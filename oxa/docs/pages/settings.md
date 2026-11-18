@@ -193,9 +193,11 @@ directly. Project settings cannot enable this transport or change its cloud poli
 Set `oxa.cloud.discover_models` to `true` to discover models at startup for the
 configured OpenRouter, OpenAI and Anthropic API keys. It also enables the
 OpenCode model cache when that provider is configured. A fresh cached catalog
-avoids a discovery request. A stale catalog can be shown while a bounded
-refresh updates the cache for later starts. A failed live lookup uses the
-configured catalog and reports the failure. Discovery stays off in offline mode.
+avoids a discovery request. A stale OpenRouter catalog is refreshed at startup
+before its prices can be used to reserve spend. Other stale catalogs can be
+shown while a bounded refresh updates the cache for later starts. A failed live
+lookup uses the configured catalog and reports the failure. Discovery stays
+off in offline mode.
 
 OpenRouter supplies model limits and token prices. When a provider omits
 prices, set conservative rates for the model under `oxa.cloud.models` in user

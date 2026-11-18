@@ -328,12 +328,9 @@ impl Runtime {
                     continue;
                 }
                 let fallback_info = fallback.map(Model::info);
-                let context = offer
-                    .context
-                    .or_else(|| fallback_info.map(|info| info.context_window));
-                let max_output = offer
-                    .max_output
-                    .or_else(|| fallback_info.map(|info| info.max_output));
+                // Discovery may raise the owner's configured reservation bounds.
+                let context = offer.context.max(fallback_info.map(|info| info.context_window));
+                let max_output = offer.max_output.max(fallback_info.map(|info| info.max_output));
                 let limits = context
                     .zip(max_output)
                     .filter(|(context, output)| output <= context);

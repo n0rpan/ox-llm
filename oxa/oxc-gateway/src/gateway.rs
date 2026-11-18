@@ -175,12 +175,14 @@ impl Gateway {
             return Ok(None);
         };
         let directory = self.runtime.catalog_cache_dir();
+        use crate::catalog_cache::State;
         let (state, offers) = match source.load(directory, &key) {
+            // OpenRouter discovery can supply the rates used to reserve spend.
+            Some((State::Stale, _)) if source.provider() == Provider::OpenRouter => {
+                (State::Fresh, self.fetch_catalog(source, &key, timeout)?)
+            }
             Some(cached) => cached,
-            None => (
-                crate::catalog_cache::State::Fresh,
-                self.fetch_catalog(source, &key, timeout)?,
-            ),
+            None => (State::Fresh, self.fetch_catalog(source, &key, timeout)?),
         };
         let (missing_price, missing_limits) = self
             .runtime
