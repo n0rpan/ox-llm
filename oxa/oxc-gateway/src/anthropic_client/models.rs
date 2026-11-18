@@ -8,6 +8,11 @@ use std::{collections::BTreeSet, time::Duration};
 
 const MAX_PAGES: usize = 100;
 const MAX_PAGE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_CATALOG_BYTES: usize = 8 * 1024 * 1024;
+const MAX_MODELS: usize = 8192;
+const MAX_ID_BYTES: usize = 128;
+const MAX_METADATA_BYTES: usize = 256;
+const MAX_CAPABILITIES: usize = 128;
 
 /// Provider metadata. Limits may be absent on older API responses.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +48,7 @@ impl Client {
         let mut credential = HeaderValue::from_str(key.expose()).map_err(|_| Error::Setup)?;
         credential.set_sensitive(true);
         let mut models = Vec::new();
+        let mut remaining_bytes = MAX_CATALOG_BYTES;
         let mut cursor: Option<String> = None;
         for _ in 0..MAX_PAGES {
             let mut url = endpoint.clone();
@@ -63,13 +69,17 @@ impl Client {
             }
             let mut bytes = Vec::new();
             while let Some(chunk) = response.chunk().await.map_err(|_| Error::Transport)? {
-                if chunk.len() > MAX_PAGE_BYTES.saturating_sub(bytes.len()) {
+                if chunk.len() > MAX_PAGE_BYTES.saturating_sub(bytes.len()) || chunk.len() > remaining_bytes {
                     return Err(Error::TooLarge);
                 }
+                remaining_bytes -= chunk.len();
                 bytes.extend_from_slice(&chunk);
             }
             let page: Value = serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
             let data = page["data"].as_array().ok_or(Error::Protocol)?;
+            if data.len() > MAX_MODELS.saturating_sub(models.len()) {
+                return Err(Error::TooLarge);
+            }
             for item in data {
                 models.push(parse_model(item)?);
             }
@@ -80,7 +90,7 @@ impl Client {
             cursor = Some(
                 page["last_id"]
                     .as_str()
-                    .filter(|id| !id.is_empty())
+                    .filter(|id| !id.is_empty() && id.len() <= MAX_ID_BYTES)
                     .ok_or(Error::Protocol)?
                     .to_owned(),
             );
@@ -96,19 +106,33 @@ fn parse_model(item: &Value) -> Result<Model, Error> {
     };
     let mut capabilities = BTreeSet::new();
     if !item["capabilities"].is_null() {
-        for (name, feature) in item["capabilities"].as_object().ok_or(Error::Protocol)? {
+        let fields = item["capabilities"].as_object().ok_or(Error::Protocol)?;
+        if fields.len() > MAX_CAPABILITIES {
+            return Err(Error::TooLarge);
+        }
+        for (name, feature) in fields {
+            if name.len() > MAX_METADATA_BYTES {
+                return Err(Error::Protocol);
+            }
             if feature["supported"].as_bool().ok_or(Error::Protocol)? {
                 capabilities.insert(name.clone());
             }
         }
     }
+    let text = |field: &str, maximum: usize| {
+        item[field]
+            .as_str()
+            .filter(|text| text.len() <= maximum)
+            .map(str::to_owned)
+            .ok_or(Error::Protocol)
+    };
     let retires_at = match &item["retires_at"] {
         Value::Null => None,
-        value => Some(value.as_str().ok_or(Error::Protocol)?.to_owned()),
+        _ => Some(text("retires_at", MAX_METADATA_BYTES)?),
     };
     Ok(Model {
-        id: item["id"].as_str().ok_or(Error::Protocol)?.to_owned(),
-        display_name: item["display_name"].as_str().ok_or(Error::Protocol)?.to_owned(),
+        id: text("id", MAX_ID_BYTES)?,
+        display_name: text("display_name", MAX_METADATA_BYTES)?,
         max_input_tokens: optional_limit("max_input_tokens")?,
         max_output_tokens: optional_limit("max_tokens")?,
         capabilities,
@@ -218,6 +242,13 @@ mod tests {
 
     fn page(data: Value, more: bool, last: Value) -> String {
         json!({"data":data,"has_more":more,"last_id":last,"future_field":true}).to_string()
+    }
+
+    #[test]
+    fn catalog_parser_refuses_oversized_model_ids() {
+        let id = "m".repeat(129);
+        let model = json!({"id":id,"display_name":"Synthetic"});
+        assert!(matches!(parse_model(&model), Err(Error::Protocol)));
     }
 
     #[tokio::test]

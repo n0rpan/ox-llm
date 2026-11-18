@@ -70,13 +70,26 @@ pub fn request(
     guard_hooks(st, HookPoint::ContextWithSystem, sink, ui)?;
     guard_hooks(st, HookPoint::BeforeProviderRequest, sink, ui)?;
 
-    let msgs = request_messages(&st.transcript.wire_shared(), &opts.extra);
+    let requested = opts.max_tokens.unwrap_or(st.info.max_output);
+    let reservation = st
+        .shared
+        .reserve_literal_output(requested.min(st.info.max_output.max(1)), opts.kind)?;
+    let scoped = reservation.is_some();
+    let (max_tokens, context) = reservation.unwrap_or((requested, None));
+    let wire = st.transcript.wire_shared();
+    let msgs = if let Some(context) = context {
+        let mut extra = Vec::with_capacity(1 + opts.extra.len());
+        extra.push(context);
+        extra.extend_from_slice(&opts.extra);
+        request_messages(&wire, &extra)
+    } else {
+        request_messages(&wire, &opts.extra)
+    };
     let idem = if opts.idem_key.is_empty() {
         new_idem_key(st)
     } else {
         opts.idem_key.clone()
     };
-    let max_tokens = opts.max_tokens.unwrap_or(st.info.max_output);
     let thinking = opts
         .thinking
         .unwrap_or_else(|| crate::think::request_thinking(st, opts.kind));
@@ -119,6 +132,9 @@ pub fn request(
         },
         hints,
     };
+    // A cloud request can be billed even when its reply fails or is discarded. Until the
+    // engine exposes settlement amounts, never present this session's cost as known zero.
+    st.stats.cost_unknown |= st.info.caps.remote;
     let mut stream = StreamState::default();
     let mut hooks = crate::fire::StreamHooks::new(st, opts.events);
     let progress = crate::progress::observer(st);
@@ -181,6 +197,9 @@ pub fn request(
             return Err(error);
         }
     };
+    if scoped {
+        st.shared.settle_literal_output(max_tokens, turn.usage.completion);
+    }
     crate::Handle {
         shared: st.shared.clone(),
     }

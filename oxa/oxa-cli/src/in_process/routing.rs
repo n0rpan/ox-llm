@@ -20,7 +20,7 @@ impl Routed {
             .map_err(Clone::clone)
             .and_then(|engine| engine.info(None))
         {
-            self.cloud_models.extend(info.models);
+            self.cloud_models = info.models.into_iter().collect();
         }
         if !self.local_models.is_disjoint(&self.cloud_models) {
             return Err(OxaError::new(
@@ -100,6 +100,13 @@ impl Engine for Routed {
             }
         }
         Err(failure.unwrap_or_else(|| OxaError::new(codes::INVALID, "No configured native models.")))
+    }
+    fn local_memory_status(&self, model: &str) -> Option<(u32, &'static str, u64)> {
+        if model.is_empty() {
+            self.local.as_ref().ok()?.local_memory_status("")
+        } else {
+            self.backend(model).ok()?.local_memory_status(model)
+        }
     }
     fn count_tokens(&self, _text: &str) -> Result<u32, OxaError> {
         Err(OxaError::unsupported(

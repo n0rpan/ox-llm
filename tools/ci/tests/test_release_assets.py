@@ -28,6 +28,29 @@ class ReleaseAssets(unittest.TestCase):
         rb = (W / 'release-build.yml').read_text()
         self.assertIsNone(re.search(r'cancel-in-progress:\s*true', rb))
         self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", rb)
+        self.assertIn('release-build-${{ github.workflow }}-${{ github.ref }}', rb)
+
+    def test_dev_uses_the_full_recipe_and_cannot_be_a_stable_release(self):
+        dev = (W / 'dev-build.yml').read_text()
+        self.assertRegex(dev, r'on:\s*\n  push:\s*\n    branches: \[main\]')
+        self.assertNotIn('pull_request', dev)
+        # A running dev build finishes; only the newest pending push is kept.
+        self.assertIn('group: dev-build\n  cancel-in-progress: false', dev)
+        # Publication moves only forward, checked before any create or upload.
+        publish = dev.split('  publish:', 1)[1]
+        self.assertLess(publish.index('compare/$GITHUB_SHA...main'), publish.index('gh release create dev'))
+        self.assertLess(publish.index('compare/$(cat dev-sha)...$GITHUB_SHA'), publish.index('gh release upload dev'))
+        self.assertIn('uses: ./.github/workflows/release-build.yml', dev)
+        self.assertIn('needs: [version, build]', dev)
+        self.assertNotIn('contents: write', dev.split('  publish:', 1)[0])
+        self.assertIn("github.ref == 'refs/heads/main'", dev.split('  publish:', 1)[1])
+        self.assertIn('for arch in aarch64 x86_64', dev)
+        release_commands = [line.strip() for line in dev.splitlines()
+                            if 'gh release create ' in line or 'gh release edit ' in line]
+        self.assertEqual(len(release_commands), 2)
+        self.assertTrue(all(' dev ' in line for line in release_commands))
+        self.assertEqual(dev.count('--prerelease --latest=false'), 2)
+        self.assertIn('actions/attest-build-provenance@', dev)
 
     def test_release_environment_resolves_itself_when_sourced_by_a_workflow(self):
         with tempfile.TemporaryDirectory() as temporary:

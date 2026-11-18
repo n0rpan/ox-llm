@@ -16,27 +16,33 @@ pub(crate) fn load(args: &crate::Args, cwd: &Path) -> Result<Option<Goal>, OxaEr
                 .map_err(|e| OxaError::io("read goal file", &e))?;
             let objective = String::from_utf8(bytes)
                 .map_err(|_| OxaError::new(codes::USAGE, "Goal file must be UTF-8 text."))?;
-            let max_time_ms = args
-                .max_time
-                .map(|d| {
-                    u64::try_from(d.as_millis())
-                        .map_err(|_| OxaError::new(codes::USAGE, "Goal time budget is too large."))
-                })
-                .transpose()?;
-            let started_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| OxaError::new(codes::IO, "System clock precedes epoch."))?
-                .as_millis();
-            Goal::new(
-                objective,
-                GoalBudget {
-                    max_time_ms,
-                    max_tokens: args.max_tokens,
-                    max_turns: None,
-                },
-                u64::try_from(started_ms)
-                    .map_err(|_| OxaError::new(codes::IO, "System clock is too large."))?,
-            )
+            from_objective(objective, args.max_time, args.max_tokens)
         })
         .transpose()
+}
+
+pub(crate) fn from_objective(
+    objective: String,
+    max_time: Option<std::time::Duration>,
+    max_tokens: Option<u64>,
+) -> Result<Goal, OxaError> {
+    let max_time_ms = max_time
+        .map(|duration| {
+            u64::try_from(duration.as_millis())
+                .map_err(|_| OxaError::new(codes::USAGE, "Goal time budget is too large."))
+        })
+        .transpose()?;
+    let started_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| OxaError::new(codes::IO, "System clock precedes epoch."))?
+        .as_millis();
+    Goal::new(
+        objective,
+        GoalBudget {
+            max_time_ms,
+            max_tokens,
+            max_turns: None,
+        },
+        u64::try_from(started_ms).map_err(|_| OxaError::new(codes::IO, "System clock is too large."))?,
+    )
 }

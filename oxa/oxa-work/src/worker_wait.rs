@@ -101,33 +101,23 @@ pub(crate) fn wait(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_dir::PrivateDir;
     use std::fs;
-    use std::os::unix::{
-        fs::{DirBuilderExt, PermissionsExt},
-        process::ExitStatusExt,
-    };
-    use std::path::PathBuf;
+    use std::os::unix::{fs::PermissionsExt, process::ExitStatusExt};
     use std::sync::mpsc;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    struct Fixture(PathBuf);
+    struct Fixture(PrivateDir);
     impl Fixture {
         fn new() -> Self {
-            let root = std::env::temp_dir().join(format!(
-                "oxa-worker-deadline-{}-{}",
-                std::process::id(),
-                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
-            ));
-            fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
-            Self(root)
+            Self(PrivateDir::new("worker-deadline"))
         }
         fn child(&self, script: &str) -> Owned {
             let child = Command::new("/bin/sh")
                 .args(["-c", script, "deadline-fixture"])
-                .arg(self.0.join("ready"))
-                .arg(self.0.join("term"))
+                .arg(self.0.path().join("ready"))
+                .arg(self.0.path().join("term"))
                 .env_clear()
-                .env("HOME", &self.0)
+                .env("HOME", self.0.path())
                 .env("PATH", "/usr/bin:/bin")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -136,18 +126,14 @@ mod tests {
                 .unwrap();
             let child = Owned(child);
             let end = Instant::now() + Duration::from_secs(5);
-            while !self.0.join("ready").exists() {
+            while !self.0.path().join("ready").exists() {
                 assert!(Instant::now() < end, "child installed its signal handler");
                 std::thread::sleep(Duration::from_millis(5));
             }
             child
         }
     }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
+
     struct Owned(Child);
     impl Drop for Owned {
         fn drop(&mut self) {
@@ -208,7 +194,7 @@ mod tests {
         .unwrap();
         assert!(result.deadline);
         assert_eq!(result.status.signal(), Some(9));
-        assert_eq!(fs::read_to_string(fixture.0.join("term")).unwrap(), "term");
+        assert_eq!(fs::read_to_string(fixture.0.path().join("term")).unwrap(), "term");
         assert!(started.elapsed() >= Duration::from_millis(260));
     }
 
@@ -237,7 +223,7 @@ mod tests {
     #[test]
     fn a_stuck_term_sender_cannot_delay_the_final_kill() {
         let fixture = Fixture::new();
-        let sender = fixture.0.join("slow-terminate");
+        let sender = fixture.0.path().join("slow-terminate");
         fs::write(&sender, "#!/bin/sh\n/usr/bin/sleep 2\n").unwrap();
         fs::set_permissions(&sender, fs::Permissions::from_mode(0o700)).unwrap();
         let mut child = fixture.child("printf ready > \"$1\"\nwhile :; do :; done\n");

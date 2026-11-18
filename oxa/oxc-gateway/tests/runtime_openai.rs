@@ -108,7 +108,7 @@ fn api_admission_owns_the_fresh_key_and_uses_trusted_private_usage() {
     };
     assert!(std::sync::Arc::ptr_eq(key, &call.key_handle().unwrap()));
     assert_eq!(format!("{handle:?}"), "OpenAiAuthHandle([redacted])");
-    call.mark_forwarded();
+    call.mark_forwarded().unwrap();
     call.metered_usage(Usage {
         prompt: Some(100),
         output: Some(5),
@@ -195,7 +195,7 @@ fn subscription_owns_an_account_bound_handle_and_zero_usd_settlement_enforces_re
     assert_eq!(expected_account_id, "synthetic-account");
     assert_eq!(format!("{handle:?}"), "OpenAiAuthHandle([redacted])");
     assert!(call.key_handle().is_err());
-    call.mark_forwarded();
+    call.mark_forwarded().unwrap();
     call.metered_usage(Usage {
         prompt: Some(10),
         output: Some(5),
@@ -295,10 +295,11 @@ fn go_uses_only_its_api_key_and_persists_zero_usd_with_shared_subscription_caps(
     let mut call = runtime.begin(&payload(), Context::default()).unwrap();
     assert_eq!(call.key_handle().unwrap().expose(), anthropic::CREDENTIAL);
     assert!(call.openai_auth_handle().is_err());
-    call.mark_forwarded();
+    call.mark_forwarded().unwrap();
     call.metered_usage(Usage {
         prompt: Some(10),
         output: Some(5),
+        reported_cost: Some(0.0),
         ..Usage::default()
     });
     let row = call.finish(Outcome::Complete, 200, None).unwrap();

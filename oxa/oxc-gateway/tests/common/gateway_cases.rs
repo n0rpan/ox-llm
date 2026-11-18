@@ -320,7 +320,7 @@ fn go_captured_terminal_usage_settles_even_without_public_delivery() {
             let gateway = Gateway::new(runtime).unwrap();
             let payload = json!({"model":"synthetic-go","max_tokens":100,"messages":[]});
             let mut call = gateway.runtime.begin(&payload, Context::default()).unwrap();
-            call.mark_forwarded();
+            call.mark_forwarded().unwrap();
             // Transport already parsed this terminal record, but cancellation
             // (or protocol rejection) prevented its public Chunk callback.
             let usage = known.then(|| opencode::Usage::parse(&json!({
@@ -556,6 +556,92 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
             );
         }
         assert_eq!(mock.requests().len(), 2, "discovery plus one generation only");
+        mock.assert_healthy();
+    }
+}
+
+#[cfg(feature = "upstream-openai")]
+#[tokio::test]
+async fn forwarding_refusal_stops_paid_transport_after_admission() {
+    for malformed in [false, true] {
+        let mock = openai::MockOpenAi::start(vec![openai::Reply::json(json!({}))]);
+        let fixture = skeleton::Fixture::for_endpoint(&mock.base_url());
+        std::fs::write(
+            &fixture.key_path,
+            json!({"openai":{"api_key":anthropic::CREDENTIAL}}).to_string(),
+        )
+        .unwrap();
+        let model = Model::new(
+            skeleton::MODEL,
+            Provider::OpenAi,
+            "synthetic-upstream",
+            &mock.base_url(),
+            1024,
+            16,
+        )
+        .unwrap();
+        let price = || Price::from_model(&fixture.config["cloud"]["models"][skeleton::MODEL]).unwrap();
+        let runtime = Runtime::new(
+            [(model, Some(crate::runtime::Billing::Metered(price())))],
+            fixture.key_path.clone(),
+            fixture.ledger_dir.clone(),
+            Options {
+                access: Access::Enabled,
+                daily_budget_usd: Some(1.0),
+                ledger_enabled: true,
+                subscription: None,
+                subscription_limits: None,
+            },
+        )
+        .unwrap();
+        let gateway = Gateway::new(runtime).unwrap();
+        let payload = payload(true);
+        let call = gateway.runtime.begin(&payload, Context::default()).unwrap();
+        let snapshot = std::fs::read_dir(&fixture.ledger_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "holds"))
+            .unwrap();
+        if malformed {
+            std::fs::write(&snapshot, "invalid").unwrap();
+        } else {
+            // Another accounting instance fails settlement after this call's admission.
+            let budget = crate::accounting::Budget::new(snapshot.with_extension(""));
+            let model = crate::accounting::Model {
+                provider: "openai".into(),
+                upstream: "synthetic-upstream".into(),
+                context: 1024,
+                max_output: 16,
+                billing: crate::billing::Billing::Metered(price()),
+            };
+            let mut failed = budget.reserve(&json!(1), true, &model, 16).unwrap();
+            failed.mark_forwarded().unwrap();
+            assert!(failed
+                .finish(&Usage::default(), Outcome::Failed, |_| Err(
+                    std::io::ErrorKind::StorageFull.into()
+                ))
+                .is_err());
+        }
+        let error = gateway
+            .openai_chat(call, &payload, None, &Cancellation::default(), &mut |_| {
+                panic!("refused forwarding must emit no Chunk or Done")
+            })
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.refusal().code, "cloud_ledger_unavailable");
+        assert!(mock.requests().is_empty(), "no paid HTTP request may be sent");
+        assert!(rows(&fixture).iter().all(|row| row["cost_usd"] == 0.0));
+        assert_eq!(
+            gateway
+                .runtime
+                .begin(&payload, Context::default())
+                .err()
+                .unwrap()
+                .code,
+            "cloud_ledger_unavailable",
+            "the failure must remain closed"
+        );
         mock.assert_healthy();
     }
 }

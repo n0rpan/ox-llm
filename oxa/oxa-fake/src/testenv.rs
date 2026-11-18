@@ -17,8 +17,9 @@ impl TestEnv {
     pub fn new() -> TestEnv {
         Self::new_in(std::env::temp_dir())
     }
-    /// Create the same isolated layout below an explicit temporary parent.
-    /// Useful when the fixture must live outside a repository even if TMPDIR does not.
+    /// Create the same isolated layout below an explicit temporary parent, e.g. for
+    /// credentials/ledgers that must live outside repositories even when the runner's
+    /// TMPDIR is in a checkout.
     pub fn new_in(parent: impl AsRef<Path>) -> TestEnv {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let nanos = std::time::SystemTime::now()
@@ -106,5 +107,26 @@ impl Default for TestEnv {
 impl Drop for TestEnv {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_temp_root_preserves_layout_and_cleanup() {
+        let parent = TestEnv::new();
+        let root;
+        {
+            let env = TestEnv::new_in(&parent.tmp());
+            root = env.root().to_path_buf();
+            assert_eq!(root.parent(), Some(parent.tmp().as_path()));
+            for path in [env.home(), env.agent_dir(), env.tmp(), env.work()] {
+                assert!(path.is_dir());
+            }
+            env.write("work/note.txt", "synthetic fixture");
+        }
+        assert!(!root.exists());
     }
 }
