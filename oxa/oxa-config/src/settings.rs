@@ -110,6 +110,21 @@ impl Settings {
         }
         Some(cur)
     }
+    /// Raw value at a dotted key from the user layer only; a project file never changes it.
+    pub fn user_get(&self, key: &str) -> Option<&Value> {
+        let mut cur = &self.user;
+        for part in key.split('.') {
+            cur = cur.as_object()?.get(part)?;
+        }
+        Some(cur)
+    }
+    /// A `u32` read from the user layer only; a missing or mistyped value yields `default`.
+    pub fn user_u32(&self, key: &str, default: u32) -> u32 {
+        self.user_get(key)
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(default)
+    }
     pub fn bool(&self, key: &str, default: bool) -> bool {
         self.get(key).and_then(Value::as_bool).unwrap_or(default)
     }

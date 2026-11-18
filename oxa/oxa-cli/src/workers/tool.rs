@@ -51,6 +51,17 @@ const DESCRIPTION: &str = "Background workers: each is a separate oxa process th
 
 const SCHEMA: &str = r#"{"type":"object","properties":{"action":{"type":"string","enum":["start","list","stop","send"]},"name":{"type":"string"},"goal":{"type":"string"},"text":{"type":"string"},"model":{"type":"string"},"mode":{"type":"string","enum":["plan","ask","workspace","auto","yolo"]}},"required":["action"]}"#;
 
+/// `oxa.workers.enabled` from the user settings only (default true): a project file cannot turn
+/// process launch on or off.
+pub fn enabled(settings: &oxa_config::Settings) -> bool {
+    settings.user_bool(SETTING_ENABLED, true)
+}
+
+/// `oxa.workers.max` from the user settings only (default 4): a project file cannot raise it.
+pub fn max_workers(settings: &oxa_config::Settings) -> usize {
+    usize::try_from(settings.user_u32(SETTING_MAX, 4)).unwrap_or(4)
+}
+
 /// Whether the worker hook set is built: not in a worker child (`worker_depth` is the value of
 /// `OXA_WORKER_DEPTH`, `None` when unset) and the setting is not false.
 pub fn built(worker_depth: Option<&str>, enabled: bool) -> bool {
@@ -1204,6 +1215,32 @@ mod tests {
             assert_eq!(now.pid, rec.pid);
         }
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_true_cannot_enable_workers() {
+        let user_off = json!({"oxa": {"workers": {"enabled": false}}});
+        let project_on = json!({"oxa": {"workers": {"enabled": true}}});
+        let set = oxa_config::Settings::from_values(user_off, project_on.clone());
+        assert!(!enabled(&set));
+        assert!(!built(None, enabled(&set)));
+        // The project is ignored in both directions: unset by the user means the default.
+        assert!(enabled(&oxa_config::Settings::from_values(json!({}), project_on)));
+        let project_off = json!({"oxa": {"workers": {"enabled": false}}});
+        assert!(enabled(&oxa_config::Settings::from_values(
+            json!({}),
+            project_off
+        )));
+    }
+
+    #[test]
+    fn project_cannot_raise_worker_max() {
+        let set = |user: Value, project: Value| oxa_config::Settings::from_values(user, project);
+        let two = json!({"oxa": {"workers": {"max": 2}}});
+        let ten = json!({"oxa": {"workers": {"max": 10}}});
+        assert_eq!(max_workers(&set(two.clone(), ten.clone())), 2);
+        assert_eq!(max_workers(&set(json!({}), ten)), 4);
+        assert_eq!(max_workers(&set(two, json!({}))), 2);
     }
 
     #[test]

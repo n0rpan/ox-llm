@@ -239,6 +239,8 @@ const SCHEMA: &[KeyDef] = &[
         "\"brave\"",
     ),
     // K5a: the `worker` tool (never in a worker child) and the most live workers a session runs.
+    // The `oxa.workers.*` keys are user settings only: a project file cannot start processes,
+    // raise a limit or change the stop timing (`Settings::user_bool`, `user_u32`, `user_get`).
     key("oxa.workers.enabled", Kind::Bool, "true"),
     key("oxa.workers.max", Kind::Number, "4"),
     // K5b: relaunch the unfinished, dead workers of a session when it is opened again. User
