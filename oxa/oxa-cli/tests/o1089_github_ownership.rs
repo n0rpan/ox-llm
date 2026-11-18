@@ -15,7 +15,7 @@ fn guidance() -> String {
 const RULE: &str = "GitHub access has one owner per session.";
 
 #[test]
-fn the_session_prompt_decides_who_owns_github() {
+fn interactive_oxa_and_lead_own_github_and_workers_leave_it_to_the_runner() {
     let text = guidance();
     let start = text
         .find(RULE)
@@ -28,12 +28,26 @@ fn the_session_prompt_decides_who_owns_github() {
         .expect("the rule has to scope the `gh` commands in this file");
     let rule = &tail[..end];
     assert!(
-        rule.contains("The session prompt says which; the two never apply at once."),
-        "the rule has to name the deciding instruction: {rule}"
+        rule.contains("An owner-driven interactive `oxa` session and Lead own GitHub access"),
+        "interactive oxa and Lead must own GitHub access: {rule}"
+    );
+    for permission in [
+        "authenticated `gh` and Git",
+        "read issues, reviews and remote refs",
+        "push `agent/**` branches",
+        "open PRs",
+        "read CI results",
+    ] {
+        assert!(rule.contains(permission), "missing {permission}: {rule}");
+    }
+    assert!(
+        rule.contains("Sandboxed `oxa work` workers have no GitHub access.")
+            && rule.contains("Their runner owns GitHub access."),
+        "the runner must own GitHub access for sandboxed workers: {rule}"
     );
     assert!(
-        rule.contains("make no `gh` call at all"),
-        "a runner-owned session must not call gh: {rule}"
+        rule.contains("make no `gh` call at all and make no other GitHub request, including through Git"),
+        "a worker must not access GitHub through gh or Git: {rule}"
     );
     assert!(
         rule.contains("provenance, not an order"),
