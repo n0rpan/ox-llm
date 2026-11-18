@@ -1,9 +1,14 @@
 //! Setting descriptors: what the TUI `/settings` menu and the lead web settings page show for a key
 //! (issue #1489, design section 4.1).
 //!
-//! This module holds the types, the `const fn` builder and the lookups. The entries themselves go
-//! in `descriptor/*.rs` in later slices; the table here is empty until then. `KeyDef` and `SCHEMA`
-//! are untouched: validation and merge do not read descriptors.
+//! This module holds the types, the `const fn` builder and the lookups. The entries live in
+//! `descriptor/*.rs`, one slice per group file; each file's `DISPLAY`-style table is concatenated
+//! into `TABLE` below. `KeyDef` and `SCHEMA` are untouched: validation and merge do not read
+//! descriptors.
+
+mod display;
+
+use std::sync::LazyLock;
 
 /// A settings menu group, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -344,12 +349,12 @@ impl Descriptor {
     }
 }
 
-/// The data table, in display order. Empty until the A2 slices add their entries.
-const TABLE: &[Descriptor] = &[];
+/// The data table, in display order. Each group file adds its slice to the array below.
+static TABLE: LazyLock<Vec<Descriptor>> = LazyLock::new(|| [display::DISPLAY].concat());
 
 /// Every descriptor, in display order.
 pub fn descriptors() -> &'static [Descriptor] {
-    TABLE
+    TABLE.as_slice()
 }
 
 /// The descriptor for one key (a schema key or a field key).
@@ -471,11 +476,12 @@ mod tests {
     }
 
     #[test]
-    fn empty_table_has_no_entries() {
-        assert!(descriptors().is_empty());
+    fn groups_without_a_data_slice_have_no_entries() {
+        // Only Display has data so far (A2a); the other groups arrive in A2b-d.
         assert!(descriptor("oxa.bash.defaultTimeout").is_none());
         assert_eq!(in_group(Group::Tools).count(), 0);
         assert_eq!(fields_of("oxa.lead.serve").count(), 0);
+        assert_eq!(descriptors().len(), in_group(Group::Display).count());
     }
 
     #[test]
