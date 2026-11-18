@@ -19,7 +19,7 @@ PORTED means the named Rust implementation and its contract tests replace the fe
 | oxc/src/oxc/bootstrap_checks.py — legacy bootstrap software-check runner | DROPPED | The native product has no Python bootstrap runner. | [#681](https://github.com/oxstack/ox-llm/issues/681) and the [bootstrap retirement index](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766) cover this runner. [#1358](https://github.com/oxstack/ox-llm/pull/1358) removed it, its dedicated tests and its manifest after matching all three to the indexed archive. The build guide retains the historical procedure and finish gate. The native test binaries, recipes and independent acceptance gates remain. |
 | oxc/src/oxc/bootstrap_download.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
 | oxc/src/oxc/bootstrap_guard.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
-| oxc/src/oxc/bootstrap_install.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
+| oxc/src/oxc/bootstrap_install.py — legacy sandbox bootstrap install and rollback | DROPPED | v0.2.x product installation uses native packages. | [#681](https://github.com/oxstack/ox-llm/issues/681) and the [bootstrap retirement index](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766) cover this transaction. [#1371](https://github.com/oxstack/ox-llm/pull/1371) retired the archived runner, its dedicated tests and its named checkpoint. The guide pins the staging, apply and rollback steps to the archived procedure. The retained manifest check continues to verify every named input for the remaining manifests. |
 | oxc/src/oxc/bootstrap_jobs.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
 | oxc/src/oxc/bootstrap_sources.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
 | oxc/src/oxc/bootstrap_transfer.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
@@ -316,6 +316,15 @@ remains open. The tested packages contain standalone `oxe`, which still needs
 an explicit release allowlist decision. Each source slice still requires
 its caller and evidence gates and the indexed pre-removal archive.
 
+The [tag publisher](https://github.com/oxstack/ox-llm/blob/6341445c49c39b7a5d6cb2b486df58c2cd4b5e0b/.github/workflows/release.yml#L68-L104)
+combines the tested CPU archive type with standalone `dist-*` outputs. Its
+checks require ARM archives for `oxe-server`, `oxe-server-flash`, `oxi`, and
+`oxa`, and it [publishes the assembled archive set](https://github.com/oxstack/ox-llm/blob/6341445c49c39b7a5d6cb2b486df58c2cd4b5e0b/.github/workflows/release.yml#L146-L147).
+The [generated notes](https://github.com/oxstack/ox-llm/blob/6341445c49c39b7a5d6cb2b486df58c2cd4b5e0b/.github/workflows/release.yml#L128-L132) still describe Python controller
+wrappers and link the legacy cloud-only quickstart. For #763, reconcile the
+published asset list and native install notes, then verify checksums, membership,
+and no-Python install behavior on the approved release bytes.
+
 ### Remaining controller-path evidence at `7f7bfb6a`
 
 These entries account for the remaining paths in the packaged legacy subtree.
@@ -415,7 +424,7 @@ The evidence tables account for all 96 Python paths under `oxc/src/oxc` at the i
 - `oxc/tests/test_bootstrap_build.py`
 - `oxc/tests/test_bootstrap_checks.py` (retired with the runner in [#1358](https://github.com/oxstack/ox-llm/pull/1358), preserved in `archive/python-oxc`)
 - `oxc/tests/test_bootstrap_download.py`
-- `oxc/tests/test_bootstrap_install.py`
+- `oxc/tests/test_bootstrap_install.py` (retired with the sandbox transaction in [#1371](https://github.com/oxstack/ox-llm/pull/1371), preserved in `archive/python-oxc`)
 - `oxc/tests/test_bootstrap_manifest_pins.py`
 - `oxc/tests/test_bootstrap_sources.py`
 - `oxc/tests/test_bootstrap_transfer.py`
