@@ -11,6 +11,8 @@ use std::{collections::BTreeMap, str::FromStr};
 
 pub mod cache;
 pub mod client;
+mod plan_usage;
+pub use plan_usage::{PlanUsage, PlanWindow};
 
 pub const GO_BASE: &str = "https://opencode.ai/inference/go";
 const MAX_MODELS: usize = 1024;

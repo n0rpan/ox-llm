@@ -159,3 +159,65 @@ fn offline_and_cloud_off_refuse_before_the_cache_or_any_network_call() {
     assert_eq!(mock.requests().len(), 1, "no refusal reaches the network");
     mock.assert_healthy();
 }
+
+#[test]
+fn go_plan_usage_reads_only_typed_windows_at_the_discovered_base() {
+    use oxa_proto::CancelToken;
+    use oxc_gateway::opencode::{PlanUsage, PlanWindow};
+
+    let fixture = go_fixture();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::json(json!({"usage": {
+                "rolling": {"percent": 0, "resetsAt": "2026-11-18T11:00:00+01:00"},
+                "weekly": {"percent": 72.5, "resetsAt": CREDENTIAL},
+                "monthly": {"percent": 101, "unknown": CREDENTIAL}
+            }})),
+            Reply::json(json!({"usage": {"renewed": {"fraction": 0.4}}})),
+            Reply::error(429, CREDENTIAL, CREDENTIAL).buffer_header_refusal(),
+        ]
+    });
+    let base = format!("http://{}/inference/go", mock.address());
+    let mut enabled = go_gateway(&fixture, Access::Enabled);
+    enabled.discover_opencode(&base, TIMEOUT).unwrap();
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let cancel = CancelToken::new();
+    let read = |gateway: &Gateway| runtime.block_on(gateway.opencode_plan_usage(TIMEOUT, &cancel));
+    for access in [Access::Offline, Access::Disabled] {
+        assert_eq!(read(&go_gateway(&fixture, access)).unwrap(), None);
+    }
+    assert_eq!(mock.requests().len(), 1);
+    assert_eq!(
+        read(&enabled).unwrap(),
+        Some(PlanUsage {
+            rolling: Some(PlanWindow {
+                used_percent: Some(0.0),
+                resets_at: Some(1794996000),
+            }),
+            weekly: Some(PlanWindow {
+                used_percent: Some(72.5),
+                resets_at: None,
+            }),
+            monthly: None,
+        })
+    );
+    assert_eq!(read(&enabled).unwrap(), None);
+    let error = read(&enabled).unwrap_err();
+    assert_eq!(error.refusal().code, "cloud_rate_limited");
+    assert!(!format!("{error:?} {error}").contains(CREDENTIAL));
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 4);
+    for request in &requests[1..] {
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.target, "/inference/go/v1/usage");
+        assert!(request
+            .header("authorization")
+            .is_some_and(|value| value == format!("Bearer {CREDENTIAL}")));
+    }
+    mock.assert_healthy();
+}
