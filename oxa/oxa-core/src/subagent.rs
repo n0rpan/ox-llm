@@ -711,8 +711,6 @@ fn parse_limits(v: &Value) -> Limits {
     }
 }
 
-/// The child's soft compaction limit: the setting, never above the parent's `compactAt` and
-/// always below the context window.
 /// #1512 S3: the environment of a subagent child. Every child is unattended (`OXA_UNATTENDED=1`):
 /// no person watches it, so the OS sandbox stays on by default.
 fn child_env(hint: &str, soft: u32) -> Vec<(String, String)> {
@@ -742,6 +740,8 @@ mod child_env_tests {
     }
 }
 
+/// The child's soft compaction limit: the setting, never above the parent's `compactAt` and
+/// always below the context window.
 fn child_soft_tokens(setting: u32, l: &Limits) -> u32 {
     setting
         .min(l.compact_at.unwrap_or(u32::MAX))
