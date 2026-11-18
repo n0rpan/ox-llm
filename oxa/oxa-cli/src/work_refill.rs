@@ -61,12 +61,15 @@ impl Consumer<'_> {
 
     /// At most one task; any lease, even expired, blocks the worker until fenced completion.
     /// Unknown counts refuse. Audit durably records the board before reservation, without packets.
+    /// Retain the original receipt durably before publication; never reacquire the queue lock.
+    /// Any retention/publication error preserves the charged reservation for reconciliation.
     pub fn once(
         &self,
         source: &mut impl Source,
         packets: &[Packet<'_>],
         now: u64,
         mut audit: impl FnMut(&AssignmentBoard) -> Result<()>,
+        mut retain: impl FnMut(&Receipt) -> Result<()>,
     ) -> Result<Vec<Receipt>> {
         if !self.policy.enabled || self.paused()? {
             return Ok(vec![]);
@@ -109,7 +112,7 @@ impl Consumer<'_> {
             let identity = serde_json::to_vec(&(self.repository, number, &entry.head, entry.action))
                 .map_err(|_| "cannot encode board queue identity")?;
             let key = format!("{:x}", Sha256::digest(identity));
-            let mut lease = None;
+            let mut receipt = None;
             let published = helper_queue::publish_reserved(
                 self.queue,
                 &key,
@@ -135,18 +138,24 @@ impl Consumer<'_> {
                     {
                         return Ok(false);
                     }
-                    lease = self
-                        .claims
-                        .claim_idle_for(entry, self.policy, self.worker, now, self.ttl)?;
-                    Ok(lease.is_some())
+                    let Some(lease) =
+                        self.claims
+                            .claim_idle_for(entry, self.policy, self.worker, now, self.ttl)?
+                    else {
+                        return Ok(false);
+                    };
+                    let original = Receipt {
+                        number,
+                        key: key.clone(),
+                        lease,
+                    };
+                    retain(&original)?;
+                    receipt = Some(original);
+                    Ok(true)
                 },
             )?;
             if published {
-                return Ok(vec![Receipt {
-                    number,
-                    key,
-                    lease: lease.ok_or("missing queue lease")?,
-                }]);
+                return Ok(vec![receipt.ok_or("missing native queue receipt")?]);
             }
         }
         Ok(vec![])

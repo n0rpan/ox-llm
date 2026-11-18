@@ -18,6 +18,22 @@ and verified merge-group rejection evidence in `queue_rejections`, including the
 removal event time.
 Use `--queue-evidence` to record only the rejection evidence alongside the board.
 
+To verify the provenance of test-report archives, pass `--queue-report-policy FILE` with an owner-only
+JSON file in a private directory. Set the trusted workflow path, the exact names
+of required checks that consume those reports, and every JUnit producer and artifact.
+
+```json
+{
+  "workflow_path": ".github/workflows/checks.yml",
+  "required_check_names": ["workspace test gate"],
+  "reports": [{"producer_name": "Workspace shard 1", "artifact_name": "test-report-1"}]
+}
+```
+
+That option also enables queue evidence. The shadow journal records the checked
+run, attempt, required check IDs, and SHA-256 digests after verifying every
+configured archive for that attempt.
+
 Limit: 100 PRs/items per connection. Reported checks are matched against the base's
 classic protection and active repository/organization rulesets; missing required
 contexts and unknown/no required checks stay pending. Review
@@ -205,7 +221,12 @@ Finished successful work is returned without another worker or check run; add
 change requires a new ID. Unsupported or corrupt checkpoints are preserved and
 refused. A matching linked worktree is reused; the
 source checkout is never used as the task worktree. An existing branch checked
-out elsewhere is blocked. Dirty retained work is preserved and saved before
+out elsewhere is blocked. A new task branch that is already published starts at
+its pushed head instead of the base: the branch is created at the lone
+remote-tracking tip of the same name when that tip descends from the captured
+base (never for several diverging tips or an unrelated one), so reviewing or
+continuing a pull request works from its head. Fetch first; no fetch is run here.
+Dirty retained work is preserved and saved before
 retrying. A clean retained branch gets an ordinary sandboxed
 merge of the captured base; no reset, stash, force checkout or automatic fetch runs.
 

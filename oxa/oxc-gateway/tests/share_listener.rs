@@ -261,6 +261,12 @@ async fn authenticated_stream_is_guest_only_settles_usage_and_revocation_is_fres
         / 86400;
     assert_eq!(r.keys.guest_usage(day, &r.id).unwrap(), (1, 8));
     r.keys.revoke(&r.id).unwrap();
+    let usage = r.keys.guest_usage_snapshot(day).unwrap();
+    assert_eq!(usage.len(), 1);
+    assert_eq!(usage[0].key.name, "Device");
+    assert_eq!(usage[0].key.id, r.id);
+    assert!(usage[0].key.revoked);
+    assert_eq!((usage[0].requests, usage[0].tokens), (1, 8));
     assert!(r.models().await.starts_with("HTTP/1.1 401"));
     r.close().await;
 }
@@ -775,6 +781,10 @@ async fn authenticated_native_bridge_streams_only_guest_text_and_settles_usage()
         },
     )
     .unwrap();
+    #[cfg(feature = "ledger")]
+    let ledger_path = directory.0.join("request-ledger");
+    #[cfg(feature = "ledger")]
+    let answer = answer.with_ledger(oxc_gateway::ledger::Ledger::open(&ledger_path).unwrap());
     let server = Server::bind(
         keys.clone(),
         Arc::new(answer),
@@ -806,6 +816,32 @@ async fn authenticated_native_bridge_streams_only_guest_text_and_settles_usage()
     assert!(response.contains("\"completion_tokens\":2"));
     assert!(!response.contains("Synthetic private reasoning"));
     assert!(!response.contains(key.bearer.expose()));
+    #[cfg(feature = "ledger")]
+    {
+        let paths: Vec<_> = std::fs::read_dir(ledger_path)
+            .unwrap()
+            .map(|item| item.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "jsonl"))
+            .collect();
+        assert_eq!(paths.len(), 1);
+        let row = std::fs::read_to_string(&paths[0]).unwrap();
+        for private in [
+            key.bearer.expose(),
+            "Device",
+            "Synthetic request",
+            "Synthetic native reply",
+            "Synthetic private reasoning",
+        ] {
+            assert!(!row.contains(private));
+        }
+        let row: Value = serde_json::from_str(&row).unwrap();
+        assert_eq!(row["model"], "local-model");
+        assert_eq!(row["origin"], "api");
+        assert_eq!(row["remote"], false);
+        assert_eq!(row["guest_key"].as_str().unwrap().len(), 32);
+        assert_eq!(row["prompt_tokens"], 3);
+        assert_eq!(row["completion_tokens"], 2);
+    }
 
     stop.cancel();
     tokio::time::timeout(Duration::from_secs(3), task)

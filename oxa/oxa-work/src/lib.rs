@@ -16,6 +16,8 @@ mod committed;
 pub use committed::{verify_saved_task, VerifiedTask};
 mod execute;
 pub mod helper_queue;
+#[cfg(target_os = "linux")]
+pub mod managed_steering;
 mod notes;
 mod publish;
 mod queue;
@@ -765,6 +767,8 @@ pub enum SupervisorOperation {
     Checkout {
         branch: String,
         create: bool,
+        #[serde(default)]
+        adopted: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         normalize: Option<BaseUpdate>,
     },
@@ -994,14 +998,14 @@ pub fn run_task_with_policy(
         .map_err(|e| e.to_string())
 }
 
-fn lock_task(policy: &RunPolicy, id: &str) -> Result<fs::File> {
+fn lock_task(policy: &RunPolicy, id: &str, create: bool) -> Result<fs::File> {
     let lock_path = policy.storage.join(format!("{id}.lock"));
     let lock_file = fs::OpenOptions::new()
         .read(true)
         .write(true)
         .mode(0o600)
         .custom_flags(shadow::OWNER_FILE_FLAGS)
-        .create(true)
+        .create(create)
         .truncate(false)
         .open(&lock_path)
         .map_err(|e| format!("cannot lock task {id}: {e}"))?;
@@ -1052,6 +1056,8 @@ pub struct LockedTask<'a> {
     task: &'a Task,
     policy: &'a RunPolicy,
     lock: fs::File,
+    #[cfg(target_os = "linux")]
+    managed_steering: Option<managed_steering::Launch>,
 }
 
 impl<'a> LockedTask<'a> {
@@ -1069,26 +1075,34 @@ impl<'a> LockedTask<'a> {
                 .map_err(|error| format!("task storage: {error}"))?;
         }
         verify_task_storage(&policy.storage).map_err(|error| format!("task storage: {error}"))?;
-        let lock_path = policy.storage.join(format!("{}.lock", task.id));
-        let lock = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .custom_flags(shadow::OWNER_FILE_FLAGS)
-            .create(create)
-            .truncate(false)
-            .open(&lock_path)
-            .map_err(|e| format!("cannot lock task {}: {e}", task.id))?;
-        let lock_metadata = lock
-            .metadata()
-            .map_err(|e| format!("cannot inspect task lock: {e}"))?;
-        // SAFETY: geteuid has no preconditions and returns this process's effective owner.
-        if !shadow::regular_file_owned_by(&lock_metadata, unsafe { libc::geteuid() }) {
-            return Err("cannot lock task: lock must be an owner-controlled regular file".into());
+        let lock = lock_task(policy, &task.id, create)?;
+        Ok(Self {
+            task,
+            policy,
+            lock,
+            #[cfg(target_os = "linux")]
+            managed_steering: None,
+        })
+    }
+
+    /// The owner frontend enables steering for its exact admitted task.
+    #[cfg(target_os = "linux")]
+    pub fn bind_managed_steering(
+        &mut self,
+        claims: &Path,
+        binding: &board::NativeBinding,
+        objective: &str,
+    ) -> Result<()> {
+        if self.task.id != binding.native_task_id || self.task.branch != binding.branch {
+            return Err("managed steering requires this task's admission binding".into());
         }
-        lock.try_lock()
-            .map_err(|e| format!("task {} is already running: {e}", task.id))?;
-        Ok(Self { task, policy, lock })
+        self.managed_steering = Some(managed_steering::Launch::new(
+            claims,
+            &self.policy.storage,
+            binding,
+            objective,
+        )?);
+        Ok(())
     }
 
     /// Plan the task admitted by the native queue while retaining its lock.
@@ -1212,6 +1226,8 @@ fn run_locked(
         observer,
         scrub_note,
         base_alias: planned.base_alias.as_ref(),
+        #[cfg(target_os = "linux")]
+        managed_steering: locked.managed_steering.as_ref(),
     })
     .drive(&mut state)
     {

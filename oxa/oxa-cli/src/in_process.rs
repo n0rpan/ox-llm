@@ -95,7 +95,16 @@ pub(crate) fn select(
     requested: Option<&str>,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Arc<dyn Engine>, OxaError> {
-    select_observed(user, effective, dirs, requested, None, None, http).map(|(engine, _)| engine)
+    select_observed(
+        user,
+        effective,
+        dirs,
+        requested,
+        None,
+        SharedEngines::default(),
+        http,
+    )
+    .map(|(engine, _)| engine)
 }
 
 /// Native launch configuration is user-only. Stream policy follows the effective session.
@@ -120,21 +129,46 @@ fn shared_local_engine_uses_effective_stream_timeout() {
     assert_eq!(stream.silence_limit_ms, 2400);
 }
 
+#[derive(Clone)]
+pub(crate) struct OpenedGateway {
+    pub gateway: Arc<Gateway>,
+    notices: Vec<String>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct SharedEngines {
+    pub local: Option<Arc<oxc_local::native::LocalEngine>>,
+    pub cloud: Option<OpenedGateway>,
+}
+
 pub(crate) fn select_observed(
     user: &Settings,
     effective: &Settings,
     dirs: &Dirs,
     requested: Option<&str>,
     diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
-    shared_local: Option<Arc<oxc_local::native::LocalEngine>>,
+    shared: SharedEngines,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Selected, OxaError> {
-    let local_engine = || match shared_local {
+    let local_engine = || match shared.local {
         Some(engine) => Ok(engine as Arc<dyn Engine>),
         None => {
             let (launch, stream) = local_engine_settings(user, effective);
             oxc_local::configured_engine(launch, dirs.agent_dir.join("local-engine"), stream)
         }
+    };
+    let cloud_engine = || {
+        if oxa_proto::offline() {
+            return Err(oxa_proto::offline_error("the in-process cloud gateway"));
+        }
+        let OpenedGateway { gateway, notices } = match shared.cloud {
+            Some(opened) => opened,
+            None => open_gateway(user, effective, dirs, diagnostics, Ok)?,
+        };
+        Ok((
+            Arc::new(EmbeddedEngine::from_shared_gateway(gateway)) as Arc<dyn Engine>,
+            notices,
+        ))
     };
     if user.bool(oxc_local::LOCAL_SETTING, false) && user.bool(SETTING, false) {
         let aliases = |path| {
@@ -143,14 +177,9 @@ pub(crate) fn select_observed(
                 .map(|models| models.keys().cloned().collect())
                 .unwrap_or_default()
         };
-        let mut catalog_notices = Vec::new();
-        let cloud = if oxa_proto::offline() {
-            Err(oxa_proto::offline_error("the in-process cloud gateway"))
-        } else {
-            open(user, effective, dirs, diagnostics).map(|(engine, notices)| {
-                catalog_notices = notices;
-                engine
-            })
+        let (cloud, catalog_notices) = match cloud_engine() {
+            Ok((engine, notices)) => (Ok(engine), notices),
+            Err(error) => (Err(error), Vec::new()),
         };
         return routing::Routed {
             local: local_engine(),
@@ -169,18 +198,16 @@ pub(crate) fn select_observed(
     if !user.bool(SETTING, false) {
         return http().map(|engine| (engine, Vec::new()));
     }
-    if oxa_proto::offline() {
-        return Err(oxa_proto::offline_error("the in-process cloud gateway"));
-    }
-    open(user, effective, dirs, diagnostics)
+    cloud_engine()
 }
 
-fn open(
+pub(crate) fn open_gateway(
     user: &Settings,
     effective: &Settings,
     dirs: &Dirs,
     diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
-) -> Result<Selected, OxaError> {
+    configure: impl FnOnce(Gateway) -> Result<Gateway, OxaError>,
+) -> Result<OpenedGateway, OxaError> {
     let cloud = user.get("oxa.cloud").ok_or_else(invalid)?;
     let go_enabled = cloud.pointer("/opencode/enabled") == Some(&Value::Bool(true));
     let discover = cloud.get("discover_models") == Some(&Value::Bool(true));
@@ -278,10 +305,12 @@ fn open(
         runtime = runtime.with_diagnostics(diagnostics);
     }
     let timeout = crate::dispatch::stream_silence_timeout(effective).map(Duration::from_millis);
-    let mut gateway = Gateway::with_read_timeout(runtime, timeout).map_err(|e| {
+    let gateway = Gateway::with_read_timeout(runtime, timeout).map_err(|e| {
         let refusal = e.refusal();
         OxaError::new(refusal.code, e.to_string())
     })?;
+    // Validate guest selection before discovery can read provider credentials.
+    let mut gateway = configure(gateway)?;
     let mut refresh_go = None;
     let mut refresh_cloud = Vec::new();
     let mut notices = Vec::new();
@@ -335,7 +364,7 @@ fn open(
             }
         });
     }
-    Ok((Arc::new(EmbeddedEngine::from_shared_gateway(gateway)), notices))
+    Ok(OpenedGateway { gateway, notices })
 }
 
 // One canonical cap object shared with the other subscription routes. Refresh

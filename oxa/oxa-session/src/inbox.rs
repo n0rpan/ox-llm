@@ -198,7 +198,7 @@ impl Inbox {
         id: &str,
         mut deliver: impl FnMut(String) -> bool + Send + 'static,
     ) -> io::Result<Self> {
-        Self::watch_inner(agent_dir, id, None, move |item| match item {
+        Self::watch_inner(agent_dir, id, None, true, move |item| match item {
             InboxItem::FollowUp(text) => deliver(text),
             InboxItem::Control(_) => false,
         })
@@ -211,13 +211,38 @@ impl Inbox {
         session: &SessionRef,
         deliver: impl FnMut(InboxItem) -> bool + Send + 'static,
     ) -> io::Result<Self> {
-        Self::watch_inner(agent_dir, &session.id, Some(control_extension(session)), deliver)
+        Self::watch_inner(
+            agent_dir,
+            &session.id,
+            Some(control_extension(session)),
+            true,
+            deliver,
+        )
+    }
+
+    /// Watch only typed controls for a managed session using the existing inbox lock.
+    pub fn watch_control(
+        agent_dir: &Path,
+        session: &SessionRef,
+        mut deliver: impl FnMut(String) -> bool + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::watch_inner(
+            agent_dir,
+            &session.id,
+            Some(control_extension(session)),
+            false,
+            move |item| match item {
+                InboxItem::Control(packet) => deliver(packet),
+                InboxItem::FollowUp(_) => false,
+            },
+        )
     }
 
     fn watch_inner(
         agent_dir: &Path,
         id: &str,
         control_extension: Option<String>,
+        follow_ups: bool,
         mut deliver: impl FnMut(InboxItem) -> bool + Send + 'static,
     ) -> io::Result<Self> {
         let dir = directory(agent_dir, id)?;
@@ -249,7 +274,7 @@ impl Inbox {
         let stopped = stopping.clone();
         let thread = thread::Builder::new().name("oxa-inbox".into()).spawn(move || {
             let extension = control_extension.as_deref();
-            scan(&dir, extension, &mut deliver, &stopped);
+            scan(&dir, extension, follow_ups, &mut deliver, &stopped);
             let mut fds = [
                 libc::pollfd {
                     fd: notify.as_raw_fd(),
@@ -289,7 +314,7 @@ impl Inbox {
                     unsafe { libc::read(retry_read.as_raw_fd(), (&mut value as *mut u64).cast(), 8) };
                 }
                 // Capacity notifications and inotify overflow both trigger a rescan.
-                scan(&dir, extension, &mut deliver, &stopped);
+                scan(&dir, extension, follow_ups, &mut deliver, &stopped);
             }
         })?;
         Ok(Self {
@@ -313,16 +338,18 @@ impl Drop for Inbox {
 fn scan(
     dir: &Directory,
     control_extension: Option<&str>,
+    follow_ups: bool,
     deliver: &mut impl FnMut(InboxItem) -> bool,
     stopped: &AtomicBool,
 ) {
     let mut after = None;
-    while scan_batch(dir, control_extension, deliver, stopped, &mut after) {}
+    while scan_batch(dir, control_extension, follow_ups, deliver, stopped, &mut after) {}
 }
 
 fn scan_batch(
     dir: &Directory,
     control_extension: Option<&str>,
+    follow_ups: bool,
     deliver: &mut impl FnMut(InboxItem) -> bool,
     stopped: &AtomicBool,
     after: &mut Option<PathBuf>,
@@ -344,7 +371,7 @@ fn scan_batch(
         let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
             continue;
         };
-        let (limit, item): (usize, fn(String) -> InboxItem) = if extension == "msg" {
+        let (limit, item): (usize, fn(String) -> InboxItem) = if follow_ups && extension == "msg" {
             (INBOX_MESSAGE_BYTES, InboxItem::FollowUp)
         } else if Some(extension) == control_extension {
             (CONTROL_BYTES, InboxItem::Control)

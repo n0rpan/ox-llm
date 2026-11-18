@@ -314,13 +314,18 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let user = Settings::load(&dirs, &cwd, false);
-        let (engine, catalog_notices) =
-            match crate::in_process::select_observed(&user, &user, &dirs, None, None, None, || {
-                engine_for(&endpoint)
-            }) {
-                Ok(e) => e,
-                Err(e) => return report(&mut *stderr, &e),
-            };
+        let (engine, catalog_notices) = match crate::in_process::select_observed(
+            &user,
+            &user,
+            &dirs,
+            None,
+            None,
+            crate::in_process::SharedEngines::default(),
+            || engine_for(&endpoint),
+        ) {
+            Ok(e) => e,
+            Err(e) => return report(&mut *stderr, &e),
+        };
         write_diagnostics(
             &mut *stderr,
             catalog_notices.into_iter().map(|text| (Level::Info, text)),
@@ -782,20 +787,24 @@ fn prepare(
                 dirs,
                 a.share_models.clone(),
                 a.share_bind,
+                (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
             )
         })
         .transpose()?;
     #[cfg(feature = "share")]
-    let shared_local = sharing.as_ref().map(|prepared| prepared.local.clone());
+    let shared = sharing
+        .as_ref()
+        .map(|prepared| prepared.engines.clone())
+        .unwrap_or_default();
     #[cfg(not(feature = "share"))]
-    let shared_local = None;
+    let shared = crate::in_process::SharedEngines::default();
     let (engine, catalog_notices) = crate::in_process::select_observed(
         &user_settings,
         &settings,
         dirs,
         requested_model.as_deref(),
         (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
-        shared_local,
+        shared,
         || engine_with_settings(&endpoint, &settings),
     )?;
     let engine = child.wrap(engine);
@@ -1557,7 +1566,7 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         Err(e) => return report(stderr, &e),
     };
     #[cfg(feature = "share")]
-    let _guest_listener = match sharing.map(crate::share_cmd::Prepared::start).transpose() {
+    let guest_listener = match sharing.map(crate::share_cmd::Prepared::start).transpose() {
         Ok(Some((running, address))) => {
             notices.push((
                 Level::Info,
@@ -1638,6 +1647,13 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         open_picker: a.resume,
         save_trust: Some(save_trust),
         gated,
+        #[cfg(feature = "share")]
+        engine_status: guest_listener.as_ref().map(|running| {
+            let status = running.status.clone();
+            Box::new(move || status.lines()) as oxa_interactive::EngineStatus
+        }),
+        #[cfg(not(feature = "share"))]
+        engine_status: None,
         yolo: Some(yolo),
     };
     let result = run_interactive(session, opts);

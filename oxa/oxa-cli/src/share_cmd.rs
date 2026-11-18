@@ -5,6 +5,7 @@ use oxc_gateway::share::{
     keys::Store,
     listener::{Access, Binding, Config, Failure, Model},
     native,
+    status::Status,
     tailnet::LocalApi,
 };
 use std::{
@@ -12,7 +13,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 const TAILSCALE_SOCKET: &str = "/var/run/tailscale/tailscaled.sock";
@@ -28,69 +29,140 @@ pub(crate) fn is_agent(env: &Env) -> bool {
 }
 
 pub(crate) struct Prepared {
-    pub local: Arc<oxc_local::native::LocalEngine>,
+    pub engines: crate::in_process::SharedEngines,
     keys: Arc<Store>,
+    ledger: oxc_gateway::ledger::Ledger,
     models: Vec<Model>,
     tailnet: Arc<LocalApi>,
     config: Config,
+}
+
+fn metered_aliases(
+    settings: &Settings,
+    aliases: &[String],
+) -> Result<std::collections::BTreeSet<String>, OxaError> {
+    let Some(value) = settings.get("oxa.share.remoteModels") else {
+        return Ok(std::collections::BTreeSet::new());
+    };
+    let allowed = value
+        .as_array()
+        .filter(|allowed| allowed.len() <= 64)
+        .ok_or_else(usage)?;
+    let allowed = allowed
+        .iter()
+        .map(|alias| alias.as_str().ok_or_else(usage))
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    Ok(aliases
+        .iter()
+        .filter(|alias| allowed.contains(alias.as_str()))
+        .cloned()
+        .collect())
 }
 
 fn prepare(
     settings: &Settings,
     effective: &Settings,
     dirs: &Dirs,
-    config: Config,
+    mut config: Config,
     aliases: Vec<String>,
     socket: PathBuf,
+    diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
 ) -> Result<Prepared, OxaError> {
     oxa_proto::check_online("starting the LAN sharing listener")?;
     if aliases.is_empty() || aliases.len() > 64 {
         return Err(usage());
     }
-    if !settings.bool(oxc_local::LOCAL_SETTING, false) {
+    config.remote_models = metered_aliases(settings, &aliases)?;
+    let local_aliases: Vec<_> = aliases
+        .into_iter()
+        .filter(|alias| !config.remote_models.contains(alias))
+        .collect();
+    if !local_aliases.is_empty() && !settings.bool(oxc_local::LOCAL_SETTING, false) {
         return Err(OxaError::new(
             codes::INVALID,
             "Enable the native local engine in user settings before serving models.",
+        ));
+    }
+    if !config.remote_models.is_empty() && !settings.bool(crate::in_process::SETTING, false) {
+        return Err(OxaError::new(
+            codes::INVALID,
+            "Enable the native cloud gateway in user settings before sharing metered models.",
         ));
     }
     let keys = Arc::new(
         Store::open(&dirs.home.join(".oxa/share"))
             .map_err(|error| OxaError::new(codes::INVALID, error.to_string()))?,
     );
-    let (launch, stream) = crate::in_process::local_engine_settings(settings, effective);
-    let local = oxc_local::configured_local_engine(launch, dirs.agent_dir.join("local-engine"), stream)?;
-    let catalog = local.info(None)?;
-    let models = aliases
-        .into_iter()
-        .map(|alias| {
-            if !catalog.models.contains(&alias) {
-                return Err(OxaError::new(
-                    codes::NOT_FOUND,
-                    "The selected guest model is unavailable in the native local catalog.",
-                ));
-            }
-            let info = local.info(Some(&alias))?;
-            if info.caps.remote || info.limits_for != alias {
+    let local = if local_aliases.is_empty() {
+        None
+    } else {
+        let (launch, stream) = crate::in_process::local_engine_settings(settings, effective);
+        Some(oxc_local::configured_local_engine(
+            launch,
+            dirs.agent_dir.join("local-engine"),
+            stream,
+        )?)
+    };
+    let models = if let Some(local) = &local {
+        let catalog = local.info(None)?;
+        local_aliases
+            .into_iter()
+            .map(|alias| {
+                if !catalog.models.contains(&alias) {
+                    return Err(OxaError::new(
+                        codes::NOT_FOUND,
+                        "The selected guest model is unavailable in the native local catalog.",
+                    ));
+                }
+                let info = local.info(Some(&alias))?;
+                if info.caps.remote || info.limits_for != alias {
+                    return Err(OxaError::new(
+                        codes::INVALID,
+                        "The selected guest model has no local limits.",
+                    ));
+                }
+                Ok(Model {
+                    alias,
+                    context_window: info.n_ctx,
+                    max_output: info.max_output,
+                    access: Access::Local,
+                })
+            })
+            .collect::<Result<Vec<_>, OxaError>>()?
+    } else {
+        Vec::new()
+    };
+    let cloud = if config.remote_models.is_empty() {
+        None
+    } else {
+        for alias in &config.remote_models {
+            if settings
+                .get("oxa.local.models")
+                .is_some_and(|models| models.get(alias).is_some())
+            {
                 return Err(OxaError::new(
                     codes::INVALID,
-                    "The selected guest model has no local limits.",
+                    "Shared local and metered model aliases must be distinct.",
                 ));
             }
-            Ok(Model {
-                alias,
-                context_window: info.n_ctx,
-                max_output: info.max_output,
-                access: Access::Local,
-            })
-        })
-        .collect::<Result<Vec<_>, OxaError>>()?;
+        }
+        let gateway = crate::in_process::open_gateway(settings, effective, dirs, diagnostics, |gateway| {
+            gateway
+                .with_metered_guest_models(config.remote_models.clone())
+                .map_err(|error| OxaError::new(codes::INVALID, error.refusal().message))
+        })?;
+        Some(gateway)
+    };
     let tailnet = Arc::new(
         LocalApi::new(socket, Duration::from_secs(5))
             .map_err(|error| OxaError::new(codes::INVALID, error.to_string()))?,
     );
+    let ledger = oxc_gateway::ledger::Ledger::open(&dirs.agent_dir.join("cloud-ledger"))
+        .map_err(|_| OxaError::new(codes::INVALID, "The private request ledger is unavailable."))?;
     Ok(Prepared {
-        local,
+        engines: crate::in_process::SharedEngines { local, cloud },
         keys,
+        ledger,
         models,
         tailnet,
         config,
@@ -103,6 +175,7 @@ pub(crate) fn prepare_session(
     dirs: &Dirs,
     aliases: Vec<String>,
     bind: Option<IpAddr>,
+    diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
 ) -> Result<Prepared, OxaError> {
     let config = Config {
         binding: bind.map_or(Binding::Tailnet, Binding::Explicit),
@@ -115,6 +188,7 @@ pub(crate) fn prepare_session(
         config,
         aliases,
         PathBuf::from(TAILSCALE_SOCKET),
+        diagnostics,
     )
 }
 
@@ -122,41 +196,50 @@ impl Prepared {
     fn serve(
         self,
         stop: CancelToken,
-        ready: impl FnOnce(SocketAddr) -> Result<(), Failure>,
+        ready: impl FnOnce(SocketAddr, Status) -> Result<(), Failure>,
     ) -> Result<(), OxaError> {
         let Self {
-            local,
+            engines,
             keys,
+            ledger,
             models,
             tailnet,
             config,
         } = self;
-        let answer = native::Native::new(
-            models,
-            move |request: &ChatRequest<'_>, cancel: &CancelToken, on: &mut dyn FnMut(StreamEvent)| {
-                local.chat_guest(request, cancel, on)
-            },
-        )
-        .map_err(service_error)?;
+        let chat = move |request: &ChatRequest<'_>, cancel: &CancelToken, on: &mut dyn FnMut(StreamEvent)| {
+            engines
+                .local
+                .as_ref()
+                .ok_or_else(|| OxaError::new(codes::INVALID, "No local guest engine is configured."))?
+                .chat_guest(request, cancel, on)
+        };
+        let answer = match engines.cloud {
+            Some(opened) => native::Native::new_metered(models, chat, opened.gateway),
+            None => native::Native::new(models, chat),
+        }
+        .map_err(service_error)?
+        .with_ledger(ledger);
         native::serve(keys, Arc::new(answer), tailnet, config, stop, ready).map_err(service_error)
     }
 
     pub(super) fn start(self) -> Result<(Serving, SocketAddr), OxaError> {
+        let keys = self.keys.clone();
         let stop = CancelToken::new();
         let thread_stop = stop.clone();
         let (send, receive) = std::sync::mpsc::channel();
         let thread = std::thread::Builder::new()
             .spawn(move || {
-                self.serve(thread_stop, |address| {
-                    send.send(address).map_err(|_| Failure::Failed)
+                self.serve(thread_stop, |address, status| {
+                    send.send((address, status)).map_err(|_| Failure::Failed)
                 })
             })
             .map_err(|error| OxaError::io("cannot start the guest listener", &error))?;
         match receive.recv() {
-            Ok(address) => Ok((
+            Ok((address, status)) => Ok((
                 Serving {
                     stop,
                     thread: Some(thread),
+                    status: OwnerStatus { status, keys },
                 },
                 address,
             )),
@@ -171,6 +254,46 @@ impl Prepared {
 pub(super) struct Serving {
     stop: CancelToken,
     thread: Option<std::thread::JoinHandle<Result<(), OxaError>>>,
+    pub(super) status: OwnerStatus,
+}
+
+#[derive(Clone)]
+pub(super) struct OwnerStatus {
+    status: Status,
+    keys: Arc<Store>,
+}
+
+impl OwnerStatus {
+    pub(super) fn lines(&self) -> Vec<String> {
+        let Ok(live) = self.status.snapshot() else {
+            return vec!["LAN sharing activity unavailable.".into()];
+        };
+        let mut lines = vec![format!("LAN sharing · {} connections", live.connections)];
+        for key in live.keys {
+            lines.push(format!("{} · {} active", key.name, key.active_requests));
+        }
+        let usage = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|time| self.keys.guest_usage_snapshot(time.as_secs() / 86400).ok());
+        match usage {
+            Some(usage) => {
+                lines.push("Guest usage today (UTC)".into());
+                for row in usage {
+                    lines.push(format!(
+                        "{} · {}/{} requests · {}/{} tokens",
+                        row.key.name,
+                        row.requests,
+                        row.key.limits.daily_requests,
+                        row.tokens,
+                        row.key.limits.daily_tokens,
+                    ));
+                }
+            }
+            None => lines.push("Daily guest usage unavailable.".into()),
+        }
+        lines
+    }
 }
 
 impl Drop for Serving {
@@ -185,7 +308,7 @@ impl Drop for Serving {
 pub(crate) fn run(args: &[String], dirs: &Dirs, cwd: &Path, out: &mut dyn Write) -> Result<(), OxaError> {
     let (config, aliases, socket) = options(args)?;
     let settings = Settings::load(dirs, cwd, false);
-    let prepared = prepare(&settings, &settings, dirs, config, aliases, socket)?;
+    let prepared = prepare(&settings, &settings, dirs, config, aliases, socket, None)?;
     let stop = CancelToken::new();
     let mut signals =
         signal_hook::iterator::Signals::new([signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM])
@@ -200,7 +323,7 @@ pub(crate) fn run(args: &[String], dirs: &Dirs, cwd: &Path, out: &mut dyn Write)
         })
         .map_err(|error| OxaError::io("cannot start listener shutdown handler", &error))?;
 
-    let result = prepared.serve(stop, |address| {
+    let result = prepared.serve(stop, |address, _| {
         writeln!(out, "Guest OpenAI API listening at http://{address}/v1")
             .and_then(|()| out.flush())
             .map_err(|_| Failure::Failed)
@@ -280,16 +403,18 @@ mod tests {
             &dirs,
             vec!["synthetic".into()],
             Some(std::net::Ipv4Addr::LOCALHOST.into()),
+            None,
         )
         .unwrap();
-        let local: Arc<LocalEngine> = prepared.local.clone();
+        assert!(dirs.agent_dir.join("cloud-ledger/.salt").is_file());
+        let local: Arc<LocalEngine> = prepared.engines.local.clone().unwrap();
         let (owner, notices) = crate::in_process::select_observed(
             &settings,
             &settings,
             &dirs,
             Some("synthetic"),
             None,
-            Some(local.clone()),
+            prepared.engines.clone(),
             || panic!("owner should use the shared native engine"),
         )
         .unwrap();

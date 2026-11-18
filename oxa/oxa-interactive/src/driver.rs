@@ -1763,6 +1763,7 @@ impl<'a> Loop<'a> {
                 engine_url: &self.session.engine_url,
                 models: &self.session.models,
                 queue: (!self.session.engine_url.is_empty()).then_some(self.session.queue),
+                engine_status: self.opts.engine_status.as_deref(),
             };
             dispatch_slash(line, &cx)
         };

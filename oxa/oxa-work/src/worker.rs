@@ -89,6 +89,7 @@ pub(crate) fn run(
     lock: &File,
     session: Option<&str>,
     remaining: Duration,
+    #[cfg(target_os = "linux")] managed_steering: Option<&crate::managed_steering::Launch>,
     on_session: &mut (dyn FnMut(&str) -> Result<()> + Send),
 ) -> Result<Worker> {
     let terminate = policy
@@ -97,6 +98,13 @@ pub(crate) fn run(
         .ok_or("no trusted kill executable outside the source project")?;
     let mut command = Command::new(binary);
     crate::isolate_git_environment(&mut command);
+    #[cfg(target_os = "linux")]
+    {
+        command.env_remove(crate::managed_steering::FD_ENV);
+        if let Some(launch) = managed_steering {
+            launch.attach(&mut command)?;
+        }
+    }
     command
         .env("PATH", &policy.host_path)
         .env_remove("OXA_TRUST_PROJECT")
