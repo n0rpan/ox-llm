@@ -918,6 +918,38 @@ fn refused_uncapped_request_does_not_close_a_later_cap() {
 }
 
 #[test]
+fn cancelled_unpriced_request_keeps_cost_unknown() {
+    let home = Home::new();
+    let path = home.ledger();
+    let mut unknown = model();
+    unknown.context = 200_000_000;
+    let budget = Budget::new(path.clone());
+    let mut hold = budget.reserve(&json!(null), true, &unknown, 32).unwrap();
+    hold.mark_forwarded().unwrap();
+    let row = hold
+        .finish(
+            &Usage::default(),
+            Outcome::Cancelled {
+                request_bytes: 0,
+                streamed_bytes: 0,
+                usage_final: false,
+                elapsed: std::time::Duration::ZERO,
+            },
+            |row| append(&path, row),
+        )
+        .unwrap();
+    assert_eq!(row["cost_unknown"], true);
+    let reopened = Budget::new(path.clone());
+    assert_eq!(
+        reopened
+            .reserve(&json!(1), true, &model(), 32)
+            .err()
+            .map(|error| (error.status, error.code)),
+        Some((429, "budget_exceeded"))
+    );
+}
+
+#[test]
 fn unknown_cost_row_closes_later_capped_admission() {
     let home = Home::new();
     let path = home.ledger();

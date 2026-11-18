@@ -350,7 +350,14 @@ impl Hold {
         // The admission-time bound was unknown. The settled row is marked unknown only when
         // settlement could not determine the cost either: a usage-priced or an unpaid refused
         // row is a known cost, and a marker on it would close every later configured cap.
-        if self.cost_unknown && row["settled"].as_str() == Some("reserved") {
+        // A cancelled request without final usage is settled "estimated" from a clipped
+        // estimate (`usage_missing`); with no admission bound that is not a known cost either.
+        let unpriced = match row["settled"].as_str() {
+            Some("reserved") => true,
+            Some("estimated") => row["usage_missing"] == json!(true),
+            _ => false,
+        };
+        if self.cost_unknown && unpriced {
             row["cost_unknown"] = json!(true);
         }
         row
@@ -475,7 +482,14 @@ impl Hold {
                         Cache::Invalid,
                     )
                     .unwrap_or(self.reserved);
-                row["cost_usd"] = json!(self.reserved.min(estimate).max(actual.unwrap_or(0.0)));
+                // With no admission bound (`reserved` is zero) keep the computable estimate
+                // instead of clipping it to nothing; the row is still marked cost_unknown.
+                let bounded = if self.cost_unknown {
+                    estimate
+                } else {
+                    self.reserved.min(estimate)
+                };
+                row["cost_usd"] = json!(bounded.max(actual.unwrap_or(0.0)));
                 row["usage_missing"] = json!(true);
                 row["settled"] = json!("estimated");
             }
