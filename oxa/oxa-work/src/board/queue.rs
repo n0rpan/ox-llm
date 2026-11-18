@@ -137,12 +137,14 @@ pub fn read(
 }
 
 fn node_id(value: &Value) -> Option<&str> {
-    value.as_str().filter(|id| {
-        (1..=128).contains(&id.len())
-            && id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_=".contains(&b))
-    })
+    value.as_str().filter(|id| is_node_id(id))
+}
+
+pub(super) fn is_node_id(id: &str) -> bool {
+    (1..=128).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_=".contains(&b))
 }
 
 /// Verify a complete lowercase object ID from a GitHub commit field.

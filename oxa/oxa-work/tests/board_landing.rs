@@ -1,6 +1,7 @@
 use oxa_work::board::{self, landing::*, *};
 use std::collections::BTreeMap;
 
+const EVENT: &str = "removal-1";
 const HEAD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const FIRST_GROUP: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const RETRY_GROUP: &str = "cccccccccccccccccccccccccccccccccccccccc";
@@ -52,7 +53,8 @@ fn rejection() -> Rejection<'static> {
         main: MAIN_BEFORE,
         merge_group_head: FIRST_GROUP,
         cause: RejectionCause::FailedTests(&["synthetic_regression"]),
-        notified: false,
+        removal_event: EVENT,
+        notified_event: None,
         retry: Retry::Unused {
             last_admission_at: LAST_ADMISSION_AT,
         },
@@ -106,6 +108,7 @@ fn rejected_head_notifies_with_failing_tests_then_retries_once_after_main_moves(
         Some(Notice {
             head: HEAD,
             merge_group_head: FIRST_GROUP,
+            removal_event: EVENT,
             cause: RejectionCause::FailedTests(&["synthetic_regression"]),
         })
     );
@@ -131,11 +134,12 @@ fn rejected_head_notifies_with_failing_tests_then_retries_once_after_main_moves(
         Some(Notice {
             head: HEAD,
             merge_group_head: FIRST_GROUP,
+            removal_event: EVENT,
             cause: RejectionCause::MergeConflict,
         })
     );
     assert_eq!(conflict.next, Next::WaitNotification);
-    rejected.notified = true;
+    rejected.notified_event = Some(EVENT);
     assert_eq!(plan(rejected, MAIN_BEFORE).next, Next::WaitMain);
     assert_eq!(plan(rejected, MAIN_AFTER).next, Next::Retry);
     rejected.retry = Retry::Unknown;
@@ -153,12 +157,64 @@ fn rejected_head_notifies_with_failing_tests_then_retries_once_after_main_moves(
 }
 
 #[test]
+fn an_earlier_delivery_receipt_does_not_unlock_a_later_removal() {
+    let entry = ready();
+    let plan = |rejected| {
+        policy().plan(
+            &entry,
+            LatestReviews::Clear,
+            Queue::Rejected(rejected),
+            MAIN_AFTER,
+            LAST_ADMISSION_AT + 1800,
+        )
+    };
+    let mut rejected = Rejection {
+        removal_event: "removal-2",
+        notified_event: Some(EVENT),
+        ..rejection()
+    };
+    let pending = plan(rejected);
+    assert_eq!(pending.next, Next::WaitNotification);
+    assert_eq!(pending.notify_rejection.unwrap().removal_event, "removal-2");
+
+    rejected.notified_event = Some("removal-2");
+    let delivered = plan(rejected);
+    assert_eq!(delivered.next, Next::Retry);
+    assert_eq!(delivered.notify_rejection, None);
+}
+
+#[test]
+fn invalid_removal_event_cannot_notify_retry_or_alarm() {
+    let entry = ready();
+    for removal_event in ["", "not a node id"] {
+        let plan = policy().plan(
+            &entry,
+            LatestReviews::Clear,
+            Queue::Rejected(Rejection {
+                removal_event,
+                notified_event: Some(removal_event),
+                retry: Retry::Consumed {
+                    first_rejected_group: OTHER_GROUP,
+                    admitted_group: Some(FIRST_GROUP),
+                },
+                ..rejection()
+            }),
+            MAIN_AFTER,
+            LAST_ADMISSION_AT + 1800,
+        );
+        assert_eq!(plan.next, Next::WaitReconciliation);
+        assert_eq!(plan.notify_rejection, None);
+        assert!(!plan.repeat_rejection_alarm);
+    }
+}
+
+#[test]
 fn malformed_main_observations_cannot_enqueue_or_retry() {
     let entry = ready();
     let now = LAST_ADMISSION_AT + 1800;
     let plan = |queue, main| policy().plan(&entry, LatestReviews::Clear, queue, main, now).next;
     let known = Rejection {
-        notified: true,
+        notified_event: Some(EVENT),
         ..rejection()
     };
     for missing in ["", "main", "abcdef0"] {
@@ -181,7 +237,7 @@ fn malformed_main_observations_cannot_enqueue_or_retry() {
 fn retry_spacing_is_measured_from_the_admission_of_the_rejected_head() {
     let entry = ready();
     let mut rejected = rejection();
-    rejected.notified = true;
+    rejected.notified_event = Some(EVENT);
     let plan = |receipt, main, now| {
         policy()
             .plan(&entry, LatestReviews::Clear, Queue::Rejected(receipt), main, now)
@@ -218,14 +274,14 @@ fn rejection_with_unbound_head_or_group_cannot_notify_or_retry() {
         (entry.head.as_str(), "not-an-object-id"),
         (entry.head.as_str(), entry.head.as_str()),
     ] {
-        for notified in [false, true] {
+        for notified_event in [None, Some(EVENT)] {
             let plan = policy().plan(
                 &entry,
                 LatestReviews::Clear,
                 Queue::Rejected(Rejection {
                     head,
                     merge_group_head: group,
-                    notified,
+                    notified_event,
                     ..rejection()
                 }),
                 MAIN_AFTER,
@@ -325,7 +381,7 @@ fn queue_alarm_is_strictly_older_than_45_minutes_without_duplicate_enqueue() {
 fn main_movement_never_overrides_existing_board_gates_or_asks_for_a_main_merge() {
     let mut entry = ready();
     let mut rejected = rejection();
-    rejected.notified = true;
+    rejected.notified_event = Some(EVENT);
     for action in [
         Action::FixFindings,
         Action::FixRequiredCi,
