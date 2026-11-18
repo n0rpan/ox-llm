@@ -317,6 +317,25 @@ mod tests {
     }
 
     #[test]
+    fn repaired_user_file_retries_the_unapplied_project_edit() {
+        let fixture = Fixture::new("repaired-user", r#"{"theme":"dark"}"#);
+        let project = fixture.dirs.project_settings_file(&fixture.cwd);
+        std::fs::create_dir_all(project.parent().unwrap()).unwrap();
+        std::fs::write(&project, r#"{"theme":"light"}"#).unwrap();
+        let current = Settings::load(&fixture.dirs, &fixture.cwd, true);
+        let mut watch = Watch::default();
+
+        fixture.write("{");
+        std::fs::write(project, r#"{"theme":"light-theme"}"#).unwrap();
+        assert!(matches!(fixture.run(&mut watch, &current), Refresh::Kept(_)));
+        fixture.write(r#"{"theme":"dark","quietStartup":true}"#);
+        let Refresh::Applied { settings, .. } = fixture.run(&mut watch, &current) else {
+            panic!("expected both valid layers to apply");
+        };
+        assert_eq!(settings.string("theme").as_deref(), Some("light-theme"));
+    }
+
+    #[test]
     fn tool_exclusion_applies_even_if_the_merged_tool_list_matches() {
         let f = Fixture::new("tool-exclusion", "{}");
         let current = Settings::load(&f.dirs, &f.cwd, false);

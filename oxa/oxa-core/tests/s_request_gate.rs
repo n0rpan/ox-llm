@@ -2,7 +2,7 @@
 //! the instance's background request (threshold summary, idle prefill) but never a foreground
 //! one. Every wait on another thread has a hard timeout.
 
-use oxa_config::{Dirs, Settings};
+use oxa_config::{Dirs, QueueMode, Settings};
 use oxa_core::{Deps, Open, RunEnd, Session, ToolSelection};
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
@@ -444,6 +444,42 @@ fn queued_run_preserves_settings_supplied_by_the_session_caller() {
         Some(RunEnd::Stopped)
     );
     assert_eq!(session.inner().settings.string("theme").as_deref(), Some("dark"));
+}
+
+#[test]
+fn changed_queue_and_retry_settings_update_runtime_switches() {
+    let env = TestEnv::new();
+    let (engine, _started) = Holding::new(vec![ScriptTurn::text("answer")]);
+    let mut session = open(
+        &env,
+        engine,
+        Vec::new(),
+        r#"{"retry":{"enabled":false},"steeringMode":"all","followUpMode":"one-at-a-time"}"#,
+    );
+    assert!(!session.state().auto_retry);
+    assert_eq!(session.state().steering_mode, QueueMode::All);
+    session.handle().set_modes(QueueMode::All, QueueMode::All);
+    std::fs::write(
+        Dirs::under(env.root()).settings_file(),
+        r#"{"retry":{"enabled":true},"steeringMode":"one-at-a-time","followUpMode":"one-at-a-time"}"#,
+    )
+    .unwrap();
+    session
+        .prompt(
+            "first".into(),
+            Vec::new(),
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    let state = session.state();
+    assert!(state.auto_retry, "the user enabled retry");
+    assert_eq!(state.steering_mode, QueueMode::OneAtATime);
+    assert_eq!(
+        state.follow_up_mode,
+        QueueMode::All,
+        "keep the untouched runtime override"
+    );
 }
 
 #[test]
