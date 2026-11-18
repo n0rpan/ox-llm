@@ -1,7 +1,7 @@
 # Legacy v0.2.0 cloud-only quickstart
 
 This guide applies to the Python controller shipped in v0.2.0. For the native
-v0.2.1 release target, see the [native install and upgrade guide](../../docs/NATIVE-INSTALL.md).
+v0.2.1 release target, see the [native install and upgrade guide](https://github.com/oxstack/ox-llm/blob/main/docs/NATIVE-INSTALL.md).
 
 oxc (the controller and its cloud gateway) plus oxa, with **no local engine and no model
 download**. Every model is a cloud model that oxc proxies over its loopback OpenAI v1

@@ -50,6 +50,8 @@ fn dependency_wait_survives_reopening_and_deadline_is_not_release_or_progress() 
     let row = claims.assignments().unwrap().remove(&1).unwrap();
     assert_eq!(row.data.dependency, Some(wait));
     assert!(!row.stalled(39, Some(5)).unwrap());
+    assert!(row.stalled(39, Some(u64::MAX)).is_err());
+    assert!(row.stalled(u64::MAX, Some(5)).is_err());
     assert!(row.stalled(40, Some(5)).unwrap());
     assert!(row.stalled(100, Some(5)).unwrap());
     assert_eq!(row.state.lease, Some(receipt.lease));

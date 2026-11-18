@@ -22,4 +22,4 @@ oxc-diagnostics = "oxc.__main__:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-oxc = ["omarchy_plugin/*.qml", "omarchy_plugin/*.js", "omarchy_plugin/*.json", "omarchy_plugin/i18n/*.json", "runtime/oxc", "runtime/studio"]
+oxc = ["omarchy_plugin/*.qml", "omarchy_plugin/*.js", "omarchy_plugin/*.json", "omarchy_plugin/i18n/*.json", "runtime/oxc"]
