@@ -172,6 +172,9 @@ mod tests {
 
     #[test]
     fn admission_replay_rejects_and_open_log_preserves_interrupted_tail_bytes() {
+        if crate::lock_process::in_parent() {
+            return;
+        }
         let full = snapshot_bytes();
         for fragment in [full.as_slice(), &full[..full.len() / 2]] {
             let dir = path("interrupted-admission");
@@ -202,6 +205,9 @@ mod tests {
 
     #[test]
     fn admission_replay_refuses_multiple_objects_on_one_complete_line() {
+        if crate::lock_process::in_parent() {
+            return;
+        }
         let journal = path("corrupt-admission");
         let snapshot = snapshot_bytes();
         let line = [&snapshot[..], &snapshot[..], b"\n"].concat();

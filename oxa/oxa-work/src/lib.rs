@@ -39,6 +39,10 @@ pub use worker::{WorkerInterruption, WorkerOutcome, WorkerResult, WorkerTokens};
 #[path = "../tests/support/private_dir.rs"]
 mod test_dir;
 
+#[cfg(test)]
+#[path = "../tests/support/lock_process.rs"]
+mod lock_process;
+
 pub type Result<T> = std::result::Result<T, String>;
 
 // Lead facts consume public observations and never open runner task-state files.

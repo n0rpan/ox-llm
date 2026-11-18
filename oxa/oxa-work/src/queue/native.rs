@@ -222,6 +222,9 @@ mod tests {
 
     #[test]
     fn only_the_exact_durable_whole_task_after_lock_release_settles_the_original_claim() {
+        if crate::lock_process::in_parent() {
+            return;
+        }
         let (_directory, claims, binding, prepared, policy) = setup();
         let owner = NativeQueueOwner {
             claims: &claims,
