@@ -370,7 +370,8 @@ mod tests {
 
     #[test]
     fn current_reports_default_and_set() {
-        let s = Settings::from_values(json!({ "oxa.test.k": 5 }), Value::Null);
+        // Settings files are nested objects; `Settings::get` walks the dotted key through them.
+        let s = Settings::from_values(json!({ "oxa": { "test": { "k": 5 } } }), Value::Null);
         let set = d("oxa.test.k", Group::Tools, "", "L", "h").number(Unit::Count);
         let shown = current(&s, &set);
         assert_eq!(shown.value, json!(5));
