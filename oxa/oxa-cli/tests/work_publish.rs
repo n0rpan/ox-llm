@@ -1075,3 +1075,76 @@ fn publication_refuses_a_secret_in_a_local_base_commit_origin_lacks() {
     );
     assert_refused(&env, &record, "local.txt:1", &token);
 }
+
+/// Refused after confirmation, from the destination's own tips, before any push.
+fn assert_refused_before_push(env: &TestEnv, record: &serde_json::Value, place: &str, secret: &str) {
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    let detail = record["detail"].as_str().unwrap();
+    assert!(detail.contains("publishing refused"), "{detail}");
+    assert!(detail.contains(place), "{detail}");
+    assert!(!record.to_string().contains(secret), "{record}");
+    assert!(!env.home().join("push-calls").exists());
+}
+
+fn local_secret_commit(env: &TestEnv, token: &str) {
+    let repo = env.work().join("project");
+    env.write("work/project/local.txt", &format!("{token}\n"));
+    git(env, &repo, &["add", "local.txt"]);
+    git(env, &repo, &["commit", "-m", "Local-only base commit"]);
+}
+
+#[test]
+fn publication_refuses_a_secret_in_a_local_commit_message() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let repo = env.work().join("project");
+    let token = format!("ghp_{}", "x".repeat(36));
+    git(&env, &repo, &["commit", "--allow-empty", "-m", &format!("Note {token}")]);
+    let record = run_args(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused(&env, &record, "commit ", &token);
+}
+
+#[test]
+fn publication_ignores_forged_remote_tracking_refs() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let repo = env.work().join("project");
+    let token = format!("ghp_{}", "x".repeat(36));
+    local_secret_commit(&env, &token);
+    // A local ref claims origin already has the secret commit; origin does not.
+    git(&env, &repo, &["update-ref", "refs/remotes/origin/forged", "HEAD"]);
+    let record = run_args(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused_before_push(&env, &record, "local.txt:1", &token);
+}
+
+#[test]
+fn publication_checks_the_push_url_not_the_fetch_url() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let repo = env.work().join("project");
+    let token = format!("ghp_{}", "x".repeat(36));
+    local_secret_commit(&env, &token);
+    // The fetch repository has the secret commit; the push destination does not.
+    git(&env, &env.work(), &["init", "--bare", "mirror.git"]);
+    git(&env, &repo, &["push", "../mirror.git", "main"]);
+    git(&env, &repo, &["remote", "set-url", "origin", "../mirror.git"]);
+    git(&env, &repo, &["remote", "set-url", "--push", "origin", "../remote.git"]);
+    git(&env, &repo, &["fetch", "origin"]);
+    let record = run_args(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused_before_push(&env, &record, "local.txt:1", &token);
+}

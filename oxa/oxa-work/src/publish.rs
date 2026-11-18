@@ -70,62 +70,101 @@ fn refusal(path: &str, line: Option<usize>, finding: ContentFinding) -> String {
     )
 }
 
-/// Scan every commit the push can add: those reachable from `head` and from no
-/// remote-tracking ref of origin. This includes local base commits origin lacks.
-/// Each commit's own changes and the lines a merge commit introduces itself are
-/// passed to `scan`. Any failure refuses publication.
-fn scan_pushed(policy: &RunPolicy, tree: &Path, head: &str, scan: ContentScan<'_>) -> Result<()> {
-    let range = [head, "--not", "--remotes=origin"];
-    let text = checked(super::git(
+/// The commits a push can add: reachable from `head` and from none of `known`.
+fn pushed_revisions<'a>(head: &'a str, known: &'a [String]) -> Vec<&'a str> {
+    let mut revisions = vec!["--ignore-missing", head, "--not"];
+    revisions.extend(known.iter().map(String::as_str));
+    revisions
+}
+
+/// The branch and tag tips the publication destination itself advertises. Local
+/// remote-tracking refs are writable by the task and may describe a different
+/// fetch URL, so only the destination's own answer may exclude history.
+fn destination_tips(policy: &RunPolicy, repo: &Path, url: &str) -> Result<Vec<String>> {
+    if url.starts_with('-') {
+        return Err("publishing refused: invalid publication destination".into());
+    }
+    let mut command = super::git(
         policy,
-        tree,
+        repo,
         &[
             "-c",
-            "core.quotePath=false",
-            "log",
-            "--reverse",
-            "--format=%x00%H",
-            "--patch",
-            "--cc",
-            "--text",
-            "--unified=0",
-            "--no-color",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--no-renames",
-            "--no-relative",
-            "--no-show-signature",
-            "--src-prefix=a/",
-            "--dst-prefix=b/",
-            range[0],
-            range[1],
-            range[2],
-            "--",
+            "protocol.https.allow=always",
+            "-c",
+            "protocol.ssh.allow=always",
+            "-c",
+            "protocol.file.allow=always",
+            "ls-remote",
+            "--heads",
+            "--tags",
+            "--refs",
+            url,
         ],
-    ))
-    .map_err(|_| "publishing refused: cannot scan the commits to publish".to_string())?;
+    );
+    isolate_github_environment(&mut command);
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GIT_ALLOW_PROTOCOL", "https:ssh:file");
+    let text = checked(command)
+        .map_err(|_| "publishing refused: cannot read the publication destination's branches".to_string())?;
+    let mut tips: Vec<String> = text
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(oid, _)| oid)
+        .filter(|oid| matches!(oid.len(), 40 | 64) && oid.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(str::to_string)
+        .collect();
+    tips.sort();
+    tips.dedup();
+    Ok(tips)
+}
+
+/// Scan the commits `revisions` select: each commit's metadata, its own changes and
+/// the lines a merge commit introduces itself. Any failure refuses publication.
+fn scan_pushed(policy: &RunPolicy, tree: &Path, revisions: &[&str], scan: ContentScan<'_>) -> Result<()> {
+    let unreadable = |_: String| "publishing refused: cannot scan the commits to publish".to_string();
+    let log = |options: &[&str]| {
+        let mut args = vec!["-c", "core.quotePath=false", "log"];
+        args.extend_from_slice(options);
+        args.extend_from_slice(revisions);
+        args.push("--");
+        checked(super::git(policy, tree, &args)).map_err(unreadable)
+    };
+    // Messages and identities are pushed with the commits.
+    let metadata = log(&[
+        "--format=%x00%H%n%an%n%ae%n%cn%n%ce%n%B",
+        "--no-show-signature",
+    ])?;
+    scan_metadata(&metadata, scan)?;
+    let text = log(&[
+        "--reverse",
+        "--format=%x00%H",
+        "--patch",
+        "--cc",
+        "--text",
+        "--unified=0",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "--no-relative",
+        "--no-show-signature",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+    ])?;
     scan_patch(&text, scan)?;
     // An empty added file has no content header in the patch, so the names of all
     // added files are listed separately and checked as well.
-    let names = checked(super::git(
-        policy,
-        tree,
-        &[
-            "log",
-            "--format=",
-            "--name-only",
-            "-z",
-            "--diff-filter=A",
-            "--cc",
-            "--no-renames",
-            "--no-relative",
-            range[0],
-            range[1],
-            range[2],
-            "--",
-        ],
-    ))
-    .map_err(|_| "publishing refused: cannot scan the commits to publish".to_string())?;
+    let names = log(&[
+        "--format=",
+        "--name-only",
+        "-z",
+        "--diff-filter=A",
+        "--cc",
+        "--no-renames",
+        "--no-relative",
+    ])?;
     for name in names.split('\0').map(str::trim).filter(|name| !name.is_empty()) {
         let item = PushedContent {
             path: name,
@@ -134,6 +173,26 @@ fn scan_pushed(policy: &RunPolicy, tree: &Path, head: &str, scan: ContentScan<'_
         };
         if let Some(finding) = scan(&item) {
             return Err(refusal(name, None, finding));
+        }
+    }
+    Ok(())
+}
+
+/// Pass each line of every commit's author, committer and message to `scan`.
+fn scan_metadata(text: &str, scan: ContentScan<'_>) -> Result<()> {
+    for record in text.split('\0').filter(|record| !record.trim().is_empty()) {
+        let mut lines = record.lines();
+        let commit = lines.next().unwrap_or_default();
+        let place = format!("commit {}", commit.get(..12).unwrap_or(commit));
+        for (index, text) in lines.enumerate() {
+            let item = PushedContent {
+                path: &place,
+                line: Some(index + 1),
+                text,
+            };
+            if let Some(finding) = scan(&item) {
+                return Err(refusal(&place, Some(index + 1), finding));
+            }
         }
     }
     Ok(())
@@ -369,8 +428,14 @@ fn publish_locked(
             return Err("task branch must differ from its base branch".into());
         }
         // The owner confirmation shows only metadata, so content is checked here,
-        // before any remote request. The head is re-verified after confirmation.
-        scan_pushed(policy, tree, &head, scan)?;
+        // before any remote request, against what the local origin refs record.
+        // The destination's own tips are checked again after confirmation.
+        scan_pushed(
+            policy,
+            tree,
+            &[head.as_str(), "--not", "--remotes=origin"],
+            scan,
+        )?;
         let remote = checked(git(repo, &["remote", "get-url", "--push", "--all", "origin"]))?;
         if remote.lines().count() != 1 {
             return Err("publishing requires one origin push URL".into());
@@ -439,6 +504,10 @@ fn publish_locked(
             return Err("publication destination or task head changed during confirmation".into());
         }
         proof.verify(policy, &head, accepted_base)?;
+        // Every commit the destination lacks is pushed, so the exclusions come from
+        // the push URL's own advertised tips rather than from local refs.
+        let known = destination_tips(policy, repo, &remote)?;
+        scan_pushed(policy, tree, &pushed_revisions(&head, &known), scan)?;
         // Confirmation may remain open indefinitely: queue admission is checked
         // only after it returns, immediately before the push.
         if let Some(pr) = prs.first() {

@@ -97,6 +97,16 @@ impl PushScan {
             .filter_map(|(_, value)| secret_value(value))
             .collect();
         setting_values("", settings.merged(), &mut values);
+        // Added content is scanned line by line, so a multiline value is matched
+        // through each of its lines.
+        let values = values.iter().flat_map(|value| {
+            if value.contains('\n') {
+                value.lines().filter_map(secret_value).collect()
+            } else {
+                vec![value.clone()]
+            }
+        });
+        let mut values: Vec<String> = values.collect();
         values.sort();
         values.dedup();
         PushScan { values }
@@ -263,6 +273,16 @@ mod tests {
                 text: &text,
             };
             assert!(scan.check(&item).is_none(), "{text}");
+        }
+    }
+
+    #[test]
+    fn multiline_secret_values_are_matched_line_by_line() {
+        let value = "synthetic-first-half\nsynthetic-second-half";
+        let env = Env::from_pairs(&[("SYNTHETIC_PASSWORD", value)]);
+        let scan = PushScan::new(&env, &Settings::from_values(json!({}), json!({})));
+        for text in ["synthetic-first-half", "x synthetic-second-half"] {
+            assert!(scan.check(&line("notes.txt", text)).is_some(), "{text}");
         }
     }
 
