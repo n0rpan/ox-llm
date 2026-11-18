@@ -23,7 +23,7 @@ pub struct ItemOwner {
 }
 
 impl Saved {
-    fn item_lease(&self) -> Option<ItemLease> {
+    pub(super) fn item_lease(&self) -> Option<ItemLease> {
         let owner = self.data.item_owner.as_ref()?;
         Some(ItemLease {
             lease: self.state.lease.clone()?,
