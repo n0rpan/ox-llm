@@ -1,6 +1,6 @@
 //! Explicit local projection of the existing Claims store; never admits or starts work.
 use super::{refill, refill_input::text};
-use oxa_work::board::{Claims, Policy};
+use oxa_work::board::Claims;
 use serde_json::json;
 use std::{collections::BTreeMap, io::Write, path::Path};
 
@@ -23,7 +23,8 @@ pub(super) fn run(
     let claims = Claims::open(path)?;
     let (worker, host) = crate::work_cmd::registered_native_worker(&value)?;
     let partition = refill::partition(&value)?;
-    partition.validate(Policy::default().max_attempts_per_day)?;
+    let max_attempts_per_day = refill::attempt_limit(&value)?;
+    partition.validate()?;
     let assignments = claims.assignments_read_only()?;
     let membership: BTreeMap<_, _> = assignments
         .keys()
@@ -32,6 +33,7 @@ pub(super) fn run(
     let receipt = json!({
         "schema_version":1,"source":"Claims::assignments_read_only",
         "worker":worker,"host_id":host,"refill_enabled":value["enabled"] == true,
+        "max_attempts_per_day":max_attempts_per_day,
         "partition":{"modulus":partition.modulus,"residues":partition.residues},
         "partition_source":"protected-owner-configuration","partition_membership":membership,
         "assignments":assignments,"legacy_coverage":"unknown"

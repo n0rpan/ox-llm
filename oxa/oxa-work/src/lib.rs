@@ -11,6 +11,7 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 pub mod board;
+pub mod budget_policy;
 mod checkpoint;
 mod committed;
 pub use committed::{verify_saved_task, VerifiedTask};
@@ -24,7 +25,10 @@ mod publish;
 mod queue;
 pub use notes::{ProblemNote, ReportRecord};
 pub use publish::{inherit_report_lease, publish, report_notes};
-pub use queue::{native_task, run_queue, NativeQueueOwner, QueueEvent, QueueOptions, QueueRun, QueueStatus};
+pub use queue::{
+    native_task, run_queue, NativeQueueOwner, NativeQueueTarget, QueueEvent, QueueOptions, QueueRun,
+    QueueStatus,
+};
 pub mod mirrors;
 pub mod shadow;
 mod state;

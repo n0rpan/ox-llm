@@ -39,7 +39,7 @@ impl Partition {
         worker: &Worker,
         now: u64,
     ) -> Result<AssignmentBoard> {
-        self.validate(policy.max_attempts_per_day)?;
+        self.validate()?;
         claims.assignment_board(
             &mut Partitioned(source, self),
             policy,
@@ -48,13 +48,9 @@ impl Partition {
         )
     }
 
-    pub(crate) fn validate(&self, max_attempts_per_day: u32) -> Result<()> {
-        if self.modulus == 0
-            || self.residues.is_empty()
-            || self.residues.iter().any(|r| *r >= self.modulus)
-            || max_attempts_per_day > 3
-        {
-            return Err("invalid board partition or attempt cap".into());
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.modulus == 0 || self.residues.is_empty() || self.residues.iter().any(|r| *r >= self.modulus) {
+            return Err("invalid board partition".into());
         }
         Ok(())
     }

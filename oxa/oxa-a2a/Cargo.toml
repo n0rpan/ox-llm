@@ -9,9 +9,10 @@ publish.workspace = true
 
 [features]
 default = []
-agent-host = []
+agent-host = ["dep:oxa-proto"]
 
 [dependencies]
+oxa-proto = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 

@@ -50,6 +50,18 @@ pub(super) fn partition(value: &Value) -> Result<Partition, String> {
     })
 }
 
+pub(super) fn attempt_limit(value: &Value) -> Result<u32, String> {
+    let mut value = value;
+    for field in ["budget_pools", "limits", "max_attempts_per_day"] {
+        let object = value.as_object().ok_or("invalid owner attempt policy")?;
+        let Some(next) = object.get(field) else {
+            return Ok(Policy::default().max_attempts_per_day);
+        };
+        value = next;
+    }
+    serde_json::from_value(value.clone()).map_err(|_| "invalid owner attempt limit".into())
+}
+
 pub(super) fn run(
     args: &[String],
     root: &Path,
@@ -191,6 +203,7 @@ pub(super) fn run(
         .as_secs();
     let board_policy = Policy {
         enabled: true,
+        max_attempts_per_day: attempt_limit(&value)?,
         ..Policy::default()
     };
     if let Some(model) = model {

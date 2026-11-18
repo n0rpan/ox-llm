@@ -13,6 +13,7 @@ fn command(test: &TestEnv) -> Command {
     command
         .env_clear()
         .envs(test.envs("http://127.0.0.1:1"))
+        .env("TZ", "UTC0")
         .current_dir(test.work())
         .stdin(Stdio::null());
     command
@@ -336,7 +337,10 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
             assert!(reply.starts_with("HTTP/1.1 200"), "{path}");
             assert!(reply.contains("0 tokens") && reply.contains("role=log"));
             if prompt == "status" {
-                assert!(reply.contains("0 items") && reply.contains("href=/board>Board · observed at 10"));
+                assert!(
+                    reply.contains("0 items")
+                        && reply.contains("href=/board>Board · observed 1970-01-01 00:00 UTC")
+                );
             }
             assert_eq!(reply.contains("<!doctype html>"), suffix.is_empty());
             assert!(get(port, &path, "attacker.invalid", "").starts_with("HTTP/1.1 403"));

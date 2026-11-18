@@ -1,3 +1,4 @@
+use oxa_proto::bounded_io::BoundedWriter;
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
 use std::io::{self, Write};
@@ -97,28 +98,12 @@ impl Journal {
         let value = json!({"schema":1,"sequence":self.sequence,"elapsedMs":self.started.elapsed().as_millis(),"worker":worker,"event":kind,"details":details});
         // Bound the serialization buffer too, rather than allocating an entire
         // oversized record before discovering it cannot be admitted.
-        struct Bounded {
-            bytes: Vec<u8>,
-            limit: usize,
-        }
-        impl Write for Bounded {
-            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-                if data.len() > self.limit.saturating_sub(self.bytes.len()) {
-                    return Err(io::Error::other("orchestrator journal limit exceeded"));
-                }
-                self.bytes.extend_from_slice(data);
-                Ok(data.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-        let mut buffer = Bounded {
-            bytes: Vec::new(),
-            limit: self.limit.saturating_sub(self.bytes).saturating_sub(1),
-        };
-        serde_json::to_writer(&mut buffer, &value)?;
-        let mut line = buffer.bytes;
+        let mut line = Vec::new();
+        let remaining = self.limit.saturating_sub(self.bytes).saturating_sub(1);
+        let output = BoundedWriter::new(&mut line, remaining, || {
+            io::Error::other("orchestrator journal limit exceeded")
+        });
+        serde_json::to_writer(output, &value)?;
         line.push(b'\n');
         if line.len() > self.limit.saturating_sub(self.bytes) {
             return Err(io::Error::other("orchestrator journal limit exceeded"));

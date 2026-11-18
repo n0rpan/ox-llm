@@ -27,8 +27,10 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
             {
                 let _ = write!(
                     html,
-                    "<dd>{} of {} remaining · resets at {} (Unix seconds)",
-                    window.remaining, window.limit, window.resets_at
+                    "<dd>{} of {} remaining · resets {}",
+                    window.remaining,
+                    window.limit,
+                    super::human_time(window.resets_at, now)
                 );
                 meter(
                     html,
@@ -39,7 +41,12 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
                 );
                 html.push_str("</dd>");
             } else {
-                html.push_str("<dd>Unknown</dd>");
+                let reason = if view.github_quotas.is_none() {
+                    "No GitHub quota observation reached this page."
+                } else {
+                    "No valid current quota window was reported."
+                };
+                let _ = write!(html, "<dd>Unknown. {reason}</dd>");
             }
         }
     }
@@ -53,7 +60,12 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
         });
-    let _ = write!(html, "<dt>Model plan</dt><dd>{}</dd>", plan.unwrap_or("Unknown"));
+    let plan = plan.unwrap_or(if view.model_plan.is_none() {
+        "Unknown. No model plan observation reached this page."
+    } else {
+        "Unknown. No valid model plan was reported."
+    });
+    let _ = write!(html, "<dt>Model plan</dt><dd>{plan}</dd>");
     let windows = view
         .model_plan
         .map_or([None; 2], |usage| model_windows(usage, now));
@@ -62,8 +74,9 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
         if let Some(window) = window {
             let _ = write!(
                 html,
-                "<dd>{}% used · resets at {} (Unix seconds)",
-                window.used_percent, window.resets_at
+                "<dd>{}% used · resets {}",
+                window.used_percent,
+                super::human_time(window.resets_at, now)
             );
             meter(
                 html,
@@ -74,7 +87,12 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
             );
             html.push_str("</dd>");
         } else {
-            html.push_str("<dd>Unknown</dd>");
+            let reason = if view.model_plan.is_none() {
+                "No model plan observation reached this page."
+            } else {
+                "No valid current model window was reported."
+            };
+            let _ = write!(html, "<dd>Unknown. {reason}</dd>");
         }
     }
     html.push_str("</dl></section>");
