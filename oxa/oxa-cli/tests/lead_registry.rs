@@ -1,5 +1,5 @@
 //! The installed menu needs no runtime; reserved children stay unavailable.
-use oxa_fake::TestEnv;
+use oxa_fake::{FakeOpts, FakeServer, TestEnv};
 use std::process::Command;
 
 fn command(test: &TestEnv) -> Command {
@@ -60,4 +60,54 @@ fn legacy_shadow_keeps_its_read_only_resource_floor() {
         assert!(args.no_tools && args.no_mcp && args.no_extensions && args.no_web_search);
         assert_eq!(args.tools.unwrap(), ["read", "grep", "find", "ls"]);
     }
+}
+
+#[test]
+fn chat_status_reads_the_protected_board_without_calling_the_provider() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+
+    let test = TestEnv::new();
+    let directory = test.agent_dir().join("lead-fixture");
+    fs::create_dir_all(&directory).unwrap();
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+    let sample = directory.join("board.jsonl");
+    let board = oxa_work::board::Board {
+        observed_at: 1234,
+        entries: vec![oxa_work::board::Entry {
+            number: 42,
+            head: "a".repeat(40),
+            release_pinned: false,
+            action: oxa_work::board::Action::Ready,
+            lease: None,
+            attempts_today: 0,
+            eligible: true,
+        }],
+        ..Default::default()
+    };
+    fs::write(
+        &sample,
+        format!(
+            "{}\n",
+            serde_json::json!({"schema_version":1,"observed_at":1234,"board":board})
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&sample, fs::Permissions::from_mode(0o600)).unwrap();
+    let server = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+    let output = command(&test)
+        .envs(test.envs(&server.url()))
+        .env("OXA_LEAD_BOARD_LOG", &sample)
+        .args(["lead", "chat", "status"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reply = String::from_utf8(output.stdout).unwrap();
+    assert!(reply.contains("1 item"), "{reply}");
+    assert!(reply.contains("1234"), "{reply}");
+    assert!(reply.contains("0 tokens"), "{reply}");
+    assert!(server.requests().is_empty());
 }
