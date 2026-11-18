@@ -290,6 +290,11 @@ where
     let mut text = String::new();
     let mut reasoning = String::new();
     let mut finish = None;
+    // Usage that arrived before the finish frame (GLM order). It stays
+    // provisional until a valid finish is seen, so a truncated or cancelled
+    // stream never settles it as final.
+    let mut pending_usage: Option<Usage> = None;
+    let mut usage_seen = false;
     let mut received = 0usize;
     loop {
         let next = tokio::select! { biased; _=cancel.cancelled()=>return Err(Error::Cancelled), next=source.next()=>next, };
@@ -305,9 +310,9 @@ where
             let Some(data) = decoder.push(byte) else { continue };
             if data == b"[DONE]" {
                 let finish_reason = finish.ok_or_else(|| terminal(TerminalCheck::DoneWithoutFinish))?;
-                if terminal_usage.is_none() {
-                    return Err(terminal(TerminalCheck::DoneWithoutUsage));
-                }
+                // A valid finish plus [DONE] without usage is a complete
+                // answer: usage stays unknown and the request settles as
+                // usage_missing in the ledger.
                 let calls: Vec<Value> = tool_slots.into_values().collect();
                 return Ok(Completed {
                     assistant: json!({"role":"assistant","content":text,"reasoning_content":reasoning,"tool_calls":calls}),
@@ -316,9 +321,10 @@ where
                     finish_reason,
                 });
             }
-            // Final usage must be the last semantic frame before [DONE]. A
-            // conflicting/later frame invalidates its authority for settlement.
-            if terminal_usage.take().is_some() {
+            // Usage may come before, with or after the finish frame, but once
+            // both are in, any further frame invalidates the terminal sequence.
+            if finish.is_some() && usage_seen {
+                *terminal_usage = None;
                 return Err(terminal(TerminalCheck::FrameAfterUsage));
             }
             let mut chunk: Value =
@@ -428,13 +434,19 @@ where
                     diagnostics
                         .billing_source(super::PlanName::from_value(&value["opencode"]["billing_source"]));
                 }
-                // Accept a separate final usage frame or usage on a validated
-                // finish frame, never an interim record during generation.
-                if finish.is_none() && ending.is_none() {
-                    return Err(terminal(TerminalCheck::UsageBeforeFinish));
+                // Exactly one usage record per stream. It is validated (type,
+                // sign, range, finiteness) here, then held until the finish
+                // is validated when it arrived first.
+                if usage_seen {
+                    return Err(terminal(TerminalCheck::UsageRecordInvalid));
                 }
-                *terminal_usage =
-                    Some(Usage::parse(value).map_err(|_| terminal(TerminalCheck::UsageRecordInvalid))?);
+                let parsed = Usage::parse(value).map_err(|_| terminal(TerminalCheck::UsageRecordInvalid))?;
+                usage_seen = true;
+                if finish.is_some() || ending.is_some() {
+                    *terminal_usage = Some(parsed);
+                } else {
+                    pending_usage = Some(parsed);
+                }
             }
             if cancel.is_cancelled() || on(Event::Chunk(chunk)) == Control::Stop {
                 return Err(Error::Cancelled);
@@ -503,6 +515,9 @@ where
                     return Err(Error::Cancelled);
                 }
                 finish = Some(reason);
+                if terminal_usage.is_none() {
+                    *terminal_usage = pending_usage.take();
+                }
             }
         }
     }

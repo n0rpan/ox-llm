@@ -1731,7 +1731,7 @@ fn go_private_stream_cause_tool_arguments() {
 }
 #[test]
 fn go_private_stream_cause_terminal_usage() {
-    check_private_stream_details("terminal_usage",Some("done_without_usage"),cause_reply(b"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"));
+    check_private_stream_details("terminal_usage",Some("done_without_finish"),cause_reply(b"data: [DONE]\n\n"));
 }
 
 fn terminal_frames(frames: &[Value], done: bool) -> Reply {
@@ -1753,14 +1753,6 @@ fn go_private_terminal_done_without_finish() {
         "terminal_usage",
         Some("done_without_finish"),
         terminal_frames(&[], true),
-    );
-}
-#[test]
-fn go_private_terminal_done_without_usage() {
-    check_private_stream_details(
-        "terminal_usage",
-        Some("done_without_usage"),
-        terminal_frames(&[terminal_finish()], true),
     );
 }
 #[test]
@@ -1792,12 +1784,76 @@ fn go_private_terminal_choices_after_finish() {
         ),
     );
 }
+fn terminal_content() -> Value {
+    json!({"choices":[{"index":0,"delta":{"content":"Synthetic success"},"finish_reason":null}]})
+}
+fn settled_success(frames: &[Value]) -> (TestEnv, Vec<Value>) {
+    let env = go_diagnostic_env();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![Reply::json(discovery(base)), terminal_frames(frames, true)]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("native diagnostic"));
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["status"], 200);
+    assert_eq!(mock.requests().len(), 2);
+    mock.assert_healthy();
+    (env, ledger)
+}
 #[test]
-fn go_private_terminal_usage_before_finish() {
+fn glm_usage_before_finish_is_a_complete_stream() {
+    for frames in [
+        vec![terminal_content(), json!({"choices":[],"usage":usage()}), terminal_finish()],
+        // Same-frame usage and finish.
+        vec![terminal_content(), {
+            let mut frame = terminal_finish();
+            frame["usage"] = usage();
+            frame
+        }],
+    ] {
+        let (_env, ledger) = settled_success(&frames);
+        assert_eq!(ledger[0]["subscription_tokens"], 105);
+        assert_eq!(ledger[0]["settled"], "usage");
+        assert!(ledger[0].get("usage_missing").is_none());
+    }
+}
+#[test]
+fn done_without_usage_settles_as_usage_missing() {
+    let (_env, ledger) = settled_success(&[terminal_content(), terminal_finish()]);
+    assert_eq!(ledger[0]["settled"], "reserved");
+    assert_eq!(ledger[0]["usage_missing"], true);
+}
+#[test]
+fn usage_after_finish_still_counts() {
+    let (_env, ledger) = settled_success(&[
+        terminal_content(),
+        terminal_finish(),
+        json!({"choices":[],"usage":usage()}),
+    ]);
+    assert_eq!(ledger[0]["subscription_tokens"], 105);
+    assert_eq!(ledger[0]["settled"], "usage");
+    assert!(ledger[0].get("usage_missing").is_none());
+}
+#[test]
+fn truly_truncated_stream_is_still_stream_broken() {
+    // Early usage must stay provisional: no finish and no [DONE] is a cut stream.
+    check_private_stream_cause(
+        "eof",
+        terminal_frames(&[terminal_content(), json!({"choices":[],"usage":usage()})], false),
+    );
+    // Finish but no [DONE] is also truncation.
+    check_private_stream_cause(
+        "eof",
+        terminal_frames(&[terminal_content(), terminal_finish()], false),
+    );
+    // [DONE] without any finish.
     check_private_stream_details(
         "terminal_usage",
-        Some("usage_before_finish"),
-        terminal_frames(&[json!({"choices":[],"usage":usage()})], true),
+        Some("done_without_finish"),
+        terminal_frames(&[terminal_content(), json!({"choices":[],"usage":usage()})], true),
     );
 }
 #[test]
