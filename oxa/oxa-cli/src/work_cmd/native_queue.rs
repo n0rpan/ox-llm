@@ -1,6 +1,9 @@
 //! Explicit one-shot execution of an existing, fully bound native board packet.
 use super::{protected_storage, registered_native_worker, Context};
-use oxa_work::{board::Claims, LockedTask, NativeQueueOwner, QueueOptions, QueueRun, Task};
+use oxa_work::{
+    board::{Claims, ItemLease, LeaseSignal},
+    CheckpointKind, LockedTask, NativeQueueOwner, QueueOptions, QueueRun, Record, Task,
+};
 use serde_json::Value;
 use std::{
     fs,
@@ -65,6 +68,10 @@ pub(super) fn run(
     if value["enabled"] != true || value["nativeExecution"] != true {
         return Ok(0);
     }
+    let activity = match value.get("nativeActivity") {
+        None => false,
+        Some(value) => value.as_bool().ok_or("nativeActivity must be a boolean")?,
+    };
     let steering = value
         .get("nativeSteering")
         .map(|setting| {
@@ -105,14 +112,11 @@ pub(super) fn run(
     if owned.next().is_some() {
         return Err("native worker has multiple active assignments".into());
     }
-    if !row
+    let item_owner = row
         .data
         .item_owner
-        .as_ref()
-        .is_some_and(|owner| owner.host_id == host)
-    {
-        return Err("native claim does not belong to the authenticated host".into());
-    }
+        .filter(|owner| owner.host_id == host)
+        .ok_or("native claim does not belong to the authenticated host")?;
     let binding = row
         .data
         .native_binding
@@ -134,6 +138,32 @@ pub(super) fn run(
     )
     .ok_or("no trusted disk-space executable outside the source project")?;
     let worker_context = Arc::clone(&context);
+    let activity_receipt = activity.then(|| ItemLease {
+        lease: binding.lease.clone(),
+        host_id: item_owner.host_id,
+        expires_at: item_owner.expires_at,
+    });
+    let activity_claims = claims.clone();
+    let activity_binding = binding.clone();
+    let observe = move |record: &Record| {
+        let (Some(receipt), Some(revision)) = (&activity_receipt, record.worker_launch_revision) else {
+            return Ok(());
+        };
+        if record.checkpoint_kind == CheckpointKind::WorkerFinished
+            && record.id == activity_binding.native_task_id
+            && record.branch == activity_binding.branch
+        {
+            activity_claims.observe_item_for(
+                &receipt.lease.holder,
+                &receipt.host_id,
+                &activity_binding,
+                receipt,
+                oxa_proto::time::now_ms() / 1000,
+                LeaseSignal::Milestone(record, revision),
+            )?;
+        }
+        Ok(())
+    };
     #[cfg(all(target_os = "linux", feature = "managed-steering"))]
     let steering_objective = steering.map(|(_, objective)| objective.to_owned());
     #[cfg(all(target_os = "linux", feature = "managed-steering"))]
@@ -147,7 +177,7 @@ pub(super) fn run(
             lock.bind_managed_steering(&claims_path, &steering_binding, objective)?;
         }
         match lock.plan_native(&worker_context.cwd, worker_context.reports) {
-            Ok(plan) => worker_context.planned_locked(&plan, lock),
+            Ok(plan) => worker_context.planned_locked(&plan, lock, &observe),
             Err(error) => Ok(oxa_work::blocked_record(task, error)),
         }
     });
