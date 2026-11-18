@@ -159,7 +159,7 @@ fn destination_tips(policy: &RunPolicy, repo: &Path, url: &str) -> Result<Vec<St
     Ok(tips)
 }
 
-/// Scan the commits `revisions` select: each commit's metadata, its own changes and
+/// Scan the commits `revisions` select: each raw commit object, its own changes and
 /// the lines a merge commit introduces itself. Any failure refuses publication.
 fn scan_pushed(policy: &RunPolicy, tree: &Path, revisions: &[&str], scan: ContentScan<'_>) -> Result<()> {
     let unreadable = |_: String| "publishing refused: cannot scan the commits to publish".to_string();
@@ -190,9 +190,20 @@ fn scan_pushed(policy: &RunPolicy, tree: &Path, revisions: &[&str], scan: Conten
         args.push("--");
         checked(super::git(policy, tree, &args)).map_err(unreadable)
     };
-    // Messages and identities are pushed with the commits.
-    let metadata = log(&["--format=%x00%H%n%an%n%ae%n%cn%n%ce%n%B", "--no-show-signature"])?;
-    scan_metadata(&metadata, scan)?;
+    // Every byte of each commit object is pushed: identities, the message and any
+    // extra header (gpgsig, mergetag, encoding, unknown ones), so the raw object is
+    // scanned rather than a formatted subset of it.
+    let mut listing = vec!["rev-list", "--reverse"];
+    listing.extend_from_slice(revisions);
+    listing.push("--");
+    let commits = checked(super::git(policy, tree, &listing)).map_err(unreadable)?;
+    for commit in commits.lines().filter(|line| !line.is_empty()) {
+        if !valid_object_id(commit) {
+            return Err(unreadable(String::new()));
+        }
+        let raw = checked(super::git(policy, tree, &["cat-file", "commit", commit])).map_err(unreadable)?;
+        scan_commit_object(commit, &raw, scan)?;
+    }
     let text = log(&[
         "--reverse",
         "--format=%x00%H",
@@ -234,21 +245,23 @@ fn scan_pushed(policy: &RunPolicy, tree: &Path, revisions: &[&str], scan: Conten
     Ok(())
 }
 
-/// Pass each line of every commit's author, committer and message to `scan`.
-fn scan_metadata(text: &str, scan: ContentScan<'_>) -> Result<()> {
-    for record in text.split('\0').filter(|record| !record.trim().is_empty()) {
-        let mut lines = record.lines();
-        let commit = lines.next().unwrap_or_default();
-        let place = format!("commit {}", commit.get(..12).unwrap_or(commit));
-        for (index, text) in lines.enumerate() {
-            let item = PushedContent {
-                path: &place,
-                line: Some(index + 1),
-                text,
-            };
-            if let Some(finding) = scan(&item) {
-                return Err(refusal(&place, Some(index + 1), finding));
-            }
+/// A full lowercase hexadecimal object id (SHA-1 or SHA-256).
+fn valid_object_id(id: &str) -> bool {
+    matches!(id.len(), 40 | 64) && id.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Pass each line of one raw commit object (`git cat-file commit`: all headers,
+/// signature blocks and the message) to `scan`.
+fn scan_commit_object(commit: &str, raw: &str, scan: ContentScan<'_>) -> Result<()> {
+    let place = format!("commit {}", commit.get(..12).unwrap_or(commit));
+    for (index, text) in raw.lines().enumerate() {
+        let item = PushedContent {
+            path: &place,
+            line: Some(index + 1),
+            text,
+        };
+        if let Some(finding) = scan(&item) {
+            return Err(refusal(&place, Some(index + 1), finding));
         }
     }
     Ok(())
@@ -917,5 +930,66 @@ mod scan_tests {
         })
         .unwrap_err();
         assert!(!error.contains("hidden"), "{error}");
+    }
+
+    fn craft_commit(dir: &Path, header: &str) -> String {
+        let raw = git_ok(dir, &["cat-file", "commit", "HEAD"]);
+        let (head, message) = raw.split_once("\n\n").unwrap();
+        let file = dir.join("crafted-commit");
+        std::fs::write(&file, format!("{head}\n{header}\n\n{message}\n")).unwrap();
+        git_ok(
+            dir,
+            &[
+                "hash-object",
+                "-t",
+                "commit",
+                "-w",
+                "--literally",
+                "crafted-commit",
+            ],
+        )
+    }
+
+    #[test]
+    fn an_extra_commit_header_is_scanned() {
+        let (dir, policy) = repo();
+        git_ok(dir.path(), &["commit", "-q", "--allow-empty", "-m", "base"]);
+        let value = ["synthetic", "-header-", "value"].concat();
+        let crafted = craft_commit(dir.path(), &format!("x-note {value}"));
+        let error = scan_pushed(
+            &policy,
+            dir.path(),
+            &[crafted.as_str()],
+            &containing("header-value"),
+        )
+        .unwrap_err();
+        assert!(error.contains("commit "), "{error}");
+        assert!(!error.contains("header-value"), "{error}");
+    }
+
+    #[test]
+    fn a_multi_line_signature_header_is_scanned() {
+        let (dir, policy) = repo();
+        git_ok(dir.path(), &["commit", "-q", "--allow-empty", "-m", "base"]);
+        let value = ["synthetic", "-signature-", "value"].concat();
+        let header =
+            format!("gpgsig -----BEGIN PGP SIGNATURE-----\n \n {value}\n -----END PGP SIGNATURE-----");
+        let crafted = craft_commit(dir.path(), &header);
+        let error = scan_pushed(
+            &policy,
+            dir.path(),
+            &[crafted.as_str()],
+            &containing("signature-value"),
+        )
+        .unwrap_err();
+        assert!(error.contains("commit "), "{error}");
+    }
+
+    #[test]
+    fn only_full_object_ids_reach_cat_file() {
+        assert!(valid_object_id(&"a".repeat(40)));
+        assert!(valid_object_id(&"0".repeat(64)));
+        assert!(!valid_object_id("--output=x"));
+        assert!(!valid_object_id(&"A".repeat(40)));
     }
 }

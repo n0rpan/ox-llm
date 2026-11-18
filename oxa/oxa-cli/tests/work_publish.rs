@@ -1113,6 +1113,72 @@ fn publication_refuses_a_secret_in_a_local_commit_message() {
     assert_refused(&env, &record, "commit ", &token);
 }
 
+/// Replace HEAD with a commit whose object carries `header` as an extra header.
+fn craft_header_commit(env: &TestEnv, repo: &std::path::Path, header: &str) -> String {
+    let raw = git(env, repo, &["cat-file", "commit", "HEAD"]);
+    let (head, message) = raw.split_once("\n\n").unwrap();
+    let file = env.tmp().join("crafted-commit");
+    fs::write(&file, format!("{head}\n{header}\n\n{message}\n")).unwrap();
+    let sha = git(
+        env,
+        repo,
+        &[
+            "hash-object",
+            "-t",
+            "commit",
+            "-w",
+            "--literally",
+            file.to_str().unwrap(),
+        ],
+    );
+    git(env, repo, &["reset", "--hard", "-q", &sha]);
+    sha
+}
+
+fn assert_origin_lacks(env: &TestEnv, sha: &str) {
+    let found = Command::new("git")
+        .args(["--git-dir", "remote.git", "cat-file", "-e", sha])
+        .current_dir(env.work())
+        .status()
+        .unwrap();
+    assert!(!found.success(), "origin received {sha}");
+}
+
+#[test]
+fn publication_refuses_a_secret_in_an_extra_commit_header() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let repo = env.work().join("project");
+    let token = format!("ghp_{}", "x".repeat(36));
+    let sha = craft_header_commit(&env, &repo, &format!("x-note {token}"));
+    let record = run_args(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused_before_push(&env, &record, "commit ", &token);
+    assert_origin_lacks(&env, &sha);
+}
+
+#[test]
+fn publication_refuses_a_secret_in_a_multi_line_signature_header() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let repo = env.work().join("project");
+    let token = format!("ghp_{}", "x".repeat(36));
+    let header = format!("gpgsig -----BEGIN PGP SIGNATURE-----\n \n {token}\n -----END PGP SIGNATURE-----");
+    let sha = craft_header_commit(&env, &repo, &header);
+    let record = run_args(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused_before_push(&env, &record, "commit ", &token);
+    assert_origin_lacks(&env, &sha);
+}
+
 #[test]
 fn publication_ignores_forged_remote_tracking_refs() {
     let env = TestEnv::new();
