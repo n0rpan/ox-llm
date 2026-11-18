@@ -19,7 +19,9 @@ mod native;
 pub use native::NativeBinding;
 mod ownership;
 mod reviews;
+mod timing;
 pub use ownership::{ExistingWork, ItemLease, ItemOwner};
+pub use timing::ActivityTiming;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
