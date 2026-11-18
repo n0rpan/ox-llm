@@ -266,8 +266,17 @@ with no Python files, controller wrappers, active hooks or MEMLAT policy.
 #1198 merged at `0ddf790ada7708966957da50e916d505ed0b7f22`. The tracked
 workflow, release/Arch scripts and MEMLAT templates in that commit match
 the tested packaging head. The cited artifacts come from the candidate test
-merge. #763 tracks exact-release acceptance. Source deletion still depends
-on the v0.2.1 tag and the indexed pre-removal archive.
+merge. This clears the packaging SHIP condition for #951 rows 021
+(`oxc/src/oxc/__main__.py`), 095 (`oxc/src/oxc/runtime/oxc`) and 105
+(`oxc/src/oxc/runtime/studio`). The Python CLI conformance job in
+`.github/workflows/checks.yml`, `oxc/tests/test_oxc_status_cli.py` and
+`oxc/tests/test_controller_behaviour.py` retain separate caller gates.
+Keep all four inert MEMLAT templates.
+
+The [#763](https://github.com/oxstack/ox-llm/issues/763) packaging requirement
+remains open. The tested packages contain standalone `oxe`, which still needs
+an explicit release allowlist decision. Source deletion requires the v0.2.1
+tag and the indexed pre-removal archive.
 
 ### Remaining controller-path evidence at `7f7bfb6a`
 
