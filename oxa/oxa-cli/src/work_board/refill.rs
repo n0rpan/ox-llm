@@ -186,8 +186,30 @@ pub(super) fn run(
         })
         .collect();
     let mut log = oxa_work::shadow::open_log(&owner_path("log")?)?;
-    consumer.once(&mut source, &inputs, now, |board| {
-        oxa_work::shadow::run(&mut log, true, || Ok(board.board.clone()), |_| {})
-    })?;
+    consumer.once(
+        &mut source,
+        &inputs,
+        now,
+        |board| oxa_work::shadow::run(&mut log, true, || Ok(board.board.clone()), |_| {}),
+        |receipt| {
+            let prepared = packets
+                .iter()
+                .find(|packet| packet.number == receipt.number)
+                .ok_or("native admission packet unavailable")?;
+            let mut binding = oxa_work::board::NativeBinding::new(
+                receipt.number,
+                &receipt.key,
+                &receipt.lease,
+                &prepared.branch,
+            )?;
+            binding.reviewed_head =
+                (prepared.action != Action::BuildIssue).then(|| prepared.revision.clone());
+            binding.validate()?;
+            if !claims.bind_native(&worker.id, &binding)? {
+                return Err("native admission binding refused".into());
+            }
+            Ok(())
+        },
+    )?;
     Ok(0)
 }
