@@ -109,7 +109,11 @@ fn release_priority_lease_expiry_and_daily_attempt_cap() {
     assert!(result.entries[1].eligible);
     assert!(board(vec![pinned.clone()], state.clone(), 86_410).entries[0].eligible);
     state.get_mut(&9).unwrap().attempts = 3;
-    assert!(!board(vec![pinned.clone()], state.clone(), 86_410).entries[0].eligible);
+    // The daily three is advisory: an expired lease at three attempts is still
+    // eligible, and the entry reports the count without hiding it.
+    let capped = board(vec![pinned.clone()], state.clone(), 86_410).entries[0].clone();
+    assert!(capped.eligible);
+    assert_eq!(capped.attempts_today, 3);
     assert!(board(vec![pinned], state, 172_800).entries[0].eligible);
 }
 
