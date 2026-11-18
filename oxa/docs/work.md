@@ -71,9 +71,11 @@ Run it inside the project repository. The JSON file is an array:
 ```
 
 `base` defaults to `main`. IDs contain 1–128 letters, digits, hyphens or underscores.
-Optional `max_time` is a positive integer number of seconds, defaulting to 2700
-(45 minutes). The task's saved deadline is shared by its worker, repair and crash
-recovery; a repair does not get a fresh budget. Each child receives its remaining
+In a task file, optional `max_time` is a positive integer number of seconds and
+defaults to 2700 (45 minutes). Newly generated issue, pull request, and native
+queue tasks get four hours. Existing checkpoints retain their saved budget.
+The task's saved deadline is shared by its worker, repair and crash recovery.
+A repair does not get a fresh budget. Each child receives its remaining
 allowance as `--max-time` for one graceful wrap-up turn. If it remains alive 60
 seconds after that allowance, the runner sends SIGTERM, then SIGKILL after another
 10 seconds. The result is interrupted and its worktree is retained. `kill` must be

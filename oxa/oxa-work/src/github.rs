@@ -1,8 +1,7 @@
 //! Runner-owned pull request context, bound to an immutable reviewed commit.
 use crate::{
-    append_capped, checked, default_max_time, git, github_json, github_runner_guidance,
-    isolate_git_environment, load_task_checkpoint, Result, RunPolicy, Task, GITHUB_RUNNER_LEAD,
-    MAX_COMMENT_BYTES,
+    append_capped, checked, git, github_json, github_runner_guidance, isolate_git_environment,
+    load_task_checkpoint, Result, RunPolicy, Task, GITHUB_RUNNER_LEAD, MAX_COMMENT_BYTES,
 };
 use serde_json::Value;
 use std::path::Path;
@@ -171,7 +170,7 @@ pub fn pull_request_task(
         branch: context.branch,
         base,
         prompt: context.prompt,
-        max_time: default_max_time(),
+        max_time: crate::RUNNER_DEFAULT_MAX_TIME,
         reviewed_pull_request: None,
     })
 }
@@ -325,7 +324,7 @@ mod tests {
             branch: "agent/fixture".into(),
             base: "main".into(),
             prompt: github_runner_guidance("pull request"),
-            max_time: default_max_time(),
+            max_time: crate::RUNNER_DEFAULT_MAX_TIME,
             reviewed_pull_request: Some(ReviewedPullRequest {
                 number: 1,
                 head: head.clone(),

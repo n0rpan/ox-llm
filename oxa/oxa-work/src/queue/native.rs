@@ -27,7 +27,7 @@ pub fn native_task(binding: &board::NativeBinding, mut task: Task) -> Result<Tas
     Ok(task)
 }
 
-pub(super) fn from_packet(binding: &board::NativeBinding, packet: &str) -> Result<Task> {
+pub(super) fn from_packet(binding: &board::NativeBinding, packet: &str, policy: &RunPolicy) -> Result<Task> {
     let (header, body) = packet.split_once('\n').ok_or("native task packet has no body")?;
     let mut fields = header.split_ascii_whitespace();
     let id = fields.next().ok_or("native task packet has no source id")?;
@@ -46,6 +46,10 @@ pub(super) fn from_packet(binding: &board::NativeBinding, packet: &str) -> Resul
     {
         return Err("native task packet disagrees with its bound source".into());
     }
+    // The binding-derived task ID is stable across worker recovery. Reuse the
+    // saved budget for that ID so a newer runner cannot extend a live deadline.
+    let max_time = load_task_checkpoint(policy, &binding.native_task_id)?
+        .map_or(crate::RUNNER_DEFAULT_MAX_TIME, |saved| saved.task.max_time);
     native_task(
         binding,
         Task {
@@ -54,7 +58,7 @@ pub(super) fn from_packet(binding: &board::NativeBinding, packet: &str) -> Resul
             branch: branch.into(),
             base: base.into(),
             prompt: body.into(),
-            max_time: crate::default_max_time(),
+            max_time,
             reviewed_pull_request: None,
         },
     )
@@ -220,6 +224,30 @@ mod tests {
             storage: directory.path().join("runner"),
         };
         (directory, claims, binding, prepared, policy)
+    }
+
+    #[test]
+    fn new_native_packet_uses_the_longer_budget_but_recovery_uses_the_saved_budget() {
+        let (_directory, _claims, binding, _prepared, policy) = setup();
+        let packet = "c1 fake agent/fixture agent/fixture\nSynthetic task";
+        let mut task = from_packet(&binding, packet, &policy).unwrap();
+        assert_eq!(task.max_time, 4 * 60 * 60);
+        task.max_time = crate::default_max_time();
+        let _locked = LockedTask::acquire(&task, &policy).unwrap();
+        let mut checkpoint = state::State::new(task.clone(), blocked_record(&task, String::new()), true);
+        let deadline = checkpoint.deadline_at_ms;
+        state::Writer::new(policy.storage.join(format!("{}.json", task.id)), false)
+            .save(&mut checkpoint, Step::Preparing, &|_: &Record| Ok(()))
+            .unwrap();
+
+        assert_eq!(from_packet(&binding, packet, &policy).unwrap(), task);
+        assert_eq!(
+            load_task_checkpoint(&policy, &task.id)
+                .unwrap()
+                .unwrap()
+                .deadline_at_ms,
+            deadline
+        );
     }
 
     #[test]
