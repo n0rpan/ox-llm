@@ -151,7 +151,7 @@ fn prepare(
                 .with_metered_guest_models(config.remote_models.clone())
                 .map_err(|error| OxaError::new(codes::INVALID, error.refusal().message))
         })?;
-        Some(Arc::new(gateway))
+        Some(gateway)
     };
     let tailnet = Arc::new(
         LocalApi::new(socket, Duration::from_secs(5))
@@ -214,7 +214,7 @@ impl Prepared {
                 .chat_guest(request, cancel, on)
         };
         let answer = match engines.cloud {
-            Some(gateway) => native::Native::new_metered(models, chat, gateway),
+            Some(opened) => native::Native::new_metered(models, chat, opened.gateway),
             None => native::Native::new(models, chat),
         }
         .map_err(service_error)?
@@ -408,7 +408,7 @@ mod tests {
         .unwrap();
         assert!(dirs.agent_dir.join("cloud-ledger/.salt").is_file());
         let local: Arc<LocalEngine> = prepared.engines.local.clone().unwrap();
-        let owner = crate::in_process::select_observed(
+        let (owner, notices) = crate::in_process::select_observed(
             &settings,
             &settings,
             &dirs,
@@ -420,6 +420,7 @@ mod tests {
         .unwrap();
         let local_api: Arc<dyn Engine> = local;
         assert!(Arc::ptr_eq(&owner, &local_api));
+        assert!(notices.is_empty());
         let (running, address) = prepared.start().unwrap();
         assert!(std::net::TcpStream::connect_timeout(&address, Duration::from_secs(2)).is_ok());
         drop(running);

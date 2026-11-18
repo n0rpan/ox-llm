@@ -314,10 +314,22 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let user = Settings::load(&dirs, &cwd, false);
-        let engine = match crate::in_process::select(&user, &user, &dirs, None, || engine_for(&endpoint)) {
+        let (engine, catalog_notices) = match crate::in_process::select_observed(
+            &user,
+            &user,
+            &dirs,
+            None,
+            None,
+            crate::in_process::SharedEngines::default(),
+            || engine_for(&endpoint),
+        ) {
             Ok(e) => e,
             Err(e) => return report(&mut *stderr, &e),
         };
+        write_diagnostics(
+            &mut *stderr,
+            catalog_notices.into_iter().map(|text| (Level::Info, text)),
+        );
         let result = list_models(
             engine.as_ref(),
             &endpoint.name,
@@ -804,7 +816,7 @@ fn prepare(
         .unwrap_or_default();
     #[cfg(not(feature = "share"))]
     let shared = crate::in_process::SharedEngines::default();
-    let engine = child.wrap(crate::in_process::select_observed(
+    let (engine, catalog_notices) = crate::in_process::select_observed(
         &user_settings,
         &settings,
         dirs,
@@ -812,7 +824,9 @@ fn prepare(
         (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
         shared,
         || engine_with_settings(&endpoint, &settings),
-    )?);
+    )?;
+    let engine = child.wrap(engine);
+    notices.extend(catalog_notices.into_iter().map(|text| (Level::Info, text)));
 
     let opts = discover_opts(a, dirs, cwd, trusted)?;
     // O-152: the built-in skills' files, so the model can read their bodies (written only

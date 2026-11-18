@@ -17,7 +17,7 @@ impl EmbeddedEngine {
     pub fn from_gateway(gateway: Gateway) -> Self {
         Self::from_shared_gateway(Arc::new(gateway))
     }
-
+    /// Use the caller's gateway and its existing HTTP pool.
     pub fn from_shared_gateway(gateway: Arc<Gateway>) -> Self {
         Self::new(Arc::new(Backend {
             gateway,

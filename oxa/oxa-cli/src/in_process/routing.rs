@@ -20,7 +20,7 @@ impl Routed {
             .map_err(Clone::clone)
             .and_then(|engine| engine.info(None))
         {
-            self.cloud_models.extend(info.models);
+            self.cloud_models = info.models.into_iter().collect();
         }
         if !self.local_models.is_disjoint(&self.cloud_models) {
             return Err(OxaError::new(
