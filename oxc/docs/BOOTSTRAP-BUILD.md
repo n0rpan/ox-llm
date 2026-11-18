@@ -41,27 +41,8 @@ A passed `build-result.json` records actual tool versions, effective compiler pa
 
 ## Run exactly four model-free native checks after build PASS
 
-The next reviewed module is [bootstrap_checks.py](../src/oxc/bootstrap_checks.py). It executes only `bmoe_config_test`, `bmoe_params_test`, `bmoe_mapping_release_test` and `bmoe_file_reader_test`. These do not initialize GGUF models. It binds the exact passed build receipt, verifies the CLI/server binary pair and requires explicit hashes for all four fixed test filenames. Test binaries are checked before and after execution. A nonzero exit, skip exit or SKIP/NOT RUN output fails. Full bounded output is inspected, not only a token counter.
+The [archived four-check procedure](https://github.com/oxstack/ox-llm/blob/e64b985a2ff6abf51d406471382ed95a18fd161c/oxc/docs/BOOTSTRAP-BUILD.md#run-exactly-four-model-free-native-checks-after-build-pass) preserves the legacy Python runner invocation, its hashed manifest and the receipt requirements. The archived runner executes four fixed Flash test binaries without loading model weights.
 
-After the build unit has stopped successfully, create an owner-only JSON mapping those four filenames to their actual SHA256 values. Record its SHA256 and the actual build-result SHA256. Pass them explicitly:
-
-```sh
-systemd-run --user --wait --collect \
-  --unit=oxc-bootstrap-sources.service \
-  -p CPUQuota=100% -p MemoryHigh=768M -p MemoryMax=1G \
-  -p MemorySwapMax=0 -p TasksMax=64 -p RuntimeMaxSec=900 \
-  -p TimeoutStopSec=15 -p KillMode=control-group -p SendSIGKILL=yes \
-  -p UMask=0077 -p LimitCORE=0 \
-  --setenv=PYTHONPATH="$PWD/src" --working-directory="$PWD" \
-  /usr/bin/python3 -B -m oxc.bootstrap_checks --run \
-  --manifest-sha256 ecf8f4e11e3b97d36f93e8ff5cf8fb07238ad05f269394f17e5e743e21df7287 \
-  --build-work /path/to/passed-build-work \
-  --build-receipt-sha256 YOUR_ACTUAL_BUILD_RECEIPT_SHA256 \
-  --test-hashes /path/to/private-test-hashes.json \
-  --test-hashes-sha256 YOUR_TEST_HASHES_JSON_SHA256 \
-  --work /path/to/new-native-checks-work
-```
-
-This deliberately reuses the inactive source-kind unit and its CPU 100%/1 GiB/900-second guard; do not run source acquisition concurrently. The result is `native-checks-result.json`, with per-test exit/hash/time, resource/cleanup facts and no model qualification. The three preparer tests used fake executable bytes and an injected runner only; **actual native gate completion must come from the scheduled job**.
+Use the [native install and upgrade guide](https://github.com/oxstack/ox-llm/blob/main/docs/NATIVE-INSTALL.md) for v0.2.x installations. The historical procedure records build and check evidence for the corresponding inputs.
 
 After all four pass, architecture byte-identity tests, real default MoE/Q8 and optional Dense/Flash/Q4 qualification, OpenCode/browser/image workflow, private installation/rollback and the right-side widget still need their own clean-install acceptance. [Complete finish gate](BOOTSTRAP-PARITY.md).
