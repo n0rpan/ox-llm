@@ -24,10 +24,8 @@ i8g_fattn: -O3 -DNDEBUG -std=gnu11 \
 
 #[cfg(not(target_arch = "aarch64"))]
 mod not_aarch64 {
-    //! The release profile is `panic = "abort"` (engine/Cargo.toml), so a refusal is a hard process
-    //! exit, not an unwind: each family of entry points runs in its own copy of this test binary
-    //! (selected by an environment variable) and the parent requires that copy to die. A normal exit
-    //! means an entry point answered on a target that has no kernels, and that fails the test.
+    //! A panic in an `extern "C"` stub terminates the process, so each entry point runs in its own
+    //! copy of this test binary. The parent checks for that entry point's refusal message.
     //!
     //! Every helper below calls one entry point with null operands: the stub refuses before it would
     //! touch one, so no pointer is dereferenced.
@@ -195,40 +193,38 @@ mod not_aarch64 {
         let _ = sinks::quant_chunk(&x, &mut dst, 8);
     }
 
-    /// The worker: reach every entry point of `family`; each call must abort the process.
-    fn worker(family: &str) {
-        match family {
-            "gemm" => {
-                dot8x8();
-                udot8x8();
-                tile8x8();
-                utile8x8();
-                row_max();
-                softmax_pack();
-                probe_sdot4x4();
-                rows1();
-                kernel_abi();
-                packed_from_f32();
-            }
-            "sinks" => {
-                quant_chunk_raw();
-                silu_gate_raw();
-                rope_scale_raw();
-                safe_quant_chunk();
-            }
-            "fattn" => {
-                fattn_qk_f32();
-                fattn_qk_f16();
-                fattn_softmax_f32();
-                fattn_softmax_f16();
-                fattn_pv_f32();
-                fattn_pv_f16();
-                fattn_to_f16();
-                fattn_from_f16();
-            }
-            other => panic!("unknown refusal family {other}"),
-        }
-    }
+    const CASES: &[(&str, fn(), &str)] = &[
+        ("dot8x8", dot8x8, "i8g_dot8x8"),
+        ("udot8x8", udot8x8, "i8g_udot8x8"),
+        ("tile8x8", tile8x8, "i8g_tile8x8"),
+        ("utile8x8", utile8x8, "i8g_utile8x8"),
+        ("row_max", row_max, "i8g_row_max"),
+        ("softmax_pack", softmax_pack, "i8g_softmax_pack"),
+        ("probe_sdot4x4", probe_sdot4x4, "i8g_probe_sdot4x4"),
+        ("rows1", rows1, "i8g_rows1"),
+        ("kernel_abi", kernel_abi, "i8g_kernel_abi"),
+        ("quant_chunk_raw", quant_chunk_raw, "i8g_quant_chunk"),
+        ("silu_gate_raw", silu_gate_raw, "i8g_silu_gate"),
+        ("rope_scale_raw", rope_scale_raw, "i8g_rope_scale"),
+        ("fattn_qk_f32", fattn_qk_f32, "i8g_fattn_qk_f32"),
+        ("fattn_qk_f16", fattn_qk_f16, "i8g_fattn_qk_f16"),
+        (
+            "fattn_softmax_f32",
+            fattn_softmax_f32,
+            "i8g_fattn_softmax_f32",
+        ),
+        (
+            "fattn_softmax_f16",
+            fattn_softmax_f16,
+            "i8g_fattn_softmax_f16",
+        ),
+        ("fattn_pv_f32", fattn_pv_f32, "i8g_fattn_pv_f32"),
+        ("fattn_pv_f16", fattn_pv_f16, "i8g_fattn_pv_f16"),
+        ("fattn_to_f16", fattn_to_f16, "i8g_fattn_to_f16"),
+        ("fattn_from_f16", fattn_from_f16, "i8g_fattn_from_f16"),
+        ("packed_from_f32", packed_from_f32, "i8g_quant_chunk"),
+        ("safe_quant_chunk", safe_quant_chunk, "i8g_quant_chunk"),
+    ];
 
     #[test]
     fn unsupported_target_refuses_every_entry_point() {
@@ -236,18 +232,21 @@ mod not_aarch64 {
             KERNEL_CFLAGS.starts_with("none"),
             "build.rs must record that no kernel was built: {KERNEL_CFLAGS}"
         );
-        // Worker copy: the first stub call ends the process.
-        if let Some(family) = selected() {
-            worker(&family);
-            panic!("{family}: every entry point answered on a target that has no kernels");
+        if let Some(name) = selected() {
+            let (_, run, _) = CASES
+                .iter()
+                .find(|(case, _, _)| *case == name.as_str())
+                .expect("unknown refusal test case");
+            run();
+            panic!("{name}: the entry point returned on a target that has no kernels");
         }
-        // Parent: one copy per family, all of which must die without answering.
+
         let exe = std::env::current_exe().expect("current_exe");
         let name = "target_arch_tests::not_aarch64::unsupported_target_refuses_every_entry_point";
-        for family in ["gemm", "sinks", "fattn"] {
+        for &(case, _, symbol) in CASES {
             let out = std::process::Command::new(&exe)
                 .args(["--exact", name, "--nocapture", "--test-threads=1"])
-                .env(SELECT, family)
+                .env(SELECT, case)
                 .output()
                 .expect("run this test binary");
             let text = format!(
@@ -258,15 +257,15 @@ mod not_aarch64 {
             // The child must have run this test (a renamed test would select nothing and exit 0).
             assert!(
                 text.contains("running 1 test"),
-                "{family}: the child ran no test; the name in this file is stale:\n{text}"
+                "{case}: the child ran no test; the name in this file is stale:\n{text}"
             );
             assert!(
                 !out.status.success(),
-                "{family}: an entry point answered on a target that has no kernels:\n{text}"
+                "{case}: an entry point answered on a target that has no kernels:\n{text}"
             );
             assert!(
-                text.contains("aarch64 kernel"),
-                "{family}: the refusal message is missing from the child's output:\n{text}"
+                text.contains(&format!("int8-gemm: {symbol} is an aarch64 kernel")),
+                "{case}: the refusal message is missing from the child's output:\n{text}"
             );
         }
     }

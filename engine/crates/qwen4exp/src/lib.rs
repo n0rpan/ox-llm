@@ -48,3 +48,15 @@ pub mod uring;
 
 pub const KERNEL_CFLAGS: &str = env!("OXF_KERNEL_CFLAGS");
 pub const ENGINE_COMMIT: &str = env!("OXE_GIT_COMMIT");
+
+/// The production archive identity carried by Flash execution receipts.
+pub fn ggml_prod_cpu_sha256() -> &'static str {
+    #[cfg(target_arch = "aarch64")]
+    {
+        env!("OXF_GGML_PROD_CPU_SHA")
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        cli::die("the production Flash ggml archive is only available on aarch64")
+    }
+}
