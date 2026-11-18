@@ -31,8 +31,11 @@ case "$1 $2" in
   'run list')
     head=$({ git rev-parse refs/heads/agent/test; })
     mode=failure
+    if test -f "$HOME/lane-cancelled"; then mode=cancelled; fi
     if test -f "$HOME/lane-pass"; then mode=success; fi
     printf '[{"databaseId":7,"headSha":"%s","status":"completed","conclusion":"%s","event":"push"}]' "$head" "$mode" ;;
+  'pr list') printf '[]' ;;
+  'api graphql') printf '%s' '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":null}}}}' ;;
   'run view')
     for arg in "$@"; do
       if test "$arg" = '--log-failed'; then
@@ -67,8 +70,16 @@ fn approve(command: &mut Command) {
     command.env("OXA_WORK_OWNER_CONFIRMED", "1");
 }
 
+fn run_lane_observed(
+    env: &TestEnv,
+    turns: Vec<ScriptTurn>,
+    path: String,
+) -> (serde_json::Value, Vec<oxa_fake::Recorded>) {
+    run_observed_with(env, turns, &["work", "../tasks.json"], Some(path), approve)
+}
+
 fn run_lane(env: &TestEnv, turns: Vec<ScriptTurn>, path: String) -> serde_json::Value {
-    run_observed_with(env, turns, &["work", "../tasks.json"], Some(path), approve).0
+    run_lane_observed(env, turns, path).0
 }
 
 fn edits() -> Vec<ScriptTurn> {
@@ -132,7 +143,9 @@ fn a_green_lane_run_at_the_pushed_head_is_done() {
         "{gh_calls}"
     );
     assert!(
-        !gh_calls.lines().any(|line| line.starts_with("pr ")),
+        !gh_calls
+            .lines()
+            .any(|line| line.starts_with("pr create") || line.starts_with("pr edit")),
         "acceptance opened a pull request: {gh_calls}"
     );
     let state = fs::read_to_string(state_path(&env)).unwrap();
@@ -163,6 +176,93 @@ fn a_local_pass_with_a_failed_lane_run_is_red_after_one_repair() {
     );
     let push_calls = fs::read_to_string(env.home().join("push-calls")).unwrap();
     assert_eq!(push_calls.lines().count(), 2, "{push_calls}");
+}
+
+#[test]
+fn a_head_that_changes_the_lane_workflow_is_refused_before_any_push() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    // The base already carries the lane runner, so the worker edits a tracked
+    // control rather than creating a new path the write tool may not create.
+    env.write("work/project/tools/ci/lane_run.py", "print('trusted')\n");
+    git(&env, &env.work().join("project"), &["add", "."]);
+    git(
+        &env,
+        &env.work().join("project"),
+        &["commit", "-m", "lane runner fixture"],
+    );
+    lane_task(&env);
+    let path = configure(&env);
+    env.write("home/lane-pass", "");
+    let (record, _) = run_lane_observed(
+        &env,
+        vec![
+            ScriptTurn::tool(
+                "write",
+                "write",
+                r#"{"path":"tools/ci/lane_run.py","content":"print('tampered')\n"}"#,
+            ),
+            ScriptTurn::text("done"),
+        ],
+        path,
+    );
+    assert_ne!(record["outcome"], "done", "{record}");
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(
+        record["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("refuses a head that changes the lane workflow"),
+        "{record}"
+    );
+    assert!(
+        !env.home().join("push-calls").exists(),
+        "a head that rewrites the lane gate was pushed"
+    );
+    assert!(
+        !env.home().join("gh-calls").exists(),
+        "a refused head reached GitHub"
+    );
+}
+
+#[test]
+fn a_local_repair_consumes_the_single_lane_repair_allowance() {
+    let env = TestEnv::new();
+    setup(&env, r#"["grep -Fx repaired answer.txt"]"#);
+    lane_task(&env);
+    let path = configure(&env);
+    // No "lane-pass": the lane run fails after the local repair passes.
+    let (record, _) = run_lane_observed(&env, repair_edits(), path);
+    assert_eq!(record["outcome"], "red", "{record}");
+    assert_eq!(record["lane_repairs"], 1, "{record}");
+    assert_eq!(
+        record["task_tokens"]["attempts"], 2,
+        "a second repair worker followed a spent local repair: {record}"
+    );
+}
+
+#[test]
+fn a_cancelled_lane_run_is_blocked_without_spending_the_repair() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    lane_task(&env);
+    let path = configure(&env);
+    env.write("home/lane-cancelled", "");
+    let (record, _) = run_lane_observed(&env, edits(), path);
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert_eq!(record["lane"]["conclusion"], "cancelled", "{record}");
+    assert_eq!(record["lane_repairs"], 0, "{record}");
+    assert_eq!(
+        record["task_tokens"]["attempts"], 1,
+        "an infrastructure result started a repair worker: {record}"
+    );
+    assert!(
+        record["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("infrastructure result"),
+        "{record}"
+    );
 }
 
 #[test]

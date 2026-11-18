@@ -300,12 +300,24 @@ impl Runner<'_> {
                         };
                         self.advance(state, Step::Saving)?;
                     } else if state.record.step == Step::Acceptance {
-                        state
-                            .execution
-                            .as_mut()
-                            .ok_or("missing task execution checkpoint")?
-                            .failures = failures;
-                        self.advance(state, Step::Repair)?;
+                        // A lane task has one repair round in total. A local
+                        // acceptance failure spends it, so a later lane failure
+                        // cannot start a second worker.
+                        if state.task.lane_ci && state.record.lane_repairs > 0 {
+                            state.record.outcome = Outcome::Red;
+                            state.record.detail = failures;
+                            self.advance(state, Step::Saving)?;
+                        } else {
+                            if state.task.lane_ci {
+                                state.record.lane_repairs = 1;
+                            }
+                            state
+                                .execution
+                                .as_mut()
+                                .ok_or("missing task execution checkpoint")?
+                                .failures = failures;
+                            self.advance(state, Step::Repair)?;
+                        }
                     } else {
                         state.record.outcome = Outcome::Red;
                         state.record.detail = failures;

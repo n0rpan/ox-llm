@@ -41,7 +41,33 @@ impl LaneVerdict {
 
 pub enum LaneAcceptance {
     Pass(LaneVerdict),
-    Fail { verdict: LaneVerdict, failures: String },
+    /// A test or build failure: this spends the task's one repair round.
+    Fail {
+        verdict: LaneVerdict,
+        failures: String,
+    },
+    /// An infrastructure result. It is never green and must not spend a repair.
+    Blocked {
+        verdict: LaneVerdict,
+        detail: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Disposition {
+    Pass,
+    Repair,
+    Blocked,
+}
+
+/// Only a completed `failure` is the code's failure. Cancellation, timeouts and
+/// startup errors are infrastructure and stay blocked with their own state.
+fn disposition(conclusion: &str) -> Disposition {
+    match conclusion {
+        "success" => Disposition::Pass,
+        "failure" => Disposition::Repair,
+        _ => Disposition::Blocked,
+    }
 }
 
 pub(crate) fn branch_is_laned(branch: &str) -> bool {
@@ -101,8 +127,10 @@ fn parse_runs(value: &Value, head: &str) -> Result<Option<Run>> {
         if !valid_status(status) {
             return Err("invalid lane run status".into());
         }
+        // `gh run list` reports an unfinished run as an empty string, not null.
         let conclusion = match &row["conclusion"] {
             Value::Null => None,
+            Value::String(text) if text.is_empty() => None,
             Value::String(text) if valid_conclusion(text) => Some(text.clone()),
             _ => return Err("invalid lane run conclusion".into()),
         };
@@ -177,12 +205,57 @@ fn failed_steps(value: &Value, names: &mut Vec<String>) {
     }
 }
 
+/// The lane result is only a gate while the gate's own definition stays fixed.
+/// A head that edits the lane workflow or its runner could report itself green.
+const PROTECTED_LANE_CONTROLS: &[&str] = &[".github/workflows/lane.yml", "tools/ci/"];
+
+fn protected_controls_unchanged(policy: &RunPolicy, repo: &Path, base: &str, head: &str) -> Result<()> {
+    let changed = crate::checked(crate::git(
+        policy,
+        repo,
+        &[
+            "diff",
+            "--name-only",
+            base,
+            head,
+            "--",
+            PROTECTED_LANE_CONTROLS[0],
+            PROTECTED_LANE_CONTROLS[1],
+        ],
+    ))?;
+    if changed.trim().is_empty() {
+        Ok(())
+    } else {
+        Err(
+            "lane acceptance refuses a head that changes the lane workflow or its runner; land those separately"
+                .into(),
+        )
+    }
+}
+
+/// Remove the `gh run view --log-failed` envelope: `<job>\t<step>\t<timestamp>`.
+fn log_message(line: &str) -> &str {
+    let mut rest = line;
+    if let Some((_, after_job)) = line.split_once('\t') {
+        if let Some((_, after_step)) = after_job.split_once('\t') {
+            rest = after_step;
+        }
+    }
+    let rest = rest.trim_start();
+    if let Some((stamp, message)) = rest.split_once(' ') {
+        if stamp.len() >= 20 && stamp.contains('T') && stamp.ends_with('Z') {
+            return message.trim_start();
+        }
+    }
+    rest
+}
+
 /// Test identities from a bounded failure log. Nextest prints one `FAIL` line per
 /// test; the classic harness prints `test NAME ... FAILED`. Anything else is left
 /// to the job and step names rather than guessed.
 fn failed_tests(log: &str, names: &mut Vec<String>) {
     for line in log.lines() {
-        let line = line.trim_start();
+        let line = log_message(line);
         if let Some(rest) = line.strip_prefix("FAIL ") {
             if let Some(name) = rest.split_whitespace().last() {
                 push_failed(names, name);
@@ -318,7 +391,15 @@ pub(crate) fn accept(
     // captured checks run for this commit. Nothing is pushed before it passes.
     let proof = crate::committed::verify_commit(repo, binary, policy, saved, lock)?;
     proof.verify(policy, head, base)?;
+    protected_controls_unchanged(policy, repo, base, head)?;
     let repository = crate::publish::origin_repository(repo, gh, policy, lock)?;
+    if let Some(number) =
+        crate::publish::queued_pull_request(repo, gh, policy, lock, &repository, &task.branch)?
+    {
+        return Err(format!(
+            "PR #{number} is in the merge queue; use a new task branch for follow-up lane work"
+        ));
+    }
     crate::publish::push_head(policy, repo, head, &task.branch, lock)?;
     let started = Instant::now();
     let run = wait_with(
@@ -349,8 +430,10 @@ pub(crate) fn accept(
         || started.elapsed(),
         |wait| std::thread::sleep(wait),
     )?;
+    let conclusion = run.conclusion.clone().unwrap_or_else(|| "unknown".into());
+    let disposition = disposition(&conclusion);
     let mut failed = Vec::new();
-    if run.conclusion.as_deref() != Some("success") {
+    if disposition == Disposition::Repair {
         if let Ok(jobs) = crate::publish::gh(
             gh,
             policy,
@@ -377,14 +460,22 @@ pub(crate) fn accept(
     let verdict = LaneVerdict {
         head: head.into(),
         run_id: run.id,
-        conclusion: run.conclusion.clone().unwrap_or_else(|| "unknown".into()),
+        conclusion,
         failed: failed.clone(),
     };
-    if verdict.passed() {
-        Ok(LaneAcceptance::Pass(verdict))
-    } else {
-        let failures = failure_detail(&run, &failed);
-        Ok(LaneAcceptance::Fail { verdict, failures })
+    match disposition {
+        Disposition::Pass => Ok(LaneAcceptance::Pass(verdict)),
+        Disposition::Repair => {
+            let failures = failure_detail(&run, &failed);
+            Ok(LaneAcceptance::Fail { verdict, failures })
+        }
+        Disposition::Blocked => Ok(LaneAcceptance::Blocked {
+            detail: format!(
+                "lane CI run {} concluded {}; an infrastructure result is not a repair",
+                run.id, verdict.conclusion
+            ),
+            verdict,
+        }),
     }
 }
 
@@ -441,6 +532,12 @@ mod tests {
         assert!(parse_runs(&json!([run(1, &head, "completed", Value::Null)]), &head).is_err());
         assert!(parse_runs(&json!([run(1, &head, "in_progress", json!("success"))]), &head).is_err());
         assert!(parse_runs(&json!([run(1, &head, "unknown", Value::Null)]), &head).is_err());
+        // The CLI reports an unfinished run as an empty conclusion string.
+        assert!(
+            completed_run(&json!([run(1, &head, "in_progress", json!(""))]), &head)
+                .unwrap()
+                .is_none()
+        );
         assert!(parse_runs(&json!([run(0, &head, "queued", Value::Null)]), &head).is_err());
     }
 
@@ -452,12 +549,18 @@ FAIL [   0.004s] oxa-work::lane::tests::a_case
 FAIL [   0.005s] oxa-work::lane::tests::a_case
 test tools::other ... FAILED
 test \u{1b}[31mcontrol\u{1b}[0m ... FAILED
+lane (oxa, ubuntu-24.04)\tAffected crates\t2026-11-18T17:45:18.3848701Z         FAIL [   0.044s] ( 699/1728) oxa-cli::work_lane_ci prefixed_case
 ";
         let mut names = Vec::new();
         failed_tests(log, &mut names);
         assert_eq!(
             names,
-            vec!["oxa-work::lane::tests::a_case", "tools::other", "[31mcontrol[0m"]
+            vec![
+                "oxa-work::lane::tests::a_case",
+                "tools::other",
+                "[31mcontrol[0m",
+                "prefixed_case"
+            ]
         );
     }
 
@@ -511,6 +614,23 @@ test \u{1b}[31mcontrol\u{1b}[0m ... FAILED
         .err()
         .unwrap();
         assert!(error.contains("did not conclude"), "{error}");
+    }
+
+    #[test]
+    fn only_a_completed_failure_spends_a_repair() {
+        assert_eq!(disposition("success"), Disposition::Pass);
+        assert_eq!(disposition("failure"), Disposition::Repair);
+        for conclusion in [
+            "cancelled",
+            "timed_out",
+            "startup_failure",
+            "action_required",
+            "stale",
+            "neutral",
+            "skipped",
+        ] {
+            assert_eq!(disposition(conclusion), Disposition::Blocked, "{conclusion}");
+        }
     }
 
     #[test]

@@ -105,6 +105,91 @@ pub(crate) fn repository(value: &serde_json::Value) -> Result<Repository> {
         name: name.into(),
     })
 }
+/// Validated open pull requests whose head is this task branch.
+pub(crate) fn open_pull_requests(
+    repo: &Path,
+    gh_binary: &Path,
+    policy: &RunPolicy,
+    lock: &File,
+    repository: &Repository,
+    branch: &str,
+) -> Result<Vec<serde_json::Value>> {
+    let prs = json(&gh(
+        gh_binary,
+        policy,
+        repo,
+        lock,
+        &[
+            "pr",
+            "list",
+            "--repo",
+            &repository.qualified,
+            "--state",
+            "open",
+            "--head",
+            branch,
+            "--json",
+            "number,url,isDraft,headRepositoryOwner,isCrossRepository",
+        ],
+    )?)?;
+    let prs = prs.as_array().ok_or("invalid PR list")?.to_vec();
+    if prs.len() > 1 {
+        return Err("multiple open PRs match the task branch".into());
+    }
+    if prs.first().is_some_and(|pr| {
+        pr["headRepositoryOwner"]["login"].as_str() != Some(repository.owner.as_str())
+            || pr["isCrossRepository"].as_bool() != Some(false)
+    }) {
+        return Err("PR head repository does not match origin".into());
+    }
+    Ok(prs)
+}
+
+/// The open PR's number when it is already admitted to the merge queue.
+pub(crate) fn queued_pull_request(
+    repo: &Path,
+    gh_binary: &Path,
+    policy: &RunPolicy,
+    lock: &File,
+    repository: &Repository,
+    branch: &str,
+) -> Result<Option<u64>> {
+    let prs = open_pull_requests(repo, gh_binary, policy, lock, repository, branch)?;
+    let Some(pr) = prs.first() else {
+        return Ok(None);
+    };
+    let number = pr["number"]
+        .as_u64()
+        .filter(|number| *number != 0)
+        .ok_or("PR number missing")?;
+    let query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){mergeQueueEntry{id}}}}";
+    let data = json(&gh(
+        gh_binary,
+        policy,
+        repo,
+        lock,
+        &[
+            "api",
+            "graphql",
+            "--hostname",
+            &repository.host,
+            "-f",
+            &format!("query={query}"),
+            "-F",
+            &format!("owner={}", repository.owner),
+            "-F",
+            &format!("name={}", repository.name),
+            "-F",
+            &format!("number={number}"),
+        ],
+    )?)?;
+    let pull = &data["data"]["repository"]["pullRequest"];
+    if !pull.is_object() || pull.get("mergeQueueEntry").is_none() {
+        return Err("cannot determine whether PR is in the merge queue".into());
+    }
+    Ok((!pull["mergeQueueEntry"].is_null()).then_some(number))
+}
+
 /// Resolve the single origin destination through the same validated `gh` read.
 pub(crate) fn origin_repository(
     repo: &Path,
@@ -293,34 +378,7 @@ fn publish_locked(
         let remote = checked(git(repo, &["remote", "get-url", "--push", "--all", "origin"]))?;
         let repository = origin_repository(tree, gh_binary, policy, lock)?;
         let name = repository.qualified.as_str();
-        let owner = repository.owner.as_str();
-        let repo_name = repository.name.as_str();
-        let prs = json(&gh(
-            tree,
-            lock,
-            &[
-                "pr",
-                "list",
-                "--repo",
-                name,
-                "--state",
-                "open",
-                "--head",
-                &task.branch,
-                "--json",
-                "number,url,isDraft,headRepositoryOwner,isCrossRepository",
-            ],
-        )?)?;
-        let prs = prs.as_array().ok_or("invalid PR list")?;
-        if prs.len() > 1 {
-            return Err("multiple open PRs match the task branch".into());
-        }
-        if prs.first().is_some_and(|pr| {
-            pr["headRepositoryOwner"]["login"].as_str() != Some(owner)
-                || pr["isCrossRepository"].as_bool() != Some(false)
-        }) {
-            return Err("PR head repository does not match origin".into());
-        }
+        let prs = open_pull_requests(tree, gh_binary, policy, lock, &repository, &task.branch)?;
         if accepted == Outcome::NothingToDo
             && prs.is_empty()
             && value.record.head_sha == value.record.base_sha
@@ -353,34 +411,10 @@ fn publish_locked(
         proof.verify(policy, &head, accepted_base)?;
         // Confirmation may remain open indefinitely: queue admission is checked
         // only after it returns, immediately before the push.
-        if let Some(pr) = prs.first() {
-            let number = pr["number"].as_u64().ok_or("PR number missing")?.to_string();
-            let query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){mergeQueueEntry{id}}}}";
-            let data = json(&gh(
-                tree,
-                lock,
-                &[
-                    "api",
-                    "graphql",
-                    "--hostname",
-                    &repository.host,
-                    "-f",
-                    &format!("query={query}"),
-                    "-F",
-                    &format!("owner={owner}"),
-                    "-F",
-                    &format!("name={repo_name}"),
-                    "-F",
-                    &format!("number={number}"),
-                ],
-            )?)?;
-            let pull = &data["data"]["repository"]["pullRequest"];
-            if !pull.is_object() || pull.get("mergeQueueEntry").is_none() {
-                return Err("cannot determine whether PR is in the merge queue".into());
-            }
-            if !pull["mergeQueueEntry"].is_null() {
-                return Err("PR is in the merge queue; use a new task branch for follow-up work".into());
-            }
+        if let Some(number) = queued_pull_request(tree, gh_binary, policy, lock, &repository, &task.branch)? {
+            return Err(format!(
+                "PR #{number} is in the merge queue; use a new task branch for follow-up work"
+            ));
         }
         push_head(policy, repo, &head, &task.branch, lock)?;
         let draft = false;

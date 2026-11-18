@@ -1446,6 +1446,14 @@ fn run_locked(
                 state.record.lane = Some(verdict);
                 break;
             }
+            Ok(lane::LaneAcceptance::Blocked { verdict, detail }) => {
+                // A cancelled, timed-out or unstarted run says nothing about the
+                // code, so it keeps its own state and spends no repair round.
+                state.record.lane = Some(verdict);
+                state.record.outcome = Outcome::Blocked;
+                state.record.detail = format!("lane acceptance: {detail}");
+                break;
+            }
             Ok(lane::LaneAcceptance::Fail { verdict, failures }) => {
                 state.record.lane = Some(verdict);
                 if state.record.lane_repairs == 0 {

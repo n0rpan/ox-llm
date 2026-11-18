@@ -160,12 +160,19 @@ workflow run whose `headSha` is exactly that commit and whose event is the push,
 and records its terminal conclusion in the task record (`lane`). A crash during
 the wait resumes the saved `lane` step instead of rerunning the worker.
 
-A green run accepts the task (`done`). Any other conclusion is a failed
-acceptance: the runner spends its single repair round with the failed job, step
-and test names, saves and pushes the repaired commit, and observes the new head
-once more. A second failure is `red`; an unobservable run (no matching push run
-before the bounded wait, or a GitHub read error) is `blocked`. In both cases the
-task is never `done`.
+A green run accepts the task (`done`). A completed `failure` spends the task's
+single repair round, shared with a local acceptance repair, with the failed job,
+step and test names; the runner saves and pushes the repaired commit and observes
+the new head once more. A second failure is `red`. Cancellation, timeouts,
+startup errors and an unobservable run (no matching push run before the bounded
+wait, or a GitHub read error) are `blocked` with their own state and spend no
+repair. In every non-green case the task is never `done`.
+
+Because the lane workflow is the authority, a head that changes
+`.github/workflows/lane.yml` or `tools/ci/` is refused before the push: those
+changes land in their own owner-reviewed change instead of qualifying themselves.
+A branch whose open pull request is already in the merge queue is refused too;
+use a new task branch for follow-up work.
 
 The push is gated. The owner confirms it at the controlling terminal before the
 run starts, or a web/runner surface that already holds the owner's confirmation
