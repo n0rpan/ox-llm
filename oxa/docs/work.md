@@ -59,8 +59,10 @@ lease and an attempt under a kernel file lock, then syncs state before returning
 `budget_pools.limits.max_attempts_per_day` sets the daily attempt threshold as an
 advisory default of three per UTC day, and zero warns immediately: a claim past the
 threshold is still reserved, and `oxa work board --refill` prints one operator
-warning on stderr with the attempt ordinal, the threshold and its UTC window. Only
-`enabled: false`, the pause marker or an active lease stops admission.
+warning on stderr with the attempt ordinal, the threshold and its UTC window. The
+attempt count never fences admission: `enabled: false`, the pause marker, wait
+actions, stale-head and protected-configuration checks, active leases and Claims
+failures still do.
 A crash after reservation consumes an attempt.
 `release(number, lease)` fences stale workers and never refunds attempts. Active
 leases survive UTC midnight; corrupt state, or state that vanished after a PR's

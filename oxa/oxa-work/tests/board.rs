@@ -84,7 +84,7 @@ fn conflict_and_conservative_fallback() {
 }
 
 #[test]
-fn release_priority_lease_expiry_and_daily_attempt_cap() {
+fn release_priority_lease_expiry_and_daily_attempt_count() {
     let mut pinned = pr(9);
     pinned.release_pinned = true;
     pinned.findings = true;
