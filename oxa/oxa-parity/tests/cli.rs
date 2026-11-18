@@ -964,7 +964,7 @@ fn cli_027() {
     ));
     assert_eq!(
         tool_names(&small.requests()[0]),
-        names(&["ask", "bash", "edit", "find", "grep", "read", "write"]),
+        names(&["ask", "bash", "edit", "find", "grep", "read", "worker", "write"]),
         "the default selection minus ls on a model below 32K"
     );
     let mixed = run(&env, &server.url(), &["-p", "-t", "read,+ls", "x"]);
