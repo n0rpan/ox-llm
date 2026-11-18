@@ -54,6 +54,18 @@ pub struct Shared {
     pub dirty: std::sync::atomic::AtomicBool,
     /// S1 / ENG-001 / ENG-002: the request gate and the background cancel (see [`Gate`]).
     pub gate: Gate,
+    /// W4: the frontend's hook told when a background job wakes its session (see
+    /// [`Handle::set_wake_notifier`]); `None` for a headless host.
+    pub wake: Mutex<Option<WakeNotify>>,
+}
+
+/// W4: the frontend's wake for a session. Called with the session id that has queued input.
+pub struct WakeNotify(pub Arc<dyn Fn(&str) + Send + Sync>);
+
+impl std::fmt::Debug for WakeNotify {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WakeNotify")
+    }
 }
 
 /// What an extension asked for: a new session, or another one (a path or an id).
@@ -268,6 +280,7 @@ impl Shared {
             modes: Mutex::new((steering, follow_up)),
             dirty: std::sync::atomic::AtomicBool::new(false),
             gate: Gate::default(),
+            wake: Mutex::new(None),
         }
     }
 
@@ -408,6 +421,29 @@ impl Handle {
         self.shared.dirty.store(true, Ordering::SeqCst);
         self.shared.gate.bg_cancel.cancel();
     }
+    /// W4: install the frontend's wake. A finished background job queues its message and then
+    /// calls this with the session id, so an idle frontend runs the queued input.
+    pub fn set_wake_notifier(&self, notify: Arc<dyn Fn(&str) + Send + Sync>) {
+        *lock(&self.shared.wake) = Some(WakeNotify(notify));
+    }
+
+    /// W4: queue a finished background job's wake for the active session. Jobs are reset when
+    /// the session changes, so the active session is the one that started them. Without a
+    /// frontend wake the message waits for the next run, as a normal follow-up does.
+    pub fn wake_active(&self, text: String) -> bool {
+        let session_id = lock(&self.shared.queue).session_id.clone();
+        if !self.follow_up_for(&session_id, text) {
+            return false;
+        }
+        let notify = lock(&self.shared.wake).as_ref().map(|w| w.0.clone());
+        if let Some(notify) = notify {
+            if self.request_inbox_wake() {
+                notify(&session_id);
+            }
+        }
+        true
+    }
+
     /// Whether these handles control the same ordinary input queues. Reopening creates
     /// another instance; a fork within the same instance retains its existing queue semantics.
     pub fn same_instance(&self, other: &Handle) -> bool {
@@ -840,5 +876,132 @@ mod tests {
         assert_eq!(h.shared.take_steering(), vec!["s1"]);
         h.set_modes(QueueMode::All, QueueMode::All);
         assert_eq!(h.shared.take_steering(), vec!["s2"]);
+    }
+
+    /// W4: a fake sandbox for the wake tests. Prints 25 numbered lines and exits 3, or (when
+    /// `block`) waits until cancelled and then reports no exit code.
+    struct WakeSandbox {
+        block: bool,
+    }
+
+    impl oxa_proto::Sandbox for WakeSandbox {
+        fn check(&self) -> Result<(), oxa_proto::OxaError> {
+            Ok(())
+        }
+        fn bwrap_args(&self, _s: &oxa_proto::ExecSpec) -> Vec<String> {
+            Vec::new()
+        }
+        fn run(
+            &self,
+            _s: &oxa_proto::ExecSpec,
+            c: &oxa_proto::CancelToken,
+            live: &mut dyn FnMut(&[u8]),
+        ) -> oxa_proto::ExecResult {
+            if self.block {
+                live(b"waiting\n");
+                while !c.is_cancelled() {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                return oxa_proto::ExecResult {
+                    output: Vec::new(),
+                    exit: None,
+                    timed_out: false,
+                };
+            }
+            for i in 1..=25 {
+                live(format!("line {i}\n").as_bytes());
+            }
+            oxa_proto::ExecResult {
+                output: Vec::new(),
+                exit: Some(3),
+                timed_out: false,
+            }
+        }
+    }
+
+    fn wake_spec(command: &str) -> oxa_proto::ExecSpec {
+        oxa_proto::ExecSpec {
+            command: command.to_string(),
+            cwd: std::path::Path::new("/work").to_path_buf(),
+            writable: true,
+            net: false,
+            timeout_s: None,
+            env: Vec::new(),
+        }
+    }
+
+    fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn finished_job_queues_one_follow_up_with_exit_and_tail() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.shared.bind_session("active");
+        let jobs = oxa_tools::JobRegistry::new();
+        jobs.set_sandbox(Arc::new(WakeSandbox { block: false }));
+        let hook = h.clone();
+        jobs.set_on_finish(Arc::new(move |job: oxa_tools::JobDone| {
+            hook.wake_active(job.wake_text());
+        }));
+        let id = jobs.spawn(wake_spec("gh run watch 1 --exit-status")).unwrap();
+        wait_until("the wake is queued", || h.has_inbox_input());
+        let msgs = h.take_follow_up();
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        let msg = &msgs[0];
+        assert!(
+            msg.starts_with(&format!(
+                "[background job {id} finished: exit 3; gh run watch 1 --exit-status; last lines:]\n"
+            )),
+            "{msg}"
+        );
+        // The header plus the last 20 of the 25 lines, and nothing before them.
+        assert_eq!(msg.lines().count(), 1 + 20, "{msg}");
+        assert!(msg.ends_with("line 25"), "{msg}");
+        assert!(!msg.contains("line 5\n"), "{msg}");
+        // One exit, one wake: nothing more is queued afterwards.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(h.take_follow_up().is_empty());
+    }
+
+    #[test]
+    fn stopped_job_does_not_wake() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.shared.bind_session("active");
+        let jobs = oxa_tools::JobRegistry::new();
+        jobs.set_sandbox(Arc::new(WakeSandbox { block: true }));
+        let hook = h.clone();
+        jobs.set_on_finish(Arc::new(move |job: oxa_tools::JobDone| {
+            hook.wake_active(job.wake_text());
+        }));
+        let id = jobs.spawn(wake_spec("gh run watch 1 --exit-status")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let killed = jobs.kill(&id).unwrap();
+        assert_eq!(killed.status, oxa_tools::JobStatus::Killed);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!h.has_inbox_input());
+        assert!(h.take_follow_up().is_empty());
+    }
+
+    #[test]
+    fn wake_on_finish_false_keeps_old_behaviour() {
+        // With `oxa.jobs.wakeOnFinish` false, Session::open installs no hook.
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.shared.bind_session("active");
+        let jobs = oxa_tools::JobRegistry::new();
+        jobs.set_sandbox(Arc::new(WakeSandbox { block: false }));
+        let id = jobs.spawn(wake_spec("gh run watch 1 --exit-status")).unwrap();
+        wait_until("the job exits", || {
+            jobs.read(&id).unwrap().status == oxa_tools::JobStatus::Exited(3)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!h.has_inbox_input());
+        assert!(h.take_follow_up().is_empty());
+        // The output still waits for a read.
+        assert!(jobs.read(&id).unwrap().output.ends_with("line 25\n"));
     }
 }

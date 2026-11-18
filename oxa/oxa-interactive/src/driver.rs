@@ -877,6 +877,14 @@ impl<'a> Loop<'a> {
             }
             // Stop the old callback before installing one bound to the current handle.
             self.inbox = None;
+            // W4: a finished background job of this session wakes it the way an inbox message does.
+            let job_cmds = self.cmds.clone();
+            self.handle
+                .set_wake_notifier(std::sync::Arc::new(move |session_id: &str| {
+                    let _ = job_cmds.send(SessionCmd::Inbox {
+                        session_id: session_id.to_string(),
+                    });
+                }));
             let handle = self.handle.clone();
             let cmds = self.cmds.clone();
             let session_id = info.id.clone();

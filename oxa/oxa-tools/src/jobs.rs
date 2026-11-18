@@ -14,6 +14,7 @@
 
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, Sandbox};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -35,6 +36,43 @@ pub const READ_CAP: usize = 8 * 1024;
 const LAST_LINE_SCAN: usize = 4 * 1024;
 /// The longest last line a listing shows, in characters.
 const LAST_LINE_CAP: usize = 100;
+/// W4: how many trailing lines of a finished job's output its wake message carries.
+pub const WAKE_TAIL_LINES: usize = 20;
+/// W4: how many trailing bytes of a finished job's output its wake message may carry.
+pub const WAKE_TAIL_BYTES: usize = 2 * 1024;
+/// W4: how many characters of the command a wake message shows.
+pub const WAKE_COMMAND_CAP: usize = 120;
+
+/// W4: a background job that finished on its own (not stopped by the model or the user), handed
+/// to the finish hook installed with [`JobRegistry::set_on_finish`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobDone {
+    pub id: String,
+    /// `Exited(code)` for a normal exit; `Killed` for a signal or a timeout.
+    pub status: JobStatus,
+    /// The command as the job ran it, shown truncated in the wake message.
+    pub command: String,
+    /// The last [`WAKE_TAIL_LINES`] lines (and at most [`WAKE_TAIL_BYTES`]) of the output.
+    pub tail: String,
+}
+
+impl JobDone {
+    /// The one follow-up message a finished job sends its session.
+    pub fn wake_text(&self) -> String {
+        let outcome = match self.status {
+            JobStatus::Exited(code) => format!("exit {code}"),
+            _ => "killed".to_string(),
+        };
+        let command: String = self.command.chars().take(WAKE_COMMAND_CAP).collect();
+        format!(
+            "[background job {} finished: {outcome}; {command}; last lines:]\n{}",
+            self.id, self.tail
+        )
+    }
+}
+
+/// W4: called once on the job's thread when the job finishes on its own.
+pub type FinishHook = Arc<dyn Fn(JobDone) + Send + Sync>;
 
 /// The status of one job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +113,9 @@ struct Job {
     status: Arc<Mutex<JobStatus>>,
     /// When the job was started, for the age a listing shows.
     started: Instant,
+    /// W4: set when the model or the user stopped the job (or the session reset it); such a job
+    /// never wakes the session.
+    stopped: Arc<AtomicBool>,
 }
 
 /// A snapshot of a job for a read.
@@ -122,6 +163,8 @@ pub struct JobRegistry {
     state: Mutex<State>,
     /// The sandbox every job runs under, set once by the session that owns the registry.
     sandbox: Mutex<Option<Arc<dyn Sandbox>>>,
+    /// W4: the hook a job's thread calls when it finishes on its own; `None` = no wake.
+    on_finish: Arc<Mutex<Option<FinishHook>>>,
 }
 
 impl Default for JobRegistry {
@@ -129,6 +172,7 @@ impl Default for JobRegistry {
         JobRegistry {
             state: Mutex::new(State::default()),
             sandbox: Mutex::new(None),
+            on_finish: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -148,6 +192,12 @@ impl JobRegistry {
     /// (the same `Arc` the session's tools run with).
     pub fn set_sandbox(&self, sandbox: Arc<dyn Sandbox>) {
         *self.sandbox.lock().unwrap() = Some(sandbox);
+    }
+
+    /// W4: install the hook a job calls when it finishes on its own (not stopped). Without a
+    /// hook a finished job only waits for a read, as before.
+    pub fn set_on_finish(&self, hook: FinishHook) {
+        *self.on_finish.lock().unwrap() = Some(hook);
     }
 
     /// How many jobs are currently running.
@@ -202,6 +252,7 @@ impl JobRegistry {
         let cancel = CancelToken::new();
         let output = Arc::new(Mutex::new(Out::default()));
         let status = Arc::new(Mutex::new(JobStatus::Running));
+        let stopped = Arc::new(AtomicBool::new(false));
         state.jobs.insert(
             id.clone(),
             Job {
@@ -209,10 +260,14 @@ impl JobRegistry {
                 output: output.clone(),
                 status: status.clone(),
                 started: Instant::now(),
+                stopped: stopped.clone(),
             },
         );
         drop(state);
 
+        let job_id = id.clone();
+        let command = spec.command.clone();
+        let on_finish = self.on_finish.clone();
         std::thread::spawn(move || {
             let mut sink = |chunk: &[u8]| {
                 let mut out = output.lock().unwrap();
@@ -229,6 +284,20 @@ impl JobRegistry {
                 None => JobStatus::Killed,
             };
             *status.lock().unwrap() = final_status;
+            // W4: wake the session on its own finish only; a stopped job stays quiet.
+            if stopped.load(Ordering::SeqCst) {
+                return;
+            }
+            let hook = on_finish.lock().unwrap().clone();
+            if let Some(hook) = hook {
+                let tail = wake_tail(&output.lock().unwrap().buf);
+                (*hook)(JobDone {
+                    id: job_id,
+                    status: final_status,
+                    command,
+                    tail,
+                });
+            }
         });
         Ok(id)
     }
@@ -320,13 +389,14 @@ impl JobRegistry {
     /// returns. A job that already finished is left as it is (`was_running: false`). `Err` for an
     /// unknown id.
     pub fn kill(&self, id: &str) -> Result<JobKill, String> {
-        let (cancel, status) = {
+        let (cancel, status, stopped) = {
             let state = self.state.lock().unwrap();
             let job = state.jobs.get(id).ok_or_else(|| format!("Unknown job: {id}"))?;
-            (job.cancel.clone(), job.status.clone())
+            (job.cancel.clone(), job.status.clone(), job.stopped.clone())
         };
         let was_running = *status.lock().unwrap() == JobStatus::Running;
         if was_running {
+            stopped.store(true, Ordering::SeqCst);
             cancel.cancel();
             let deadline = Instant::now() + KILL_SETTLE;
             while *status.lock().unwrap() == JobStatus::Running && Instant::now() < deadline {
@@ -342,6 +412,7 @@ impl JobRegistry {
     pub fn reset(&self) {
         let mut state = self.state.lock().unwrap();
         for job in state.jobs.values() {
+            job.stopped.store(true, Ordering::SeqCst);
             job.cancel.cancel();
         }
         state.jobs.clear();
@@ -352,9 +423,19 @@ impl JobRegistry {
     pub fn kill_all(&self) {
         let state = self.state.lock().unwrap();
         for job in state.jobs.values() {
+            job.stopped.store(true, Ordering::SeqCst);
             job.cancel.cancel();
         }
     }
+}
+
+/// W4: the last lines of a finished job's output for its wake message: at most
+/// [`WAKE_TAIL_LINES`] lines and [`WAKE_TAIL_BYTES`] bytes, from the ring buffer's end.
+fn wake_tail(buf: &[u8]) -> String {
+    let tail = &buf[buf.len().saturating_sub(WAKE_TAIL_BYTES)..];
+    let text = String::from_utf8_lossy(tail);
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(WAKE_TAIL_LINES)..].join("\n")
 }
 
 /// The number of a `job-N` id, for ordering a listing and forgetting the oldest finished jobs.
