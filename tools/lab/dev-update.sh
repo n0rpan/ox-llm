@@ -9,8 +9,11 @@ for tool in curl jq gh sha256sum tar flock diff; do command -v "$tool" >/dev/nul
 case $(uname -m) in aarch64|x86_64) arch=$(uname -m);; *) echo 'Unsupported architecture' >&2; exit 1;; esac
 test ! -L "$prefix"
 [[ $prefix != *$'\n'* && $prefix != *$'\r'* ]]
-mkdir -p "$prefix"
-test -O "$prefix"
+mkdir -p -- "$prefix"
+if ! [[ -d $prefix && ! -L $prefix && -O $prefix && $(stat -c %a -- "$prefix") == 700 ]]; then
+  echo 'Refusing a dev prefix that is not an owned mode-0700 directory' >&2
+  exit 1
+fi
 for state in .dev-channel .update.lock; do
   if test -e "$prefix/$state" || test -L "$prefix/$state"; then
     { test -f "$prefix/$state" && test ! -L "$prefix/$state" && test -O "$prefix/$state"; } || exit 1
