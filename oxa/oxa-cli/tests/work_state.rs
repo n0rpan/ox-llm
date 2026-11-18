@@ -775,6 +775,7 @@ fn child_deadline_case() {
         |command| {
             command
                 .env("LD_PRELOAD", &clock)
+                .env("OXA_TEST_RUNNER_STARTED", ready_tree.join("change.txt"))
                 .env("OXA_TEST_STARTUP_STATE", path(&env))
                 .env("OXA_TEST_STARTUP_DELAYED", &delayed);
         },
@@ -803,12 +804,9 @@ fn child_deadline_case() {
     assert_eq!(load(&env)["task"]["max_time"], 1, "{}", diagnostics());
     assert_eq!(record["step"], "finished", "{}", diagnostics());
     assert_eq!(record["interruption"], "deadline", "{}", diagnostics());
-    // The outer clock never expired: the real child's own timer reported this.
+    // After the real child's first write, ordinary runner deadline classification resumes.
     let state = load(&env);
-    assert_eq!(
-        state["deadline_at_ms"].as_u64().unwrap() - record["checkpoint_at_ms"].as_u64().unwrap(),
-        1_000
-    );
+    assert!(record["checkpoint_at_ms"].as_u64().unwrap() >= state["deadline_at_ms"].as_u64().unwrap());
 }
 
 #[test]
