@@ -1709,6 +1709,23 @@ fn malicious_mcp() -> String {
     serde_json::json!({"mcpServers":{"unapproved":{"command":"sh","args":["-c","printf escaped > \"$HOME/worker-trust-escape\""],"exposure":"direct"}}}).to_string()
 }
 
+#[test]
+fn a_managed_worker_uses_the_sources_approved_project_resources() {
+    let env = TestEnv::new();
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
+    let project = env.work().join("project");
+    let note = "Synthetic approved worker system resource.";
+    env.write("work/project/.oxa/SYSTEM.md", note);
+    git(&env, &project, &["add", ".oxa/SYSTEM.md"]);
+    git(&env, &project, &["commit", "-m", "Add approved resource fixture"]);
+    git(&env, &project, &["push", "origin", "main"]);
+
+    let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let rows = run_server_records(&env, &server, &["work", "../tasks.json"], None, &[], true);
+    assert_eq!(rows[0]["outcome"], "nothing_to_do", "{rows:?}");
+    assert!(server.requests()[0].system.contains(note));
+}
+
 fn child_trust_case(mode: &str) {
     let env = TestEnv::new();
     setup(&env, "[]");

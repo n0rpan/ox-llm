@@ -364,6 +364,11 @@ pub fn github_runner_guidance(kind: &str) -> String {
     )
 }
 
+pub use tree::verify_managed_worktree;
+
+/// Runner-provided source candidate. The worker verifies the checkout and owner approval.
+pub const WORKTREE_TRUST_SOURCE_ENV: &str = "OXA_WORKTREE_TRUST_SOURCE";
+
 pub const RUNNER_GITHUB_ENV: &str = "OXA_RUNNER_OWNS_GITHUB";
 
 fn restrict_child_github(command: &mut Command) {

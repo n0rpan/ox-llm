@@ -765,16 +765,38 @@ fn prepare(
     }
 
     let gated = gated_resources(cwd);
-    let trusted = project_trusted(
-        a,
-        env,
-        dirs,
-        cwd,
-        &gated,
-        mode == RunMode::Interactive && stdin_is_tty && stdout_is_tty,
-        &mut notices,
-    )?;
+    let inherited_source = env
+        .get(oxa_work::WORKTREE_TRUST_SOURCE_ENV)
+        .filter(|_| mode == RunMode::Json);
+    let trusted = if let Some(source) = inherited_source.filter(|_| a.approve.is_none()) {
+        let source = Path::new(source);
+        let store = TrustStore::load(&dirs.trust_file());
+        let path = std::ffi::OsStr::new(env.get("PATH").unwrap_or(""));
+        let trusted = store.lookup(source) == Some(true)
+            && crate::netguard::trusted_executable_for("git", Some(path), Some(cwd), Some(&dirs.home))
+                .is_some_and(|git| oxa_work::verify_managed_worktree(&git, path, source, cwd).is_ok())
+            && store.approved_worktree_resources(source, cwd);
+        if !trusted {
+            report_untrusted_project(dirs, cwd, &gated, &mut notices);
+        }
+        trusted
+    } else {
+        project_trusted(
+            a,
+            env,
+            dirs,
+            cwd,
+            &gated,
+            mode == RunMode::Interactive && stdin_is_tty && stdout_is_tty,
+            &mut notices,
+        )?
+    };
     let mut settings = child.apply(Settings::load(dirs, cwd, trusted));
+    if inherited_source.is_some() {
+        // The work runner owns acceptance. The child must not run a second
+        // local done round just because trusted project resources were loaded.
+        settings = settings.with_override("done", Value::Array(Vec::new()));
+    }
     // CLI-045 (pi cli.md): `--verbose` overrides `quietStartup` for this run (in memory only).
     if a.verbose {
         settings = settings.with_override("quietStartup", Value::Bool(false));
@@ -1196,7 +1218,14 @@ pub(crate) fn project_trusted(
     if trusted && saved == Some(true) {
         trust_store.record_baseline(&dirs.trust_file(), cwd)?;
     }
-    if !trusted && !gated.is_empty() {
+    if !trusted {
+        report_untrusted_project(dirs, cwd, gated, notices);
+    }
+    Ok(trusted)
+}
+
+fn report_untrusted_project(dirs: &Dirs, cwd: &Path, gated: &[String], notices: &mut Vec<(Level, String)>) {
+    if !gated.is_empty() {
         notices.push((
             Level::Warning,
             format!(
@@ -1207,13 +1236,12 @@ pub(crate) fn project_trusted(
     }
     // `done` is a project-only key in practice: an untrusted project's list is never merged,
     // so say that its checks will not run.
-    if !trusted && Settings::project_declares_done(dirs, cwd) {
+    if Settings::project_declares_done(dirs, cwd) {
         notices.push((
             Level::Warning,
             "done checks in .oxa/settings.json were not run: project is not trusted".to_string(),
         ));
     }
-    Ok(trusted)
 }
 
 fn discover_opts(a: &Args, dirs: &Dirs, cwd: &Path, trusted: bool) -> Result<DiscoverOpts, OxaError> {

@@ -73,6 +73,36 @@ impl TrustStore {
         self.lookup(cwd) == Some(true) && !matches!(self.approval(cwd), Approval::Changed(_))
     }
 
+    /// Check resources after the caller has verified the runner's linked worktree.
+    /// This is a per-launch decision. It creates no standalone worktree approval.
+    pub fn approved_worktree_resources(&self, source: &Path, worktree: &Path) -> bool {
+        let (Ok(source), Ok(worktree)) = (source.canonicalize(), worktree.canonicalize()) else {
+            return false;
+        };
+        if source == worktree
+            || self.lookup(&source) != Some(true)
+            || self.lookup(&worktree) == Some(false)
+            || self.approval(&source) != Approval::Matches
+        {
+            return false;
+        }
+        let Some(approved) = self.approved.get(&key_string(&source)) else {
+            return false;
+        };
+        manifest(&worktree).into_iter().all(|(name, hash)| {
+            let path = Path::new(&name);
+            let Ok(relative) = path.strip_prefix(&worktree) else {
+                // Parent resources are inherited only at an already approved absolute path.
+                return approved.get(&name) == Some(&hash);
+            };
+            let original = source.join(relative);
+            // A link written identically in different checkouts can resolve differently.
+            path.canonicalize().ok().as_deref() == Some(path)
+                && original.canonicalize().ok().as_deref() == Some(original.as_path())
+                && original.to_str().and_then(|name| approved.get(name)) == Some(&hash)
+        })
+    }
+
     /// B4: how the executable project files of `cwd` ([`approval_files`]) compare with what the
     /// user approved for `cwd`.
     pub fn approval(&self, cwd: &Path) -> Approval {
