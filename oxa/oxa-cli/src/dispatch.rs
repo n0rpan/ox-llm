@@ -775,20 +775,24 @@ fn prepare(
                 dirs,
                 a.share_models.clone(),
                 a.share_bind,
+                (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
             )
         })
         .transpose()?;
     #[cfg(feature = "share")]
-    let shared_local = sharing.as_ref().map(|prepared| prepared.local.clone());
+    let shared = sharing
+        .as_ref()
+        .map(|prepared| prepared.engines.clone())
+        .unwrap_or_default();
     #[cfg(not(feature = "share"))]
-    let shared_local = None;
+    let shared = crate::in_process::SharedEngines::default();
     let engine = child.wrap(crate::in_process::select_observed(
         &user_settings,
         &settings,
         dirs,
         requested_model.as_deref(),
         (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
-        shared_local,
+        shared,
         || engine_with_settings(&endpoint, &settings),
     )?);
 

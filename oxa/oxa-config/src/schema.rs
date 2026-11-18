@@ -178,6 +178,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.prefill.tools", Kind::Bool, "null"),
     key("oxa.reportIssue.repo", Kind::String, "null"),
     key("oxa.reportIssue.semanticDedupe", Kind::Bool, "false"),
+    key("oxa.share.remoteModels", Kind::StringList, "[]"),
     // B3 (lane harden): user settings only (read from the user file whatever the project says).
     // `greedy` = W6 `temperature: 0` (MTP on); `model` = the model card's sampling (oxa-core
     // `sampling.rs`). The seed is sent only with `model`.
