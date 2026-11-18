@@ -2661,8 +2661,8 @@ fn key_003() {
         t.key("down");
         t.wait_editor("");
     }
-    // Regular layout: plain pageUp / pageDown page the editor.
-    let t = Setup::new().regular().start();
+    // Regular layout: plain pageUp / pageDown page the editor (25 rows, as above).
+    let t = Setup::new().regular().size(25, 80).start();
     let long: String = (1..=40)
         .map(|i| format!("L{i:02}"))
         .collect::<Vec<_>>()
