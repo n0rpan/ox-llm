@@ -478,7 +478,7 @@ mod tests {
         sets.hooks
             .iter()
             .flat_map(|h| h.tools())
-            .map(|t| t.spec().name)
+            .map(|t| t.spec().name.clone())
             .collect()
     }
 
