@@ -90,6 +90,10 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
     };
     let mut html = format!("<main><h1 id=main tabindex=-1>{title}</h1>");
     html.push_str(&page.navigation(view.situation.map(|snapshot| snapshot.asks.len())));
+    html.push_str("<aside id=refresh-error class=stale-notice role=status hidden><h2>Refresh unavailable</h2><p>The last rendered observations are retained. <a href=\"\">Retry</a></p></aside>");
+    if view.board.is_some_and(|board| stale(board, now)) {
+        html.push_str("<aside class=stale-notice role=status><h2>Board observation needs refreshing</h2><p>The Board timestamp is stale or ahead of this clock. <a href=\"\">Retry</a></p></aside>");
+    }
     match page {
         Page::Home => {
             html.push_str("<div class=home-layout><div class=home-decisions>");
@@ -422,6 +426,7 @@ pub const STYLE: &str = concat!(
     include_str!("lead_page/style.css"),
     r#"
 :root { --nav-height:3.875rem; }
+.stale-notice { padding:16px; margin:16px 0; border:1px dashed var(--muted); border-radius:var(--radius); background:var(--raised); }
 :root { --bad:#b62c24; --bad-soft:#fde7e4; }
 @media(prefers-color-scheme:dark) { :root { --bad:#ff8a80; --bad-soft:#331917; } }
 #attention .severity { font-weight:700; color:var(--warn); }
@@ -470,9 +475,13 @@ async function refresh(){
       const current=document.querySelector('main'),work=current.querySelector('details.home-work');
       const replacement=next.querySelector('details.home-work');
       if(work&&replacement)replacement.open=work.open;
-      current.replaceWith(next);badge.textContent='Live';
+      current.replaceWith(next);badge.textContent='Connected';
     }
-  }catch(error){if(!active.signal.aborted)badge.textContent='Refresh unavailable';}
+  }catch(error){if(!active.signal.aborted){
+    badge.textContent='Refresh unavailable';
+    const notice=document.getElementById('refresh-error');
+    if(notice)notice.hidden=false;
+  }}
   finally{if(pending===active){pending=null;if(!document.hidden)timer=setTimeout(refresh,15000);}}
 }
 document.addEventListener('visibilitychange',()=>{
@@ -689,7 +698,8 @@ for(failureMode of ['network','refused','missing']) {
     throw new Error('refresh failure must retain content and expose retry');
   failureMode='ok';
   await refresh();
-  if(current!==supplied||!current.notice.hidden)throw new Error('successful refresh must clear error');
+  if(current!==supplied||!current.notice.hidden||connectionBadge.textContent!=='Connected')
+    throw new Error('successful refresh must clear error without claiming source freshness');
 }
 current=makeMain(true); supplied=makeMain(false); failureMode='abort';
 await refresh();
