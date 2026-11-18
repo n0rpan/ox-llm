@@ -137,6 +137,7 @@ pub(super) fn run(
     let steering_objective = steering.map(|(_, objective)| objective.to_owned());
     #[cfg(all(target_os = "linux", feature = "managed-steering"))]
     let steering_binding = binding.clone();
+    let admission = binding.clone();
     let run = Arc::new(move |task: &Task, lock: &mut LockedTask<'_>| {
         if paused(&pause)? {
             return Err("native board execution paused".into());
@@ -145,7 +146,7 @@ pub(super) fn run(
         if let Some(objective) = &steering_objective {
             lock.bind_managed_steering(&claims_path, &steering_binding, objective)?;
         }
-        match lock.plan_native(&worker_context.cwd, worker_context.reports) {
+        match lock.plan_native(&worker_context.cwd, worker_context.reports, &admission) {
             Ok(plan) => worker_context.planned_locked(&plan, lock),
             Err(error) => Ok(oxa_work::blocked_record(task, error)),
         }

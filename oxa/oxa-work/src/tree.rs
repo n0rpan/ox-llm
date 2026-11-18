@@ -343,12 +343,39 @@ fn native_attempt(task: &Task) -> bool {
     task.id.starts_with("board-") && task.runner_owns_github()
 }
 
+/// Whether the earlier attempt's persisted admission receipt and this attempt's match.
+/// A task ID or prompt is ordinary task input, so neither proves native lineage: an
+/// earlier native attempt is handed over only to a later attempt of the same admitted
+/// source, and only when the earlier one persisted its own receipt.
+fn same_admission(
+    prior_id: &str,
+    prior: Option<&crate::board::NativeBinding>,
+    task: &Task,
+    current: Option<&crate::board::NativeBinding>,
+) -> bool {
+    match (current, prior) {
+        (None, None) => !prior_id.starts_with("board-"),
+        (Some(current), Some(prior)) => {
+            prior.validate().is_ok()
+                && current.validate().is_ok()
+                && prior.native_task_id == prior_id
+                && current.native_task_id == task.id
+                && prior.branch == task.branch
+                && current.branch == task.branch
+                && prior.number == current.number
+                && prior.reviewed_head.is_some() == current.reviewed_head.is_some()
+        }
+        _ => false,
+    }
+}
+
 /// Preserve an earlier, finished task in place while releasing its branch for this one.
 fn release_prior_branch(
     repo: &Path,
     tree: &Path,
     task: &Task,
     lineage: Lineage<'_>,
+    native: Option<&crate::board::NativeBinding>,
     binary: &Path,
     policy: &RunPolicy,
 ) -> Result<()> {
@@ -407,6 +434,7 @@ fn release_prior_branch(
     };
     if prior.task.id != prior_id
         || !prior_kind
+        || !same_admission(prior_id, prior.native_binding.as_ref(), task, native)
         || prior.task.branch != task.branch
         || prior.record.worktree != previous
         || prior.record.step != Step::Finished
@@ -449,6 +477,7 @@ fn release_prior_branch(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare(
     repo: &Path,
     tree: &Path,
@@ -457,6 +486,7 @@ pub(crate) fn prepare(
     binary: &Path,
     policy: &RunPolicy,
     lock: &fs::File,
+    native: Option<&crate::board::NativeBinding>,
 ) -> Result<Prepared> {
     let (base, alias) = base;
     verify_objects(policy, repo, base)?;
@@ -473,12 +503,13 @@ pub(crate) fn prepare(
                 tree,
                 task,
                 Lineage::Review { number, reviewed },
+                native,
                 binary,
                 policy,
             )?;
         }
-    } else if native_attempt(task) && !tree.exists() {
-        release_prior_branch(repo, tree, task, Lineage::Native, binary, policy)?;
+    } else if native.is_some() && native_attempt(task) && !tree.exists() {
+        release_prior_branch(repo, tree, task, Lineage::Native, native, binary, policy)?;
     }
     let retained = tree.exists();
     if !retained {

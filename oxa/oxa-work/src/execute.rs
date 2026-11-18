@@ -126,6 +126,7 @@ impl Runner<'_> {
                         self.binary,
                         self.policy,
                         self.lock,
+                        state.native_binding.as_ref(),
                     )?;
                     let point = state
                         .execution
