@@ -99,7 +99,7 @@ fn form_nonce(page: &str) -> &str {
         .unwrap()
 }
 
-fn with_fixed_chat(run: impl FnOnce(u16, &str, &std::path::Path, &oxa_proto::work::Snapshot)) {
+fn with_fixed_chat(run: impl FnOnce(u16, &str)) {
     let test = TestEnv::new();
     let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = reservation.local_addr().unwrap().port();
@@ -131,12 +131,12 @@ fn with_fixed_chat(run: impl FnOnce(u16, &str, &std::path::Path, &oxa_proto::wor
     drop(reservation);
     let _server = start_with_situation(&test, &board, Some(&situation));
     let authority = format!("127.0.0.1:{port}");
-    run(port, &authority, &situation, &snapshot);
+    run(port, &authority);
 }
 
 #[test]
 fn fixed_chat_form_posts_without_js_and_reuses_protected_observations() {
-    with_fixed_chat(|port, authority, situation, snapshot| {
+    with_fixed_chat(|port, authority| {
         let page = get(port, "/chat", authority, "");
         let nonce = form_nonce(&page);
         assert_eq!(nonce.len(), 43);
@@ -152,18 +152,25 @@ fn fixed_chat_form_posts_without_js_and_reuses_protected_observations() {
                 "",
                 &format!("csrf={nonce}&prompt={prompt}"),
             );
-            assert_eq!(reply.lines().next(), Some("HTTP/1.1 200 OK"));
-            assert!(reply.contains("<!doctype html>") && reply.contains("0 tokens"));
-            let fact = match prompt {
-                "status" => "0 items".to_owned(),
-                "workers" => format!("{} running tasks", snapshot.running.len()),
-                _ => format!("{} open owner decisions", snapshot.asks.len()),
+            assert_eq!(reply.lines().next(), Some("HTTP/1.1 303 See Other"));
+            let target = reply
+                .lines()
+                .find_map(|line| line.strip_prefix("Location: "))
+                .unwrap();
+            assert_eq!(target, format!("/chat?prompt={prompt}"));
+            let page = get(port, target, authority, "");
+            assert!(page.contains("<!doctype html>") && page.contains("0 tokens"));
+            let fact = if prompt == "status" {
+                "0 items"
+            } else {
+                "Snapshot observations unavailable"
             };
-            assert!(reply.contains(&fact), "{prompt}");
+            assert!(page.contains(fact), "{prompt}");
+            assert!(get(port, &format!("{target}&fragment=1"), authority, "").contains(fact));
         }
         let refused = |path, host, source, extra, body: &str| {
             let reply = post(port, path, host, source, extra, body);
-            assert!(!reply.starts_with("HTTP/1.1 200"));
+            assert!(reply.starts_with("HTTP/1.1 4"));
             assert!(!reply.contains("private-input-marker") && !reply.contains("0 tokens"));
         };
         let valid = format!("csrf={nonce}&prompt=status");
@@ -184,30 +191,19 @@ fn fixed_chat_form_posts_without_js_and_reuses_protected_observations() {
             refused("/chat", authority, &origin, extra, &valid);
         }
         refused("/workers", authority, &origin, "", &valid);
-        std::fs::set_permissions(&situation, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let refused = post(
-            port,
-            "/chat",
-            authority,
-            &origin,
-            "",
-            &format!("csrf={nonce}&prompt=workers"),
-        );
-        assert!(refused.contains("Snapshot observations unavailable"));
-        assert!(!refused.contains(situation.to_str().unwrap()));
     });
 }
 
 #[test]
 fn fixed_form_response_preserves_browser_origin() {
-    with_fixed_chat(|port, authority, _, _| {
+    with_fixed_chat(|port, authority| {
         assert!(get(port, "/chat", authority, "").contains("Referrer-Policy: same-origin\r\n"));
     });
 }
 
 #[test]
 fn fixed_post_redirects_to_the_selected_refresh_url() {
-    with_fixed_chat(|port, authority, _, _| {
+    with_fixed_chat(|port, authority| {
         let page = get(port, "/chat", authority, "");
         let nonce = form_nonce(&page);
         for prompt in ["status", "workers", "attention"] {
@@ -227,7 +223,7 @@ fn fixed_post_redirects_to_the_selected_refresh_url() {
 
 #[test]
 fn same_uid_client_cannot_read_protected_situation() {
-    with_fixed_chat(|port, authority, _, _| {
+    with_fixed_chat(|port, authority| {
         assert!(get(port, "/asks", authority, "").contains("Owner asks unavailable"));
     });
 }

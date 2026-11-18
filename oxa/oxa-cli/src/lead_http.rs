@@ -135,14 +135,18 @@ fn connection_fixed(
                     .read_exact(std::slice::from_mut(byte))
                     .map_err(|_| "400 Bad Request")?;
             }
-            Some(fixed_page(&body, &form.csrf).ok_or("403 Forbidden")?)
+            Some(fixed_target(&body, &form.csrf).ok_or("403 Forbidden")?)
         } else {
             None
         };
         Ok((r.path, page))
     });
+    let location = match &allowed {
+        Ok((_, Some(target))) => format!("Location: {target}\r\n"),
+        _ => String::new(),
+    };
     let (status, kind, body) = match allowed {
-        Ok((_, Some(page))) => ("200 OK", "text/html", render(page, false)),
+        Ok((_, Some(_))) => ("303 See Other", "text/plain", String::new()),
         Ok(("/events", None)) => (
             "200 OK",
             "text/event-stream",
@@ -160,7 +164,12 @@ fn connection_fixed(
         Err(status) => (status, "text/plain", "Request refused".into()),
     };
     let form_action = if form.is_some() { "'self'" } else { "'none'" };
-    let headers = format!("HTTP/1.1 {status}\r\nContent-Type: {kind}; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action {form_action}\r\nReferrer-Policy: no-referrer\r\n\r\n", body.len());
+    let referrer = if form.is_some() {
+        "same-origin"
+    } else {
+        "no-referrer"
+    };
+    let headers = format!("HTTP/1.1 {status}\r\n{location}Content-Type: {kind}; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action {form_action}\r\nReferrer-Policy: {referrer}\r\n\r\n", body.len());
     write_response(
         &mut stream,
         &[headers.as_bytes(), body.as_bytes()],
@@ -202,7 +211,7 @@ struct Fields<'a> {
     length: usize,
 }
 
-fn fixed_page(bytes: &[u8], expected: &str) -> Option<Page> {
+fn fixed_target(bytes: &[u8], expected: &str) -> Option<String> {
     let (mut csrf, mut prompt) = (None, None);
     for field in std::str::from_utf8(bytes).ok()?.split('&') {
         let (key, value) = field.split_once('=')?;
@@ -215,10 +224,11 @@ fn fixed_page(bytes: &[u8], expected: &str) -> Option<Page> {
     if csrf != Some(expected) {
         return None;
     }
-    let (page, false) = Page::request(&format!("/chat?prompt={}", prompt?))? else {
+    let target = format!("/chat?prompt={}", prompt?);
+    let (Page::Chat(_), false) = Page::request(&target)? else {
         return None;
     };
-    Some(page)
+    Some(target)
 }
 
 fn request(bytes: &[u8], fixed: bool) -> Result<(Request<'_>, Fields<'_>), &'static str> {

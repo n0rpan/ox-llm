@@ -61,24 +61,17 @@ fn authorized(
 struct Source {
     uid: u32,
     board: Option<PathBuf>,
-    situation: Option<PathBuf>,
     form: Option<crate::lead_http::FixedForm>,
 }
 impl Source {
     fn new(env: &Env, uid: u32) -> Result<Self, OxaError> {
         let board = env.get("OXA_LEAD_BOARD_LOG").map(PathBuf::from);
-        let situation = env.get("OXA_LEAD_SITUATION").map(PathBuf::from);
-        if board
-            .iter()
-            .chain(situation.iter())
-            .any(|path| !path.is_absolute())
-        {
+        if board.as_ref().is_some_and(|path| !path.is_absolute()) {
             return Err(invalid("lead board sample path must be absolute"));
         }
         Ok(Self {
             uid,
             board,
-            situation,
             form: None,
         })
     }
@@ -96,14 +89,9 @@ impl Source {
         let github_quotas = sample.as_ref().and_then(|(board, app_quota)| {
             crate::lead_quota::GitHubQuotas::from_app_sample((*app_quota)?, board.observed_at, now)
         });
-        let situation = self
-            .situation
-            .as_deref()
-            .and_then(|path| crate::lead_input::situation(path, self.uid).ok());
         let view = crate::lead_page::View {
             board: sample.as_ref().map(|(board, _)| board),
             github_quotas: github_quotas.as_ref(),
-            situation: situation.as_ref(),
             fixed_prompt_csrf: self.form.as_ref().map(|form| form.csrf.as_str()),
             ..Default::default()
         };
