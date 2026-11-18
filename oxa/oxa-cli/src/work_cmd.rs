@@ -161,7 +161,13 @@ pub(crate) fn run(
             let json = match args {
                 [_] => false,
                 [_, flag] if flag == "--json" => true,
-                _ => return Err("usage: oxa work status [--json]".into()),
+                [_, flag, id] if flag == "--usage" => {
+                    let usage = oxa_work::task_usage(&policy, id)?;
+                    serde_json::to_writer(&mut *out, &usage).map_err(|error| error.to_string())?;
+                    writeln!(out).map_err(|error| error.to_string())?;
+                    return Ok(0);
+                }
+                _ => return Err("usage: oxa work status [--json | --usage TASK]".into()),
             };
             let rows = oxa_work::status(&policy.storage, &binary)?;
             if json {
@@ -331,7 +337,7 @@ pub(crate) fn run(
                 vec![oxa_work::pull_request_task(&root, &gh, &policy, number, model.clone())?]
             }
             _ => return Err(
-                "usage: oxa work <taskfile> [--rerun] | --issue N --model MODEL [--rerun] | --pr N --model MODEL [--rerun] | status [--json]"
+                "usage: oxa work <taskfile> [--rerun] | --issue N --model MODEL [--rerun] | --pr N --model MODEL [--rerun] | status [--json | --usage TASK]"
                     .into(),
             ),
         };
