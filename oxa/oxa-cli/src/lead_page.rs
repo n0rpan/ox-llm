@@ -4,7 +4,9 @@ use oxa_work::board::{Action, Board, Entry};
 use std::fmt::Write;
 
 mod chat;
+mod filters;
 mod pages;
+pub use filters::{Filter, Query};
 pub use pages::{Page, Prompt};
 
 /// Borrowed presentation inputs, not a second runner state store. None means unavailable.
@@ -91,14 +93,19 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
     html.push_str(&page.navigation());
     match page {
         Page::Home => {
-            board(&mut html, view, now);
+            board(&mut html, view, now, Query::default());
             workers(&mut html, view);
             queue(&mut html, view);
             release(&mut html, view);
             asks(&mut html, view);
         }
-        Page::Board => {
-            board(&mut html, view, now);
+        Page::Board | Page::BoardQuery(_) => {
+            let query = if let Page::BoardQuery(query) = page {
+                query
+            } else {
+                Query::default()
+            };
+            board(&mut html, view, now, query);
             queue(&mut html, view);
         }
         Page::Workers => workers(&mut html, view),
@@ -161,7 +168,7 @@ fn attention(html: &mut String, view: &View<'_>) {
     }
 }
 
-fn board(html: &mut String, view: &View<'_>, now: u64) {
+fn board(html: &mut String, view: &View<'_>, now: u64, query: Query) {
     html.push_str("<section id=board><h2>Board</h2>");
     if let Some(board) = view.board {
         let stale = board.observed_at > now.saturating_add(60) || now.saturating_sub(board.observed_at) > 900;
@@ -175,8 +182,15 @@ fn board(html: &mut String, view: &View<'_>, now: u64) {
             },
             board.observed_at
         );
+        query.navigation(html, board, view);
+        if !query.filter.available(view) {
+            html.push_str("<p>Blocked observations unavailable.</p></section>");
+            return;
+        }
+        let rows = query.rows(board, view);
         html.push_str("<div class=scroll><table><thead><tr><th>PR</th><th>Next action</th><th>Priority</th><th>Lease</th><th>Attempts today</th></tr></thead><tbody>");
-        for row in &board.entries {
+        let offset = query.page.saturating_mul(pages::BOARD_ROWS);
+        for row in rows.iter().skip(offset).take(pages::BOARD_ROWS) {
             let lease = lease(row, now);
             let _ = write!(
                 html,
@@ -190,6 +204,25 @@ fn board(html: &mut String, view: &View<'_>, now: u64) {
         html.push_str("</tbody></table></div>");
         if board.entries.is_empty() {
             html.push_str("<p>No open PRs in this snapshot.</p>");
+        } else {
+            let shown = rows.len().saturating_sub(offset).min(pages::BOARD_ROWS);
+            let _ = write!(html, "<p>Showing {shown} of {} items</p>", rows.len());
+            html.push_str("<nav class=pages aria-label=\"Board pages\">");
+            if query.page > 0 {
+                let path = escape(&Query { page: 0, ..query }.url());
+                let _ = write!(html, "<a href=\"{path}\">First page</a>");
+            }
+            if offset.saturating_add(pages::BOARD_ROWS) < rows.len() {
+                let path = escape(
+                    &Query {
+                        page: query.page + 1,
+                        ..query
+                    }
+                    .url(),
+                );
+                let _ = write!(html, "<a href=\"{path}\">Show more</a>");
+            }
+            html.push_str("</nav>");
         }
     } else {
         html.push_str("<p>Board unavailable.</p>");

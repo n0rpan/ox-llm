@@ -132,10 +132,167 @@ fn absent_or_unverified_evidence_never_creates_a_rejection() {
 }
 
 #[test]
+fn impossible_utc_times_do_not_establish_rejection_evidence() {
+    let path = "/p42/timelineItems/nodes/0";
+    let mut invalid_removal = fixture("FAILURE");
+    invalid_removal.pointer_mut(path).unwrap()["createdAt"] = json!("2026-04-31T00:00:01Z");
+
+    let mut partly_invalid_checks = fixture("FAILURE");
+    let runs = partly_invalid_checks
+        .pointer_mut(&format!("{path}/beforeCommit/statusCheckRollup/contexts/nodes"))
+        .unwrap()
+        .as_array_mut()
+        .unwrap();
+    runs[0]["completedAt"] = json!("2025-02-29T00:00:00Z");
+
+    for inputs in [invalid_removal, partly_invalid_checks] {
+        let evidence = queue::read(&board(), |_| Ok((inputs.clone(), 4096))).unwrap();
+        assert!(evidence.is_empty());
+    }
+}
+
+#[test]
 fn changed_pr_head_refuses_the_snapshot() {
     let mut data = fixture("FAILURE");
     data["p42"]["headRefOid"] = json!(GROUP);
     assert!(queue::read(&board(), |_| Ok((data.clone(), 4096))).is_err());
+}
+
+#[test]
+fn the_owner_journal_matches_only_the_previously_queued_head_and_group() {
+    use oxa_work::board::landing::Next;
+    use shadow::{LandingDecision, LandingSample, QueueObservation};
+    use std::collections::BTreeMap;
+
+    let path = std::env::temp_dir().join(format!(
+        "oxa-queue-admission-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let mut prior = board();
+    prior.observed_at = 1_767_225_600;
+    for observed_at in [prior.observed_at, prior.observed_at + 1] {
+        let mut log = shadow::open_log(&path).unwrap();
+        shadow::run_with_landing(
+            &mut log,
+            true,
+            || {
+                let mut queued_board = prior.clone();
+                queued_board.observed_at = observed_at;
+                Ok(LandingSample {
+                    board: queued_board,
+                    landing: BTreeMap::from([(
+                        42,
+                        LandingDecision {
+                            next: Next::AlreadyQueued,
+                            queue_alarm: false,
+                            queue: Some(QueueObservation {
+                                enqueued_at: prior.observed_at - 5,
+                                group_head: Some(GROUP.into()),
+                            }),
+                        },
+                    )]),
+                    ..Default::default()
+                })
+            },
+            |_| unreachable!(),
+        )
+        .unwrap();
+    }
+
+    let mut current = prior.clone();
+    current.observed_at += 3;
+    let other = "cccccccccccccccccccccccccccccccccccccccc";
+    let first_main = "dddddddddddddddddddddddddddddddddddddddd";
+    let later_main = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    for (head, group, main, newly_queued) in [
+        (HEAD, GROUP, first_main, false),
+        (HEAD, other, later_main, false),
+        (HEAD, GROUP, later_main, false),
+        (HEAD, GROUP, later_main, true),
+        (HEAD, other, later_main, false),
+        (other, GROUP, later_main, false),
+    ] {
+        let mut log = shadow::open_log(&path).unwrap();
+        current.entries[0].head = head.into();
+        let mut evidence = fixture("FAILURE");
+        evidence["p42"]["headRefOid"] = head.into();
+        let group_event = &mut evidence["p42"]["timelineItems"]["nodes"][0]["beforeCommit"];
+        group_event["oid"] = group.into();
+        group_event["statusCheckRollup"]["commit"]["oid"] = group.into();
+        let rejections = queue::read(&current, |_| Ok((evidence.clone(), 4096))).unwrap();
+        shadow::run_with_landing(
+            &mut log,
+            true,
+            || {
+                let queued = newly_queued.then(|| QueueObservation {
+                    enqueued_at: current.observed_at,
+                    group_head: Some(other.into()),
+                });
+                Ok(LandingSample {
+                    board: current.clone(),
+                    landing_main: Some(main.into()),
+                    queue_rejections: rejections.clone(),
+                    landing: BTreeMap::from([(
+                        42,
+                        LandingDecision {
+                            next: if queued.is_some() {
+                                Next::AlreadyQueued
+                            } else {
+                                Next::WaitQueue
+                            },
+                            queue_alarm: false,
+                            queue: queued,
+                        },
+                    )]),
+                    ..Default::default()
+                })
+            },
+            |_| unreachable!(),
+        )
+        .unwrap();
+        current.observed_at += 1;
+    }
+    let saved = fs::read_to_string(&path).unwrap();
+    fs::remove_file(path).unwrap();
+    let samples: Vec<Value> = saved
+        .lines()
+        .map(|row| serde_json::from_str(row).unwrap())
+        .collect();
+    assert!(samples[0].get("matched_queue_admissions").is_none());
+    let rows = &samples[1..];
+    assert!(rows[0].get("matched_queue_admissions").is_none());
+    assert_eq!(
+        rows[1]["matched_queue_admissions"]["42"],
+        json!({
+            "removal_event":"removal-1","pr_head":HEAD,"merge_group_head":GROUP,
+            "enqueued_at":prior.observed_at-5,"admission_observed_at":prior.observed_at,
+            "rejection_baseline":{"main":first_main,"observed_at":prior.observed_at+3}
+        })
+    );
+    assert_eq!(rows[3]["landing_main"], later_main);
+    assert_eq!(
+        rows[3]["matched_queue_admissions"],
+        rows[1]["matched_queue_admissions"]
+    );
+    assert_eq!(rows[2]["queue_rejections"][0]["merge_group_head"], other);
+    assert_eq!(
+        rows[4]["matched_queue_admissions"],
+        rows[1]["matched_queue_admissions"]
+    );
+    assert_eq!(rows[4]["landing"]["42"]["next"], "already_queued");
+    assert_eq!(rows[5]["queue_rejections"][0]["merge_group_head"], other);
+    assert_eq!(
+        rows[5]["queue_rejections"][0]["removed_at"],
+        "2026-01-01T00:00:01Z"
+    );
+    assert_eq!(rows[6]["queue_rejections"][0]["merge_group_head"], GROUP);
+    for row in [&rows[2], &rows[5], &rows[6]] {
+        assert!(row.get("matched_queue_admissions").is_none());
+    }
 }
 
 #[test]

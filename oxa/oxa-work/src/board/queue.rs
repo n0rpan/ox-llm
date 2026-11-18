@@ -20,6 +20,24 @@ pub struct RejectionEvidence {
     failed_required_workflows: BTreeMap<u64, WorkflowIdentity>,
 }
 
+pub(crate) struct Removal<'a> {
+    pub number: u64,
+    pub event: &'a str,
+    pub group: &'a str,
+    pub removed_at: &'a str,
+}
+
+impl RejectionEvidence {
+    pub(crate) fn admission_identity(&self) -> Removal<'_> {
+        Removal {
+            number: self.number,
+            event: &self.removal_event,
+            group: &self.merge_group_head,
+            removed_at: &self.removed_at,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 struct WorkflowIdentity {
     check_suite_id: u64,
@@ -190,8 +208,13 @@ fn rejection(row: &Value, entry: &Entry, queue_id: &str) -> Result<Option<Reject
                 run["conclusion"].as_str(),
                 Some("FAILURE" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE" | "STALE")
             )
-            && github_utc(&run["completedAt"]).is_some_and(|completed_at| completed_at <= removed_at)
         {
+            let Some(completed_at) = github_utc(&run["completedAt"]) else {
+                return Ok(None);
+            };
+            if completed_at > removed_at {
+                continue;
+            }
             let id = positive_id(&run["databaseId"]).ok_or("invalid required check run identity")?;
             let workflow = WorkflowIdentity::read(run, sha);
             if failed
@@ -215,17 +238,9 @@ fn rejection(row: &Value, entry: &Entry, queue_id: &str) -> Result<Option<Reject
     }))
 }
 
-/// GitHub GraphQL DateTime emits UTC at whole-second precision. Compare only
-/// that fixed-width representation; unfamiliar precision stays unavailable.
+/// Validate a canonical UTC second before comparing GitHub event times.
 fn github_utc(value: &Value) -> Option<&str> {
-    value.as_str().filter(|time| {
-        time.len() == 20
-            && time.bytes().enumerate().all(|(i, b)| match i {
-                4 | 7 => b == b'-',
-                10 => b == b'T',
-                13 | 16 => b == b':',
-                19 => b == b'Z',
-                _ => b.is_ascii_digit(),
-            })
-    })
+    value
+        .as_str()
+        .filter(|time| oxa_session::parse_utc_seconds(time).is_some())
 }

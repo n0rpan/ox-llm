@@ -59,6 +59,37 @@ impl NativeBinding {
 }
 
 impl Claims {
+    /// Guard an append for a trusted frontend's original native binding. Reassignment
+    /// and release use the same lock. The operation must only perform the append
+    /// and must not call back into Claims.
+    pub fn with_live_native_lease<T>(
+        &self,
+        binding: &NativeBinding,
+        now: impl FnOnce() -> u64,
+        operation: impl FnOnce(&Lease) -> T,
+    ) -> Result<Option<T>> {
+        if !binding.valid() || Self::open(&self.root)?.uid != self.uid {
+            return Err("invalid native attempt or board claim directory".into());
+        }
+        let lock = io(File::open(&self.root))?;
+        io(lock.lock())?;
+        let row = self.load(binding.number)?;
+        let Some(lease) = row.state.lease.as_ref() else {
+            return Ok(None);
+        };
+        if row.data.native_binding.as_ref() != Some(binding)
+            || lease.holder != binding.lease.holder
+            || lease.generation != binding.lease.generation
+        {
+            return Ok(None);
+        }
+        let now = now();
+        if !lease.claimed_at.is_some_and(|start| start <= now) || now >= lease.expires_at {
+            return Ok(None);
+        }
+        Ok(Some(operation(lease)))
+    }
+
     /// Persist before queue publication. Identity is authenticated by the trusted frontend.
     /// Failure leaves the original reservation charged and must prevent the ready hardlink.
     pub fn bind_native(&self, worker_id: &str, binding: &NativeBinding) -> Result<bool> {

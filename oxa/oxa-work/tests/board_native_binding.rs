@@ -100,6 +100,49 @@ fn every_original_lease_component_and_holder_authentication_are_fenced() {
 }
 
 #[test]
+fn guarded_native_append_uses_only_the_current_bound_lease() {
+    let (dir, store, lease) = setup();
+    let original = binding(&lease);
+    let append = |_: &Lease| panic!("the append must not run with an invalid binding");
+    assert_eq!(
+        store.with_live_native_lease(&original, || 11, append).unwrap(),
+        None::<()>
+    );
+
+    assert!(store.bind_native(&lease.holder, &original).unwrap());
+    let path = dir.path().join("1.board-claim.json");
+    let before = fs::read(&path).unwrap();
+    let generation = store
+        .with_live_native_lease(&original, || 11, |live| live.generation)
+        .unwrap();
+    assert_eq!(generation, Some(lease.generation));
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(
+        store
+            .with_live_native_lease(&original, || lease.expires_at, append)
+            .unwrap(),
+        None,
+    );
+    assert!(store.release_for(1, &lease.holder, &lease, 20, "done").unwrap());
+    let replacement = store
+        .claim_for(&entry(), &policy(), &worker(), 21, 20)
+        .unwrap()
+        .unwrap();
+    let next = binding(&replacement);
+    assert!(store.bind_native(&replacement.holder, &next).unwrap());
+    assert_eq!(
+        store.with_live_native_lease(&original, || 22, append).unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .with_live_native_lease(&next, || 22, |live| live.generation)
+            .unwrap(),
+        Some(replacement.generation),
+    );
+}
+
+#[test]
 fn completion_lookup_never_substitutes_a_new_lease_or_a_different_branch() {
     let (_dir, store, lease) = setup();
     let original = binding(&lease);

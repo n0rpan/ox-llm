@@ -87,7 +87,7 @@ The same release workflow also creates a full `git archive HEAD` build-source ta
 The shipped legacy controller subtree has 94 Python modules and two extensionless
 Python entry points under `oxc/src/oxc`. The tables above have evidence for 17 of
 those paths, including bounded feature rows and the Studio retirement decision. The
-inventory lists another 78 paths without a disposition. The remaining entry
+inventory then listed another 78 paths without a disposition. The remaining entry
 point, `oxc/src/oxc/runtime/oxc`, is invoked by the package wrapper and needs
 per-command evidence. The table is still incomplete.
 
@@ -134,9 +134,81 @@ already invoke `/usr/bin/local-ai-memlat-boot`.
 Source removal remains waiting on accepted packaging and the exact
 `archive/python-oxc` pre-removal commit recorded in #946.
 
+### Additional runtime contracts at `48f6e431`
+
+These rows add evidence for eleven runtime paths and the Flash QoS helper.
+A PORTED status applies to the named contract. The owner scoped #1196 to native
+image generation. Its acceptance excludes legacy editing, uploads, and web
+job queues.
+
+| Python module / feature | Status | Evidence and remaining caller gate |
+|---|---|---|
+| `oxc/src/oxc/runtime/client_disconnect.py` — in-process local cancellation and guest socket EOF | PORTED | `oxa/oxc-local/src/{native,transport,queue}.rs` retains engine exclusion through cancellation. `oxa/oxc-local/tests/transport.rs::cancellation_holds_engine_exclusion_until_process_exit` and `oxa/oxc-gateway/tests/share_listener.rs::disconnect_cancels_a_silent_backend_and_waits_for_its_cleanup` exercise the native boundaries. The legacy HTTP watcher still has its own request-parser, keep-alive and controller comparison tests in `test_client_disconnect.py` and `test_controller_disconnect_http.py`. |
+| `oxc/src/oxc/runtime/exec_in_scope.py` — owned local engine zero-swap admission | PORTED | [#1011](https://github.com/oxstack/ox-llm/pull/1011) adds the Rust scope path. `oxa/oxc-local/src/platform.rs` tests inherited and attached cgroups, unavailable systemd and the zero-swap scope request. [#1010](https://github.com/oxstack/ox-llm/issues/1010) retains the exact packaged-artifact proof. The Python wrapper still enforces explicit MemoryMax and a ready/go handshake for the image worker. Preserve `test_flash_memory.py` and `test_image_npu_worker.py` until those callers have a disposition. |
+| `oxc/src/oxc/runtime/request_ledger.py` — native paid request settlement and salted identifiers | PORTED | `oxa/oxc-gateway/src/ledger.rs` and `tests/ledger.rs::keyed_identifiers_are_stable_separated_and_no_request_content_is_stored`, `daily_handles_share_admission_and_record_one_row_before_releasing_each_hold`. The legacy module still serves day digests and cache targeting through `health_digest.py`, `ctl_cache.py`, `ctl_proxy_ledger.py`, `ctl_proxy_prep.py` and `ctl_routes.py`. Preserve `test_request_ledger.py` and `test_request_ledger_origin.py` until legacy readers and session hints are qualified. |
+| `oxc/src/oxc/runtime/state_cache.py` — owner cache budget and scoped clears | MISSING | Existing cache migration issue [#222](https://github.com/oxstack/ox-llm/issues/222). `ctl_cache.py` handles budget, usage and clears, `ctl_routes.py` validates scoped clears, and `oxe_runtime.py` selects stores. Native backend cache and prefix storage alone do not cover those owner controls. Keep `test_state_cache.py`, `test_prefix_cache.py` and `test_flash_prefix_store.py`. |
+| `oxc/src/oxc/runtime/studio_page.py` — embedded Studio web page | RETIREMENT INDEX PENDING | The `studio` script imports `PAGE`; the [#951 owner decision](https://github.com/oxstack/ox-llm/issues/951#issuecomment-6959811415) retires the web UI for v0.2.x. Record the matching #946 entry and resolve the legacy Studio callers before deletion. |
+| `oxc/src/oxc/runtime/studio_context.py` — Python Studio namespace adapter | RETIREMENT INDEX PENDING | `studio`, the planners, the worker and the oxi adapter use the shared namespace. The same #951 web UI retirement applies to the adapter. Keep it with its callers until their dispositions and the #946 entry are recorded. |
+| `oxc/src/oxc/runtime/studio_pixels.py` — Studio image and mask transforms | RETIREMENT INDEX PENDING | The `studio` caller uses the legacy PNG, mask and crop helpers. `test_studio_crop_edit.py` covers the masked-edit boundary, outside [#1196](https://github.com/oxstack/ox-llm/issues/1196). Record disposition for the Studio-only transforms before removing their source and fixtures. |
+| `oxc/src/oxc/runtime/studio_plan_edit.py` — Studio FLUX.2 edit and generation planning | MISSING | `studio` imports the planner; `test_studio_edit.py` and `test_studio_klein.py` cover legacy modes. Carry the generation behavior named in [#1196](https://github.com/oxstack/ox-llm/issues/1196). Editing is outside that scope and needs a retirement entry for this slice. |
+| `oxc/src/oxc/runtime/studio_plan_generate.py` — Studio generation, upscale and refine planning | MISSING | Existing product replacement [#1196](https://github.com/oxstack/ox-llm/issues/1196). `studio` imports the planner; `test_studio_upscale.py` exercises the legacy upscale path. Scope the native image behavior and index any retired planning modes. |
+| `oxc/src/oxc/runtime/studio_oxi.py` — Studio native image adapter and legacy fallback | MISSING | Existing product replacement [#1196](https://github.com/oxstack/ox-llm/issues/1196). `studio` imports the adapter, and `test_studio_oxi.py` covers route and fallback behavior. Native acceptance explicitly excludes silent fallback. Preserve the legacy test while its caller remains. |
+| `oxc/src/oxc/runtime/studio_worker.py` — legacy Studio job and image-worker lifecycle | MISSING | Existing product replacement [#1196](https://github.com/oxstack/ox-llm/issues/1196). `studio` invokes the worker, and `test_studio_handoff.py` exercises the worker boundary. Track any carried image-worker admission and cleanup behavior and any retired web-job orchestration. |
+| `oxc/packaging/flash-qos/oxc-flash-qos` — Flash idle-QoS helper | UNQUALIFIED | Main stages this extensionless Python script via the broad controller copy. The legacy unit and Flash stage use it, and `test_flash_qos_helper.py` and `test_flash_qos_install_user.py` retain its contract. [#1198](https://github.com/oxstack/ox-llm/pull/1198) excludes the helper from the installed candidate. Source retirement still needs an explicit feature decision and index entry. |
+
+### Published packaging artifacts at `67b999ec`
+
+[#1198](https://github.com/oxstack/ox-llm/pull/1198) now publishes the filtered
+archive rule. [Release run 44206046295](https://github.com/oxstack/ox-llm/actions/runs/44206046295)
+built both CPU artifacts from `cca8f4f0cf39b4ef8869880659c6b9bbb1cf9c03`, the
+test merge of packaging head `67b999ec` into `0095e879`. Both uploaded artifacts
+passed their checksum manifests and contained byte-identical build-source
+archives with SHA-256
+`5bc840e55d12f119a0f5dad991db6c9a8a6f82b4f02193af5e537fc54f483b45`.
+Their file lists exclude `oxc/src`, `oxc/tools`, `oxc/tests`, the Flash QoS
+script and all `oxc/**/*.py`. They retain the MEMLAT templates, the native
+crate and the captured oracle. Both installed payload tarballs contain the
+native MEMLAT command and exclude Python files and the legacy controller
+wrappers. The included no-Python receipts bind their payload digests to that
+same source commit.
+
+The [Arch job](https://github.com/oxstack/ox-llm/actions/runs/44206046295/job/134480040168)
+failed after installing the binary package. Its smoke probe at
+[`packaging/release/smoke.py:49`](https://github.com/oxstack/ox-llm/blob/67b999ecbf0b52a401b6df9b85a2b5d1c46071d9/packaging/release/smoke.py#L46-L52)
+expects `oxe --help` to exit zero. The existing CLI prints its usage and
+exits 2. The package already tests `oxe --version` and the next step tests
+`oxe gen --check-args`. Keep the ELF assertion for every binary and use the
+existing success probes for `oxe` in the Arch smoke. Arch acceptance and the
+exact pre-removal archive are still pending. The CPU artifact inventories
+qualify only those two uploaded artifact boundaries.
+
+### Local engine ownership at `5cbccf25`
+
+The native local engine evidence below applies to the named behavior in each
+row. The Python controller still owns its public HTTP, mixed backend and
+panel contracts. Preserve the listed callers and tests until their own
+dispositions are recorded.
+
+| Python module / feature | Status | Evidence and remaining caller gate |
+|---|---|---|
+| `oxc/src/oxc/runtime/ctl_lifecycle.py` — native child load, readiness and unload | PORTED | [#693](https://github.com/oxstack/ox-llm/pull/693) implements native ownership in `oxa/oxc-local/src/lifecycle.rs`. `tests/lifecycle.rs::load_requires_memory_and_holds_lease_through_readiness_and_unload` proves the bounded contract. The legacy mixin still handles engine-specific adapters, idle QoS and diagnostics for `Manager`. |
+| `oxc/src/oxc/runtime/ctl_manager.py` — single owned local child and request lifecycle | PORTED | [#732](https://github.com/oxstack/ox-llm/pull/732) wires the typed factory in `oxa/oxc-local/src/configured.rs`. `oxa/oxa-cli/tests/in_process_local.rs` checks explicit selection and no HTTP fallback on invalid enabled configuration. The Python manager composes the legacy status, model, cache and lease mixins for `controller.py`. |
+| `oxc/src/oxc/runtime/ctl_engines.py` — native local launch and child readiness | PORTED | [#686](https://github.com/oxstack/ox-llm/pull/686) maps native launch profiles and [#693](https://github.com/oxstack/ox-llm/pull/693) owns readiness. `oxa/oxc-local/tests/{launch_profile,supervision}.rs` check invalid profiles and failed readiness. `ctl_lifecycle.py` still consumes the mixed adapters. Preserve `test_oxe_production.py` and `test_flash_oxe_production.py`. |
+| `oxc/src/oxc/runtime/ctl_queue.py` — bounded FIFO admission and cancellation | PORTED | [#626](https://github.com/oxstack/ox-llm/pull/626), `oxa/oxc-local/src/queue.rs` and `tests/queue.rs::fifo_and_cancellation_do_not_let_newcomers_jump_a_waiter` cover native queue fairness. The controller still exposes the separate early SSE queue contract in `test_controller_queue.py`. |
+| `oxc/src/oxc/runtime/ctl_lease.py` — native text-engine lease | PORTED | `oxa/oxc-local/tests/lifecycle.rs::admitted_ticket_covers_cold_load_and_generation_without_a_fifo_gap` exercises queue ownership through cold load and generation. The legacy cross-process image reservation is still exercised by `test_studio_handoff.py`. Native image admission belongs to [#1196](https://github.com/oxstack/ox-llm/issues/1196). |
+| `oxc/src/oxc/runtime/ctl_models.py` — native local profile selection without probing | PORTED | `oxa/oxa-cli/tests/in_process_local.rs::native_local_discovery_is_user_only_non_launching_and_allowed_offline` and `oxa/oxc-local/tests/launch_profile.rs` cover typed selection. The Python mixin still reads and writes legacy controller model and context selections. Preserve `test_selection_status.py` and the #222 harness primer boundary. |
+| `oxc/src/oxc/runtime/ctl_status.py` — typed native local memory and lifecycle status | PORTED | `oxa/oxc-local/src/native.rs` exercises status for the owned model and refuses unrelated model status. The legacy `/_local/status` route and panel read a larger schema via this mixin. Preserve `test_oxc_status_cli.py` and its controller fixtures. |
+| `oxc/src/oxc/runtime/keep_warm.py` — idle unload and memory-pressure stop for the native child | PORTED | `oxa/oxc-local/tests/lifecycle.rs::idle_unload_does_not_interrupt_a_request_and_starts_at_release` and `idle_disabled_keeps_engine_but_not_under_memory_faults` cover the bounded behavior. Legacy PSI some, grace and confirmation semantics remain in `test_keep_warm.py`; native guard samples PSI full. |
+| `oxc/src/oxc/runtime/memory_policy.py` — native admission and fail-closed memory stop | PORTED | [#780](https://github.com/oxstack/ox-llm/pull/780) and [#1011](https://github.com/oxstack/ox-llm/pull/1011) manage native allocation budgeting and child scope checks. `oxa/oxc-local/tests/lifecycle.rs` covers unavailable memory and in-flight stop. Legacy Flash caps and the image-worker handshake retain `test_memory_policy.py` and `test_flash_memory.py`. |
+| `oxc/src/oxc/runtime/profile_policy.py` — native per-model launch tuning and MTP cutoffs | PORTED | [#767](https://github.com/oxstack/ox-llm/pull/767) and `oxa/oxc-local/tests/launch_profile.rs::model_mtp_settings_override_defaults_without_changing_other_models` cover native launch profiles. `ctl_models.py` and `ctl_cache.py` still use legacy context modes and Flash limits validated by `test_profile_policy.py`. |
+| `oxc/src/oxc/runtime/oxe_runtime.py` — native model launch and pre-spawn identity checks | PORTED | [#774](https://github.com/oxstack/ox-llm/pull/774) supplies native binary and weight preflight. `oxa/oxc-local/tests/launch_profile.rs::profile_cannot_override_binding_model_or_alias_through_extra_arguments` covers containment of user launch arguments. Legacy Flash cache and power policy still run through `ctl_engines.py` and `test_flash_oxe_production.py`. |
+| `oxc/src/oxc/runtime/exec_no_thp.py` — legacy Flash candidate process wrapper | UNQUALIFIED | `bigmoe_runtime.py` resolves this sibling file to pin the executable and apply the candidate process THP policy. `test_exec_no_thp.py` checks refusal and execution semantics. [#858](https://github.com/oxstack/ox-llm/issues/858) tracks native V-cache THP work. Verify which candidate wrapper contract is retained before retiring this source. |
+| `oxc/src/oxc/runtime/flash_cache_pref.py` — legacy Flash cache tier owner control | MISSING | `ctl_cache.py`, `model_catalog.py` and `oxe_runtime.py` read and present its owner preference. Preserve `test_flash_cache_pref.py` and `test_flash_cache_setting.py`. [#222](https://github.com/oxstack/ox-llm/issues/222) covers moving cache management behind the engine API. The chosen tier and owner setting still need an explicit disposition. |
+| `oxc/src/oxc/runtime/oxc` — default legacy control launcher | RETIREMENT INDEX PENDING | [#681](https://github.com/oxstack/ox-llm/issues/681) retires the Python launcher from the default. Keep its controller callers until their feature gates have cleared. Native sign-in is mapped above; share is tracked in #688, cache controls in #222 and image generation in #1196. Stage rollback and uninstall remain separate command contracts. |
+
 ## Complete module inventory awaiting feature-level qualification
 
-Each path below needs a ledger disposition with its own evidence; presence here is neither UNUSED nor a deletion approval. Move a module into the table only after checking every retained feature and its callers. Keep existing #681 retirement decisions distinct from actual Rust replacement coverage. The provider, MEMLAT, retired installer/bootstrap and alert-file rows already mapped above are omitted here. Partial-feature rows do not qualify a whole module. The extensionless entry point oxc/src/oxc/runtime/oxc still needs an explicit launcher/feature row; Studio has a retirement decision and outstanding index entry as recorded above.
+Each path below needs a ledger disposition with its own evidence; presence here is neither UNUSED nor a deletion approval. Move a module into the table only after checking every retained feature and its callers. Keep existing #681 retirement decisions distinct from actual Rust replacement coverage. The provider, MEMLAT, retired installer/bootstrap and alert-file rows already mapped above are omitted here. Partial-feature rows do not qualify a whole module. The extensionless control and Studio launchers have bounded rows above.
 
 - `oxc/benchmarks/classic/loopback_bridge.py`
 - `oxc/benchmarks/classic/screen.py`
@@ -175,34 +247,23 @@ Each path below needs a ledger disposition with its own evidence; presence here 
 - `oxc/src/oxc/runtime/cache_miss.py`
 - `oxc/src/oxc/runtime/cache_turn.py`
 - `oxc/src/oxc/runtime/classic_beta.py`
-- `oxc/src/oxc/runtime/client_disconnect.py`
 - `oxc/src/oxc/runtime/cloud.py`
 - `oxc/src/oxc/runtime/controller.py`
 - `oxc/src/oxc/runtime/ctl_cache.py`
 - `oxc/src/oxc/runtime/ctl_cloud.py`
 - `oxc/src/oxc/runtime/ctl_diag.py`
-- `oxc/src/oxc/runtime/ctl_engines.py`
 - `oxc/src/oxc/runtime/ctl_env.py`
 - `oxc/src/oxc/runtime/ctl_host.py`
-- `oxc/src/oxc/runtime/ctl_lease.py`
-- `oxc/src/oxc/runtime/ctl_lifecycle.py`
-- `oxc/src/oxc/runtime/ctl_manager.py`
-- `oxc/src/oxc/runtime/ctl_models.py`
 - `oxc/src/oxc/runtime/ctl_proxy.py`
 - `oxc/src/oxc/runtime/ctl_proxy_ledger.py`
 - `oxc/src/oxc/runtime/ctl_proxy_prep.py`
 - `oxc/src/oxc/runtime/ctl_proxy_stream.py`
-- `oxc/src/oxc/runtime/ctl_queue.py`
 - `oxc/src/oxc/runtime/ctl_repack.py`
 - `oxc/src/oxc/runtime/ctl_replay.py`
 - `oxc/src/oxc/runtime/ctl_routes.py`
 - `oxc/src/oxc/runtime/ctl_seams.py`
-- `oxc/src/oxc/runtime/ctl_status.py`
 - `oxc/src/oxc/runtime/engine_diagnostics.py`
 - `oxc/src/oxc/runtime/engine_ledger.py`
-- `oxc/src/oxc/runtime/exec_in_scope.py`
-- `oxc/src/oxc/runtime/exec_no_thp.py`
-- `oxc/src/oxc/runtime/flash_cache_pref.py`
 - `oxc/src/oxc/runtime/harness_compat.py`
 - `oxc/src/oxc/runtime/harness_registry.py`
 - `oxc/src/oxc/runtime/health_digest.py`
@@ -210,28 +271,15 @@ Each path below needs a ledger disposition with its own evidence; presence here 
 - `oxc/src/oxc/runtime/image_npu_worker.py`
 - `oxc/src/oxc/runtime/image_size_gate.py`
 - `oxc/src/oxc/runtime/image_slot.py`
-- `oxc/src/oxc/runtime/keep_warm.py`
-- `oxc/src/oxc/runtime/memory_policy.py`
 - `oxc/src/oxc/runtime/model_catalog.py`
 - `oxc/src/oxc/runtime/openai_api.py`
 - `oxc/src/oxc/runtime/openai_conformance.py`
 - `oxc/src/oxc/runtime/openai_responses.py`
-- `oxc/src/oxc/runtime/oxe_runtime.py`
 - `oxc/src/oxc/runtime/prefix_plan.py`
 - `oxc/src/oxc/runtime/prefix_store.py`
-- `oxc/src/oxc/runtime/profile_policy.py`
 - `oxc/src/oxc/runtime/release_update.py`
-- `oxc/src/oxc/runtime/request_ledger.py`
 - `oxc/src/oxc/runtime/slim_request.py`
-- `oxc/src/oxc/runtime/state_cache.py`
 - `oxc/src/oxc/runtime/storage_view.py`
-- `oxc/src/oxc/runtime/studio_context.py`
-- `oxc/src/oxc/runtime/studio_oxi.py`
-- `oxc/src/oxc/runtime/studio_page.py`
-- `oxc/src/oxc/runtime/studio_pixels.py`
-- `oxc/src/oxc/runtime/studio_plan_edit.py`
-- `oxc/src/oxc/runtime/studio_plan_generate.py`
-- `oxc/src/oxc/runtime/studio_worker.py`
 - `oxc/src/oxc/runtime/uninstall.py`
 - `oxc/src/oxc/source_archive.py`
 - `oxc/src/oxc/system_counters.py`

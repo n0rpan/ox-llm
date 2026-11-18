@@ -9,6 +9,21 @@ use std::path::{Path, PathBuf};
 const VERSION: u64 = 1;
 const MAX_STATE_BYTES: u64 = 4 * 1024 * 1024;
 
+pub(crate) fn lock(path: &Path) -> Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    file.try_lock()
+        .map_err(|error| format!("queue is already running: {error}"))?;
+    Ok(file)
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Step {
