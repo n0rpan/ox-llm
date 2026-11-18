@@ -72,21 +72,24 @@ fn protected_source<T>(
     Ok(read(path, uid).ok())
 }
 
-pub(crate) fn run_fixed(words: &[String], env: &Env, out: &mut dyn Write) -> Result<i32, OxaError> {
-    let prompt = match words {
-        [word] if word == "status" => Prompt::Status,
-        [word] if word == "workers" => Prompt::Workers,
-        [word] if word == "attention" => Prompt::Attention,
-        _ => {
-            return Err(OxaError::new(
+pub(crate) fn run_fixed(
+    words: &[String],
+    project: &Path,
+    env: &Env,
+    out: &mut dyn Write,
+) -> Result<i32, OxaError> {
+    let prompt =
+        match words {
+            [word] if word == "--init" => return provision(project, env, out),
+            [word] if word == "status" => Prompt::Status,
+            [word] if word == "workers" => Prompt::Workers,
+            [word] if word == "attention" => Prompt::Attention,
+            _ => return Err(OxaError::new(
                 codes::USAGE,
-                "Lead chat arguments unavailable. Use oxa lead chat status, workers or attention.",
-            ))
-        }
-    };
-    let uid = std::fs::metadata("/proc/self")
-        .map_err(|_| OxaError::new(codes::INVALID, "OS owner identity unavailable"))?
-        .uid();
+                "Lead chat arguments unavailable. Use oxa lead chat status, workers, attention or --init.",
+            )),
+        };
+    let uid = owner_uid()?;
     let (board, situation) = match prompt {
         Prompt::Status => (
             protected_source(env, "OXA_LEAD_BOARD_LOG", uid, |path, uid| {
@@ -110,5 +113,31 @@ pub(crate) fn run_fixed(words: &[String], env: &Env, out: &mut dyn Write) -> Res
     }
     .and_then(|()| writeln!(out, "From the snapshot · 0 tokens"))
     .map_err(|error| OxaError::io("cannot write lead chat reply", &error))?;
+    Ok(0)
+}
+
+fn owner_uid() -> Result<u32, OxaError> {
+    std::fs::metadata("/proc/self")
+        .map(|metadata| metadata.uid())
+        .map_err(|_| OxaError::new(codes::INVALID, "OS owner identity unavailable"))
+}
+
+fn provision(project: &Path, env: &Env, out: &mut dyn Write) -> Result<i32, OxaError> {
+    use crate::dispatch::LeadOwnerBinding;
+
+    let dirs = oxa_config::dirs_from_env(env, None)?;
+    let project = project
+        .canonicalize()
+        .map_err(|_| OxaError::new(codes::INVALID, "Lead project unavailable"))?;
+    let uid = owner_uid()?;
+    if LeadOwnerBinding::load(&dirs, &project, uid)?.is_some() {
+        return Err(OxaError::new(
+            codes::USAGE,
+            "A dedicated Lead Session is already configured",
+        ));
+    }
+    let id = LeadOwnerBinding::create(&dirs, &project, uid)?;
+    writeln!(out, "{id}")
+        .map_err(|error| OxaError::io("cannot write the dedicated Lead Session ID", &error))?;
     Ok(0)
 }
