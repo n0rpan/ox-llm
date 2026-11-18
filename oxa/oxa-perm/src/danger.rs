@@ -588,7 +588,7 @@ fn parent_dir_after_a_link(raw: &str, cwd: &Path) -> bool {
         if *part == ".." {
             continue;
         }
-        so_far.push(part);
+        so_far.push(*part);
         if std::fs::symlink_metadata(&so_far).is_ok_and(|m| m.file_type().is_symlink())
             && parts[i + 1..].iter().any(|later| *later == "..")
         {
@@ -797,7 +797,7 @@ fn redirect(
         // A quoted or escaped delimiter (`<<'EOF'`, `<<"EOF"`, `<<\EOF`) turns expansion off.
         let quoted = chars[raw_start..np]
             .iter()
-            .any(|c| matches!(c, '\'' | '"' | '\\'));
+            .any(|c| matches!(*c, '\'' | '"' | '\\'));
         heredocs.push(Heredoc {
             delim: target.clone(),
             strip: op == "<<-",
