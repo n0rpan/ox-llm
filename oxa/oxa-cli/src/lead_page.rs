@@ -603,7 +603,7 @@ async function fetch(){
 for(const [open,close,expected] of [[false,false,false],[true,false,true],[true,true,false]]) {
   current=makeMain(open); supplied=makeMain(false); closeDuringFetch=close;
   await refresh();
-  if(current.work.open!==expected)throw new Error('reader disclosure state lost');
+  if(current!==supplied||current.work.open!==expected)throw new Error('reader disclosure state lost');
 }
 return true;
 "#,
