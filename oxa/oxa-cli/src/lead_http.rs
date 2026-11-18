@@ -424,7 +424,11 @@ mod tests {
             } else {
                 format!("Content-Length: {}\r\n", body.len())
             };
-            write!(client, "POST /chat HTTP/1.1\r\nHost: example.invalid\r\nOrigin: {origin}\r\nSec-Fetch-Site: {site}\r\nContent-Type: application/x-www-form-urlencoded\r\n{framing}{length}\r\n{body}").unwrap();
+            // Refused headers never reach the body reader. Do not queue an unread payload
+            // that would turn the fixture's TCP close into a reset.
+            let payload = if expected == "303" { body } else { "" };
+            client.set_read_timeout(Some(Duration::from_secs(6))).unwrap();
+            write!(client, "POST /chat HTTP/1.1\r\nHost: example.invalid\r\nOrigin: {origin}\r\nSec-Fetch-Site: {site}\r\nContent-Type: application/x-www-form-urlencoded\r\n{framing}{length}\r\n{payload}").unwrap();
             let mut reply = String::new();
             client.read_to_string(&mut reply).unwrap();
             handler.join().unwrap();
