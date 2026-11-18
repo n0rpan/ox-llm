@@ -371,7 +371,7 @@ fn hud_build(p: &HudParts, drops: usize, model: &str, g: &Glyphs, theme: &Theme)
     // never replaced by a sandbox claim: the label says what bash runs under.
     if let Some(text) = p.guard {
         if shown(11) {
-            segs.push(theme.fg(guard_token(text), text));
+            segs.push(theme.fg(guard_token(text), &text.replace('·', g.mid)));
         }
     }
 

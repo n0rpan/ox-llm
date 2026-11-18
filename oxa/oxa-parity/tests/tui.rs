@@ -180,9 +180,29 @@ fn raw_since(rig: &Rig, mark: usize) -> String {
 }
 
 /// The footer: the last two rows.
-fn footer(s: &Screen) -> (String, String) {
+/// #1512 S3: the pi footer's extension status row (`no sandbox · …`, `sandbox`, `YOLO full
+/// access`) is drawn below the footer. Such a row is skipped to find the footer rows.
+fn is_status_row(text: &str) -> bool {
+    let t = text.trim();
+    t == "sandbox"
+        || t.starts_with("no sandbox")
+        || t.starts_with("YOLO full access")
+        || t.ends_with("YOLO full access")
+}
+
+/// The last row that is not an extension status row.
+fn last_footer_row(s: &Screen) -> usize {
     let (rows, _) = s.size();
-    (s.row(rows - 2), s.row(rows - 1))
+    let mut row = rows - 1;
+    while row > 1 && is_status_row(&s.row(row)) {
+        row -= 1;
+    }
+    row
+}
+
+fn footer(s: &Screen) -> (String, String) {
+    let last = last_footer_row(s);
+    (s.row(last - 1), s.row(last))
 }
 
 /// Wait until the editor holds exactly `text`.

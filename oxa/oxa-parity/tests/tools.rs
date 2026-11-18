@@ -653,7 +653,8 @@ fn tools_013() {
     let env = TestEnv::new();
     let outside = env.tmp().join("outside.txt");
     let cmd = format!(r#"{{"command":"echo x > '{}'; echo done"}}"#, outside.display());
-    let r = run_one(&env, "bash", &cmd, &[]);
+    // #1512 S3: an attended run has no OS sandbox unless asked for it.
+    let r = run_one(&env, "bash", &cmd, &["--sandbox"]);
     assert!(
         !outside.exists(),
         "the sandbox keeps writes out of the workspace; result: {r:?}"

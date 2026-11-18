@@ -892,11 +892,11 @@ fn tree_009() {
         RigOpts::default(),
     );
     // Change the thinking level on the gamma branch (Shift+Tab cycles it).
-    let before = rig.screen().row(29);
+    let before = model_row(&rig.screen());
     rig.pty.send_key("shift+tab");
     let s = rig
         .pty
-        .wait_for_named("thinking changed", |s| s.row(29) != before, WAIT)
+        .wait_for_named("thinking changed", |s| model_row(s) != before, WAIT)
         .unwrap();
     let level = s
         .row(29)
@@ -1614,4 +1614,21 @@ fn eng_006() {
         "X-Oxe-Snapshot is not sent without the advertised capability"
     );
     assert_eq!(header(&r[0], "x-oxe-snapshot"), None);
+}
+
+/// #1512 S3: the footer's model row, above any extension status row the pi footer draws.
+fn model_row(s: &oxa_parity::pty::Screen) -> String {
+    let (rows, _) = s.size();
+    let mut row = rows - 1;
+    while row > 1 && {
+        let t = s.row(row);
+        let t = t.trim();
+        t == "sandbox"
+            || t.starts_with("no sandbox")
+            || t.ends_with("YOLO full access")
+            || t.starts_with("YOLO full access")
+    } {
+        row -= 1;
+    }
+    s.row(row)
 }
