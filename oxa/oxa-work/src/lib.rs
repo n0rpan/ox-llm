@@ -38,6 +38,7 @@ mod tree;
 pub use state::{CheckpointKind, CheckpointObserver, Step};
 mod worker;
 mod worker_wait;
+pub use worker::owner_cli;
 pub use worker::{WorkerInterruption, WorkerOutcome, WorkerResult, WorkerTokens};
 
 #[cfg(test)]
