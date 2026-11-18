@@ -1467,6 +1467,7 @@ version = "0.2.0"
 dependencies = [
  "libc",
  "oxa-proto",
+ "oxa-session",
  "serde",
  "serde_json",
 ]
