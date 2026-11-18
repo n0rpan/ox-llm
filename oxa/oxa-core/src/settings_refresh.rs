@@ -197,6 +197,7 @@ pub(crate) fn refresh_at_run_start(st: &mut SessionState, sink: &mut dyn EventSi
                 let _ = write!(message, "\n{}: {}", diagnostic.source, diagnostic.message);
             }
             st.settings = settings;
+            st.shared.publish_live_settings(&st.settings);
             notice(sink, level, message);
             if prompt {
                 if let Err(e) = crate::epoch::open_epoch_at_run_start(st, "settings", sink) {

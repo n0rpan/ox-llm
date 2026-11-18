@@ -109,6 +109,7 @@ impl WrapUpReason {
 pub struct Gate {
     /// L1: the settings files as last seen (`settings_refresh`).
     pub(crate) settings_watch: Mutex<crate::settings_refresh::Watch>,
+    live_settings: Mutex<LiveSettings>,
     goal_steering_enabled: std::sync::atomic::AtomicBool,
     pub(crate) lead_steering_authority: Mutex<Option<crate::goal::BoundLeadAuthority>>,
     pub(crate) advisor: Mutex<Option<Arc<crate::advice::BoundAdvisor>>>,
@@ -139,6 +140,21 @@ pub struct Gate {
     /// `true` once a front end polls `Session::take_swap_request`; without it the two
     /// extension calls answer `unsupported_in_oxa`.
     pub swap_enabled: std::sync::atomic::AtomicBool,
+}
+
+#[derive(Default)]
+struct LiveSettings {
+    subscribed: bool,
+    pending: Option<oxa_config::Settings>,
+}
+
+impl std::fmt::Debug for LiveSettings {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fmt.debug_struct("LiveSettings")
+            .field("subscribed", &self.subscribed)
+            .field("pending", &self.pending.is_some())
+            .finish()
+    }
 }
 
 /// Holds [`Gate::in_flight`] for one request; dropping it opens the gate.
@@ -209,6 +225,13 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Shared {
+    pub(crate) fn publish_live_settings(&self, settings: &oxa_config::Settings) {
+        let mut live = lock(&self.gate.live_settings);
+        if live.subscribed {
+            live.pending = Some(settings.clone());
+        }
+    }
+
     pub(crate) fn begin_literal_turn(
         self: &Arc<Self>,
         context: Option<oxa_proto::WireMsg>,
@@ -401,6 +424,16 @@ pub struct Handle {
 }
 
 impl Handle {
+    /// Subscribe a local frontend to applied settings before it starts a run.
+    pub fn watch_live_settings(&self) {
+        lock(&self.shared.gate.live_settings).subscribed = true;
+    }
+
+    /// Take the latest effective settings without sending values through public events.
+    pub fn take_live_settings(&self) -> Option<oxa_config::Settings> {
+        lock(&self.shared.gate.live_settings).pending.take()
+    }
+
     /// Enable typed steering for this frontend before it starts the native run.
     pub fn enable_goal_steering(&self) {
         self.shared
