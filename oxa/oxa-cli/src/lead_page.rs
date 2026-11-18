@@ -423,7 +423,12 @@ async function refresh(){
     const doc=new DOMParser().parseFromString(await response.text(),'text/html');
     const next=doc.querySelector('main');
     if(!next)throw new Error('refresh unavailable');
-    if(pending===active){document.querySelector('main').replaceWith(next);badge.textContent='Live';}
+    if(pending===active){
+      const current=document.querySelector('main'),work=current.querySelector('details.home-work');
+      const replacement=next.querySelector('details.home-work');
+      if(work&&replacement)replacement.open=work.open;
+      current.replaceWith(next);badge.textContent='Live';
+    }
   }catch(error){if(!active.signal.aborted)badge.textContent='Refresh unavailable';}
   finally{if(pending===active){pending=null;if(!document.hidden)timer=setTimeout(refresh,15000);}}
 }
