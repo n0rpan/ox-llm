@@ -7,7 +7,7 @@ use serde_json::{json, Map, Value};
 use std::str::FromStr;
 
 #[derive(Clone, Debug)]
-pub struct Price(Value);
+pub struct Price(Value, bool);
 #[derive(Clone, Copy, Debug)]
 pub enum Cache {
     Tokens { read: u64, write: u64 },
@@ -80,16 +80,62 @@ impl Price {
                     normalized["max_prompt_tokens"] = bound.clone();
                     result.push(normalized);
                 }
-                return Some(Self(json!({"tiers":result})));
+                return Some(Self(json!({"tiers":result}), false));
             }
             if let Some(price) = rates(price) {
-                return Some(Self(price));
+                return Some(Self(price, false));
             }
         }
-        (raw["free"] == true).then(|| Self(json!({"input_per_million":0.0,"output_per_million":0.0})))
+        (raw["free"] == true).then(|| Self(json!({"input_per_million":0.0,"output_per_million":0.0}), false))
+    }
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn conservative(raw: &Value) -> Option<Self> {
+        let price = rates(raw)?;
+        (price["input_per_million"].as_f64()? > 0.0 && price["output_per_million"].as_f64()? > 0.0)
+            .then_some(Self(price, true))
+    }
+    pub fn is_estimated(&self) -> bool {
+        self.1
     }
     pub fn normalized(&self) -> &Value {
         &self.0
+    }
+    /// The live list publishes short-context rates. Keep configured tiers and
+    /// use configured rates as floors when applying live pricing.
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn overlay_discovered(mut self, live: &Self) -> Self {
+        let overlay = |tier: &mut Value| {
+            for (field, rate) in live.0.as_object().into_iter().flatten() {
+                let Some(rate) = rate.as_f64() else {
+                    continue;
+                };
+                let rate = tier[field]
+                    .as_f64()
+                    .map_or(rate, |configured| configured.max(rate));
+                tier[field] = json!(rate);
+            }
+        };
+        if let Some(tiers) = self.0.get_mut("tiers").and_then(Value::as_array_mut) {
+            let mut tiers = tiers.iter_mut();
+            let mut previous = tiers.next().expect("validated price has a tier");
+            overlay(previous);
+            for tier in tiers {
+                overlay(tier);
+                for (field, rate) in previous.as_object().into_iter().flatten() {
+                    if field.ends_with("_per_million")
+                        && tier[field]
+                            .as_f64()
+                            .is_none_or(|current| rate.as_f64().is_some_and(|rate| rate > current))
+                    {
+                        tier[field] = rate.clone();
+                    }
+                }
+                previous = tier;
+            }
+        } else {
+            overlay(&mut self.0);
+        }
+        self
     }
     pub fn cost(
         &self,

@@ -30,6 +30,7 @@ pub struct SlashCx<'a> {
     pub models: &'a [String],
     /// Requests waiting on the engine, when known.
     pub queue: Option<u32>,
+    pub engine_status: Option<&'a (dyn Fn() -> Vec<String> + Send)>,
 }
 
 /// The built-in commands this module handles, without the slash, in pi's listing order.
@@ -437,7 +438,11 @@ fn engine_action(cx: &SlashCx, args: &str) -> AppAction {
             } else {
                 cx.engine_url.to_string()
             };
-            AppAction::ShowLines(engine_lines(&cx.vm.status, &endpoint, cx.queue))
+            let mut lines = engine_lines(&cx.vm.status, &endpoint, cx.queue);
+            if let Some(engine_status) = cx.engine_status {
+                lines.extend(engine_status());
+            }
+            AppAction::ShowLines(lines)
         }
         "load" if !rest.is_empty() => idle_or(cx, "engine load", || switch_model(cx, rest)),
         _ => usage("Usage: /engine [status | load <model>]"),

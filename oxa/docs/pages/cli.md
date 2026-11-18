@@ -96,7 +96,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa remove <source> [-l]` | remove a package from the settings (`uninstall` is an alias) |
 | `oxa update [source] [--extensions]` | update installed packages, all of them or the one named |
 | `oxa list` | list the installed packages |
-| `oxa work <taskfile> \| --issue N --model MODEL` | run tasks in separate git worktrees with external acceptance checks; `oxa work status [--json]` reads its checkpoints ([work.md](../work.md)) |
+| `oxa work <taskfile> \| --issue N \| --pr N --model MODEL` | run tasks in separate git worktrees with external acceptance checks; `oxa work status [--json]` reads its checkpoints ([work.md](../work.md)) |
 | `oxa login chatgpt --experimental [--paste] [--replace]` | explicit owner-only native ChatGPT sign-in |
 | `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa status <session-id\|session-file> [--session-dir <dir>]` | read a saved session's progress and stall signal without contacting an engine |
@@ -104,6 +104,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa config [-l]` | print every setting with its value and where it comes from |
 | `oxa mcp <command>` | manage MCP servers, see below |
 | `oxa identity [--refresh] [--offline]` | show the identity text of the system prompt; `--refresh` rewrites it from this machine and the engine, and `--offline` skips the engine |
+| `oxa share serve --model ALIAS` | start the authenticated streaming OpenAI-compatible listener for explicitly selected native local models in a build with the `share` feature |
 | `oxa share key <add\|list\|revoke>` | owner-only guest key and daily limit management, in a build compiled with the `share` feature |
 | `oxa report-issue <draft\|submit>` | draft a scrubbed issue for the ox-llm repository, or post a draft after confirmation |
 | `oxa wipe --session <id> \| --all [--yes] [--engine]` | remove the stored session files and spill files of one session or of all sessions. See [sessions.md](sessions.md#what-oxa-stores-and-how-to-remove-it) |
@@ -116,6 +117,12 @@ Commands take the place of the message. They do not start a session.
 $ oxa share key add guest --daily-requests 100 --daily-tokens 200000
 $ oxa share key list
 ```
+
+`oxa share serve` starts a foreground listener after the owner enables the native local engine and selects one or more local aliases with `--model`. It binds to the Tailscale interface by default and prints its `/v1` base URL. Set `--port` to use a fixed port. Explicit binds accept loopback for Tailscale Serve and addresses assigned by the local Tailscale daemon. `--same-owner` requires the connecting peer to pass the Tailscale owner check. Clients send a guest bearer and can list models or stream text chat. Ctrl+C stops admission and joins active cleanup.
+
+Start an interactive owner session with `oxa --share-model ALIAS` to share that session's native engine. A queued owner request goes before a waiting guest, and an active guest keeps its lease through cleanup. The startup notice gives the guest API address. Use `/engine status` to see live guest activity and per-key usage for the UTC day. Exiting the owner session drains the listener.
+
+Metered cloud aliases need `oxa.engine.inProcessCloud`, a configured price and daily USD cap, and an entry in the user-only `oxa.share.remoteModels` allowlist. Choose each guest alias with `--model` for foreground serving or `--share-model` for an owner session. Personal subscription routes are excluded.
 
 `oxa update --self`, `--all` and `--models` report that they are not supported: oxa does not update itself and does not refresh model catalogues. Update oxa by installing a new build.
 
@@ -175,6 +182,7 @@ $ oxa mcp logout <name>
 | `--list-models [search]` | list the models the engine serves, optionally filtered by a fuzzy search, and exit |
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
 | `--mode <mode>` | output mode: `text` (default), `json` or `rpc` ([rpc.md](rpc.md)) |
+| `--shadow` | required with `oxa lead`; read-only proposal preset, enabled only by user setting `oxa.lead.shadow` (default false) |
 | `--output-schema <file>` | check the final answer against a JSON schema file (a supported subset), retrying once on mismatch |
 | `--print`, `-p` | non-interactive: process the prompts and exit |
 | `--goal <file>` | pursue a stored UTF-8 objective in print/JSON mode; continue the saved pursuing goal after restart |
@@ -232,6 +240,8 @@ See [tools.md](tools.md) for the tool names.
 | `--yolo` | permission mode yolo, full access: no prompts, bash runs without the sandbox, no deny-list or protected paths for file tools ([security.md](security.md#standard-auto-and-yolo)) |
 | `--approve`, `-a` | trust the project's configuration and resources for this run |
 | `--no-approve`, `-na` | ignore the project's configuration and resources for this run |
+| `--share-model <alias>` | share one native local model during the interactive owner session in a build with the `share` feature, repeat to select more aliases |
+| `--share-bind <address>` | set an explicit bind address for `--share-model`. Sharing uses the Tailscale interface by default |
 | `--offline` | offline mode: oxa's own non-local connections are refused, bash has no network, `web_search` is off, and `!cmd` and stdio MCP servers run without network. What it does not cover is in [security.md](security.md#offline-mode) |
 
 See [security.md](security.md).
@@ -273,6 +283,7 @@ Every boolean variable takes the same eight words, in any case: `1`, `true`, `ye
 |---|---|
 | `OXA_ENGINE_URL` | engine endpoint for the default model entry. Default `http://127.0.0.1:8092` |
 | `OXA_AGENT_DIR` | agent directory. Default `~/.oxa/agent`; `~` is expanded |
+| `OXA_LEAD_BOARD_LOG` | owner-selected absolute path to a private local board sample log; missing or refused data stays unavailable |
 | `OXA_SESSION_DIR` | session storage; `--session-dir` wins over it |
 | `OXA_PACKAGE_DIR` | package directory, for Nix or Guix store paths |
 | `OXA_SYSTEM_SKILLS_DIR` | system skills directory, read last. Default `/usr/share/omarchy/default/agents/skills`; empty disables it |

@@ -23,6 +23,10 @@ for variant in ox-llm-bin ox-llm; do
   cd "/build/$variant"
   runuser -u builder -- makepkg --noconfirm --cleanbuild
   package=$(find . -maxdepth 1 -name '*.pkg.tar.zst' -print)
+  bsdtar -xOf "$package" .PKGINFO | awk '
+    /^depend = python($|[-<>=])/ { print "Unexpected runtime dependency: " $0; failed = 1 }
+    END { exit failed }
+  '
   namcap PKGBUILD 2>&1 | tee /tmp/namcap.log
   namcap "$package" 2>&1 | tee -a /tmp/namcap.log
   # Warnings remain visible; any namcap error fails the job.
@@ -33,6 +37,10 @@ for variant in ox-llm-bin ox-llm; do
   pacman -Ql "$variant" | awk '{print $2}' | while read -r path; do
     if [[ ! -d $path ]]; then echo "$path"; fi
   done > /tmp/installed-files
+  if grep -E '\.(py|pyc|pyo)$' /tmp/installed-files; then
+    echo "Unexpected Python files in $variant" >&2
+    exit 1
+  fi
   python -B /smoke.py
   pacman -Qkk "$variant"
   pacman -Rns --noconfirm "$variant"

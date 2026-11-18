@@ -27,11 +27,18 @@ mod home_cwd;
 mod hooks;
 mod identity_cmd;
 mod in_process;
+pub mod lead;
 pub mod lead_access;
+pub(crate) mod lead_chat;
+pub mod lead_http;
 pub mod lead_input;
 pub mod lead_page;
 pub mod lead_panels;
 pub mod lead_peer;
+mod lead_preset;
+pub mod lead_quota;
+pub mod lead_runs;
+pub mod lead_serve;
 mod limits;
 mod login_cmd;
 mod mcp_cmd;
@@ -40,25 +47,31 @@ mod pkg_cmd;
 mod report_cmd;
 mod result_facts;
 mod sandbox_layout;
+#[cfg(feature = "share")]
+mod share_cmd;
 mod status;
 mod themes;
 mod wipe_cmd;
 mod work_board;
+pub use work_board::refill_input;
 mod work_checks;
 mod work_cmd;
+pub mod work_refill;
+mod work_reports;
 
 pub use args::{
-    no_tool_alias, parse_args, usage_text, ApiKey, Args, LoginArgs, ModeArg, Subcommand, NO_TOOL_ALIASES,
+    no_tool_alias, parse_args, usage_text, ApiKey, Args, LoginArgs, ModeArg, RegistryArgs, Subcommand,
+    NO_TOOL_ALIASES,
 };
 pub use config_cmd::run_config;
-pub use dispatch::{choose_mode, run, RunMode, Stdio};
+pub use dispatch::{choose_mode, run, with_lead_owner, LeadOwnerBinding, RunMode, Stdio};
 pub use help::{requested, text};
 pub use hooks::{build_hooks, HookInputs, HookSets, EXTENSIONS_LOG};
 pub use identity_cmd::{identity_facts, run_identity, write_identity};
 pub use mcp_cmd::run_mcp;
 pub use pkg_cmd::run_pkg;
 pub use report_cmd::{
-    clean_notes, parse_draft, report_repo, run_report_issue, save_draft, scrub, submit, Confirm, Runner,
-    ScrubCtx, MAX_NOTES_CHARS, REPORT_DISABLED, SETTING_REPORT_REPO,
+    clean_notes, parse_draft, process_runner, report_repo, run_report_issue, save_draft, scrub, submit,
+    Confirm, Runner, ScrubCtx, MAX_NOTES_CHARS, REPORT_DISABLED, SETTING_REPORT_REPO,
 };
 pub use wipe_cmd::{run_wipe, WipeIo};

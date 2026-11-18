@@ -318,6 +318,7 @@ impl ProgressObserver for StatusWriter {
                 true
             }
             Progress::Advanced => false,
+            Progress::GoalControlCommitted { .. } => return,
             Progress::Closing => {
                 snapshot.running = true;
                 snapshot.phase = "closing";

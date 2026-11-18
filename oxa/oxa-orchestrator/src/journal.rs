@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::Instant;
 
@@ -30,14 +30,10 @@ impl Journal {
             .parent()
             .ok_or_else(|| io::Error::other("journal needs a parent directory"))?;
         let namespace = crate::namespace::protected_directory(parent)?;
-        let metadata = namespace.metadata()?;
-        // SAFETY: geteuid has no arguments or memory access side effects.
-        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "journal parent must be private and operator-owned",
-            ));
-        }
+        crate::namespace::require_private_directory(
+            &namespace,
+            "journal parent must be private and operator-owned",
+        )?;
         if limit == 0 || limit > 16 * 1024 * 1024 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -125,7 +121,7 @@ impl Journal {
 mod tests {
     use super::*;
     use oxa_fake::TestEnv;
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 
     fn private(env: &TestEnv) -> std::path::PathBuf {
         let directory = env.root().join("private");

@@ -1,11 +1,11 @@
 use oxa_config::{Dirs, Settings};
-use oxa_core::{Deps, Open, RunOutcome, Session, ToolSelection};
+use oxa_core::{goal::GoalControl, Deps, Open, RunOutcome, Session, ToolSelection};
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{HeadlessUi, ToolCall, VecSink};
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
-use oxa_session::{Goal, GoalBudget, GoalStatus, MemStore, SessionStore};
+use oxa_session::{FsStore, Goal, GoalBudget, GoalStatus, MemStore, SessionStore};
 use std::sync::Arc;
 fn deps(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<ScriptedEngine>) -> Deps {
     Deps {
@@ -35,6 +35,234 @@ fn deps(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<ScriptedEngine>
 fn objective(budget: GoalBudget) -> Goal {
     Goal::new("Review synthetic work and wait for more.".into(), budget, 1000).unwrap()
 }
+
+#[test]
+fn bounded_literal_prompt_keeps_evidence_request_local_and_caps_schema_repair() {
+    use oxa_core::{output_schema::OutputSchema, RunEnd};
+    use oxa_proto::{codes, WireMsg};
+    use std::num::NonZeroU32;
+
+    for first_completion in [6, 10] {
+        let env = TestEnv::new();
+        let mut invalid = ScriptTurn::text("try again");
+        invalid.completion_tokens = Some(first_completion);
+        let mut repaired = ScriptTurn::text(r#"{"ok":true}"#);
+        repaired.completion_tokens = Some(4);
+        let engine = Arc::new(ScriptedEngine::new(vec![
+            invalid,
+            repaired,
+            ScriptTurn::text("ordinary reply"),
+        ]));
+        let store = Arc::new(MemStore::new());
+        let mut session = Session::open(deps(&env, store.clone(), engine.clone()), Open::New).unwrap();
+        let schema = OutputSchema::new(serde_json::json!({"type": "object", "required": ["ok"]})).unwrap();
+        session.set_output_schema(Some(schema));
+        let mut sink = VecSink::default();
+        let mut ui = HeadlessUi::default();
+        let prompt = WireMsg::user("/help");
+        let evidence = WireMsg::user("Synthetic transient evidence");
+        let result = session.prompt_literal_bounded(
+            "/help".into(),
+            "Synthetic transient evidence".into(),
+            NonZeroU32::new(10).unwrap(),
+            &mut sink,
+            &mut ui,
+        );
+        let expected_limits: &[u32] = if first_completion == 6 {
+            result.unwrap();
+            &[10, 4]
+        } else {
+            let Some(RunEnd::Failed(error)) = result.unwrap() else {
+                panic!("the repair should be refused when no output remains");
+            };
+            assert_eq!(error.code, codes::BUDGET_EXHAUSTED);
+            &[10]
+        };
+        let requests: Vec<_> = engine
+            .requests()
+            .into_iter()
+            .filter(|r| r.max_tokens > 0)
+            .collect();
+        assert_eq!(
+            requests.iter().map(|r| r.max_tokens).collect::<Vec<_>>(),
+            expected_limits
+        );
+        assert!(requests.iter().all(|r| r.messages.contains(&evidence)));
+        assert!(requests[0].messages.contains(&prompt));
+        let entries = store.load(&session.inner().sref).unwrap();
+        let persisted = format!("{entries:?}");
+        assert!(persisted.contains("/help"));
+        assert!(!persisted.contains("Synthetic transient evidence"));
+
+        session.set_output_schema(None);
+        session.prompt_literal("Next".into(), &mut sink, &mut ui).unwrap();
+        let last = engine.requests().into_iter().rfind(|r| r.max_tokens > 0).unwrap();
+        assert_eq!(last.max_tokens, session.inner().info.max_output);
+        assert!(!last.messages.contains(&evidence));
+    }
+}
+
+#[test]
+fn native_goal_control_rejects_stale_requests_and_persists_terminal_cancel() {
+    let env = TestEnv::new();
+    let root = env.root().join("sessions");
+    let store = Arc::new(FsStore::new(root.clone()));
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, store, engine.clone()), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    let mut ui = HeadlessUi::default();
+    let saved = session.inner().sref.clone();
+    assert_eq!(session.goal_revision(), 0);
+
+    let mut goal = objective(GoalBudget {
+        max_tokens: Some(100),
+        ..GoalBudget::default()
+    });
+    goal.charge(Some(17), 20, true).unwrap();
+    session.set_goal(Some(goal.clone()), &mut sink).unwrap();
+    let original = session.goal_revision();
+
+    let paused = session
+        .control_goal(&saved, original, GoalControl::Pause, &mut sink)
+        .unwrap();
+    assert!(paused > original);
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Paused);
+    assert_eq!(
+        session
+            .control_goal(&saved, original, GoalControl::Cancel, &mut sink)
+            .unwrap_err()
+            .code,
+        "goal_revision_conflict"
+    );
+    assert_eq!(session.goal_revision(), paused);
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Paused);
+
+    let resumed = session
+        .control_goal(&saved, paused, GoalControl::Resume, &mut sink)
+        .unwrap();
+    assert!(resumed > paused);
+    assert_eq!(session.goal().unwrap(), goal);
+    let canceled = session
+        .control_goal(&saved, resumed, GoalControl::Cancel, &mut sink)
+        .unwrap();
+    assert!(canceled > resumed);
+    goal.status = GoalStatus::Canceled;
+    assert_eq!(session.goal(), Some(goal.clone()));
+    session.shutdown(&mut ui);
+    drop(session);
+
+    let store = Arc::new(FsStore::new(root));
+    let mut session = Session::open(deps(&env, store, engine), Open::Resume(saved.clone())).unwrap();
+    assert_eq!(session.goal(), Some(goal));
+    assert_eq!(session.goal_revision(), canceled);
+    for control in [GoalControl::Pause, GoalControl::Resume, GoalControl::Cancel] {
+        assert!(session
+            .control_goal(&saved, canceled, control, &mut sink)
+            .is_err());
+    }
+    assert_eq!(session.goal_revision(), canceled);
+
+    session.switch(Open::New, &mut sink, &mut ui).unwrap();
+    let new_id = session.state().session_id;
+    assert_ne!(saved.id, new_id);
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    let new_revision = session.goal_revision();
+    assert_eq!(
+        session
+            .control_goal(&saved, new_revision, GoalControl::Cancel, &mut sink)
+            .unwrap_err()
+            .code,
+        "goal_revision_conflict"
+    );
+    assert_eq!(session.goal_revision(), new_revision);
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Pursuing);
+    session.shutdown(&mut ui);
+}
+
+#[test]
+fn a_control_bound_to_a_different_file_rejects_an_equal_id_and_revision() {
+    use oxa_core::goal::{SteeringBinding, SteeringLease};
+
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let open = |name| {
+        let mut deps = deps(
+            &env,
+            Arc::new(FsStore::new(env.root().join(name))),
+            engine.clone(),
+        );
+        deps.session_id = Some("shared-id".into());
+        Session::open(deps, Open::New).unwrap()
+    };
+    let mut sink = VecSink::default();
+    let mut ui = HeadlessUi::default();
+    let goal = objective(GoalBudget::default());
+    let mut owner = open("original");
+    owner.set_goal(Some(goal.clone()), &mut sink).unwrap();
+    let observation = owner.goal_observation();
+    let original = observation.session.clone();
+    let revision = observation.revision;
+    assert_eq!(observation.status, Some(GoalStatus::Pursuing));
+    let lease = SteeringLease {
+        holder: "fixture/worker-a".into(),
+        generation: (1, 1),
+    };
+    let steer = SteeringBinding {
+        session: original.clone(),
+        revision,
+        lease: Some(lease.clone()),
+    };
+    steer.validate(owner.inner(), Some(&lease)).unwrap();
+    for changed in [
+        SteeringLease {
+            holder: "fixture/worker-b".into(),
+            ..lease.clone()
+        },
+        SteeringLease {
+            generation: (1, 2),
+            ..lease.clone()
+        },
+    ] {
+        assert_eq!(
+            steer.validate(owner.inner(), Some(&changed)).unwrap_err().code,
+            "goal_steer_stale"
+        );
+    }
+    assert_eq!(
+        steer.validate(owner.inner(), None).unwrap_err().code,
+        "goal_steer_stale"
+    );
+
+    let mut other = open("second");
+    other.set_goal(Some(goal.clone()), &mut sink).unwrap();
+    let target = other.inner().sref.clone();
+    assert_ne!(original.path, target.path);
+    assert_eq!(original.id, target.id);
+    assert_eq!(other.goal_revision(), revision);
+    other.shutdown(&mut ui);
+    drop(other);
+
+    owner
+        .switch(Open::Resume(target.clone()), &mut sink, &mut ui)
+        .unwrap();
+    let observation = owner.goal_observation();
+    assert_eq!(observation.session, &target);
+    assert_ne!(observation.session, &original);
+    assert_eq!(observation.revision, revision);
+    assert_eq!(observation.status, Some(GoalStatus::Pursuing));
+    assert_eq!(
+        steer.validate(owner.inner(), Some(&lease)).unwrap_err().code,
+        "goal_steer_stale"
+    );
+    let result = owner.control_goal(&original, revision, GoalControl::Cancel, &mut sink);
+    assert_eq!(result.unwrap_err().code, "goal_revision_conflict");
+    assert_eq!(owner.goal_revision(), revision);
+    assert_eq!(owner.goal(), Some(goal));
+    owner.shutdown(&mut ui);
+}
+
 #[test]
 fn ordinary_prefix_unchanged_and_two_idle_turns_stall_with_one_fixed_continuation() {
     let env = TestEnv::new();
@@ -49,6 +277,7 @@ fn ordinary_prefix_unchanged_and_two_idle_turns_stall_with_one_fixed_continuatio
     session
         .set_goal(Some(objective(GoalBudget::default())), &mut sink)
         .unwrap();
+    let initial_revision = session.goal_revision();
     assert!(session.inner().active.get("goal_done").is_some());
     assert!(session.inner().active.get("wait").is_some());
     session
@@ -60,6 +289,7 @@ fn ordinary_prefix_unchanged_and_two_idle_turns_stall_with_one_fixed_continuatio
         )
         .unwrap();
     assert_eq!(session.stats().outcome, RunOutcome::Stalled);
+    assert!(session.goal_revision() > initial_revision);
     let goal = session.goal().unwrap();
     assert_eq!(goal.status, GoalStatus::Paused);
     assert_eq!(goal.turns, 2);
@@ -121,7 +351,7 @@ fn done_closes_all_calls_without_running_later_calls_or_requesting_another_reply
     }
 }
 #[test]
-fn spent_token_or_turn_budget_stops_without_an_extra_request() {
+fn spent_token_or_turn_budget_can_cancel_but_cannot_resume() {
     for budget in [
         GoalBudget {
             max_tokens: Some(1),
@@ -134,14 +364,41 @@ fn spent_token_or_turn_budget_stops_without_an_extra_request() {
     ] {
         let env = TestEnv::new();
         let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("Progress")]));
-        let mut session = Session::open(deps(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+        let root = env.root().join("sessions");
+        let store = Arc::new(FsStore::new(root.clone()));
+        let mut session = Session::open(deps(&env, store, engine.clone()), Open::New).unwrap();
         let mut sink = VecSink::default();
+        let mut ui = HeadlessUi::default();
         session.set_goal(Some(objective(budget)), &mut sink).unwrap();
         session
-            .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+            .prompt("Start".into(), vec![], &mut sink, &mut ui)
             .unwrap();
         assert_eq!(session.stats().outcome, RunOutcome::Blocked("goal_blocked"));
-        assert_eq!(session.goal().unwrap().turns, 1);
+        let mut expected = session.goal().unwrap();
+        assert_eq!(expected.status, GoalStatus::Blocked);
+        assert_eq!(expected.turns, 1);
+        assert!(expected.exhausted());
+
+        let bound = session.inner().sref.clone();
+        let revision = session.goal_revision();
+        assert!(session
+            .control_goal(&bound, revision, GoalControl::Resume, &mut sink)
+            .is_err());
+        assert_eq!(session.goal_revision(), revision);
+        let canceled_revision = session
+            .control_goal(&bound, revision, GoalControl::Cancel, &mut sink)
+            .expect("an exhausted goal can still be canceled");
+        assert!(canceled_revision > revision);
+        expected.status = GoalStatus::Canceled;
+        assert_eq!(session.goal(), Some(expected.clone()));
+        session.shutdown(&mut ui);
+        drop(session);
+
+        let store = Arc::new(FsStore::new(root));
+        let mut reopened = Session::open(deps(&env, store, engine), Open::Resume(bound)).unwrap();
+        assert_eq!(reopened.goal(), Some(expected));
+        assert_eq!(reopened.goal_revision(), canceled_revision);
+        reopened.shutdown(&mut ui);
     }
 }
 
@@ -360,4 +617,114 @@ fn goal_completion_obeys_the_existing_final_answer_schema_repair() {
             session.goal()
         );
     }
+}
+
+#[test]
+fn a_durable_pending_steer_requires_the_live_lease_after_reopening() {
+    use oxa_session::{LeadGoalState, OpenGoalAsk, SteeringLease};
+
+    let env = TestEnv::new();
+    let root = env.root().join("sessions");
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let store = Arc::new(FsStore::new(root.clone()));
+    let mut owner = Session::open(deps(&env, store, engine.clone()), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    let session = owner.inner().sref.clone();
+    owner
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    let revision = owner.goal_revision();
+    let lease = SteeringLease {
+        holder: "fixture".into(),
+        generation: (0, 1),
+    };
+    let staged = owner
+        .stage_lead_steer(
+            &session,
+            revision,
+            "Synthetic confirmed steer.".into(),
+            Some(lease),
+            &mut sink,
+        )
+        .unwrap();
+    let lead = LeadGoalState {
+        open_asks: vec![OpenGoalAsk {
+            id: "ask-1".into(),
+            revision: 2,
+            question: "Which synthetic result should be used?".into(),
+        }],
+        ..LeadGoalState::default()
+    };
+    assert_eq!(
+        owner
+            .update_lead_goal(&session, revision, lead.clone(), &mut sink)
+            .unwrap_err()
+            .code,
+        "goal_revision_conflict"
+    );
+    owner
+        .update_lead_goal(&session, staged, lead.clone(), &mut sink)
+        .unwrap();
+    drop(owner);
+
+    let mut owner = Session::open(
+        deps(&env, Arc::new(FsStore::new(root)), engine.clone()),
+        Open::Resume(session),
+    )
+    .unwrap();
+    assert!(owner.goal().unwrap().lead.unwrap().pending_steer.is_some());
+    // No authority is available yet, so preserve the pending steer and refuse to run.
+    let mut ui = HeadlessUi::default();
+    let error = owner
+        .prompt("continue".into(), vec![], &mut sink, &mut ui)
+        .unwrap_err();
+    assert_eq!(error.code, "goal_steer_stale");
+    assert!(owner.goal().unwrap().lead.unwrap().pending_steer.is_some());
+
+    owner.bind_lead_steering_authority(Arc::new(|_, operation| {
+        operation(Some(&SteeringLease {
+            holder: "fixture".into(),
+            generation: (0, 2),
+        }));
+    }));
+    let error = owner
+        .prompt("continue".into(), vec![], &mut sink, &mut ui)
+        .unwrap_err();
+    assert_eq!(error.code, "goal_steer_stale");
+    assert_eq!(owner.goal().unwrap().lead, Some(lead));
+    assert!(engine.requests().is_empty());
+}
+
+#[test]
+fn a_queued_turn_delivers_durably_staged_input_before_its_first_request() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("first"),
+        ScriptTurn::text("second"),
+    ]));
+    let mut session =
+        Session::open(deps(&env, Arc::new(MemStore::new()), engine.clone()), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    let mut ui = HeadlessUi::default();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    let bound = session.inner().sref.clone();
+    session
+        .stage_lead_steer(
+            &bound,
+            session.goal_revision(),
+            "Synthetic durable steer.".into(),
+            None,
+            &mut sink,
+        )
+        .unwrap();
+    session.handle().follow_up("Synthetic follow-up.".into());
+    session.run_queued(&mut sink, &mut ui).unwrap();
+    let requests = engine.requests();
+    assert!(requests[0]
+        .messages
+        .iter()
+        .any(|message| message.content.as_deref() == Some("Synthetic durable steer.")));
+    assert!(session.goal().unwrap().lead.unwrap().pending_steer.is_none());
 }

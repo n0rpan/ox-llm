@@ -5,12 +5,13 @@
 //! byte for byte instead of a hash), and that every byte already on disk is still there.
 
 use oxa_config::{Dirs, Settings};
-use oxa_core::{prompt, Deps, Open, Session, ToolSelection};
+use oxa_core::{goal::GoalControl, prompt, Deps, Open, Session, ToolSelection};
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
-use oxa_proto::{Finish, HeadlessUi, Role, ToolCall, VecSink, WireMsg};
-use oxa_session::{FsStore, SessionRef};
+use oxa_proto::{codes, EntryBody, Finish, HeadlessUi, OxaError, Role, ToolCall, VecSink, WireMsg};
+use oxa_session::{FsStore, Goal, GoalBudget, GoalStatus, SessionRef};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 fn deps(env: &TestEnv, engine: Arc<ScriptedEngine>) -> Deps {
     Deps {
@@ -241,10 +242,15 @@ fn a_second_resume_appends_nothing_more() {
     assert_eq!(std::fs::read(&sref.path).unwrap(), once);
 }
 
-/// Counts `sync` calls; everything else goes to an in-memory store.
+/// Counts sync calls and can inject failures at the durability and prefix boundaries.
+#[derive(Debug, Default)]
 struct CountingStore {
     inner: oxa_session::MemStore,
-    syncs: std::sync::atomic::AtomicUsize,
+    syncs: AtomicUsize,
+    goal_revision_at_sync: AtomicU64,
+    confirmed_goal_revision: AtomicU64,
+    fail_sync: AtomicBool,
+    fail_prefix: AtomicBool,
 }
 
 impl oxa_session::SessionStore for CountingStore {
@@ -257,6 +263,9 @@ impl oxa_session::SessionStore for CountingStore {
         self.inner.create(cwd, id, parent)
     }
     fn append(&self, s: &SessionRef, e: &oxa_proto::Entry) -> Result<(), oxa_proto::OxaError> {
+        if self.fail_prefix.load(Ordering::SeqCst) && matches!(e.body, EntryBody::Prefix(_)) {
+            return Err(OxaError::new(codes::IO, "synthetic prefix append failure"));
+        }
         self.inner.append(s, e)
     }
     fn load(&self, s: &SessionRef) -> Result<Vec<oxa_proto::Entry>, oxa_proto::OxaError> {
@@ -274,8 +283,14 @@ impl oxa_session::SessionStore for CountingStore {
     fn delete(&self, s: &SessionRef) -> Result<(), oxa_proto::OxaError> {
         self.inner.delete(s)
     }
-    fn sync(&self, _s: &SessionRef) -> Result<(), oxa_proto::OxaError> {
-        self.syncs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    fn sync(&self, s: &SessionRef) -> Result<(), oxa_proto::OxaError> {
+        self.syncs.fetch_add(1, Ordering::SeqCst);
+        let revision = Goal::revision(&self.inner.load(s)?);
+        self.goal_revision_at_sync.store(revision, Ordering::SeqCst);
+        if self.fail_sync.load(Ordering::SeqCst) {
+            return Err(OxaError::new(codes::IO, "synthetic sync failure"));
+        }
+        self.confirmed_goal_revision.store(revision, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -285,10 +300,7 @@ fn the_session_file_is_synced_once_per_turn_and_fs_sync_works() {
     let env = TestEnv::new();
     std::fs::write(env.work().join("a.txt"), "alpha\n").unwrap();
     std::fs::write(env.work().join("b.txt"), "beta\n").unwrap();
-    let store = Arc::new(CountingStore {
-        inner: oxa_session::MemStore::new(),
-        syncs: Default::default(),
-    });
+    let store = Arc::new(CountingStore::default());
     let eng = Arc::new(ScriptedEngine::new(vec![two_reads(), ScriptTurn::text("done")]));
     let mut d = deps(&env, eng);
     d.store = store.clone();
@@ -296,8 +308,75 @@ fn the_session_file_is_synced_once_per_turn_and_fs_sync_works() {
     let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
     s.prompt("go".into(), Vec::new(), &mut sink, &mut ui).unwrap();
     // Two turns (the tool batch, the final reply): two syncs, not one per entry.
-    assert_eq!(store.syncs.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(store.syncs.load(Ordering::SeqCst), 2);
     let sref = full_session(&env);
     let fs = FsStore::new(env.root().join("sessions"));
     oxa_session::SessionStore::sync(&fs, &sref).unwrap();
+}
+
+#[derive(Debug)]
+struct GoalCommits {
+    store: Arc<CountingStore>,
+    seen: Mutex<Vec<(SessionRef, u64, u64)>>,
+}
+
+impl oxa_core::ProgressObserver for GoalCommits {
+    fn notify(&self, session: &SessionRef, progress: oxa_core::Progress<'_>) {
+        if let oxa_core::Progress::GoalControlCommitted { revision } = progress {
+            let confirmed = self.store.confirmed_goal_revision.load(Ordering::SeqCst);
+            self.seen
+                .lock()
+                .unwrap()
+                .push((session.clone(), revision, confirmed));
+        }
+    }
+}
+
+#[test]
+fn goal_control_syncs_before_ack_and_distinguishes_partial_failures() {
+    for (fail_sync, fail_prefix, expected_error) in [
+        (false, false, None),
+        (true, false, Some("goal_sync_failed")),
+        (false, true, Some("goal_applied_prefix_failed")),
+    ] {
+        let env = TestEnv::new();
+        let store = Arc::new(CountingStore::default());
+        let mut deps = deps(&env, Arc::new(ScriptedEngine::new(vec![])));
+        deps.store = store.clone();
+        let mut session = Session::open(deps, Open::New).unwrap();
+        let mut sink = VecSink::default();
+        let goal = Goal::new("Synthetic objective".into(), GoalBudget::default(), 1).unwrap();
+        session.set_goal(Some(goal), &mut sink).unwrap();
+        let bound = session.inner().sref.clone();
+        let before = session.goal_revision();
+        let commits = Arc::new(GoalCommits {
+            store: store.clone(),
+            seen: Mutex::new(Vec::new()),
+        });
+        session.set_progress_observer(commits.clone());
+        store.fail_sync.store(fail_sync, Ordering::SeqCst);
+        store.fail_prefix.store(fail_prefix, Ordering::SeqCst);
+
+        let receipt = session.control_goal(&bound, before, GoalControl::Cancel, &mut sink);
+        let after = session.goal_revision();
+        assert!(after > before);
+        assert_eq!(session.goal().unwrap().status, GoalStatus::Canceled);
+        assert_eq!(store.syncs.load(Ordering::SeqCst), 1);
+        assert_eq!(store.goal_revision_at_sync.load(Ordering::SeqCst), after);
+        match expected_error {
+            Some(code) => assert_eq!(receipt.unwrap_err().code, code),
+            None => assert_eq!(receipt.unwrap(), after),
+        }
+        let retry = session.control_goal(&bound, before, GoalControl::Cancel, &mut sink);
+        assert_eq!(retry.unwrap_err().code, "goal_revision_conflict");
+        assert_eq!(session.goal_revision(), after);
+        assert_eq!(store.syncs.load(Ordering::SeqCst), 1);
+        let expected = if fail_sync {
+            vec![]
+        } else {
+            vec![(bound, after, after)]
+        };
+        assert_eq!(*commits.seen.lock().unwrap(), expected);
+        session.shutdown(&mut HeadlessUi::default());
+    }
 }

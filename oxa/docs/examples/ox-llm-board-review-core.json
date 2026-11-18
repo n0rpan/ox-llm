@@ -1,0 +1,13 @@
+{
+  "core": [
+    "oxa/oxa-rpc/src/a2a_control.rs",
+    "oxa/oxa-work/src/managed_steering.rs",
+    "oxa/oxa-cli/src/work_cmd/native_queue.rs",
+    "oxa/oxa-cli/src/lead_access.rs",
+    "oxa/oxa-cli/src/lead_access",
+    "oxa/oxa-cli/src/lead_peer.rs",
+    "oxa/oxa-cli/src/share_cmd.rs",
+    "oxa/oxc-gateway/src/share",
+    "oxa/oxa-rpc/src/server.rs"
+  ]
+}
