@@ -10,7 +10,8 @@ fn discovery() -> Value {
         "capabilities":{"tools":true},"modalities":{"input":["text"],"output":["text"]}}]})
 }
 fn usage() -> Value {
-    json!({"prompt_tokens":100,"completion_tokens":25,"cost":0,"opencode":{"billing_source":"go","allowance":0.00012,"list_cost":0.00015,
+    json!({"prompt_tokens":100,"completion_tokens":25,"cost":0,"opencode":{"billing_source":"go","estimated":false,
+        "allowance":0.00012,"list_cost":0.00015,
         "tokens":{"input":20,"output":25,"reasoning":5,"cache_read":80,"cache_write_5m":0,"cache_write_1h":0}}})
 }
 #[test]

@@ -217,11 +217,11 @@ fn native_go_records_bounded_plan_labels_in_usage_and_status() {
     }
 }
 #[test]
-fn native_go_paid_balance_settles_cost_and_caps_new_process() {
+fn native_go_paid_balance_settles_cost_and_admission_continues() {
     check_go_billing(json!("balance"), "balance", 0.01, true);
 }
 #[test]
-fn native_go_subcent_paid_cost_reaches_exact_cap_after_restart() {
+fn native_go_subcent_paid_cost_is_recorded_and_admission_continues() {
     check_go_billing(json!("balance"), "balance", 4e-9, true);
 }
 #[test]
@@ -238,7 +238,7 @@ fn capped_go(env: &TestEnv, base: &str) {
 }
 
 #[test]
-fn native_go_unknown_price_reserves_usd_before_another_process_forwards() {
+fn native_go_processes_forward_concurrently_without_local_usd_holds() {
     let env = TestEnv::new();
     let (held, release) = stream(json!({"content":"Synthetic held reply"}), "stop").gated();
     let mock = MockOpenAi::start_with(|base| {
@@ -246,7 +246,7 @@ fn native_go_unknown_price_reserves_usd_before_another_process_forwards() {
             Reply::json(discovery(base)),
             held,
             Reply::json(discovery(base)),
-            stream(json!({"content":"Unexpected concurrent forwarding"}), "stop"),
+            stream(json!({"content":"Synthetic concurrent reply"}), "stop"),
         ]
     });
     capped_go(&env, &format!("http://{}", mock.address()));
@@ -261,9 +261,16 @@ fn native_go_unknown_price_reserves_usd_before_another_process_forwards() {
         .spawn()
         .unwrap();
     mock.wait_for_requests(2);
+    // The second process forwards and settles while the first still holds its
+    // reply open. A tiny or fully held cap must never refuse either process.
     let second = run(
         &env,
         &["--no-session", "--no-tools", "-p", "Synthetic second request"],
+    );
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
     );
     release.send(()).unwrap();
     let first = first.wait_with_output().unwrap();
@@ -272,20 +279,24 @@ fn native_go_unknown_price_reserves_usd_before_another_process_forwards() {
         "{}",
         String::from_utf8_lossy(&first.stderr)
     );
-    assert_eq!(terminal(&second)["error_class"], "cloud_budget_reserved");
-    assert!(String::from_utf8_lossy(&second.stderr).contains("Another in-flight request holds"));
-    assert!(!String::from_utf8_lossy(&second.stderr).contains("daily cloud budget is exhausted"));
-    assert_eq!(
-        mock.requests().len(),
-        3,
-        "only discovery may follow the held request"
-    );
-    assert!(rows(&env).iter().any(|row| row["settled"] == "usage"));
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 2);
+    for row in &ledger {
+        assert_eq!(row["settled"], "usage");
+        assert_eq!(row["billing"], "subscription");
+        assert_eq!(row["cost_usd"], 0.0);
+        assert!(row.get("go_reserved_usd").is_none());
+    }
+    assert_eq!(mock.requests().len(), 4);
+    for output in [&first, &second] {
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(CREDENTIAL));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
+    }
     mock.assert_healthy();
 }
 
 #[test]
-fn native_go_unknown_cost_keeps_usd_reserved_after_process_restart() {
+fn native_go_unknown_cost_stays_unknown_and_admission_continues() {
     let env = TestEnv::new();
     let mock = MockOpenAi::start_with(|base| {
         vec![
@@ -295,10 +306,7 @@ fn native_go_unknown_cost_keeps_usd_reserved_after_process_restart() {
                 true,
             ),
             Reply::json(discovery(base)),
-            stream(
-                json!({"content":"Unexpected forwarding after unknown usage"}),
-                "stop",
-            ),
+            stream(json!({"content":"Synthetic next process reply"}), "stop"),
         ]
     });
     capped_go(&env, &format!("http://{}", mock.address()));
@@ -307,18 +315,31 @@ fn native_go_unknown_cost_keeps_usd_reserved_after_process_restart() {
         &["--no-session", "--no-tools", "-p", "Synthetic unknown usage"],
     );
     assert!(!first.status.success());
+    // The unknown cost stays recorded as unknown at zero USD: no local
+    // estimate, no reservation field, and no ledger poisoning.
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["settled"], "reserved");
+    assert_eq!(ledger[0]["usage_missing"], true);
+    assert_eq!(ledger[0]["billing"], "subscription");
+    assert_eq!(ledger[0]["cost_usd"], 0.0);
+    assert!(ledger[0].get("estimated_cost_usd").is_none());
+    assert!(ledger[0].get("go_reserved_usd").is_none());
+    // A restarted process keeps working with the unknown row on disk.
     let second = run(
         &env,
         &["--no-session", "--no-tools", "-p", "Synthetic next process"],
     );
-    assert_eq!(terminal(&second)["error_class"], "budget_exhausted");
-    assert_eq!(mock.requests().len(), 3);
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(mock.requests().len(), 4);
     let ledger = rows(&env);
-    let unknown = ledger.iter().find(|row| row["settled"] == "reserved").unwrap();
-    assert!(unknown.get("cost_usd").is_none());
-    assert_eq!(unknown["estimated_cost_usd"], 0.01);
-    assert_eq!(unknown["billing"], "metered");
-    assert_eq!(unknown["usage_missing"], true);
+    assert_eq!(ledger.len(), 2);
+    assert_eq!(ledger[1]["settled"], "usage");
+    assert_eq!(ledger[1]["cost_usd"], 0.0);
     mock.assert_healthy();
 }
 
@@ -427,25 +448,15 @@ fn check_go_billing(source: Value, expected: &str, cost: f64, cap: bool) {
         ledger[0]["billing"],
         if cost > 0.0 { "metered" } else { "subscription" }
     );
-    if cost > 0.0 && cap {
+    if cost > 0.0 {
+        // The recorded charge consumes or exceeds the configured day cap, yet
+        // a new process keeps admitting Go: the charge is recorded, never a
+        // local stop. The `cap` flag only makes the day cap exact.
         let next = run(
             &env,
             &["--no-session", "--no-tools", "-p", "Synthetic next request"],
         );
-        assert_eq!(terminal(&next)["error_class"], "budget_exhausted");
-        assert_eq!(mock.requests().len(), 3);
-        assert_eq!(rows(&env)[0]["cost_usd"], cost);
-    } else if cost > 0.0 {
-        let next = run(
-            &env,
-            &["--no-session", "--no-tools", "-p", "Synthetic next request"],
-        );
-        assert_eq!(
-            next.status.code(),
-            Some(0),
-            "{}",
-            String::from_utf8_lossy(&next.stderr)
-        );
+        assert!(next.status.success(), "{}", String::from_utf8_lossy(&next.stderr));
         assert_eq!(mock.requests().len(), 4);
         let ledger = rows(&env);
         assert_eq!(ledger.len(), 2);

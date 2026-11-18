@@ -125,72 +125,38 @@ fn two_go_calls_and_a_metered_call_hold_and_settle_together() {
 }
 
 #[test]
-fn configured_go_pool_and_metered_pool_do_not_consume_each_others_headroom() {
+fn an_overrun_paid_charge_is_recorded_and_admission_continues() {
     let fixture = fixture();
-    let first = runtime(&fixture, 2.2)
-        .with_opencode_budget(&json!({"daily_budget_usd":0.25,"max_request_usd":0.25}))
-        .unwrap();
-    let second = runtime(&fixture, 2.2)
-        .with_opencode_budget(&json!({"daily_budget_usd":0.25,"max_request_usd":0.25}))
-        .unwrap();
-    let begin = |alias| json!({"model":alias,"max_tokens":32});
-
-    let mut go = first.begin(&begin(GO), Context::default()).unwrap();
-    let mut api = second.begin(&begin(API), Context::default()).unwrap();
-    let blocked_go = first.begin(&begin(GO), Context::default()).err().unwrap();
-    assert_eq!(blocked_go.code, "cloud_budget_reserved");
-    assert!(!blocked_go.message.contains("exhausted"));
-    assert_eq!(
-        second.begin(&begin(API), Context::default()).err().unwrap().code,
-        "budget_exceeded"
-    );
-
-    api.mark_forwarded().unwrap();
-    assert_eq!(settle(api, 20, 10, None)["cost_usd"].as_f64(), Some(0.06));
-    go.mark_forwarded().unwrap();
-    assert_eq!(settle(go, 16, 10, Some(0.25))["cost_usd"].as_f64(), Some(0.25));
-
-    assert_eq!(
-        first.begin(&begin(GO), Context::default()).err().unwrap().code,
-        "budget_exceeded"
-    );
-    // A settled Go charge plus the metered debit would leave too little
-    // aggregate headroom for a full metered reservation.
-    assert!(second.begin(&begin(API), Context::default()).is_ok());
-}
-
-#[test]
-fn a_charge_above_the_declared_bound_is_recorded_and_closes_go_admission() {
-    let fixture = fixture();
-    let policy = json!({"daily_budget_usd":1.0,"max_request_usd":0.25});
-    let first = runtime(&fixture, 400.0).with_opencode_budget(&policy).unwrap();
+    let first = runtime(&fixture, 400.0);
     let mut call = first.begin(&json!({"model":GO}), Context::default()).unwrap();
     call.mark_forwarded().unwrap();
     let row = settle(call, 16, 10, Some(0.3));
     assert_eq!(row["cost_usd"].as_f64(), Some(0.3));
-    assert_eq!(row["go_reserved_usd"].as_f64(), Some(0.25));
+    assert_eq!(row["settled"], "usage");
+    // No local request bound exists, so the row carries no reservation field.
+    assert!(row.get("go_reserved_usd").is_none());
 
-    let restarted = runtime(&fixture, 400.0).with_opencode_budget(&policy).unwrap();
-    assert_eq!(
-        restarted
-            .begin(&json!({"model":GO}), Context::default())
-            .err()
-            .unwrap()
-            .code,
-        "go_budget_bound_exceeded"
-    );
+    // The recorded overrun closes nothing: a restarted process keeps admitting
+    // both classes while the actual charge stays in the day's total.
+    let restarted = runtime(&fixture, 400.0);
+    assert!(restarted.begin(&json!({"model":GO}), Context::default()).is_ok());
     assert!(restarted.begin(&json!({"model":API}), Context::default()).is_ok());
+    let day = Ledger::open(&fixture.ledger_dir).unwrap().today().unwrap();
+    assert_eq!(day.budget().spend().unwrap(), 0.3);
 }
 
 #[test]
 fn a_legacy_unscoped_go_hold_contributes_zero_to_metered_reservations() {
     const LEGACY: &str = "00000000000000000000000000000000";
-    // A missing stored hold, a token-only hold, and a hold whose recorded USD
-    // dwarfs the entire daily cap. All three must behave identically for money.
+    // A missing stored hold, a token-only hold, and holds whose recorded USD
+    // dwarfs the entire daily cap in both legacy shapes: the pre-pool
+    // `reserved_usd` form and the bounded-pool `go_usd` form. All four must
+    // behave identically for money.
     for legacy in [
         None,
         Some(json!({"subscription_tokens":120})),
         Some(json!({"subscription_tokens":120,"reserved_usd":4000.0})),
+        Some(json!({"subscription_tokens":120,"go_usd":4000.0})),
     ] {
         let fixture = fixture();
         // Settle one metered call so the day's durable files exist, then plant
@@ -227,7 +193,7 @@ fn a_legacy_unscoped_go_hold_contributes_zero_to_metered_reservations() {
         assert_eq!(settle(api, 20, 10, None)["cost_usd"].as_f64(), Some(0.06));
         let row = settle(call, 16, 10, Some(0.02));
         assert_eq!(row["cost_usd"].as_f64(), Some(0.02));
-        assert_eq!(row["go_reserved_usd"].as_f64(), Some(0.25));
+        assert!(row.get("go_reserved_usd").is_none());
 
         // The daily total contains only the actual settled usage.
         let day = Ledger::open(&fixture.ledger_dir).unwrap().today().unwrap();
