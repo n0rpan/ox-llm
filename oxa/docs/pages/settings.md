@@ -275,10 +275,13 @@ client's 30-second maximum. These settings contain no access or refresh token.
 Client transport tests inject loopback endpoints privately; production refresh
 configuration never supplies one.
 
-Subscription calls require their own positive request/token caps, retain actual
-token usage and settle zero USD. Unknown paid work retains its full token bound;
-the cap includes concurrent and crashed-process reservations. It never falls back
-to a paid API balance. Missing metered pricing still refuses metered requests.
+ChatGPT requires positive request and token caps. For OpenCode Go,
+`oxa.cloud.subscription_limits` is optional and has no default. If configured,
+oxa warns when projected usage reaches 80% or 100% of either limit, including
+concurrent reservations, and continues the request. Both providers keep
+recording requests and tokens, including conservative reservations for unknown
+outcomes. Provider limits and credential, offline, and LAN access checks still
+apply. Missing metered pricing still refuses metered requests.
 
 ### Other
 

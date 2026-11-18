@@ -1348,6 +1348,10 @@ impl StreamState {
 
     fn handle(&mut self, ev: StreamEvent, sink: &mut dyn EventSink, events: bool) {
         match ev {
+            StreamEvent::Warning(text) => sink.emit(&AgentEvent::Notice {
+                level: Level::Warning,
+                text: text.into(),
+            }),
             StreamEvent::Prefill { done, total, secs } => {
                 sink.emit(&AgentEvent::Prefill { done, total, secs });
             }

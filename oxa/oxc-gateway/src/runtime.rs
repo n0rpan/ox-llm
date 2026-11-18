@@ -409,9 +409,6 @@ impl Runtime {
         if let Err(catalog::Error::Disabled | catalog::Error::Offline) = self.catalog.resolve(None) {
             return Err(Error::Request);
         }
-        if self.subscription_limits.is_none() {
-            return Err(Error::Request);
-        }
         // The credential store is still read before the cache, so a missing or
         // unsafe store keeps failing at startup with the same error class and
         // still precedes any HTTP, exactly as before.
@@ -452,9 +449,6 @@ impl Runtime {
         use crate::opencode::client::Error;
         let cache = self.go_cache.as_ref().ok_or(Error::Request)?;
         if let Err(catalog::Error::Disabled | catalog::Error::Offline) = self.catalog.resolve(None) {
-            return Err(Error::Request);
-        }
-        if self.subscription_limits.is_none() {
             return Err(Error::Request);
         }
         let key = self.go_key()?;
@@ -586,7 +580,7 @@ impl Runtime {
             }
             if matches!(billing, Billing::Metered(_)) {
                 policy::daily_budget(&self.cap, self.ledger_enabled, Some(0.0), 0.0, 0.0)?;
-            } else if self.subscription_limits.is_none() {
+            } else if self.subscription_limits.is_none() && model.info().provider != Provider::OpenCode {
                 return Err(crate::billing::SubscriptionLimits::missing());
             } else if !self.ledger_enabled {
                 return Err(Refusal::ledger());
@@ -693,6 +687,10 @@ impl Runtime {
     }
 }
 impl<'a> Call<'a> {
+    pub(crate) fn budget_warning(&self) -> Option<&'static str> {
+        self.hold.as_ref().and_then(Hold::budget_warning)
+    }
+
     pub fn model(&self) -> &'a Model {
         self.model
     }

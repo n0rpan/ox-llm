@@ -161,6 +161,44 @@ fn explicit_go_opt_in_still_selects_its_catalog_without_a_default_model() {
 }
 
 #[test]
+fn configured_go_subscription_limits_warn_at_thresholds_and_keep_accounting() {
+    for (limit, threshold) in [(41_600, "80%"), (33_279, "100%")] {
+        let env = TestEnv::new();
+        let mock = MockOpenAi::start_with(|base| {
+            vec![
+                Reply::json(discovery(base)),
+                stream(json!({"content":"Synthetic plan reply"}), "stop"),
+            ]
+        });
+        setup(&env, &format!("http://{}", mock.address()));
+        let path = env.agent_dir().join("settings.json");
+        let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        settings["oxa"]["cloud"]["subscription_limits"]["daily_tokens"] = json!(limit);
+        fs::write(path, settings.to_string()).unwrap();
+
+        let output = run(
+            &env,
+            &["--no-tools", "-p", "Synthetic request with advisory limits"],
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        assert!(
+            stderr.contains(&format!("projected usage reached {threshold}")),
+            "{stderr}"
+        );
+        assert!(!stderr.contains(CREDENTIAL));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("Synthetic plan reply"));
+        assert!(!stdout.contains("projected usage"));
+        let ledger = rows(&env);
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0]["subscription_requests"], 1);
+        assert_eq!(ledger[0]["subscription_tokens"], 105);
+        mock.assert_healthy();
+    }
+}
+
+#[test]
 fn unavailable_go_reports_the_owner_fix_before_any_discovery() {
     for (disabled, reason) in [(true, "disabled"), (false, "no key")] {
         let env = TestEnv::new();
@@ -1825,6 +1863,7 @@ fn check_private_stream_details(cause: &str, check: Option<&str>, reply: Reply) 
         let mut replies = vec![Reply::json(discovery(base)), reply];
         if check.is_some() {
             replies.push(Reply::json(discovery(base)));
+            replies.push(stream(json!({"content":"Synthetic continuation"}), "stop"));
         }
         replies
     });
@@ -1875,11 +1914,14 @@ fn check_private_stream_details(cause: &str, check: Option<&str>, reply: Reply) 
             &env,
             &["--no-session", "--no-tools", "-p", "Synthetic continuation"],
         );
-        assert!(!continued.status.success());
-        assert!(String::from_utf8_lossy(&continued.stderr).contains("subscription_limit_exceeded"));
-        assert_eq!(mock.requests().len(), 3, "discovery only; no second chat");
-        assert_eq!(mock.requests().iter().filter(|r| r.method == "POST").count(), 1);
-        assert_eq!(rows(&env)[0]["subscription_tokens"], 33280);
+        let stderr = String::from_utf8_lossy(&continued.stderr);
+        assert!(continued.status.success(), "{stderr}");
+        assert!(stderr.contains("projected usage reached 100%"), "{stderr}");
+        assert_eq!(mock.requests().iter().filter(|r| r.method == "POST").count(), 2);
+        let ledger = rows(&env);
+        assert_eq!(ledger.len(), 2);
+        assert_eq!(ledger[0]["subscription_tokens"], 33280);
+        assert_eq!(ledger[1]["subscription_tokens"], 105);
     }
     mock.assert_healthy();
 }
