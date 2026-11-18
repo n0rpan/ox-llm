@@ -178,14 +178,14 @@ pub(super) fn run(
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_err(|_| "invalid system clock")?
         .as_secs();
-    let policy = Policy {
+    let board_policy = Policy {
         enabled: true,
         ..Policy::default()
     };
     if let Some(model) = model {
         packets = Input::new(&gh, &policy.host_path, repo, &token, &[], false)
             .with_host(host)
-            .prepare_live(&claims, &policy, &worker, &partition, now, model)?;
+            .prepare_live(&claims, &board_policy, &worker, &partition, now, model)?;
     }
     let mut source = Input::new(&gh, &policy.host_path, repo, &token, &packets, intake).with_host(host);
     let consumer = Consumer {
@@ -195,7 +195,7 @@ pub(super) fn run(
         claims: &claims,
         worker: &worker,
         partition: &partition,
-        policy: &policy,
+        policy: &board_policy,
         ttl: 1800,
     };
     let inputs: Vec<_> = packets
