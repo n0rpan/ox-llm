@@ -128,6 +128,8 @@ fn same_store_readback_preserves_full_claims_and_unknown_legacy_coverage_while_p
         )
         .unwrap();
     let expected = serde_json::to_value(claims.assignments().unwrap()).unwrap();
+    let marker = root.join("22.board-claim.created");
+    fs::remove_file(&marker).unwrap();
     let before = files(root);
     let output = invoke(&env, &config);
     assert!(
@@ -148,6 +150,7 @@ fn same_store_readback_preserves_full_claims_and_unknown_legacy_coverage_while_p
     );
     assert_eq!(readback["legacy_coverage"], "unknown");
     assert_eq!(readback["refill_enabled"], false);
+    assert!(!marker.exists(), "readback must not repair a missing marker");
     assert_eq!(files(root), before);
     assert!(!Path::new(value["queue"].as_str().unwrap()).exists());
     assert_eq!(
@@ -155,6 +158,17 @@ fn same_store_readback_preserves_full_claims_and_unknown_legacy_coverage_while_p
         b"owner paused"
     );
     assert!(!String::from_utf8_lossy(&output.stdout).contains(root.to_str().unwrap()));
+    claims.assignments().unwrap();
+    assert!(marker.exists(), "normal Claims queries retain witness repair");
+    fs::set_permissions(&marker, fs::Permissions::from_mode(0o644)).unwrap();
+    let preserved = files(root);
+    assert_eq!(invoke(&env, &config).status.code(), Some(2));
+    assert_eq!(files(root), preserved);
+    private(&marker, false);
+    fs::remove_file(root.join("22.board-claim.json")).unwrap();
+    let preserved = files(root);
+    assert_eq!(invoke(&env, &config).status.code(), Some(2));
+    assert_eq!(files(root), preserved);
     let other = config.parent().unwrap().join("other-claims");
     private(&other, true);
     value["claims"] = json!(other);
