@@ -583,7 +583,7 @@ fn opt_in_review_policy_observes_pinned_diff_and_authenticated_reviews() {
     let head = git(&["rev-parse", "HEAD"]);
     env.write(
         "home/review.json",
-        r#"{"requester":"review-bot","codex":"code-reviewer","security":"security-reviewer","owner":"owner-reviewer","core":["engine"],"protected":[]}"#,
+        r#"{"requester":"review-bot","codex":"code-reviewer","security":"security-reviewer","owner":"owner-reviewer","core":["engine"],"protected":["docs/protected"]}"#,
     );
     detail["data"]["repository"]["pullRequests"]["nodes"][0]["headRefOid"] = head.clone().into();
     let row = &mut detail["data"]["repository"]["p42"];
@@ -732,6 +732,73 @@ fn opt_in_review_policy_observes_pinned_diff_and_authenticated_reviews() {
         assert_eq!(
             sample["reviews"]["42"]["decision"]["review"]["outstanding"],
             outstanding
+        );
+    }
+
+    env.write("work/docs/protected/contract.md", "protected change\n");
+    git(&["add", "docs/protected/contract.md"]);
+    git(&["commit", "-m", "owner-reviewed change"]);
+    let reviewed_head = git(&["rev-parse", "HEAD"]);
+
+    for (paths, owner_opinion, outstanding) in [
+        (
+            &["docs/token-usage.md", "engine/tests/regression.rs"][..],
+            "APPROVED",
+            serde_json::json!(["codex", "security"]),
+        ),
+        (&[][..], "APPROVED", serde_json::json!(["codex", "security"])),
+        (
+            &["docs/token-usage.md"][..],
+            "DISMISSED",
+            serde_json::json!(["codex", "security", "owner"]),
+        ),
+        (
+            &["docs/AGENTS.md"][..],
+            "APPROVED",
+            serde_json::json!(["codex", "security", "owner"]),
+        ),
+        (
+            &["docs/protected/guide.md"][..],
+            "APPROVED",
+            serde_json::json!(["codex", "security", "owner"]),
+        ),
+        (
+            &["engine/other.rs"][..],
+            "APPROVED",
+            serde_json::json!(["codex", "security", "owner"]),
+        ),
+    ] {
+        git(&["reset", "--hard", &reviewed_head]);
+        for path in paths {
+            env.write(&format!("work/{path}"), "follow-up\n");
+            git(&["add", "--", path]);
+        }
+        git(&["commit", "--allow-empty", "-m", "follow-up"]);
+        let new_head = git(&["rev-parse", "HEAD"]);
+        detail["data"]["repository"]["pullRequests"]["nodes"][0]["headRefOid"] = new_head.clone().into();
+        let row = &mut detail["data"]["repository"]["p42"];
+        row["headRefOid"] = new_head.into();
+        row["comments"] = serde_json::json!({"totalCount":0,"nodes":[]});
+        row["latestOpinionatedReviews"] = serde_json::json!({
+            "totalCount":3,
+            "nodes":[
+                {"state":"APPROVED","commit":{"oid":reviewed_head},"author":{"login":"code-reviewer"}},
+                {"state":"APPROVED","commit":{"oid":reviewed_head},"author":{"login":"security-reviewer"}},
+                {"state":owner_opinion,"commit":{"oid":reviewed_head},"author":{"login":"owner-reviewer"}}
+            ]
+        });
+        fs::write(env.work().join("first.json"), detail.to_string()).unwrap();
+        fs::write(env.work().join("detail.json"), detail.to_string()).unwrap();
+        let out = invoke(
+            &env,
+            "work board --shadow --repo example/repo --once --review-policy ../home/review.json",
+        );
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let log = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
+        let sample: serde_json::Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+        assert_eq!(
+            sample["reviews"]["42"]["decision"]["review"]["outstanding"], outstanding,
+            "{paths:?}"
         );
     }
 }

@@ -20,7 +20,7 @@ pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs) -> Result<bool, String
 }
 
 // Keep owner state outside every worker Git bind.
-fn protected_storage(storage: &Path, repo: &Path, common: &Path) -> Result<(), String> {
+pub(crate) fn protected_storage(storage: &Path, repo: &Path, common: &Path) -> Result<(), String> {
     if !storage.is_absolute()
         || storage
             .components()
@@ -155,7 +155,7 @@ pub(crate) fn run(
         };
         protected_storage(&policy.storage, &root, &common)?;
         if args.first().is_some_and(|arg| arg == "board") {
-            return crate::work_board::run(&args[1..], &root, env, dirs, &policy);
+            return crate::work_board::run(&args[1..], &root, &common, env, dirs, &policy);
         }
         if matches!(args.first().map(String::as_str), Some("status" | "--status")) {
             let json = match args {
