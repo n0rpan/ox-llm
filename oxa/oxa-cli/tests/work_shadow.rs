@@ -1444,6 +1444,20 @@ fn landing_shadow_holds_an_approved_head_on_unresolved_current_or_older_reviews(
     let mut absent = queue.clone();
     absent["data"]["repository"]["mergeQueue"]["entries"] = json!({"totalCount":0,"nodes":[]});
     save_queue(&absent);
+    let mut missing_code = review.clone();
+    missing_code["data"]["repository"]["p42"]["comments"] = json!({"totalCount":0,"nodes":[]});
+    assert_eq!(read(&missing_code)["landing"]["42"]["next"], "wait_review");
+
+    let mut pending = completed(head, false);
+    pending["status"] = "in_progress".into();
+    for code in [pending, completed(old, false)] {
+        let mut without_exact_clearance = review.clone();
+        without_exact_clearance["data"]["repository"]["p42"]["comments"]["nodes"][0]["body"] =
+            summary(code, completed(head, false)).into();
+        let decision = read(&without_exact_clearance);
+        assert_eq!(decision["landing"]["42"]["next"], "wait_review");
+        assert!(decision["landing"]["42"].get("hold_intervention").is_none());
+    }
     assert_eq!(read(&review)["landing"]["42"]["next"], "wait_queue");
     save_queue(&queue);
     review["data"]["repository"]["p42"]["mergeQueueEntry"] = json!({"id":"MQE_fixture"});

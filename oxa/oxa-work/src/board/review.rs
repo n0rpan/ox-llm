@@ -353,11 +353,15 @@ pub fn latest_findings(comments: Option<&[Comment<'_>]>) -> Findings {
     latest_summary(comments, None).map_or(Findings::Unknown, |summary| summary.findings)
 }
 
-/// Also report whether the latest summary confirms a completed, unresolved
-/// review on this exact head. A hold from another head cannot authorize an action.
+/// Landing requires completed Code review on this head for clearance. Older
+/// unresolved findings still hold landing, but cannot authorize an action.
 pub fn latest_findings_for_head(comments: Option<&[Comment<'_>]>, head: &str) -> (Findings, bool) {
     latest_summary(comments, Some(head)).map_or((Findings::Unknown, false), |summary| {
-        (summary.findings, summary.exact_hold)
+        let findings = match summary.findings {
+            Findings::Clear if !summary.exact_code_completed => Findings::Unknown,
+            findings => findings,
+        };
+        (findings, summary.exact_hold)
     })
 }
 
@@ -370,6 +374,7 @@ pub fn latest_code_approval(comments: Option<&[Comment<'_>]>) -> Option<String> 
 struct Summary {
     findings: Findings,
     code_approval: Option<String>,
+    exact_code_completed: bool,
     exact_hold: bool,
 }
 
@@ -387,6 +392,7 @@ fn latest_summary(comments: Option<&[Comment<'_>]>, head: Option<&str>) -> Optio
         let state = state_line(lines.next(), head).unwrap_or(Summary {
             findings: Findings::Unknown,
             code_approval: None,
+            exact_code_completed: false,
             exact_hold: false,
         });
         match latest {
@@ -410,6 +416,7 @@ fn combine_tied(left: Summary, right: Summary) -> Summary {
     };
     Summary {
         findings,
+        exact_code_completed: left.exact_code_completed && right.exact_code_completed,
         exact_hold: left.exact_hold && right.exact_hold,
         code_approval: left
             .code_approval
@@ -440,17 +447,21 @@ fn state_line(line: Option<&str>, head: Option<&str>) -> Option<Summary> {
                 && findings != Findings::Unresolved
         })
         .map(str::to_owned);
+    let completed_on_head = |review: &Value| {
+        head.is_some_and(|head| {
+            git::object_id(head)
+                && review["commit_sha"].as_str() == Some(head)
+                && review["status"] == "completed"
+        })
+    };
+    let exact_hold = [code, security]
+        .into_iter()
+        .any(|review| completed_on_head(review) && review["has_unresolved_findings"] == true);
     Some(Summary {
         findings,
         code_approval,
-        exact_hold: head.is_some_and(|head| {
-            git::object_id(head)
-                && [code, security].into_iter().any(|review| {
-                    review["commit_sha"].as_str() == Some(head)
-                        && review["status"] == "completed"
-                        && review["has_unresolved_findings"] == true
-                })
-        }),
+        exact_code_completed: completed_on_head(code),
+        exact_hold,
     })
 }
 
