@@ -11,6 +11,7 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 pub mod board;
+pub mod budget_policy;
 mod checkpoint;
 mod committed;
 pub use committed::{verify_saved_task, VerifiedTask};
