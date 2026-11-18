@@ -5,9 +5,10 @@
 //!
 //! A record is relaunched when its state is [`WorkerState::Dead`]: not finished, not stopped by
 //! the owner, and its process is gone (for example the parent shut down and stopped the group).
-use super::launch::{check_value, resume_mode, WorkerMode};
+use super::launch::{check_value, resume_mode, scope_args, WorkerMode};
 use super::registry::{WorkerRecord, WorkerState};
 use super::tool::parse_mode;
+use super::tool::ParentScope;
 use oxa_proto::Autonomy;
 
 /// Setting: relaunch dead, unfinished workers when the parent session opens (default true).
@@ -19,7 +20,8 @@ pub fn due(state: &WorkerState) -> bool {
 }
 
 /// The argv of the relaunched child (without the program): `--mode json --continue=<id> --model <m>
-/// --permission-mode <p>`. There is no `--goal`: the session carries its goal. The permission
+/// --permission-mode <p>` and the parent's token allowance, tool exclusions and session directory
+/// (`scope`), as a first launch carries them. There is no `--goal`: the session carries its goal. The permission
 /// mode is the one recorded at start, never wider than the parent's autonomy allows now; a notice
 /// is returned when it was narrowed.
 pub fn resume_argv(
@@ -39,7 +41,7 @@ pub fn resume_argv(
             mode.as_arg()
         )
     });
-    let args = vec![
+    let mut args = vec![
         "--mode".to_string(),
         "json".to_string(),
         format!("--continue={}", rec.session_id),
@@ -48,6 +50,11 @@ pub fn resume_argv(
         "--permission-mode".to_string(),
         mode.as_arg().to_string(),
     ];
+    args.extend(scope_args(
+        scope.max_tokens,
+        &scope.exclude_tools,
+        scope.session_dir.as_deref(),
+    )?);
     Ok((args, notice))
 }
 
@@ -83,13 +90,27 @@ mod tests {
 
     #[test]
     fn resume_argv_continues_without_goal_and_never_widens() {
-        let (args, notice) = resume_argv(&rec("workspace"), Autonomy::Standard).unwrap();
+        let (args, notice) =
+            resume_argv(&rec("workspace"), Autonomy::Standard, &ParentScope::default()).unwrap();
         assert!(args.iter().any(|a| a == "--continue=p-a-1"));
         assert!(!args.iter().any(|a| a == "--goal"));
         assert!(notice.is_none());
-        let (args, notice) = resume_argv(&rec("yolo"), Autonomy::Standard).unwrap();
+        let (args, notice) = resume_argv(&rec("yolo"), Autonomy::Standard, &ParentScope::default()).unwrap();
         assert!(args.windows(2).any(|w| w == ["--permission-mode", "workspace"]));
         assert!(notice.is_some());
-        assert!(resume_argv(&rec("bogus"), Autonomy::Standard).is_err());
+        let scope = ParentScope {
+            max_tokens: Some(900),
+            exclude_tools: vec!["bash".into()],
+            session_dir: Some("/work/sessions".into()),
+        };
+        let (args, _) = resume_argv(&rec("workspace"), Autonomy::Standard, &scope).unwrap();
+        for expected in [
+            "--max-tokens=900",
+            "--exclude-tools=bash",
+            "--session-dir=/work/sessions",
+        ] {
+            assert!(args.iter().any(|a| a == expected), "{expected}: {args:?}");
+        }
+        assert!(resume_argv(&rec("bogus"), Autonomy::Standard, &ParentScope::default()).is_err());
     }
 }

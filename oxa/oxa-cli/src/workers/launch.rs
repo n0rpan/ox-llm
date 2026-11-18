@@ -152,19 +152,34 @@ pub fn child_argv(
     .to_vec();
     // The parent's own limits and scope reach the child, so starting a worker is not a way
     // around them.
-    if let Some(tokens) = spec.max_tokens {
+    args.extend(scope_args(
+        spec.max_tokens,
+        &spec.exclude_tools,
+        spec.session_dir.as_deref(),
+    )?);
+    Ok((args, notice))
+}
+
+/// The argv that carries the parent's allowance, tool exclusions and session directory to a child.
+pub(super) fn scope_args(
+    max_tokens: Option<u64>,
+    exclude_tools: &[String],
+    session_dir: Option<&Path>,
+) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    if let Some(tokens) = max_tokens {
         args.push(format!("--max-tokens={tokens}"));
     }
-    if !spec.exclude_tools.is_empty() {
-        let excluded: Vec<&str> = spec.exclude_tools.iter().map(String::as_str).collect();
+    if !exclude_tools.is_empty() {
+        let excluded: Vec<&str> = exclude_tools.iter().map(String::as_str).collect();
         check_value("excluded tool", &excluded.join(","))?;
         args.push(format!("--exclude-tools={}", excluded.join(",")));
     }
-    if let Some(dir) = &spec.session_dir {
+    if let Some(dir) = session_dir {
         check_value("session directory", &dir.to_string_lossy())?;
         args.push(format!("--session-dir={}", dir.display()));
     }
-    Ok((args, notice))
+    Ok(args)
 }
 
 /// The git commands that create a worker's worktree, one argv each (program first). Hooks are

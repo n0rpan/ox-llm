@@ -669,7 +669,7 @@ impl WorkerCore {
             Err(e) => return vec![format!("worker: cannot resume workers: {e}")],
         };
         let autonomy = self.yolo.level();
-        let env = child_env(&self.parent_env);
+        let env = child_env(&self.parent_env, oxa_proto::offline());
         let mut live = records.iter().filter(|r| is_live(r, &self.sessions_dir)).count();
         let mut notices = Vec::new();
         let mut changed = false;
@@ -684,7 +684,7 @@ impl WorkerCore {
                 ));
                 continue;
             }
-            let (argv, notice) = match resume::resume_argv(rec, autonomy) {
+            let (argv, notice) = match resume::resume_argv(rec, autonomy, &self.parent_scope) {
                 Ok(v) => v,
                 Err(e) => {
                     notices.push(format!("worker {}: not resumed: {e}", rec.name));
@@ -699,7 +699,14 @@ impl WorkerCore {
                 ));
                 continue;
             }
-            let mut command = env_wrapper(&rec.worktree, &self.parent_env, &env);
+            let Some(env_bin) = self.trusted_program("env", &rec.worktree) else {
+                notices.push(format!(
+                    "worker {}: not resumed, env was not found in a trusted PATH directory",
+                    rec.name
+                ));
+                continue;
+            };
+            let mut command = env_wrapper(&env_bin, &rec.worktree, &self.parent_env, &env);
             command.push(self.oxa_bin.to_string_lossy().into_owned());
             command.extend(argv);
             let refs: Vec<&str> = command.iter().map(String::as_str).collect();
