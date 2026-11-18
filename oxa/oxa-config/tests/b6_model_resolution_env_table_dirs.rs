@@ -311,6 +311,34 @@ fn models_json_endpoints_keys_and_default() {
 }
 
 #[test]
+fn models_json_accepts_https_cloud_protocols_alongside_the_engine() {
+    let t = TestEnv::new();
+    let dirs = Dirs::under(t.root());
+    t.write(
+        "home/.oxa/agent/models.json",
+        r#"{"default":"laptop","providers":{
+            "laptop":{"api":"openai-completions","baseUrl":"http://192.168.1.7:8080"},
+            "chatbox":{"api":"openai-chat","baseUrl":"https://chat.example.invalid/v1",
+                "key":"chat-key-ref","pool":"api-monthly",
+                "models":[{"id":"chat-model","context":32768,"price":{"input":1.25,"output":4}}]},
+            "responsebox":{"api":"openai-responses","baseUrl":"https://responses.example.invalid/v1",
+                "key":"response-key-ref","pool":"api-monthly"},
+            "messagebox":{"api":"anthropic-messages","baseUrl":"https://messages.example.invalid/v1",
+                "key":"message-key-ref","pool":"api-monthly",
+                "models":[{"id":"message-model","context":32768}]}
+        }}"#,
+    );
+    let (cfg, diags) = ModelsConfig::load(&dirs, &Env::from_pairs(&[]));
+    assert!(
+        diags.is_empty(),
+        "valid cloud entries should be recognized: {diags:?}"
+    );
+    assert_eq!(cfg.default, "laptop");
+    assert_eq!(cfg.endpoints.len(), 1);
+    assert_eq!(cfg.endpoints[0].base_url, "http://192.168.1.7:8080");
+}
+
+#[test]
 fn bad_models_json_is_a_diagnostic_not_a_failure() {
     let t = TestEnv::new();
     let dirs = Dirs::under(t.root());
