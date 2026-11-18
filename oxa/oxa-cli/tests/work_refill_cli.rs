@@ -215,14 +215,10 @@ cat "$0.reply"
         .expect("CLI must retain native receipt");
     assert_eq!(binding.number, 44);
     assert_eq!(binding.branch, "agent/44");
-    if pull_request {
-        let frozen = serde_json::to_value(&binding).unwrap();
-        let fields = frozen.as_object().unwrap();
-        assert!(
-            fields.values().any(|value| value == &json!(revision)),
-            "PR admission must durably retain the exact reviewed revision"
-        );
-    }
+    assert_eq!(
+        binding.reviewed_head.as_deref(),
+        pull_request.then_some(revision.as_str())
+    );
     assert!(binding.lease == claims.snapshot().unwrap()[&44].lease.clone().unwrap());
     assert_eq!(
         tasks[0].file_name().unwrap().to_str().unwrap(),

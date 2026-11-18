@@ -196,12 +196,15 @@ pub(super) fn run(
                 .iter()
                 .find(|packet| packet.number == receipt.number)
                 .ok_or("native admission packet unavailable")?;
-            let binding = oxa_work::board::NativeBinding::new(
+            let mut binding = oxa_work::board::NativeBinding::new(
                 receipt.number,
                 &receipt.key,
                 &receipt.lease,
                 &prepared.branch,
             )?;
+            binding.reviewed_head =
+                (prepared.action != Action::BuildIssue).then(|| prepared.revision.clone());
+            binding.validate()?;
             if !claims.bind_native(&worker.id, &binding)? {
                 return Err("native admission binding refused".into());
             }
