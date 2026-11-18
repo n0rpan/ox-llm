@@ -83,6 +83,9 @@ impl<'a> Input<'a> {
         let board = partition.assignment_board(claims, self, policy, worker, now)?;
         let mut prepared = vec![];
         for number in board.candidates(&worker.id)? {
+            if !board.assignments.contains_key(&number) {
+                continue;
+            }
             let entry = board
                 .board
                 .entries
@@ -97,6 +100,9 @@ impl<'a> Input<'a> {
             }
             let fields = oxa_work::pull_request_fields(number)?;
             let (snapshot, _) = self.reader.repository_read(&fields)?;
+            if snapshot["pullRequest"]["isCrossRepository"] == true {
+                continue;
+            }
             let context =
                 oxa_work::prepare_pull_request_context(number, &entry.head, &snapshot["pullRequest"])?;
             let mut prompt = String::with_capacity(context.prompt.len());
