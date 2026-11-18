@@ -107,6 +107,7 @@ impl std::error::Error for Error {}
 pub struct Gateway {
     runtime: Runtime,
     client: Client,
+    go_base: Option<String>,
     #[cfg(feature = "upstream-openai")]
     openai: crate::openai::client::Client,
 }
@@ -121,6 +122,7 @@ impl Gateway {
         Ok(Self {
             runtime,
             client,
+            go_base: None,
             #[cfg(feature = "upstream-openai")]
             openai,
         })
@@ -143,11 +145,33 @@ impl Gateway {
         let result = driver.block_on(self.runtime.discover_go(self.client.transport(), base, timeout));
         driver.shutdown_timeout(Duration::from_secs(1));
         if result.is_ok() {
+            self.go_base = Some(base.to_owned());
             if let Some(diagnostics) = self.runtime.diagnostics() {
                 diagnostics.clear();
             }
         }
         result.map_err(Error::OpenCode)
+    }
+    /// Refresh the Go account's Usage observation independently of chat.
+    /// The destination is the same protected base used for successful Go discovery.
+    pub async fn opencode_plan_usage(
+        &self,
+        timeout: Duration,
+        cancel: &Cancellation,
+    ) -> Result<Option<crate::opencode::PlanUsage>, Error> {
+        let Some(base) = &self.go_base else {
+            return Ok(None);
+        };
+        let Some(key) = self
+            .runtime
+            .catalog_key(crate::catalog::Provider::OpenCode)
+            .map_err(Error::Refused)?
+        else {
+            return Ok(None);
+        };
+        crate::opencode::client::plan_usage(self.client.transport(), base, &key, timeout, cancel)
+            .await
+            .map_err(Error::OpenCode)
     }
     /// One bounded background refresh of the Go catalog cache, sharing this
     /// gateway's existing HTTP pool. It never mutates the live catalog, so a
@@ -184,7 +208,7 @@ impl Gateway {
             Some(cached) => cached,
             None => (State::Fresh, self.fetch_catalog(source, &key, timeout)?),
         };
-        let (missing_price, missing_limits) = self
+        let (missing_price, missing_limits, estimated_price) = self
             .runtime
             .apply_provider_catalog(source, offers)
             .map_err(Error::Refused)?;
@@ -192,6 +216,7 @@ impl Gateway {
             state,
             missing_price,
             missing_limits,
+            estimated_price,
         }))
     }
     /// Replace only the private cache on a stale refresh.
@@ -394,12 +419,16 @@ impl Gateway {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |t| t.as_secs()),
         };
+        let mut forwarding_error = None;
         let mut deliver = |event| match event {
             anthropic_client::Event::Sending => {
                 if cancel.is_cancelled() {
                     return Control::Stop;
                 }
-                call.mark_forwarded();
+                if let Err(error) = call.mark_forwarded() {
+                    forwarding_error = Some(error);
+                    return Control::Stop;
+                }
                 Control::Continue
             }
             anthropic_client::Event::Chunk(chunk) => {
@@ -437,6 +466,9 @@ impl Gateway {
                 )
                 .await
         };
+        if let Some(error) = forwarding_error {
+            return self.finish(call, Err(Error::Refused(error)), history, false, on);
+        }
         // This record survives cancellation during final chunk delivery and
         // public usage opt-out; both must settle the actual cache categories.
         if let Some(usage) = terminal_usage {
@@ -548,6 +580,7 @@ impl Gateway {
         let mut payload = payload.clone();
         payload["max_tokens"] = call.max_output().into();
         let mut usage = None;
+        let mut forwarding_error = None;
         let result = client::stream_observed(
             self.client.transport(),
             client::Chat {
@@ -563,7 +596,10 @@ impl Gateway {
                     if cancel.is_cancelled() {
                         return Control::Stop;
                     }
-                    call.mark_forwarded();
+                    if let Err(error) = call.mark_forwarded() {
+                        forwarding_error = Some(error);
+                        return Control::Stop;
+                    }
                     Control::Continue
                 }
                 client::Event::Chunk(chunk) => {
@@ -575,6 +611,9 @@ impl Gateway {
             self.runtime.diagnostics(),
         )
         .await;
+        if let Some(error) = forwarding_error {
+            return self.finish(call, Err(Error::Refused(error)), None, false, on);
+        }
         let result = self.finish_go(call, result, usage, on);
         if result.is_ok() {
             if let Some(diagnostics) = self.runtime.diagnostics() {

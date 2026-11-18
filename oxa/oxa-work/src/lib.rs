@@ -11,6 +11,7 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 pub mod board;
+pub mod budget_policy;
 mod checkpoint;
 mod committed;
 pub use committed::{verify_saved_task, VerifiedTask};
@@ -24,7 +25,10 @@ mod publish;
 mod queue;
 pub use notes::{ProblemNote, ReportRecord};
 pub use publish::{inherit_report_lease, publish, report_notes};
-pub use queue::{native_task, run_queue, NativeQueueOwner, QueueEvent, QueueOptions, QueueRun, QueueStatus};
+pub use queue::{
+    native_task, run_queue, NativeQueueOwner, NativeQueueTarget, QueueEvent, QueueOptions, QueueRun,
+    QueueStatus,
+};
 pub mod mirrors;
 pub mod shadow;
 mod state;
@@ -51,10 +55,17 @@ pub mod events;
 mod facts_io;
 pub use facts_io::require_private_directory;
 mod github;
-pub use github::{pull_request_task, ReviewedPullRequest};
+pub use github::{
+    prepare_pull_request_context, pull_request_fields, pull_request_task, PullRequestContext,
+    ReviewedPullRequest,
+};
 pub mod incidents;
 pub mod situation;
 pub mod standing;
+pub use publish::{
+    Admission, AdmissionAcknowledgment, AdmissionReceipt, DeliveryReceipt, LandingPublisher, NoticeIntent,
+    RejectedLanding, RetryIntent,
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -97,6 +108,9 @@ pub struct Record {
     pub outcome: Outcome,
     pub detail: String,
     pub worker: Option<WorkerResult>,
+    /// Durable runner revision immediately before the native invocation that produced this result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_launch_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_tokens: Option<TaskTokens>,
     pub session_id: Option<String>,
@@ -148,6 +162,7 @@ pub struct PlannedTask {
     commands: Vec<String>,
     checkpoint_revision: Option<u64>,
     base_alias: Option<tree::BaseAlias>,
+    native: bool,
 }
 impl PlannedTask {
     pub fn task(&self) -> &Task {
@@ -191,6 +206,7 @@ fn plan_new_task(repo: &Path, task: Task, policy: &RunPolicy, native: bool) -> R
         commands,
         checkpoint_revision: None,
         base_alias,
+        native,
     })
 }
 
@@ -244,6 +260,7 @@ fn plan_task_mode(
             commands: execution.commands,
             checkpoint_revision: Some(saved.record.checkpoint_revision),
             base_alias: None,
+            native,
         });
     }
     plan_new_task(repo, task, policy, native)
@@ -936,6 +953,7 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
         outcome: Outcome::Blocked,
         detail,
         worker: None,
+        worker_launch_revision: None,
         task_tokens: None,
         session_id: None,
         base_sha: None,
@@ -1199,6 +1217,14 @@ fn run_locked(
             return Err("task specification changed; use a new task id".into());
         }
         writer.replay(&old, observer).map_err(RunError::Checkpoint)?;
+        if planned.native
+            && old.record.checkpoint_kind == CheckpointKind::WorkerFinished
+            && old.record.worker_launch_revision.is_some()
+        {
+            // Other tasks can acknowledge the shared repository cursor. The task lock
+            // still fences this exact worker result and the consumer deduplicates it.
+            observer.checkpoint(&old.record).map_err(RunError::Checkpoint)?;
+        }
         // Action recovery cannot turn a changed HEAD into fresh acceptance.
         // Only an explicit rerun starts a new execution for these checkpoints.
         if !rerun && matches!(old.record.step, Step::Publishing | Step::Reporting) {
@@ -1242,6 +1268,7 @@ fn run_locked(
         observer,
         scrub_note,
         base_alias: planned.base_alias.as_ref(),
+        native: planned.native,
         #[cfg(target_os = "linux")]
         managed_steering: locked.managed_steering.as_ref(),
     })

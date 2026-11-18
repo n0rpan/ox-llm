@@ -19,6 +19,24 @@ use landing_history::{AdmissionEvidence, Admissions};
 
 pub const INTERVAL: Duration = Duration::from_secs(300);
 pub const MAX_LOG_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_LEAD_SAMPLE_BYTES: u64 = 1_048_576;
+
+/// Sanitized remaining quota for one GitHub API resource.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitHubWindow {
+    pub limit: u64,
+    pub remaining: u64,
+    pub resets_at: u64,
+}
+
+/// Only the authenticated App Reader can populate this sample field.
+#[derive(Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppQuota {
+    pub core: Option<GitHubWindow>,
+    pub graphql: Option<GitHubWindow>,
+}
 
 /// Read the owner's explicit report policy through the private facts storage checks.
 pub fn read_queue_report_policy(path: &Path) -> Result<Vec<u8>> {
@@ -49,6 +67,8 @@ struct Sample<'a> {
     landing: &'a BTreeMap<u64, LandingDecision>,
     #[serde(skip_serializing_if = "Option::is_none")]
     landing_main: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    app_quota: Option<AppQuota>,
 }
 
 pub(crate) const OWNER_FILE_FLAGS: libc::c_int = libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
@@ -337,6 +357,7 @@ pub struct LandingSample {
     pub landing: BTreeMap<u64, LandingDecision>,
     /// Main can advance independently of the queue or its merge-group commits.
     pub landing_main: Option<String>,
+    pub app_quota: Option<AppQuota>,
 }
 
 /// Persist the board and its projections in one owner-only sample.
@@ -355,6 +376,7 @@ pub fn run_with_landing(
             queue_rejections,
             mut landing,
             landing_main,
+            app_quota,
         } = snapshot()?;
         let matched_queue_admissions = if landing.is_empty() {
             BTreeMap::new()
@@ -375,7 +397,7 @@ pub fn run_with_landing(
             &queue_rejections,
             &matched_queue_admissions,
         );
-        let sample = Sample {
+        let mut sample = Sample {
             schema_version: 1,
             observed_at: board.observed_at,
             would_take: board.entries.iter().filter(|entry| entry.eligible).collect(),
@@ -385,8 +407,13 @@ pub fn run_with_landing(
             matched_queue_admissions: &matched_queue_admissions,
             landing: &landing,
             landing_main: landing_main.as_deref(),
+            app_quota,
         };
         let mut line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
+        if sample.app_quota.is_some() && line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
+            sample.app_quota = None;
+            line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
+        }
         line.push(b'\n');
         let length = log.metadata().map_err(|_| "cannot inspect shadow log")?.len();
         if length.saturating_add(line.len() as u64) > MAX_LOG_BYTES {

@@ -172,7 +172,8 @@ commands! {
     LeadChat {
         path: &["lead", "chat"], aliases: &[], summary: "Open lead chat",
         arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
-        surfaces: LEAD_PENDING, requirements: NO_REQUIREMENTS,
+        surfaces: Surfaces { cli: Availability::Supported, ..LEAD_PENDING },
+        requirements: Requirements { owner_only: true, ..NO_REQUIREMENTS },
     },
 }
 
@@ -326,14 +327,15 @@ mod tests {
             let declaration = COMMANDS.iter().find(|entry| entry.id == *id).unwrap();
             assert_eq!(declaration.path, *path);
             let input: Vec<_> = path.iter().map(|part| (*part).to_string()).collect();
-            let installed = matches!(id, CommandId::Lead | CommandId::LeadServe);
+            let in_menu = matches!(id, CommandId::Lead | CommandId::LeadServe);
+            let in_cli = in_menu || *id == CommandId::LeadChat;
             assert_eq!(
                 parse_cli(&input).map(|invocation| invocation.command.id),
-                installed.then_some(*id)
+                in_cli.then_some(*id)
             );
             assert!(dispatch_slash(&input).is_none());
             for surface in [Surface::Cli, Surface::Slash, Surface::Menu, Surface::Web] {
-                let shown = installed && matches!(surface, Surface::Cli | Surface::Menu);
+                let shown = (in_menu && surface == Surface::Menu) || (in_cli && surface == Surface::Cli);
                 assert_eq!(entries(surface).any(|entry| entry.id == *id), shown);
                 assert_eq!(help(surface).contains(declaration.summary), shown);
             }
@@ -344,6 +346,9 @@ mod tests {
     fn unavailable_child_does_not_resolve_as_the_available_lead_menu() {
         assert_eq!(parse_cli(&words("lead")).unwrap().command.id, CommandId::Lead);
         assert!(parse_cli(&words("lead board")).is_none());
-        assert!(parse_cli(&words("lead chat private synthetic text")).is_none());
+        let input = words("lead chat status");
+        let invocation = parse_cli(&input).unwrap();
+        assert_eq!(invocation.command.id, CommandId::LeadChat);
+        assert_eq!(invocation.args, &input[2..]);
     }
 }

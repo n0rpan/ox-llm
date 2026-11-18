@@ -37,25 +37,32 @@ impl NotificationTarget {
     fn read(row: &Value) -> Option<Self> {
         let author = &row["author"];
         let login = author["login"].as_str()?;
-        let account = match author["__typename"].as_str()? {
-            "User" => login,
-            "Bot" => login.strip_suffix("[bot]").unwrap_or(login),
+        let is_bot = match author["__typename"].as_str()? {
+            "User" => false,
+            "Bot" => true,
             _ => return None,
         };
-        if account.len() > 100
-            || !account.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
-            || !account
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
-        {
-            return None;
-        }
+        recipient_mention(login, is_bot)?;
         Some(Self {
             pull_request_id: node_id(&row["id"])?.to_owned(),
             author_id: node_id(&author["id"])?.to_owned(),
             login: login.to_owned(),
         })
     }
+}
+
+pub(crate) fn recipient_mention(login: &str, is_bot: bool) -> Option<&str> {
+    let account = if is_bot {
+        login.strip_suffix("[bot]").unwrap_or(login)
+    } else {
+        login
+    };
+    (account.len() <= 100
+        && account.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+        && account
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b)))
+    .then_some(account)
 }
 
 pub(crate) struct Removal<'a> {
@@ -81,19 +88,23 @@ impl RejectionEvidence {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
-struct WorkflowIdentity {
-    check_suite_id: u64,
-    workflow_run_id: u64,
+pub(super) struct WorkflowIdentity {
+    pub(super) check_suite_id: u64,
+    pub(super) workflow_run_id: u64,
     // GitHub may begin a new workflow attempt after the check completed.
     // The job's own attempt must match before using any test report.
-    observed_run_attempt: u64,
+    pub(super) observed_run_attempt: u64,
 }
 
 impl WorkflowIdentity {
     fn read(check: &Value, merge_group_head: &str) -> Option<Self> {
+        Self::for_event(check, merge_group_head, "merge_group")
+    }
+
+    pub(super) fn for_event(check: &Value, head: &str, event: &str) -> Option<Self> {
         let suite = &check["checkSuite"];
         let run = &suite["workflowRun"];
-        if suite["commit"]["oid"].as_str() != Some(merge_group_head) || run["event"] != "merge_group" {
+        if suite["commit"]["oid"].as_str() != Some(head) || run["event"] != event {
             return None;
         }
         Some(Self {
@@ -104,7 +115,7 @@ impl WorkflowIdentity {
     }
 }
 
-fn positive_id(value: &Value) -> Option<u64> {
+pub(super) fn positive_id(value: &Value) -> Option<u64> {
     value.as_u64().filter(|id| *id > 0)
 }
 
@@ -183,7 +194,7 @@ fn node_id(value: &Value) -> Option<&str> {
     value.as_str().filter(|id| is_node_id(id))
 }
 
-pub(super) fn is_node_id(id: &str) -> bool {
+pub(crate) fn is_node_id(id: &str) -> bool {
     (1..=128).contains(&id.len())
         && id
             .bytes()
@@ -286,7 +297,7 @@ fn rejection(row: &Value, entry: &Entry, queue_id: &str) -> Result<Option<Reject
 }
 
 /// Validate a canonical UTC second before comparing GitHub event times.
-fn github_utc(value: &Value) -> Option<&str> {
+pub(super) fn github_utc(value: &Value) -> Option<&str> {
     value
         .as_str()
         .filter(|time| oxa_session::parse_utc_seconds(time).is_some())
