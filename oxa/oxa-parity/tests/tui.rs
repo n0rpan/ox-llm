@@ -191,7 +191,7 @@ fn is_status_row(text: &str) -> bool {
 }
 
 /// The last row that is not an extension status row.
-fn last_footer_row(s: &Screen) -> usize {
+fn last_footer_row(s: &Screen) -> u16 {
     let (rows, _) = s.size();
     let mut row = rows - 1;
     while row > 1 && is_status_row(&s.row(row)) {
