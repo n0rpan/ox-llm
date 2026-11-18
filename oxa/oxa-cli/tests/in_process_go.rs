@@ -134,6 +134,61 @@ fn a_key_enables_go_catalog_and_plan_chat_without_legacy_enable_or_limits() {
 }
 
 #[test]
+fn native_go_continue_restores_a_keyed_session_without_explicit_cloud_enablement() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"Synthetic first reply"}), "stop"),
+            Reply::json(discovery(base)),
+            stream(json!({"content":"Synthetic resumed reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    fs::write(&path, settings.to_string()).unwrap();
+
+    let first = run(
+        &env,
+        &["--model", MODEL, "--no-tools", "-p", "Synthetic first task"],
+    );
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(String::from_utf8_lossy(&first.stdout).contains("Synthetic first reply"));
+
+    let resumed = run(
+        &env,
+        &["--continue", "--no-tools", "-p", "Synthetic resumed task"],
+    );
+    assert!(
+        resumed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    assert!(String::from_utf8_lossy(&resumed.stdout).contains("Synthetic resumed reply"));
+    assert_eq!(terminal(&resumed)["session_id"], terminal(&first)["session_id"]);
+    assert_eq!(
+        mock.requests()
+            .iter()
+            .filter(|request| request.method == "POST")
+            .count(),
+        2
+    );
+    assert_eq!(rows(&env).len(), 2);
+    mock.assert_healthy();
+}
+
+#[test]
 fn explicit_go_opt_in_still_selects_its_catalog_without_a_default_model() {
     let env = TestEnv::new();
     let mock = MockOpenAi::start_with(|base| {
