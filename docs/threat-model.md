@@ -25,5 +25,9 @@ Used by automated security review (Codex) and by human/agent reviewers. Keep it 
 8. **Native engine (oxe):** the HTTP server listens on loopback only; `unsafe`, FFI (kernels, NPU), process spawning and file permission changes need explicit review.
 9. **No Python in the product path** (v0.2.1+).
 
+## Advisory Go review allowance
+
+The fixed-price OpenCode Go review is advisory and defaults off. Trusted repository maintainers with Write access govern `GO_REVIEW_ENABLED`, `GO_REVIEW_MAX_PER_DAY` (40 reviews per UTC day by default), and the PR comment markers used to count reviews and suppress repeats for the same diff. The allowance depends on maintainers preserving those markers. Metered spend remains subject to the budget and ledger requirements above. Required CI and review gates remain in force.
+
 ## Most security-relevant paths
 `oxa/oxc-gateway/src/` (providers, auth, ledger, redaction, share), `oxa/oxa-cli/src/{login_cmd,in_process,dispatch}.rs`, `oxa/oxa-sandbox/`, `oxa/oxa-perm/`, `oxa/oxa-proto/src/guard.rs`, `oxa/oxa-tools/src/bash.rs`, `engine/crates/{server,kernels-sys,image-npu,oxn}/`, `.github/workflows/`, `packaging/`.
