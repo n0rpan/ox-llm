@@ -5,6 +5,7 @@ use std::fmt::Write;
 
 mod chat;
 mod filters;
+mod goal;
 mod pages;
 mod quotas;
 pub use filters::{Filter, Query};
@@ -118,6 +119,7 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
     }
     match page {
         Page::Home => {
+            goal::render(&mut html, view, now);
             html.push_str("<div class=home-layout><div class=home-decisions>");
             attention(&mut html, view);
             asks(&mut html, view, now);
