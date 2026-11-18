@@ -2,7 +2,7 @@
 use super::{Action, Board, Entry};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 const BATCH: usize = 8;
 const MAX_PRS: usize = 1000;
@@ -13,8 +13,39 @@ const QUEUE: &str = r#"mergeQueue(branch:"main"){id}"#;
 pub struct RejectionEvidence {
     number: u64,
     removal_event: String,
+    removed_at: String,
     merge_group_head: String,
     failed_required_check_runs: Vec<u64>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    failed_required_workflows: BTreeMap<u64, WorkflowIdentity>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+struct WorkflowIdentity {
+    check_suite_id: u64,
+    workflow_run_id: u64,
+    // GitHub may begin a new workflow attempt after the check completed.
+    // The job's own attempt must match before using any test report.
+    observed_run_attempt: u64,
+}
+
+impl WorkflowIdentity {
+    fn read(check: &Value, merge_group_head: &str) -> Option<Self> {
+        let suite = &check["checkSuite"];
+        let run = &suite["workflowRun"];
+        if suite["commit"]["oid"].as_str() != Some(merge_group_head) || run["event"] != "merge_group" {
+            return None;
+        }
+        Some(Self {
+            check_suite_id: positive_id(&suite["databaseId"])?,
+            workflow_run_id: positive_id(&run["databaseId"])?,
+            observed_run_attempt: positive_id(&run["runAttempt"])?,
+        })
+    }
+}
+
+fn positive_id(value: &Value) -> Option<u64> {
+    value.as_u64().filter(|id| *id > 0)
 }
 
 /// Reads at most one relevant timeline event per open PR. The returned facts
@@ -51,6 +82,7 @@ pub fn read(
                             beforeCommit{{oid statusCheckRollup{{commit{{oid}} contexts(first:100){{
                                 totalCount nodes{{__typename ... on CheckRun{{
                                     databaseId isRequired(pullRequestNumber:{n}) status conclusion completedAt
+                                    checkSuite{{databaseId commit{{oid}} workflowRun{{databaseId event runAttempt}}}}
                                 }}}}
                             }}}}}}
                         }}}}
@@ -95,6 +127,14 @@ fn node_id(value: &Value) -> Option<&str> {
     })
 }
 
+/// Verify a complete lowercase object ID from a GitHub commit field.
+pub fn is_object_id(sha: &str) -> bool {
+    matches!(sha.len(), 40 | 64)
+        && sha
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 fn rejection(row: &Value, entry: &Entry, queue_id: &str) -> Result<Option<RejectionEvidence>, String> {
     if row["number"].as_u64() != Some(entry.number)
         || row["headRefOid"].as_str() != Some(entry.head.as_str())
@@ -126,13 +166,10 @@ fn rejection(row: &Value, entry: &Entry, queue_id: &str) -> Result<Option<Reject
         return Ok(None);
     };
     let commit = &event["beforeCommit"];
-    let Some(sha) = commit["oid"].as_str().filter(|sha| {
-        matches!(sha.len(), 40 | 64)
-            && sha
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            && *sha != entry.head
-    }) else {
+    let Some(sha) = commit["oid"]
+        .as_str()
+        .filter(|sha| is_object_id(sha) && *sha != entry.head)
+    else {
         return Ok(None);
     };
     let rollup = &commit["statusCheckRollup"];
@@ -144,7 +181,7 @@ fn rejection(row: &Value, entry: &Entry, queue_id: &str) -> Result<Option<Reject
     }) else {
         return Ok(None);
     };
-    let mut failed = BTreeSet::new();
+    let mut failed = BTreeMap::new();
     for run in runs {
         if run["__typename"] == "CheckRun"
             && run["isRequired"] == true
@@ -153,34 +190,39 @@ fn rejection(row: &Value, entry: &Entry, queue_id: &str) -> Result<Option<Reject
                 run["conclusion"].as_str(),
                 Some("FAILURE" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE" | "STALE")
             )
-            && github_utc(&run["completedAt"]).is_some_and(|completed_at| completed_at <= removed_at)
         {
-            let id = run["databaseId"]
-                .as_u64()
-                .filter(|id| *id > 0)
-                .ok_or("invalid required check run identity")?;
-            failed.insert(id);
+            let Some(completed_at) = github_utc(&run["completedAt"]) else {
+                return Ok(None);
+            };
+            if completed_at > removed_at {
+                continue;
+            }
+            let id = positive_id(&run["databaseId"]).ok_or("invalid required check run identity")?;
+            let workflow = WorkflowIdentity::read(run, sha);
+            if failed
+                .insert(id, workflow)
+                .is_some_and(|previous| previous != workflow)
+            {
+                return Err("conflicting workflow identity for a required check run".into());
+            }
         }
     }
     Ok((!failed.is_empty()).then(|| RejectionEvidence {
         number: entry.number,
         removal_event: removal_event.to_owned(),
+        removed_at: removed_at.to_owned(),
         merge_group_head: sha.to_owned(),
-        failed_required_check_runs: failed.into_iter().collect(),
+        failed_required_check_runs: failed.keys().copied().collect(),
+        failed_required_workflows: failed
+            .into_iter()
+            .filter_map(|(id, workflow)| workflow.map(|workflow| (id, workflow)))
+            .collect(),
     }))
 }
 
-/// GitHub GraphQL DateTime emits UTC at whole-second precision. Compare only
-/// that fixed-width representation; unfamiliar precision stays unavailable.
+/// Validate a canonical UTC second before comparing GitHub event times.
 fn github_utc(value: &Value) -> Option<&str> {
-    value.as_str().filter(|time| {
-        time.len() == 20
-            && time.bytes().enumerate().all(|(i, b)| match i {
-                4 | 7 => b == b'-',
-                10 => b == b'T',
-                13 | 16 => b == b':',
-                19 => b == b'Z',
-                _ => b.is_ascii_digit(),
-            })
-    })
+    value
+        .as_str()
+        .filter(|time| oxa_session::parse_utc_seconds(time).is_some())
 }

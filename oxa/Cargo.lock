@@ -1378,7 +1378,9 @@ dependencies = [
  "oxa-core",
  "oxa-export",
  "oxa-fake",
+ "oxa-orchestrator",
  "oxa-proto",
+ "oxa-rpc",
  "oxa-session",
  "serde_json",
 ]
@@ -1465,6 +1467,7 @@ version = "0.2.0"
 dependencies = [
  "libc",
  "oxa-proto",
+ "oxa-session",
  "serde",
  "serde_json",
 ]

@@ -117,6 +117,8 @@ fn native_goal_control_rejects_stale_requests_and_persists_terminal_cancel() {
 
 #[test]
 fn a_control_bound_to_a_different_file_rejects_an_equal_id_and_revision() {
+    use oxa_core::goal::{SteeringBinding, SteeringLease};
+
     let env = TestEnv::new();
     let engine = Arc::new(ScriptedEngine::new(vec![]));
     let open = |name| {
@@ -133,8 +135,39 @@ fn a_control_bound_to_a_different_file_rejects_an_equal_id_and_revision() {
     let goal = objective(GoalBudget::default());
     let mut owner = open("original");
     owner.set_goal(Some(goal.clone()), &mut sink).unwrap();
-    let original = owner.inner().sref.clone();
-    let revision = owner.goal_revision();
+    let observation = owner.goal_observation();
+    let original = observation.session.clone();
+    let revision = observation.revision;
+    assert_eq!(observation.status, Some(GoalStatus::Pursuing));
+    let lease = SteeringLease {
+        holder: "fixture/worker-a".into(),
+        generation: (1, 1),
+    };
+    let steer = SteeringBinding {
+        session: original.clone(),
+        revision,
+        lease: Some(lease.clone()),
+    };
+    steer.validate(owner.inner(), Some(&lease)).unwrap();
+    for changed in [
+        SteeringLease {
+            holder: "fixture/worker-b".into(),
+            ..lease.clone()
+        },
+        SteeringLease {
+            generation: (1, 2),
+            ..lease.clone()
+        },
+    ] {
+        assert_eq!(
+            steer.validate(owner.inner(), Some(&changed)).unwrap_err().code,
+            "goal_steer_stale"
+        );
+    }
+    assert_eq!(
+        steer.validate(owner.inner(), None).unwrap_err().code,
+        "goal_steer_stale"
+    );
 
     let mut other = open("second");
     other.set_goal(Some(goal.clone()), &mut sink).unwrap();
@@ -145,8 +178,18 @@ fn a_control_bound_to_a_different_file_rejects_an_equal_id_and_revision() {
     other.shutdown(&mut ui);
     drop(other);
 
-    owner.switch(Open::Resume(target), &mut sink, &mut ui).unwrap();
-    assert_eq!(owner.goal_revision(), revision);
+    owner
+        .switch(Open::Resume(target.clone()), &mut sink, &mut ui)
+        .unwrap();
+    let observation = owner.goal_observation();
+    assert_eq!(observation.session, &target);
+    assert_ne!(observation.session, &original);
+    assert_eq!(observation.revision, revision);
+    assert_eq!(observation.status, Some(GoalStatus::Pursuing));
+    assert_eq!(
+        steer.validate(owner.inner(), Some(&lease)).unwrap_err().code,
+        "goal_steer_stale"
+    );
     let result = owner.control_goal(&original, revision, GoalControl::Cancel, &mut sink);
     assert_eq!(result.unwrap_err().code, "goal_revision_conflict");
     assert_eq!(owner.goal_revision(), revision);

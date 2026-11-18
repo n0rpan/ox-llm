@@ -132,6 +132,121 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
     let page = get(port, "/", &authority, "");
     assert!(page.starts_with("HTTP/1.1 200"));
     assert!(page.contains("No open PRs in this snapshot"));
+    for (path, title) in [
+        ("/", "Status"),
+        ("/asks", "Asks"),
+        ("/board", "Board"),
+        ("/workers", "Workers"),
+        ("/usage", "Usage"),
+        ("/chat", "Chat with lead"),
+    ] {
+        for fragment in [false, true] {
+            let path = if fragment {
+                format!("{path}?fragment=1")
+            } else {
+                path.into()
+            };
+            let response = get(port, &path, &authority, "");
+            assert!(response.starts_with("HTTP/1.1 200"), "{path}");
+            assert!(response.contains(&format!(">{title}</h1>")), "{path}");
+            assert_eq!(response.contains("<!doctype html>"), !fragment, "{path}");
+        }
+        assert!(get(port, path, "attacker.invalid", "").starts_with("HTTP/1.1 403"));
+    }
+    for prompt in ["status", "workers", "attention"] {
+        for suffix in ["", "&fragment=1"] {
+            let path = format!("/chat?prompt={prompt}{suffix}");
+            let reply = get(port, &path, &authority, "");
+            assert!(reply.starts_with("HTTP/1.1 200"), "{path}");
+            assert!(reply.contains("0 tokens") && reply.contains("role=log"));
+            if prompt == "status" {
+                assert!(reply.contains("0 items") && reply.contains("href=/board>Board · observed at 10"));
+            }
+            assert_eq!(reply.contains("<!doctype html>"), suffix.is_empty());
+            assert!(get(port, &path, "attacker.invalid", "").starts_with("HTTP/1.1 403"));
+        }
+    }
+    assert!(get(port, "/chat?prompt=unknown", &authority, "").starts_with("HTTP/1.1 404"));
+    let entries: Vec<_> = (1..=101)
+        .map(|number| {
+            serde_json::json!({
+                "number":number,"head":"synthetic-head","release_pinned":false,
+                "action":"ready","lease":null,"attempts_today":0,"eligible":true
+            })
+        })
+        .collect();
+    let record = serde_json::json!({"schema_version":1,"observed_at":10,
+        "board":{"observed_at":10,"entries":entries}});
+    std::fs::write(&sample, format!("{record}\n")).unwrap();
+    for (path, first, last, absent) in [
+        ("/board", 1, 50, 51),
+        ("/board?page=1", 51, 100, 1),
+        ("/board?page=2", 101, 101, 100),
+    ] {
+        let response = get(port, path, &authority, "");
+        assert!(response.starts_with("HTTP/1.1 200"), "{path}");
+        for number in [first, last] {
+            assert!(response.contains(&format!("#{number}<")), "{path} #{number}");
+        }
+        assert!(!response.contains(&format!("#{absent}<")), "{path} #{absent}");
+        let separator = if path.contains('?') { '&' } else { '?' };
+        let fragment = get(port, &format!("{path}{separator}fragment=1"), &authority, "");
+        assert!(fragment.starts_with("HTTP/1.1 200") && !fragment.contains("<!doctype"));
+        assert!(get(port, path, "attacker.invalid", "").starts_with("HTTP/1.1 403"));
+    }
+    for page in ["-1", "01", "18446744073709551615"] {
+        assert!(get(port, &format!("/board?page={page}"), &authority, "").starts_with("HTTP/1.1 404"));
+    }
+    let mut filtered = record.clone();
+    for (index, row) in filtered["board"]["entries"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .enumerate()
+    {
+        row["action"] = if index < 60 {
+            "fix_findings"
+        } else if index < 100 {
+            "wait_review"
+        } else {
+            "ready"
+        }
+        .into();
+    }
+    std::fs::write(&sample, format!("{filtered}\n")).unwrap();
+    for (query, first, last, absent) in [
+        ("f=fix", 1, 50, 51),
+        ("f=fix&page=1", 51, 60, 61),
+        ("f=waiting", 61, 100, 1),
+        ("f=ready", 101, 101, 100),
+    ] {
+        let path = format!("/board?{query}");
+        let reply = get(port, &path, &authority, "");
+        assert!(reply.starts_with("HTTP/1.1 200"), "{path}");
+        for text in ["Needs fix (60)", "Waiting (40)", "Ready (1)"] {
+            assert!(reply.contains(text), "{text}");
+        }
+        for number in [first, last] {
+            assert!(reply.contains(&format!("#{number}<")), "{path}");
+        }
+        assert!(!reply.contains(&format!("#{absent}<")), "{path}");
+        let fragment = get(port, &format!("{path}&fragment=1"), &authority, "");
+        assert!(fragment.starts_with("HTTP/1.1 200") && !fragment.contains("<!doctype"));
+        assert!(get(port, &path, "attacker.invalid", "").starts_with("HTTP/1.1 403"));
+    }
+    assert!(get(port, "/board?f=blocked", &authority, "").contains("Blocked observations unavailable"));
+    for query in [
+        "f=unknown",
+        "f=fix&f=ready",
+        "page=1&page=2",
+        "f=fix&other=x",
+        "f=fix&page=01",
+    ] {
+        assert!(
+            get(port, &format!("/board?{query}"), &authority, "").starts_with("HTTP/1.1 404"),
+            "{query}"
+        );
+    }
     assert!(get(port, "/", "attacker.invalid", "").starts_with("HTTP/1.1 403"));
     assert!(get(
         port,

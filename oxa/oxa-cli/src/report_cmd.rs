@@ -457,11 +457,14 @@ pub(super) fn submit_with_storage(
 /// The real confirmation: the question and the answer go through `/dev/tty` (never stdin, so
 /// piped input cannot confirm). `None` without a controlling terminal, or when oxa's own tools
 /// run this (`OXA_CODING_AGENT` is set: the model must not confirm for the user).
-fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
+pub(crate) fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
     move |question: &str| {
         if env.get("OXA_CODING_AGENT").is_some() {
             return None;
         }
+        // Keep concurrent workers' questions and answers together.
+        static TERMINAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _terminal = TERMINAL.lock().ok()?;
         let mut tty = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -475,7 +478,7 @@ fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
     }
 }
 
-pub(crate) use oxa_work::command_runner;
+use oxa_work::{command_runner, COMMAND_DEADLINE};
 
 /// The real runner: the program's stdout, killed after 30 s. The program is resolved through
 /// the trusted host-tool lookup (`PATH` from `env`, never inside `cwd` or a group- or
@@ -495,7 +498,7 @@ pub fn process_runner<'a>(
         };
         let mut command = std::process::Command::new(exe);
         command.args(args);
-        command_runner(command, None)
+        command_runner(command, None, COMMAND_DEADLINE)
     }
 }
 
@@ -581,7 +584,7 @@ pub fn run_report_issue(
                         .args(args)
                         .current_dir(&dirs.home)
                         .env("GH_HOST", "github.com");
-                    command_runner(command, Some(1_048_576))
+                    command_runner(command, Some(1_048_576), COMMAND_DEADLINE)
                 } else {
                     runner(program, args)
                 }

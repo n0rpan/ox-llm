@@ -16,7 +16,7 @@ type Result<T> = std::result::Result<T, &'static str>;
 
 /// The caller supplies the owner's uid from its user configuration, never project metadata.
 /// Sources must have private parent directories; producers may atomically replace files.
-fn open(path: &Path, uid: u32) -> Result<File> {
+pub(crate) fn open(path: &Path, uid: u32) -> Result<File> {
     let parent = path.parent().ok_or("missing input directory")?;
     let directory = fs::symlink_metadata(parent).map_err(|_| "input directory unavailable")?;
     if !directory.is_dir() || directory.uid() != uid || directory.mode() & 0o077 != 0 {

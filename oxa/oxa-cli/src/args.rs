@@ -216,6 +216,12 @@ pub struct Args {
     pub version: bool,
     /// The hard offline switch (see the help text).
     pub offline: bool,
+    /// Explicitly expose only these native local aliases for the current owner session.
+    #[cfg(feature = "share")]
+    pub share_models: Vec<String>,
+    /// Override the Tailscale bind for this owner session.
+    #[cfg(feature = "share")]
+    pub share_bind: Option<std::net::IpAddr>,
     /// Flags registered by extensions (`registerFlag`): name -> value.
     pub extension_flags: Vec<(String, Value)>,
     /// Unknown `--long` flags seen before the extension flags are known (resolved by the
@@ -235,6 +241,11 @@ const COMMANDS: &[(&str, &str)] = &[
     (
         "oxa share key <add|list|revoke>",
         "Manage private guest keys and daily limits",
+    ),
+    #[cfg(feature = "share")]
+    (
+        "oxa share serve --model ALIAS",
+        "Serve selected native local models to authenticated guest devices",
     ),
     (
         "oxa status <session-id|session-file>",
@@ -276,7 +287,7 @@ const COMMANDS: &[(&str, &str)] = &[
         "Draft a scrubbed ox-llm issue; submit posts it only after you type yes",
     ),
     (
-        "oxa work <taskfile> | --issue N --model MODEL | board --shadow --repo OWNER/REPO --once",
+        "oxa work <taskfile> [--rerun] [--publish] [--report-problems] | --issue N --model MODEL | --pr N --model MODEL | --status | board --shadow --repo OWNER/REPO --once",
         "Run tasks in isolated worktrees with external acceptance checks",
     ),
     (
@@ -449,6 +460,10 @@ const OPTIONS: &[(&str, &str)] = &[
         "Permission mode: standard, auto, yolo, plan (or workspace, ask); default: permissions.defaultMode, else auto",
     ),
     ("--verbose", "Show verbose startup information"),
+    #[cfg(feature = "share")]
+    ("--share-model <alias>", "Share one native local model during the interactive owner session (repeatable)"),
+    #[cfg(feature = "share")]
+    ("--share-bind <address>", "Explicitly bind interactive guest sharing to this address"),
     (
         "--offline",
         "Hard offline switch: non-local connections refused, bash has no network, web_search off",
@@ -633,11 +648,11 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
                 continue;
             }
         }
-        // Inbox delivery, like work, accepts leading offline switches. Once a prompt,
-        // another option or `--` appears, later words retain their positional meaning.
+        // These commands accept leading offline switches so their own guards
+        // can report the refusal. A prompt, another option or `--` ends that prefix.
         if !stop
             && (i == 1
-                || ((matches!(arg, "send" | "work")
+                || ((matches!(arg, "send" | "work" | "share")
                     || oxa_interactive::command_registry::parse_cli(&argv[i - 1..])
                         .is_some_and(|invocation| registry_owned(invocation.command.id)))
                     && argv[..i - 1].iter().all(|word| word == "--offline")))
@@ -914,6 +929,25 @@ fn parse_flag(
         "-na" | "--no-approve" => {
             no_value(inline, flag)?;
             a.approve = Some(false);
+        }
+        #[cfg(feature = "share")]
+        "--share-model" => {
+            let alias = value(argv, i, inline, flag, "a native local alias")?;
+            if alias.is_empty() || a.share_models.len() >= 64 || a.share_models.contains(&alias) {
+                return Err(usage(
+                    "specify between one and 64 distinct native local sharing aliases",
+                ));
+            }
+            a.share_models.push(alias);
+        }
+        #[cfg(feature = "share")]
+        "--share-bind" => {
+            let address = value(argv, i, inline, flag, "an IP address")?;
+            a.share_bind = Some(
+                address
+                    .parse()
+                    .map_err(|_| usage("invalid --share-bind address"))?,
+            );
         }
         "--offline" => {
             no_value(inline, flag)?;

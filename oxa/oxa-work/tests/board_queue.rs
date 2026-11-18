@@ -98,6 +98,7 @@ fn assert_rejection_journal(conclusion: &str) {
         sample["queue_rejections"],
         json!([{
             "number":42, "removal_event":"removal-1", "merge_group_head":GROUP,
+            "removed_at":"2026-01-01T00:00:01Z",
             "failed_required_check_runs":[11,15]
         }])
     );
@@ -131,8 +132,72 @@ fn absent_or_unverified_evidence_never_creates_a_rejection() {
 }
 
 #[test]
+fn impossible_utc_times_do_not_establish_rejection_evidence() {
+    let path = "/p42/timelineItems/nodes/0";
+    let mut invalid_removal = fixture("FAILURE");
+    invalid_removal.pointer_mut(path).unwrap()["createdAt"] = json!("2026-04-31T00:00:01Z");
+
+    let mut partly_invalid_checks = fixture("FAILURE");
+    let runs = partly_invalid_checks
+        .pointer_mut(&format!("{path}/beforeCommit/statusCheckRollup/contexts/nodes"))
+        .unwrap()
+        .as_array_mut()
+        .unwrap();
+    runs[0]["completedAt"] = json!("2025-02-29T00:00:00Z");
+
+    for inputs in [invalid_removal, partly_invalid_checks] {
+        let evidence = queue::read(&board(), |_| Ok((inputs.clone(), 4096))).unwrap();
+        assert!(evidence.is_empty());
+    }
+}
+
+#[test]
 fn changed_pr_head_refuses_the_snapshot() {
     let mut data = fixture("FAILURE");
     data["p42"]["headRefOid"] = json!(GROUP);
     assert!(queue::read(&board(), |_| Ok((data.clone(), 4096))).is_err());
+}
+
+#[test]
+fn failed_required_workflows_belong_to_the_removed_commit() {
+    let mut data = fixture("FAILURE");
+    let checks = data
+        .pointer_mut("/p42/timelineItems/nodes/0/beforeCommit/statusCheckRollup/contexts/nodes")
+        .unwrap()
+        .as_array_mut()
+        .unwrap();
+    let suite = json!({
+        "databaseId": 101,
+        "commit": {"oid": GROUP},
+        "workflowRun": {"databaseId": 201, "event": "merge_group", "runAttempt": 2}
+    });
+    // Install the same suite on optional, successful, incomplete and late runs too.
+    for check in checks.iter_mut().take(6) {
+        check["checkSuite"] = suite.clone();
+    }
+    checks[0]["checkSuite"]["commit"]["oid"] = json!(HEAD);
+    let read = |data: &Value| {
+        let evidence = queue::read(&board(), |fields| {
+            assert!(fields
+                .contains("checkSuite{databaseId commit{oid} workflowRun{databaseId event runAttempt}}"));
+            Ok((data.clone(), 4096))
+        })
+        .unwrap();
+        serde_json::to_value(&evidence[0]).unwrap()
+    };
+    let evidence = read(&data);
+    assert_eq!(evidence["failed_required_check_runs"], json!([11, 15]));
+    assert_eq!(
+        evidence["failed_required_workflows"],
+        json!({"11": {"check_suite_id": 101, "workflow_run_id": 201, "observed_run_attempt": 2}})
+    );
+    let workflow_path =
+        "/p42/timelineItems/nodes/0/beforeCommit/statusCheckRollup/contexts/nodes/1/checkSuite/workflowRun";
+    for (field, value) in [("event", json!("pull_request")), ("runAttempt", json!(0))] {
+        let mut malformed = data.clone();
+        malformed.pointer_mut(workflow_path).unwrap()[field] = value;
+        let evidence = read(&malformed);
+        assert_eq!(evidence["failed_required_check_runs"], json!([11, 15]));
+        assert!(evidence.get("failed_required_workflows").is_none());
+    }
 }

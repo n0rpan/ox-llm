@@ -95,7 +95,29 @@ pub(crate) fn select(
     requested: Option<&str>,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Arc<dyn Engine>, OxaError> {
-    select_observed(user, effective, dirs, requested, None, http).map(|(engine, _)| engine)
+    select_observed(user, effective, dirs, requested, None, None, http).map(|(engine, _)| engine)
+}
+
+/// Native launch configuration is user-only. Stream policy follows the effective session.
+pub(crate) fn local_engine_settings<'a>(
+    user: &'a Settings,
+    effective: &Settings,
+) -> (Option<&'a Value>, oxa_engine::StreamOpts) {
+    let stream = oxa_engine::StreamOpts {
+        silence_limit_ms: crate::dispatch::stream_silence_timeout(effective)
+            .unwrap_or(365 * 24 * 3600 * 1000),
+        ..oxa_engine::StreamOpts::default()
+    };
+    (user.get("oxa.local"), stream)
+}
+
+#[test]
+fn shared_local_engine_uses_effective_stream_timeout() {
+    let user_values = serde_json::json!({"httpIdleTimeoutMs": 1700});
+    let user = Settings::from_values(user_values.clone(), serde_json::json!({}));
+    let effective = Settings::from_values(user_values, serde_json::json!({"httpIdleTimeoutMs": 2400}));
+    let (_, stream) = local_engine_settings(&user, &effective);
+    assert_eq!(stream.silence_limit_ms, 2400);
 }
 
 pub(crate) fn select_observed(
@@ -104,8 +126,16 @@ pub(crate) fn select_observed(
     dirs: &Dirs,
     requested: Option<&str>,
     diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
+    shared_local: Option<Arc<oxc_local::native::LocalEngine>>,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Selected, OxaError> {
+    let local_engine = || match shared_local {
+        Some(engine) => Ok(engine as Arc<dyn Engine>),
+        None => {
+            let (launch, stream) = local_engine_settings(user, effective);
+            oxc_local::configured_engine(launch, dirs.agent_dir.join("local-engine"), stream)
+        }
+    };
     if user.bool(oxc_local::LOCAL_SETTING, false) && user.bool(SETTING, false) {
         let aliases = |path| {
             user.get(path)
@@ -123,15 +153,7 @@ pub(crate) fn select_observed(
             })
         };
         return routing::Routed {
-            local: oxc_local::configured_engine(
-                user.get("oxa.local"),
-                dirs.agent_dir.join("local-engine"),
-                oxa_engine::StreamOpts {
-                    silence_limit_ms: crate::dispatch::stream_silence_timeout(effective)
-                        .unwrap_or(365 * 24 * 3600 * 1000),
-                    ..oxa_engine::StreamOpts::default()
-                },
-            ),
+            local: local_engine(),
             cloud,
             local_models: aliases("oxa.local.models"),
             cloud_models: aliases("oxa.cloud.models"),
@@ -142,16 +164,7 @@ pub(crate) fn select_observed(
         .map(|engine| (engine, catalog_notices));
     }
     if user.bool(oxc_local::LOCAL_SETTING, false) {
-        return oxc_local::configured_engine(
-            user.get("oxa.local"),
-            dirs.agent_dir.join("local-engine"),
-            oxa_engine::StreamOpts {
-                silence_limit_ms: crate::dispatch::stream_silence_timeout(effective)
-                    .unwrap_or(365 * 24 * 3600 * 1000),
-                ..oxa_engine::StreamOpts::default()
-            },
-        )
-        .map(|engine| (engine, Vec::new()));
+        return local_engine().map(|engine| (engine, Vec::new()));
     }
     if !user.bool(SETTING, false) {
         return http().map(|engine| (engine, Vec::new()));
