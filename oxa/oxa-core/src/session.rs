@@ -380,6 +380,22 @@ impl Session {
         self.run_queued(sink, ui)
     }
 
+    /// Run one literal prompt with request-only evidence and a shared output limit.
+    /// Evidence goes to chat requests for this turn and is never appended to the wire.
+    /// The limit covers generation across the turn, including follow-up provider requests.
+    pub fn prompt_literal_bounded(
+        &mut self,
+        text: String,
+        evidence_context: String,
+        max_output_tokens: std::num::NonZeroU32,
+        sink: &mut dyn EventSink,
+        ui: &mut dyn Ui,
+    ) -> Result<Option<RunEnd>, OxaError> {
+        let context = (!evidence_context.is_empty()).then(|| WireMsg::user(evidence_context));
+        let _turn = self.st.shared.begin_literal_turn(context, max_output_tokens)?;
+        self.prompt_literal(text, sink, ui)
+    }
+
     pub fn handle(&self) -> Handle {
         Handle {
             shared: self.st.shared.clone(),
