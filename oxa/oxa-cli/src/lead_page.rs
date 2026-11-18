@@ -592,13 +592,13 @@ mod tests {
     fn live_refresh_keeps_the_readers_latest_work_disclosure_choice() {
         let mut runtime = oxa_script::Runtime::new(oxa_script::Limits::EXTENSION).unwrap();
         runtime.eval_script("dom-fixture", r#"
-let current, supplied, closeDuringFetch;
+let current, supplied, closeDuringFetch, focused='', inside=false, fetches=0;
 function makeMain(open) {
   const work={open};
-  return {work, contains:()=>false, querySelector:selector=>selector==='details.home-work'?work:null,
+  return {work, contains:()=>inside, querySelector:selector=>selector==='details.home-work'?work:null,
     replaceWith:next=>{current=next;}};
 }
-const document={hidden:false, activeElement:{matches:()=>false}, getElementById:()=>({textContent:'Snapshot'}),
+const document={hidden:false, activeElement:{matches:selectors=>selectors.split(',').includes(focused)}, getElementById:()=>({textContent:'Snapshot'}),
   querySelector:()=>current, addEventListener:()=>{}};
 const setTimeout=()=>1, clearTimeout=()=>{};
 class AbortController { constructor(){this.signal={};} abort(){} }
@@ -606,6 +606,7 @@ class URL { constructor(){this.searchParams={set(){}};} }
 const location={href:'http://example.invalid/'};
 class DOMParser { parseFromString(){return {querySelector:()=>supplied};} }
 async function fetch(){
+  fetches++;
   if(closeDuringFetch)current.work.open=false;
   return {ok:true, text:async()=>''};
 }
@@ -620,6 +621,16 @@ for(const [open,close,expected] of [[false,false,false],[true,false,true],[true,
   await refresh();
   if(current!==supplied||current.work.open!==expected)throw new Error('reader disclosure state lost');
 }
+closeDuringFetch=false; inside=true;
+for(focused of ['summary','[tabindex]']) {
+  current=makeMain(true); supplied=makeMain(false);
+  const before=fetches;
+  await refresh();
+  if(current===supplied||fetches!==before)throw new Error('focused reader region was replaced');
+}
+inside=false;
+await refresh();
+if(current!==supplied)throw new Error('refresh did not resume after leaving main');
 return true;
 "#,
             )
@@ -994,6 +1005,56 @@ return true;
         snapshot.running.clear();
         assert!(render(Page::Workers, &snapshot).contains("Idle worker inventory is unavailable"));
         assert!(content_for(Page::Workers, &View::default(), 100).contains("Lane status unavailable"));
+    }
+
+    #[test]
+    fn board_scroll_region_and_table_headers_are_available_without_javascript() {
+        let board = Board {
+            observed_at: 100,
+            entries: vec![Entry {
+                number: 17,
+                head: "private-head-marker".into(),
+                release_pinned: false,
+                action: Action::WaitReview,
+                lease: None,
+                attempts_today: 2,
+                eligible: true,
+            }],
+        };
+        for page in [Page::Home, Page::Board, Page::BoardQuery(Query::default())] {
+            let html = content_for(
+                page,
+                &View {
+                    board: Some(&board),
+                    ..View::default()
+                },
+                100,
+            );
+            assert!(html.contains("class=scroll role=region aria-labelledby=board-table-title tabindex=0"));
+            assert_eq!(html.matches("id=board-table-title").count(), 1);
+            assert!(html.contains("<caption id=board-table-title>Observed board items</caption>"));
+            for label in ["PR", "Next action", "Priority", "Lease", "Attempts today"] {
+                assert!(html.contains(&format!("<th scope=col>{label}</th>")));
+            }
+            assert!(html.contains("<th scope=row><a href=/items/17>#17</a></th>"));
+            for value in ["Wait for review", "Normal", "Unleased", "2"] {
+                assert!(html.contains(&format!("<td>{value}</td>")));
+            }
+            assert!(!html.contains("private-head-marker") && !html.contains("onclick="));
+        }
+        let empty = content_for(
+            Page::Board,
+            &View {
+                board: Some(&Board::default()),
+                ..View::default()
+            },
+            100,
+        );
+        assert!(empty.contains("No open PRs in this snapshot."));
+        assert!(empty.contains("<caption id=board-table-title>Observed board items</caption>"));
+        let unavailable = content_for(Page::Board, &View::default(), 100);
+        assert!(unavailable.contains("Board unavailable."));
+        assert!(!unavailable.contains("role=region") && !unavailable.contains("<table"));
     }
 
     #[test]
