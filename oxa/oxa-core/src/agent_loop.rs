@@ -763,6 +763,11 @@ fn run_inner(
             let snapshot = goal.stopped();
             crate::goal::save_checkpoint(st, &snapshot, sink)?;
             if goal.pursuing() {
+                // Queued input (a follow-up that woke a wait) is the next user message:
+                // stop so `settle_runs` delivers it instead of the continuation prompt.
+                if st.shared.has_input() {
+                    return Ok(RunEnd::Stopped);
+                }
                 push_user(st, crate::prompt::GOAL_CONTINUE.into(), sink, ui, run_msgs)?;
                 continue;
             }
