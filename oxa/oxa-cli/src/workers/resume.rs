@@ -3,8 +3,8 @@
 //! K4 supervisor (`WorkerCore::resume` in `tool.rs`); nothing here runs a process or builds a
 //! shell command string, and the child id is the one in the registry record, never model text.
 //!
-//! A record is relaunched when its state is [`WorkerState::Dead`]: not finished, not stopped by
-//! the owner, and its process is gone (for example the parent shut down and stopped the group).
+//! A record is relaunched when its process is gone, the owner did not stop it, and it did not
+//! finish for good (see [`due`]): for example the parent shut down and stopped the group.
 use super::launch::{check_value, resume_mode, scope_args, WorkerMode};
 use super::registry::{WorkerRecord, WorkerState};
 use super::tool::parse_mode;
@@ -14,9 +14,21 @@ use oxa_proto::{Autonomy, Mode};
 /// Setting: relaunch dead, unfinished workers when the parent session opens (default true).
 pub const SETTING_RESUME: &str = "oxa.workers.resumeOnStart";
 
-/// Whether `state` is one that gets relaunched.
-pub fn due(state: &WorkerState) -> bool {
-    matches!(state, WorkerState::Dead)
+/// Whether a worker is relaunched: its process is gone (`alive` false) and either it never wrote a
+/// final status ([`WorkerState::Dead`]) or its last status is `finished` with the outcome
+/// `interrupted`. The second case is what a normal parent shutdown leaves: `Supervisor::stop_all`
+/// sends SIGINT, the child ends cooperatively and records an interrupted finish while its goal is
+/// still open. A worker the owner stopped (`rec.stopped`) is never relaunched, and any other
+/// finished outcome (done, blocked, failed) is final.
+pub fn due(rec: &WorkerRecord, state: &WorkerState, alive: bool) -> bool {
+    if alive || rec.stopped {
+        return false;
+    }
+    match state {
+        WorkerState::Dead => true,
+        WorkerState::Finished(outcome) => outcome == "interrupted",
+        _ => false,
+    }
 }
 
 /// The argv of the relaunched child (without the program): `--mode json --continue=<id> --model <m>
@@ -83,11 +95,22 @@ mod tests {
     }
 
     #[test]
-    fn only_dead_workers_are_due() {
-        assert!(due(&WorkerState::Dead));
-        assert!(!due(&WorkerState::Stopped));
-        assert!(!due(&WorkerState::Idle));
-        assert!(!due(&WorkerState::Finished("done".into())));
+    fn interrupted_finish_after_parent_shutdown_is_resumed_unless_stopped() {
+        let r = rec("workspace");
+        let mut stopped = rec("workspace");
+        stopped.stopped = true;
+        let interrupted = WorkerState::Finished("interrupted".into());
+        // Dead without a final status, and an interrupted finish: both come back.
+        assert!(due(&r, &WorkerState::Dead, false));
+        assert!(due(&r, &interrupted, false));
+        // A final outcome, a live process, an owner stop and a working worker do not.
+        assert!(!due(&r, &WorkerState::Finished("done".into()), false));
+        assert!(!due(&r, &WorkerState::Finished("failed".into()), false));
+        assert!(!due(&r, &interrupted, true));
+        assert!(!due(&stopped, &WorkerState::Dead, false));
+        assert!(!due(&stopped, &interrupted, false));
+        assert!(!due(&r, &WorkerState::Stopped, false));
+        assert!(!due(&r, &WorkerState::Idle, false));
     }
 
     #[test]

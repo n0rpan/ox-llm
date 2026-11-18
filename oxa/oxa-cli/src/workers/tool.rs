@@ -680,9 +680,10 @@ impl WorkerCore {
         let env = child_env(&self.parent_env, oxa_proto::offline());
         let mut live = records.iter().filter(|r| is_live(r, &self.sessions_dir)).count();
         let mut notices = Vec::new();
-        let mut changed = false;
+        let mut launched: Vec<u32> = Vec::new();
         for rec in records.iter_mut() {
-            if !resume::due(&live_state(rec, &self.sessions_dir)) {
+            let alive = PathBuf::from(format!("/proc/{}", rec.pid)).exists();
+            if !resume::due(rec, &live_state(rec, &self.sessions_dir), alive) {
                 continue;
             }
             if live >= self.max {
@@ -722,7 +723,7 @@ impl WorkerCore {
                 Ok(pgid) => {
                     rec.pid = pgid;
                     rec.pgid = pgid;
-                    changed = true;
+                    launched.push(pgid);
                     live += 1;
                     notices.push(format!(
                         "worker {}: relaunched with --continue={}",
@@ -733,9 +734,15 @@ impl WorkerCore {
                 Err(e) => notices.push(format!("worker {}: cannot relaunch: {e}", rec.name)),
             }
         }
-        if changed {
+        if !launched.is_empty() {
             if let Err(e) = registry::save(&self.agent_dir, &parent, &records) {
-                notices.push(format!("worker: relaunched workers were not recorded: {e}"));
+                // Not recorded, so nothing would ever stop them: stop them now, as `start` does.
+                for pgid in &launched {
+                    let _ = self.supervisor.stop(*pgid);
+                }
+                notices.push(format!(
+                    "worker: relaunched workers were not recorded and were stopped: {e}"
+                ));
             }
         }
         notices
@@ -1172,6 +1179,30 @@ mod tests {
         assert_eq!(notices.len(), 1, "{notices:?}");
         assert!(notices[0].contains("relaunched"), "{notices:?}");
         let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resume_stops_relaunched_workers_when_registry_write_fails() {
+        let (root, repo, agent, fake) = fixture("rollback");
+        let hooks = hooks(&fake, &agent);
+        set_session(&hooks, "parent-1");
+        set_table_mode(&hooks, Mode::Workspace);
+        start_alpha(&hooks, &repo);
+        let rec = registry::load(&agent, "parent-1").unwrap().remove(0);
+        hooks.core.supervisor.stop(rec.pgid).unwrap();
+        // A read-only registry directory makes the save fail (a privileged user ignores modes).
+        let dir = agent.join("workers");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+        let writable = fs::write(dir.join(".probe"), b"x").is_ok();
+        let notices = hooks.core.resume();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        if !writable {
+            assert!(notices.iter().any(|n| n.contains("were stopped")), "{notices:?}");
+            // The relaunched process is gone and the registry still holds the old record.
+            let now = registry::load(&agent, "parent-1").unwrap().remove(0);
+            assert_eq!(now.pid, rec.pid);
+        }
         let _ = fs::remove_dir_all(&root);
     }
 
