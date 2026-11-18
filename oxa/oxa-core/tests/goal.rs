@@ -849,3 +849,95 @@ fn goal_command_set_is_refused_while_busy() {
     assert_eq!(session.goal_revision(), revision);
     assert_eq!(session.goal().unwrap().objective, "First objective");
 }
+
+/// Delegates to a MemStore; `sync` counts its calls and fails while `fail_sync` is set.
+#[derive(Default)]
+struct SyncFailStore {
+    inner: MemStore,
+    syncs: std::sync::atomic::AtomicUsize,
+    fail_sync: std::sync::atomic::AtomicBool,
+}
+
+impl SessionStore for SyncFailStore {
+    fn create(
+        &self,
+        cwd: &std::path::Path,
+        id: Option<&str>,
+        parent: Option<&std::path::Path>,
+    ) -> Result<oxa_session::SessionRef, oxa_proto::OxaError> {
+        self.inner.create(cwd, id, parent)
+    }
+    fn append(&self, s: &oxa_session::SessionRef, e: &oxa_proto::Entry) -> Result<(), oxa_proto::OxaError> {
+        self.inner.append(s, e)
+    }
+    fn load(&self, s: &oxa_session::SessionRef) -> Result<Vec<oxa_proto::Entry>, oxa_proto::OxaError> {
+        self.inner.load(s)
+    }
+    fn header(&self, s: &oxa_session::SessionRef) -> Result<oxa_session::SessionHeader, oxa_proto::OxaError> {
+        self.inner.header(s)
+    }
+    fn list(&self, cwd: Option<&std::path::Path>) -> Vec<oxa_session::SessionMeta> {
+        self.inner.list(cwd)
+    }
+    fn resolve(&self, id_or_path: &str) -> Result<oxa_session::SessionRef, oxa_proto::OxaError> {
+        self.inner.resolve(id_or_path)
+    }
+    fn delete(&self, s: &oxa_session::SessionRef) -> Result<(), oxa_proto::OxaError> {
+        self.inner.delete(s)
+    }
+    fn sync(&self, s: &oxa_session::SessionRef) -> Result<(), oxa_proto::OxaError> {
+        self.syncs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_sync.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(oxa_proto::OxaError::new(
+                oxa_proto::codes::IO,
+                "synthetic sync failure",
+            ));
+        }
+        self.inner.sync(s)
+    }
+}
+
+#[test]
+fn goal_command_set_fails_when_store_sync_fails() {
+    use oxa_core::goal::parse_goal_command;
+    use std::sync::atomic::Ordering;
+    let env = TestEnv::new();
+    let store = Arc::new(SyncFailStore::default());
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, store.clone(), engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    store.fail_sync.store(true, Ordering::SeqCst);
+
+    let error = session
+        .apply_goal_command(parse_goal_command("Ship the parser"), 1000, &mut sink)
+        .unwrap_err();
+    assert_eq!(error.code, "goal_sync_failed");
+    assert!(store.syncs.load(Ordering::SeqCst) > 0);
+
+    store.fail_sync.store(false, Ordering::SeqCst);
+    session.shutdown(&mut HeadlessUi::default());
+}
+
+#[test]
+fn goal_command_clear_fails_when_store_sync_fails() {
+    use oxa_core::goal::{parse_goal_command, GoalCommand};
+    use std::sync::atomic::Ordering;
+    let env = TestEnv::new();
+    let store = Arc::new(SyncFailStore::default());
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, store.clone(), engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .apply_goal_command(parse_goal_command("Ship the parser"), 1000, &mut sink)
+        .unwrap();
+
+    store.fail_sync.store(true, Ordering::SeqCst);
+    let error = session
+        .apply_goal_command(GoalCommand::Clear, 2000, &mut sink)
+        .unwrap_err();
+    assert_eq!(error.code, "goal_sync_failed");
+    assert!(store.syncs.load(Ordering::SeqCst) > 0);
+
+    store.fail_sync.store(false, Ordering::SeqCst);
+    session.shutdown(&mut HeadlessUi::default());
+}
