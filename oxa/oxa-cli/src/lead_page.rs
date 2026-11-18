@@ -3,6 +3,7 @@ use oxa_proto::work::{IncidentKind, PullRequest, Snapshot, Subject};
 use oxa_work::board::{Action, Board, Entry};
 use std::fmt::Write;
 
+mod approvals;
 mod chat;
 mod filters;
 mod goal;
@@ -39,6 +40,10 @@ pub struct View<'a> {
     pub running_sha256: Option<&'a str>,
     /// True only when this listener supplies the agreed authenticated live route.
     pub live_events: bool,
+    /// Requests the approval desk still holds for the owner; None when the desk cannot be read.
+    pub approvals: Option<&'a [oxa_perm::ApprovalRecord]>,
+    /// The owner form credential for answering approvals; present only with owner chat.
+    pub approval_csrf: Option<&'a str>,
 }
 
 pub struct OwnerChatView<'a> {
@@ -151,6 +156,7 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
             goal::render(&mut html, view, now);
             html.push_str("<div class=home-layout><div class=home-decisions>");
             attention(&mut html, view);
+            approvals::render(&mut html, view, now);
             asks(&mut html, view, now);
             html.push_str("</div><div class=home-overview><section><h2>Snapshot overview</h2>");
             if let Some(board) = view.board {
@@ -181,6 +187,7 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
             } else {
                 Query::default()
             };
+            approvals::render(&mut html, view, now);
             board(&mut html, view, now, query);
             queue(&mut html, view);
         }

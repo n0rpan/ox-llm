@@ -4,6 +4,7 @@ use crate::lead_access::{self, proxy, Config, IdentityProvider, Mode, VerifiedId
 use crate::lead_chat::conversation::ConversationReply;
 use crate::lead_http::{OwnerForm, OwnerSubmission, RefusalFact, RefusalLog, Stage};
 use oxa_config::{Dirs, Env};
+use oxa_perm::ApprovalDesk;
 use oxa_proto::{codes, OxaError};
 use std::{
     io::Write,
@@ -233,7 +234,9 @@ fn authorized(
             Mode::Local => Proof::Local(crate::lead_peer::owner_uid(stream) == Ok(uid)),
             Mode::Tailscale => Proof::Proxy(proxy::verify(config, stream, request.forwarded_login)?),
         };
-        if request.method == "POST" {
+        if request.method == "POST" && request.path == "/approvals" {
+            lead_access::approval_post(config, peer.ip(), request, &proof)
+        } else if request.method == "POST" {
             lead_access::chat_post(config, peer.ip(), request, &proof)
         } else {
             lead_access::read_only(
@@ -248,7 +251,7 @@ fn authorized(
         }
     })();
     if let Err(refused) = allowed {
-        if crate::lead_http::chat_path(request.path) {
+        if crate::lead_http::chat_path(request.path) || crate::lead_http::approvals_path(request.path) {
             journal.log(identity_fact(refused));
         }
     }
@@ -358,6 +361,46 @@ impl OwnerChat {
                     })?;
                 current.confirmed = true;
             }
+            // The run closure answers approvals itself, so they never wait on the chat turn lock.
+            OwnerSubmission::Approve { .. } => return Err("409 Conflict"),
+        }
+        Ok(())
+    }
+}
+
+/// The owner's answers to approval requests (#1512 S6). The writes are the ones `oxa send
+/// --approve` makes, through the same path, so a web answer and a CLI answer are equivalent.
+struct OwnerApprovals {
+    dirs: Dirs,
+    cwd: PathBuf,
+    desk: ApprovalDesk,
+    journal: ServiceJournal,
+}
+
+impl OwnerApprovals {
+    fn post(&self, id: &str, answer: &str) -> Result<(), &'static str> {
+        let refuse = |status: u16, text: &'static str, reason: &'static str| -> Result<(), &'static str> {
+            self.journal.log(RefusalFact {
+                status,
+                stage: Stage::Approval,
+                reason,
+                fix: "answer a request still listed as waiting for approval",
+            });
+            Err(text)
+        };
+        let waiting = match self.desk.pending() {
+            Ok(waiting) => waiting,
+            Err(_) => return refuse(503, "503 Service Unavailable", "desk"),
+        };
+        // Unknown and already answered ids are the same refusal: only pending requests answer.
+        let Some(found) = waiting.iter().find(|rec| rec.id == id) else {
+            return refuse(404, "404 Not Found", "not_pending");
+        };
+        let session = found.session.clone();
+        if crate::approve_cmd::approve(&self.dirs, &self.cwd, &session, id, answer, &mut std::io::sink())
+            .is_err()
+        {
+            return refuse(409, "409 Conflict", "answer");
         }
         Ok(())
     }
@@ -377,6 +420,7 @@ struct Source {
     board: Option<PathBuf>,
     form: Option<crate::lead_http::FixedForm>,
     owner: Option<Arc<OwnerChat>>,
+    desk: Option<ApprovalDesk>,
 }
 impl Source {
     fn new(env: &Env, uid: u32) -> Result<Self, OxaError> {
@@ -389,6 +433,7 @@ impl Source {
             board,
             form: None,
             owner: None,
+            desk: None,
         })
     }
 
@@ -409,7 +454,19 @@ impl Source {
             matches!(page, crate::lead_page::Page::Chat(_)) && owner.binding.recheck().is_ok()
         });
         let latest = owner.and_then(|owner| owner.latest.try_lock().ok());
+        // Pending approvals show on the home and board pages; a missing or unreadable desk is None.
+        let waiting = match (page, self.desk.as_ref()) {
+            (
+                crate::lead_page::Page::Home
+                | crate::lead_page::Page::Board
+                | crate::lead_page::Page::BoardQuery(_),
+                Some(desk),
+            ) => desk.pending().ok(),
+            _ => None,
+        };
         let view = crate::lead_page::View {
+            approvals: waiting.as_deref(),
+            approval_csrf: self.owner.as_ref().map(|owner| owner.csrf.as_str()),
             owner_chat: owner
                 .zip(latest.as_deref())
                 .map(|(owner, latest)| crate::lead_page::OwnerChatView {
@@ -445,6 +502,8 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
         .map_err(|_| invalid("OS owner identity unavailable"))?
         .uid();
     let mut source = Source::new(env, uid)?;
+    // The approval desk is read on every board render; a desk that cannot open shows as unavailable.
+    source.desk = ApprovalDesk::open(&dirs.agent_dir).ok();
     // The one real service journal: fixed allowlisted lines on stderr, carried to
     // the system journal by the operator's existing service unit.
     let journal = ServiceJournal::stderr();
@@ -472,9 +531,23 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
         });
         source.owner = Some(chat.clone());
         let env = env.clone();
+        // Answers use the owner form's CSRF and origin checks, then the desk. They never wait on
+        // the chat turn lock, so a running Lead turn does not hold up an approval.
+        let approvals = source.desk.clone().map(|desk| OwnerApprovals {
+            dirs: dirs.clone(),
+            cwd: cwd.to_path_buf(),
+            desk,
+            journal: journal.clone(),
+        });
         Some(OwnerForm {
             csrf: chat.csrf.clone(),
-            post: Arc::new(move |submission| chat.post(submission, &env)),
+            post: Arc::new(move |submission| match submission {
+                OwnerSubmission::Approve { id, answer } => match &approvals {
+                    Some(approvals) => approvals.post(&id, &answer),
+                    None => Err("503 Service Unavailable"),
+                },
+                other => chat.post(other, &env),
+            }),
         })
     } else {
         None
@@ -819,5 +892,163 @@ mod tests {
             uid
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod approval_answer_tests {
+    use super::*;
+    use oxa_config::Settings;
+    use oxa_fake::TestEnv;
+    use oxa_perm::{ApprovalDesk, DangerHit};
+    use std::os::unix::fs::PermissionsExt;
+
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+    impl Write for Sink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().write_all(bytes)?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn captured() -> (ServiceJournal, Arc<Mutex<Vec<u8>>>) {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        (
+            ServiceJournal {
+                out: Arc::new(Mutex::new(Box::new(Sink(buffer.clone())))),
+            },
+            buffer,
+        )
+    }
+
+    fn recorded(buffer: &Arc<Mutex<Vec<u8>>>) -> Vec<String> {
+        String::from_utf8(buffer.lock().unwrap().clone())
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn fixture() -> (TestEnv, Dirs, ApprovalDesk) {
+        let test = TestEnv::new();
+        let dirs = Dirs::under(test.root());
+        let desk = ApprovalDesk::open(&dirs.agent_dir).unwrap();
+        (test, dirs, desk)
+    }
+
+    fn hit() -> DangerHit {
+        DangerHit {
+            rule: "rm-recursive".into(),
+            reason: "recursive delete outside the workspace".into(),
+            segment: "rm -rf /srv/data".into(),
+        }
+    }
+
+    fn file(test: &TestEnv, desk: &ApprovalDesk) -> String {
+        desk.record("s1", &test.work(), "rm -rf /srv/data", &[hit()], "pending")
+            .unwrap()
+    }
+
+    fn owner_answers(
+        test: &TestEnv,
+        dirs: &Dirs,
+        desk: &ApprovalDesk,
+        journal: ServiceJournal,
+    ) -> OwnerApprovals {
+        OwnerApprovals {
+            dirs: dirs.clone(),
+            cwd: test.work(),
+            desk: desk.clone(),
+            journal,
+        }
+    }
+
+    #[test]
+    fn approval_post_once_answers_pending_request() {
+        let (test, dirs, desk) = fixture();
+        let id = file(&test, &desk);
+        let (journal, buffer) = captured();
+        let answers = owner_answers(&test, &dirs, &desk, journal);
+        answers.post(&id, "once").unwrap();
+        assert!(desk.pending().unwrap().is_empty());
+        assert!(recorded(&buffer).is_empty());
+    }
+
+    #[test]
+    fn approval_post_always_writes_user_settings_only() {
+        let (test, dirs, desk) = fixture();
+        let id = file(&test, &desk);
+        let keys = desk.pending().unwrap()[0].keys.clone();
+        assert!(!keys.is_empty());
+        let (journal, buffer) = captured();
+        let answers = owner_answers(&test, &dirs, &desk, journal);
+        answers.post(&id, "always").unwrap();
+        // The keys land in the user settings file and nowhere else.
+        let user = std::fs::read_to_string(dirs.settings_file()).unwrap();
+        for key in &keys {
+            assert!(user.contains(key.as_str()), "{user}");
+        }
+        assert_eq!(
+            Settings::load(&dirs, &test.work(), false).list("oxa.approval.always"),
+            keys
+        );
+        assert!(recorded(&buffer).is_empty());
+    }
+
+    #[test]
+    fn approval_post_unknown_or_answered_id_is_refused() {
+        let (test, dirs, desk) = fixture();
+        let id = file(&test, &desk);
+        let (journal, buffer) = captured();
+        let answers = owner_answers(&test, &dirs, &desk, journal);
+        assert_eq!(answers.post("0123456789abcdef", "once"), Err("404 Not Found"));
+        answers.post(&id, "deny").unwrap();
+        // An answered request is no longer pending, so a second answer is refused the same way.
+        assert_eq!(answers.post(&id, "once"), Err("404 Not Found"));
+        assert_eq!(
+            recorded(&buffer),
+            [
+                "lead chat refusal status=404 stage=approval reason=not_pending fix=answer a request still listed as waiting for approval",
+                "lead chat refusal status=404 stage=approval reason=not_pending fix=answer a request still listed as waiting for approval",
+            ]
+        );
+    }
+
+    #[test]
+    fn approval_post_refusal_is_journaled() {
+        // Local mode has no owner chat, so the approval gate refuses the POST; the refusal is
+        // journaled as an identity fact on the approval path, like a refused chat submission.
+        let test = TestEnv::new();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let dirs = Dirs::under(test.root());
+        std::fs::create_dir_all(&dirs.agent_dir).unwrap();
+        std::fs::set_permissions(&dirs.agent_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(
+            dirs.settings_file(),
+            serde_json::json!({"oxa":{"lead":{"serve":{"enabled":true,"port":port}}}}).to_string(),
+        )
+        .unwrap();
+        let config = Config::load(&dirs, &test.work()).unwrap();
+        let uid = std::fs::metadata("/proc/self").unwrap().uid();
+        let (journal, buffer) = captured();
+        let authority = format!("127.0.0.1:{port}");
+        let request = crate::lead_http::Request {
+            method: "POST",
+            path: "/approvals",
+            authority: &authority,
+            forwarded_login: None,
+        };
+        assert!(!authorized(&config, uid, &stream, &request, &journal));
+        assert_eq!(
+            recorded(&buffer),
+            ["lead chat refusal status=403 stage=identity reason=not_allowed fix=use the configured owner identity and exact authority"]
+        );
+        drop(client);
     }
 }

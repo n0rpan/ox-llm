@@ -42,6 +42,7 @@ pub enum Stage {
     Recheck,
     Provider,
     Reply,
+    Approval,
 }
 impl Stage {
     pub fn as_str(self) -> &'static str {
@@ -55,6 +56,7 @@ impl Stage {
             Self::Recheck => "recheck",
             Self::Provider => "provider",
             Self::Reply => "reply",
+            Self::Approval => "approval",
         }
     }
 }
@@ -71,6 +73,11 @@ fn refuse(log: Option<&RefusalLog>, fact: RefusalFact) {
 /// Every `/chat` path form; refusals on these paths are chat refusals.
 pub(crate) fn chat_path(path: &str) -> bool {
     path == "/chat" || path.starts_with("/chat?")
+}
+
+/// Every `/approvals` path form; refusals on these paths are logged like chat refusals.
+pub(crate) fn approvals_path(path: &str) -> bool {
+    path == "/approvals" || path.starts_with("/approvals?")
 }
 
 /// Why an authenticated chat submission was not accepted.
@@ -120,6 +127,11 @@ pub(crate) struct FixedForm {
 pub(crate) enum OwnerSubmission {
     Message(String),
     Confirm(String),
+    /// The owner's answer to one approval request. It never enters the chat turn.
+    Approve {
+        id: String,
+        answer: String,
+    },
 }
 
 pub(crate) type OwnerPost = dyn Fn(OwnerSubmission) -> Result<(), &'static str> + Send + Sync;
@@ -226,9 +238,12 @@ fn connection_fixed(
             status
         })
         .and_then(|(r, fields)| {
-            let post = r.method == "POST" && r.path == "/chat" && (form.is_some() || owner.is_some());
+            // Answers to approval requests need the owner form; the fixed prompts never reach them.
+            let post = (r.method == "POST" && r.path == "/chat" && (form.is_some() || owner.is_some()))
+                || (r.method == "POST" && r.path == "/approvals" && owner.is_some());
+            let approval = post && r.path == "/approvals";
             if r.method != "GET" && !post {
-                if chat_path(r.path) {
+                if chat_path(r.path) || approvals_path(r.path) {
                     refuse(
                         refusals,
                         RefusalFact {
@@ -249,7 +264,7 @@ fn connection_fixed(
                 let scheme = form.map_or("https", |form| form.scheme);
                 if fields.origin != Some(format!("{scheme}://{}", r.authority).as_str())
                     || fields.kind != Some("application/x-www-form-urlencoded")
-                    || (form.is_none() && fields.fetch_site != Some("same-origin"))
+                    || ((form.is_none() || approval) && fields.fetch_site != Some("same-origin"))
                 {
                     refuse(
                         refusals,
@@ -294,7 +309,7 @@ fn connection_fixed(
                 // below when one is installed; only the final refusal is recorded.
                 let mut form_rejection: Option<Rejected> = None;
                 let fixed = match form {
-                    Some(form) if body.len() <= 256 => match fixed_target(&body, &form.csrf) {
+                    Some(form) if !approval && body.len() <= 256 => match fixed_target(&body, &form.csrf) {
                         Ok(target) => Some(target),
                         Err(rejected) => {
                             form_rejection = Some(rejected);
@@ -305,6 +320,26 @@ fn connection_fixed(
                 };
                 if let Some(target) = fixed {
                     Some(target)
+                } else if approval {
+                    let owner = owner.ok_or("405 Method Not Allowed")?;
+                    if scheme != "https" || fields.fetch_site != Some("same-origin") {
+                        refuse(
+                            refusals,
+                            RefusalFact {
+                                status: 403,
+                                stage: Stage::Origin,
+                                reason: "cross_origin",
+                                fix: "send the approval answer from its served origin",
+                            },
+                        );
+                        return Err("403 Forbidden");
+                    }
+                    let submission = approval_submission(&body, &owner.csrf).map_err(|rejected| {
+                        refuse(refusals, rejected.fact());
+                        "403 Forbidden"
+                    })?;
+                    (owner.post)(submission)?;
+                    Some("/".into())
                 } else {
                     let owner = owner.ok_or_else(|| {
                         refuse(
@@ -459,6 +494,35 @@ fn owner_submission(bytes: &[u8], expected: &str) -> Result<OwnerSubmission, Rej
     }
 }
 
+/// The owner's approval answer: exactly `csrf`, `id` and `answer`, with the answer allow-listed.
+/// The id is only a lookup key; the caller refuses any id that is not pending.
+fn approval_submission(bytes: &[u8], expected: &str) -> Result<OwnerSubmission, Rejected> {
+    let (mut csrf, mut id, mut answer) = (None, None, None);
+    for field in std::str::from_utf8(bytes).map_err(|_| Rejected::Body)?.split('&') {
+        let (key, value) = field.split_once('=').ok_or(Rejected::Body)?;
+        match key {
+            "csrf" if csrf.replace(value).is_none() => {}
+            "id" if id.replace(value).is_none() => {}
+            "answer" if answer.replace(value).is_none() => {}
+            _ => return Err(Rejected::Body),
+        }
+    }
+    if csrf != Some(expected) {
+        return Err(Rejected::Csrf);
+    }
+    let (Some(id), Some(answer)) = (id, answer) else {
+        return Err(Rejected::Body);
+    };
+    let well_formed = !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric());
+    if !well_formed || !matches!(answer, "once" | "session" | "always" | "deny") {
+        return Err(Rejected::Body);
+    }
+    Ok(OwnerSubmission::Approve {
+        id: id.to_owned(),
+        answer: answer.to_owned(),
+    })
+}
+
 fn decode_message(value: &str) -> Option<String> {
     let mut encoded = value.bytes();
     let mut decoded = Vec::new();
@@ -522,7 +586,8 @@ fn request(bytes: &[u8], fixed: bool, owner: bool) -> Result<(Request<'_>, Field
     fields.length = length.unwrap_or("0").parse().map_err(|_| "400 Bad Request")?;
     if length.is_some_and(|text| text != fields.length.to_string())
         || fields.length > if owner { 4096 } else { 256 }
-        || fields.length != 0 && !((fixed || owner) && first[0] == "POST" && first[1] == "/chat")
+        || fields.length != 0
+            && !((fixed || owner) && first[0] == "POST" && (first[1] == "/chat" || first[1] == "/approvals"))
     {
         return Err("400 Bad Request");
     }
@@ -850,5 +915,155 @@ mod tests {
             elapsed < Duration::from_millis(1750),
             "partial writes renewed the one-second budget: {elapsed:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod approval_transport_tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    /// One `POST /approvals` over a real loopback connection; returns the reply, how many
+    /// answers reached the owner form, and the refusal facts the transport recorded.
+    fn approval_exchange(origin: &str, site: &str, body: &str) -> (String, usize, Vec<RefusalFact>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let invoked = count.clone();
+        let facts: Arc<std::sync::Mutex<Vec<RefusalFact>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = facts.clone();
+        let handler = std::thread::spawn(move || {
+            let owner = OwnerForm {
+                csrf: "fixture".into(),
+                post: Arc::new(move |submission| {
+                    assert!(matches!(
+                        submission,
+                        OwnerSubmission::Approve { ref id, ref answer }
+                            if id == "0123456789abcdef" && answer == "once"
+                    ));
+                    invoked.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }),
+            };
+            let refusals: RefusalLog = Arc::new(move |fact| record.lock().unwrap().push(fact));
+            connection_fixed(
+                server,
+                |_, _| true,
+                |_, _| panic!("unexpected render"),
+                None,
+                Some(&owner),
+                Some(&refusals),
+            )
+            .unwrap();
+        });
+        client.set_read_timeout(Some(Duration::from_secs(6))).unwrap();
+        // A cross-origin submission is refused before its body is read; an unread payload would
+        // turn the close into a reset, so only the same-origin submissions send their body.
+        let payload = if origin == "https://example.invalid" && site == "same-origin" {
+            body
+        } else {
+            ""
+        };
+        write!(
+            client,
+            "POST /approvals HTTP/1.1\r\nHost: example.invalid\r\nOrigin: {origin}\r\nSec-Fetch-Site: {site}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{payload}",
+            body.len()
+        )
+        .unwrap();
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).unwrap();
+        handler.join().unwrap();
+        let facts = facts.lock().unwrap().clone();
+        (reply, count.load(Ordering::SeqCst), facts)
+    }
+
+    #[test]
+    fn approval_post_refuses_bad_csrf() {
+        let body = "csrf=wrong&id=0123456789abcdef&answer=once";
+        let (reply, answered, facts) = approval_exchange("https://example.invalid", "same-origin", body);
+        assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
+        assert_eq!(answered, 0);
+        assert_eq!(
+            facts,
+            [RefusalFact {
+                status: 403,
+                stage: Stage::Csrf,
+                reason: "invalid",
+                fix: "reload the served chat form and resubmit",
+            }]
+        );
+    }
+
+    #[test]
+    fn approval_post_refuses_cross_site_origin() {
+        let body = "csrf=fixture&id=0123456789abcdef&answer=once";
+        for (origin, site) in [
+            ("https://other.invalid", "same-origin"),
+            ("https://example.invalid", "same-site"),
+            ("https://example.invalid", ""),
+        ] {
+            let (reply, answered, facts) = approval_exchange(origin, site, body);
+            assert!(reply.starts_with("HTTP/1.1 403"), "{origin} {site:?}: {reply}");
+            assert_eq!(answered, 0, "{origin} {site:?}");
+            assert_eq!(facts.len(), 1, "{origin} {site:?}");
+            assert_eq!(facts[0].stage, Stage::Origin, "{origin} {site:?}");
+        }
+    }
+
+    #[test]
+    fn approval_post_accepts_one_well_formed_answer_only() {
+        let (reply, answered, facts) = approval_exchange(
+            "https://example.invalid",
+            "same-origin",
+            "csrf=fixture&id=0123456789abcdef&answer=once",
+        );
+        assert!(reply.starts_with("HTTP/1.1 303"), "{reply}");
+        assert!(reply.contains("Location: /\r\n"), "{reply}");
+        assert_eq!(answered, 1);
+        assert!(facts.is_empty());
+        // An unlisted answer or an extra field is malformed and never reaches the owner form.
+        for body in [
+            "csrf=fixture&id=0123456789abcdef&answer=maybe",
+            "csrf=fixture&id=0123456789abcdef&answer=once&extra=1",
+            "csrf=fixture&id=0123456789abcdef",
+        ] {
+            let (reply, answered, _) = approval_exchange("https://example.invalid", "same-origin", body);
+            assert!(reply.starts_with("HTTP/1.1 403"), "{body}: {reply}");
+            assert_eq!(answered, 0, "{body}");
+        }
+    }
+
+    #[test]
+    fn approval_post_refuses_get_and_other_paths_at_the_transport() {
+        // A GET to the same path is a method refusal, logged as a refusal on the approval path.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let facts: Arc<std::sync::Mutex<Vec<RefusalFact>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = facts.clone();
+        let handler = std::thread::spawn(move || {
+            let refusals: RefusalLog = Arc::new(move |fact| record.lock().unwrap().push(fact));
+            connection_fixed(
+                server,
+                |_, _| true,
+                |_, _| panic!("unexpected render"),
+                None,
+                None,
+                Some(&refusals),
+            )
+            .unwrap();
+        });
+        client.set_read_timeout(Some(Duration::from_secs(6))).unwrap();
+        write!(
+            client,
+            "POST /approvals?x=1 HTTP/1.1\r\nHost: example.invalid\r\n\r\n"
+        )
+        .unwrap();
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).unwrap();
+        handler.join().unwrap();
+        assert!(reply.starts_with("HTTP/1.1 405"), "{reply}");
+        assert_eq!(facts.lock().unwrap().len(), 1);
     }
 }

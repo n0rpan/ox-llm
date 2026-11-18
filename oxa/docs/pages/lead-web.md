@@ -3,11 +3,33 @@
 Run `oxa lead serve` to serve the read-only board after enabling it in user settings.
 `OXA_LEAD_BOARD_LOG` selects an absolute private board log; refused input stays unavailable.
 The owner must read the final authentication composition before merge or live exposure.
-Chat and owner-decision mutations remain separate work.
+Chat remains separate work. The one owner-decision mutation is the approval answer below.
 
 Optional user setting `oxa.lead.serve.fixed_prompts` defaults to false.
 It enables no-JS, same-origin/CSRF-protected fixed questions at zero model tokens.
 Private situation data needs browser proof separate from tool UIDs; absent inputs stay unavailable.
+
+## Waiting for your approval
+
+The board and home pages show a "Waiting for your approval" panel. It lists the
+dangerous-command requests the approval desk still holds: the request id, the
+session, the working directory's basename, the command text (escaped), the rule
+reasons and how long the request has waited. The panel is read-only and follows
+the same GET authorization as the rest of the pages. Answered requests
+leave it.
+
+Answering needs owner chat. Set the user-only `oxa.lead.serve.owner_chat` to
+`true` with the Tailscale identity and exactly one allowed identity; without it
+the panel shows the requests but serves no answer forms. Each answer is a
+same-origin, CSRF-checked form POST to `/approvals` with the fields `id` and
+`answer` (`once`, `session`, `always` or `deny`), then a redirect to `/`.
+
+An answer is equivalent to `oxa send <session> --approve <id> <answer>`: the same
+approval desk write, the same user-only save of `always` keys to
+`oxa.approval.always` (never the project's settings), and the same informational
+note to the session. An unknown or already answered request returns 404 and
+changes nothing. A refused answer is written to the service journal like a
+refused chat request, with stage `approval`.
 
 Only the user settings file may configure `oxa.lead.serve`; a project's settings
 cannot enable it or choose its listener or identity policy. It is disabled by
