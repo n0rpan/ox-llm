@@ -39,10 +39,8 @@ fn secret_name(name: &str) -> bool {
 
 fn secret_value(value: &str) -> Option<String> {
     let value = value.trim();
-    (value.chars().count() >= MIN_SECRET_VALUE_CHARS
-        && !value.starts_with('/')
-        && !value.starts_with('~'))
-    .then(|| value.to_string())
+    (value.chars().count() >= MIN_SECRET_VALUE_CHARS && !value.starts_with('/') && !value.starts_with('~'))
+        .then(|| value.to_string())
 }
 
 fn setting_values(name: &str, value: &Value, out: &mut Vec<String>) {
