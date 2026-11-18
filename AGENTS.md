@@ -14,8 +14,13 @@ maintainer, who says in the PR when a hardware check is needed.
 - Keep engine transport selection, native binary/launch configuration, `allowRemote`, share
   authority and login/token paths user-only. A project file must never override these decisions.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
-- Preserve sandbox/bwrap enforcement and file-tool denials for private paths. Only explicit
-  owner-selected yolo deliberately disables the permission floor.
+- Preserve the OS sandbox (bwrap) for unattended runs (workers, subagents, headless goal runs,
+  `oxa work`): it is on by default (`oxa.sandbox.unattended`) and bash is disabled when it is wanted
+  but unusable. Interactive runs have no OS sandbox unless the owner turns it on (`--sandbox`,
+  `oxa.sandbox.interactive`). Preserve dangerous-command approval (`oxa.approval.*`, parsed-command
+  classifier, its bypass tests) and the in-process guards: file-tool denials for private paths,
+  credential masking, user-only settings, offline. Yolo drops approval prompts only; it never lifts
+  the in-process guards.
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
   in the ledger (an unknown cost is recorded as unknown). Limits are owner configuration: with no cap
@@ -35,7 +40,8 @@ maintainer, who says in the PR when a hardware check is needed.
 - **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
   registry with its surfaces and help (P1 if added outside it or without an exception reason).
 - Owner policy: nothing blocks by default except the security invariants above (secrets,
-  sandbox, user-only settings, offline, fork safety). Limits, budgets, retries and guards are owner
+  sandbox for unattended runs, dangerous-command approval, user-only settings, offline, fork
+  safety). Limits, budgets, retries and guards are owner
   settings with generous defaults that warn and record; a hard block exists only when the owner
   configures it. Do not ask for a new default block or for a feature to be default-off.
 - Reserve P0/P1 for violations of these invariants or concrete data loss/crash. Report only
@@ -167,7 +173,7 @@ Run these in GitHub CI before saying a task is done. Automatic local helpers mus
    `checks.yml`, the receipt scrubber, allow-lists, the oxa sandbox, permissions and secret handling. Don't
    split or obfuscate strings to get past a scanner. A test fixture that must look like a secret gets a
    narrow, exact-path exclusion with a written reason, reviewed as T3.
-   The user-selected yolo mode is the single deliberate exception, where the user has switched the permission floor off for the session.
+   User-selected yolo only removes approval prompts and the interactive OS sandbox; the in-process guards stay.
 2. **No secrets, keys, tokens, transcripts, personal data, real home paths, host names or e-mail
    addresses** in code, tests, fixtures, docs or commit messages. Use placeholder paths (`~/project`), `example.invalid` and
    synthetic data. Commit with a GitHub no-reply e-mail address.

@@ -4,6 +4,27 @@ oxa is a local agent. The model reads your project, runs commands and writes fil
 
 The short threat model is in [SECURITY.md](../../SECURITY.md) at the repository root.
 
+## Interactive and unattended runs
+
+oxa runs in two kinds of run, and the OS sandbox follows who is at the keyboard:
+
+- **Interactive**: the TUI, `oxa -p` started by a person, and the lead chat. There is no OS sandbox by default: bash and hooks run with your rights, and a dangerous command asks first.
+- **Unattended**: a subagent, a lead worker, `oxa work`, a runner-owned task, or a headless `--goal` run. Nobody is there to answer, so the OS sandbox (bubblewrap) is on by default, and a dangerous command is refused or filed for the owner.
+
+| Run | OS sandbox for bash and hooks | Dangerous commands |
+|---|---|---|
+| interactive, default | no | ask |
+| interactive, `--sandbox` or `oxa.sandbox.interactive: true` | yes | ask |
+| unattended, default | yes; bash is disabled if bubblewrap is missing or unusable | refused with the reason, or filed for the owner (see [Dangerous commands](#dangerous-commands)) |
+| unattended, `oxa.sandbox.unattended: false` | no | filed for the owner (`auto` or `request`), or refused (`refuse`) |
+| yolo, any run | no | no prompts |
+
+In every run and mode the in-process guards hold: file-tool denials for private paths, credential masking in tool output, user-only settings and offline mode. Yolo drops the approval prompts and the interactive OS sandbox; it does not lift the guards.
+
+The owner settings are `oxa.sandbox.interactive`, `oxa.sandbox.unattended`, `oxa.approval.dangerous`, `oxa.approval.always` and `oxa.approval.unattended`. All of them are user settings only (see [settings](settings.md)). The `--sandbox` flag turns the OS sandbox on for one interactive run.
+
+On macOS there is no OS sandbox yet (#1510). Unattended runs there use the approval-request path for dangerous commands.
+
 ## Permission modes
 
 Every tool call has an access class: `Read`, `Write`, `Exec` (a command), `Net` (a host) or `Mcp` (an MCP tool, read or write). The mode decides what happens to each class.
@@ -15,13 +36,13 @@ Every tool call has an access class: `Read`, `Write`, `Exec` (a command), `Net` 
 | write inside the project | deny | allow | ask |
 | write outside the project | deny | ask | ask |
 | bash, read-only command, no network | allow | allow | ask |
-| bash, other command, no network | deny | allow (sandboxed) | ask |
+| bash, other command, no network | deny | allow | ask |
 | extension `exec` with `net: true` | deny | ask | ask |
 | `web_search` | deny | allow, no prompt | ask |
 | MCP tool that its server marks read-only | allow | allow | ask |
 | MCP tool, other | deny | ask | ask |
 
-In `workspace`, bash runs without asking, in the sandbox described below. Bash has network access in `workspace` and `ask` modes by default (see [Network](#network)). An extension `exec` that asks for network is asked for in `workspace` and `ask`, and refused in `plan`.
+In `workspace`, bash runs without asking. Where the OS sandbox is on (unattended runs, or `--sandbox`), it runs in the sandbox described below. An interactive run without the OS sandbox runs bash with your rights, and its dangerous commands ask (see [Dangerous commands](#dangerous-commands)). Bash has network access in `workspace` and `ask` modes by default (see [Network](#network)). An extension `exec` that asks for network is asked for in `workspace` and `ask`, and refused in `plan`.
 
 - When oxa asks, it offers "Allow once", "Allow for this session", and "Deny". A session grant covers the same path directory, command, host or tool for the rest of the run. Grants are kept in memory and never written to disk. A grant never overrides a deny.
 - Plan mode is for reading and planning. It refuses writes, the `subagent` tool, `web_search`, and every command that is not read-only.
@@ -38,18 +59,18 @@ On top of the table, the permission mode decides who answers the questions:
 
 | Mode | Prompts | Bash | File tools |
 |---|---|---|---|
-| `standard` | the table above asks you | in the sandbox | deny-list and protected paths enforced |
-| `auto` (default) | table questions allowed and counted; protected configuration still asks | in the sandbox | deny-list and protected paths enforced |
-| `yolo` | none | **without the sandbox**, in your own environment | no deny-list, no protected paths |
+| `standard` | the table above asks you | no OS sandbox (interactive) / sandbox (unattended or `--sandbox`) | deny-list and protected paths enforced |
+| `auto` (default) | table questions allowed and counted; protected configuration still asks | no OS sandbox (interactive) / sandbox (unattended or `--sandbox`) | deny-list and protected paths enforced |
+| `yolo` | none, dangerous commands included | **without the OS sandbox**, in your own environment, in every run | deny-list and protected paths enforced |
 | `plan` | as in the table | read-only commands | no writes |
 
-- `auto` is the default of a fresh install. It removes the prompts and nothing else: the bash sandbox and its deny-list stay, the file tools still refuse `~/.ssh`, `~/.gnupg`, cloud and git credentials, `~/.config/oxc`, browser profiles and the agent directory, `.git/hooks` and `.git/config` are never written, and a write to the project's `.oxa` configuration still asks.
-- `yolo` is full access. Bash runs as you, with your files, credentials and network; the file tools no longer refuse the deny-list or git's protected files and do not ask before writing `.oxa` or a startup file. Yolo removes every guard; use `auto` when you want no prompts but still want the sandbox. Use it only in a session you watch, on a machine and project you can restore. With `--offline` bash still has no network.
+- `auto` is the default of a fresh install. It removes the prompts for table questions and nothing else: dangerous commands still ask, the deny-list stays masked, the file tools still refuse `~/.ssh`, `~/.gnupg`, cloud and git credentials, `~/.config/oxc`, browser profiles and the agent directory, `.git/hooks` and `.git/config` are never written, and a write to the project's `.oxa` configuration still asks. Bash has the OS sandbox only where it is on (unattended runs, or `--sandbox`).
+- `yolo` is full access to bash and no prompts. Bash runs as you, without the OS sandbox, so it can read and write your files and reach your network, and it is not limited to the sandbox's masks. The guards stay: the file tools still refuse the deny-list and git's protected files, and dangerous commands run without asking. Use it only in a session you watch, on a machine and project you can restore. To keep the OS sandbox too, use `auto` with `--sandbox`. With `--offline` bash still has no network.
 - Set the mode at start with `--standard`, `--auto`, `--yolo` or `--permission-mode <mode>` (one run), or with the `permissions.defaultMode` setting (`standard`, `auto`, `yolo` or `plan`). `/mode <mode> --save` and "make default" in the `/mode` picker write that setting. A project's settings can lower the mode (for example to `standard`) but never raise it.
 - In a session: `/mode` opens the picker, `/mode <mode>` switches, `/auto` switches to auto, `/yolo [on|off]` or Ctrl+Alt+O toggles yolo (off returns to the mode before it), and Alt+M cycles standard, auto and yolo. `/mode workspace` and `/mode ask` still set the table mode.
 - The status bar always shows the mode. In yolo it shows a flame, `YOLO full access` and the count of auto-approved actions, the frames turn to the theme's hot colours, and the first switch in a session prints a one-line notice. In print, JSON and RPC mode the mode is written to stderr at start.
 - Subagents inherit the mode the parent has when they start. Running background jobs also keep their launch-time rights: switching modes affects subsequent commands, not processes already started. Stop an existing job with `bash {"job": "job-N", "kill": true}` or close the session.
-- The auto-approved count records questions answered with allow, once each. A denial bypassed by full access is not an approval and does not increment it (#443).
+- The auto-approved count records questions answered with allow, once each. Yolo never bypasses a denial, so a denial is never counted.
 - Plan mode and project trust work the same in every mode.
 
 A shell alias makes yolo quick to start:
@@ -58,11 +79,66 @@ A shell alias makes yolo quick to start:
 $ alias yoxa='oxa --yolo'
 ```
 
+## Dangerous commands
+
+Some commands are dangerous in any mode. An interactive run asks before it runs one; yolo does not ask; an unattended run refuses it or files it for the owner. The rules match the parsed command, not the raw text, so quoting and wrapping do not hide a match.
+
+The built-in rules, by id:
+
+| Rule id | Matches |
+|---|---|
+| `rm-recursive-outside` | recursive delete outside the workspace, of `/` or `~`, or of a glob or variable at the top |
+| `git-push-force` | `git push` with a force flag, `--mirror`, `--delete` or a `+refspec` |
+| `credential-write` | write, delete or redirect into a credential, agent or token path |
+| `pipe-to-shell` | a pipeline or heredoc feeds a shell, or an interpreter is fed by `curl` or `wget` |
+| `disk-destroy` | raw disk write, `mkfs`, `wipefs`, partitioning or a redirect to a disk device |
+| `chmod-recursive-open` | recursive `chmod` to world-writable modes, or `chown -R` outside the workspace |
+| `sudo` | privilege escalation: `sudo`, `doas`, `su`, `pkexec` or `run0` |
+| `sql-drop` | SQL `DROP` of a table, database or schema, or a `TRUNCATE` statement |
+| `kill-foreign` | kill of processes by name, of pid 1, of -1 or of a process group |
+| `oxa-self-approve` | `oxa send` or `oxa approve`, or a write into the agent directory |
+| `eval-dynamic` | `eval` or `source` of a command the shell builds at run time |
+| `unparsed` | the command line cannot be parsed (fail closed) |
+
+How a command is read:
+
+- Quotes and backslashes are removed before a rule reads a word, so `r\m`, `'r'm` and `"rm"` all match `rm`.
+- A command substitution (`$( )` or backticks), and the string of `sh -c` or `bash -c` (or a here-string), are parsed again and checked, to eight levels of nesting.
+- `env` (with its `VAR=value` words and options), `xargs`, `nohup`, `command`, `builtin`, `exec`, `setsid`, `ionice` and `flock -c` are looked through, so the command they run is checked. The privilege wrappers `sudo`, `doas`, `pkexec` and `run0` are reported under `sudo`, and the command they run is checked too.
+- The arguments of `eval` are checked as a shell script. `source` and `.` are reported when their argument is built at run time. A command name or an `eval` argument that contains `$` or a backtick is `eval-dynamic`.
+- A line the parser cannot read is a hit under `unparsed`, so it is never run unchecked.
+- Each hit names the simple command that matched, redirections included.
+
+When a dangerous command asks, the prompt offers four answers:
+
+- **once**: run this command this time only.
+- **session**: allow the same rule and command until the run ends. The grant is kept in memory.
+- **always**: allow the same rule and command in later runs too. oxa writes the exact key, `<rule> <command>`, to the user setting `oxa.approval.always`. Remove the line there to revoke it.
+- **deny**: refuse the command. The model receives the refusal.
+
+To change the rules, set `oxa.approval.dangerous` in your user settings. It is user settings only, and a project file cannot set it.
+
+- `[]` (the default) is every built-in rule.
+- `+id` adds a built-in rule, `-id` removes one, and `cmd:<words>` adds a rule for a command. For example, `["-sudo", "cmd:terraform destroy"]` drops the `sudo` rule and asks before `terraform destroy`.
+- A list of plain ids, with no `+` or `-`, replaces the built-in set.
+
+Unknown entries are ignored, with a warning.
+
+### Unattended runs
+
+An unattended run has no one to ask. `oxa.approval.unattended` (user settings only) decides what it does with a dangerous command:
+
+- `auto` (the default): with the OS sandbox on, the command is refused and the refusal gives the reason. Without the OS sandbox (macOS, or `oxa.sandbox.unattended: false`), the command is filed as an approval request and not run.
+- `refuse`: always refused.
+- `request`: always filed as an approval request.
+
+Nothing waits for an answer. The run goes on with its other work. The owner answers a request with `oxa send <session> --approve <id> once|session|always|deny`, and lists the open requests with `oxa send --approvals`. `always` also saves the rule key to the user settings. The [lead web page](lead-web.md) shows the same requests under "Waiting for your approval" and answers them the same way. Answers go only to the approval desk. A model cannot grant one by writing a message to the inbox.
+
 ## The bash sandbox
 
-On Linux, bash runs in a `bubblewrap` (`bwrap`) sandbox. Without a usable `bwrap`, the bash tool is disabled and oxa says so at start-up. oxa does not fall back to running commands unsandboxed; only the `yolo` mode runs bash without it.
+The sections below describe the OS sandbox, which is on for unattended runs and for an interactive run with `--sandbox` or `oxa.sandbox.interactive`. On Linux, bash then runs in a `bubblewrap` (`bwrap`) sandbox. Where the OS sandbox is wanted and `bwrap` is not usable, the bash tool is disabled and oxa says so at start-up; oxa does not fall back to running those commands unsandboxed. Without the OS sandbox (an interactive run by default, and yolo), bash and hooks run with your rights; see [Interactive and unattended runs](#interactive-and-unattended-runs).
 
-What a command sees:
+What a command sees inside the OS sandbox:
 
 | Part of the machine | Inside the sandbox |
 |---|---|
@@ -84,7 +160,7 @@ Tools that insist on "owned by root or the caller" (stat/ownership checks, some 
 
 The same mapping limits what a command can write as metadata. Setting a POSIX ACL (`setfacl`, or `fsetxattr` on `system.posix_acl_access`) that names a user id or group id other than the mapped ones fails with `EINVAL`, because the kernel cannot represent an unmapped id in the namespace; the same goes for `chown` to another id. Named entries for your own uid and gid, and ACLs with only owner, group, mask and other entries, work. A test or script that needs a foreign named uid in an ACL has to run outside the sandbox.
 
-The environment of a command starts empty. It gets `PATH`, `HOME`, `LANG`, `TERM` and `AI_AGENT`, the toolchain variables that are set (for example `CARGO_HOME`, `RUSTUP_HOME`, `GOPATH`, `NVM_DIR`, `UV_CACHE_DIR`, and the `MISE_*` variables), and the variables oxa sets for the session (`OXA_SESSION_ID`, and `OXA_SESSION_FILE` unless the session is ephemeral). Every other variable is dropped, including your API keys and tokens. A toolchain variable whose name contains `TOKEN`, `SECRET`, `KEY`, `PASSWORD`, `PASSWD`, `CREDENTIAL`, `AUTH`, `COOKIE` or `SESSION` is never passed.
+Inside the OS sandbox the environment of a command starts empty. It gets `PATH`, `HOME`, `LANG`, `TERM` and `AI_AGENT`, the toolchain variables that are set (for example `CARGO_HOME`, `RUSTUP_HOME`, `GOPATH`, `NVM_DIR`, `UV_CACHE_DIR`, and the `MISE_*` variables), and the variables oxa sets for the session (`OXA_SESSION_ID`, and `OXA_SESSION_FILE` unless the session is ephemeral). Every other variable is dropped, including your API keys and tokens. A toolchain variable whose name contains `TOKEN`, `SECRET`, `KEY`, `PASSWORD`, `PASSWD`, `CREDENTIAL`, `AUTH`, `COOKIE` or `SESSION` is never passed.
 
 ### Starting in your home directory
 
@@ -101,7 +177,7 @@ Writable package caches are shared with your own builds. A crate or Go module th
 
 ### The deny-list
 
-These paths are masked inside the sandbox, and the file tools refuse them in `standard`, `auto` and `plan`, whatever the grants or settings say. The single deliberate exception is user-selected `yolo` outside plan mode: its bash sandbox and file-tool permission floor are off. `grep`, `find` and `ls` on a folder above them (your home directory, `~/.config`) skip them: their names and contents are not shown. The list is fixed. Each entry is a path under your home directory, except oxa's own agent directory, which is masked wherever `OXA_AGENT_DIR` puts it.
+These paths are masked inside the OS sandbox, and the file tools refuse them in every mode, yolo included, whatever the grants or settings say. Without the OS sandbox (an interactive run by default, and yolo), bash is not masked from them, so bash can read them as you do. `grep`, `find` and `ls` on a folder above them (your home directory, `~/.config`) skip them: their names and contents are not shown. The list is fixed. Each entry is a path under your home directory, except oxa's own agent directory, which is masked wherever `OXA_AGENT_DIR` puts it.
 
 - SSH, GPG, and cloud credentials: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.vault-token`, `~/.terraform.d/credentials.tfrc.json`, `~/.s3cfg`, `~/.config/rclone`, `~/.config/hcloud`, `~/.config/doctl`, `~/.config/sops/age`.
 - Git and package-registry credentials: `~/.git-credentials`, `~/.config/git/credentials`, `~/.config/gh` (see below), `~/.config/hub`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`, `~/.cargo/credentials.toml`, `~/.gem/credentials`, `~/.m2/settings.xml`, `~/.gradle/gradle.properties`, `~/.config/github-copilot`.
@@ -152,7 +228,7 @@ Trust covers the content, not just the directory. Once you trust a project, oxa 
 
 `--approve` trusts the project and records the current content for one run. `--no-approve` ignores the project's configuration and resources for one run. `oxa install -l` and `oxa mcp ... -l` check the same record.
 
-In `standard` and `auto`, the model cannot write `.oxa/**` or `.agents/skills/**` without asking, and the file tools refuse writes to `.git/hooks` or `.git/config`. Plan mode denies these writes too. User-selected `yolo` outside plan mode deliberately lifts all of these guards.
+In `standard` and `auto`, the model cannot write `.oxa/**` or `.agents/skills/**` without asking, and the file tools refuse writes to `.git/hooks` or `.git/config`. Plan mode denies these writes too. Yolo outside plan mode drops the question about `.oxa/**` and `.agents/skills/**`, so those writes run without asking, but the refusal for `.git/hooks` and `.git/config` stays.
 
 ## Network
 
@@ -165,7 +241,7 @@ The harness connects to one place by default: the engine, on loopback (`127.0.0.
 | `web_search` (only with a key) | Brave Search only; refused in `plan` | asked for `api.search.brave.com` |
 | remote MCP servers (HTTP) | the server's host | asked |
 | extension `fetch` and exec with network | the host asked for | asked |
-| exec hooks | no | not applicable |
+| exec hooks | no inside the OS sandbox; without it, your network | not applicable |
 
 ### Bash network
 
@@ -189,7 +265,7 @@ This matters because the model can be steered by text it reads. A steered model 
 - subagent children inherit the switch;
 - the local engine keeps working.
 
-Offline mode is about the network only. It does not limit what those programs read or write. A `!cmd` command or a stdio MCP server, when started offline, sees your files as you do: it is not under the deny-list masks, and it can write anywhere your account can write. Exec hooks have never had network. Programs you start yourself, outside oxa, are not affected by oxa at all.
+Offline mode is about the network only. It does not limit what those programs read or write. A `!cmd` command or a stdio MCP server, when started offline, sees your files as you do: it is not under the deny-list masks, and it can write anywhere your account can write. Exec hooks have no network inside the OS sandbox or when oxa is offline; without the OS sandbox and online, a hook has your network, as bash does. Programs you start yourself, outside oxa, are not affected by oxa at all.
 
 ### Remote engine
 
@@ -198,7 +274,7 @@ oxa refuses to send prompts to an engine on another host. The check is on the en
 ## Extensions, hooks and MCP
 
 - Extensions run in an embedded JavaScript runtime with no file, network or process access of their own. Each host function they call (`exec`, `fs`, `fetch`, session actions) goes through the same policy as the model's tools.
-- Exec hooks (`hooks` setting) run as `bash -c` in the sandbox, with no network. A hook that exits with status 2 blocks the `tool_call` or `user_bash` event it belongs to. A hook that times out or fails does not block anything. They run on every event, without the model asking, so only put commands you have read in a hook.
+- Exec hooks (`hooks` setting) follow the OS-sandbox choice. With the OS sandbox on they run in it, with no network. Without it they run as `bash -c` with your rights. A hook that exits with status 2 blocks the `tool_call` or `user_bash` event it belongs to. A hook that times out or fails does not block anything. They run on every event, without the model asking, so only put commands you have read in a hook.
 - MCP stdio servers and `!cmd` commands run with your rights. Outside offline mode they are not in the bash sandbox, and an MCP stdio server starts after an approval. MCP HTTP servers and their OAuth tokens (`mcp-auth.json`, mode `0600`) are subject to the network rules above.
 - An MCP tool's read-only mark (`readOnlyHint`) is the server's own claim. oxa does not check it. For a remote server oxa does not believe the mark unless the server entry says `"trustAnnotations": true` (see [mcp.md](mcp.md#permissions)).
 
@@ -220,13 +296,14 @@ Session files are `0600`. The Brave key is never written to a session, an export
 - Put the Brave key in a `0600` file, or in the environment for one shell.
 - Use `--offline` (or `OXA_OFFLINE=1`) when the task needs no network.
 - Set `oxa.sandbox.net: "off"` if bash should never reach the network.
+- Use `--sandbox` (or `oxa.sandbox.interactive`) for an interactive run where bash should run inside bubblewrap.
 - Do not add `oxa.engine.allowRemote` unless the engine is on a host you control.
 
 ## Sandbox persistence
 
 oxa shows no startup notice about this (it would fill small terminals). The note is appended to bash results that mention /tmp or fail with a read-only or permission error; this contextual reminder is the only place the model sees it.
 
-Workspace writes persist (except protected paths), as do configured writable binds, package caches and permitted git data. Other paths are read-only or hidden. /tmp is the session's private scratch: it persists between commands of one session and is deleted when the session ends (`TMPDIR` and `XDG_CACHE_HOME` point into it). Do not report scratch files as saved; put deliverables in the workspace.
+Where the OS sandbox is on, workspace writes persist (except protected paths), as do configured writable binds, package caches and permitted git data. Other paths are read-only or hidden. /tmp is the session's private scratch: it persists between commands of one session and is deleted when the session ends (`TMPDIR` and `XDG_CACHE_HOME` point into it). Do not report scratch files as saved; put deliverables in the workspace.
 
 Each session gets its own scratch directory, `~/.cache/oxa/scratch/<pid>-<n>` on the host (mode 0700), created when the session starts or is reopened. It is deleted when the session ends: at `/new`, `/resume`, fork, clone or any other switch to another session, and when oxa exits. A resumed session therefore starts with an empty /tmp; two sessions never share one. A directory left behind by an oxa that was killed is removed when a later oxa creates its next session directory. Hook commands do not belong to a session and get a new empty /tmp for each command. If the directory cannot be created, every command gets a new empty /tmp instead.
 
