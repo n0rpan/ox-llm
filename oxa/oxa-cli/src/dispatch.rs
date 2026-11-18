@@ -24,7 +24,7 @@ use oxa_perm::{
 };
 use oxa_proto::{codes, Engine, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
 use oxa_resources::{discover, DiscoverOpts, Resources};
-use oxa_rpc::{run_json_outcome, run_print_outcome, serve_outcome, Out};
+use oxa_rpc::{run_json_outcome_with_inbox, run_print_outcome_with_inbox, serve_outcome, Out};
 use oxa_sandbox::{Bwrap, NoSandbox};
 use oxa_session::{decode_entry, decode_header, FsStore, MemStore, SessionStore};
 use std::io::{BufReader, Read, Write};
