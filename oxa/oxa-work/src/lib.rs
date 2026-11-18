@@ -986,17 +986,16 @@ fn acceptance_result(out: Output, commands: &[(CheckOrigin, String)]) -> Result<
     }
 }
 
-/// The per-check evidence of a supervisor run, tagged with the origins the runner sent.
-/// `None` when it does not name every sent check exactly once.
+/// Pair each supervisor receipt with the request's origin. The receipt carries already
+/// scrubbed display text. The original command stays in the frozen execution plan.
 fn evidence(out: &Output, commands: &[(CheckOrigin, String)]) -> Option<Vec<CheckRun>> {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let runs = derived::parse_evidence(&stdout, commands.len())?;
     Some(
         runs.into_iter()
             .zip(commands)
-            .map(|(mut run, (origin, command))| {
+            .map(|(mut run, (origin, _))| {
                 run.origin = *origin;
-                run.command = derived::bounded_command(command);
                 run
             })
             .collect(),

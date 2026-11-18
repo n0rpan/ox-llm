@@ -16,8 +16,8 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
-/// One check the runner ran, with the evidence its verdict rests on (#1442). The command is
-/// the entry as configured or derived, bounded by [`COMMAND_CAP`].
+/// One check the runner ran, with the evidence its verdict rests on (#1442).
+/// The command has been scrubbed for display and bounded by [`COMMAND_CAP`].
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct CheckRun {
     pub origin: CheckOrigin,

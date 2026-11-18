@@ -213,6 +213,7 @@ git --no-replace-objects commit -m {message}
         command_prefix: settings.shell_command_prefix(),
     };
     let sandbox = crate::netguard::without_github(Arc::new(b), &settings);
+    let scrub = crate::report_cmd::ScrubCtx::from_env(env, dirs);
     let mut failed = false;
     let mut diagnostics = Vec::new();
     // #1442: one fact per command. The runner pairs this record with what it sent, decides
@@ -224,6 +225,7 @@ git --no-replace-objects commit -m {message}
         ))
         .ok_or("invalid acceptance deadline")?;
     for entry in commands {
+        let evidence_command = crate::report_cmd::scrub(&entry, &scrub);
         let (directory, text) = match entry.strip_prefix("in ").and_then(|s| s.split_once(':')) {
             Some((dir, command)) => (Some(dir.trim()), command.trim()),
             None => (None, entry.as_str()),
@@ -271,7 +273,7 @@ git --no-replace-objects commit -m {message}
         if seconds == 0 {
             failed = true;
             evidence.push(serde_json::json!({
-                "command": entry,
+                "command": evidence_command,
                 "exit": null,
                 "timed_out": true,
             }));
@@ -290,7 +292,7 @@ git --no-replace-objects commit -m {message}
             keep_tail(&mut tail, bytes, 8192);
         });
         evidence.push(serde_json::json!({
-            "command": entry,
+            "command": evidence_command,
             "exit": result.exit,
             "timed_out": result.timed_out,
         }));
@@ -305,16 +307,14 @@ git --no-replace-objects commit -m {message}
     serde_json::to_writer(&mut *out, &record).map_err(|e| e.to_string())?;
     writeln!(out).map_err(|e| e.to_string())?;
     if failed {
-        let ctx = crate::report_cmd::ScrubCtx::from_env(env, dirs);
-        let safe = crate::report_cmd::scrub(&String::from_utf8_lossy(&diagnostics), &ctx);
+        let safe = crate::report_cmd::scrub(&String::from_utf8_lossy(&diagnostics), &scrub);
         err.write_all(safe.as_bytes()).map_err(|e| e.to_string())?;
     }
     Ok(i32::from(failed))
 }
 
 // Exit codes remain the gate: repository callbacks cannot forge a clean verdict by printing
-// JSON or diagnostics. The evidence record restates what the runner itself sent plus each
-// bare exit, and the runner pairs it with its own commands before deciding anything.
+// JSON or diagnostics. The supervisor reports each exit and scrubbed command in request order.
 fn changed_paths(sandbox: &Bwrap, root: &Path, base: &str, out: &mut dyn Write) -> Result<i32, String> {
     if !oxa_work::board::queue::is_object_id(base) {
         return Err("invalid base for worktree change inventory".into());
