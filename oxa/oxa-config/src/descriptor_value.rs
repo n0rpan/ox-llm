@@ -243,10 +243,16 @@ pub fn current(settings: &Settings, d: &Descriptor) -> Shown {
         .unwrap_or(Value::Null);
     let default = if schema.is_null() { eff(d) } else { schema };
     match settings.get(d.key) {
-        Some(v) => Shown {
+        // A value injected by the defaults layer (`defaultTools`) is not an explicit setting.
+        Some(v) if settings.is_set(d.key) => Shown {
             value: v.clone(),
             source: Source::Set,
             differs: *v != default,
+        },
+        Some(v) => Shown {
+            value: v.clone(),
+            source: Source::Default,
+            differs: false,
         },
         None => Shown {
             value: default,
@@ -384,6 +390,22 @@ mod tests {
         assert_eq!(shown.value, json!(true));
         assert_eq!(shown.source, Source::Default);
         assert!(!shown.differs);
+    }
+
+    #[test]
+    fn current_reports_an_injected_default_as_default() {
+        // `defaultTools` comes from the injected defaults layer, so `get` finds it while no
+        // settings file names it: the row shows the built-in list, not an override.
+        let list = d("defaultTools", Group::Tools, "", "L", "h").text();
+        let s = Settings::from_values(json!({}), Value::Null);
+        let shown = current(&s, &list);
+        assert_eq!(shown.source, Source::Default);
+        assert!(!shown.differs);
+        let s = Settings::from_values(json!({ "defaultTools": ["read"] }), Value::Null);
+        let shown = current(&s, &list);
+        assert_eq!(shown.source, Source::Set);
+        assert_eq!(shown.value, json!(["read"]));
+        assert!(shown.differs);
     }
 
     #[test]
