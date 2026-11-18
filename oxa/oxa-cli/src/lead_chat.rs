@@ -194,11 +194,17 @@ fn cli_conversation_error(error: OxaError) -> OxaError {
             "Cloud models need a positive oxa.cloud.daily_budget_usd in oxa user settings."
         }
         "budget_exceeded" | codes::BUDGET_EXHAUSTED => "The daily cloud budget is exhausted.",
+        codes::LITERAL_OUTPUT_EXHAUSTED => {
+            "The Lead reply stopped at its bounded output limit; ask for a shorter answer."
+        }
         "subscription_limit_exceeded" => "The local subscription limit would be exceeded.",
         "subscription_limits_not_configured" => "Subscription limits are unavailable.",
         "lead_owner_unavailable" => "The selected Lead session is unavailable.",
         "lead_reply_invalid" => "Lead returned an invalid reply.",
+        "lead_evidence_invalid" => "The Lead reply cited observations outside the bounded input.",
         "lead_reply_incomplete" => "Lead reply did not complete.",
+        "cloud_provider_forbidden" => "This subscription provider serves only the owner agent.",
+        "cloud_not_shared" => "Cloud models are not available to shared guests.",
         codes::BUSY => "The selected Lead session is busy.",
         codes::NOT_FOUND => "The configured Lead model ID is unavailable.",
         codes::USAGE => "Lead chat requires a bounded message.",
