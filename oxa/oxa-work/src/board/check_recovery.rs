@@ -28,8 +28,46 @@ pub enum Decision {
     Alarm,
 }
 
-pub fn decide(_enabled: bool, _check: &Observation<'_>, _now: u64, _history: History) -> Decision {
-    Decision::Quiet
+const STALE_CHECK_SECONDS: u64 = 10 * 60;
+
+pub fn decide(enabled: bool, check: &Observation<'_>, now: u64, history: History) -> Decision {
+    if !enabled
+        || !check.required
+        || check.status != "in_progress"
+        || check.job_id == 0
+        || check.run_attempt == 0
+        || !matches!(
+            check.conclusion,
+            Some(
+                "success"
+                    | "failure"
+                    | "neutral"
+                    | "cancelled"
+                    | "skipped"
+                    | "timed_out"
+                    | "action_required"
+                    | "stale"
+                    | "startup_failure"
+            )
+        )
+    {
+        return Decision::Quiet;
+    }
+    let age = check
+        .completed_at
+        .and_then(oxa_session::parse_utc_seconds)
+        .and_then(|completed_at| now.checked_sub(completed_at));
+    if !age.is_some_and(|age| age > STALE_CHECK_SECONDS) {
+        return Decision::Quiet;
+    }
+
+    match history {
+        History::Unused => Decision::RerunJob(check.job_id),
+        History::Requested { before_attempt } if before_attempt > 0 && check.run_attempt > before_attempt => {
+            Decision::Alarm
+        }
+        History::Unknown | History::Reserved | History::Requested { .. } => Decision::WaitForReceipt,
+    }
 }
 
 #[cfg(test)]
