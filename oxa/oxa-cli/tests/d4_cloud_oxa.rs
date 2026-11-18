@@ -133,7 +133,8 @@ fn list_models_chatgpt_provider_and_published_modalities() {
         assert_eq!(cells[0], "chatgpt", "subscription provider: {stdout}");
         assert_eq!(cells[1], "chatgpt/subscription-model");
         let expected = if omit_modality { ["?", "?"] } else { ["yes", "no"] };
-        assert_eq!(cells[4..], expected, "published capabilities: {stdout}");
+        assert_eq!(cells[4..6], expected, "published capabilities: {stdout}");
+        assert_eq!(cells[6..], ["-"], "subscription routing: {stdout}");
         assert!(server.requests().is_empty(), "listing must not generate");
     }
 }
