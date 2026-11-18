@@ -352,7 +352,7 @@ impl LeadOwnerBinding {
         let route = lead_model(dirs, binding.uid)?;
         args.model = route.clone();
         let interactive = mode == RunMode::Interactive;
-        prepare(
+        let prep = prepare(
             args,
             env,
             dirs,
