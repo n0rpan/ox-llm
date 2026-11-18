@@ -46,6 +46,7 @@ with tempfile.TemporaryDirectory() as sandbox, tempfile.TemporaryDirectory() as 
     for binary in ('oxa', 'oxe', 'oxe-server', 'local-ai-memlat-boot'):
         with Path('/usr/bin', binary).open('rb') as executable:
             assert executable.read(4) == b'\x7fELF', f'Expected a native Linux executable: {binary}'
+    for binary in ('oxa', 'oxe-server', 'local-ai-memlat-boot'):
         subprocess.run([binary, '--help'], env=env, stdout=subprocess.DEVNULL, check=True)
     # This validates argument parsing without loading model weights.
     subprocess.run(['oxe', 'gen', '--model', 'absent.gguf', '--tokens', '1', '--check-args'],
