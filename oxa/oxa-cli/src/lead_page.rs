@@ -621,7 +621,7 @@ mod tests {
                 eligible: true,
             }],
         };
-        let render = |board| {
+        let render = |board: Option<&Board>| {
             content_for(
                 Page::Item(17),
                 &View {
