@@ -143,7 +143,7 @@ class GoReview(unittest.TestCase):
         self.assertEqual(self.run_review(daily_comments=comments)[2], 1)
 
     def test_unverifiable_daily_counter_refuses(self):
-        for listing in ({'message': 'unavailable'}, [quota_comment(login='untrusted')] * 100,
+        for listing in ({'message': 'unavailable'},
                         [{**quota_comment(), 'created_at': 'unknown'}]):
             with self.subTest(listing_type=type(listing)), self.assertRaises(review.Refused):
                 self.run_review(daily_comments=listing)
@@ -418,6 +418,24 @@ class GoReview(unittest.TestCase):
         self.assertTrue(review.reviewed(comments, SHA, marker['diff_hash']))
         comments[0]['user']['login'] = 'outside-author'
         self.assertFalse(review.reviewed(comments, SHA, marker['diff_hash']))
+
+    def test_busy_repo_comment_history_does_not_fail_the_review(self):
+        busy = [{'id': i, 'user': {'login': 'someone'}, 'body': 'chat'} for i in range(1, 101)]
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            calls, posted, auth = self.run_review(daily_comments=busy)
+        self.assertEqual((len(posted), auth), (1, 1))
+        self.assertIn('Warning', output.getvalue())
+
+    def test_incomplete_count_warns_and_continues(self):
+        busy = [{'id': i, 'user': {'login': 'someone'}, 'body': 'chat'} for i in range(1, 101)]
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            _, posted, auth = self.run_review(comments=busy)
+        self.assertEqual((len(posted), auth), (1, 1))
+        self.assertIn('per-PR', output.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            _, posted, auth = self.run_review(daily_comments=busy)
+        self.assertEqual((len(posted), auth), (1, 1))
+        self.assertIn('daily Go review count', output.getvalue())
 
     def test_instruction_and_author_boundaries(self):
         self.assertTrue(review.eligible(PR, SHA))

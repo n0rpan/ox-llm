@@ -44,6 +44,10 @@ class Refused(Exception):
     """Only constant, credential-free messages may be exposed to the job log."""
 
 
+class Incomplete(Exception):
+    """A bounded listing that could not be completed: warn and continue, never block."""
+
+
 class Skipped(Refused):
     """A bounded review deferral is advisory, not a failed product check."""
 
@@ -163,8 +167,8 @@ def reviewed(comments, sha, diff_hash):
     return False
 
 
-def comment_pages(url, headers, **filters):
-    for page in range(1, 21):
+def comment_pages(url, headers, max_pages=200, **filters):
+    for page in range(1, max_pages + 1):
         query = urllib.parse.urlencode({**filters, 'per_page': 100, 'page': page})
         comments = request(f'{url}?{query}', headers, limit=2_000_000)
         if not isinstance(comments, list) or len(comments) > 100:
@@ -172,7 +176,7 @@ def comment_pages(url, headers, **filters):
         yield comments
         if len(comments) < 100:
             return
-    raise Refused('Comment history exceeds the Go review bound')
+    raise Incomplete('Comment history exceeds the Go review bound')
 
 
 def created_day(comment):
@@ -198,21 +202,25 @@ def check_daily_quota(headers, day):
     since = datetime.combine(day, time(), UTC) - timedelta(seconds=1)
     since = since.strftime('%Y-%m-%dT%H:%M:%SZ')
     seen = set()
-    for comments in comment_pages(f'{API}/issues/comments', headers, since=since, sort='created',
-                                  direction='asc'):
-        for comment in comments:
-            if review_receipt(comment):
-                created = created_day(comment)
-                if created > day:
-                    raise Refused('Go review quota date is inconsistent')
-                if created < day:
-                    continue
-                comment_id = comment.get('id')
-                if type(comment_id) is not int or comment_id <= 0 or comment_id in seen:
-                    raise Refused('Invalid Go review quota listing')
-                seen.add(comment_id)
-                if len(seen) >= limit:
-                    raise Skipped('Daily Go review quota is exhausted')
+    try:
+        for comments in comment_pages(f'{API}/issues/comments', headers, since=since, sort='created',
+                                      direction='asc'):
+            for comment in comments:
+                if review_receipt(comment):
+                    created = created_day(comment)
+                    if created > day:
+                        raise Refused('Go review quota date is inconsistent')
+                    if created < day:
+                        continue
+                    comment_id = comment.get('id')
+                    if type(comment_id) is not int or comment_id <= 0 or comment_id in seen:
+                        raise Refused('Invalid Go review quota listing')
+                    seen.add(comment_id)
+                    if len(seen) >= limit:
+                        raise Skipped('Daily Go review quota is exhausted')
+    except Incomplete:
+        # Busy repositories can exceed the listing bound; record the gap and continue.
+        print('Warning: daily Go review count could not be completed; quota not verified, review continues')
 
 
 def marker(sha, diff_hash, models, verdict, count):
@@ -410,8 +418,11 @@ def main():
     allowed = changed_lines(files)
     diff_hash = own_diff_hash(files)
     models = review_models(current, files)
-    if any(reviewed(comments, sha, diff_hash) for comments in comment_pages(comments_url, headers)):
-        return
+    try:
+        if any(reviewed(comments, sha, diff_hash) for comments in comment_pages(comments_url, headers)):
+            return
+    except Incomplete:
+        print('Warning: per-PR Go review history could not be completed; review continues')
     day = utc_day()
     check_daily_quota(headers, day)
     if not eligible(request(pull, headers), sha):
