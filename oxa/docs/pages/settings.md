@@ -169,6 +169,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.offline` | bool | `false` | same as `--offline`; user settings only |
 | `oxa.engine.allowRemote` | bool | `false` | allow an engine on another host; user settings only |
 | `oxa.engine.inProcessLocal` | bool | `false` | select the in-process owned local engine, including offline; user settings only |
+| `oxa.inbox.headless` | bool | `true` | a headless print or JSON run (`--mode json`) of a persisted session whose goal is pursuing takes `oxa send` follow-ups from that session's inbox for the length of the run. Each message is an ordinary follow-up user message, at most 256 KiB and 64 queued; a larger file stays on disk. Runs without a pursuing goal never watch the inbox, and `false` turns this off |
 | `oxa.local` | object | `{}` | literal native binary/model/arguments/environment and model limits; user settings only; see [native local configuration](../../oxc-local/CONFIGURATION.md) |
 | `oxa.lead.shadow` | bool | `false` | enable the read-only `oxa lead --shadow` proposal preset; user settings only; no live runner actions |
 | `oxa.engine.inProcessCloud` | bool | `false` | select the in-process Rust cloud gateway for sessions and model discovery; user settings only |

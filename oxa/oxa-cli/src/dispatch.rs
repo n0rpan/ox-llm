@@ -1556,8 +1556,22 @@ fn run_headless(
                 authority,
             )
         }
-        RunMode::Json => run_json_outcome(&mut session, prompts, stdout.as_deref_mut().unwrap(), stderr),
-        _ => run_print_outcome(&mut session, prompts, stdout.as_deref_mut().unwrap(), stderr),
+        RunMode::Json => run_json_outcome_with_inbox(
+            &mut session,
+            prompts,
+            stdout.as_deref_mut().unwrap(),
+            stderr,
+            &built.dirs.agent_dir,
+            built.settings.bool("oxa.inbox.headless", true),
+        ),
+        _ => run_print_outcome_with_inbox(
+            &mut session,
+            prompts,
+            stdout.as_deref_mut().unwrap(),
+            stderr,
+            &built.dirs.agent_dir,
+            built.settings.bool("oxa.inbox.headless", true),
+        ),
     };
     built.result_facts.goal(session.goal());
     // `session_shutdown` for the hook sets, then their script contexts and MCP servers stop.
