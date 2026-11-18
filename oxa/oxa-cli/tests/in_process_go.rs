@@ -85,12 +85,16 @@ fn rows(env: &TestEnv) -> Vec<Value> {
 #[test]
 fn a_key_enables_go_catalog_and_plan_chat_without_legacy_enable_or_limits() {
     let env = TestEnv::new();
+    let patterns = [MODEL, "synthetic-flash", "oxe/opencode/synthetic-flash"];
     let mock = MockOpenAi::start_with(|base| {
-        vec![
-            Reply::json(discovery(base)),
-            Reply::json(discovery(base)),
-            stream(json!({"content":"synthetic plan reply"}), "stop"),
-        ]
+        let mut replies = vec![Reply::json(discovery(base))];
+        for _ in patterns {
+            replies.extend([
+                Reply::json(discovery(base)),
+                stream(json!({"content":"synthetic plan reply"}), "stop"),
+            ]);
+        }
+        replies
     });
     setup(&env, &format!("http://{}", mock.address()));
     let path = env.home().join(".oxa/agent/settings.json");
@@ -109,19 +113,23 @@ fn a_key_enables_go_catalog_and_plan_chat_without_legacy_enable_or_limits() {
     assert!(status.contains("oxa.cloud.opencode.enabled"), "{status}");
     assert!(!status.contains(CREDENTIAL));
 
-    let output = run(&env, &["--model", MODEL, "--no-tools", "-p", "Synthetic task"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("synthetic plan reply"));
+    for pattern in patterns {
+        let output = run(&env, &["--model", pattern, "--no-tools", "-p", "Synthetic task"]);
+        assert!(
+            output.status.success(),
+            "{pattern}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("synthetic plan reply"));
+    }
     let ledger = rows(&env);
-    assert_eq!(ledger.len(), 1);
-    assert_eq!(ledger[0]["billing"], "subscription");
-    assert_eq!(ledger[0]["cost_usd"].as_f64(), Some(0.0));
-    assert_eq!(ledger[0]["settled"], "usage");
-    assert_eq!(mock.requests().len(), 3);
+    assert_eq!(ledger.len(), patterns.len());
+    for row in ledger {
+        assert_eq!(row["billing"], "subscription");
+        assert_eq!(row["cost_usd"].as_f64(), Some(0.0));
+        assert_eq!(row["settled"], "usage");
+    }
+    assert_eq!(mock.requests().len(), 1 + 2 * patterns.len());
     mock.assert_healthy();
 }
 
@@ -154,6 +162,35 @@ fn unavailable_go_reports_the_owner_fix_before_any_discovery() {
         assert!(!stderr.contains(CREDENTIAL));
         assert!(mock.requests().is_empty());
         mock.assert_healthy();
+    }
+}
+
+#[test]
+fn a_local_model_pattern_can_use_a_go_prefixed_alias_when_cloud_is_off() {
+    let env = TestEnv::new();
+    let alias = "opencode/synthetic-local";
+    setup(&env, "http://127.0.0.1:9");
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings["oxa"]["engine"] = json!({"inProcessLocal":true, "inProcessCloud":false});
+    settings["oxa"]["local"] = json!({
+        "binary":"/synthetic/not-launched-oxe",
+        "models":{(alias):{"model":"/synthetic/missing.gguf"}},
+        "limits":{(alias):{"context_window":4096,"max_output":64,"thinking":true,
+            "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,
+                                "mtp_state_bytes":0,"margin_bytes":1044480}}}
+    });
+    fs::write(path, settings.to_string()).unwrap();
+
+    for pattern in ["opencode/SYNTHETIC-LOCAL", "opencode/synthetic-local:high"] {
+        let output = run(&env, &["--model", pattern, "--no-tools", "-p", "Synthetic task"]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success());
+        assert!(
+            stderr.contains("Local weights are missing"),
+            "{pattern}: {stderr}"
+        );
+        assert!(!stderr.contains("OpenCode Go"), "{pattern}: {stderr}");
     }
 }
 
