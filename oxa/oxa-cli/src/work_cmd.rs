@@ -338,11 +338,12 @@ pub(crate) fn run(
         // Freeze every task before checkout hooks or a first worker can change
         // shared refs. A bad plan remains a per-task error, not a batch abort.
         let plans = if is_trusted {
-            if publish || reports {
-                oxa_work::plan_tasks_for_actions(&root, &tasks, &policy, rerun)
+            let planner = if publish || reports {
+                oxa_work::plan_tasks_for_actions
             } else {
-                oxa_work::plan_tasks_for_run(&root, &tasks, &policy, rerun)
-            }
+                oxa_work::plan_tasks_for_run
+            };
+            planner(&root, &tasks, &policy, rerun)
         } else {
             tasks
                 .iter()

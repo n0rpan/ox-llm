@@ -245,20 +245,19 @@ pub fn plan_tasks_for_run(
     policy: &RunPolicy,
     rerun: bool,
 ) -> Vec<Result<PlannedTask>> {
-    plan_tasks_mode(repo, tasks, policy, rerun, false)
+    plan_tasks(repo, tasks, policy, rerun, false)
 }
 
-/// Preserve action recovery while freezing all batch inputs before callbacks.
 pub fn plan_tasks_for_actions(
     repo: &Path,
     tasks: &[Task],
     policy: &RunPolicy,
     rerun: bool,
 ) -> Vec<Result<PlannedTask>> {
-    plan_tasks_mode(repo, tasks, policy, rerun, true)
+    plan_tasks(repo, tasks, policy, rerun, true)
 }
 
-fn plan_tasks_mode(
+fn plan_tasks(
     repo: &Path,
     tasks: &[Task],
     policy: &RunPolicy,

@@ -116,8 +116,8 @@ fn exercise_save_recovery(test_name: &str, case: SaveRecovery) {
             git_binary: "/usr/bin/git".into(),
             host_path: std::env::var_os("PATH").unwrap(),
             terminate_binary: Some("/usr/bin/kill".into()),
-            offline: false,
             runner_owns_github: false,
+            offline: false,
             storage: root.join("home/.oxa/agent/work/save-recovery"),
         };
         let binary = std::path::Path::new(env!("CARGO_BIN_EXE_oxa"));

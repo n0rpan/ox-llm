@@ -22,17 +22,7 @@ pub fn run_observed(
     args: &[&str],
     path: Option<String>,
 ) -> (serde_json::Value, Vec<oxa_fake::Recorded>) {
-    let (mut records, requests) = run_batch(env, turns, args, path);
-    assert_eq!(records.len(), 1, "expected one task record");
-    (records.remove(0), requests)
-}
-pub fn run_batch(
-    env: &TestEnv,
-    turns: Vec<ScriptTurn>,
-    args: &[&str],
-    path: Option<String>,
-) -> (Vec<serde_json::Value>, Vec<oxa_fake::Recorded>) {
-    run_batch_with(env, turns, args, path, |_| {})
+    run_observed_with(env, turns, args, path, |_| {})
 }
 
 pub fn run_observed_with(
@@ -45,6 +35,15 @@ pub fn run_observed_with(
     let (mut records, requests) = run_batch_with(env, turns, args, path, configure);
     assert_eq!(records.len(), 1, "expected one task record");
     (records.remove(0), requests)
+}
+
+pub fn run_batch(
+    env: &TestEnv,
+    turns: Vec<ScriptTurn>,
+    args: &[&str],
+    path: Option<String>,
+) -> (Vec<serde_json::Value>, Vec<oxa_fake::Recorded>) {
+    run_batch_with(env, turns, args, path, |_| {})
 }
 
 fn run_batch_with(
