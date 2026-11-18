@@ -155,3 +155,44 @@ fn offline_refuses_remote_fetch_and_network_exec_before_asking() {
         "{e}"
     );
 }
+
+/// #1512 S2: an extension's `exec` is classified in the directory it runs in, not in the
+/// session's directory: `/…/other/victim` is outside the session's workspace but inside the
+/// directory the extension gave the command, so only the first asks.
+#[test]
+fn extension_exec_is_classified_in_its_own_directory() {
+    let env = TestEnv::new();
+    let (mut st, _eng) = state(&env, vec![ScriptTurn::text("x")], Settings::default());
+    st.policy = Box::new(
+        ModePolicy::new()
+            .with_guard(oxa_perm::PathGuard::new(
+                &env.home(),
+                &env.agent_dir(),
+                &env.tmp(),
+            ))
+            .with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new()),
+    );
+    let other = env.root().join("other");
+    std::fs::create_dir_all(other.join("victim")).unwrap();
+    let spec = |cwd: std::path::PathBuf| {
+        HostAction::Exec(ExecSpec {
+            command: format!("rm -rf {}/victim", other.display()),
+            cwd,
+            writable: true,
+            net: false,
+            timeout_s: None,
+            env: Vec::new(),
+        })
+    };
+    let e = through_host(&mut st, spec(env.work())).unwrap_err();
+    assert!(
+        e.message
+            .starts_with("Refused: dangerous command (rm-recursive-outside: "),
+        "{e}"
+    );
+    through_host(&mut st, spec(other.clone())).unwrap();
+    assert!(
+        !other.join("victim").exists(),
+        "the command ran where it was told"
+    );
+}

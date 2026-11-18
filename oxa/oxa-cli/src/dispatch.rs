@@ -720,13 +720,15 @@ impl Built {
 }
 
 /// #1512 S2: the dangerous-command rules of the user settings. `[]` (the default) is every
-/// built-in rule; a plain entry replaces the built-ins and `+id` / `-id` patch them.
+/// built-in rule; a plain entry replaces the built-ins and `+id` / `-id` patch them. The raw
+/// user entries are read: the merged value has already applied a `+x` / `-x` list to the empty
+/// default, which would turn `["+cmd:x"]` into a plain list that drops every built-in rule.
 fn dangerous_rules(user_settings: &Settings) -> (DangerRules, Vec<String>) {
     let builtin_ids: Vec<String> = oxa_perm::BUILTIN_RULES
         .iter()
         .map(|row| row.0.to_string())
         .collect();
-    let patch = user_settings.list(oxa_perm::SETTING_DANGEROUS);
+    let patch = user_settings.user_list(oxa_perm::SETTING_DANGEROUS);
     let entries = if patch.is_empty() {
         builtin_ids
     } else {
@@ -2825,6 +2827,41 @@ mod session_scratch_tests {
         assert!(!b.exists(), "the second session's scratch outlived it");
     }
 
+    /// #1512 S7: an edit list in `oxa.approval.dangerous` edits the built-in rules. Adding a
+    /// custom rule keeps every built-in rule, `-id` removes only that rule, and only a plain
+    /// list replaces the built-in set (the merged value must not turn `+x` into a plain list).
+    #[test]
+    fn dangerous_rules_edit_list_keeps_the_builtin_rules() {
+        let env = oxa_fake::TestEnv::new();
+        let guard = oxa_perm::PathGuard::new(&env.home(), &env.agent_dir(), &env.tmp());
+        let cwd = env.work();
+        let rules = |list: serde_json::Value| {
+            let user = serde_json::json!({"oxa": {"approval": {"dangerous": list}}});
+            dangerous_rules(&Settings::from_values(user, serde_json::json!({}))).0
+        };
+        let hits = |r: &DangerRules, cmd: &str| -> Vec<String> {
+            r.classify(cmd, &cwd, &guard)
+                .into_iter()
+                .map(|h| h.rule)
+                .collect()
+        };
+        let has = |r: &DangerRules, cmd: &str, rule: &str| hits(r, cmd).iter().any(|h| h == rule);
+        let force = "git push --force origin main";
+        let added = rules(serde_json::json!(["+cmd:terraform destroy"]));
+        assert!(has(&added, "terraform destroy", "cmd:terraform destroy"));
+        assert!(has(&added, force, "git-push-force"));
+        assert!(has(&added, "sudo ls", "sudo"));
+        let edited = rules(serde_json::json!(["-sudo", "+cmd:terraform destroy"]));
+        assert!(!has(&edited, "sudo ls", "sudo"));
+        assert!(has(&edited, force, "git-push-force"));
+        assert!(has(&edited, "terraform destroy", "cmd:terraform destroy"));
+        let removed = rules(serde_json::json!(["-sudo"]));
+        assert!(!has(&removed, "sudo ls", "sudo"));
+        assert!(has(&removed, force, "git-push-force"));
+        let replaced = rules(serde_json::json!(["cmd:terraform destroy"]));
+        assert!(hits(&replaced, force).is_empty());
+        assert!(has(&replaced, "terraform destroy", "cmd:terraform destroy"));
+    }
     /// #1512 S2: the dangerous-command rules and the always keys come from the user settings
     /// only. A project file that replaces the rules and lists the key changes nothing; the same
     /// key in the user file allows the command.

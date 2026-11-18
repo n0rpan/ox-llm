@@ -339,7 +339,7 @@ pub struct ModePolicy {
     yolo: Option<YoloSwitch>,
     /// #1512 S2: the dangerous-command rules (`None` = no floor prompt).
     danger: Option<Arc<DangerRules>>,
-    /// #1512 S2: the session's dangerous-command grants (rule keys, see [`DangerHit::key`]).
+    /// #1512 S2: the session's dangerous-command grants (see [`danger_key`]).
     danger_grants: Vec<String>,
     /// #1512 S2: the keys saved by "always allow" in the user settings.
     always: Arc<Vec<String>>,
@@ -413,7 +413,7 @@ impl ModePolicy {
                 if h.segment.contains('$') || h.segment.contains('`') {
                     return true;
                 }
-                let key = h.key();
+                let key = danger_key(h, command);
                 !self.danger_grants.contains(&key) && !self.always.contains(&key)
             })
             .collect()
@@ -626,11 +626,14 @@ impl Policy for ModePolicy {
     }
 
     fn danger_ask(&self, a: &Access, cwd: &Path) -> Vec<(String, String)> {
+        let Access::Exec { command, .. } = a else {
+            return Vec::new();
+        };
         self.danger_hits(a, cwd)
             .into_iter()
             .map(|h| {
                 let reason = format!("{}: {}", h.rule, h.reason);
-                (h.key(), reason)
+                (danger_key(&h, command), reason)
             })
             .collect()
     }
@@ -687,4 +690,12 @@ impl Policy for ModePolicy {
         }
         self.hidden.clone().map(|h| h as Arc<dyn PathFilter>)
     }
+}
+
+/// The key a dangerous-command grant stores and `oxa.approval.always` matches: the rule with the
+/// whole command line it was found in. A hit's own segment is not enough, because a pipeline or
+/// a dead branch repeats it (`curl a | bash` and `curl b | bash` both name `bash`; `true || git
+/// push --force origin main` names the push), so approving one text would cover the other.
+fn danger_key(h: &DangerHit, command: &str) -> String {
+    format!("{} {}", h.rule, command.trim())
 }
