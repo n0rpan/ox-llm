@@ -233,32 +233,38 @@ fn malformed_or_unknown_goal_metadata_is_an_error_not_a_fresh_budget() {
 #[test]
 fn lead_state_survives_compaction_and_stays_private_to_its_session() {
     use oxa_proto::Value;
-    use oxa_session::{HeldGoalLease, LeadGoalState, OpenGoalAsk, SteeringLease};
+    use oxa_session::{HeldGoalLease, LeadGoalState, OpenGoalAsk, PendingGoalSteer, SteeringLease};
 
     let env = TestEnv::new();
     let root = env.root().join("sessions");
     let store = FsStore::new(root.clone());
     let session = store.create(&env.work(), None, None).unwrap();
     let mut goal = objective();
+    let lease = SteeringLease {
+        holder: "fixture".into(),
+        generation: (7, 2),
+    };
     goal.lead = Some(LeadGoalState {
         // Existing standing-store fixtures retain 39 concurrently open asks.
         open_asks: (1..=39)
             .map(|id| OpenGoalAsk {
                 id: format!("ask-{id}"),
                 revision: 2,
-                question: "Which synthetic result should be used?".into(),
+                question: format!("Which synthetic result should be used for item {id}?"),
             })
             .collect(),
-        standing_refs: vec!["rule-1".into()],
+        standing_refs: vec!["rule-1".into(), "decision-2".into()],
         held_leases: vec![HeldGoalLease {
             task: "task-1".into(),
-            lease: SteeringLease {
-                holder: "fixture".into(),
-                generation: (0, 1),
-            },
+            lease: lease.clone(),
             expires_at: 60,
         }],
-        pending_steer: None,
+        pending_steer: Some(PendingGoalSteer {
+            entry_id: "abcdef02".into(),
+            revision: 1,
+            text: "Keep the synthetic result.\nThen check the next item.".into(),
+            lease: Some(lease),
+        }),
     });
     let checkpoint = entry("00000001", None, goal.body());
     let mut public = Vec::new();

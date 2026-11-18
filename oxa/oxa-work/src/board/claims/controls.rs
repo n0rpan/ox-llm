@@ -19,6 +19,8 @@ pub struct AssignmentData {
     pub native_binding: Option<NativeBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item_owner: Option<super::ownership::ItemOwner>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_activity: Option<super::activity::LeaseActivity>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -181,20 +183,23 @@ impl Claims {
         ttl: u64,
     ) -> Result<Option<Lease>> {
         self.claim_checked(entry, policy, &worker.id, (now, ttl), None, |row| {
-            if !self.established(entry.number)?
-                || row.state.lease.is_some()
-                || self.rows_locked()?.values().any(|saved| {
-                    saved
-                        .state
-                        .lease
-                        .as_ref()
-                        .is_some_and(|lease| lease.holder == worker.id)
-                })
-            {
+            if !self.idle_for(entry.number, &worker.id, row)? {
                 return Ok(false);
             }
             let controls = row.data.policy.get_or_insert_with(AssignmentPolicy::default);
             Ok(controls.allows(worker, entry.action))
         })
+    }
+
+    pub(super) fn idle_for(&self, number: u64, worker_id: &str, row: &Saved) -> Result<bool> {
+        Ok(self.established(number)?
+            && row.state.lease.is_none()
+            && !self.rows_locked()?.values().any(|saved| {
+                saved
+                    .state
+                    .lease
+                    .as_ref()
+                    .is_some_and(|lease| lease.holder == worker_id)
+            }))
     }
 }
