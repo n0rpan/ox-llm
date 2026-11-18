@@ -77,6 +77,9 @@ fn managed_native_worker_authenticates_its_handoff_and_uses_the_owner_goal() {
         ManagedCase::Accepted,
         ManagedCase::Expired,
         ManagedCase::WrongAttempt,
+        ManagedCase::MissingHost,
+        ManagedCase::DifferentHost,
+        ManagedCase::Unhosted,
     ] {
         managed_native_worker(case);
     }
@@ -88,6 +91,9 @@ enum ManagedCase {
     Accepted,
     Expired,
     WrongAttempt,
+    MissingHost,
+    DifferentHost,
+    Unhosted,
 }
 
 #[cfg(all(target_os = "linux", feature = "managed-steering"))]
@@ -147,10 +153,18 @@ fn managed_native_worker(case: ManagedCase) {
             claimed_at,
         )
         .unwrap();
-    let lease = claims
-        .claim_idle_for(&entry, &policy, &holder, claimed_at, 60)
-        .unwrap()
-        .unwrap();
+    let lease = if case == ManagedCase::Unhosted {
+        claims
+            .claim_idle_for(&entry, &policy, &holder, claimed_at, 60)
+            .unwrap()
+            .unwrap()
+    } else {
+        claims
+            .claim_item_for(&entry, &policy, &holder, "host-a", (claimed_at, 60), |_| Ok(None))
+            .unwrap()
+            .unwrap()
+            .lease
+    };
     let binding = NativeBinding::new(42, &"a".repeat(64), &lease, "agent/42").unwrap();
     assert!(claims.bind_native(&lease.holder, &binding).unwrap());
     assert!(oxa_work::helper_queue::publish(
@@ -168,15 +182,16 @@ fn managed_native_worker(case: ManagedCase) {
         &binding.native_task_id
     };
     let config = controls.join("config.json");
-    fs::write(
-        &config,
-        json!({"enabled":true,"nativeExecution":true,"worker":worker,
-            "queue":queue,"claims":claims_path,"pause":controls.join("pause"),
-            "nativeSteering":{"attempt":attempt,"objective":objective}
-        })
-        .to_string(),
-    )
-    .unwrap();
+    let mut settings = json!({"enabled":true,"nativeExecution":true,"worker":worker,
+        "queue":queue,"claims":claims_path,"pause":controls.join("pause"),
+        "nativeSteering":{"attempt":attempt,"objective":objective}
+    });
+    match case {
+        ManagedCase::MissingHost => {}
+        ManagedCase::DifferentHost => settings["host_id"] = "host-b".into(),
+        _ => settings["host_id"] = "host-a".into(),
+    }
+    fs::write(&config, settings.to_string()).unwrap();
     fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
 
     let mut completion = ScriptTurn::tool(
@@ -230,8 +245,21 @@ fn managed_native_worker(case: ManagedCase) {
         finish(child)
     };
     if case != ManagedCase::Accepted {
+        assert!(
+            server.requests().is_empty(),
+            "refused case reached the model: {out:?}"
+        );
         assert!(!out.status.success(), "{out:?}");
-        assert!(server.requests().is_empty());
+        if matches!(
+            case,
+            ManagedCase::MissingHost | ManagedCase::DifferentHost | ManagedCase::Unhosted
+        ) {
+            let ready = queue.join(format!("board-{}.txt", binding.key));
+            assert!(
+                ready.is_file(),
+                "refused host must leave the original packet ready"
+            );
+        }
         let state = &claims.assignments().unwrap()[&42].state;
         assert_eq!(state.lease.as_ref(), Some(&lease));
         assert_eq!(state.attempts, 1);

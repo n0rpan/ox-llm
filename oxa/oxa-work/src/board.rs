@@ -9,6 +9,7 @@ pub use claims::{
 };
 pub mod assignment;
 pub use claims::{Dependency, DependencyWait};
+pub mod check_recovery;
 mod intake;
 pub mod landing;
 pub mod queue;
