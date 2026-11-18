@@ -2,7 +2,8 @@
 use crate::work_board::{QueryError, Reader};
 use oxa_work::board::queue::{
     report::{
-        attempt_for, select, ActionMetadata, ReportArchive, ReportSource, VerifiedArchive, VerifiedReports,
+        attempt_for, select, ActionMetadata, ReportArchive, ReportAttemptIdentity, ReportSource,
+        VerifiedArchive, VerifiedReports,
     },
     RejectionEvidence,
 };
@@ -14,18 +15,25 @@ use std::{
     process::Command,
 };
 
+mod junit;
+
 struct AttemptRead {
     workflow: Value,
     jobs: Value,
     artifacts: Value,
-    verified_archives: BTreeSet<(u64, u64, String)>,
+    verified_archives: BTreeMap<(u64, u64, String), Vec<String>>,
+}
+
+struct VerifiedAttempt {
+    identity: ReportAttemptIdentity,
+    reports: VerifiedReports,
 }
 
 pub(in crate::work_board) struct Settings {
     workflow_path: String,
     required_check_names: BTreeSet<String>,
     reports: Vec<(String, String)>,
-    verified: BTreeMap<(String, u64, u64), VerifiedReports>,
+    verified: BTreeMap<(String, u64, u64), VerifiedAttempt>,
 }
 
 impl Settings {
@@ -107,6 +115,7 @@ impl Reader<'_> {
     ) -> Result<(), String> {
         let mut previous = std::mem::take(&mut settings.verified);
         let mut attempts_read = BTreeMap::new();
+        let mut decoded_bytes = 0;
         for rejection in rejections {
             let mut attempts = BTreeMap::<_, Vec<_>>::new();
             for id in rejection.workflow_checks() {
@@ -115,9 +124,18 @@ impl Reader<'_> {
                 }
             }
             for ((run, attempt), checks) in attempts {
+                let Some(identity) = rejection.report_attempt_identity(&checks) else {
+                    continue;
+                };
                 let key = (rejection.removal_event().to_owned(), run, attempt);
                 let proof = match previous.remove(&key) {
-                    Some(saved) if saved.failed_check_runs == checks => Some(saved),
+                    Some(saved) if saved.identity == identity => {
+                        for name in &saved.reports.failed_tests {
+                            crate::work_board::charge(&mut decoded_bytes, name.len())
+                                .map_err(|_| "decoded test names exceed sample limit")?;
+                        }
+                        Some(saved.reports)
+                    }
                     _ => {
                         let sources = match attempts_read.entry((run, attempt)) {
                             Entry::Occupied(entry) => entry.into_mut(),
@@ -126,12 +144,25 @@ impl Reader<'_> {
                             }
                         };
                         let Some(sources) = sources else { continue };
-                        self.verify_attempt_reports(rejection, checks, (run, attempt), settings, sources)?
+                        self.verify_attempt_reports(
+                            rejection,
+                            checks,
+                            (run, attempt),
+                            settings,
+                            sources,
+                            &mut decoded_bytes,
+                        )?
                     }
                 };
                 if let Some(proof) = proof {
                     rejection.record_verified_reports(proof.clone());
-                    settings.verified.insert(key, proof);
+                    settings.verified.insert(
+                        key,
+                        VerifiedAttempt {
+                            identity,
+                            reports: proof,
+                        },
+                    );
                 }
             }
         }
@@ -152,7 +183,7 @@ impl Reader<'_> {
             workflow,
             jobs: self.actions_json(&format!("runs/{run}/attempts/{attempt}/jobs?per_page=100"))?,
             artifacts: self.actions_json(&format!("runs/{run}/artifacts?per_page=100"))?,
-            verified_archives: BTreeSet::new(),
+            verified_archives: BTreeMap::new(),
         }))
     }
 
@@ -163,6 +194,7 @@ impl Reader<'_> {
         (run, attempt): (u64, u64),
         settings: &Settings,
         sources: &mut AttemptRead,
+        decoded_bytes: &mut usize,
     ) -> Result<Option<VerifiedReports>, String> {
         let metadata = ActionMetadata {
             attempt: &sources.workflow,
@@ -188,11 +220,19 @@ impl Reader<'_> {
             archives.push(first);
         }
         let mut verified = Vec::new();
+        let mut failed_tests = BTreeSet::new();
         for report in archives {
             let key = (report.artifact_id, report.size_bytes, report.sha256.to_owned());
-            if !sources.verified_archives.contains(&key) {
-                self.verify_archive(&report)?;
-                sources.verified_archives.insert(key);
+            let names = match sources.verified_archives.entry(key) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => entry.insert(junit::failed_tests(&self.verify_archive(&report)?)?),
+            };
+            for name in names {
+                if !failed_tests.contains(name) {
+                    crate::work_board::charge(decoded_bytes, name.len())
+                        .map_err(|_| "decoded test names exceed sample limit")?;
+                    failed_tests.insert(name.clone());
+                }
             }
             verified.push(VerifiedArchive {
                 id: report.artifact_id,
@@ -204,10 +244,11 @@ impl Reader<'_> {
             workflow_run: run,
             run_attempt: attempt,
             archives: verified,
+            failed_tests: failed_tests.into_iter().collect(),
         }))
     }
 
-    fn verify_archive(&self, selected: &ReportArchive<'_>) -> Result<(), String> {
+    fn verify_archive(&self, selected: &ReportArchive<'_>) -> Result<Vec<u8>, String> {
         let size = usize::try_from(selected.size_bytes).map_err(|_| "invalid GitHub archive size")?;
         let (remaining, duration) = self.read_budget().map_err(QueryError::message)?;
         if size > remaining {
@@ -226,6 +267,6 @@ impl Reader<'_> {
         if format!("{:x}", Sha256::digest(&bytes)) != selected.sha256 {
             return Err("GitHub test archive digest mismatch".into());
         }
-        Ok(())
+        Ok(bytes)
     }
 }

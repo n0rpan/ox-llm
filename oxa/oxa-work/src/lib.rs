@@ -15,6 +15,7 @@ mod checkpoint;
 mod committed;
 pub use committed::{verify_saved_task, VerifiedTask};
 mod execute;
+pub use execute::TaskTokens;
 pub mod helper_queue;
 #[cfg(target_os = "linux")]
 pub mod managed_steering;
@@ -28,7 +29,7 @@ pub mod mirrors;
 pub mod shadow;
 mod state;
 mod status;
-pub use status::{status, Liveness, Status};
+pub use status::{status, task_usage, task_usage_for_binding, Liveness, Status, TaskUsage};
 mod tree;
 pub use state::{CheckpointKind, CheckpointObserver, Step};
 mod worker;
@@ -39,6 +40,10 @@ pub use worker::{WorkerInterruption, WorkerOutcome, WorkerResult, WorkerTokens};
 #[path = "../tests/support/private_dir.rs"]
 mod test_dir;
 
+#[cfg(test)]
+#[path = "../tests/support/lock_process.rs"]
+mod lock_process;
+
 pub type Result<T> = std::result::Result<T, String>;
 
 // Lead facts consume public observations and never open runner task-state files.
@@ -46,7 +51,7 @@ pub mod events;
 mod facts_io;
 pub use facts_io::require_private_directory;
 mod github;
-pub use github::pull_request_task;
+pub use github::{pull_request_task, ReviewedPullRequest};
 pub mod incidents;
 pub mod situation;
 pub mod standing;
@@ -62,6 +67,9 @@ pub struct Task {
     pub prompt: String,
     #[serde(default = "default_max_time")]
     pub max_time: u64,
+    /// Reviewed source for attempts whose execution IDs use a different namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_pull_request: Option<ReviewedPullRequest>,
 }
 fn default_max_time() -> u64 {
     45 * 60
@@ -89,6 +97,8 @@ pub struct Record {
     pub outcome: Outcome,
     pub detail: String,
     pub worker: Option<WorkerResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_tokens: Option<TaskTokens>,
     pub session_id: Option<String>,
     pub base_sha: Option<String>,
     pub checkpoint_revision: u64,
@@ -575,6 +585,9 @@ fn valid_task_id(id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
 }
 fn validate(task: &Task) -> Result<()> {
+    if task.reviewed_pull_request.is_some() && task.reviewed_source().is_none() {
+        return Err("invalid reviewed pull request source".into());
+    }
     if !valid_task_id(&task.id) {
         return Err("task id must contain 1..128 letters, digits, - or _".into());
     }
@@ -633,6 +646,7 @@ pub fn issue_task(
         base: default_base(),
         prompt: issue_prompt(number, &issue)?,
         max_time: default_max_time(),
+        reviewed_pull_request: None,
     })
 }
 
@@ -922,6 +936,7 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
         outcome: Outcome::Blocked,
         detail,
         worker: None,
+        task_tokens: None,
         session_id: None,
         base_sha: None,
         checkpoint_revision: 0,
@@ -1158,6 +1173,7 @@ fn run_locked(
         record.worktree = tree.clone();
         record.base_sha = Some(planned.base_sha.clone());
         record.checkpoint_revision = revision;
+        record.task_tokens = Some(TaskTokens::default());
         let mut state = state::State::new(task.clone(), record, policy.offline);
         state.execution = Some(state::Execution {
             initial: None,

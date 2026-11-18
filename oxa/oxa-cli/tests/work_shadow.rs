@@ -989,8 +989,27 @@ fn real_shadow_cli_records_exact_queue_evidence_only_when_opted_in() {
 fn report_policy_records_only_archives_verified_for_all_required_failed_checks() {
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
+    use std::io::{Cursor, Write};
+    use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
     let (env, mut detail) = fixture();
-    let second_head = "second-synthetic-head";
+    fs::rename(env.tmp().join("gh"), env.tmp().join("gh-fixture")).unwrap();
+    let gh = env.write(
+        "tmp/gh",
+        r#"#!/bin/sh
+if [ "$1 $2 $3" = 'api --hostname github.com' ]; then
+  case "$#:$4:$5:$6:$7" in
+    '7:--include:graphql:-f:query=query{'*|'6:--method:GET:repos/example/repo/actions/'*':')
+      exec "$0-fixture" "$@" ;;
+  esac
+fi
+printf 'unexpected command\n' >> unexpected-github-command
+exit 94
+"#,
+    );
+    fs::set_permissions(gh, fs::Permissions::from_mode(0o700)).unwrap();
+    let head = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let second_head = "dddddddddddddddddddddddddddddddddddddddd";
+    let main = "cccccccccccccccccccccccccccccccccccccccc";
     let group = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     let workflow_path = ".github/workflows/checks.yml";
     let mut queue = queue_rejection(group);
@@ -1009,6 +1028,8 @@ fn report_policy_records_only_archives_verified_for_all_required_failed_checks()
         fs::write(env.work().join(file), value.to_string()).unwrap();
     };
     let repo = &mut detail["data"]["repository"];
+    repo["p42"]["headRefOid"] = head.into();
+    repo["pullRequests"]["nodes"][0]["headRefOid"] = head.into();
     let mut second = repo["p42"].clone();
     second["number"] = 43.into();
     second["headRefOid"] = second_head.into();
@@ -1020,11 +1041,17 @@ fn report_policy_records_only_archives_verified_for_all_required_failed_checks()
     write("first.json", detail.clone());
     write("detail.json", detail);
     let rows = &mut queue["data"]["repository"];
+    rows["p42"]["headRefOid"] = head.into();
+    rows["p42"]["id"] = "pr-42".into();
+    rows["p42"]["author"] = json!({"__typename":"User","id":"user-1","login":"sample-author"});
     let mut second = rows["p42"].clone();
     second["number"] = 43.into();
+    second["id"] = "pr-43".into();
+    second["author"] = json!({"__typename":"Bot","id":"bot-2","login":"sample-agent[bot]"});
     second["headRefOid"] = second_head.into();
     second["timelineItems"]["nodes"][0]["id"] = "removal-2".into();
     rows["p43"] = second;
+    let valid_queue = queue.clone();
     write("queue.json", queue.clone());
     write(
         "report-attempt.json",
@@ -1054,9 +1081,24 @@ fn report_policy_records_only_archives_verified_for_all_required_failed_checks()
     );
     fs::set_permissions(&policy, fs::Permissions::from_mode(0o600)).unwrap();
 
-    let bytes = b"synthetic opaque report bytes";
-    fs::write(env.work().join("report.zip"), bytes).unwrap();
-    let digest = format!("{:x}", Sha256::digest(bytes));
+    let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
+    archive
+        .start_file(
+            "junit.xml",
+            SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+        )
+        .unwrap();
+    archive
+        .write_all(
+            br#"<testsuite name="example">
+  <testcase classname="example" name="passed"/>
+  <testcase classname="example" name="failed"><failure>synthetic output</failure></testcase>
+</testsuite>"#,
+        )
+        .unwrap();
+    let bytes = archive.finish().unwrap().into_inner();
+    fs::write(env.work().join("report.zip"), &bytes).unwrap();
+    let digest = format!("{:x}", Sha256::digest(&bytes));
     let listing = |sha256: &str| {
         json!({"total_count":1,"artifacts":[{"id":71,"name":"report-1",
         "size_in_bytes":bytes.len(),"digest":format!("sha256:{sha256}"),"expired":false,
@@ -1077,15 +1119,17 @@ fn report_policy_records_only_archives_verified_for_all_required_failed_checks()
     let log = log_for(&env, "example/repo");
     let saved = fs::read_to_string(&log).unwrap();
     let sample: Value = serde_json::from_str(saved.trim()).unwrap();
+    assert!(sample.get("landing").is_none());
     for (index, number, event) in [(0, 42, "removal-1"), (1, 43, "removal-2")] {
         let row = &sample["queue_rejections"][index];
         assert_eq!(row["number"], number);
         assert_eq!(row["removal_event"], event);
+        assert_eq!(row["merge_group_head"], group);
         assert_eq!(
             row["verified_test_reports"],
             json!([{
                 "failed_check_runs":[11,12],"workflow_run":61,"run_attempt":1,
-                "archives":[{"id":71,"sha256":digest}]
+                "archives":[{"id":71,"sha256":digest}],"failed_tests":["example::failed"]
             }])
         );
     }
@@ -1149,7 +1193,7 @@ fn report_policy_records_only_archives_verified_for_all_required_failed_checks()
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    let text = fs::read_to_string(log).unwrap();
+    let text = fs::read_to_string(&log).unwrap();
     let sample: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
     assert_eq!(
         sample["queue_rejections"][0]["verified_test_reports"][0]["failed_check_runs"],
@@ -1163,6 +1207,135 @@ fn report_policy_records_only_archives_verified_for_all_required_failed_checks()
         fs::read_to_string(env.work().join("report-reads")).unwrap(),
         "read\nread\nread\n"
     );
+
+    let mut wrong_suite = valid_queue.clone();
+    let checks = &mut wrong_suite["data"]["repository"]["p43"]["timelineItems"]["nodes"][0]["beforeCommit"]
+        ["statusCheckRollup"]["contexts"]["nodes"];
+    for check in checks.as_array_mut().unwrap() {
+        check["checkSuite"]["databaseId"] = 52.into();
+    }
+    write("queue.json", wrong_suite);
+    let result = invoke(&env, &args);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let text = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
+    let sample: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+    assert_eq!(
+        sample["queue_rejections"][0]["verified_test_reports"][0]["archives"],
+        json!([{"id":71,"sha256":digest}])
+    );
+    let other = &sample["queue_rejections"][1];
+    assert_eq!(other["merge_group_head"], group);
+    assert_eq!(other["removal_event"], "removal-2");
+    assert_eq!(other["failed_required_check_runs"], json!([11, 12]));
+    assert!(other.get("verified_test_reports").is_none());
+    assert_eq!(
+        fs::read_to_string(env.work().join("report-reads")).unwrap(),
+        "read\nread\nread\nread\n"
+    );
+    let invalid_archive = vec![0; bytes.len()];
+    let invalid_digest = format!("{:x}", Sha256::digest(&invalid_archive));
+    fs::write(env.work().join("report.zip"), invalid_archive).unwrap();
+    write("report-artifacts.json", listing(&invalid_digest));
+    let result = invoke(&env, &args);
+    assert_eq!(result.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("invalid CI report archive"));
+    assert_eq!(fs::read_to_string(log_for(&env, "example/repo")).unwrap(), text);
+    fs::write(env.work().join("report.zip"), &bytes).unwrap();
+    write("report-artifacts.json", listing(&digest));
+
+    let mut historical: Value = serde_json::from_str(saved.trim()).unwrap();
+    historical["observed_at"] = 1_767_225_600.into();
+    historical["board"]["observed_at"] = 1_767_225_600.into();
+    historical["queue_rejections"] = json!([]);
+    let admission = json!({"next":"already_queued","queue_alarm":false,
+        "queue":{"enqueued_at":1_767_225_595u64,"group_head":group}});
+    historical["landing"] = json!({"42":admission,"43":admission});
+    fs::write(&log, format!("{historical}\n")).unwrap();
+    write("queue.json", valid_queue);
+    let queue_state = |rows: Vec<Value>| {
+        json!({"data":{"repository":{
+            "main":{"target":{"oid":main}},"mergeQueue":{"entries":{"totalCount":rows.len(),"nodes":rows}}
+        }}})
+    };
+    write("queue-state.json", queue_state(vec![]));
+    write(
+        "review.json",
+        json!({"data":{"repository":{
+            "p42":{"number":42,"state":"OPEN","headRefOid":head,"comments":{"totalCount":0,"nodes":[]}},
+            "p43":{"number":43,"state":"OPEN","headRefOid":second_head,"comments":{"totalCount":0,"nodes":[]}}
+        }}}),
+    );
+    let shadow_args = format!("{args} --landing-shadow");
+    let result = invoke(&env, &shadow_args);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let sampled = fs::read_to_string(&log).unwrap();
+    let row: Value = serde_json::from_str(sampled.lines().last().unwrap()).unwrap();
+    assert_eq!(
+        row["landing"]["42"]["would_notify_rejection"],
+        json!({
+            "pr_head":head,"merge_group_head":group,"removal_event":"removal-1",
+            "target":{"pull_request_id":"pr-42","author_id":"user-1","login":"sample-author"},
+            "failed_tests":["example::failed"]
+        })
+    );
+    let second_notice = json!({
+        "pr_head":second_head,"merge_group_head":group,"removal_event":"removal-2",
+        "target":{"pull_request_id":"pr-43","author_id":"bot-2","login":"sample-agent[bot]"},
+        "failed_tests":["example::failed"]
+    });
+    assert_eq!(row["landing"]["43"]["would_notify_rejection"], second_notice);
+    for rejection in row["queue_rejections"].as_array().unwrap() {
+        assert!(rejection.get("notification_target").is_none());
+    }
+
+    let queue_path = env.work().join("queue.json");
+    let original: Value = serde_json::from_str(&fs::read_to_string(queue_path).unwrap()).unwrap();
+    let mut hidden = original.clone();
+    hidden["data"]["repository"]["p42"]["author"] = Value::Null;
+    write("queue.json", hidden);
+    let result = invoke(&env, &shadow_args);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let sampled = fs::read_to_string(&log).unwrap();
+    let row: Value = serde_json::from_str(sampled.lines().last().unwrap()).unwrap();
+    assert!(row["queue_rejections"][0]["verified_test_reports"].is_array());
+    assert!(row["landing"]["42"].get("would_notify_rejection").is_none());
+    assert_eq!(row["landing"]["43"]["would_notify_rejection"], second_notice);
+    write("queue.json", original);
+
+    let current_row = |time| json!({"pullRequest":{"number":42,"headRefOid":head},"enqueuedAt":time});
+    write(
+        "queue-state.json",
+        queue_state(vec![current_row(json!("2026-01-01T00:00:00Z"))]),
+    );
+    let result = invoke(&env, &shadow_args);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let sampled = fs::read_to_string(&log).unwrap();
+    let row: Value = serde_json::from_str(sampled.lines().last().unwrap()).unwrap();
+    assert!(row["landing"]["42"]["queue"].is_object());
+    assert!(row["landing"]["42"].get("would_notify_rejection").is_none());
+
+    write("queue-state.json", queue_state(vec![current_row(Value::Null)]));
+    let result = invoke(&env, &shadow_args);
+    assert_eq!(result.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("invalid enqueue time"));
+    assert_eq!(fs::read_to_string(log).unwrap(), sampled);
+    assert!(!env.work().join("unexpected-github-command").exists());
 }
 
 #[test]

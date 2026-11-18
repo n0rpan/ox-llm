@@ -148,7 +148,7 @@ fn durable_publication(pull_request: bool) {
     fs::write(&task, valid).unwrap();
     fs::set_permissions(&task, fs::Permissions::from_mode(0o600)).unwrap();
     let config = controls.join("refill.json");
-    fs::write(&config, json!({"enabled":true,"intake":true,"queue":queue,"claims":root,
+    fs::write(&config, json!({"enabled":true,"host_id":"host-a","intake":true,"queue":queue,"claims":root,
         "pause":controls.join("paused"),"log":controls.join("audit.jsonl"),
         "worker":{"id":"oxa:node/helper","kind":"oxa","roles":["builder"],"skills":[]},
         "partition":{"modulus":22,"residues":[0]},
@@ -173,7 +173,7 @@ cat "$0.reply"
     };
     fs::write(env.tmp().join("gh.reply"), json!({"data":{"repository":{
         "mergeQueue":null,"pullRequests":{"totalCount":rows.len(),"nodes":rows,"pageInfo":{"hasNextPage":false,"endCursor":"last"}},
-        "i44":{"number":44,"state":"OPEN","updatedAt":"revision"},
+        "i44":{"number":44,"state":"OPEN","updatedAt":"revision"},"b44":null,
         "p44":{"number":44,"headRefOid":revision,"baseRefName":"main","state":"OPEN","body":"",
             "isDraft":false,"reviewDecision":null,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY",
             "baseRef":{"refUpdateRule":null,"rules":{"totalCount":0,"nodes":[]}},
@@ -195,6 +195,44 @@ cat "$0.reply"
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
     assert_eq!(fs::read_dir(&queue).unwrap().count(), 0);
     fs::write(&task, valid).unwrap();
+    let original_config = fs::read(&config).unwrap();
+    let mut hostless: serde_json::Value = serde_json::from_slice(&original_config).unwrap();
+    hostless.as_object_mut().unwrap().remove("host_id");
+    fs::write(&config, hostless.to_string()).unwrap();
+    let refused = invoke(&env, &config, "synthetic\n", false);
+    assert_eq!(refused.status.code(), Some(2), "native refill requires a host");
+    assert!(!env.tmp().join("gh.calls").exists());
+    fs::write(&config, original_config).unwrap();
+    if !pull_request {
+        let reply = env.tmp().join("gh.reply");
+        let original = fs::read(&reply).unwrap();
+        for observed in [
+            Some(json!({"name":"agent/44","target":{"committer":{"user":{"login":"worker-a[bot]"}}}})),
+            None,
+        ] {
+            let expected = if observed.is_some() {
+                "worker-a[bot]"
+            } else {
+                "branch observation"
+            };
+            let mut response: serde_json::Value = serde_json::from_slice(&original).unwrap();
+            if let Some(branch) = observed {
+                response["data"]["repository"]["b44"] = branch;
+            } else {
+                response["data"]["repository"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("b44");
+            }
+            fs::write(&reply, response.to_string()).unwrap();
+            let refused = invoke(&env, &config, "synthetic\n", false);
+            assert_eq!(refused.status.code(), Some(2));
+            let reason = String::from_utf8_lossy(&refused.stderr);
+            assert!(reason.contains(expected), "{reason}");
+            assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
+        }
+        fs::write(&reply, original).unwrap();
+    }
     let result = invoke(&env, &config, "synthetic\n", false);
     assert!(
         result.status.success(),
@@ -227,6 +265,43 @@ cat "$0.reply"
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
     assert!(invoke(&env, &config, "synthetic\n", false).status.success());
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
+    if !pull_request {
+        let original_config = fs::read(&config).unwrap();
+        let original_reply = fs::read(env.tmp().join("gh.reply")).unwrap();
+        assert!(claims
+            .release_for(
+                44,
+                &binding.lease.holder,
+                &binding.lease,
+                binding.lease.claimed_at.unwrap(),
+                "verified completion"
+            )
+            .unwrap());
+        let mut next: serde_json::Value = serde_json::from_slice(&original_config).unwrap();
+        next["packets"][0]["branch"] = "agent/replacement".into();
+        next["packets"][0]["revision"] = "revision-two".into();
+        fs::write(&config, next.to_string()).unwrap();
+        fs::write(
+            &task,
+            "i44 local/fake agent/replacement main\nSynthetic prepared packet.\n",
+        )
+        .unwrap();
+        let mut response: serde_json::Value = serde_json::from_slice(&original_reply).unwrap();
+        response["data"]["repository"]["i44"]["updatedAt"] = "revision-two".into();
+        response["data"]["repository"]["r44"] = json!({"name":"agent/44"});
+        fs::write(env.tmp().join("gh.reply"), response.to_string()).unwrap();
+        let refused = invoke(&env, &config, "synthetic\n", false);
+        assert_eq!(
+            refused.status.code(),
+            Some(2),
+            "retained branch must block a replacement"
+        );
+        assert!(String::from_utf8_lossy(&refused.stderr).contains(&binding.lease.holder));
+        assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
+        fs::write(&config, original_config).unwrap();
+        fs::write(env.tmp().join("gh.reply"), original_reply).unwrap();
+        fs::write(&task, valid).unwrap();
+    }
     let peer = env
         .work()
         .parent()

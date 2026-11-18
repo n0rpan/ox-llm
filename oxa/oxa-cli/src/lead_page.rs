@@ -14,6 +14,8 @@ pub use pages::{Page, Prompt};
 pub struct View<'a> {
     pub board: Option<&'a Board>,
     pub situation: Option<&'a Snapshot>,
+    /// C's selected checkpoint observation; the renderer never acquires runner state.
+    pub selected_task_usage: Option<&'a oxa_work::Result<Option<oxa_work::TaskUsage>>>,
     pub main_red: bool,
     pub main_merge_stalled: bool,
     pub stalled_runs: &'a [u64],
@@ -87,17 +89,26 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
         _ => page.title().into(),
     };
     let mut html = format!("<main><h1 id=main tabindex=-1>{title}</h1>");
-    if page == Page::Home {
-        attention(&mut html, view);
-    }
-    html.push_str(&page.navigation());
+    html.push_str(&page.navigation(view.situation.map(|snapshot| snapshot.asks.len())));
     match page {
         Page::Home => {
+            html.push_str("<div class=home-layout><div class=home-decisions>");
+            attention(&mut html, view);
+            asks(&mut html, view);
+            html.push_str("</div><div class=home-overview><section><h2>Snapshot overview</h2>");
+            if let Some(board) = view.board {
+                let _ = write!(html,
+                    "<p><a href=/board>{} observed items</a></p><p class=muted>{} · observed at {} (Unix seconds)</p>",
+                    board.entries.len(), if stale(board, now) { "Stale snapshot" } else { "Board snapshot" }, board.observed_at);
+            } else {
+                html.push_str("<p>Board unavailable.</p>");
+            }
+            html.push_str("</section><details class=home-work><summary>Observed work</summary>");
             board(&mut html, view, now, Query::default());
             workers(&mut html, view);
             queue(&mut html, view);
             release(&mut html, view);
-            asks(&mut html, view);
+            html.push_str("</details></div></div>");
         }
         Page::Board | Page::BoardQuery(_) => {
             let query = if let Page::BoardQuery(query) = page {
@@ -109,11 +120,14 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
             queue(&mut html, view);
         }
         Page::Workers => workers(&mut html, view),
-        Page::Asks => asks(&mut html, view),
+        Page::Asks => {
+            html.push_str("<div class=asks-layout>");
+            asks(&mut html, view);
+            html.push_str("</div>");
+        }
         Page::Item(number) => item(&mut html, view, number, now),
         Page::Chat(prompt) => chat::render(&mut html, view, prompt),
-        Page::Usage => html
-            .push_str("<section><h2>Plans and quotas</h2><p>Usage observations unavailable.</p></section>"),
+        Page::Usage => usage(&mut html, view),
     }
     html.push_str("<footer>Read-only · Chat with the lead is not connected yet.</footer></main>");
     html
@@ -127,13 +141,24 @@ fn attention(html: &mut String, view: &View<'_>) {
         .flatten()
         .filter(|pr| view.overdue_queue.contains(pr))
         .collect();
-    if view.main_red
-        || view.main_merge_stalled
-        || !view.stalled_runs.is_empty()
-        || !overdue.is_empty()
-        || ask_count > 0
-    {
-        html.push_str("<section id=attention><h2>Needs attention</h2><ul>");
+    let alarm =
+        view.main_red || view.main_merge_stalled || !view.stalled_runs.is_empty() || !overdue.is_empty();
+    if alarm || ask_count > 0 {
+        let (role, icon, label) = if alarm {
+            ("alert", "!", "Alarm")
+        } else {
+            ("status", "?", "Needs you")
+        };
+        let _ = write!(
+            html,
+            "<section id=attention role={role}><p class=severity><span aria-hidden=true>{icon}</span> {label}</p><h2>Needs attention</h2><ul>"
+        );
+        if ask_count > 0 {
+            let _ = write!(
+                html,
+                "<li><a href=#asks>Unanswered owner decisions ({ask_count})</a></li>"
+            );
+        }
         if view.main_red {
             html.push_str("<li>Checks on main are failing.</li>");
         }
@@ -143,7 +168,7 @@ fn attention(html: &mut String, view: &View<'_>) {
         for pr in overdue {
             let _ = write!(
                 html,
-                "<li><a href=#queue>PR #{} has waited too long in the merge queue</a></li>",
+                "<li><a href=/board#queue>PR #{} has waited too long in the merge queue</a></li>",
                 pr.number
             );
         }
@@ -158,24 +183,25 @@ fn attention(html: &mut String, view: &View<'_>) {
             }
             html.push_str("</ul></details></li>");
         }
-        if ask_count > 0 {
-            let _ = write!(
-                html,
-                "<li><a href=#asks>Unanswered owner decisions ({ask_count})</a></li>"
-            );
+        html.push_str("</ul>");
+        if alarm {
+            html.push_str("<p class=muted>Lead response observations unavailable.</p>");
         }
-        html.push_str("</ul></section>");
+        html.push_str("</section>");
     }
+}
+
+fn stale(board: &Board, now: u64) -> bool {
+    board.observed_at > now.saturating_add(60) || now.saturating_sub(board.observed_at) > 900
 }
 
 fn board(html: &mut String, view: &View<'_>, now: u64, query: Query) {
     html.push_str("<section id=board><h2>Board</h2>");
     if let Some(board) = view.board {
-        let stale = board.observed_at > now.saturating_add(60) || now.saturating_sub(board.observed_at) > 900;
         let _ = write!(
             html,
             "<p class=muted>{} · observed at {} (Unix seconds)</p>",
-            if stale {
+            if stale(board, now) {
                 "Stale snapshot"
             } else {
                 "GitHub snapshot"
@@ -252,10 +278,42 @@ fn item(html: &mut String, view: &View<'_>, number: u64, now: u64) {
         return;
     };
     let _ = write!(html,
-        "<section><h2>Next action</h2><p>{}</p></section><section><h2>State</h2><p>{}</p><p>{}</p><p>Attempts today: {}</p><p class=muted>Observed at {} (Unix seconds)</p></section>",
+        "<section><article><h2>Next action</h2><p>{}</p></article></section><section><article><h2>State</h2><dl><dt>Priority</dt><dd>{}</dd><dt>Lease</dt><dd>{}</dd><dt>Attempts today</dt><dd>{}</dd><dt>Observed at</dt><dd>{} (Unix seconds)</dd></dl></article></section>",
         action(row.action), if row.release_pinned { "Release" } else { "Normal priority" },
         lease(row, now), row.attempts_today, board.observed_at);
     html.push_str("<section><h2>Details and changes</h2><p>Title, checks, findings and diff observations unavailable.</p></section>");
+}
+
+fn usage(html: &mut String, view: &View<'_>) {
+    html.push_str("<section id=task-usage><h2>Task usage</h2>");
+    match view.selected_task_usage {
+        None | Some(Err(_)) => html.push_str("<p>Task usage observations unavailable.</p>"),
+        Some(Ok(None)) => html.push_str("<p>No saved checkpoint for the selected task.</p>"),
+        Some(Ok(Some(usage))) => {
+            let _ = write!(
+                html,
+                "<article><h3>Task {}</h3><p class=muted>Checkpoint revision {}</p>",
+                escape(&usage.task),
+                usage.checkpoint_revision
+            );
+            if let Some(tokens) = &usage.task_tokens {
+                let count =
+                    |value: Option<u64>| value.map_or_else(|| "Unknown".into(), |value| value.to_string());
+                let _ = write!(html,
+                    "<p>Usage coverage: {}</p><dl><dt>Task attempts</dt><dd>{}</dd><dt>Attempts with complete usage</dt><dd>{}</dd><dt>Prompt tokens</dt><dd>{}</dd><dt>Completion tokens</dt><dd>{}</dd><dt>Cached input tokens</dt><dd>{}</dd></dl><p class=muted>Cached tokens are included in prompt when both are reported.</p>",
+                    if tokens.complete { "complete" } else { "partial" }, tokens.attempts, tokens.complete_attempts,
+                    count(tokens.prompt), count(tokens.completion), count(tokens.cached));
+            } else {
+                html.push_str("<p>Saved token aggregate unknown.</p>");
+            }
+            html.push_str(
+                "<p class=muted>Task-scoped checkpoint; merged-PR attribution unavailable.</p></article>",
+            );
+        }
+    }
+    html.push_str(
+        "</section><section><h2>Plans and quotas</h2><p>Usage observations unavailable.</p></section>",
+    );
 }
 
 fn workers(html: &mut String, view: &View<'_>) {
@@ -266,10 +324,18 @@ fn workers(html: &mut String, view: &View<'_>) {
             "<p class=muted>Runner facts · sequence {} · observed at {} (Unix milliseconds)</p>",
             s.as_of_seq, s.at_ms
         );
-        for running in &s.running {
-            let stalled = s.incidents.iter().any(|i| {
-                i.kind == IncidentKind::WorkerStalled && i.subject == Subject::Task(running.task.clone())
-            });
+        let mut ordered: Vec<_> = s
+            .running
+            .iter()
+            .map(|running| {
+                let stalled = s.incidents.iter().any(|i| {
+                    i.kind == IncidentKind::WorkerStalled && i.subject == Subject::Task(running.task.clone())
+                });
+                (stalled, running)
+            })
+            .collect();
+        ordered.sort_by_key(|(stalled, _)| !stalled);
+        for (stalled, running) in ordered {
             let _ = write!(
                 html,
                 "<article><b>{}</b><p>{}</p></article>",
@@ -338,9 +404,11 @@ fn release(html: &mut String, view: &View<'_>) {
 fn asks(html: &mut String, view: &View<'_>) {
     html.push_str("<section id=asks><h2>For your decision</h2>");
     if let Some(s) = view.situation {
+        html.push_str("<div class=ask-cards>");
         for ask in &s.asks {
-            let _ = write!(html, "<article><p class=muted>{}</p><h3>{}</h3><p>Options, recommendation and meanwhile are unavailable in these facts.</p></article>", subject(&ask.subject), escape(&ask.question));
+            let _ = write!(html, "<article><p class=muted>Ask {} · {}</p><h3>{}</h3><p>Options, recommendation and meanwhile are unavailable in these facts.</p></article>", escape(&ask.id), subject(&ask.subject), escape(&ask.question));
         }
+        html.push_str("</div>");
         if s.asks.is_empty() {
             html.push_str("<p>No open asks in these runner facts.</p>");
         }
@@ -350,7 +418,38 @@ fn asks(html: &mut String, view: &View<'_>) {
     html.push_str("</section>");
 }
 
-pub const STYLE: &str = include_str!("lead_page/style.css");
+pub const STYLE: &str = concat!(
+    include_str!("lead_page/style.css"),
+    r#"
+:root { --nav-height:3.875rem; }
+:root { --bad:#b62c24; --bad-soft:#fde7e4; }
+@media(prefers-color-scheme:dark) { :root { --bad:#ff8a80; --bad-soft:#331917; } }
+#attention .severity { font-weight:700; color:var(--warn); }
+#attention[role=alert] { background:var(--bad-soft); }
+#attention[role=alert] h2,#attention[role=alert] .severity { color:var(--bad); }
+nav.tabs a { position:relative; flex-direction:column; gap:.125rem; font-size:.75rem; line-height:1.25; }
+nav.tabs svg { order:-1; flex:none; width:1.375rem; height:1.375rem; }
+nav.tabs .badge {
+  position:absolute; top:.25rem; right:.25rem; max-width:calc(100% - .5rem);
+  padding:.125rem .375rem; border-radius:1rem; font-size:.71875rem;
+  color:var(--warn); background:var(--warn-soft); white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis;
+}
+nav.tabs .badge.quiet { color:var(--muted); background:var(--raised); }
+.home-decisions,.home-overview,.ask-cards>article { min-width:0; }
+.home-work { border:1px solid var(--line); border-radius:var(--radius); padding:16px; background:var(--surface); }
+.home-work>summary { min-height:44px; font-weight:600; }
+.ask-cards { display:grid; gap:14px; }
+.ask-cards>article { margin:0; }
+@media(min-width:900px) {
+  body { padding-left:5.75rem; }
+  nav.tabs { width:5.75rem; }
+  .home-layout { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(0,1fr); gap:24px; align-items:start; }
+  .asks-layout .ask-cards { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  nav.tabs a { min-height:4.5rem; padding:.625rem .25rem; justify-content:center; font-size:.78125rem; }
+}
+"#
+);
 
 pub const SCRIPT: &str = r#"const badge=document.getElementById('connection');
 let timer,pending;
@@ -367,7 +466,12 @@ async function refresh(){
     const doc=new DOMParser().parseFromString(await response.text(),'text/html');
     const next=doc.querySelector('main');
     if(!next)throw new Error('refresh unavailable');
-    if(pending===active){document.querySelector('main').replaceWith(next);badge.textContent='Live';}
+    if(pending===active){
+      const current=document.querySelector('main'),work=current.querySelector('details.home-work');
+      const replacement=next.querySelector('details.home-work');
+      if(work&&replacement)replacement.open=work.open;
+      current.replaceWith(next);badge.textContent='Live';
+    }
   }catch(error){if(!active.signal.aborted)badge.textContent='Refresh unavailable';}
   finally{if(pending===active){pending=null;if(!document.hidden)timer=setTimeout(refresh,15000);}}
 }
@@ -381,6 +485,180 @@ timer=setTimeout(refresh,15000);
 mod tests {
     use super::*;
     use oxa_work::board::{GitHub, Mergeability, Policy, PullRequest as BoardPr, RequiredCi};
+
+    fn observed_asks() -> Snapshot {
+        include_str!("../../oxa-proto/tests/fixtures/work/evening.jsonl")
+            .lines()
+            .filter_map(|line| Snapshot::from_json(line.as_bytes()).ok())
+            .find(|snapshot| !snapshot.asks.is_empty())
+            .unwrap()
+    }
+
+    #[test]
+    fn navigation_has_real_urls_one_current_destination_and_observed_ask_counts() {
+        let mut snapshot = observed_asks();
+        for (page, selected) in [
+            (Page::Home, "/"),
+            (Page::Asks, "/asks"),
+            (Page::Board, "/board"),
+            (Page::Workers, "/workers"),
+            (Page::Usage, "/usage"),
+            (Page::Item(17), "/board"),
+            (
+                Page::BoardQuery(Query {
+                    filter: Filter::Fix,
+                    page: 1,
+                }),
+                "/board",
+            ),
+            (Page::Chat(Prompt::Status), "/chat"),
+        ] {
+            let html = document_for(
+                page,
+                &View {
+                    situation: Some(&snapshot),
+                    ..View::default()
+                },
+                100,
+            );
+            let nav = html
+                .split("<nav class=tabs")
+                .nth(1)
+                .unwrap()
+                .split("</nav>")
+                .next()
+                .unwrap();
+            assert_eq!(nav.matches("aria-current=page").count(), 1);
+            let current = nav
+                .split("<a ")
+                .find(|anchor| anchor.split('>').next().unwrap().contains("aria-current=page"))
+                .unwrap();
+            assert!(
+                current
+                    .split('>')
+                    .next()
+                    .unwrap()
+                    .split_whitespace()
+                    .any(|attribute| attribute == format!("href={selected}")),
+                "{page:?}"
+            );
+            for path in ["/", "/asks", "/board", "/workers", "/usage", "/chat"] {
+                assert!(nav.contains(&format!("href={path}")), "{page:?} {path}");
+            }
+            assert!(nav.contains(&format!(
+                "aria-label=\"Asks, {} open in snapshot\"",
+                snapshot.asks.len()
+            )));
+            assert_eq!(nav.matches("<svg ").count(), 5);
+            assert_eq!(html.matches("<h1 ").count(), 1);
+            assert!(html.contains("href=#main>Skip to content"));
+            assert!(html.contains("id=main tabindex=-1"));
+            assert!(!nav.contains("https://") && !nav.contains("onclick="));
+        }
+        snapshot.asks.clear();
+        let quiet = content_for(
+            Page::Asks,
+            &View {
+                situation: Some(&snapshot),
+                ..View::default()
+            },
+            100,
+        );
+        assert!(quiet.contains("aria-label=\"Asks, 0 open in snapshot\""));
+        let unknown = content_for(Page::Asks, &View::default(), 100);
+        assert!(unknown.contains("aria-label=\"Asks, observations unavailable\""));
+        assert!(!unknown.contains("Asks, 0 open in snapshot"));
+        assert!(unknown.contains("Owner asks unavailable"));
+    }
+
+    #[test]
+    fn home_prioritizes_decisions_and_keeps_observed_work_in_native_details() {
+        let snapshot = observed_asks();
+        let board = Board::default();
+        let html = content_for(
+            Page::Home,
+            &View {
+                board: Some(&board),
+                situation: Some(&snapshot),
+                main_red: true,
+                ..View::default()
+            },
+            100,
+        );
+        assert!(html.contains("<div class=home-layout>"));
+        assert!(html.find("id=attention").unwrap() < html.find("id=asks").unwrap());
+        assert!(html.find("id=asks").unwrap() < html.find("<details class=home-work>").unwrap());
+        assert!(html.contains("<details class=home-work><summary>Observed work</summary>"));
+        assert!(!html.contains("<details class=home-work open"));
+        assert!(html.contains("role=alert"));
+        for ask in &snapshot.asks {
+            assert!(html.contains(&escape(&ask.question)));
+        }
+        assert!(html.contains("No open PRs in this snapshot"));
+        assert!(html.contains("href=/board>0 observed items"));
+        assert!(html.contains("Options, recommendation and meanwhile are unavailable"));
+        assert!(!html.contains("<form") && !html.contains("onclick="));
+    }
+
+    #[test]
+    fn asks_layout_keeps_questions_and_unknown_options_read_only() {
+        let snapshot = observed_asks();
+        let html = content_for(
+            Page::Asks,
+            &View {
+                situation: Some(&snapshot),
+                ..View::default()
+            },
+            100,
+        );
+        assert!(html.contains("<div class=asks-layout>"));
+        assert!(html.contains("<div class=ask-cards>"));
+        for ask in &snapshot.asks {
+            assert!(html.contains(&escape(&ask.question)));
+            assert!(html.contains(&escape(&ask.id)));
+        }
+        assert!(html.contains("Options, recommendation and meanwhile are unavailable"));
+        assert!(!html.contains("<form") && !html.contains("<button"));
+    }
+
+    #[test]
+    fn live_refresh_keeps_the_readers_latest_work_disclosure_choice() {
+        let mut runtime = oxa_script::Runtime::new(oxa_script::Limits::EXTENSION).unwrap();
+        runtime.eval_script("dom-fixture", r#"
+let current, supplied, closeDuringFetch;
+function makeMain(open) {
+  const work={open};
+  return {work, contains:()=>false, querySelector:selector=>selector==='details.home-work'?work:null,
+    replaceWith:next=>{current=next;}};
+}
+const document={hidden:false, activeElement:{matches:()=>false}, getElementById:()=>({textContent:'Snapshot'}),
+  querySelector:()=>current, addEventListener:()=>{}};
+const setTimeout=()=>1, clearTimeout=()=>{};
+class AbortController { constructor(){this.signal={};} abort(){} }
+class URL { constructor(){this.searchParams={set(){}};} }
+const location={href:'http://example.invalid/'};
+class DOMParser { parseFromString(){return {querySelector:()=>supplied};} }
+async function fetch(){
+  if(closeDuringFetch)current.work.open=false;
+  return {ok:true, text:async()=>''};
+}
+"#).unwrap();
+        runtime.eval_script("live.js", SCRIPT).unwrap();
+        let result = runtime
+            .eval_async_body(
+                "refresh",
+                r#"
+for(const [open,close,expected] of [[false,false,false],[true,false,true],[true,true,false]]) {
+  current=makeMain(open); supplied=makeMain(false); closeDuringFetch=close;
+  await refresh();
+  if(current!==supplied||current.work.open!==expected)throw new Error('reader disclosure state lost');
+}
+return true;
+"#,
+            )
+            .unwrap();
+        assert_eq!(result, serde_json::json!(true));
+    }
 
     #[test]
     fn queue_alarm_requires_membership_at_the_exact_head() {
@@ -460,6 +738,128 @@ mod tests {
         }
     }
     #[test]
+    fn known_alarms_have_visible_severity_and_keep_their_observed_evidence() {
+        let queue = [PullRequest {
+            number: 17,
+            head: "a".repeat(40),
+        }];
+        let runs = [29];
+        for (view, evidence) in [
+            (
+                View {
+                    main_red: true,
+                    ..View::default()
+                },
+                "Checks on main are failing.",
+            ),
+            (
+                View {
+                    main_merge_stalled: true,
+                    ..View::default()
+                },
+                "No PR merged into main for 45 minutes",
+            ),
+            (
+                View {
+                    stalled_runs: &runs,
+                    ..View::default()
+                },
+                "Run 29",
+            ),
+            (
+                View {
+                    queue: Some(&queue),
+                    overdue_queue: &queue,
+                    ..View::default()
+                },
+                "PR #17 has waited too long",
+            ),
+        ] {
+            let html = content_for(Page::Home, &view, 100);
+            let banner = html
+                .split("<section id=attention")
+                .nth(1)
+                .unwrap()
+                .split("</section>")
+                .next()
+                .unwrap();
+            assert!(banner.contains("role=alert"));
+            assert!(banner.contains("aria-hidden=true>!</span> Alarm</p>"));
+            assert!(banner.contains(evidence));
+            assert!(banner.contains("Lead response observations unavailable."));
+            assert!(!banner.contains("All good"));
+            assert!(!banner.contains("<form") && !banner.contains("<button"));
+        }
+    }
+
+    #[test]
+    fn owner_decisions_are_distinct_from_alarms_and_unknown_is_not_healthy() {
+        let mut snapshot = observed_asks();
+        let ask_only = content_for(
+            Page::Home,
+            &View {
+                situation: Some(&snapshot),
+                ..View::default()
+            },
+            100,
+        );
+        let banner = ask_only
+            .split("<section id=attention")
+            .nth(1)
+            .unwrap()
+            .split("</section>")
+            .next()
+            .unwrap();
+        assert!(banner.contains("role=status"));
+        assert!(banner.contains("aria-hidden=true>?</span> Needs you</p>"));
+        assert!(banner.contains(&format!("Unanswered owner decisions ({})", snapshot.asks.len())));
+        assert!(!banner.contains("Alarm</p>") && !banner.contains("Lead response"));
+        let mixed = content_for(
+            Page::Home,
+            &View {
+                situation: Some(&snapshot),
+                main_red: true,
+                ..View::default()
+            },
+            100,
+        );
+        assert!(mixed.contains("role=alert") && mixed.contains(" Alarm</p>"));
+        assert!(
+            mixed.find("Unanswered owner decisions").unwrap()
+                < mixed.find("Checks on main are failing").unwrap()
+        );
+        snapshot.asks.clear();
+        let queue = [PullRequest {
+            number: 17,
+            head: "a".repeat(40),
+        }];
+        let old_head = [PullRequest {
+            number: 17,
+            head: "b".repeat(40),
+        }];
+        for situation in [None, Some(&snapshot)] {
+            for (queue, overdue_queue) in [
+                (None, queue.as_slice()),
+                (Some(queue.as_slice()), old_head.as_slice()),
+                (Some(queue.as_slice()), &[]),
+            ] {
+                let unknown = content_for(
+                    Page::Home,
+                    &View {
+                        situation,
+                        queue,
+                        overdue_queue,
+                        ..View::default()
+                    },
+                    100,
+                );
+                assert!(!unknown.contains("id=attention"));
+                assert!(!unknown.contains("role=alert") && !unknown.contains("All good"));
+            }
+        }
+    }
+
+    #[test]
     fn only_failed_main_rollups_render_an_alarm() {
         for (state, red) in [
             ("ERROR", true),
@@ -528,6 +928,107 @@ mod tests {
             assert!(!render_at(&payload, MERGED + 45 * 60), "{field}");
         }
     }
+    #[test]
+    fn workers_put_reported_stalls_first_and_keep_observation_order_within_groups() {
+        use oxa_proto::work::{Event, Fact, Incident};
+        let fixture = include_str!("../../oxa-proto/tests/fixtures/work/evening.jsonl");
+        let mut snapshot = fixture
+            .lines()
+            .find_map(|line| Snapshot::from_json(line.as_bytes()).ok())
+            .unwrap();
+        let template = fixture
+            .lines()
+            .filter_map(|line| Event::from_json(line.as_bytes()).ok())
+            .find_map(|event| match event.fact {
+                Fact::TaskStarted(running) => Some(running),
+                _ => None,
+            })
+            .unwrap();
+        let tasks = [
+            "worker-ready-a",
+            "worker-stalled-b",
+            "worker-ready-c",
+            "worker-stalled-d",
+        ];
+        snapshot.running = tasks
+            .iter()
+            .map(|task| oxa_proto::work::Running {
+                task: (*task).into(),
+                ..template.clone()
+            })
+            .collect();
+        snapshot.incidents = [
+            (
+                IncidentKind::WorkerStalled,
+                Subject::Task("worker-stalled-d".into()),
+            ),
+            (
+                IncidentKind::WorkerStalled,
+                Subject::Task("worker-stalled-b".into()),
+            ),
+            (IncidentKind::MainFailed, Subject::Task("worker-ready-c".into())),
+            (
+                IncidentKind::WorkerStalled,
+                Subject::Host("worker-ready-a".into()),
+            ),
+            (IncidentKind::WorkerStalled, Subject::Task("not-running".into())),
+            (IncidentKind::HostIdle, Subject::Host(template.host.clone())),
+            (IncidentKind::HostIdle, Subject::Host("idle-example".into())),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (kind, subject))| Incident {
+            id: format!("incident-{index}"),
+            kind,
+            subject,
+            evidence: None,
+        })
+        .collect();
+        let render = |page, snapshot: &Snapshot| {
+            content_for(
+                page,
+                &View {
+                    situation: Some(snapshot),
+                    ..View::default()
+                },
+                100,
+            )
+        };
+        for page in [Page::Home, Page::Workers] {
+            let html = render(page, &snapshot);
+            let expected = [
+                "worker-stalled-b",
+                "worker-stalled-d",
+                "worker-ready-a",
+                "worker-ready-c",
+                "idle-example",
+            ];
+            let positions: Vec<_> = expected
+                .iter()
+                .map(|task| html.find(&format!("<b>{task}</b>")).unwrap())
+                .collect();
+            assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+            assert_eq!(html.matches("Stall reported").count(), 2);
+            assert_eq!(html.matches("Busy at observation").count(), 2);
+            assert_eq!(html.matches("Idle reported").count(), 1);
+            assert!(!html.contains("not-running") && !html.contains("Verified"));
+            assert!(!html.contains(&format!("<b>{}</b>", template.host)));
+            assert!(!html.contains(&template.worktree));
+            assert!(!html.contains(template.session_id.as_ref().unwrap()));
+        }
+        snapshot.incidents.clear();
+        let page = render(Page::Workers, &snapshot);
+        let positions: Vec<_> = tasks
+            .iter()
+            .map(|task| page.find(&format!("<b>{task}</b>")).unwrap())
+            .collect();
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(!page.contains("Stall reported") && !page.contains("Idle reported"));
+        snapshot.running.clear();
+        assert!(render(Page::Workers, &snapshot).contains("Idle worker inventory is unavailable"));
+        assert!(content_for(Page::Workers, &View::default(), 100).contains("Lane status unavailable"));
+    }
+
     #[test]
     fn fake_board_uses_policy_and_does_not_render_source_payloads() {
         struct Fake;
@@ -600,5 +1101,182 @@ mod tests {
             assert!(page.contains(unknown));
         }
         assert!(page.contains("0 / 1 reported complete"));
+    }
+
+    fn usage_page(observation: Option<&oxa_work::Result<Option<oxa_work::TaskUsage>>>) -> String {
+        content_for(
+            Page::Usage,
+            &View {
+                selected_task_usage: observation,
+                ..View::default()
+            },
+            100,
+        )
+    }
+
+    #[test]
+    fn selected_usage_preserves_unavailable_absent_and_saved_unknown_states() {
+        let failure = Err("private-error-marker".into());
+        for observation in [None, Some(&failure)] {
+            let page = usage_page(observation);
+            assert!(page.contains("Task usage observations unavailable."));
+            assert!(!page.contains("No saved checkpoint") && !page.contains("private-error-marker"));
+        }
+        let absent = Ok(None);
+        let page = usage_page(Some(&absent));
+        assert!(page.contains("No saved checkpoint for the selected task."));
+        assert!(!page.contains("Task usage observations unavailable."));
+        let unknown = Ok(Some(oxa_work::TaskUsage {
+            task: "<task>&example".into(),
+            checkpoint_revision: 41,
+            task_tokens: None,
+        }));
+        let page = usage_page(Some(&unknown));
+        assert!(page.contains("Task &lt;task&gt;&amp;example"));
+        assert!(page.contains("Checkpoint revision 41"));
+        assert!(page.contains("Saved token aggregate unknown."));
+        assert!(!page.contains("<task>") && !page.contains("<dd>0</dd>"));
+        assert!(!page.contains("Prompt tokens"));
+    }
+
+    #[test]
+    fn selected_usage_keeps_measured_zero_and_partial_counters_distinct() {
+        let complete_zero = Ok(Some(oxa_work::TaskUsage {
+            task: "selected-example".into(),
+            checkpoint_revision: 42,
+            task_tokens: Some(oxa_work::TaskTokens {
+                attempts: 1,
+                complete_attempts: 1,
+                prompt: Some(0),
+                completion: Some(0),
+                cached: Some(0),
+                complete: true,
+            }),
+        }));
+        let page = usage_page(Some(&complete_zero));
+        assert!(page.contains("Usage coverage: complete"));
+        assert!(page.contains("<dt>Task attempts</dt><dd>1</dd>"));
+        assert!(page.contains("<dt>Attempts with complete usage</dt><dd>1</dd>"));
+        assert_eq!(page.matches("<dd>0</dd>").count(), 3);
+        assert!(!page.contains("<dd>Unknown</dd>"));
+        assert!(page.contains("Task-scoped checkpoint; merged-PR attribution unavailable."));
+        assert!(page.contains("<h2>Plans and quotas</h2><p>Usage observations unavailable.</p>"));
+        assert!(page.contains("aria-current=page>Usage"));
+        assert!(!page.contains("<form") && !page.contains("<button"));
+        let partial = Ok(Some(oxa_work::TaskUsage {
+            task: "selected-example".into(),
+            checkpoint_revision: 43,
+            task_tokens: Some(oxa_work::TaskTokens {
+                attempts: 2,
+                complete_attempts: 1,
+                prompt: None,
+                completion: Some(0),
+                cached: None,
+                complete: false,
+            }),
+        }));
+        let page = usage_page(Some(&partial));
+        assert!(page.contains("Usage coverage: partial"));
+        assert!(!page.contains("Usage coverage: complete"));
+        assert!(page.contains("<dt>Task attempts</dt><dd>2</dd>"));
+        assert!(page.contains("<dt>Prompt tokens</dt><dd>Unknown</dd>"));
+        assert!(page.contains("<dt>Completion tokens</dt><dd>0</dd>"));
+        assert!(page.contains("<dt>Cached input tokens</dt><dd>Unknown</dd>"));
+        assert!(page.contains("Cached tokens are included in prompt when both are reported."));
+    }
+
+    #[test]
+    fn selected_partial_usage_keeps_large_known_fields_without_inventing_totals() {
+        let usage = Ok(Some(oxa_work::TaskUsage {
+            task: "selected-example".into(),
+            checkpoint_revision: 44,
+            task_tokens: Some(oxa_work::TaskTokens {
+                attempts: 2,
+                complete_attempts: 1,
+                prompt: Some(u64::MAX),
+                completion: Some(u64::MAX),
+                cached: Some(1),
+                complete: false,
+            }),
+        }));
+        let page = usage_page(Some(&usage));
+        assert!(page.contains("Usage coverage: partial"));
+        for label in ["Prompt tokens", "Completion tokens"] {
+            assert!(page.contains(&format!("<dt>{label}</dt><dd>{}</dd>", u64::MAX)));
+        }
+        assert!(!page.contains("Total tokens") && !page.contains("Estimated cost"));
+        assert!(page.contains("merged-PR attribution unavailable"));
+    }
+
+    #[test]
+    fn item_state_pairs_native_labels_with_observed_values_and_keeps_unknowns_explicit() {
+        let mut board = Board {
+            observed_at: 100,
+            entries: vec![Entry {
+                number: 17,
+                head: "private-head-marker".into(),
+                release_pinned: true,
+                action: Action::FixFindings,
+                lease: Some(oxa_work::board::Lease {
+                    holder: "worker-example".into(),
+                    expires_at: 200,
+                    claimed_at: Some(90),
+                    generation: (0, 1),
+                }),
+                attempts_today: 2,
+                eligible: true,
+            }],
+        };
+        let render = |board: Option<&Board>| {
+            content_for(
+                Page::Item(17),
+                &View {
+                    board,
+                    ..View::default()
+                },
+                201,
+            )
+        };
+        let page = render(Some(&board));
+        for expected in [
+            "<h1 id=main tabindex=-1>Item #17</h1>",
+            "href=/board>Back to Board</a>",
+            "aria-current=page>Board",
+            "<h2>Next action</h2><p>Fix findings</p>",
+            "<h2>State</h2><dl>",
+            "<dt>Priority</dt><dd>Release</dd>",
+            "<dt>Lease</dt><dd>worker-example · expires 200 (expired)</dd>",
+            "<dt>Attempts today</dt><dd>2</dd>",
+            "<dt>Observed at</dt><dd>100 (Unix seconds)</dd>",
+            "Title, checks, findings and diff observations unavailable.",
+        ] {
+            assert!(page.contains(expected), "{expected}");
+        }
+        assert_eq!(page.matches("<dt>").count(), 4);
+        assert!(!page.contains("private-head-marker"));
+        assert!(!page.contains("<form") && !page.contains("<button"));
+        board.entries[0].release_pinned = false;
+        board.entries[0].lease = None;
+        let unleased = render(Some(&board));
+        assert!(unleased.contains("<dt>Priority</dt><dd>Normal priority</dd>"));
+        assert!(unleased.contains("<dt>Lease</dt><dd>Unleased</dd>"));
+        board.entries[0].lease = Some(oxa_work::board::Lease {
+            holder: "<worker>&example".into(),
+            expires_at: 300,
+            claimed_at: Some(90),
+            generation: (0, 1),
+        });
+        let leased = render(Some(&board));
+        assert!(leased.contains("&lt;worker&gt;&amp;example · expires 300</dd>"));
+        assert!(!leased.contains("(expired)") && !leased.contains("<worker>"));
+        board.entries.clear();
+        for (source, expected) in [
+            (None, "Board unavailable."),
+            (Some(&board), "Item unavailable in this snapshot."),
+        ] {
+            let missing = render(source);
+            assert!(missing.contains(expected));
+            assert!(!missing.contains("<dl>") && !missing.contains("<dt>"));
+        }
     }
 }

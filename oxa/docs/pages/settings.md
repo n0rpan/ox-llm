@@ -190,6 +190,28 @@ gateway for sessions and `--list-models`. The default is `false`. Offline mode
 refuses before opening the gateway; configuration or gateway failures are returned
 directly. Project settings cannot enable this transport or change its cloud policy.
 
+Set `oxa.cloud.discover_models` to `true` to discover models at startup for the
+configured OpenRouter, OpenAI and Anthropic API keys. It also enables the
+OpenCode model cache when that provider is configured. A fresh cached catalog
+avoids a discovery request. A stale OpenRouter catalog is refreshed at startup
+before its prices can be used to reserve spend. Other stale catalogs can be
+shown while a bounded refresh updates the cache for later starts. A failed live
+lookup uses the configured catalog and reports the failure. Discovery stays
+off in offline mode.
+
+OpenRouter supplies model limits and token prices. When a provider omits
+prices, set conservative rates for the model under `oxa.cloud.models` in user
+settings before using it for paid inference. The gateway uses those rates to
+reserve budget and calculate charges from usage. Live prices cannot lower
+configured rates. A charge calculated from catalog rates is distinct from a
+charge reported by the provider. The ledger labels estimated and reserved
+costs. Models without enough pricing or limit data to enforce the budget are
+reported and omitted. When the same provider has several configured base URLs,
+select the discovery endpoint with `oxa.cloud.discovery.<provider>.base_url`.
+
+The merged catalog is available through the model picker and `--list-models`.
+The LAN guest catalog lists only guest-allowlisted models.
+
 Configure `anthropic`, `openai` (Responses API) or `chatgpt` (subscription) routes
 under `oxa.cloud.models`, keyed by the model name used
 with `--model`. Supply the upstream model, context/output limits and current
@@ -262,6 +284,7 @@ to a paid API balance. Missing metered pricing still refuses metered requests.
 | `oxa.reportIssue.repo` | string | `null` | repository for `oxa report-issue submit`, as `OWNER/NAME` |
 | `oxa.reportIssue.semanticDedupe` | bool | `false` | verify dogfood reports against current main and search open and recently closed issues before posting. Matching reports become comments. New issues are limited to one per task and three per worker per UTC day |
 | `oxa.builtinSkills` | bool | `true` | include the skills built into oxa |
+| `oxa.share.remoteModels` | string list | `[]` | user-only allowlist of metered cloud aliases eligible for explicit LAN sharing; personal subscriptions are excluded |
 | `oxa.skills.includeSynced` | bool | `false` | also list the skills another product synced into `~/.agents/skills` (a `synced/` folder, or a folder whose `manifest.json` lists `skillId`s); they are written for that product's tools, so oxa skips them by default |
 
 ## Example

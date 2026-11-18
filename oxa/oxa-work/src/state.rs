@@ -157,6 +157,7 @@ pub(crate) fn load(path: &Path) -> Result<State> {
         "problem_notes",
         "reports",
         "acceptance_outcome",
+        "task_tokens",
     ];
     if keys.iter().any(|key| !record.contains_key(*key))
         || record
@@ -171,6 +172,14 @@ pub(crate) fn load(path: &Path) -> Result<State> {
     }
     if state.record.id != state.task.id || state.record.branch != state.task.branch {
         return Err("task checkpoint identity disagrees with its task".into());
+    }
+    if state
+        .record
+        .task_tokens
+        .as_ref()
+        .is_some_and(|usage| !usage.valid())
+    {
+        return Err("invalid task usage evidence in checkpoint".into());
     }
     Ok(state)
 }
@@ -292,6 +301,7 @@ mod tests {
             model: "fake".into(),
             prompt: "Synthetic task".into(),
             max_time: crate::default_max_time(),
+            reviewed_pull_request: None,
         };
         let record = crate::blocked_record(&task, String::new());
         State::new(task, record, false)

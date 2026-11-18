@@ -19,7 +19,10 @@
 //!   does. stdin close = shutdown.
 #![forbid(unsafe_code)]
 
-#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "a2a-control", feature = "managed-steering")
+))]
 mod a2a_control;
 
 mod client;
@@ -36,7 +39,10 @@ pub use events::{
     JsonSink,
 };
 pub use ext_ui::{RpcUi, UiRouter};
-#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "a2a-control", feature = "managed-steering")
+))]
 pub use print::run_json_outcome_with_steering_authority;
 pub use print::{run_json, run_json_outcome, run_print, run_print_outcome};
 #[cfg(all(target_os = "linux", feature = "a2a-control"))]

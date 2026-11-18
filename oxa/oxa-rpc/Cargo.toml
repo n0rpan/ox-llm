@@ -11,6 +11,7 @@ publish.workspace = true
 [features]
 default = []
 a2a-control = ["dep:oxa-orchestrator"]
+managed-steering = ["dep:oxa-orchestrator"]
 
 [dependencies]
 oxa-proto.workspace = true

@@ -167,7 +167,7 @@ const BASE: &[Entry] = &[
             "oxa work <taskfile> [--rerun]",
             "oxa work --issue N --model MODEL [--rerun]",
             "oxa work --pr N --model MODEL [--rerun]",
-            "oxa work status [--json]",
+            "oxa work status [--json | --usage TASK]",
             "oxa work board --shadow --repo OWNER/REPO --once",
         ],
         example: "oxa work tasks.json",
@@ -185,8 +185,8 @@ const BASE: &[Entry] = &[
     },
     Entry {
         path: &["work", "status"],
-        summary: "List the saved work records and their liveness",
-        usage: &["oxa work status [--json]"],
+        summary: "List work records or read the saved usage of one task",
+        usage: &["oxa work status [--json | --usage TASK]"],
         example: "oxa work status --json",
     },
     Entry {

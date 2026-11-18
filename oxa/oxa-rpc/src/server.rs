@@ -14,7 +14,7 @@
 // back while the job ran) and the `abort` responses that waited for it. A command a client
 // sends after reading any of those records therefore meets an idle session and fresh state.
 #[cfg(all(target_os = "linux", feature = "a2a-control"))]
-use crate::a2a_control::BoundControl;
+use crate::a2a_control::{write_control_receipt, BoundControl};
 use crate::events::{event_to_json, session_state, write_record};
 use crate::{cmd_run, handle_session, Out, RpcCx, RpcUi, UiRouter};
 use oxa_core::{Handle, RunOutcome, Session};
@@ -411,11 +411,6 @@ fn publish(cx: &RpcCx) -> Published {
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "a2a-control"))]
-pub(super) fn write_control_receipt(out: &Out, data: Value) {
-    write_out(out, &json!({"type": "goal_control_receipt", "data": data}));
-}
-
 /// The session thread: runs each job in order and writes its response. Returns when the job
 /// channel closes (stdin EOF), after the session has shut down.
 fn session_loop(
@@ -772,12 +767,13 @@ pub fn serve_outcome(
 /// Serve an assigned session using the frontend's existing guarded lease read.
 #[cfg(all(target_os = "linux", feature = "a2a-control"))]
 pub fn serve_outcome_with_steering_authority(
-    session: Session,
+    mut session: Session,
     dirs: oxa_config::Dirs,
     input: Box<dyn BufRead + Send>,
     out: Out,
     authority: Arc<oxa_core::goal::SteeringAuthority>,
 ) -> Result<RunOutcome, OxaError> {
+    session.bind_lead_steering_authority(authority.clone());
     serve_inner(session, dirs, input, out, authority)
 }
 
