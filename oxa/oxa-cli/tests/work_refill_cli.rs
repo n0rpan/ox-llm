@@ -238,6 +238,29 @@ cat "$0.reply"
     if live {
         let reply = env.tmp().join("gh.reply");
         let original = fs::read(&reply).unwrap();
+        // Item 66 is inside the same partition but has no imported attempt row.
+        let mut unknown: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        let repository = &mut unknown["data"]["repository"];
+        repository["pullRequests"]["nodes"][0]["number"] = json!(66);
+        repository["p66"] = repository["p44"].take();
+        repository["p66"]["number"] = json!(66);
+        fs::write(&reply, unknown.to_string()).unwrap();
+        let refused = invoke(&env, &config, "synthetic\n", false);
+        assert!(
+            refused.status.success(),
+            "{}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+        let rows = claims.assignments().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(
+            !rows.contains_key(&66),
+            "unknown attempts must not become a zero-count claim"
+        );
+        assert_eq!(rows[&44].state.attempts, 0);
+        assert!(fs::read_dir(&queue)
+            .unwrap()
+            .all(|entry| entry.unwrap().path().is_dir()));
         for (field, value) in [
             ("headRefOid", json!("b".repeat(40))),
             ("isCrossRepository", json!(true)),
@@ -247,7 +270,9 @@ cat "$0.reply"
             fs::write(&reply, response.to_string()).unwrap();
             assert_eq!(invoke(&env, &config, "synthetic\n", false).status.code(), Some(2));
             assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
-            assert_eq!(fs::read_dir(&queue).unwrap().count(), 0);
+            assert!(fs::read_dir(&queue)
+                .unwrap()
+                .all(|entry| entry.unwrap().path().is_dir()));
         }
         fs::write(&reply, original).unwrap();
     }
