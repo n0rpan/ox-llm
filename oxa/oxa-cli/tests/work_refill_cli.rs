@@ -271,7 +271,7 @@ cat "$0.reply"
                 44,
                 &binding.lease.holder,
                 &binding.lease,
-                now,
+                binding.lease.claimed_at.unwrap(),
                 "verified completion"
             )
             .unwrap());
