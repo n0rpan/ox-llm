@@ -628,3 +628,37 @@ fn a_durable_pending_steer_requires_the_live_lease_after_reopening() {
     assert_eq!(owner.goal().unwrap().lead, Some(lead));
     assert!(engine.requests().is_empty());
 }
+
+#[test]
+fn a_queued_turn_delivers_durably_staged_input_before_its_first_request() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("first"),
+        ScriptTurn::text("second"),
+    ]));
+    let mut session =
+        Session::open(deps(&env, Arc::new(MemStore::new()), engine.clone()), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    let mut ui = HeadlessUi::default();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    let bound = session.inner().sref.clone();
+    session
+        .stage_lead_steer(
+            &bound,
+            session.goal_revision(),
+            "Synthetic durable steer.".into(),
+            None,
+            &mut sink,
+        )
+        .unwrap();
+    session.handle().follow_up("Synthetic follow-up.".into());
+    session.run_queued(&mut sink, &mut ui).unwrap();
+    let requests = engine.requests();
+    assert!(requests[0]
+        .messages
+        .iter()
+        .any(|message| message.content.as_deref() == Some("Synthetic durable steer.")));
+    assert!(session.goal().unwrap().lead.unwrap().pending_steer.is_none());
+}

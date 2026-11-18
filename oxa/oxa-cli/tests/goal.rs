@@ -420,12 +420,12 @@ fn explicit_continue_resumes_a_paused_goal_without_resetting_its_budget_or_objec
 
 #[test]
 fn lead_goal_resumes_after_a_killed_turn_without_redelivering_a_saved_steer() {
-    for append_was_saved in [false, true] {
-        lead_resume_after_kill(append_was_saved);
+    for (append_was_saved, paused) in [(false, false), (true, false), (false, true)] {
+        lead_resume_after_kill(append_was_saved, paused);
     }
 }
 
-fn lead_resume_after_kill(append_was_saved: bool) {
+fn lead_resume_after_kill(append_was_saved: bool, paused: bool) {
     use oxa_proto::{Entry, EntryBody, Part, WireMsg};
     use oxa_session::{FsStore, Goal, SessionStore, GOAL_ENTRY};
     use serde_json::json;
@@ -447,9 +447,11 @@ fn lead_resume_after_kill(append_was_saved: bool) {
         "held_leases": [{"task":"task-1","holder":"fixture","generation":[1,1],"expires_at":9999999999_u64}],
         "pending_steer": {"entry_id":steering_id,"revision":1,"text":steering,"lease":null}
     });
-    let mut data = Goal::new(objective.into(), Default::default(), 1)
-        .unwrap()
-        .value();
+    let mut goal = Goal::new(objective.into(), Default::default(), 1).unwrap();
+    if paused {
+        goal.pause();
+    }
+    let mut data = goal.value();
     data["change"] = "control".into();
     data["lead"] = state.clone();
     store
