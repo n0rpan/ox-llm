@@ -67,6 +67,7 @@ pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &st
     // An explicit later online publication never relaxes the saved check policy.
     let verification_policy = RunPolicy {
         offline: saved.offline || policy.offline,
+        runner_owns_github: saved.task.runner_owns_github(),
         ..policy.clone()
     };
     let policy = &verification_policy;
@@ -102,6 +103,7 @@ pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &st
                 branch: saved.task.branch,
                 create: false,
                 adopted: false,
+                normalize: None,
             },
         },
         policy,
@@ -458,6 +460,7 @@ mod tests {
                 host_path: "/usr/bin:/bin".into(),
                 terminate_binary: None,
                 offline: true,
+                runner_owns_github: false,
                 storage,
             };
             checked(private_git(
@@ -634,7 +637,7 @@ mod tests {
             &fixture.source,
             &retained,
             &task,
-            &fixture.head,
+            (&fixture.head, None),
             &fixture.root.join("unavailable-worker"),
             &fixture.policy,
             &lock,

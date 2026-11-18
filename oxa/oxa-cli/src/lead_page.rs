@@ -3,6 +3,10 @@ use oxa_proto::work::{IncidentKind, PullRequest, Snapshot, Subject};
 use oxa_work::board::{Action, Board};
 use std::fmt::Write;
 
+mod chat;
+mod pages;
+pub use pages::{Page, Prompt};
+
 /// Borrowed presentation inputs, not a second runner state store. None means unavailable.
 #[derive(Default)]
 pub struct View<'a> {
@@ -58,12 +62,52 @@ fn subject(value: &Subject) -> String {
 
 /// Full server-rendered page; scripts/styles are same-origin resources, without a CDN.
 pub fn document(view: &View<'_>, now: u64) -> String {
-    format!("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>oxa lead</title><link rel=stylesheet href=/style.css><script src=/live.js defer></script><header><a href=/>oxa <b>lead</b></a><span id=connection>Snapshot</span></header>{}</html>", content(view, now))
+    document_for(Page::Home, view, now)
+}
+
+pub fn document_for(page: Page, view: &View<'_>, now: u64) -> String {
+    let refresh = if page == Page::Home {
+        "<noscript><meta http-equiv=refresh content=60></noscript>"
+    } else {
+        ""
+    };
+    format!("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1,viewport-fit=cover\"><meta name=color-scheme content=\"light dark\"><title>oxa lead</title><link rel=stylesheet href=/style.css><script src=/live.js defer></script>{refresh}<a class=skip href=#main>Skip to content</a><header class=top><a href=/>oxa <b>lead</b></a><span id=connection class=age>Snapshot</span></header>{}</html>", content_for(page, view, now))
 }
 
 /// Allow-listed HTML fragment, also used by SSE. No worktrees, sessions, errors or headers.
 pub fn content(view: &View<'_>, now: u64) -> String {
-    let mut html = String::from("<main><h1>Work in motion</h1>");
+    content_for(Page::Home, view, now)
+}
+
+pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
+    let mut html = format!("<main><h1 id=main tabindex=-1>{}</h1>", page.title());
+    if page == Page::Home {
+        attention(&mut html, view);
+    }
+    html.push_str(&page.navigation());
+    match page {
+        Page::Home => {
+            board(&mut html, view, now);
+            workers(&mut html, view);
+            queue(&mut html, view);
+            release(&mut html, view);
+            asks(&mut html, view);
+        }
+        Page::Board => {
+            board(&mut html, view, now);
+            queue(&mut html, view);
+        }
+        Page::Workers => workers(&mut html, view),
+        Page::Asks => asks(&mut html, view),
+        Page::Chat(prompt) => chat::render(&mut html, view, prompt),
+        Page::Usage => html
+            .push_str("<section><h2>Plans and quotas</h2><p>Usage observations unavailable.</p></section>"),
+    }
+    html.push_str("<footer>Read-only · Chat with the lead is not connected yet.</footer></main>");
+    html
+}
+
+fn attention(html: &mut String, view: &View<'_>) {
     let ask_count = view.situation.map_or(0, |s| s.asks.len());
     let overdue: Vec<_> = view
         .queue
@@ -110,7 +154,10 @@ pub fn content(view: &View<'_>, now: u64) -> String {
         }
         html.push_str("</ul></section>");
     }
-    html.push_str("<nav aria-label=Views><a href=#board>Board</a><a href=#lanes>Lanes</a><a href=#queue>Merge queue</a><a href=#release>Release</a><a href=#asks>Asks</a></nav><section id=board><h2>Board</h2>");
+}
+
+fn board(html: &mut String, view: &View<'_>, now: u64) {
+    html.push_str("<section id=board><h2>Board</h2>");
     if let Some(board) = view.board {
         let stale = board.observed_at > now.saturating_add(60) || now.saturating_sub(board.observed_at) > 900;
         let _ = write!(
@@ -149,7 +196,11 @@ pub fn content(view: &View<'_>, now: u64) -> String {
     } else {
         html.push_str("<p>Board unavailable.</p>");
     }
-    html.push_str("</section><section id=lanes><h2>Lanes</h2>");
+    html.push_str("</section>");
+}
+
+fn workers(html: &mut String, view: &View<'_>) {
+    html.push_str("<section id=lanes><h2>Workers</h2>");
     if let Some(s) = view.situation {
         let _ = write!(
             html,
@@ -188,7 +239,11 @@ pub fn content(view: &View<'_>, now: u64) -> String {
     } else {
         html.push_str("<p>Lane status unavailable.</p>");
     }
-    html.push_str("</section><section id=queue><h2>Merge queue</h2>");
+    html.push_str("</section>");
+}
+
+fn queue(html: &mut String, view: &View<'_>) {
+    html.push_str("<section id=queue><h2>Merge queue</h2>");
     if let Some(queue) = view.queue {
         for (index, pr) in queue.iter().enumerate() {
             let _ = write!(html, "<article>{}. PR #{}</article>", index + 1, pr.number);
@@ -199,7 +254,11 @@ pub fn content(view: &View<'_>, now: u64) -> String {
     } else {
         html.push_str("<p>Merge queue unavailable. Ready to land does not establish queue membership.</p>");
     }
-    html.push_str("</section><section id=release><h2>Release checklist</h2>");
+    html.push_str("</section>");
+}
+
+fn release(html: &mut String, view: &View<'_>) {
+    html.push_str("<section id=release><h2>Release checklist</h2>");
     if let Some((number, items)) = view.release {
         let _ = write!(html, "<p class=muted>Issue #{number} · {} / {} reported complete; validation requires merge evidence.</p><ul>", items.iter().filter(|i| i.0).count(), items.len());
         for (checked, text) in items {
@@ -214,7 +273,11 @@ pub fn content(view: &View<'_>, now: u64) -> String {
     } else {
         html.push_str("<p>Release checklist unavailable.</p>");
     }
-    html.push_str("</section><section id=asks><h2>For your decision</h2>");
+    html.push_str("</section>");
+}
+
+fn asks(html: &mut String, view: &View<'_>) {
+    html.push_str("<section id=asks><h2>For your decision</h2>");
     if let Some(s) = view.situation {
         for ask in &s.asks {
             let _ = write!(html, "<article><p class=muted>{}</p><h3>{}</h3><p>Options, recommendation and meanwhile are unavailable in these facts.</p></article>", subject(&ask.subject), escape(&ask.question));
@@ -225,25 +288,34 @@ pub fn content(view: &View<'_>, now: u64) -> String {
     } else {
         html.push_str("<p>Owner asks unavailable.</p>");
     }
-    html.push_str("</section><footer>Read-only · Chat with the lead is not connected yet.</footer></main>");
-    html
+    html.push_str("</section>");
 }
 
-pub const STYLE: &str = r#"
-:root{color-scheme:dark;font:16px/1.6 system-ui,sans-serif;background:#10171e;color:#e2e9ed}
-body{max-width:1100px;margin:auto;padding:0 24px}header{display:flex;justify-content:space-between;padding:28px 0;border-bottom:1px solid #34414a}
-a{color:#e9c785;text-decoration:none}a:focus-visible{outline:2px solid #e9c785}header a{font-size:22px;color:inherit}header b{color:#e9c785}
-h1{font-size:clamp(32px,5vw,48px);letter-spacing:-.04em;margin:40px 0 0}h2{font-size:22px}h3{font-size:18px;margin:6px 0}
-.muted,footer,#connection{color:#a3b4bf}nav{display:flex;gap:24px;overflow:auto;padding:20px 0}nav a{white-space:nowrap}
-section{padding:16px 0 28px;border-top:1px solid #34414a;scroll-margin:16px}.scroll{overflow:auto}table{border-collapse:collapse;width:100%;text-align:left;font-size:14px}
-th{color:#a3b4bf;font-weight:500}td,th{padding:12px;border-bottom:1px solid #28343d}article{background:#19242d;padding:16px 20px;margin:12px 0;border-radius:8px}article p{margin:4px 0}footer{padding:24px 0 40px}li{margin:10px 0}
-@media(max-width:600px){body{padding:0 16px}nav{gap:18px}td,th{padding:10px}header{padding:20px 0}}
-"#;
+pub const STYLE: &str = include_str!("lead_page/style.css");
 
 pub const SCRIPT: &str = r#"const badge=document.getElementById('connection');
-const stream=new EventSource('/events');
-stream.addEventListener('snapshot',event=>{document.querySelector('main').outerHTML=event.data;badge.textContent='Live';});
-stream.onerror=()=>{badge.textContent='Disconnected · reconnecting';};
+let timer,pending;
+async function refresh(){
+  clearTimeout(timer);
+  if(document.hidden)return;
+  if(document.querySelector('main').contains(document.activeElement)&&document.activeElement.matches('a,button,input,textarea,select,summary')){timer=setTimeout(refresh,15000);return;}
+  if(pending)pending.abort();
+  const active=new AbortController();pending=active;
+  const target=new URL(location.href);target.searchParams.set('fragment','1');
+  try{
+    const response=await fetch(target,{cache:'no-store',signal:active.signal});
+    if(!response.ok)throw new Error('refresh refused');
+    const doc=new DOMParser().parseFromString(await response.text(),'text/html');
+    const next=doc.querySelector('main');
+    if(!next)throw new Error('refresh unavailable');
+    if(pending===active){document.querySelector('main').replaceWith(next);badge.textContent='Live';}
+  }catch(error){if(!active.signal.aborted)badge.textContent='Refresh unavailable';}
+  finally{if(pending===active){pending=null;if(!document.hidden)timer=setTimeout(refresh,15000);}}
+}
+document.addEventListener('visibilitychange',()=>{
+  clearTimeout(timer);if(pending)pending.abort();if(!document.hidden)refresh();
+});
+timer=setTimeout(refresh,15000);
 "#;
 
 #[cfg(test)]

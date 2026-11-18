@@ -66,6 +66,7 @@ pub(crate) fn run(
             branch,
             create,
             adopted,
+            normalize,
         } => {
             // Adopted content is materialized without ambient GitHub authority.
             // The ordinary checkout path retains its existing hook policy.
@@ -79,15 +80,18 @@ pub(crate) fn run(
             } else {
                 "git --no-replace-objects"
             };
+            let mut command = if let Some(update) = normalize {
+                // Materialize filters first, then advance under the caller's Git
+                // worktree hold, with the selected checkout callback policy.
+                format!("{git} read-tree --reset -u HEAD && test $({git} symbolic-ref --quiet {}; echo $?) = 1 && {git} update-ref --no-deref {} {} {} && checkout_head=$({git} rev-parse HEAD) && {git} hook run --ignore-missing post-checkout -- \"$checkout_head\" \"$checkout_head\" 0", sh_quote(&update.reference), sh_quote(&update.reference), sh_quote(&update.new), sh_quote(&update.old))
+            } else {
+                format!("{git} checkout HEAD -- .")
+            };
+            if create {
+                command.push_str(&format!(" && {git} checkout -b {} HEAD", sh_quote(&branch)));
+            }
             let spec = ExecSpec {
-                command: if create {
-                    format!(
-                        "{git} checkout HEAD -- . && {git} checkout -b {} HEAD",
-                        sh_quote(&branch)
-                    )
-                } else {
-                    format!("{git} checkout HEAD -- .")
-                },
+                command,
                 cwd: root,
                 writable: true,
                 net: !adopted && sandbox.network(),

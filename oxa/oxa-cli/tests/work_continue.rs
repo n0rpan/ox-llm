@@ -3,7 +3,7 @@
 mod work;
 use oxa_fake::{ScriptTurn, TestEnv};
 use std::path::{Path, PathBuf};
-use work::{git, run, run_observed, setup};
+use work::{git, run, run_batch, run_observed, setup};
 
 fn project(env: &TestEnv) -> PathBuf {
     env.work().join("project")
@@ -146,6 +146,15 @@ fn ordinary_fresh_branch_reference_hooks_run_only_in_the_task_sandbox() {
 
 #[test]
 fn published_checkout_hooks_have_neither_network_nor_github_credentials() {
+    published_checkout_policy(false);
+}
+
+#[test]
+fn normalizing_an_adopted_checkout_preserves_the_restricted_policy() {
+    published_checkout_policy(true);
+}
+
+fn published_checkout_policy(normalize: bool) {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
     published_task(&env);
@@ -167,6 +176,20 @@ fn published_checkout_hooks_have_neither_network_nor_github_credentials() {
     git(&env, &project(&env), &["checkout", "main"]);
     git(&env, &project(&env), &["branch", "-D", "published"]);
     git(&env, &project(&env), &["fetch", "origin"]);
+    let normalized_base = normalize.then(|| {
+        let (_, fetched) = lag_existing_base(&env);
+        git(
+            &env,
+            &project(&env),
+            &["checkout", "-b", "published", "origin/agent/test"],
+        );
+        git(&env, &project(&env), &["merge", "--no-edit", "origin/main"]);
+        git(&env, &project(&env), &["push", "origin", "published:agent/test"]);
+        git(&env, &project(&env), &["checkout", "source"]);
+        git(&env, &project(&env), &["branch", "-D", "published"]);
+        git(&env, &project(&env), &["fetch", "origin"]);
+        fetched
+    });
     git(&env, &project(&env), &["config", "filter.adopted.smudge", "printf ran > adopted-filter-ran; if test -n \"${GH_TOKEN-}${GITHUB_TOKEN-}\"; then printf exposed > adopted-filter-credentials; fi; if test -r \"$HOME/.config/gh/config.yml\"; then printf exposed > adopted-filter-config; fi; readlink /proc/self/ns/net > adopted-filter-network; cat"]);
     env.write("home/.config/gh/config.yml", "version: 1\n");
     let hook = env.write(
@@ -188,6 +211,10 @@ fn published_checkout_hooks_have_neither_network_nor_github_credentials() {
         ],
     );
     assert_eq!(record["outcome"], "done", "{record}");
+    if let Some(fetched) = normalized_base {
+        assert_eq!(record["base_sha"], fetched, "{record}");
+        assert_eq!(git(&env, &project(&env), &["rev-parse", "main"]), fetched);
+    }
     assert!(!tree(&record).join("adopted-hook-ran").exists(), "{record}");
     assert!(
         !tree(&record).join("adopted-hook-credentials").exists(),
@@ -526,6 +553,226 @@ fn resumed_old_merge_is_told_to_integrate_the_newly_captured_base() {
         &env,
         &project(&env),
         &["merge-base", "--is-ancestor", &new_base, "agent/test"],
+    );
+}
+
+fn lagging_base(env: &TestEnv) -> (String, String) {
+    setup(env, "[]");
+    lag_existing_base(env)
+}
+
+fn lag_existing_base(env: &TestEnv) -> (String, String) {
+    // The source checkout pulled `main` while its local branch stayed behind.
+    let stale = git(env, &project(env), &["rev-parse", "main"]);
+    commit_file(env, "fetched.txt", "fetched base\n");
+    git(env, &project(env), &["push", "origin", "main"]);
+    git(env, &project(env), &["reset", "--hard", "HEAD~1"]);
+    // The source checkout works on its own branch, so `main` is not checked out.
+    git(env, &project(env), &["checkout", "-b", "source"]);
+    git(env, &project(env), &["fetch", "origin"]);
+    let fetched = git(env, &project(env), &["rev-parse", "origin/main"]);
+    assert_ne!(fetched, stale);
+    // A base named after the fetched ref names a commit, not the stale branch.
+    env.write(
+        "work/tasks.json",
+        r#"[{"id":"test","branch":"agent/test","model":"fake","base":"origin/main","prompt":"Finish task"}]"#,
+    );
+    (stale, fetched)
+}
+
+#[test]
+fn fresh_worktree_fast_forwards_a_local_base_branch_that_lags_it() {
+    let env = TestEnv::new();
+    let (stale, fetched) = lagging_base(&env);
+    let record = run(&env, vec![ScriptTurn::text("nothing")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(record["base_sha"], fetched, "{record}");
+    assert_ne!(record["base_sha"], stale, "{record}");
+    assert_eq!(
+        git(&env, &project(&env), &["rev-parse", "main"]),
+        fetched,
+        "the local base branch still lags the fetched base"
+    );
+    assert_eq!(
+        git(&env, tree(&record), &["diff", "--name-only", "main..HEAD"]),
+        "",
+        "the task's own diff against its base is not empty"
+    );
+}
+
+#[test]
+fn a_tag_spelling_a_remote_base_never_advances_the_local_branch() {
+    let env = TestEnv::new();
+    let (stale, fetched) = lagging_base(&env);
+    commit_file(&env, "tagged.txt", "an explicitly tagged base\n");
+    git(&env, &project(&env), &["tag", "origin/main"]);
+    let tagged = git(&env, &project(&env), &["rev-parse", "refs/tags/origin/main"]);
+    assert_ne!(tagged, fetched);
+    let record = run(&env, vec![ScriptTurn::text("nothing")]);
+    assert_eq!(record["base_sha"], tagged, "{record}");
+    assert_eq!(
+        git(&env, &project(&env), &["rev-parse", "refs/heads/main"]),
+        stale
+    );
+}
+
+#[test]
+fn a_symbolic_local_base_never_moves_its_checked_out_target() {
+    let env = TestEnv::new();
+    let (stale, _) = lagging_base(&env);
+    git(
+        &env,
+        &project(&env),
+        &["symbolic-ref", "refs/heads/main", "refs/heads/source"],
+    );
+    let record = run(&env, vec![ScriptTurn::text("nothing")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(git(&env, &project(&env), &["rev-parse", "source"]), stale);
+    assert_eq!(
+        git(&env, &project(&env), &["symbolic-ref", "refs/heads/main"]),
+        "refs/heads/source"
+    );
+    assert_eq!(git(&env, &project(&env), &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn a_batch_freezes_remote_and_local_base_aliases_after_normalization() {
+    let env = TestEnv::new();
+    let (_, fetched) = lagging_base(&env);
+    env.write(
+        "work/tasks.json",
+        r#"[
+        {"id":"first","branch":"agent/first","model":"fake","base":"origin/main","prompt":"First task"},
+        {"id":"second","branch":"agent/second","model":"fake","base":"main","prompt":"Second task"}
+    ]"#,
+    );
+    let (records, _) = run_batch(
+        &env,
+        vec![ScriptTurn::text("nothing"), ScriptTurn::text("nothing")],
+        &["work", "../tasks.json"],
+        None,
+    );
+    assert_eq!(records.len(), 2);
+    for record in records {
+        assert_eq!(record["base_sha"], fetched, "{record}");
+        assert_eq!(
+            git(&env, tree(&record), &["diff", "--name-only", "main..HEAD"]),
+            ""
+        );
+    }
+}
+
+#[test]
+fn post_checkout_policy_observes_the_normalized_base() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    let (_, fetched) = lagging_base(&env);
+    let hook = env.write("work/project/.git/hooks/post-checkout", "#!/bin/sh\ntest \"$(git rev-parse HEAD)\" = \"$(git rev-parse main)\" || { echo stale-base-before-checkout >&2; exit 1; }\n");
+    std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let record = run(&env, vec![ScriptTurn::text("nothing")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(record["base_sha"], fetched);
+}
+
+#[test]
+fn a_concurrent_checkout_during_ancestry_validation_keeps_its_head_and_index() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    let (stale, _) = lagging_base(&env);
+    let original_path = std::env::var("PATH").unwrap();
+    env.write("bin/original-path", &format!("{original_path}\n"));
+    let marker = env.work().join("checkout-race");
+    // The trusted Git wrapper performs the real ancestry read, then interleaves an ordinary
+    // source checkout before returning that successful read to the native runner.
+    let wrapper = env.write("bin/git", "#!/bin/sh\nfixture_tools=${0%/*}\nIFS= read -r PATH < \"$fixture_tools/original-path\" || exit 1\nexport PATH\ngit \"$@\"\nrace_status=$?\ncase \" $* \" in *\" merge-base --is-ancestor \"*) if test \"$race_status\" -eq 0 && mkdir \"$fixture_tools/../work/checkout-race\" 2>/dev/null; then git -C \"$fixture_tools/../work/project\" checkout main >/dev/null 2>&1 || exit 1; fi;; esac\nexit \"$race_status\"\n");
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{original_path}", wrapper.parent().unwrap().display());
+    let (record, _) = run_observed(
+        &env,
+        vec![ScriptTurn::text("nothing")],
+        &["work", "../tasks.json"],
+        Some(path),
+    );
+    assert!(
+        marker.exists(),
+        "the controlled concurrent checkout never ran: {record}"
+    );
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(
+        git(&env, &project(&env), &["symbolic-ref", "HEAD"]),
+        "refs/heads/main"
+    );
+    assert_eq!(git(&env, &project(&env), &["rev-parse", "HEAD"]), stale);
+    assert_eq!(git(&env, &project(&env), &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn local_base_branch_checked_out_elsewhere_is_never_moved() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    // `main` lives in the review worktree; the source checkout is off it.
+    git(&env, &project(&env), &["checkout", "-b", "source"]);
+    let other = env.work().join("review");
+    git(
+        &env,
+        &project(&env),
+        &["worktree", "add", "-q", other.to_str().unwrap(), "main"],
+    );
+    let checked_out = git(&env, &project(&env), &["rev-parse", "main"]);
+    commit_file(&env, "fetched.txt", "fetched base\n");
+    git(&env, &project(&env), &["push", "origin", "source:main"]);
+    git(&env, &project(&env), &["fetch", "origin"]);
+    let fetched = git(&env, &project(&env), &["rev-parse", "origin/main"]);
+    env.write(
+        "work/tasks.json",
+        r#"[{"id":"test","branch":"agent/test","model":"fake","base":"origin/main","prompt":"Finish task"}]"#,
+    );
+    let record = run(&env, vec![ScriptTurn::text("nothing")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(record["base_sha"], fetched, "{record}");
+    assert_eq!(
+        git(&env, tree(&record), &["rev-parse", "HEAD"]),
+        fetched,
+        "{record}"
+    );
+    assert_eq!(
+        git(&env, &project(&env), &["rev-parse", "main"]),
+        checked_out,
+        "a branch checked out in another worktree was moved"
+    );
+}
+
+#[test]
+fn base_branch_fast_forward_runs_no_repository_hook_on_the_host() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    let (_, fetched) = lagging_base(&env);
+    // Install the hook only now: the fixture's own commits and pushes are
+    // expected to run it, the runner's host metadata is not.
+    let hook = env.write(
+        "work/project/.git/hooks/reference-transaction",
+        "#!/bin/sh\ncat >/dev/null\nprintf escaped > \"$HOME/branch-advance-escape\"\nprintf ran > branch-advance-ran\n",
+    );
+    std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let record = run(&env, vec![ScriptTurn::text("nothing")]);
+    // Sandboxed branch creation already runs this hook and saves its task-local marker.
+    assert_eq!(record["outcome"], "done", "{record}");
+    assert_eq!(
+        std::fs::read_to_string(tree(&record).join("branch-advance-ran")).unwrap(),
+        "ran"
+    );
+    assert_eq!(
+        git(&env, &project(&env), &["rev-parse", "main"]),
+        fetched,
+        "the host refused to advance the base branch"
+    );
+    assert!(
+        !env.home().join("branch-advance-escape").exists(),
+        "advancing the base branch ran a host hook: {record}"
+    );
+    assert!(
+        !project(&env).join("branch-advance-ran").exists(),
+        "advancing the base branch ran a hook: {record}"
     );
 }
 

@@ -17,7 +17,7 @@ pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs) -> Result<bool, String
 }
 
 // Keep owner state outside every worker Git bind.
-fn protected_storage(storage: &Path, repo: &Path, common: &Path) -> Result<(), String> {
+pub(crate) fn protected_storage(storage: &Path, repo: &Path, common: &Path) -> Result<(), String> {
     if !storage.is_absolute()
         || storage
             .components()
@@ -147,11 +147,12 @@ pub(crate) fn run(
             host_path,
             terminate_binary,
             offline: oxa_proto::offline(),
+            runner_owns_github: false,
             storage: dirs.agent_dir.join("work").join(key),
         };
         protected_storage(&policy.storage, &root, &common)?;
         if args.first().is_some_and(|arg| arg == "board") {
-            return crate::work_board::run(&args[1..], &root, env, dirs, &policy);
+            return crate::work_board::run(&args[1..], &root, &common, env, dirs, &policy);
         }
         if matches!(args.first().map(String::as_str), Some("status" | "--status")) {
             let json = match args {
@@ -256,19 +257,18 @@ pub(crate) fn run(
         };
         // Freeze every task before checkout hooks or a first worker can change
         // shared refs. A bad plan remains a per-task error, not a batch abort.
+        let plans = if is_trusted {
+            oxa_work::plan_tasks_for_run(&root, &tasks, &policy, rerun)
+        } else {
+            tasks
+                .iter()
+                .map(|_| Err("source project is not trusted; approve it before unattended work".into()))
+                .collect()
+        };
         let planned: Vec<_> = tasks
             .into_iter()
-            .map(|task| {
-                if is_trusted {
-                    oxa_work::plan_task_for_run(&root, task.clone(), &policy, rerun)
-                        .map_err(|detail| Box::new(oxa_work::blocked_record(&task, detail)))
-                } else {
-                    Err(Box::new(oxa_work::blocked_record(
-                        &task,
-                        "source project is not trusted; approve it before unattended work".into(),
-                    )))
-                }
-            })
+            .zip(plans)
+            .map(|(task, plan)| plan.map_err(|detail| Box::new(oxa_work::blocked_record(&task, detail))))
             .collect();
         let mut code = 0;
         for task in planned {

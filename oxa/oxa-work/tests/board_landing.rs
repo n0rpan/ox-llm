@@ -1,6 +1,11 @@
 use oxa_work::board::{self, landing::*, *};
 use std::collections::BTreeMap;
 
+const HEAD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const FIRST_GROUP: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const RETRY_GROUP: &str = "cccccccccccccccccccccccccccccccccccccccc";
+const OTHER_GROUP: &str = "dddddddddddddddddddddddddddddddddddddddd";
+
 struct Snapshot(PullRequest);
 impl GitHub for Snapshot {
     fn open_pull_requests(&mut self) -> oxa_work::Result<Vec<PullRequest>> {
@@ -10,7 +15,7 @@ impl GitHub for Snapshot {
 fn board() -> Board {
     let pr = PullRequest {
         number: 1,
-        head: "head-one".into(),
+        head: HEAD.into(),
         release_pinned: false,
         findings: false,
         required_ci: RequiredCi::Passed,
@@ -39,11 +44,12 @@ fn policy() -> board::landing::Policy {
 }
 fn rejection() -> Rejection<'static> {
     Rejection {
-        head: "head-one",
+        head: HEAD,
         main: "main-one",
+        merge_group_head: FIRST_GROUP,
         cause: RejectionCause::FailedTests(&["synthetic_regression"]),
         notified: false,
-        retry_used: false,
+        retry: Retry::Unused,
     }
 }
 
@@ -53,7 +59,7 @@ fn default_off_and_latest_findings_override_approved_ready_head() {
     let mut observations = BTreeMap::from([(
         1,
         Observation {
-            head: "head-one",
+            head: HEAD,
             reviews: LatestReviews::Unresolved,
             queue: Queue::Absent,
         },
@@ -84,7 +90,8 @@ fn rejected_head_notifies_with_failing_tests_then_retries_once_after_main_moves(
     assert_eq!(
         notice.notify_rejection,
         Some(Notice {
-            head: "head-one",
+            head: HEAD,
+            merge_group_head: FIRST_GROUP,
             cause: RejectionCause::FailedTests(&["synthetic_regression"]),
         })
     );
@@ -108,7 +115,8 @@ fn rejected_head_notifies_with_failing_tests_then_retries_once_after_main_moves(
     assert_eq!(
         conflict.notify_rejection,
         Some(Notice {
-            head: "head-one",
+            head: HEAD,
+            merge_group_head: FIRST_GROUP,
             cause: RejectionCause::MergeConflict,
         })
     );
@@ -116,12 +124,103 @@ fn rejected_head_notifies_with_failing_tests_then_retries_once_after_main_moves(
     rejected.notified = true;
     assert_eq!(plan(rejected, "main-one").next, Next::WaitMain);
     assert_eq!(plan(rejected, "main-two").next, Next::Retry);
-    rejected.retry_used = true;
+    rejected.retry = Retry::Consumed {
+        first_rejected_group: FIRST_GROUP,
+        admitted_group: None,
+    };
     let exhausted = plan(rejected, "main-three");
     assert_eq!(exhausted.next, Next::RetryExhausted);
     assert_eq!(exhausted.notify_rejection, None);
+    assert!(!exhausted.repeat_rejection_alarm);
     rejected.head = "old-head";
     assert_eq!(plan(rejected, "main-three").next, Next::WaitReconciliation);
+}
+
+#[test]
+fn rejection_with_unbound_head_or_group_cannot_notify_or_retry() {
+    let entry = ready();
+    for (head, group) in [
+        ("old-head", FIRST_GROUP),
+        (entry.head.as_str(), ""),
+        (entry.head.as_str(), "not-an-object-id"),
+        (entry.head.as_str(), entry.head.as_str()),
+    ] {
+        for notified in [false, true] {
+            let plan = policy().plan(
+                &entry,
+                LatestReviews::Clear,
+                Queue::Rejected(Rejection {
+                    head,
+                    merge_group_head: group,
+                    notified,
+                    ..rejection()
+                }),
+                "main-two",
+                0,
+            );
+            assert_eq!(plan.notify_rejection, None, "head={head:?} group={group:?}");
+            assert_eq!(
+                plan.next,
+                Next::WaitReconciliation,
+                "head={head:?} group={group:?}"
+            );
+            assert!(!plan.repeat_rejection_alarm);
+        }
+    }
+}
+
+#[test]
+fn repeat_rejection_alarm_requires_the_retried_group_for_the_same_head() {
+    let entry = ready();
+    let mut rejected = rejection();
+    rejected.retry = Retry::Consumed {
+        first_rejected_group: FIRST_GROUP,
+        admitted_group: Some(RETRY_GROUP),
+    };
+    let plan = |receipt| {
+        policy().plan(
+            &entry,
+            LatestReviews::Unresolved,
+            Queue::Rejected(receipt),
+            "main-two",
+            0,
+        )
+    };
+    assert!(!plan(rejected).repeat_rejection_alarm);
+    rejected.merge_group_head = OTHER_GROUP;
+    assert!(!plan(rejected).repeat_rejection_alarm);
+    rejected.merge_group_head = RETRY_GROUP;
+    assert!(plan(rejected).repeat_rejection_alarm);
+    assert_eq!(plan(rejected).next, Next::HoldFindings);
+    assert!(
+        !board::landing::Policy::default()
+            .plan(
+                &entry,
+                LatestReviews::Clear,
+                Queue::Rejected(rejected),
+                "main-two",
+                0
+            )
+            .repeat_rejection_alarm
+    );
+    assert!(
+        !plan(Rejection {
+            head: "different-head",
+            ..rejected
+        })
+        .repeat_rejection_alarm
+    );
+    let missing_report = plan(Rejection {
+        cause: RejectionCause::Unknown,
+        ..rejected
+    });
+    assert!(missing_report.repeat_rejection_alarm);
+    assert!(missing_report.notify_rejection.is_none());
+    rejected.retry = Retry::Consumed {
+        first_rejected_group: RETRY_GROUP,
+        admitted_group: Some(RETRY_GROUP),
+    };
+    assert!(!plan(rejected).repeat_rejection_alarm);
 }
 
 #[test]

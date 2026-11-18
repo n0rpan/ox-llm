@@ -1,5 +1,6 @@
 //! Registry-neutral HTTP adapter. No listener, identity policy or command is declared here.
 //! The owner-approved caller binds the listener and supplies verified request authorization.
+use crate::lead_page::Page;
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -23,7 +24,7 @@ impl Drop for Slot {
 pub fn serve(
     listener: TcpListener,
     authorize: impl Fn(&TcpStream, &Request<'_>) -> bool + Send + Sync + 'static,
-    render: impl Fn(bool) -> String + Send + Sync + 'static,
+    render: impl Fn(Page, bool) -> String + Send + Sync + 'static,
 ) -> std::io::Result<()> {
     if !listener.local_addr()?.ip().is_loopback() {
         return Err(std::io::ErrorKind::PermissionDenied.into());
@@ -39,7 +40,11 @@ pub fn serve(
         let (authorize, render, slot) = (authorize.clone(), render.clone(), Slot(active.clone()));
         std::thread::spawn(move || {
             let _slot = slot;
-            let _ = connection(stream, |s, r| authorize(s, r), |fragment| render(fragment));
+            let _ = connection(
+                stream,
+                |s, r| authorize(s, r),
+                |page, fragment| render(page, fragment),
+            );
         });
     }
     Ok(())
@@ -60,7 +65,7 @@ pub struct Request<'a> {
 pub fn connection(
     mut stream: TcpStream,
     authorize: impl FnOnce(&TcpStream, &Request<'_>) -> bool,
-    render: impl FnOnce(bool) -> String,
+    render: impl FnOnce(Page, bool) -> String,
 ) -> std::io::Result<()> {
     let start = Instant::now();
     let mut bytes = Vec::new();
@@ -86,15 +91,20 @@ pub fn connection(
         Ok(r.path)
     });
     let (status, kind, body) = match allowed {
-        Ok("/") => ("200 OK", "text/html", render(false)),
         Ok("/events") => (
             "200 OK",
             "text/event-stream",
-            format!("retry: 5000\nevent: snapshot\ndata: {}\n\n", render(true)),
+            format!(
+                "retry: 5000\nevent: snapshot\ndata: {}\n\n",
+                render(Page::Home, true)
+            ),
         ),
         Ok("/style.css") => ("200 OK", "text/css", crate::lead_page::STYLE.into()),
         Ok("/live.js") => ("200 OK", "text/javascript", crate::lead_page::SCRIPT.into()),
-        Ok(_) => ("404 Not Found", "text/plain", "Not found".into()),
+        Ok(path) => match Page::request(path) {
+            Some((page, fragment)) => ("200 OK", "text/html", render(page, fragment)),
+            None => ("404 Not Found", "text/plain", "Not found".into()),
+        },
         Err(status) => (status, "text/plain", "Request refused".into()),
     };
     let headers = format!("HTTP/1.1 {status}\r\nContent-Type: {kind}; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\nReferrer-Policy: no-referrer\r\n\r\n", body.len());
@@ -186,7 +196,7 @@ mod tests {
             connection(
                 server,
                 |_, _| permitted,
-                |fragment| {
+                |page, fragment| {
                     count.fetch_add(1, Ordering::SeqCst);
                     let board = oxa_work::board::Board::default();
                     let view = crate::lead_page::View {
@@ -194,9 +204,9 @@ mod tests {
                         ..Default::default()
                     };
                     if fragment {
-                        crate::lead_page::content(&view, 100)
+                        crate::lead_page::content_for(page, &view, 100)
                     } else {
-                        crate::lead_page::document(&view, 100)
+                        crate::lead_page::document_for(page, &view, 100)
                     }
                 },
             )
