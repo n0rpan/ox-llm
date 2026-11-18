@@ -70,10 +70,12 @@ fn refusal(path: &str, line: Option<usize>, finding: ContentFinding) -> String {
     )
 }
 
-/// Scan every commit in `base..head` (each commit's own changes, and the lines
-/// a merge commit introduces itself) with `scan`. Any failure refuses publication.
-fn scan_pushed(policy: &RunPolicy, tree: &Path, base: &str, head: &str, scan: ContentScan<'_>) -> Result<()> {
-    let range = format!("{base}..{head}");
+/// Scan every commit the push can add: those reachable from `head` and from no
+/// remote-tracking ref of origin. This includes local base commits origin lacks.
+/// Each commit's own changes and the lines a merge commit introduces itself are
+/// passed to `scan`. Any failure refuses publication.
+fn scan_pushed(policy: &RunPolicy, tree: &Path, head: &str, scan: ContentScan<'_>) -> Result<()> {
+    let range = [head, "--not", "--remotes=origin"];
     let text = checked(super::git(
         policy,
         tree,
@@ -95,7 +97,9 @@ fn scan_pushed(policy: &RunPolicy, tree: &Path, base: &str, head: &str, scan: Co
             "--no-show-signature",
             "--src-prefix=a/",
             "--dst-prefix=b/",
-            &range,
+            range[0],
+            range[1],
+            range[2],
             "--",
         ],
     ))
@@ -115,7 +119,9 @@ fn scan_pushed(policy: &RunPolicy, tree: &Path, base: &str, head: &str, scan: Co
             "--cc",
             "--no-renames",
             "--no-relative",
-            &range,
+            range[0],
+            range[1],
+            range[2],
             "--",
         ],
     ))
@@ -364,7 +370,7 @@ fn publish_locked(
         }
         // The owner confirmation shows only metadata, so content is checked here,
         // before any remote request. The head is re-verified after confirmation.
-        scan_pushed(policy, tree, accepted_base, &head, scan)?;
+        scan_pushed(policy, tree, &head, scan)?;
         let remote = checked(git(repo, &["remote", "get-url", "--push", "--all", "origin"]))?;
         if remote.lines().count() != 1 {
             return Err("publishing requires one origin push URL".into());

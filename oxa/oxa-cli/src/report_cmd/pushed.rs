@@ -37,10 +37,18 @@ fn secret_name(name: &str) -> bool {
         || [".key", "_key", "-key"].iter().any(|end| name.ends_with(end))
 }
 
+/// Whether a secret-named variable or setting names a location (`SSH_KEY_PATH`,
+/// `tokenFile`) rather than holding the secret itself.
+fn path_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    ["path", "file", "dir", "directory"]
+        .iter()
+        .any(|end| name.ends_with(end))
+}
+
 fn secret_value(value: &str) -> Option<String> {
     let value = value.trim();
-    (value.chars().count() >= MIN_SECRET_VALUE_CHARS && !value.starts_with('/') && !value.starts_with('~'))
-        .then(|| value.to_string())
+    (value.chars().count() >= MIN_SECRET_VALUE_CHARS).then(|| value.to_string())
 }
 
 fn setting_values(name: &str, value: &Value, out: &mut Vec<String>) {
@@ -51,7 +59,7 @@ fn setting_values(name: &str, value: &Value, out: &mut Vec<String>) {
             }
         }
         Value::Array(rows) => rows.iter().for_each(|row| setting_values(name, row, out)),
-        Value::String(text) if secret_name(name) => out.extend(secret_value(text)),
+        Value::String(text) if secret_name(name) && !path_name(name) => out.extend(secret_value(text)),
         _ => {}
     }
 }
@@ -85,7 +93,7 @@ impl PushScan {
         let mut values: Vec<String> = env
             .pairs()
             .iter()
-            .filter(|(name, _)| secret_name(name))
+            .filter(|(name, _)| secret_name(name) && !path_name(name))
             .filter_map(|(_, value)| secret_value(value))
             .collect();
         setting_values("", settings.merged(), &mut values);
@@ -96,17 +104,19 @@ impl PushScan {
 
     /// The category of secret `item` adds, if any. The result never contains the content.
     pub(crate) fn check(&self, item: &PushedContent<'_>) -> Option<ContentFinding> {
+        // A path that itself contains secret text is refused and withheld for every
+        // event, including lines added to an existing file.
+        if let Some(label) = self.secret_text(item.path) {
+            return Some(ContentFinding {
+                label,
+                secret_path: true,
+            });
+        }
         let found = |label| ContentFinding {
             label,
             secret_path: false,
         };
         if item.line.is_none() {
-            if let Some(label) = self.secret_text(item.path) {
-                return Some(ContentFinding {
-                    label,
-                    secret_path: true,
-                });
-            }
             return secret_store(item.path).then(|| found("a file name used for secrets"));
         }
         if let Some(label) = self.secret_text(item.text) {
@@ -201,6 +211,56 @@ mod tests {
             assert!(scan.check(&item).is_some(), "{path}");
         }
         assert!(scan.check(&line("src/main.rs", "PLAIN=value")).is_none());
+    }
+
+    #[test]
+    fn a_secret_path_is_withheld_for_added_lines() {
+        let configured = format!("synthetic{}", "Q".repeat(12));
+        let env = Env::from_pairs(&[("SYNTHETIC_API_TOKEN", &configured)]);
+        let scan = PushScan::new(&env, &Settings::from_values(json!({}), json!({})));
+        let token_path = format!("notes/ghp_{}.txt", "x".repeat(36));
+        let value_path = format!("notes/{configured}.txt");
+        let copied = format!("copied ghp_{}", "x".repeat(36));
+        for path in [token_path.as_str(), value_path.as_str()] {
+            for text in ["plain text", copied.as_str()] {
+                let item = PushedContent {
+                    path,
+                    line: Some(3),
+                    text,
+                };
+                assert!(scan.check(&item).unwrap().secret_path, "{path}");
+            }
+        }
+    }
+
+    #[test]
+    fn path_like_secret_values_are_matched_unless_named_as_locations() {
+        let value = format!("/{}", "s".repeat(20));
+        let home = format!("~{}", "t".repeat(20));
+        let location = format!("/srv/{}", "u".repeat(20));
+        let env = Env::from_pairs(&[
+            ("SYNTHETIC_TOKEN", &value),
+            ("SYNTHETIC_PASSWORD", &home),
+            ("SYNTHETIC_KEY_PATH", &location),
+        ]);
+        let settings = Settings::from_values(json!({"service":{"tokenFile": "/srv/not-a-secret-value"}}), json!({}));
+        let scan = PushScan::new(&env, &settings);
+        for text in [format!("a {value}"), format!("b {home}")] {
+            let item = PushedContent {
+                path: "src/main.rs",
+                line: Some(1),
+                text: &text,
+            };
+            assert!(scan.check(&item).is_some(), "{text}");
+        }
+        for text in [format!("c {location}"), "d /srv/not-a-secret-value".to_string()] {
+            let item = PushedContent {
+                path: "src/main.rs",
+                line: Some(1),
+                text: &text,
+            };
+            assert!(scan.check(&item).is_none(), "{text}");
+        }
     }
 
     #[test]

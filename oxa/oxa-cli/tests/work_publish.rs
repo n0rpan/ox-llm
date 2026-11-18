@@ -1057,3 +1057,21 @@ fn publication_refuses_an_empty_file_named_with_a_token() {
     );
     assert_refused(&env, &record, "a file whose path", &token);
 }
+
+#[test]
+fn publication_refuses_a_secret_in_a_local_base_commit_origin_lacks() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let repo = env.work().join("project");
+    let token = format!("ghp_{}", "x".repeat(36));
+    env.write("work/project/local.txt", &format!("{token}\n"));
+    git(&env, &repo, &["add", "local.txt"]);
+    git(&env, &repo, &["commit", "-m", "Local-only base commit"]);
+    let record = run_args(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused(&env, &record, "local.txt:1", &token);
+}
