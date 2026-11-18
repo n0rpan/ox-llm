@@ -17,7 +17,7 @@ pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs) -> Result<bool, String
 }
 
 // Keep owner state outside every worker Git bind.
-fn protected_storage(storage: &Path, repo: &Path, common: &Path) -> Result<(), String> {
+pub(crate) fn protected_storage(storage: &Path, repo: &Path, common: &Path) -> Result<(), String> {
     if !storage.is_absolute()
         || storage
             .components()
@@ -147,11 +147,12 @@ pub(crate) fn run(
             host_path,
             terminate_binary,
             offline: oxa_proto::offline(),
+            runner_owns_github: false,
             storage: dirs.agent_dir.join("work").join(key),
         };
         protected_storage(&policy.storage, &root, &common)?;
         if args.first().is_some_and(|arg| arg == "board") {
-            return crate::work_board::run(&args[1..], &root, env, dirs, &policy);
+            return crate::work_board::run(&args[1..], &root, &common, env, dirs, &policy);
         }
         if matches!(args.first().map(String::as_str), Some("status" | "--status")) {
             let json = match args {
@@ -203,8 +204,28 @@ pub(crate) fn run(
                 return Ok(0);
             }
         }
-        let rerun = args.last().is_some_and(|arg| arg == "--rerun");
-        let task_args = if rerun { &args[..args.len() - 1] } else { args };
+        let (mut rerun, mut publish, mut reports) = (false, false, false);
+        let mut end = args.len();
+        while let Some(flag) = args.get(end.wrapping_sub(1)) {
+            match flag.as_str() {
+                "--rerun" => rerun = true,
+                "--publish" => publish = true,
+                "--report-problems" => reports = true,
+                _ => break,
+            }
+            end -= 1;
+        }
+        if (publish || reports)
+            && env.pairs().iter().any(|(name, _)| {
+                matches!(
+                    name.as_str(),
+                    "OXA_CODING_AGENT" | "AI_AGENT" | "OXA_SUBAGENT_DEPTH"
+                )
+            })
+        {
+            return Err("publishing and problem reporting require the owner outside an agent tool".into());
+        }
+        let task_args = &args[..end];
         let is_trusted = trusted(&root, env, dirs)?;
         let tasks = match task_args {
             [file] if !file.starts_with('-') => oxa_work::read_tasks(&cwd.join(file))?,
@@ -256,47 +277,116 @@ pub(crate) fn run(
         };
         // Freeze every task before checkout hooks or a first worker can change
         // shared refs. A bad plan remains a per-task error, not a batch abort.
+        let plans = if is_trusted {
+            let planner = if publish || reports {
+                oxa_work::plan_tasks_for_actions
+            } else {
+                oxa_work::plan_tasks_for_run
+            };
+            planner(&root, &tasks, &policy, rerun)
+        } else {
+            tasks
+                .iter()
+                .map(|_| Err("source project is not trusted; approve it before unattended work".into()))
+                .collect()
+        };
         let planned: Vec<_> = tasks
             .into_iter()
-            .map(|task| {
-                if is_trusted {
-                    oxa_work::plan_task_for_run(&root, task.clone(), &policy, rerun)
-                        .map_err(|detail| Box::new(oxa_work::blocked_record(&task, detail)))
-                } else {
-                    Err(Box::new(oxa_work::blocked_record(
-                        &task,
-                        "source project is not trusted; approve it before unattended work".into(),
-                    )))
-                }
-            })
+            .zip(plans)
+            .map(|(task, plan)| plan.map_err(|detail| Box::new(oxa_work::blocked_record(&task, detail))))
             .collect();
         let mut code = 0;
         for task in planned {
             let record = match task {
                 Ok(plan) => {
-                    match oxa_work::run_task_with_observer(
-                        &root,
-                        &binary,
-                        &plan,
-                        &policy,
-                        rerun,
-                        &|_: &oxa_work::Record| Ok(()),
-                    ) {
-                        Ok(record) => record,
-                        Err(oxa_work::RunError::Blocked(detail)) => {
-                            let mut record = oxa_work::blocked_record(plan.task(), detail);
-                            record.base_sha = Some(plan.base_sha().to_owned());
-                            record
+                    let cached = if (publish || reports) && !rerun {
+                        oxa_work::action_record(&policy, plan.task())?
+                    } else {
+                        None
+                    };
+                    let mut record = if let Some(record) = cached {
+                        record
+                    } else {
+                        let ctx = crate::report_cmd::ScrubCtx::from_env(env, dirs);
+                        match oxa_work::run_task_with_notes(
+                            &root,
+                            &binary,
+                            &plan,
+                            &policy,
+                            rerun,
+                            &|_: &oxa_work::Record| Ok(()),
+                            &|note| crate::work_reports::scrub_note(note, &ctx),
+                        ) {
+                            Ok(record) => record,
+                            Err(oxa_work::RunError::Blocked(detail)) => {
+                                let mut record = oxa_work::blocked_record(plan.task(), detail);
+                                record.base_sha = Some(plan.base_sha().to_owned());
+                                record
+                            }
+                            Err(oxa_work::RunError::Checkpoint(error)) => return Err(error),
                         }
-                        Err(oxa_work::RunError::Checkpoint(error)) => return Err(error),
+                    };
+                    if publish && !record.worktree.as_os_str().is_empty() {
+                        let gh = crate::netguard::trusted_executable_for(
+                            "gh",
+                            Some(policy.host_path.as_os_str()),
+                            Some(&root),
+                            Some(&dirs.home),
+                        )
+                        .unwrap_or_else(|| PathBuf::from("/unavailable/gh"));
+                        record = oxa_work::publish(
+                            &root,
+                            &binary,
+                            plan.task(),
+                            &policy,
+                            &gh,
+                            &|_: &oxa_work::Record| Ok(()),
+                            &mut crate::report_cmd::tty_confirm(env),
+                        )?;
                     }
+                    if reports && !record.worktree.as_os_str().is_empty() {
+                        let settings = oxa_config::Settings::load(dirs, &root, false);
+                        let ctx = crate::report_cmd::ScrubCtx::from_env(env, dirs);
+                        record = oxa_work::report_notes(
+                            plan.task(),
+                            &policy,
+                            &|_: &oxa_work::Record| Ok(()),
+                            &mut |note, lock, offline| {
+                                let mut runner = |program: &str, args: &[String]| {
+                                    let executable = crate::netguard::trusted_executable_for(
+                                        program,
+                                        Some(policy.host_path.as_os_str()),
+                                        Some(&root),
+                                        Some(&dirs.home),
+                                    )?;
+                                    crate::work_reports::process(
+                                        &executable.to_string_lossy(),
+                                        args,
+                                        &root,
+                                        lock,
+                                    )
+                                };
+                                crate::work_reports::report(
+                                    note,
+                                    dirs,
+                                    &settings,
+                                    &ctx,
+                                    offline,
+                                    &mut crate::report_cmd::tty_confirm(env),
+                                    &mut runner,
+                                )
+                            },
+                        )?;
+                    }
+                    record
                 }
                 Err(record) => *record,
             };
             if matches!(
                 record.outcome,
                 oxa_work::Outcome::Red | oxa_work::Outcome::Blocked | oxa_work::Outcome::Interrupted
-            ) {
+            ) || record.reports.iter().any(|report| report.disposition == "failed")
+            {
                 code = 1;
             }
             serde_json::to_writer(&mut *out, &record).map_err(|e| e.to_string())?;

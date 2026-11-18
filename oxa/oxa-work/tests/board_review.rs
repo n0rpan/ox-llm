@@ -35,6 +35,7 @@ fn facts<'a>(changes: &'a [Change<'static>]) -> Facts<'a> {
         head: "new-head",
         patch_id: Some(PATCH),
         main_merge_predecessors: &[],
+        owner_approval_predecessors: &[],
         requested: &[],
         approvals: &[],
     }

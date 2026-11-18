@@ -1,5 +1,5 @@
 //! Landing decisions derived from a board snapshot and trusted queue observations.
-use super::{Action, Board, Entry};
+use super::{queue::is_object_id, Action, Board, Entry};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -51,6 +51,15 @@ pub struct Rejection<'a> {
     pub retry: Retry<'a>,
 }
 
+impl Rejection<'_> {
+    fn matches_head(&self, entry: &Entry) -> bool {
+        self.head == entry.head
+            && is_object_id(self.head)
+            && self.merge_group_head != self.head
+            && is_object_id(self.merge_group_head)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum Queue<'a> {
     Unknown,
@@ -68,7 +77,8 @@ pub struct Observation<'a> {
     pub queue: Queue<'a>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Next {
     Disabled,
     HoldFindings,
@@ -87,6 +97,7 @@ pub enum Next {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Notice<'a> {
     pub head: &'a str,
+    pub merge_group_head: &'a str,
     pub cause: RejectionCause<'a>,
 }
 
@@ -149,30 +160,24 @@ impl Policy {
             };
         }
         let notify_rejection = match queue {
-            Queue::Rejected(r) if !r.notified && !r.head.is_empty() && r.cause.known() => Some(Notice {
+            Queue::Rejected(r) if r.matches_head(entry) && !r.notified && r.cause.known() => Some(Notice {
                 head: r.head,
+                merge_group_head: r.merge_group_head,
                 cause: r.cause,
             }),
             _ => None,
         };
         let repeat_rejection_alarm = match queue {
-            Queue::Rejected(Rejection {
-                head,
-                merge_group_head,
-                retry:
-                    Retry::Consumed {
-                        first_rejected_group,
-                        admitted_group: Some(retry_group),
-                    },
-                ..
-            }) => {
-                !head.is_empty()
-                    && head == entry.head
-                    && !first_rejected_group.is_empty()
-                    && !retry_group.is_empty()
+            Queue::Rejected(r) if r.matches_head(entry) => matches!(
+                r.retry,
+                Retry::Consumed {
+                    first_rejected_group,
+                    admitted_group: Some(retry_group),
+                } if is_object_id(first_rejected_group)
+                    && first_rejected_group != r.head
                     && retry_group != first_rejected_group
-                    && retry_group == merge_group_head
-            }
+                    && retry_group == r.merge_group_head
+            ),
             _ => false,
         };
         let next = match (reviews, queue) {
@@ -184,9 +189,7 @@ impl Policy {
             (_, Queue::Unknown) => Next::WaitQueue,
             (_, Queue::Absent) if !main.is_empty() => Next::Enqueue,
             (_, Queue::Absent) => Next::WaitReconciliation,
-            (_, Queue::Rejected(r))
-                if r.head != entry.head || r.head.is_empty() || r.main.is_empty() || main.is_empty() =>
-            {
+            (_, Queue::Rejected(r)) if !r.matches_head(entry) || r.main.is_empty() || main.is_empty() => {
                 Next::WaitReconciliation
             }
             (_, Queue::Rejected(r)) if !r.notified || !r.cause.known() => Next::WaitNotification,

@@ -11,6 +11,13 @@ The private, locked `work/<project-hash>/board/OWNER/REPO/board-shadow.jsonl` un
 directory appends `{schema_version:1,observed_at,board,would_take}`. Eligible shared
 board entries form `would_take`; shadow reserves no leases or attempts. Use one
 GitHub repository per capture. Read errors and incomplete connections stop sampling.
+
+Add `--landing-shadow` to record latest-review holds and queue-age alarms in `landing`.
+The sample records the observed main ref in `landing_main` independently of queue membership
+and verified merge-group rejection evidence in `queue_rejections`, including the
+removal event time.
+Use `--queue-evidence` to record only the rejection evidence alongside the board.
+
 Limit: 100 PRs/items per connection. Reported checks are matched against the base's
 classic protection and active repository/organization rulesets; missing required
 contexts and unknown/no required checks stay pending. Review
@@ -87,8 +94,16 @@ from the runner. Each reviewed commit has its own task ID and frozen packet.
 When a newer reviewed commit is already on the local branch, a finished clean
 task worktree for the same PR is left in place at a detached HEAD. The next round
 gets its own worktree. Uncommitted changes or an active task block the transition.
+For runner-owned issue and PR packets the checkout, acceptance, save, and saved
+verification supervisors run under the same GitHub and network restriction.
 
 Branches must be literal names; checkout-history aliases such as `@{-1}` are refused.
+A local base branch that lags behind the commit the base names (for example a local
+`main` after a fetch, though the runner itself never fetches) is fast-forwarded to that
+commit for the new worktree, so the task's own diff against its base shows only its own
+work. The branch is moved only when it is a strict ancestor of the base and no worktree
+has it checked out; otherwise it is left as it is. That move is host metadata, so no
+repository hook runs for it.
 Every base and acceptance command list is resolved before any task in the batch
 starts. All bases must therefore exist at batch startup. Host metadata commands
 ignore replacement objects and inherited `GIT_*` overrides, disable filesystem
@@ -210,3 +225,33 @@ one short line per task.
 The [checkpoint integration contract](work-state.md) defines the runner's public
 event hook. Event/situation/standing stores and their CLI adapters are a separate
 integration; this slice does not infer facts from worker prose or raw logs.
+`oxa work tasks.json --publish` pushes the accepted, saved commit to `origin` and
+creates or updates its PR through `gh`. Sign in with `gh auth login --hostname HOST`
+for the host in `origin`. Publication uses that host's saved login. Red acceptance never pushes; green
+acceptance makes the PR ready. Blocked tasks do not create PRs. Drift-only accepted reruns may update an existing PR.
+The runner checks existing PR queue membership before every push and refuses a
+queued PR; use a new task branch for follow-up work. It refuses branch changes
+made after acceptance until `--rerun` checks them. PR bodies include task ID and
+acceptance state, without raw prompts, transcripts or failed-check output.
+Execution preserves a saved offline restriction across restarts; later explicit
+publication uses the current network policy without changing that restriction.
+A publication failure keeps a publication checkpoint; another `--publish` retries
+without replaying the agent. Offline mode refuses network publication.
+Before each push, the runner asks through the controlling terminal for approval
+of the accepted commit, branch and PR destination. Piped input cannot approve it.
+
+`--report-problems` independently authorizes filing the task's own structured
+problem notes using the `report-issue` workflow. This flag must be launched by the
+user outside an agent tool. Each new report or comment shows its exact cleaned
+text and requires controlling-terminal confirmation, as `oxa report-issue submit`
+does. Without confirmation it stays a local draft. Reports use the user setting `oxa.reportIssue.repo`;
+project settings cannot choose a destination. Notes, titles and queries pass
+through the existing report scrubber. The runner performs two or three symptom
+queries against open issues and PRs and reads the top matches before writing.
+It comments only new notes on a matching issue, links an existing fixing PR, or
+files a new report with related links. Search failure, offline mode or missing
+report configuration keeps a local scrubbed draft and records its path/detail.
+A later explicit `--report-problems` retries local reports without replaying the
+agent. A draft-write failure records a failed report and finishes the task checkpoint;
+`--report-problems` can retry it. Reports contain only scrubbed structured symptom
+summaries, without raw assistant output or acceptance logs.

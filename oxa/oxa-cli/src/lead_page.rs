@@ -3,8 +3,9 @@ use oxa_proto::work::{IncidentKind, PullRequest, Snapshot, Subject};
 use oxa_work::board::{Action, Board, Entry};
 use std::fmt::Write;
 
+mod chat;
 mod pages;
-pub use pages::Page;
+pub use pages::{Page, Prompt};
 
 /// Borrowed presentation inputs, not a second runner state store. None means unavailable.
 #[derive(Default)]
@@ -103,6 +104,7 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
         Page::Workers => workers(&mut html, view),
         Page::Asks => asks(&mut html, view),
         Page::Item(number) => item(&mut html, view, number, now),
+        Page::Chat(prompt) => chat::render(&mut html, view, prompt),
         Page::Usage => html
             .push_str("<section><h2>Plans and quotas</h2><p>Usage observations unavailable.</p></section>"),
     }
