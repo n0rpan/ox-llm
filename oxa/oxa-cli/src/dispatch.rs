@@ -910,7 +910,21 @@ fn prepare(
     let mut thinking = a.thinking;
     // `defaultModel` (SET-004) is applied by the core when no model was chosen here
     // (`Session::open`), so a resumed session keeps its own model and `--models` scopes it.
-    if let Some(pattern) = &a.model {
+    if let Some(expected) = env.get("OXA_WORK_EXACT_MODEL") {
+        if a.model.as_deref() != Some(expected) {
+            return Err(OxaError::new(
+                codes::INVALID,
+                "The worker model differs from the model admitted for this Work attempt.",
+            ));
+        }
+        if !engine.info(None)?.models.iter().any(|id| id == expected) {
+            return Err(OxaError::new(
+                codes::NOT_FOUND,
+                "The model admitted for this Work attempt is absent from the current catalog.",
+            ));
+        }
+        model = Some(expected.to_owned());
+    } else if let Some(pattern) = &a.model {
         let available = engine_model_refs(engine.info(None)?, &endpoint.name);
         let picked = resolve_model(pattern, a.provider.as_deref(), &available)?;
         model = Some(picked.model);

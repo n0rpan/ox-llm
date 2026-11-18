@@ -108,6 +108,7 @@ pub(crate) fn run(
     command
         .env("PATH", &policy.host_path)
         .env_remove("OXA_TRUST_PROJECT")
+        .env_remove("OXA_WORK_EXACT_MODEL")
         .current_dir(root)
         .args([
             "-na",
@@ -125,6 +126,9 @@ pub(crate) fn run(
         // independent tool adapters have no GitHub access.
         crate::restrict_child_github(&mut command);
         command.args(["--no-mcp", "--no-extensions", "--no-web-search", "--no-subagent"]);
+        if task.id.starts_with("board-") {
+            command.env("OXA_WORK_EXACT_MODEL", &task.model);
+        }
     }
     if let Some(id) = session {
         command.arg(format!("--continue={id}"));
