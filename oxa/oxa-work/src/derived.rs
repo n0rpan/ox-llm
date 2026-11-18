@@ -936,6 +936,20 @@ members = ["crates/*", "tools/pinned"]
     }
 
     #[test]
+    fn a_changed_path_outside_manifest_limits_has_a_bounded_diagnostic() {
+        let dir = PrivateDir::new("derived-manifest-limit");
+        let parent = "src/".repeat(65);
+        let path = format!("{parent}lib.rs\0");
+        let Err(error) = from_changed_paths(dir.path(), path.as_bytes()) else {
+            panic!("accepted a path outside manifest limits");
+        };
+        assert_eq!(
+            error,
+            "changed file is outside the supported manifest directory format"
+        );
+    }
+
+    #[test]
     fn workspace_metadata_does_not_trigger_a_local_workspace_sweep() {
         let dir = PrivateDir::new("derived-members");
         manifest(&dir, "Cargo.toml", "[workspace]\nmembers = [\"./app\"]\n");
