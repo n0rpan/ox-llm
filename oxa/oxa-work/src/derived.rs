@@ -77,6 +77,7 @@ const MAX_MEMBERS: usize = 256;
 const MANIFEST_BYTES: u64 = 256 * 1024;
 const MAX_MANIFESTS: usize = 512;
 const MAX_WALK_ENTRIES: usize = 20_000;
+const MAX_GLOB_WORK: usize = 4_000_000;
 /// Bytes of one check command kept in evidence.
 pub(crate) const COMMAND_CAP: usize = 512;
 
@@ -143,6 +144,8 @@ struct Manifest {
     package: Option<String>,
     workspace: bool,
     members: Vec<String>,
+    excludes: Vec<String>,
+    incomplete_workspace_list: bool,
 }
 
 /// Read a bounded regular manifest beneath the checkout. Walk by descriptor so
@@ -201,28 +204,47 @@ fn read_manifest(root: &Path, dir: &str) -> Result<Option<Manifest>, String> {
     };
 
     match read() {
-        Ok(bytes) => std::str::from_utf8(&bytes)
-            .map(|text| Some(parse_manifest(text)))
-            .map_err(|_| format!("{} is not UTF-8", join_dir(dir, "Cargo.toml"))),
+        Ok(bytes) => {
+            let path = join_dir(dir, "Cargo.toml");
+            let text = std::str::from_utf8(&bytes).map_err(|_| format!("{path} is not UTF-8"))?;
+            let manifest = parse_manifest(text);
+            if manifest.incomplete_workspace_list
+                || manifest.members.len() > MAX_MEMBERS
+                || manifest.excludes.len() > MAX_MEMBERS
+                || manifest
+                    .members
+                    .iter()
+                    .chain(&manifest.excludes)
+                    .any(|pattern| pattern.contains(['[', ']']))
+            {
+                return Err(format!("unsupported or incomplete workspace path list in {path}"));
+            }
+            Ok(Some(manifest))
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!("cannot read {}: {error}", join_dir(dir, "Cargo.toml"))),
     }
 }
 
 /// A line-oriented subset of TOML: section headers, `[package] name`, a `[workspace]` flag
-/// and `members` lists. It never fails; an unknown shape reads as an empty manifest.
+/// and workspace path lists. Unknown sections do not contribute acceptance commands.
 fn parse_manifest(text: &str) -> Manifest {
     let mut out = Manifest::default();
     let mut section = String::new();
-    let mut members = None::<String>;
+    let mut list = None::<(bool, String)>;
     for line in text.lines() {
         let line = manifest_line(line);
-        if let Some(buffer) = &mut members {
+        if let Some((exclude, buffer)) = &mut list {
             buffer.push(' ');
             buffer.push_str(line);
-            if line.contains(']') {
-                out.members = quoted_items(buffer);
-                members = None;
+            if unquoted_delimiter(line, ']').is_some() {
+                let paths = if *exclude {
+                    &mut out.excludes
+                } else {
+                    &mut out.members
+                };
+                *paths = quoted_items(buffer);
+                list = None;
             }
             continue;
         }
@@ -242,21 +264,35 @@ fn parse_manifest(text: &str) -> Manifest {
             if section == "package" && out.package.is_none() && key == "name" {
                 out.package = unquote(value).filter(|name| valid_package_name(name));
             }
-            if section == "workspace" && key == "members" {
-                if value.contains(']') {
-                    out.members = quoted_items(value);
+            if section == "workspace" && matches!(key, "members" | "exclude") {
+                let exclude = key == "exclude";
+                if unquoted_delimiter(value, ']').is_some() {
+                    let paths = if exclude {
+                        &mut out.excludes
+                    } else {
+                        &mut out.members
+                    };
+                    *paths = quoted_items(value);
                 } else {
-                    members = Some(value.to_owned());
+                    list = Some((exclude, value.to_owned()));
                 }
             }
         }
     }
-    out.members.truncate(MAX_MEMBERS);
+    out.incomplete_workspace_list = list.is_some();
+    out.members.sort();
+    out.members.dedup();
+    out.excludes.sort();
+    out.excludes.dedup();
     out
 }
 
 /// Remove a TOML comment before folding a line into a multiline members list.
 fn manifest_line(line: &str) -> &str {
+    &line[..unquoted_delimiter(line, '#').unwrap_or(line.len())]
+}
+
+fn unquoted_delimiter(line: &str, delimiter: char) -> Option<usize> {
     let mut quote = None;
     let mut escaped = false;
     for (index, ch) in line.char_indices() {
@@ -268,13 +304,13 @@ fn manifest_line(line: &str) -> &str {
             quote = None;
         } else if quote.is_none() {
             match ch {
-                '#' => return &line[..index],
+                ch if ch == delimiter => return Some(index),
                 '"' | '\'' => quote = Some(ch),
                 _ => {}
             }
         }
     }
-    line
+    None
 }
 
 /// The quoted strings of a `members` value, without comments, in order.
@@ -379,9 +415,13 @@ impl Manifests {
     }
     /// The directory a cargo command for the crate at `dir` runs in: the nearest workspace
     /// root at or above it, or the crate directory itself for a standalone crate.
-    fn in_dir(&mut self, root: &Path, dir: &str) -> Result<String, String> {
+    fn in_dir(&mut self, root: &Path, dir: &str, budget: &mut usize) -> Result<String, String> {
         for ancestor in self.ancestors(root, dir)? {
-            if self.root[&ancestor].workspace {
+            let manifest = &self.root[&ancestor];
+            if manifest.workspace {
+                if workspace_excludes(&ancestor, dir, &manifest.excludes, budget)? {
+                    return Ok(dir.to_owned());
+                }
                 return Ok(ancestor);
             }
         }
@@ -395,16 +435,25 @@ impl Manifests {
 fn select(root: &Path, paths: &[String]) -> Result<BTreeSet<(String, String)>, String> {
     let mut manifests = Manifests::default();
     let mut selected = BTreeSet::new();
+    let mut expanded = BTreeSet::new();
+    let mut budget = MAX_GLOB_WORK;
     for path in paths {
         let name = path.rsplit('/').next().unwrap_or(path.as_str());
         let dir = parent_dir(path);
         if name == "Cargo.toml" || name == "Cargo.lock" {
             let manifest = manifests.at(root, dir)?;
             if manifest.workspace {
+                if !expanded.insert(dir) {
+                    continue;
+                }
                 let package = manifest.package.clone();
                 let members = manifest.members.clone();
+                let excludes = manifest.excludes.clone();
                 for member in members {
-                    for member_dir in member_dirs(root, dir, &member) {
+                    for member_dir in member_dirs(root, dir, &member, &mut budget)? {
+                        if workspace_excludes(dir, &member_dir, &excludes, &mut budget)? {
+                            continue;
+                        }
                         if let Some(package) = manifests.at(root, &member_dir)?.package.clone() {
                             selected.insert((package, dir.to_owned()));
                         }
@@ -414,13 +463,13 @@ fn select(root: &Path, paths: &[String]) -> Result<BTreeSet<(String, String)>, S
                     selected.insert((package, dir.to_owned()));
                 }
             } else if let Some(package) = manifest.package.clone() {
-                selected.insert((package, manifests.in_dir(root, dir)?));
+                selected.insert((package, manifests.in_dir(root, dir, &mut budget)?));
             }
             continue;
         }
         for ancestor in manifests.ancestors(root, dir)? {
             if let Some(package) = manifests.root[&ancestor].package.clone() {
-                let in_dir = manifests.in_dir(root, &ancestor)?;
+                let in_dir = manifests.in_dir(root, &ancestor, &mut budget)?;
                 selected.insert((package, in_dir));
                 break;
             }
@@ -434,52 +483,108 @@ fn select(root: &Path, paths: &[String]) -> Result<BTreeSet<(String, String)>, S
     Ok(selected)
 }
 
+fn spend_glob_work(budget: &mut usize, cost: usize) -> Result<(), String> {
+    *budget = budget
+        .checked_sub(cost)
+        .ok_or("workspace path matching exceeds its work limit")?;
+    Ok(())
+}
+
+fn match_component(pattern: &str, name: &str, budget: &mut usize) -> Result<bool, String> {
+    if !pattern.contains(['*', '?']) {
+        spend_glob_work(budget, 1)?;
+        return Ok(pattern == name);
+    }
+    spend_glob_work(budget, (pattern.len() + 1).saturating_mul(name.len() + 1))?;
+    Ok(simple_glob(pattern, name))
+}
+
+// Match a package directory using the same component-level syntax as member expansion.
+fn workspace_excludes(
+    workspace: &str,
+    dir: &str,
+    patterns: &[String],
+    budget: &mut usize,
+) -> Result<bool, String> {
+    for pattern in patterns {
+        let full = join_dir(workspace, pattern);
+        let mut names = dir.split('/');
+        let mut matched = true;
+        for part in full.split('/') {
+            let Some(name) = names.next() else {
+                matched = false;
+                break;
+            };
+            if !match_component(part, name, budget)? {
+                matched = false;
+                break;
+            }
+        }
+        if matched && names.next().is_none() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// The directories a `members` entry names, with `*`/`?` glob components expanded.
-fn member_dirs(root: &Path, base: &str, member: &str) -> Vec<String> {
+fn member_dirs(root: &Path, base: &str, member: &str, budget: &mut usize) -> Result<Vec<String>, String> {
     let full = join_dir(base, member);
     if !full.contains(['*', '?']) {
-        return valid_member_path(&full).then_some(full).into_iter().collect();
+        return Ok(valid_member_path(&full).then_some(full).into_iter().collect());
     }
     let mut frontier = vec![String::new()];
     for part in full.split('/') {
         let mut next = Vec::new();
         for dir in &frontier {
             if part.contains('*') || part.contains('?') {
-                next.extend(glob_dirs(root, dir, part));
+                next.extend(glob_dirs(root, dir, part, budget)?);
             } else if valid_member_path(&join_dir(dir, part)) {
                 next.push(join_dir(dir, part));
+            }
+            if next.len() > MAX_MEMBERS {
+                return Err("workspace member expansion exceeds its path limit".into());
             }
         }
         frontier = next;
         if frontier.is_empty() {
-            return vec![];
+            break;
         }
     }
     frontier.retain(|dir| valid_member_path(dir));
     frontier.sort();
-    frontier.truncate(MAX_MEMBERS);
-    frontier
+    Ok(frontier)
 }
 
 /// The subdirectories of `dir` matching `pattern`.
-fn glob_dirs(root: &Path, dir: &str, pattern: &str) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(root.join(dir)) else {
-        return vec![];
+fn glob_dirs(root: &Path, dir: &str, pattern: &str, budget: &mut usize) -> Result<Vec<String>, String> {
+    let entries = match std::fs::read_dir(root.join(dir)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err("workspace member directory could not be read".into()),
     };
     let mut out = Vec::new();
-    for entry in entries.flatten() {
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+    for entry in entries {
+        spend_glob_work(budget, 1)?;
+        let entry = entry.map_err(|_| "workspace member entry could not be read")?;
+        if !entry
+            .file_type()
+            .map_err(|_| "workspace member entry type could not be read")?
+            .is_dir()
+        {
             continue;
         }
         let Some(file) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        if simple_glob(pattern, &file) {
+        if match_component(pattern, &file, budget)? {
             out.push(join_dir(dir, &file));
+            if out.len() > MAX_MEMBERS {
+                return Err("workspace member expansion exceeds its path limit".into());
+            }
         }
     }
-    out.sort();
-    out
+    Ok(out)
 }
 
 /// `*` and `?` only, anchored at both ends; member globs never need character classes.
@@ -578,10 +683,11 @@ pub(crate) fn discover(root: &Path) -> Option<BTreeSet<(String, String)>> {
         }
     }
     let mut packages = BTreeSet::new();
+    let mut budget = MAX_GLOB_WORK;
     let dirs: Vec<String> = manifests.root.keys().cloned().collect();
     for dir in dirs {
         if let Some(name) = manifests.root[&dir].package.clone() {
-            let in_dir = manifests.in_dir(root, &dir).ok()?;
+            let in_dir = manifests.in_dir(root, &dir, &mut budget).ok()?;
             packages.insert((name, in_dir));
         }
     }
@@ -811,6 +917,51 @@ members = ["crates/*", "tools/pinned"]
                 "workspace-wide change {changed}"
             );
         }
+    }
+
+    #[test]
+    fn an_excluded_member_uses_its_own_check_directory() {
+        let dir = PrivateDir::new("derived-excluded");
+        manifest(
+            &dir,
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/*\"]\nexclude = [\"crates/solo\"]\n",
+        );
+        manifest(&dir, "crates/solo/Cargo.toml", "[package]\nname = \"solo\"\n");
+        manifest(&dir, "crates/other/Cargo.toml", "[package]\nname = \"other\"\n");
+        let changed = select(dir.path(), &["crates/solo/src/lib.rs".to_owned()]).unwrap();
+        assert_eq!(
+            changed,
+            BTreeSet::from([("solo".to_owned(), "crates/solo".to_owned())])
+        );
+        let root = select(dir.path(), &["Cargo.lock".to_owned()]).unwrap();
+        assert_eq!(root, BTreeSet::from([("other".to_owned(), "".to_owned())]));
+    }
+
+    #[test]
+    fn workspace_patterns_are_deduplicated_and_expansion_has_a_shared_budget() {
+        let dir = PrivateDir::new("derived-glob-budget");
+        manifest(&dir, "crates/one/Cargo.toml", "[package]\nname = \"one\"\n");
+        let parsed = parse_manifest("[workspace]\nmembers = [\"crates/*\", \"crates/*\"]");
+        assert_eq!(parsed.members, ["crates/*"]);
+        let mut budget = 1;
+        let error = member_dirs(dir.path(), "", &parsed.members[0], &mut budget).unwrap_err();
+        assert!(error.contains("work limit"), "{error}");
+    }
+
+    #[test]
+    fn a_member_class_cannot_silently_produce_partial_workspace_checks() {
+        let dir = PrivateDir::new("derived-member-class");
+        manifest(
+            &dir,
+            "Cargo.toml",
+            "[workspace]\nmembers = [\n \"crates/[ab]\",\n]\n",
+        );
+        let error = select(dir.path(), &["Cargo.lock".to_owned()]).unwrap_err();
+        assert!(
+            error.contains("unsupported or incomplete workspace path list"),
+            "{error}"
+        );
     }
 
     #[test]

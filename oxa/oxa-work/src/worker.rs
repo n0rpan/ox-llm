@@ -248,6 +248,13 @@ fn read_session(
     // The worker's last message carries its declarations; a later message replaces them.
     let mut declared = crate::derived::Declaration::Absent;
     while let Some(bytes) = line(&mut reader)? {
+        if bytes.is_empty() {
+            // An oversized event could have contained the last acceptance block.
+            // A later complete assistant message can still supply its own declaration.
+            declared = crate::derived::Declaration::Unreadable;
+            notes.clear();
+            continue;
+        }
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
             continue;
         };
@@ -344,6 +351,20 @@ pub(crate) fn keep_tail(tail: &mut Vec<u8>, bytes: &[u8], cap: usize) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_discarded_assistant_event_leaves_declaration_evidence_unreadable() {
+        let message = json!({
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "plain text ".repeat(LINE_CAP / 8)}],
+            }
+        });
+        let events = format!("{{\"type\":\"session\",\"id\":\"fixture\"}}\n{message}\n");
+        let (_, _, declaration) = read_session(events.as_bytes(), &mut |_| Ok(())).unwrap();
+        assert_eq!(declaration, crate::derived::Declaration::Unreadable);
+    }
 
     #[test]
     fn terminal_process_usage_survives_serializing_the_worker_result() {
