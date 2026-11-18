@@ -23,6 +23,153 @@ fn action_context(
 }
 const MAX_PUBLICATION_RESPONSE_BYTES: usize = 1024 * 1024;
 
+/// One part of the commits a publication would push: the name of a file that a
+/// commit adds (`line` is `None`, `text` is empty) or one added line.
+pub struct PushedContent<'a> {
+    pub path: &'a str,
+    pub line: Option<usize>,
+    pub text: &'a str,
+}
+
+/// Why pushed content must not be published. `label` never contains the content;
+/// `secret_path` withholds a path that itself contains secret text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContentFinding {
+    pub label: &'static str,
+    pub secret_path: bool,
+}
+
+/// Classifies pushed content before publication.
+pub type ContentScan<'a> = &'a dyn Fn(&PushedContent<'_>) -> Option<ContentFinding>;
+
+fn diff_path(header: &str) -> Option<String> {
+    let path = header.trim_end();
+    if path == "/dev/null" {
+        return None;
+    }
+    let path = path
+        .strip_prefix('"')
+        .and_then(|quoted| quoted.strip_suffix('"'))
+        .unwrap_or(path);
+    Some(path.strip_prefix("b/").unwrap_or(path).to_string())
+}
+
+fn refusal(path: &str, line: Option<usize>, finding: ContentFinding) -> String {
+    let path: String = if finding.secret_path {
+        "a file whose path".into()
+    } else {
+        path.chars()
+            .map(|ch| if ch.is_control() { '?' } else { ch })
+            .take(200)
+            .collect()
+    };
+    let at = line.map_or(String::new(), |line| format!(":{line}"));
+    format!(
+        "publishing refused: {path}{at} adds {}; remove it from the task branch history before publishing",
+        finding.label
+    )
+}
+
+/// Scan every commit in `base..head` (each commit's own changes, and the lines
+/// a merge commit introduces itself) with `scan`. Any failure refuses publication.
+fn scan_pushed(policy: &RunPolicy, tree: &Path, base: &str, head: &str, scan: ContentScan<'_>) -> Result<()> {
+    let range = format!("{base}..{head}");
+    let text = checked(super::git(
+        policy,
+        tree,
+        &[
+            "-c",
+            "core.quotePath=false",
+            "log",
+            "--reverse",
+            "--format=%x00%H",
+            "--patch",
+            "--cc",
+            "--text",
+            "--unified=0",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--no-relative",
+            "--no-show-signature",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            &range,
+            "--",
+        ],
+    ))
+    .map_err(|_| "publishing refused: cannot scan the commits to publish".to_string())?;
+    scan_patch(&text, scan)
+}
+
+/// Pass every added file name and added line of `git log --patch --cc -U0` output to `scan`.
+fn scan_patch(text: &str, scan: ContentScan<'_>) -> Result<()> {
+    let (mut path, mut added, mut hunk, mut parents, mut line) = (None::<String>, false, false, 1, 0);
+    for row in text.lines() {
+        if row.starts_with('\0') || row.starts_with("diff --") {
+            parents = if row.starts_with("diff --cc ") || row.starts_with("diff --combined ") {
+                2
+            } else {
+                1
+            };
+            (path, added, hunk) = (None, false, false);
+            continue;
+        }
+        if row.starts_with("@@") {
+            let marks = row.bytes().take_while(|byte| *byte == b'@').count();
+            parents = marks.saturating_sub(1).max(1);
+            line = row[marks..]
+                .split_ascii_whitespace()
+                .find_map(|range| range.strip_prefix('+'))
+                .and_then(|range| range.split(',').next())
+                .and_then(|start| start.parse().ok())
+                .ok_or("publishing refused: cannot scan the commits to publish")?;
+            hunk = true;
+            continue;
+        }
+        if !hunk {
+            if row.starts_with("new file mode ") {
+                added = true;
+            } else if let Some(header) = row.strip_prefix("+++ ") {
+                path = diff_path(header);
+                if let Some(name) = path.as_deref().filter(|_| added) {
+                    let item = PushedContent {
+                        path: name,
+                        line: None,
+                        text: "",
+                    };
+                    if let Some(finding) = scan(&item) {
+                        return Err(refusal(name, None, finding));
+                    }
+                }
+            }
+            continue;
+        }
+        let Some(name) = path.as_deref() else {
+            continue;
+        };
+        let Some((marks, rest)) = row.split_at_checked(parents) else {
+            continue;
+        };
+        if marks.contains('-') || row.starts_with('\\') {
+            continue;
+        }
+        if marks.contains('+') {
+            let item = PushedContent {
+                path: name,
+                line: Some(line),
+                text: rest,
+            };
+            if let Some(finding) = scan(&item) {
+                return Err(refusal(name, Some(line), finding));
+            }
+        }
+        line += 1;
+    }
+    Ok(())
+}
+
 fn isolate_github_environment(command: &mut Command) {
     // The destination comes from origin. Let the CLI choose its stored
     // login for that host, independently of host-agnostic shell overrides.
@@ -135,9 +282,10 @@ pub fn publish(
     policy: &RunPolicy,
     gh_binary: &Path,
     observer: &dyn CheckpointObserver,
+    scan: ContentScan<'_>,
     confirm: &mut dyn FnMut(&str) -> Option<bool>,
 ) -> Result<Record> {
-    LockedTask::open(task, policy, false)?.publish(repo, binary, gh_binary, observer, confirm)
+    LockedTask::open(task, policy, false)?.publish(repo, binary, gh_binary, observer, scan, confirm)
 }
 
 fn publish_locked(
@@ -146,6 +294,7 @@ fn publish_locked(
     locked: &LockedTask<'_>,
     gh_binary: &Path,
     observer: &dyn CheckpointObserver,
+    scan: ContentScan<'_>,
     confirm: &mut dyn FnMut(&str) -> Option<bool>,
 ) -> Result<Record> {
     let (mut writer, mut value) = action_context(locked, observer)?;
@@ -183,6 +332,9 @@ fn publish_locked(
         if task.branch == base {
             return Err("task branch must differ from its base branch".into());
         }
+        // The owner confirmation shows only metadata, so content is checked here,
+        // before any remote request. The head is re-verified after confirmation.
+        scan_pushed(policy, tree, accepted_base, &head, scan)?;
         let remote = checked(git(repo, &["remote", "get-url", "--push", "--all", "origin"]))?;
         if remote.lines().count() != 1 {
             return Err("publishing requires one origin push URL".into());
@@ -472,9 +624,10 @@ impl LockedTask<'_> {
         binary: &Path,
         gh_binary: &Path,
         observer: &dyn CheckpointObserver,
+        scan: ContentScan<'_>,
         confirm: &mut dyn FnMut(&str) -> Option<bool>,
     ) -> Result<Record> {
-        publish_locked(repo, binary, self, gh_binary, observer, confirm)
+        publish_locked(repo, binary, self, gh_binary, observer, scan, confirm)
     }
 
     pub fn report_notes(
@@ -483,5 +636,54 @@ impl LockedTask<'_> {
         reporter: &mut impl FnMut(&super::ProblemNote, &Record, &File, bool) -> Result<super::ReportRecord>,
     ) -> Result<Record> {
         report_locked(self, observer, reporter)
+    }
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+
+    fn items(text: &str) -> Vec<(String, Option<usize>, String)> {
+        let seen = std::cell::RefCell::new(vec![]);
+        scan_patch(text, &|item| {
+            seen.borrow_mut()
+                .push((item.path.to_string(), item.line, item.text.to_string()));
+            None
+        })
+        .unwrap();
+        seen.into_inner()
+    }
+
+    #[test]
+    fn added_names_and_lines_are_scanned_in_ordinary_and_merge_commits() {
+        let patch = "\0aaaa\n\ndiff --git a/new.txt b/new.txt\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,2 @@\n+first\n+++ looks like a header\ndiff --git a/old.txt b/old.txt\nindex 1111111..2222222 100644\n--- a/old.txt\n+++ b/old.txt\n@@ -3 +3 @@\n-before\n+after\n\0bbbb\n\ndiff --cc merged.txt\nindex 1111111,2222222..3333333\n--- a/merged.txt\n+++ b/merged.txt\n@@@ -4,1 -4,1 +4,2 @@@\n- ours\n -theirs\n++introduced by the merge\n+ kept from the first parent\n";
+        let seen = items(patch);
+        let expected = [
+            ("new.txt", None, ""),
+            ("new.txt", Some(1), "first"),
+            ("new.txt", Some(2), "++ looks like a header"),
+            ("old.txt", Some(3), "after"),
+            ("merged.txt", Some(4), "introduced by the merge"),
+            ("merged.txt", Some(5), "kept from the first parent"),
+        ];
+        let expected: Vec<_> = expected
+            .iter()
+            .map(|(p, l, t)| (p.to_string(), *l, t.to_string()))
+            .collect();
+        assert_eq!(seen, expected);
+    }
+
+    #[test]
+    fn a_secret_path_is_withheld_from_the_refusal() {
+        let patch =
+            "\0aaaa\n\ndiff --git a/hidden b/hidden\nnew file mode 100644\n--- /dev/null\n+++ b/hidden\n";
+        let error = scan_patch(patch, &|_| {
+            Some(ContentFinding {
+                label: "a known access token format",
+                secret_path: true,
+            })
+        })
+        .unwrap_err();
+        assert!(!error.contains("hidden"), "{error}");
     }
 }

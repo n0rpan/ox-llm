@@ -20,7 +20,7 @@ mod notes;
 mod publish;
 mod queue;
 pub use notes::{ProblemNote, ReportRecord};
-pub use publish::{inherit_report_lease, publish, report_notes};
+pub use publish::{inherit_report_lease, publish, report_notes, ContentFinding, ContentScan, PushedContent};
 pub use queue::{native_task, run_queue, NativeQueueOwner, QueueEvent, QueueOptions, QueueRun, QueueStatus};
 pub mod mirrors;
 pub mod shadow;
