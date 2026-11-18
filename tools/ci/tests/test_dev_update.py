@@ -24,13 +24,21 @@ class DevUpdate(unittest.TestCase):
         self.remote.mkdir()
         self.bin = self.root / 'bin'
         self.bin.mkdir()
-        self.prefix = self.root / 'dev'
-        self.stable = self.root / 'stable/bin/oxa'
+        self.home = self.root / 'home'
+        self.protected = self.home / '.local/state/oxc/dev-builds'
+        self.prefix = self.protected / 'default'
+        self.stable = self.protected / 'stable/bin/oxa'
         self.stable.parent.mkdir(parents=True)
         self.stable.write_bytes(b'stable sentinel')
-        self.env = {'PATH': str(self.bin) + ':' + os.defpath, 'HOME': str(self.root / 'home'),
+        self.env = {'PATH': str(self.bin) + ':' + os.defpath, 'HOME': str(self.home),
+                    'FIXTURE_ACCOUNT_HOME': str(self.home),
                     'FIXTURES': str(self.remote), 'GH_TOKEN': 'synthetic-unused',
                     'GITHUB_TOKEN': 'synthetic-unused'}
+        self.stub('getent', '''import os, sys
+uid = os.geteuid()
+assert sys.argv[1:] == ['passwd', str(uid)]
+print(f"fixture:x:{uid}:{os.getegid()}::{os.environ['FIXTURE_ACCOUNT_HOME']}:/bin/sh")
+''')
         self.stub('curl', '''import os, pathlib, shutil, sys
 args = sys.argv[1:]
 assert args[0] == '-q'
@@ -147,7 +155,7 @@ sys.exit(int(os.environ.get('REJECT_VERIFY', '0')))
         self.build()
         for mode in [0o770, 0o707]:
             with self.subTest(mode=oct(mode)):
-                prefix = self.root / f'dev-{mode:o}'
+                prefix = self.protected / f'dev-{mode:o}'
                 prefix.mkdir()
                 prefix.chmod(mode)
                 result = self.run_update(prefix)
@@ -157,8 +165,8 @@ sys.exit(int(os.environ.get('REJECT_VERIFY', '0')))
 
     def test_shared_nonsticky_ancestor_is_refused_with_a_private_prefix(self):
         self.build()
-        parent = self.root / 'shared'
-        prefix = parent / 'nested' / 'dev'
+        parent = self.home / '.local/state'
+        prefix = self.prefix
         prefix.mkdir(mode=0o700, parents=True)
         parent.chmod(0o777)
         result = self.run_update(prefix)
@@ -168,10 +176,9 @@ sys.exit(int(os.environ.get('REJECT_VERIFY', '0')))
 
     def test_trusted_sticky_ancestor_allows_a_private_prefix(self):
         sha, _, _ = self.build()
-        parent = self.root / 'sticky'
-        parent.mkdir()
+        parent = self.home / '.local/state'
         parent.chmod(0o1777)
-        prefix = parent / 'nested' / 'dev'
+        prefix = self.prefix
         result = self.run_update(prefix)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads((prefix / 'current/receipt.json').read_text())['source_sha'], sha)
@@ -179,7 +186,7 @@ sys.exit(int(os.environ.get('REJECT_VERIFY', '0')))
     def test_aliased_or_nonregular_lock_cannot_touch_another_install(self):
         self.build()
         for kind in ['symlink', 'hardlink', 'fifo']:
-            prefix = self.root / kind
+            prefix = self.protected / kind
             prefix.mkdir(mode=0o700)
             (prefix / '.dev-channel').write_text('ox-llm dev v1\n')
             lock = prefix / '.update.lock'
@@ -193,6 +200,17 @@ sys.exit(int(os.environ.get('REJECT_VERIFY', '0')))
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(self.stable.read_bytes(), b'stable sentinel')
             self.assertFalse((prefix / 'current').exists())
+
+    def test_workspace_prefix_is_refused_even_with_redirected_home(self):
+        self.build()
+        workspace = self.root / 'project'
+        prefix = workspace / '.local/state/oxc/dev-builds/preview'
+        prefix.mkdir(mode=0o700, parents=True)
+        self.env['HOME'] = str(workspace)
+        result = self.run_update(prefix)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(list(prefix.iterdir()), [])
+        self.assertFalse((self.remote / 'verified').exists())
 
 
 if __name__ == '__main__':
