@@ -141,12 +141,88 @@ fn a_key_enables_go_catalog_and_plan_chat_without_legacy_enable_or_limits() {
     mock.assert_healthy();
 }
 
+fn served_mock() -> MockOpenAi {
+    MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"Synthetic work answer"}), "stop"),
+        ]
+    })
+}
+
 #[test]
-fn taskfile_model_does_not_authorize_keyed_go() {
+fn key_only_go_is_available_to_a_delegated_worker() {
+    let env = TestEnv::new();
+    let mock = served_mock();
+    let (_, record) = run_go_work_taskfile(&env, &mock, None);
+    assert!(
+        matches!(record["worker"]["exit_code"].as_i64(), Some(0 | 4)),
+        "{record}"
+    );
+    assert_eq!(mock.requests().iter().filter(|r| r.method == "POST").count(), 1);
+    assert_eq!(rows(&env)[0]["remote_provider"], "opencode");
+    mock.assert_healthy();
+}
+
+#[test]
+fn user_false_opts_go_out_for_everyone() {
     let env = TestEnv::new();
     let mock = MockOpenAi::start(vec![]);
-    let (output, record) = run_go_work_taskfile(&env, &mock, false);
+    let (output, record) = run_go_work_taskfile(&env, &mock, Some(false));
     assert!(record["worker"].is_object(), "{record}");
+    assert!(!output.status.success());
+    let owner = run(
+        &env,
+        &["--model", MODEL, "--no-tools", "-p", "Synthetic owner task"],
+    );
+    assert!(!owner.status.success());
+    assert!(mock.requests().is_empty());
+    assert!(!env.agent_dir().join("cloud-ledger").exists());
+    mock.assert_healthy();
+}
+
+#[test]
+fn project_settings_cannot_enable_go() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start(vec![]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings["oxa"]["cloud"]["opencode"]["enabled"] = json!(false);
+    fs::write(path, settings.to_string()).unwrap();
+    env.write(
+        "work/.oxa/settings.json",
+        &json!({"oxa":{"cloud":{"opencode":{"enabled":true}},"engine":{"inProcessCloud":true}}}).to_string(),
+    );
+    let output = run(&env, &["--model", MODEL, "--no-tools", "-p", "Synthetic task"]);
+    assert!(!output.status.success());
+    assert!(mock.requests().is_empty());
+    assert!(!env.agent_dir().join("cloud-ledger").exists());
+    mock.assert_healthy();
+}
+
+#[test]
+fn no_key_means_no_go() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start(vec![]);
+    setup(&env, &format!("http://{}", mock.address()));
+    fs::remove_file(env.home().join(".config/oxc/llm/cloud-secrets.json")).unwrap();
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    fs::write(path, settings.to_string()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .current_dir(env.work())
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:9"))
+        .env("OXA_SUBAGENT_DEPTH", "1")
+        .args(["--model", MODEL, "--no-tools", "-p", "Synthetic child task"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
     assert!(!output.status.success());
     assert!(mock.requests().is_empty());
     assert!(!env.agent_dir().join("cloud-ledger").exists());
@@ -162,7 +238,7 @@ fn taskfile_can_use_go_explicitly_enabled_by_the_owner() {
             stream(json!({"content":"Synthetic work answer"}), "stop"),
         ]
     });
-    let (_, record) = run_go_work_taskfile(&env, &mock, true);
+    let (_, record) = run_go_work_taskfile(&env, &mock, Some(true));
     assert!(
         matches!(record["worker"]["exit_code"].as_i64(), Some(0 | 4)),
         "{record}"
@@ -178,18 +254,21 @@ fn taskfile_can_use_go_explicitly_enabled_by_the_owner() {
     mock.assert_healthy();
 }
 
-fn run_go_work_taskfile(env: &TestEnv, mock: &MockOpenAi, explicit: bool) -> (Output, Value) {
+fn run_go_work_taskfile(env: &TestEnv, mock: &MockOpenAi, explicit: Option<bool>) -> (Output, Value) {
     setup(env, &format!("http://{}", mock.address()));
     work_repo::setup(env, "[]");
     let path = env.agent_dir().join("settings.json");
     let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     settings.as_object_mut().unwrap().remove("defaultModel");
     settings["oxa"].as_object_mut().unwrap().remove("engine");
-    if !explicit {
-        settings["oxa"]["cloud"]["opencode"]
-            .as_object_mut()
-            .unwrap()
-            .remove("enabled");
+    match explicit {
+        Some(value) => settings["oxa"]["cloud"]["opencode"]["enabled"] = json!(value),
+        None => {
+            settings["oxa"]["cloud"]["opencode"]
+                .as_object_mut()
+                .unwrap()
+                .remove("enabled");
+        }
     }
     fs::write(path, settings.to_string()).unwrap();
     env.write(
@@ -212,9 +291,9 @@ fn run_go_work_taskfile(env: &TestEnv, mock: &MockOpenAi, explicit: bool) -> (Ou
 }
 
 #[test]
-fn supervised_child_arguments_do_not_authorize_keyed_go() {
+fn supervised_child_model_argument_uses_keyed_go() {
     let env = TestEnv::new();
-    let mock = MockOpenAi::start(vec![]);
+    let mock = served_mock();
     setup(&env, &format!("http://{}", mock.address()));
     let path = env.agent_dir().join("settings.json");
     let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -235,9 +314,13 @@ fn supervised_child_arguments_do_not_authorize_keyed_go() {
         .stdin(Stdio::null())
         .output()
         .unwrap();
-    assert!(!output.status.success());
-    assert!(mock.requests().is_empty());
-    assert!(!env.agent_dir().join("cloud-ledger").exists());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(mock.requests().iter().filter(|r| r.method == "POST").count(), 1);
+    assert_eq!(rows(&env)[0]["remote_provider"], "opencode");
     mock.assert_healthy();
 }
 

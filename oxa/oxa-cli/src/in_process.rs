@@ -24,6 +24,8 @@ pub(crate) struct ModelSelection<'a> {
     pub scope: &'a [String],
     pub endpoint: &'a str,
     pub owner_selected: bool,
+    /// The model came from a command-line argument or a restored session, not a settings default.
+    pub model_argument: bool,
 }
 
 enum SelectPurpose<'a> {
@@ -117,6 +119,7 @@ pub(crate) fn select(
             scope: &[],
             endpoint: "",
             owner_selected: requested.is_some(),
+            model_argument: requested.is_some(),
         },
         None,
         SharedEngines::default(),
@@ -273,15 +276,16 @@ fn select_for(
     shared: SharedEngines,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Selected, OxaError> {
-    let (requested, scope, endpoint, owner_selected, show_status) = match purpose {
+    let (requested, scope, endpoint, owner_selected, model_argument, show_status) = match purpose {
         SelectPurpose::Model(selection) => (
             selection.pattern,
             selection.scope,
             selection.endpoint,
             selection.owner_selected,
+            selection.model_argument,
             false,
         ),
-        SelectPurpose::Inventory => (None, &[][..], "", false, true),
+        SelectPurpose::Inventory => (None, &[][..], "", false, false, true),
     };
     let local_engine = || match shared.local {
         Some(engine) => Ok(engine as Arc<dyn Engine>),
@@ -317,11 +321,14 @@ fn select_for(
         requests_go,
     );
     // A keyed catalog is available for inventory and owner model selection.
-    // A project default alone cannot choose a new cloud transport.
+    // A project default alone cannot choose a new cloud transport. A key (with
+    // no user `false`) enables Go for any run whose model argument names a Go
+    // model, workers and nested children included.
     let native_cloud = explicit_cloud
         || (go_enabled
             && (show_status
                 || owner_selected && (!requested_local || explicit_go)
+                || model_argument && go_requested
                 || explicit_go && (requested.is_none() || go_requested)));
     let availability_notice = || {
         if show_status {

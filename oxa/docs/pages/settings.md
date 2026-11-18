@@ -172,6 +172,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.local` | object | `{}` | literal native binary/model/arguments/environment and model limits; user settings only; see [native local configuration](../../oxc-local/CONFIGURATION.md) |
 | `oxa.lead.shadow` | bool | `false` | enable the read-only `oxa lead --shadow` proposal preset; user settings only; no live runner actions |
 | `oxa.engine.inProcessCloud` | bool | `false` | select the in-process Rust cloud gateway for sessions and model discovery; user settings only |
+| `oxa.cloud.opencode.enabled` | bool | on when a key exists | OpenCode Go is on when the `opencode` key exists in the protected cloud key file, for every run that names a Go model, including workers and nested children; `false` opts out everywhere; project settings can never enable it; offline mode refuses; user settings only |
 | `oxa.cloud` | object | `{}` | native cloud models, prices, USD budget and subscription caps; user settings only; see below |
 | `oxa.lead.serve` | object | `{}` | the lead web access scaffold: `enabled`, `identity` (`local` or `tailscale`), `bind` (a loopback address), `port`, `allowed_identities`. Off by default and no listener is installed yet; user settings only. See [lead-web.md](lead-web.md) |
 | `oxa.lead.sessionId` | string | unset | exact ID of the dedicated Lead Session created by the native owner operation, from owner-private user settings. Free text is disabled when unset. |

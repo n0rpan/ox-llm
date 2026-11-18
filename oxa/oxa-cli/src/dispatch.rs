@@ -897,8 +897,9 @@ fn prepare(
             pattern: requested_model.as_deref(),
             scope: owner_scope,
             endpoint: &endpoint.name,
-            // Model arguments delegated by a launcher cannot opt into a
-            // provider without explicit user settings.
+            model_argument: a.model.is_some() || continued_go.is_some(),
+            // Delegated model arguments still need a user-enabled provider:
+            // a key or `true` in user settings, never a project file.
             owner_selected: !child.nested()
                 && env.get(oxa_work::PlannedTask::DELEGATED_MODEL_ENV).is_none()
                 && (a.model.is_some()
