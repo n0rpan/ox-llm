@@ -30,6 +30,7 @@
 //!   `Send + Clone` and is the only cross-thread surface (steer, follow-up, abort).
 #![forbid(unsafe_code)]
 
+pub mod advice;
 mod agent_loop;
 mod commands;
 mod compaction;
@@ -38,6 +39,7 @@ pub mod envnote;
 mod epoch;
 mod exec;
 mod fire;
+pub mod goal;
 mod host;
 pub mod loopguard;
 mod navigate;
@@ -52,6 +54,7 @@ pub mod repair;
 pub mod repeat;
 mod resume;
 mod retry;
+pub mod review_task;
 pub mod sampling;
 mod session;
 mod state;

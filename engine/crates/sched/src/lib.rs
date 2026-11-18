@@ -13,6 +13,8 @@
 //!   last arriver bumps an episode counter, so barriers/token is measured, not assumed.
 
 pub mod cli;
+pub mod decode_team;
+pub mod placement;
 
 use std::cell::UnsafeCell;
 use std::hint::spin_loop;
@@ -706,3 +708,7 @@ mod tests;
 mod tests_affinity;
 #[cfg(test)]
 mod tests_cli;
+#[cfg(test)]
+mod tests_decode_team;
+#[cfg(test)]
+mod tests_placement;

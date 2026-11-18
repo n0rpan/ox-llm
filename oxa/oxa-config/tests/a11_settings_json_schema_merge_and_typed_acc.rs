@@ -81,6 +81,7 @@ const OXA_KEYS: &[&str] = &[
     "$schema",
     "oxa.compaction.softTokens",
     "oxa.toolOutputCap",
+    "oxa.lead.serve",
     "oxa.mode",
     "hooks",
 ];

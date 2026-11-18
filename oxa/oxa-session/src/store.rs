@@ -38,6 +38,11 @@ fn encode_entry_inner(e: &Entry, out: &mut Vec<u8>, private: bool) {
             _ => None,
         };
         strip_nested_history(messages, false).expect("visible encoding does not parse private state");
+        if matches!(&e.body, EntryBody::Custom { custom_type, .. } if custom_type == crate::GOAL_ENTRY) {
+            if let Some(data) = fields.get_mut("data").and_then(Value::as_object_mut) {
+                data.remove("lead");
+            }
+        }
     }
     let mut m = Map::new();
     m.insert("type".into(), Value::from(ty));
@@ -1171,7 +1176,7 @@ fn unhex32(s: &str) -> Result<[u8; 32], OxaError> {
 // ---------------------------------------------------------------------------------------------
 
 /// `YYYY-MM-DDTHH:MM:SS.mmmZ`, the form pi writes.
-fn iso_from_ms(ms: u64) -> String {
+pub fn iso_from_ms(ms: u64) -> String {
     let secs = ms / 1000;
     let millis = ms % 1000;
     let days = (secs / 86_400) as i64;
@@ -1219,6 +1224,16 @@ fn ms_from_iso(s: &str) -> Option<u64> {
     } else {
         None
     }
+}
+
+/// Parse a whole-second UTC timestamp in `YYYY-MM-DDTHH:MM:SSZ` form.
+pub fn parse_utc_seconds(s: &str) -> Option<u64> {
+    let stem = s.strip_suffix('Z')?;
+    if stem.len() != 19 || !stem.as_bytes()[..4].iter().all(u8::is_ascii_digit) || stem.as_bytes()[4] != b'-'
+    {
+        return None;
+    }
+    ms_from_iso(&format!("{stem}.000Z")).map(|ms| ms / 1000)
 }
 
 /// Howard Hinnant's `civil_from_days`: days since 1970-01-01 to (year, month, day).

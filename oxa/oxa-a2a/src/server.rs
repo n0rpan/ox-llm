@@ -3,6 +3,7 @@
 //! must not block indefinitely. Models never implement this trait directly.
 use crate::loopback::{authorized, read_head, Capability, Client, DeadlineStream, Limits};
 use crate::wire::*;
+use oxa_proto::bounded_io::BoundedWriter;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -486,26 +487,8 @@ fn http_json(writer: &mut impl Write, status: &str, value: &impl Serialize, max:
 }
 
 fn encode(value: &impl Serialize, max: usize) -> io::Result<Vec<u8>> {
-    struct Bounded {
-        bytes: Vec<u8>,
-        max: usize,
-    }
-    impl Write for Bounded {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            if bytes.len() > self.max.saturating_sub(self.bytes.len()) {
-                return Err(invalid("response size limit exceeded"));
-            }
-            self.bytes.extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut output = Bounded {
-        bytes: Vec::new(),
-        max,
-    };
-    serde_json::to_writer(&mut output, value).map_err(|_| invalid("response encoding limit exceeded"))?;
-    Ok(output.bytes)
+    let mut bytes = Vec::new();
+    let output = BoundedWriter::new(&mut bytes, max, || invalid("response size limit exceeded"));
+    serde_json::to_writer(output, value).map_err(|_| invalid("response encoding limit exceeded"))?;
+    Ok(bytes)
 }

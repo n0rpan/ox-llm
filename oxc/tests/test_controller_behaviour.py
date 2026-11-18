@@ -3,7 +3,8 @@
 - an engine child that crashes mid-stream: the client sees a truncated stream with no success
   terminator, the death is recorded, the slot is released and the next request starts afresh;
 - a really occupied backend port goes through begin(): refused before any child is spawned;
-- the controller's and Studio's listeners are bound to loopback only.
+- the controller's listener is bound to loopback only.
+(The Studio listener control is in tests/test_studio_security.py.)
 (The fourth S5 item, `oxc status` wording, is in tests/test_oxc_status_cli.py.)
 """
 import http.client
@@ -146,29 +147,6 @@ class LoopbackBindTests(unittest.TestCase):
             return bool(addresses)
         self.assertTrue(wait_until(listening, 15), 'controller never listened')
         self.assertEqual(addresses, {'0100007F'}, 'controller must bind 127.0.0.1 only')
-
-    def test_studio_listens_on_loopback_only(self):
-        port = free_port()
-        scratch = Path(self.enterContext(__import__('tempfile').TemporaryDirectory(dir='/tmp')))
-        env = dict(os.environ, STUDIO_PORT=str(port), IMG_OUTDIR=str(scratch / 'out'),
-                   LOCAL_IMAGE_CONFIG_DIR=str(scratch / 'config'), OXC_LEASE=str(scratch / 'inference.lock'),
-                   SD_HOME=str(scratch / 'stack'))
-        child = subprocess.Popen([sys.executable, str(SRC / 'oxc/runtime/studio')], env=env,
-                                 cwd=scratch, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        self.addCleanup(lambda: (child.terminate(), child.wait(10)))
-        self.assertTrue(wait_until(lambda: bool(self.listeners(port)) or child.poll() is not None, 15))
-        self.assertIsNone(child.poll(), 'studio exited at start')
-        self.assertEqual(self.listeners(port), {'0100007F'}, 'studio must bind 127.0.0.1 only')
-
-    @staticmethod
-    def listeners(port):
-        found = set()
-        for name in ('/proc/net/tcp', '/proc/net/tcp6'):
-            for line in Path(name).read_text().splitlines()[1:]:
-                fields = line.split()
-                if fields[3] == '0A' and int(fields[1].rsplit(':', 1)[1], 16) == port:
-                    found.add(fields[1].rsplit(':', 1)[0])
-        return found
 
 
 if __name__ == '__main__':

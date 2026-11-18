@@ -30,20 +30,19 @@ The [manual runtime setup guide](lab-notes/RUNTIME-SETUP.md) includes portable c
 
 ## Available now
 
-- A read-only hardware and power diagnostic.
+- A read-only hardware and power diagnostic in the [archived deployment guide](https://github.com/oxstack/ox-llm/blob/e64b985a2ff6abf51d406471382ed95a18fd161c/oxc/docs/DEPLOYMENT-AND-EVIDENCE.md#available-now).
 - An allowlist exporter for public benchmark metrics.
 - Fixed synthetic coding fixtures with independent tests, plus an explicit local-API runner with offline sandbox checks.
 - Preliminary measurements with explicit comparison limits.
 - Small, opt-in engine patches with upstream license notices and provenance.
 
 ```sh
-PYTHONPATH=src python3 -m oxc doctor
 PYTHONPATH=src python3 -m unittest discover -s tests
 ```
 
 For the optional panel, `install-plugin --dry-run` checks installation prerequisites. Existing personal clones can be migrated with `install-plugin --replace-plugin ID --dry-run`; see the [panel installation and rollback instructions](OMARCHY-PLUGIN.md) before omitting `--dry-run`.
 
-These commands do not load models, install packages, change drivers or modify power settings. The diagnostic reports architecture, RAM, device availability and battery telemetry. It does not inspect prompts, chats, images, browser state, hostnames or credentials.
+These checks do not load models, install packages, change drivers or modify power settings. The archived diagnostic reports architecture, RAM, device availability and battery telemetry. It does not inspect prompts, chats, images, browser state, hostnames or credentials.
 
 ## Test method
 
