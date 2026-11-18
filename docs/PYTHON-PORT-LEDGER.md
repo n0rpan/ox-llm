@@ -2,7 +2,7 @@
 
 Release qualification for #951, inspected at main fd337a5f and packaging candidate #824 at f38febd3. This initial ledger records three provider replacements, the MEMLAT port, two retained feature gaps and the explicit installer retirement; it inventories the original 366 Python modules. It authorizes no deletion.
 
-PORTED means the named Rust implementation and its contract tests replace the feature. DROPPED requires an explicit retirement decision and an entry in #946. UNUSED requires caller/shipping evidence. MISSING requires a feature-specific issue before that module can be deleted. Unqualified modules below are deliberately not assigned a guessed status.
+PORTED means the named Rust implementation and its contract tests replace the feature. DROPPED requires an explicit retirement decision and an entry in #946. UNUSED requires caller/shipping evidence. MISSING requires a feature-specific issue before that module can be deleted. RETIREMENT INDEX PENDING records a bounded owner decision awaiting its #946 entry. DEV TOOL marks a developer workflow that can remain Python. UNQUALIFIED records concrete callers or a missing decision without authorizing deletion.
 
 | Python module / feature | Status | Rust replacement (crate/module) | Evidence |
 |---|---|---|---|
@@ -241,9 +241,61 @@ caller gates.
 | `oxc/src/oxc/runtime/image_slot.py` — legacy controller image reservation | MISSING | [#1196](https://github.com/oxstack/ox-llm/issues/1196) requires native image resource admission. `ctl_manager.py` and Studio use inherited image leases. Preserve `test_image_slot.py` and `test_controller_image_slot.py` until treatment of this legacy lease is recorded. |
 | `oxc/src/oxc/runtime/image_size_gate.py` — Studio per-size qualification receipts | UNQUALIFIED | The Studio router consumes the legacy per-size gate tested by `test_v013_image_size_gate.py`. [#1196](https://github.com/oxstack/ox-llm/issues/1196) specifies native size validation and deterministic fixture coverage. Record the old routing and qualification fixture disposition separately. |
 
-## Complete module inventory awaiting feature-level qualification
+### Corrected CPU packaging receipts at `b8111ecd`
 
-Each path below needs a ledger disposition with its own evidence; presence here is neither UNUSED nor a deletion approval. Move a module into the table only after checking every retained feature and its callers. Keep existing #681 retirement decisions distinct from actual Rust replacement coverage. The provider, MEMLAT, retired installer/bootstrap and alert-file rows already mapped above are omitted here. Partial-feature rows do not qualify a whole module. The extensionless control and Studio launchers have bounded rows above.
+[Release run 44211078636](https://github.com/oxstack/ox-llm/actions/runs/44211078636)
+produced both CPU artifacts from `174b10136c08186fff165951029431338231ea8f`, the
+test merge of [#1198](https://github.com/oxstack/ox-llm/pull/1198) head
+`b8111ecd` into `be52cf0e`. Their checksum manifests and 19/19 no-Python
+receipts passed. The filtered source archives were byte-identical at SHA-256
+`232c919b05ac2dba6981654f3f596a7d68d0706bc16a5a5a6cd76926f9ce40a3`.
+Each native payload contains an executable ELF MEMLAT command and four regular
+0644 hook templates whose bytes match the archived sources. Both payloads
+exclude active hook paths, MEMLAT policy, Python files and legacy wrappers.
+The exact Arch acceptance and pre-removal archive remain separate gates.
+
+### Remaining controller-path evidence at `7f7bfb6a`
+
+These entries account for the remaining paths in the packaged legacy subtree.
+Development tools can remain Python. Main's legacy copy still ships those
+paths. Their shipping status changes with accepted packaging. Source removal
+still needs the applicable index, caller and native acceptance evidence.
+
+| Python module / feature | Status | Evidence and remaining caller gate |
+|---|---|---|
+| `oxc/src/oxc/__init__.py` — legacy package version and import namespace | UNQUALIFIED | Exports the legacy package version and supports the package imports below. Retain with surviving lab imports until the package boundary is settled. |
+| `oxc/src/oxc/__main__.py` — default packaged diagnostic launcher | RETIREMENT INDEX PENDING | `pyproject.toml` exposes diagnostics. It dispatches `doctor`, `export-screen` and `install-plugin`. #681 retires the default diagnostics launcher. Index the entry and trace the three separate callers. |
+| `oxc/src/oxc/batch_runner.py` — guarded benchmark-arm orchestration | DEV TOOL | Runs ordered benchmark arms with frozen evidence and delegates counters to `system_counters.py`. Developer workload. Confirm any runnable harness caller before moving after the product slices. |
+| `oxc/src/oxc/devfreq_probe.py` — developer devfreq instrumentation | DEV TOOL | `tools/devfreq_trace.py` and `test_devfreq_probe.py` use its devfreq instrumentation. Retain the developer contract. It currently travels in the broad Python stage. |
+| `oxc/src/oxc/doctor.py` — legacy hardware diagnostics | RETIREMENT INDEX PENDING | The diagnostics entry, legacy bootstrap and engine report import it. `test_doctor.py` covers its report. The #681 default diagnostics retirement covers the installed launcher. Qualify the report and its other callers separately. |
+| `oxc/src/oxc/engine_report.py` — legacy configured-profile diagnostics | RETIREMENT INDEX PENDING | Imported by the diagnostics `doctor` command; exercised by `test_engine_fit.py`. The owned native engine has typed status. The legacy report additionally inspects controller configuration and needs a retirement disposition. |
+| `oxc/src/oxc/flash_profile.py` — developer Flash profiling and attribution | DEV TOOL | `test_flash_profile.py` exercises numeric profiler attribution and process identity. Namesake `flash_profile` arguments are distinct. Retain as developer support until the actual tracked caller boundary is verified. |
+| `oxc/src/oxc/legacy_config.py` — legacy configuration migration | UNQUALIFIED | `cloud_install.py` imports it; `test_legacy_config_migration.py` exercises config continuity and atomicity. The existing cloud-installer index leaves these migration cases open. |
+| `oxc/src/oxc/platform_support.py` — legacy diagnostics and panel platform preflight | RETIREMENT INDEX PENDING | `doctor.py` and `plugin_install.py` use SoC detection; `test_doctor.py` and `test_plugin_install.py` exercise it. Group with the diagnostics and panel outcomes. |
+| `oxc/src/oxc/plugin_install.py` — legacy Omarchy panel installer | RETIREMENT INDEX PENDING | `__main__.py install-plugin` and both plugin-install test files exercise the explicit legacy path. #681 drops default panel installation. Keep fixture coverage for the surviving contributor path until indexed. |
+| `oxc/src/oxc/power.py` — legacy runtime power and benchmark readings | UNQUALIFIED | Bootstrap, doctor, result export, instrumentation and `bigmoe_runtime.py` consume power readings. `test_power.py` and `test_flash_power_degraded.py` cover separate consumers. Qualify candidate admission and retain developer reading semantics. |
+| `oxc/src/oxc/results.py` — public developer export and legacy command | DEV TOOL | `__main__.py export-screen` and `test_controller_export.py` cover allowlisted export functions. Preserve the allowlisted developer export in `test_public_results.py` and `test_controller_export.py` when retiring the package launcher. |
+| `oxc/src/oxc/runtime/__init__.py` — legacy runtime import namespace | UNQUALIFIED | Package marker for the staged runtime imports. Retain with legacy runtime importers and fixtures. |
+| `oxc/src/oxc/runtime/bigmoe_adapter.py` — legacy Flash candidate fallback adapter | RETIREMENT INDEX PENDING | `bigmoe_runtime.py` injects candidate transport into this adapter. #681 excludes the legacy fallback and adapter from the new default. Record the index entry and retire or replace the remaining candidate callers. |
+| `oxc/src/oxc/runtime/bigmoe_runtime.py` — legacy Flash candidate qualification and launch | RETIREMENT INDEX PENDING | `ctl_engines.py`, `ctl_lifecycle.py` and `ctl_models.py` use its launch and qualification policy. It also checks the no-THP and slim-request source identities. #681 excludes the legacy fallback and adapter from the native default. Preserve the candidate evidence and fixtures until their retirement is indexed. |
+| `oxc/src/oxc/runtime/classic_beta.py` — legacy Ornith qualification and fallback policies | RETIREMENT INDEX PENDING | Live controller, model, launch and proxy imports. `test_beta_selector.py` checks legacy qualification. #681 excludes the old fallback from the native default. Record its remaining acceptance and evidence requirements before deleting the source. |
+| `oxc/src/oxc/runtime/ctl_env.py` — legacy controller environment and request labels | RETIREMENT INDEX PENDING | Controller and request mixins share environment, error and origin handling. Keep the environment and fixture contract with the default daemon retirement, including origin and limits. |
+| `oxc/src/oxc/runtime/ctl_host.py` — native engine child-memory sampling | PORTED | Controller reads host memory, swap, temperatures, frequencies and port state. `oxa/oxc-local/src/memory.rs::kernel_samples_are_complete_and_fail_closed_on_malformed_or_missing_data` covers the child-memory subset. Qualify the other legacy host report consumers separately. |
+| `oxc/src/oxc/runtime/ctl_repack.py` — legacy llama.cpp repack-cache diagnostics | UNQUALIFIED | `ctl_engines.py` reads llama.cpp cache identity and hooks. `test_repack_cache_notify.py` exercises the legacy error path. Separate llama.cpp cache policy from native launch qualification. |
+| `oxc/src/oxc/runtime/engine_diagnostics.py` — legacy controller stderr capture | UNQUALIFIED | Controller, lifecycle and ledger read bounded stderr; `test_engine_diagnostics.py` exercises capture. Keep diagnostics and error-retention cases until their policy is indexed. |
+| `oxc/src/oxc/runtime/engine_ledger.py` — legacy inherited-FD engine diagnostics | UNQUALIFIED | `ctl_lifecycle.py` passes a descriptor and starts capture. `ctl_status.py` exposes metadata. `test_engine_ledger.py` checks failure cleanup. Preserve the diagnostic FD and lifecycle tests until their caller disposition. The native controller-status fixture carries a compatibility field. |
+| `oxc/src/oxc/runtime/health_digest.py` — legacy request and engine health digest | UNQUALIFIED | The control launcher reads ledger rows and death events to build a digest. `test_health_digest.py` exercises output filtering. Keep the read-side reporting and privacy behavior until a retained-feature decision is recorded. |
+| `oxc/src/oxc/runtime/model_catalog.py` — native local listing without launch | PORTED | `ctl_models.py`, `ctl_cache.py`, `storage_view.py` and the legacy chooser use the metadata. `oxa/oxa-cli/tests/in_process_local.rs::native_local_discovery_is_user_only_non_launching_and_allowed_offline` covers native enumeration. Keep `test_flash_qualification.py` and `test_ui_data.py` for the legacy chooser facts. |
+| `oxc/src/oxc/runtime/release_update.py` — legacy local staged update and rollback | UNQUALIFIED | The legacy CLI updates from local staged releases and rolls back failed restarts. `test_release_update.py` exercises rollback. Native package-source `oxa update` has a different contract. Keep staged rollback until indexed. |
+| `oxc/src/oxc/runtime/slim_request.py` — opt-in Flash candidate request shaping | UNQUALIFIED | Optional candidate-specific shaping. `bigmoe_runtime.py` binds its source digest and enables it explicitly. Preserve with the candidate evidence and tests until disposition. |
+| `oxc/src/oxc/runtime/storage_view.py` — legacy owner storage inventory and deletion | RETIREMENT INDEX PENDING | `ctl_routes.py` serves inventory; `ctl_cache.py` calls deletion. `test_controller_n6.py` and `test_state_cache.py` cover consumers. #681 excludes the default legacy storage view. Record the index entry and carry any retained native storage-control contract separately from #222. |
+| `oxc/src/oxc/runtime/uninstall.py` — legacy staged-install ownership and model retention | UNQUALIFIED | The legacy CLI loads this module and `test_uninstall.py` exercises guarded ownership and model retention. Compare #1198 Arch package removal with the old staged uninstall contract once the release is accepted. |
+| `oxc/src/oxc/source_archive.py` — legacy developer source exporter | DEV TOOL | Documented developer exporter and `test_source_archive.py`. Its old required paths name the controller, Studio and bootstrap. Retain the exporter until the developer archive callers are migrated. Release archives use the packaging workflow directly. |
+| `oxc/src/oxc/system_counters.py` — benchmark runner counters | DEV TOOL | `tools/system_counters.py`, `batch_runner.py` and `test_system_counters.py` use prompt-free counters. Retain the developer workflow while packaging excludes it. |
+
+## Tests and developer module inventory
+
+The evidence tables account for all 96 Python paths under `oxc/src/oxc` at the inspected main commit, including both extensionless launchers. Individual rows record any outstanding feature disposition or caller proof. The paths below cover tests, benchmark files and tools. Retained fixtures and developer workflows have their own caller gates before removal.
 
 - `oxc/benchmarks/classic/loopback_bridge.py`
 - `oxc/benchmarks/classic/screen.py`
@@ -264,35 +316,6 @@ Each path below needs a ledger disposition with its own evidence; presence here 
 - `oxc/benchmarks/roofline/summarize_integrated_upgrade.py`
 - `oxc/benchmarks/roofline/summarize_prefix_fairness.py`
 - `oxc/benchmarks/tokens/token_harness.py`
-- `oxc/src/oxc/__init__.py`
-- `oxc/src/oxc/__main__.py`
-- `oxc/src/oxc/batch_runner.py`
-- `oxc/src/oxc/devfreq_probe.py`
-- `oxc/src/oxc/doctor.py`
-- `oxc/src/oxc/engine_report.py`
-- `oxc/src/oxc/flash_profile.py`
-- `oxc/src/oxc/legacy_config.py`
-- `oxc/src/oxc/platform_support.py`
-- `oxc/src/oxc/plugin_install.py`
-- `oxc/src/oxc/power.py`
-- `oxc/src/oxc/results.py`
-- `oxc/src/oxc/runtime/__init__.py`
-- `oxc/src/oxc/runtime/bigmoe_adapter.py`
-- `oxc/src/oxc/runtime/bigmoe_runtime.py`
-- `oxc/src/oxc/runtime/classic_beta.py`
-- `oxc/src/oxc/runtime/ctl_env.py`
-- `oxc/src/oxc/runtime/ctl_host.py`
-- `oxc/src/oxc/runtime/ctl_repack.py`
-- `oxc/src/oxc/runtime/engine_diagnostics.py`
-- `oxc/src/oxc/runtime/engine_ledger.py`
-- `oxc/src/oxc/runtime/health_digest.py`
-- `oxc/src/oxc/runtime/model_catalog.py`
-- `oxc/src/oxc/runtime/release_update.py`
-- `oxc/src/oxc/runtime/slim_request.py`
-- `oxc/src/oxc/runtime/storage_view.py`
-- `oxc/src/oxc/runtime/uninstall.py`
-- `oxc/src/oxc/source_archive.py`
-- `oxc/src/oxc/system_counters.py`
 - `oxc/tests/_isolation.py`
 - `oxc/tests/_stub_manager.py`
 - `oxc/tests/conftest.py`
