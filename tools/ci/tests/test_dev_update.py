@@ -109,6 +109,31 @@ sys.exit(int(os.environ.get('REJECT_VERIFY', '0')))
             self.assertEqual(os.readlink(self.prefix / 'current'), before)
             self.assertEqual(self.stable.read_bytes(), b'stable sentinel')
 
+    def test_reinstalling_current_build_keeps_previous_distinct_build(self):
+        self.build('a' * 40)
+        first = self.run_update()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        previous = self.prefix / os.readlink(self.prefix / 'current')
+        receipt = (previous / 'receipt.json').read_bytes()
+
+        self.build('b' * 40)
+        second = self.run_update()
+        self.assertEqual(second.returncode, 0, second.stderr)
+        current = os.readlink(self.prefix / 'current')
+        self.assertNotEqual(self.prefix / current, previous)
+
+        repeated = self.run_update()
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertEqual(os.readlink(self.prefix / 'current'), current)
+        self.assertEqual((previous / 'receipt.json').read_bytes(), receipt)
+        self.assertTrue((previous / 'usr/bin/oxa').is_file())
+
+        self.build('c' * 40)
+        third = self.run_update()
+        self.assertEqual(third.returncode, 0, third.stderr)
+        self.assertFalse(previous.exists())
+        self.assertTrue((self.prefix / current / 'receipt.json').is_file())
+
     def test_unmarked_stable_prefix_is_refused_without_creating_a_lock(self):
         self.build()
         result = self.run_update(self.stable.parent.parent)
