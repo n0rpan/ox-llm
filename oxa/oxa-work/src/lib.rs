@@ -29,7 +29,7 @@ pub mod mirrors;
 pub mod shadow;
 mod state;
 mod status;
-pub use status::{status, task_usage, Liveness, Status, TaskUsage};
+pub use status::{status, task_usage, task_usage_for_binding, Liveness, Status, TaskUsage};
 mod tree;
 pub use state::{CheckpointKind, CheckpointObserver, Step};
 mod worker;
