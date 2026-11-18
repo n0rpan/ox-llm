@@ -66,8 +66,8 @@ pub(crate) struct Execution {
     pub base: String,
     pub prompt: String,
     pub commands: Vec<String>,
-    /// Crates the worker declared as the task's acceptance tests (#1442); their suites run
-    /// before `done`. `None` until a worker declares any.
+    /// Crates the worker declared as requiring hosted acceptance tests.
+    /// `None` until a worker declares any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declared: Option<Vec<String>>,
     pub worker_error: Option<String>,
@@ -345,6 +345,7 @@ mod tests {
                 .unwrap();
             let before = fs::read(fixture.path()).unwrap();
             let policy = crate::RunPolicy {
+                local_checks: Default::default(),
                 git_binary: fixture.0.path().join("unavailable-git"),
                 host_path: "/usr/bin:/bin".into(),
                 terminate_binary: None,

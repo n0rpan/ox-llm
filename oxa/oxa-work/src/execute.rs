@@ -267,11 +267,10 @@ impl Runner<'_> {
                     let point = point(state)?;
                     let merge =
                         tree::ensure_merged(self.policy, &tree, &point.base, &state.task.branch).err();
-                    // #1442: the frozen static list runs next to the change's own checks.
-                    // The tests and clippy of every crate the worker touched are derived from
-                    // the diff, and the worker's declared acceptance crates join them; what
-                    // cannot run keeps the task unverified instead of quietly passing.
+                    // Run frozen static checks and the local compile precheck. Declared
+                    // acceptance crates require hosted test evidence.
                     let declared = point.declared.clone().unwrap_or_default();
+                    let mut requires_hosted = !declared.is_empty();
                     let initial = point.initial.clone();
                     let mut commands: Vec<(CheckOrigin, String)> = point
                         .commands
@@ -293,7 +292,7 @@ impl Runner<'_> {
                     )
                     .and_then(|out| {
                         if out.status.success() {
-                            derived::from_changed_paths(&tree, &out.stdout)
+                            derived::from_changed_paths_with(&tree, &out.stdout, &self.policy.local_checks)
                         } else {
                             Err(format!(
                                 "change inventory could not run: {}",
@@ -303,6 +302,7 @@ impl Runner<'_> {
                     });
                     match plan {
                         Ok(derived) => {
+                            requires_hosted |= derived.requires_hosted;
                             commands.extend(
                                 derived
                                     .commands
@@ -312,17 +312,10 @@ impl Runner<'_> {
                             if !declared.is_empty() {
                                 match derived::discover(&tree) {
                                     Some(discovered) => {
-                                        match derived::declared_entries(
-                                            &declared,
-                                            &discovered,
-                                            &derived.tested,
-                                        ) {
-                                            Ok(entries) => commands.extend(
-                                                entries
-                                                    .into_iter()
-                                                    .map(|command| (CheckOrigin::Declared, command)),
-                                            ),
-                                            Err(missing) => could_not_run.extend(missing),
+                                        if let Err(missing) =
+                                            derived::validate_declarations(&declared, &discovered)
+                                        {
+                                            could_not_run.extend(missing);
                                         }
                                     }
                                     None => could_not_run.push(
@@ -396,6 +389,10 @@ impl Runner<'_> {
                             errors.push(format!("Acceptance checks:\n{failures}"));
                         }
                         return Err(RunError::Blocked(errors.join("\n")));
+                    } else if failures.is_empty() && requires_hosted {
+                        state.record.outcome = Outcome::Unverified;
+                        state.record.detail = crate::HOSTED_TEST_EVIDENCE_REQUIRED.into();
+                        self.advance(state, Step::Saving)?;
                     } else if failures.is_empty() {
                         let initial = initial.as_ref().ok_or("missing initial task commit")?;
                         let head = checked(git(self.policy, &tree, &["rev-parse", "HEAD"]))?;

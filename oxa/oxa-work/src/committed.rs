@@ -138,9 +138,7 @@ pub(crate) fn verify_commit(
     if dirty_worktree(binary, &export.tree, repo, policy, lock)? {
         return Err("clean acceptance checkout is dirty".into());
     }
-    // #1442: a saved verdict is bound to the change's own crates and the declared
-    // acceptance crates, recomputed from this exact commit; the static list alone is not
-    // the evidence a `done` rested on.
+    // A local compile plan cannot verify saved Rust work for publication.
     let mut commands: Vec<(CheckOrigin, String)> = execution
         .commands
         .iter()
@@ -148,24 +146,16 @@ pub(crate) fn verify_commit(
         .collect();
     let derived = derived::derive(policy, &export.tree, base, head)
         .map_err(|reason| format!("clean committed acceptance could not run: {reason}"))?;
+    let declared = execution.declared.as_deref().unwrap_or_default();
+    if derived.requires_hosted || !declared.is_empty() {
+        return Err(crate::HOSTED_TEST_EVIDENCE_REQUIRED.into());
+    }
     commands.extend(
         derived
             .commands
             .into_iter()
             .map(|command| (CheckOrigin::Derived, command)),
     );
-    let declared = execution.declared.clone().unwrap_or_default();
-    if !declared.is_empty() {
-        let discovered = derived::discover(&export.tree)
-            .ok_or("clean committed acceptance could not run: the repository's crates cannot be listed")?;
-        let entries = derived::declared_entries(&declared, &discovered, &derived.tested)
-            .map_err(|missing| format!("clean committed acceptance could not run: {}", missing.join("; ")))?;
-        commands.extend(
-            entries
-                .into_iter()
-                .map(|command| (CheckOrigin::Declared, command)),
-        );
-    }
     if commands.is_empty() {
         return Err(crate::NO_ACCEPTANCE_CHECKS.into());
     }
@@ -521,6 +511,7 @@ mod tests {
             let storage = root.join("private");
             fs::DirBuilder::new().mode(0o700).create(&storage).unwrap();
             let policy = RunPolicy {
+                local_checks: Default::default(),
                 git_binary: "/usr/bin/git".into(),
                 host_path: "/usr/bin:/bin".into(),
                 terminate_binary: None,

@@ -1,4 +1,4 @@
-use oxa_config::{Dirs, Env};
+use oxa_config::{Dirs, Env, Settings};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -163,7 +163,11 @@ pub(crate) fn run(
             Some(&root),
             Some(&dirs.home),
         );
+        let local_checks = oxa_work::LocalCheckCommands::from_owner_setting(
+            Settings::load(dirs, &root, false).get("oxa.work.localChecks"),
+        )?;
         let policy = oxa_work::RunPolicy {
+            local_checks,
             git_binary,
             host_path,
             terminate_binary,

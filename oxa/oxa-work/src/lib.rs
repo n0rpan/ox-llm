@@ -16,7 +16,7 @@ mod checkpoint;
 mod committed;
 pub use committed::{verify_saved_task, VerifiedTask};
 mod derived;
-pub use derived::{CheckOrigin, CheckRun, CheckStatus};
+pub use derived::{CheckOrigin, CheckRun, CheckStatus, LocalCheckCommands};
 mod execute;
 pub use execute::TaskTokens;
 pub mod helper_queue;
@@ -795,6 +795,7 @@ pub struct RunPolicy {
     pub offline: bool,
     /// Set by the runner from the immutable packet before launching its children.
     pub runner_owns_github: bool,
+    pub local_checks: LocalCheckCommands,
     pub storage: PathBuf,
 }
 
@@ -892,7 +893,8 @@ pub(crate) struct Acceptance {
 }
 
 const NO_ACCEPTANCE_CHECKS: &str =
-    "no acceptance checks were available; configure project done checks or declare an acceptance crate";
+    "no acceptance checks were available; configure project done checks or enable local compile checks";
+const HOSTED_TEST_EVIDENCE_REQUIRED: &str = "exact-head hosted test evidence is required";
 
 fn acceptance(
     binary: &Path,
@@ -1452,12 +1454,14 @@ fn run_locked(
                 state.record.detail.clear();
             }
             Err(error) => {
-                state.record.outcome =
-                    if error == NO_ACCEPTANCE_CHECKS || error.contains("source project is not trusted") {
-                        Outcome::Unverified
-                    } else {
-                        Outcome::Blocked
-                    };
+                state.record.outcome = if error == NO_ACCEPTANCE_CHECKS
+                    || error == HOSTED_TEST_EVIDENCE_REQUIRED
+                    || error.contains("source project is not trusted")
+                {
+                    Outcome::Unverified
+                } else {
+                    Outcome::Blocked
+                };
                 state.record.detail = format!("save recovery: {error}");
             }
         }

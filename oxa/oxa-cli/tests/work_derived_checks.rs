@@ -1,5 +1,5 @@
 //! #1442 through the real runner, worker and sandbox: the done checks derived from the
-//! change's own crates, the worker's declared acceptance crates, honest `unverified`
+//! change's own crates, worker declarations, honest `unverified`
 //! outcomes when a check cannot run, and the per-check evidence a `done` rests on. The
 //! cargo on the worker PATH is a recording fake; no build toolchain is used, no network.
 #[path = "common/work.rs"]
@@ -16,9 +16,7 @@ use std::{
 };
 use work::{git, run_args, run_observed, run_with_exit, setup, setup_with_files};
 
-const TEST_ENTRY: &str = "in .: command -v cargo >/dev/null 2>&1 || exit 127\ncargo test --frozen -p one";
-const CLIPPY_ENTRY: &str =
-    "in .: cargo clippy --version >/dev/null 2>&1 || exit 127\ncargo clippy --frozen -p one -- -D warnings";
+const CHECK_ENTRY: &str = "in .: command -v cargo >/dev/null 2>&1 || exit 127\ncargo check -p one";
 
 /// The base fixture: a Cargo workspace with two committed member crates.
 fn crate_files() -> Vec<(&'static str, &'static str)> {
@@ -45,17 +43,13 @@ fn write_turn(path: &str) -> ScriptTurn {
 /// A private tools directory holding a `cargo` that runs `script`. It lives under the
 /// test home: PATH entries under `$HOME` are bound read-only into the check sandbox
 /// (a fresh tmpfs masks the host `/tmp` there), so the sandboxed round resolves the fake.
-fn tools_with_cargo_in(env: &TestEnv, name: &str, script: &str) -> PathBuf {
-    let tools = env.home().join(name);
+fn tools_with_cargo(env: &TestEnv, script: &str) -> PathBuf {
+    let tools = env.home().join("trusted-tools");
     fs::DirBuilder::new().mode(0o700).create(&tools).unwrap();
     let cargo = tools.join("cargo");
     fs::write(&cargo, script).unwrap();
     fs::set_permissions(&cargo, fs::Permissions::from_mode(0o700)).unwrap();
     tools
-}
-
-fn tools_with_cargo(env: &TestEnv, script: &str) -> PathBuf {
-    tools_with_cargo_in(env, "trusted-tools", script)
 }
 
 /// The recording, always-passing cargo: every invocation and its target directory.
@@ -152,7 +146,7 @@ fn the_supervisor_uses_one_deadline_for_every_check_in_a_round() {
 }
 
 #[test]
-fn the_touched_crate_tests_and_clippy_join_the_static_list_in_the_done_evidence() {
+fn local_compile_for_the_touched_crate_is_a_precheck_without_hosted_acceptance() {
     let env = TestEnv::new();
     setup_with_files(&env, r#"["true"]"#, &crate_files());
     let tools = tools_with_cargo(&env, RECORDING_CARGO);
@@ -162,15 +156,13 @@ fn the_touched_crate_tests_and_clippy_join_the_static_list_in_the_done_evidence(
         &["work", "../tasks.json"],
         Some(path_with(&tools)),
     );
-    assert_eq!(record["outcome"], "done", "{record}");
-    // The done record lists every check it rests on: the frozen static list, then the
-    // tests and clippy of the one crate the change touched, each with its exit status.
+    assert_eq!(record["outcome"], "unverified", "{record}");
+    // The record keeps the static and compile receipts while hosted test evidence is pending.
     assert_eq!(
         record["checks"],
         json!([
             {"origin": "settings", "command": "true", "exit": 0, "timed_out": false, "status": "passed"},
-            {"origin": "derived", "command": TEST_ENTRY, "exit": 0, "timed_out": false, "status": "passed"},
-            {"origin": "derived", "command": CLIPPY_ENTRY, "exit": 0, "timed_out": false, "status": "passed"},
+            {"origin": "derived", "command": CHECK_ENTRY, "exit": 0, "timed_out": false, "status": "passed"},
         ]),
         "{record}"
     );
@@ -179,18 +171,49 @@ fn the_touched_crate_tests_and_clippy_join_the_static_list_in_the_done_evidence(
     let calls = calls(tree);
     assert_eq!(
         calls.lines().collect::<Vec<_>>(),
-        vec![
-            format!("test --frozen -p one|target={}", target.display()),
-            format!("clippy --version|target={}", target.display()),
-            format!(
-                "clippy --frozen -p one -- -D warnings|target={}",
-                target.display()
-            ),
-        ],
+        [format!("check -p one|target={}", target.display())],
         "{calls}"
     );
     // The crate the worker did not touch is not checked.
     assert!(!calls.contains(" -p two"));
+}
+
+#[test]
+fn local_compile_commands_come_only_from_owner_settings() {
+    let env = TestEnv::new();
+    setup_with_files(&env, "[]", &crate_files());
+    let project = env.work().join("project");
+    env.write(
+        "work/project/.oxa/settings.json",
+        r#"{"done":[],"oxa.work.localChecks":["cargo check --offline"]}"#,
+    );
+    git(&env, &project, &["add", ".oxa/settings.json"]);
+    git(
+        &env,
+        &project,
+        &["commit", "-m", "Set fixture project check preference"],
+    );
+    git(&env, &project, &["push", "origin", "main"]);
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa.work.localChecks":["cargo check --locked"]}"#,
+    );
+    let tools = tools_with_cargo(&env, RECORDING_CARGO);
+    let record = run_args(
+        &env,
+        vec![write_turn("crates/one/src/lib.rs"), ScriptTurn::text("finished")],
+        &["work", "../tasks.json"],
+        Some(path_with(&tools)),
+    );
+    assert_eq!(record["outcome"], "unverified", "{record}");
+    let calls = calls(tree_of(&record));
+    assert_eq!(
+        calls
+            .lines()
+            .map(|line| line.split('|').next().unwrap())
+            .collect::<Vec<_>>(),
+        ["check --locked -p one"]
+    );
 }
 
 #[test]
@@ -222,7 +245,7 @@ fn a_check_that_never_ran_leaves_the_task_unverified_and_the_runner_failing() {
 }
 
 #[test]
-fn a_declared_acceptance_crate_runs_beside_the_derived_checks() {
+fn a_declared_acceptance_crate_does_not_add_a_local_command() {
     let env = TestEnv::new();
     setup_with_files(&env, "[]", &crate_files());
     let tools = tools_with_cargo(&env, RECORDING_CARGO);
@@ -235,18 +258,11 @@ fn a_declared_acceptance_crate_runs_beside_the_derived_checks() {
         &["work", "../tasks.json"],
         Some(path_with(&tools)),
     );
-    assert_eq!(record["outcome"], "done", "{record}");
-    // The untouched crate the worker named still has its tests gate completion.
+    assert_eq!(record["outcome"], "unverified", "{record}");
     assert_eq!(
         record["checks"],
         json!([
-            {"origin": "derived", "command": TEST_ENTRY, "exit": 0, "timed_out": false, "status": "passed"},
-            {"origin": "derived", "command": CLIPPY_ENTRY, "exit": 0, "timed_out": false, "status": "passed"},
-            {
-                "origin": "declared",
-                "command": "in .: command -v cargo >/dev/null 2>&1 || exit 127\ncargo test --frozen -p two",
-                "exit": 0, "timed_out": false, "status": "passed"
-            },
+            {"origin": "derived", "command": CHECK_ENTRY, "exit": 0, "timed_out": false, "status": "passed"},
         ]),
         "{record}"
     );
@@ -256,12 +272,7 @@ fn a_declared_acceptance_crate_runs_beside_the_derived_checks() {
             .lines()
             .map(|line| line.split('|').next().unwrap())
             .collect::<Vec<_>>(),
-        [
-            "test --frozen -p one",
-            "clippy --version",
-            "clippy --frozen -p one -- -D warnings",
-            "test --frozen -p two"
-        ]
+        ["check -p one"]
     );
 }
 
@@ -310,7 +321,7 @@ fn a_failing_derived_check_gets_one_repair_round_over_the_same_session() {
         &["work", "../tasks.json"],
         Some(path_with(&tools)),
     );
-    assert_eq!(record["outcome"], "done", "{record}");
+    assert_eq!(record["outcome"], "unverified", "{record}");
     // The repair prompt carries the derived failure and names the check that failed.
     assert_eq!(requests.len(), 3, "worker, then one repair over the same session");
     assert!(
@@ -318,22 +329,14 @@ fn a_failing_derived_check_gets_one_repair_round_over_the_same_session() {
             .content
             .as_deref()
             .is_some_and(|text| text.contains("External acceptance checks failed")
-                && text.contains("cargo test --frozen -p one"))),
+                && text.contains("cargo check -p one"))),
         "repair prompt: {:?}",
         requests[2].messages.last().and_then(|m| m.content.as_deref())
     );
-    // The failing round ran test then clippy; the recheck ran both again.
     let calls = calls(tree_of(&record));
     assert_eq!(
         calls.lines().collect::<Vec<_>>(),
-        [
-            "test --frozen -p one",
-            "clippy --version",
-            "clippy --frozen -p one -- -D warnings",
-            "test --frozen -p one",
-            "clippy --version",
-            "clippy --frozen -p one -- -D warnings",
-        ]
+        ["check -p one", "check -p one"]
     );
     // The recorded evidence is the passing recheck, with nothing hidden.
     for check in record["checks"].as_array().unwrap() {
@@ -342,9 +345,38 @@ fn a_failing_derived_check_gets_one_repair_round_over_the_same_session() {
 }
 
 #[test]
-fn verification_reruns_the_derived_checks_of_the_saved_commit() {
+fn a_compile_precheck_cannot_produce_a_saved_verification_receipt() {
     let env = TestEnv::new();
     setup_with_files(&env, "[]", &crate_files());
+    let tools = tools_with_cargo(&env, RECORDING_CARGO);
+    let path = path_with(&tools);
+    let record = run_args(
+        &env,
+        vec![write_turn("crates/one/src/lib.rs"), ScriptTurn::text("finished")],
+        &["work", "../tasks.json"],
+        Some(path.clone()),
+    );
+    assert_eq!(record["outcome"], "unverified", "{record}");
+    assert_eq!(record["checks"][0]["status"], "passed", "{record}");
+
+    let rejected = verify(&env, Some(&path));
+    let stderr = String::from_utf8_lossy(&rejected.stderr);
+    assert!(!rejected.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("only finished successful work can be verified"),
+        "{stderr}"
+    );
+    assert!(
+        rejected.stdout.is_empty(),
+        "a compile pass produced a verification receipt"
+    );
+}
+
+#[test]
+fn disabling_local_checks_leaves_a_changed_crate_unverified_without_receipts() {
+    let env = TestEnv::new();
+    setup_with_files(&env, "[]", &crate_files());
+    env.write("home/.oxa/agent/settings.json", r#"{"oxa.work.localChecks":[]}"#);
     let tools = tools_with_cargo(&env, RECORDING_CARGO);
     let record = run_args(
         &env,
@@ -352,30 +384,10 @@ fn verification_reruns_the_derived_checks_of_the_saved_commit() {
         &["work", "../tasks.json"],
         Some(path_with(&tools)),
     );
-    assert_eq!(record["outcome"], "done", "{record}");
-
-    let failing = tools_with_cargo_in(
-        &env,
-        "failing-tools",
-        "#!/bin/sh\nif [ \"$*\" = \"clippy --version\" ]; then exit 0; fi\nprintf '%s\\n' \"$*\" >> \"$OXA_WORK_OUTPUT_DIR/calls\"\nexit 1\n",
-    );
-    let rejected = verify(&env, Some(&path_with(&failing)));
-    assert!(
-        !rejected.status.success(),
-        "a committed change whose crate tests fail still verifies: {}",
-        String::from_utf8_lossy(&rejected.stderr)
-    );
-    assert!(
-        String::from_utf8_lossy(&rejected.stderr).contains("clean committed acceptance failed"),
-        "{}",
-        String::from_utf8_lossy(&rejected.stderr)
-    );
-    let accepted: Output = verify(&env, Some(&path_with(&tools)));
-    assert!(
-        accepted.status.success(),
-        "{}",
-        String::from_utf8_lossy(&accepted.stderr)
-    );
+    assert_eq!(record["outcome"], "unverified", "{record}");
+    assert!(record["checks"].as_array().is_none_or(Vec::is_empty), "{record}");
+    let output = tree_of(&record).parent().unwrap().join(".work-output/test/calls");
+    assert!(!output.exists(), "the runner started a disabled local check");
 }
 
 #[test]

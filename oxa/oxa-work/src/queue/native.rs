@@ -208,6 +208,7 @@ mod tests {
             reviewed_pull_request: None,
         };
         let policy = RunPolicy {
+            local_checks: Default::default(),
             git_binary: "/usr/bin/git".into(),
             host_path: "/usr/bin".into(),
             terminate_binary: None,

@@ -921,6 +921,7 @@ mod tests {
             })
             .collect();
         let policy = RunPolicy {
+            local_checks: Default::default(),
             git_binary: "/usr/bin/git".into(),
             host_path: "/usr/bin".into(),
             terminate_binary: None,

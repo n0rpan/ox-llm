@@ -116,6 +116,7 @@ fn review_git_evidence_keeps_an_unchanged_main_merge_and_rejects_a_changed_patch
         .find(|path| path.is_absolute() && path.is_file())
         .unwrap();
     let policy = RunPolicy {
+        local_checks: Default::default(),
         git_binary,
         host_path,
         offline: true,

@@ -113,6 +113,7 @@ fn exercise_save_recovery(test_name: &str, case: SaveRecovery) {
             .unwrap()
             .remove(0);
         let policy = oxa_work::RunPolicy {
+            local_checks: Default::default(),
             git_binary: "/usr/bin/git".into(),
             host_path: std::env::var_os("PATH").unwrap(),
             terminate_binary: Some("/usr/bin/kill".into()),

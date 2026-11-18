@@ -1,6 +1,5 @@
-//! Done checks derived from what a task actually changed (#1442): the tests and clippy run
-//! of every Cargo crate the worker touched, next to the project's static list, plus crates
-//! the worker declared as the task's acceptance tests.
+//! Local compile checks derived from the Cargo crates a task touched (#1442).
+//! Test acceptance depends on the exact-head hosted lane.
 //!
 //! Working-tree inventory uses the existing sandbox because Git can run clean filters.
 //! Committed inventory compares immutable objects. Every derived entry is a fixed shell
@@ -46,13 +45,13 @@ pub enum CheckStatus {
     NotRun,
 }
 
-/// Check entries of one acceptance round, plus the crates whose tests they run.
+/// Local compile entries and whether their change needs hosted test evidence.
 #[derive(Default)]
 pub(crate) struct DerivedChecks {
     /// Full `in <dir>: <command>` entries, sorted for stable evidence.
     pub commands: Vec<String>,
-    /// Crate names covered by a test command (declared duplicates are skipped).
-    pub tested: BTreeSet<String>,
+    /// A Rust change needs hosted test evidence even when the local list is empty.
+    pub requires_hosted: bool,
 }
 
 /// A worker's declared acceptance crates, as read from its final message. An unreadable
@@ -78,6 +77,7 @@ const MANIFEST_BYTES: u64 = 256 * 1024;
 const MAX_MANIFESTS: usize = 512;
 const MAX_WALK_ENTRIES: usize = 20_000;
 const MAX_GLOB_WORK: usize = 4_000_000;
+const DEFAULT_COMPILE_COMMAND: &str = "cargo check";
 /// Bytes of one check command kept in evidence.
 pub(crate) const COMMAND_CAP: usize = 512;
 
@@ -85,7 +85,63 @@ pub(crate) const COMMAND_CAP: usize = 512;
 /// was missing. Any other status is a real verdict about the change.
 pub(crate) const NOT_RUN_EXIT: &[i32] = &[126, 127];
 
-/// The crates of one change, as `cargo test`/`cargo clippy` entries. `Err` is a reason the
+/// Commands approved by the owner for the local compile precheck. Only a
+/// restricted Cargo check invocation is accepted. The runner supplies the crate.
+#[derive(Clone, Debug)]
+pub struct LocalCheckCommands(Vec<String>);
+
+impl Default for LocalCheckCommands {
+    fn default() -> Self {
+        Self(vec![DEFAULT_COMPILE_COMMAND.to_owned()])
+    }
+}
+
+impl LocalCheckCommands {
+    pub fn from_owner_setting(setting: Option<&serde_json::Value>) -> Result<Self, String> {
+        let Some(setting) = setting else {
+            return Ok(Self::default());
+        };
+        let values = setting
+            .as_array()
+            .ok_or("oxa.work.localChecks must be a list of cargo check commands")?;
+        let mut commands = Vec::new();
+        for value in values {
+            let mut words = value
+                .as_str()
+                .ok_or("oxa.work.localChecks entries must be strings")?
+                .split_ascii_whitespace();
+            if words.next() != Some("cargo") || words.next() != Some("check") {
+                return Err("oxa.work.localChecks permits only cargo check commands".into());
+            }
+            let mut flags = BTreeSet::new();
+            for flag in words {
+                if !matches!(
+                    flag,
+                    "--all-targets"
+                        | "--all-features"
+                        | "--no-default-features"
+                        | "--locked"
+                        | "--offline"
+                        | "--frozen"
+                ) {
+                    return Err("oxa.work.localChecks contains an unsupported cargo check option".into());
+                }
+                flags.insert(flag);
+            }
+            let mut command = DEFAULT_COMPILE_COMMAND.to_owned();
+            for flag in flags {
+                command.push(' ');
+                command.push_str(flag);
+            }
+            if !commands.contains(&command) {
+                commands.push(command);
+            }
+        }
+        Ok(Self(commands))
+    }
+}
+
+/// The crates of one change, as `cargo check` entries. `Err` is a reason the
 /// derived set could not be planned; the task then ends `unverified`, never `done`.
 pub(crate) fn derive(
     policy: &RunPolicy,
@@ -113,10 +169,19 @@ pub(crate) fn derive(
     if !diff.status.success() {
         return Err("committed change inventory failed".into());
     }
-    from_changed_paths(root, &diff.stdout)
+    from_changed_paths_with(root, &diff.stdout, &policy.local_checks)
 }
 
-pub(crate) fn from_changed_paths(root: &Path, paths: &[u8]) -> Result<DerivedChecks, String> {
+#[cfg(test)]
+fn from_changed_paths(root: &Path, paths: &[u8]) -> Result<DerivedChecks, String> {
+    from_changed_paths_with(root, paths, &LocalCheckCommands::default())
+}
+
+pub(crate) fn from_changed_paths_with(
+    root: &Path,
+    paths: &[u8],
+    local_checks: &LocalCheckCommands,
+) -> Result<DerivedChecks, String> {
     let paths = std::str::from_utf8(paths).map_err(|_| "change inventory is not UTF-8")?;
     let paths = if paths.is_empty() {
         Vec::new()
@@ -135,11 +200,8 @@ pub(crate) fn from_changed_paths(root: &Path, paths: &[u8]) -> Result<DerivedChe
         paths.into_iter().map(str::to_owned).collect()
     };
     let selected = select(root, &paths)?;
-    let mut checks = commands(&selected.packages);
-    for workspace in selected.workspaces {
-        checks.commands.push(test_entry_for(&workspace, "--workspace"));
-        checks.commands.push(clippy_entry_for(&workspace, "--workspace"));
-    }
+    let mut checks = commands(&selected.packages, local_checks);
+    checks.requires_hosted = selected.requires_hosted;
     Ok(checks)
 }
 
@@ -262,7 +324,7 @@ fn parse_manifest(text: &str) -> Manifest {
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix('[') {
-            section = rest.split(']').next().unwrap_or(rest).to_owned();
+            section = rest.split(']').next().unwrap_or(rest).trim().to_owned();
             if section == "workspace" || section.starts_with("workspace.") {
                 out.workspace = true;
             }
@@ -445,13 +507,12 @@ impl Manifests {
     }
 }
 
-/// The crates of the changed paths. A workspace's own manifest or lockfile selects every
-/// member (like the CI rule that unknown paths conservatively select every component);
-/// other files outside a crate select nothing.
+/// The crates of the changed paths. Only a concrete package selects a local
+/// check. The hosted lane handles workspace-wide metadata changes.
 #[derive(Debug, Default)]
 struct Selected {
     packages: BTreeSet<(String, String)>,
-    workspaces: BTreeSet<String>,
+    requires_hosted: bool,
 }
 
 fn select(root: &Path, paths: &[String]) -> Result<Selected, String> {
@@ -462,12 +523,9 @@ fn select(root: &Path, paths: &[String]) -> Result<Selected, String> {
         let name = path.rsplit('/').next().unwrap_or(path.as_str());
         let dir = parent_dir(path);
         if name == "Cargo.toml" || name == "Cargo.lock" {
+            selected.requires_hosted = true;
             let manifest = manifests.at(root, dir)?;
-            if manifest.workspace {
-                // Cargo includes implicit path-dependency members as well as the
-                // listed ones. Let the sandboxed command select the whole workspace.
-                selected.workspaces.insert(dir.to_owned());
-            } else if let Some(package) = manifest.package.clone() {
+            if let Some(package) = manifest.package.clone() {
                 selected
                     .packages
                     .insert((package, manifests.in_dir(root, dir, &mut budget)?));
@@ -476,13 +534,14 @@ fn select(root: &Path, paths: &[String]) -> Result<Selected, String> {
         }
         for ancestor in manifests.ancestors(root, dir)? {
             if let Some(package) = manifests.root[&ancestor].package.clone() {
+                selected.requires_hosted = true;
                 let in_dir = manifests.in_dir(root, &ancestor, &mut budget)?;
                 selected.packages.insert((package, in_dir));
                 break;
             }
         }
     }
-    if selected.packages.len() + selected.workspaces.len() > MAX_PACKAGES {
+    if selected.packages.len() > MAX_PACKAGES {
         return Err(format!(
             "the change affects more than {MAX_PACKAGES} Cargo targets, so their checks cannot be listed"
         ));
@@ -555,13 +614,13 @@ fn simple_glob(pattern: &str, name: &str) -> bool {
     prefixes[name.len()]
 }
 
-/// The check entries of the selected crates: `cargo test` plus clippy, one per crate.
-fn commands(selected: &BTreeSet<(String, String)>) -> DerivedChecks {
+/// One local compile check for each selected crate.
+fn commands(selected: &BTreeSet<(String, String)>, local_checks: &LocalCheckCommands) -> DerivedChecks {
     let mut out = DerivedChecks::default();
     for (name, in_dir) in selected {
-        out.tested.insert(name.clone());
-        out.commands.push(test_entry(in_dir, name));
-        out.commands.push(clippy_entry(in_dir, name));
+        for command in &local_checks.0 {
+            out.commands.push(check_entry(in_dir, command, name));
+        }
     }
     out
 }
@@ -576,28 +635,9 @@ fn entry_dir(in_dir: &str) -> &str {
     }
 }
 
-/// The tests of one crate. `--frozen` keeps the lockfile and the network out of the
-/// worktree; a cold registry or a drifted lockfile is a failure to fix, not a silent pass.
-fn test_entry(in_dir: &str, name: &str) -> String {
-    test_entry_for(in_dir, &format!("-p {name}"))
-}
-
-fn test_entry_for(in_dir: &str, target: &str) -> String {
+fn check_entry(in_dir: &str, command: &str, name: &str) -> String {
     format!(
-        "in {}: command -v cargo >/dev/null 2>&1 || exit 127\ncargo test --frozen {target}",
-        entry_dir(in_dir)
-    )
-}
-
-/// Clippy of one crate, guarded so a missing component is `not_run` (the task stays
-/// `unverified`) instead of cargo's generic failure.
-fn clippy_entry(in_dir: &str, name: &str) -> String {
-    clippy_entry_for(in_dir, &format!("-p {name}"))
-}
-
-fn clippy_entry_for(in_dir: &str, target: &str) -> String {
-    format!(
-        "in {}: cargo clippy --version >/dev/null 2>&1 || exit 127\ncargo clippy --frozen {target} -- -D warnings",
+        "in {}: command -v cargo >/dev/null 2>&1 || exit 127\n{command} -p {name}",
         entry_dir(in_dir)
     )
 }
@@ -649,14 +689,11 @@ pub(crate) fn discover(root: &Path) -> Option<BTreeSet<(String, String)>> {
     Some(packages)
 }
 
-/// Map the worker's declared acceptance crates to test entries. `Err` lists the selectors
-/// that cannot run; the caller keeps the task `unverified` instead of skipping them.
-pub(crate) fn declared_entries(
+/// Resolve declared acceptance crates. They are requirements for hosted tests.
+pub(crate) fn validate_declarations(
     declared: &[String],
     discovered: &BTreeSet<(String, String)>,
-    already_tested: &BTreeSet<String>,
-) -> Result<Vec<String>, Vec<String>> {
-    let mut commands = Vec::new();
+) -> Result<(), Vec<String>> {
     let mut missing = Vec::new();
     for selector in declared {
         if selector == UNREADABLE_DECLARATION {
@@ -670,9 +707,6 @@ pub(crate) fn declared_entries(
             (Some(_), Some(_)) => missing.push(format!(
                 "the declared acceptance crate {selector} is ambiguous across workspaces"
             )),
-            (Some(in_dir), None) if !already_tested.contains(selector) => {
-                commands.push(test_entry(in_dir, selector));
-            }
             (Some(_), None) => {}
             (None, _) => missing.push(format!(
                 "the declared acceptance crate {selector} is not a crate of this repository"
@@ -680,7 +714,7 @@ pub(crate) fn declared_entries(
         }
     }
     if missing.is_empty() {
-        Ok(commands)
+        Ok(())
     } else {
         Err(missing)
     }
@@ -864,26 +898,28 @@ members = ["crates/*", "tools/pinned"]
     }
 
     #[test]
-    fn a_workspace_manifest_or_lockfile_selects_cargos_full_membership() {
+    fn whitespace_in_cargo_table_headers_keeps_the_package_in_the_check_plan() {
+        let dir = PrivateDir::new("derived-header-whitespace");
+        manifest(&dir, "Cargo.toml", "[ workspace ]\nmembers = [\"one\"]\n");
+        manifest(&dir, "one/Cargo.toml", "[ package ]\nname = \"one\"\n");
+        let plan = from_changed_paths(dir.path(), b"one/src/lib.rs\0").unwrap();
+        assert!(plan.requires_hosted);
+        assert_eq!(plan.commands, [check_entry("", "cargo check", "one")]);
+    }
+
+    #[test]
+    fn workspace_metadata_does_not_trigger_a_local_workspace_sweep() {
         let dir = PrivateDir::new("derived-members");
         manifest(&dir, "Cargo.toml", "[workspace]\nmembers = [\"./app\"]\n");
-        manifest(
-            &dir,
-            "app/Cargo.toml",
-            "[package]\nname = \"app\"\n[dependencies]\nhelper = { path = \"../helper\" }\n",
-        );
-        manifest(&dir, "helper/Cargo.toml", "[package]\nname = \"helper\"\n");
+        manifest(&dir, "app/Cargo.toml", "[package]\nname = \"app\"\n");
         for changed in ["Cargo.toml", "Cargo.lock"] {
-            let changes = format!("{changed}\0");
-            let checks = from_changed_paths(dir.path(), changes.as_bytes()).unwrap();
-            assert_eq!(
-                checks.commands,
-                [
-                    "in .: command -v cargo >/dev/null 2>&1 || exit 127\ncargo test --frozen --workspace",
-                    "in .: cargo clippy --version >/dev/null 2>&1 || exit 127\ncargo clippy --frozen --workspace -- -D warnings",
-                ],
-                "workspace-wide change {changed}"
-            );
+            let metadata = format!("{changed}\0");
+            let checks = from_changed_paths(dir.path(), metadata.as_bytes()).unwrap();
+            assert!(checks.commands.is_empty(), "{changed}");
+            assert!(checks.requires_hosted, "{changed}");
+            let with_source = format!("{changed}\0app/src/lib.rs\0");
+            let checks = from_changed_paths(dir.path(), with_source.as_bytes()).unwrap();
+            assert_eq!(checks.commands, [check_entry("", "cargo check", "app")]);
         }
     }
 
@@ -903,7 +939,7 @@ members = ["crates/*", "tools/pinned"]
             BTreeSet::from([("solo".to_owned(), "crates/solo".to_owned())])
         );
         let root = select(dir.path(), &["Cargo.lock".to_owned()]).unwrap();
-        assert_eq!(root.workspaces, BTreeSet::from([String::new()]));
+        assert!(root.packages.is_empty());
     }
 
     #[test]
@@ -977,7 +1013,7 @@ members = ["crates/*", "tools/pinned"]
             &["docs/page.md".to_owned(), "unrelated/Cargo.toml".to_owned()],
         )
         .unwrap();
-        assert!(selected.packages.is_empty() && selected.workspaces.is_empty());
+        assert!(selected.packages.is_empty());
     }
 
     #[test]
@@ -1007,42 +1043,66 @@ members = ["crates/*", "tools/pinned"]
             );
         }
         let paths = ["a/util/src/lib.rs".to_owned(), "b/util/src/lib.rs".to_owned()];
-        let checks = commands(&select(dir.path(), &paths).unwrap().packages);
+        let checks = commands(
+            &select(dir.path(), &paths).unwrap().packages,
+            &LocalCheckCommands::default(),
+        );
         assert_eq!(
             checks.commands,
             [
-                test_entry("a", "util"),
-                clippy_entry("a", "util"),
-                test_entry("b", "util"),
-                clippy_entry("b", "util")
+                check_entry("a", "cargo check", "util"),
+                check_entry("b", "cargo check", "util")
             ]
         );
         let discovered = discover(dir.path()).unwrap();
-        let error = declared_entries(&["util".to_owned()], &discovered, &checks.tested).unwrap_err();
+        let error = validate_declarations(&["util".to_owned()], &discovered).unwrap_err();
         assert!(error[0].contains("ambiguous"), "{error:?}");
     }
 
     #[test]
     fn derived_entries_are_a_fixed_cargo_shape_per_crate() {
-        let checks = commands(&BTreeSet::from([
-            ("one".to_owned(), "".to_owned()),
-            ("solo".to_owned(), "solo".to_owned()),
-        ]));
+        let checks = commands(
+            &BTreeSet::from([
+                ("one".to_owned(), "".to_owned()),
+                ("solo".to_owned(), "solo".to_owned()),
+            ]),
+            &LocalCheckCommands::default(),
+        );
         assert_eq!(
             checks.commands,
             [
-                "in .: command -v cargo >/dev/null 2>&1 || exit 127\ncargo test --frozen -p one".to_owned(),
-                "in .: cargo clippy --version >/dev/null 2>&1 || exit 127\ncargo clippy --frozen -p one -- -D warnings".to_owned(),
-                "in solo: command -v cargo >/dev/null 2>&1 || exit 127\ncargo test --frozen -p solo".to_owned(),
-                "in solo: cargo clippy --version >/dev/null 2>&1 || exit 127\ncargo clippy --frozen -p solo -- -D warnings".to_owned(),
+                "in .: command -v cargo >/dev/null 2>&1 || exit 127\ncargo check -p one",
+                "in solo: command -v cargo >/dev/null 2>&1 || exit 127\ncargo check -p solo",
             ]
         );
+    }
+
+    #[test]
+    fn owner_check_settings_allow_compile_commands_and_can_disable_the_local_plan() {
+        let dir = PrivateDir::new("derived-owner-checks");
+        manifest(&dir, "Cargo.toml", "[package]\nname = \"one\"\n");
+        let configured = serde_json::json!(["cargo check --locked", "cargo check --offline"]);
+        let checks = LocalCheckCommands::from_owner_setting(Some(&configured)).unwrap();
+        let plan = from_changed_paths_with(dir.path(), b"src/lib.rs\0", &checks).unwrap();
         assert_eq!(
-            checks.tested,
-            ["one".to_owned(), "solo".to_owned()]
-                .into_iter()
-                .collect::<BTreeSet<_>>()
+            plan.commands,
+            [
+                check_entry("", "cargo check --locked", "one"),
+                check_entry("", "cargo check --offline", "one")
+            ]
         );
+        let empty = serde_json::json!([]);
+        let checks = LocalCheckCommands::from_owner_setting(Some(&empty)).unwrap();
+        let plan = from_changed_paths_with(dir.path(), b"src/lib.rs\0", &checks).unwrap();
+        assert!(plan.commands.is_empty());
+        assert!(plan.requires_hosted);
+        for command in ["cargo test", "cargo clippy", "cargo check --workspace"] {
+            let setting = serde_json::json!([command]);
+            assert!(
+                LocalCheckCommands::from_owner_setting(Some(&setting)).is_err(),
+                "{command}"
+            );
+        }
     }
 
     #[test]
@@ -1099,25 +1159,16 @@ members = ["crates/*", "tools/pinned"]
     }
 
     #[test]
-    fn declared_selectors_map_to_entries_or_keep_the_task_unverifiable() {
+    fn declarations_validate_as_hosted_requirements() {
         let discovered = BTreeSet::from([("one".to_owned(), "".to_owned())]);
-        let tested = ["one".to_owned()].into_iter().collect::<BTreeSet<_>>();
-        // Already derived: no duplicate entry.
-        assert!(declared_entries(&["one".to_owned()], &discovered, &tested)
-            .unwrap()
-            .is_empty());
-        // A named crate gets exactly its test entry.
-        assert_eq!(
-            declared_entries(&["one".to_owned()], &discovered, &BTreeSet::new()).unwrap(),
-            ["in .: command -v cargo >/dev/null 2>&1 || exit 127\ncargo test --frozen -p one".to_owned()]
-        );
+        validate_declarations(&["one".to_owned()], &discovered).unwrap();
         // Unknown or unreadable declarations are errors, never silent skips.
         for bad in [
             vec!["missing".to_owned()],
             vec![UNREADABLE_DECLARATION.to_owned()],
             vec!["one".to_owned(), "missing".to_owned()],
         ] {
-            let missing = declared_entries(&bad, &discovered, &tested).unwrap_err();
+            let missing = validate_declarations(&bad, &discovered).unwrap_err();
             assert_eq!(missing.len(), 1, "{bad:?}");
             assert!(!missing[0].contains("cargo test"), "{missing:?}");
         }

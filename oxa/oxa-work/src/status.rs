@@ -228,6 +228,7 @@ mod tests {
     fn selected_native_usage_requires_the_retained_attempt_and_branch() {
         let directory = PrivateDir::new("bound-task-usage");
         let policy = RunPolicy {
+            local_checks: Default::default(),
             git_binary: "/usr/bin/git".into(),
             host_path: "/usr/bin".into(),
             terminate_binary: None,
