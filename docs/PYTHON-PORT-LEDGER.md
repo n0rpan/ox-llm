@@ -80,7 +80,25 @@ Current inspected #824 source is `84f1928bf627ec555e22a59e6f0f9c25fff4f17e`. Its
 
 The [four-boundary artifact receipt](https://github.com/oxstack/ox-llm/pull/824#issuecomment-6954487105) binds runtime tarballs and both Arch variants to **2f84770e**: each inherited proof passed 15/15, native payload/manifests were checked, and Arch runtime dependencies exclude Python. [Run 44121115282](https://github.com/oxstack/ox-llm/actions/runs/44121115282) nevertheless ended FAILURE on separate real-scope setup. This is historical installed-payload evidence, not qualification of the newer 84f1928b artifact or the whole release.
 
-The same release workflow also creates a full `git archive HEAD` build-source tarball. A source-only archive inventory at 84f1928b includes **all four alert files**. Therefore neither “absent from every release artifact” nor “alerts fixed by removal” is established. Fresh exact-head artifact qualification remains with #824; repository-source remediation/removal remains with #951 / #477.
+At that #824 revision the workflow used a full `git archive HEAD`. Its
+source archive inventory at `84f1928b` included all four tracked alert files.
+
+The later [#1198 artifact member receipt](https://github.com/oxstack/ox-llm/issues/951#issuecomment-6970132625)
+qualifies the exact tested build, `174b10136c08186fff165951029431338231ea8f`.
+The two CPU tarballs, both Arch install variants and the two identical
+filtered source-archive copies omit these paths:
+
+- `oxc/src/oxc/runtime/studio`
+- `oxc/src/oxc/runtime/ctl_http.py`
+- `oxc/tools/session_replay.py`
+- `oxc/tools/interim/recording_proxy.py`
+
+The filtered source-archive copies retain the inert historical example
+`oxc/examples/runtime/units/prompt-studio-app.service`. It is absent from the
+four install payloads. Those payloads each contain the four inert MEMLAT
+templates. Release artifact acceptance remains in #763. Repository-source
+remediation, retained callers and the alert disposition remain in #951 and
+#477.
 
 ### Current main qualification at `6ecc77a3`
 
@@ -223,7 +241,7 @@ caller gates.
 | Python module / feature | Status | Evidence and remaining caller gate |
 |---|---|---|
 | `oxc/src/oxc/runtime/controller.py` — default packaged Python daemon | RETIREMENT INDEX PENDING | [#681](https://github.com/oxstack/ox-llm/issues/681) retires the default daemon. The #946 entry above covers the HTTP front specifically. The controller still supplies the model manager and routes to the lab and both comparison runners. Record the daemon entry with its callers before removal. |
-| `oxc/src/oxc/runtime/ctl_proxy.py` — typed native request and tool-result forwarding | PORTED | `oxa/oxc-local/tests/transport.rs::typed_tool_result_continues_the_same_owned_engine_without_a_controller` covers native local continuation. In [protected CI](https://github.com/oxstack/ox-llm/actions/runs/44240079306/job/134587945254), `local_overflow_uses_the_shared_error_classification` and `progress_before_overflow_preserves_typed_recovery_without_replaying` passed on `6fde2c71`. They cover native consumer classification for direct and queued in-stream overflow. The queued case checks a single POST. The legacy gateway's production of the F3 wire response remains a separate contract in `tools/oxa-contract/stub_contract.rs`. `controller.py` still uses the Python proxy for request defaults and all legacy routes; keep `test_v013_proxy_contract.py`. |
+| `oxc/src/oxc/runtime/ctl_proxy.py` — typed native request and tool-result forwarding | PORTED | `oxa/oxc-local/tests/transport.rs::typed_tool_result_continues_the_same_owned_engine_without_a_controller` covers native local continuation. In [protected CI](https://github.com/oxstack/ox-llm/actions/runs/44240079306/job/134587945254), `local_overflow_uses_the_shared_error_classification` and `progress_before_overflow_preserves_typed_recovery_without_replaying` passed on `6fde2c71`. They cover native consumer classification for direct and queued in-stream overflow. The queued case checks a single POST. [#1314](https://github.com/oxstack/ox-llm/pull/1314) also exercises the owned LocalEngine child. `owned_child_in_stream_overflow_reaches_caller_without_output` checks typed context overflow and no text, reasoning or tool-argument output for the plain in-stream SSE error. It passed in [hosted CI on both architectures](https://github.com/oxstack/ox-llm/actions/runs/44244269082). The legacy gateway's production of the F3 wire response remains a separate contract in `tools/oxa-contract/stub_contract.rs`. `controller.py` still uses the Python proxy for request defaults and all legacy routes; keep `test_v013_proxy_contract.py`. |
 | `oxc/src/oxc/runtime/ctl_proxy_prep.py` — legacy request normalization and backend hints | MISSING | [#222](https://github.com/oxstack/ox-llm/issues/222) scopes request normalization. This preparation stage still selects the Responses or Chat shim and attaches the legacy cache hints. Preserve `test_openai_conformance.py` and `test_cache_perfect_p1.py`. |
 | `oxc/src/oxc/runtime/ctl_proxy_stream.py` — typed local reply streaming | PORTED | `oxa/oxc-local/tests/transport.rs::typed_request_streams_tools_usage_and_text_without_controller_routes` exercises the native stream. The Python proxy still handles HTTP response classification and forwarding with the legacy disconnect watcher. Keep the controller comparison and `test_controller_disconnect_http.py`. |
 | `oxc/src/oxc/runtime/ctl_proxy_ledger.py` — native admission and paid settlement | PORTED | `oxa/oxc-local/tests/lifecycle.rs::admitted_ticket_covers_cold_load_and_generation_without_a_fifo_gap` and `oxa/oxc-gateway/tests/ledger.rs::daily_handles_share_admission_and_record_one_row_before_releasing_each_hold` cover native ownership. The Python controller still consumes its request ledger and post-response diagnostics through this stage. |
