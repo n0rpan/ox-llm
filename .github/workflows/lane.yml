@@ -10,10 +10,7 @@ permissions:
 
 concurrency:
   group: lane-${{ github.ref }}
-  # A dispatched lane run is the outside checker's result: cancelling it reports a
-  # green tree as red. Only PR events cancel superseded runs (CONTRIBUTING.md), and
-  # this workflow has no pull_request trigger, so it never cancels.
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   RUSTUP_TOOLCHAIN: '1.99.1'
