@@ -16,6 +16,7 @@ use std::{sync::Arc, time::Duration};
 mod routing;
 
 pub(crate) const SETTING: &str = "oxa.engine.inProcessCloud";
+const GO_SETTING: &str = "oxa.cloud.opencode.enabled";
 type Selected = (Arc<dyn Engine>, Vec<String>);
 
 pub(crate) fn credential_path(dirs: &Dirs) -> std::path::PathBuf {
@@ -133,12 +134,70 @@ fn shared_local_engine_uses_effective_stream_timeout() {
 pub(crate) struct OpenedGateway {
     pub gateway: Arc<Gateway>,
     notices: Vec<String>,
+    go_failure: Option<OxaError>,
 }
 
 #[derive(Clone, Default)]
 pub(crate) struct SharedEngines {
     pub local: Option<Arc<oxc_local::native::LocalEngine>>,
     pub cloud: Option<OpenedGateway>,
+}
+
+#[derive(Clone)]
+pub(crate) enum ProviderState {
+    On(&'static str),
+    Off(OxaError),
+    Broken(OxaError),
+}
+
+impl ProviderState {
+    fn refusal(&self) -> Option<&OxaError> {
+        match self {
+            Self::On(_) => None,
+            Self::Off(error) | Self::Broken(error) => Some(error),
+        }
+    }
+
+    fn notice(&self, name: &str, setting: &str) -> String {
+        match self {
+            Self::On(reason) => format!("{name}: on ({reason}; user setting: {setting})"),
+            Self::Off(error) | Self::Broken(error) => error.to_string(),
+        }
+    }
+}
+
+fn go_state(user: &Settings, dirs: &Dirs) -> ProviderState {
+    use oxc_gateway::{policy::Refusal, secrets};
+
+    let error = |state: &str, code, reason: &str| {
+        OxaError::new(code, format!("OpenCode Go: {state} ({reason})"))
+            .with_hint(format!("User setting: {GO_SETTING}"))
+    };
+    let off = |code, reason| ProviderState::Off(error("off", code, reason));
+    if oxa_proto::offline() {
+        return off(codes::OFFLINE, "offline mode");
+    }
+    if user.get(SETTING).is_some_and(|value| value != &Value::Bool(true)) {
+        return off(codes::INVALID, "oxa.engine.inProcessCloud is not enabled");
+    }
+    match user.get(GO_SETTING) {
+        // Keep the request-time reader and its protected-store diagnostics for
+        // the legacy explicit opt-in. The absent setting infers enablement.
+        Some(Value::Bool(true)) => return ProviderState::On("enabled by user settings"),
+        Some(Value::Bool(false)) => return off(codes::INVALID, "disabled by user settings"),
+        Some(_) => {
+            return ProviderState::Broken(error("broken", codes::INVALID, "enabled must be a boolean"));
+        }
+        None => {}
+    }
+    match secrets::read(&credential_path(dirs), Provider::OpenCode.as_str()) {
+        Ok(_) => ProviderState::On("key found in the protected cloud key file"),
+        Err(secrets::Error::Unavailable) => off(
+            Refusal::credentials().code,
+            "no key; add the opencode entry in the protected cloud key file",
+        ),
+        Err(cause) => ProviderState::Broken(error("broken", Refusal::credentials().code, &cause.to_string())),
+    }
 }
 
 pub(crate) fn select_observed(
@@ -157,50 +216,107 @@ pub(crate) fn select_observed(
             oxc_local::configured_engine(launch, dirs.agent_dir.join("local-engine"), stream)
         }
     };
+    let go = go_state(user, dirs);
+    let go_error = go.refusal();
+    let go_enabled = go_error.is_none();
+    let go_requested = requested.is_some_and(routing::is_go_model);
+    let native_local = user.bool(oxc_local::LOCAL_SETTING, false);
+    let native_cloud = user.bool(SETTING, false) || (go_enabled && (requested.is_none() || go_requested));
+    let availability_notice = || {
+        if requested.is_none() {
+            vec![go.notice("OpenCode Go", GO_SETTING)]
+        } else {
+            Vec::new()
+        }
+    };
     let cloud_engine = || {
         if oxa_proto::offline() {
             return Err(oxa_proto::offline_error("the in-process cloud gateway"));
         }
-        let OpenedGateway { gateway, notices } = match shared.cloud {
+        if let Some(error) = go_error {
+            let no_other_cloud = user
+                .get("oxa.cloud.models")
+                .is_none_or(|models| models.is_null() || models.as_object().is_some_and(|m| m.is_empty()))
+                && !user.bool("oxa.cloud.discover_models", false);
+            if no_other_cloud && user.get("oxa.cloud.opencode").is_some() {
+                return Err(error.clone());
+            }
+        }
+        let OpenedGateway {
+            gateway,
+            mut notices,
+            go_failure,
+        } = match shared.cloud {
             Some(opened) => opened,
-            None => open_gateway(user, effective, dirs, diagnostics, Ok)?,
+            None => open_gateway_with_go(user, effective, dirs, diagnostics, Ok, go_enabled)?,
         };
+        if requested.is_none() {
+            let notice = go_failure
+                .as_ref()
+                .map_or_else(|| go.notice("OpenCode Go", GO_SETTING), ToString::to_string);
+            notices.push(notice);
+        }
         Ok((
             Arc::new(EmbeddedEngine::from_shared_gateway(gateway)) as Arc<dyn Engine>,
             notices,
+            go_failure,
         ))
     };
-    if user.bool(oxc_local::LOCAL_SETTING, false) && user.bool(SETTING, false) {
+    if native_local && native_cloud {
         let aliases = |path| {
             user.get(path)
                 .and_then(Value::as_object)
                 .map(|models| models.keys().cloned().collect())
                 .unwrap_or_default()
         };
-        let (cloud, catalog_notices) = match cloud_engine() {
-            Ok((engine, notices)) => (Ok(engine), notices),
-            Err(error) => (Err(error), Vec::new()),
+        let (cloud, catalog_notices, go_failure) = match cloud_engine() {
+            Ok((engine, notices, go_failure)) => (Ok(engine), notices, go_failure),
+            Err(error) => {
+                let notice = go_error.unwrap_or(&error).to_string();
+                let notices = if requested.is_none() {
+                    vec![notice]
+                } else {
+                    Vec::new()
+                };
+                (Err(error), notices, None)
+            }
         };
         return routing::Routed {
             local: local_engine(),
             cloud,
             local_models: aliases("oxa.local.models"),
             cloud_models: aliases("oxa.cloud.models"),
-            dynamic_go: user.get("oxa.cloud.opencode.enabled") == Some(&Value::Bool(true)),
+            go_error: go_error.cloned().or(go_failure),
             default: effective.string("defaultModel"),
         }
         .into_engine(requested)
         .map(|engine| (engine, catalog_notices));
     }
-    if user.bool(oxc_local::LOCAL_SETTING, false) {
-        return local_engine().map(|engine| (engine, Vec::new()));
+    if let Some(error) = go_error.filter(|_| {
+        go_requested
+            && !requested.is_some_and(|model| {
+                native_local
+                    && user
+                        .get("oxa.local.models")
+                        .is_some_and(|aliases| aliases.get(model).is_some())
+            })
+    }) {
+        return Err(error.clone());
     }
-    if !user.bool(SETTING, false) {
-        return http().map(|engine| (engine, Vec::new()));
+    if native_local {
+        return local_engine().map(|engine| (engine, availability_notice()));
     }
-    cloud_engine()
+    if !native_cloud {
+        return http().map(|engine| (engine, availability_notice()));
+    }
+    let (engine, notices, go_failure) = cloud_engine()?;
+    if let Some(error) = go_failure.filter(|_| go_requested) {
+        return Err(error);
+    }
+    Ok((engine, notices))
 }
 
+#[cfg(feature = "share")]
 pub(crate) fn open_gateway(
     user: &Settings,
     effective: &Settings,
@@ -208,8 +324,30 @@ pub(crate) fn open_gateway(
     diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
     configure: impl FnOnce(Gateway) -> Result<Gateway, OxaError>,
 ) -> Result<OpenedGateway, OxaError> {
-    let cloud = user.get("oxa.cloud").ok_or_else(invalid)?;
-    let go_enabled = cloud.pointer("/opencode/enabled") == Some(&Value::Bool(true));
+    open_gateway_with_go(
+        user,
+        effective,
+        dirs,
+        diagnostics,
+        configure,
+        user.get(GO_SETTING) == Some(&Value::Bool(true)),
+    )
+}
+
+fn open_gateway_with_go(
+    user: &Settings,
+    effective: &Settings,
+    dirs: &Dirs,
+    diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
+    configure: impl FnOnce(Gateway) -> Result<Gateway, OxaError>,
+    go_enabled: bool,
+) -> Result<OpenedGateway, OxaError> {
+    let empty_cloud = Value::Object(serde_json::Map::new());
+    let cloud = match user.get("oxa.cloud") {
+        Some(cloud) if cloud.is_object() => cloud,
+        None if go_enabled => &empty_cloud,
+        _ => return Err(invalid()),
+    };
     let discover = cloud.get("discover_models") == Some(&Value::Bool(true));
     let empty = serde_json::Map::new();
     let models = match cloud.get("models") {
@@ -251,9 +389,11 @@ pub(crate) fn open_gateway(
         };
         routes.push((model, billing));
     }
-    let (subscription, subscription_limits) = subscription_options(cloud, needs_subscription)?;
+    let (subscription, mut subscription_limits) = subscription_options(cloud, needs_subscription)?;
     if go_enabled && subscription_limits.is_none() {
-        return Err(invalid());
+        // Local plan ceiling when the owner has supplied no limit. This is
+        // enforced by the existing durable subscription reservation.
+        subscription_limits = Some(SubscriptionLimits::new(1_000, 64_000_000).map_err(|_| invalid())?);
     }
     let cap = match cloud.get("daily_budget_usd") {
         None | Some(Value::Null) => None,
@@ -317,6 +457,7 @@ pub(crate) fn open_gateway(
     // Validate guest selection before discovery can read provider credentials.
     let mut gateway = configure(gateway)?;
     let mut refresh_go = None;
+    let mut go_failure = None;
     let mut refresh_cloud = Vec::new();
     let mut notices = Vec::new();
     let discovery_timeout = Duration::from_secs(15);
@@ -348,19 +489,14 @@ pub(crate) fn open_gateway(
         }
     }
     if go_enabled {
-        let base = cloud
-            .pointer("/opencode/base_url")
-            .map_or(Some(oxc_gateway::opencode::GO_BASE), Value::as_str)
-            .ok_or_else(invalid)?;
-        let state = gateway
-            .discover_opencode(base, Duration::from_secs(30))
-            .map_err(|e| {
-                let refusal = e.refusal();
-                OxaError::new(refusal.code, e.to_string())
-            })?;
-        if state == State::Stale {
-            refresh_go = Some(base.to_owned());
-            notices.push("Using a stale OpenCode model catalog.".into());
+        match discover_go(&mut gateway, cloud) {
+            Ok((State::Stale, base)) => {
+                refresh_go = Some(base.to_owned());
+                notices.push("Using a stale OpenCode model catalog.".into());
+            }
+            Ok(_) => {}
+            Err(error) if gateway.discovery().next().is_some() => go_failure = Some(error),
+            Err(error) => return Err(error),
         }
     }
     let gateway = Arc::new(gateway);
@@ -375,7 +511,26 @@ pub(crate) fn open_gateway(
             }
         });
     }
-    Ok(OpenedGateway { gateway, notices })
+    Ok(OpenedGateway {
+        gateway,
+        notices,
+        go_failure,
+    })
+}
+
+fn discover_go<'a>(gateway: &mut Gateway, cloud: &'a Value) -> Result<(State, &'a str), OxaError> {
+    let broken = |code, reason: &str| {
+        OxaError::new(code, format!("OpenCode Go: broken ({reason})"))
+            .with_hint(format!("User setting: {GO_SETTING}"))
+    };
+    let base = cloud
+        .pointer("/opencode/base_url")
+        .map_or(Some(oxc_gateway::opencode::GO_BASE), Value::as_str)
+        .ok_or_else(|| broken(codes::INVALID, "oxa.cloud.opencode.base_url must be a URL string"))?;
+    let state = gateway
+        .discover_opencode(base, Duration::from_secs(30))
+        .map_err(|error| broken(error.refusal().code, &error.to_string()))?;
+    Ok((state, base))
 }
 
 // One canonical cap object shared with the other subscription routes. Refresh

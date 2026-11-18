@@ -4,12 +4,19 @@ use std::{collections::BTreeSet, sync::Arc};
 
 type Backend = Result<Arc<dyn Engine>, OxaError>;
 
+pub(super) fn is_go_model(model: &str) -> bool {
+    model
+        .trim()
+        .split_once('/')
+        .is_some_and(|(provider, _)| provider.eq_ignore_ascii_case("opencode"))
+}
+
 pub(super) struct Routed {
     pub local: Backend,
     pub cloud: Backend,
     pub local_models: BTreeSet<String>,
     pub cloud_models: BTreeSet<String>,
-    pub dynamic_go: bool,
+    pub go_error: Option<OxaError>,
     pub default: Option<String>,
 }
 impl Routed {
@@ -57,8 +64,8 @@ impl Routed {
         Ok(Arc::new(self))
     }
     fn dynamic_error(&self, model: &str) -> Option<&OxaError> {
-        if self.dynamic_go && model.starts_with("opencode/") && !self.local_models.contains(model) {
-            self.cloud.as_ref().err()
+        if is_go_model(model) && !self.local_models.contains(model) {
+            self.go_error.as_ref().or_else(|| self.cloud.as_ref().err())
         } else {
             None
         }

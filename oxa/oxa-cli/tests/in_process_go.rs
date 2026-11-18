@@ -158,6 +158,41 @@ fn unavailable_go_reports_the_owner_fix_before_any_discovery() {
 }
 
 #[test]
+fn go_inventory_shows_disabled_or_broken_alongside_other_models() {
+    for disabled in [false, true] {
+        let env = TestEnv::new();
+        let replies = if disabled {
+            vec![]
+        } else {
+            vec![Reply::error(401, "invalid_request_error", CREDENTIAL)]
+        };
+        let mock = MockOpenAi::start(replies);
+        setup(&env, &format!("http://{}", mock.address()));
+        let path = env.home().join(".oxa/agent/settings.json");
+        let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        settings["oxa"]["cloud"]["opencode"]["enabled"] = json!(!disabled);
+        settings["oxa"]["cloud"]["models"]["synthetic-other"] = json!({
+            "provider":"openai", "upstream_model":"synthetic-other",
+            "context_window":32768, "max_output":64
+        });
+        fs::write(&path, settings.to_string()).unwrap();
+
+        let list = run(&env, &["--list-models"]);
+        let status = String::from_utf8_lossy(&list.stderr);
+        assert!(list.status.success(), "{status}");
+        let models = String::from_utf8_lossy(&list.stdout);
+        assert!(models.contains("synthetic-other"), "{models}");
+        assert!(!models.contains(MODEL), "{models}");
+        let state = if disabled { "off" } else { "broken" };
+        assert!(status.contains(&format!("OpenCode Go: {state}")), "{status}");
+        assert!(status.contains("oxa.cloud.opencode.enabled"), "{status}");
+        assert!(!status.contains(CREDENTIAL));
+        assert_eq!(mock.requests().len(), usize::from(!disabled));
+        mock.assert_healthy();
+    }
+}
+
+#[test]
 fn native_go_review_skill_schema_and_tool_loop_settle_subscription_rows() {
     let env = TestEnv::new();
     env.write("work/note.txt", "Synthetic review evidence.");
