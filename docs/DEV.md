@@ -71,3 +71,21 @@ unattended path performs host canaries only: it never signs in, never reproduces
 turn and never impersonates the owner, whose own acceptance stays a separate owner step.
 Wiring a user timer to this mode is likewise an operator step; the script installs and
 enables nothing.
+
+The N0 layout keeps the executable and its checksum apart: the units run the
+regular `board-bin/oxa`, and `board/binary.sha256` names it as `../board-bin/oxa`.
+Both live paths are operator input, each is validated in its own directory, and
+each rename happens inside its own directory, so the split layout activates
+unchanged and the manifest keeps its relative reference.
+
+Wiring is the operator's. For the split-window guarantee the shadow sampler (its
+verification step and its execution) must take the same artifact-install lock
+shared, so it can never observe the window between the executable rename and the
+manifest rename:
+
+```text
+flock --shared <operator-artifact-install-lock> <sampler command>
+```
+
+The activation takes that lock exclusively, so a sampler run in progress defers
+the activation and an activation in progress defers the sampler.

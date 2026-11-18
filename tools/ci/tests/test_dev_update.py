@@ -106,6 +106,12 @@ if args[1:4] == ['show', '--property=ActiveState', '--value']:
     print(state.read_text().strip() if state.exists() else 'inactive')
     sys.exit(0)
 assert args[1] == 'restart' and args[2] == os.environ['FIXTURE_UNIT']
+# The activation must still hold the artifact-install lock here, so a sampler
+# taking it shared cannot observe the window between the two renames.
+probe = subprocess.run(['flock', '-n', os.environ['FIXTURE_INSTALL_LOCK'], 'true'],
+                       capture_output=True)
+with (root / 'requests.log').open('a') as log:
+    log.write('install-lock-held\\n' if probe.returncode else 'install-lock-free\\n')
 queue = json.loads((root / 'restarts.json').read_text())
 target = queue.pop(0) if queue else 'lead'
 (root / 'restarts.json').write_text(json.dumps(queue))
@@ -292,14 +298,18 @@ class DevPromote(Fixture):
         self.operator.mkdir(mode=0o700)
         self.units = self.operator / 'board-bin'
         self.units.mkdir(mode=0o700)
+        self.boards = self.operator / 'board'
+        self.boards.mkdir(mode=0o700)
         self.binary = self.units / 'oxa'
-        self.manifest = self.units / 'binary.sha256'
+        # The manifest lives beside the board, not beside the executable, and
+        # names it relatively, exactly as the N0 layout does.
+        self.manifest = self.boards / 'binary.sha256'
         self.install_lock = self.operator / 'install.lock'
         self.install_lock.write_text('')
         self.install_lock.chmod(0o600)
-        sessions = self.operator / 'sessions'
-        sessions.mkdir(mode=0o700)
-        self.session = sessions / 'lead.jsonl'
+        self.sessions = self.operator / 'sessions'
+        self.sessions.mkdir(mode=0o700)
+        self.session = self.sessions / 'lead.jsonl'
         self.session.write_text('')
         self.session.chmod(0o600)
         self.rollout = self.operator / 'rollout.json'
@@ -334,7 +344,7 @@ class DevPromote(Fixture):
         self.binary.write_bytes(self.elf(sha))
         self.binary.chmod(0o755)
         digest = hashlib.sha256(self.elf(sha)).hexdigest()
-        self.manifest.write_text(digest + '  oxa\n')
+        self.manifest.write_text(digest + '  ../board-bin/oxa\n')
         self.manifest.chmod(0o600)
         return digest
 
@@ -346,7 +356,7 @@ class DevPromote(Fixture):
         staged.chmod(0o755)
         os.replace(staged, self.binary)
         digest = hashlib.sha256(self.elf(sha)).hexdigest()
-        self.manifest.write_text(digest + '  oxa\n')
+        self.manifest.write_text(digest + '  ../board-bin/oxa\n')
         self.manifest.chmod(0o600)
         return digest
 
@@ -411,7 +421,7 @@ class DevPromote(Fixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         new_digest = hashlib.sha256(self.elf(new)).hexdigest()
         self.assertEqual(self.binary.read_bytes(), self.elf(new))
-        self.assertEqual(self.manifest.read_text(), new_digest + '  oxa\n')
+        self.assertEqual(self.manifest.read_text(), new_digest + '  ../board-bin/oxa\n')
         self.assertEqual(self.binary.stat().st_mode & 0o777, 0o755)
         self.assertEqual(self.manifest.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.restarts(), ['lead'])
@@ -514,6 +524,29 @@ class DevPromote(Fixture):
         # The verified bytes were downloaded and imported; only activation waited.
         self.assertEqual(len(self.assets()), downloads + 1)
 
+    def test_shared_sampler_lock_defers_the_activation(self):
+        _, old_digest = self.prepare()
+        holder = subprocess.Popen(['flock', '--shared', str(self.install_lock), 'sleep', '60'])
+        self.addCleanup(holder.kill)
+        for _ in range(100):
+            if subprocess.run(['flock', '-n', str(self.install_lock), 'true'],
+                              capture_output=True).returncode:
+                break
+            time.sleep(0.02)
+        result = self.promote()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('another artifact install is in progress', result.stdout + result.stderr)
+        self.assertEqual(hashlib.sha256(self.binary.read_bytes()).hexdigest(), old_digest)
+        self.assertEqual(self.restarts(), [])
+
+    def test_activation_holds_the_artifact_lock_across_the_two_renames(self):
+        self.prepare()
+        result = self.promote()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # The unit double probes the lock while restarting: the activation must
+        # still hold it there, so a sampler cannot observe the split window.
+        self.assertIn('install-lock-held', self.requests())
+
     def test_failed_running_digest_restores_the_preserved_pair(self):
         old, old_digest = self.prepare()
         stale = self.operator / 'stale'
@@ -526,7 +559,7 @@ class DevPromote(Fixture):
         self.assertIn(f'rolled back to the previous binary ({old_digest})',
                       result.stdout + result.stderr)
         self.assertEqual(self.binary.read_bytes(), self.elf(old))
-        self.assertEqual(self.manifest.read_text(), old_digest + '  oxa\n')
+        self.assertEqual(self.manifest.read_text(), old_digest + '  ../board-bin/oxa\n')
         self.assertEqual(self.running_digest(), old_digest)
         self.assertEqual(self.restarts(), [str(stale / 'oxa'), 'lead'])
         receipt = json.loads(self.rollout.read_text())
@@ -590,9 +623,16 @@ class DevPromote(Fixture):
         remote = self.promote(lead_url='http://198.51.100.1:8743/chat')
         self.assertNotEqual(remote.returncode, 0)
         self.assertIn('canary outside loopback', remote.stderr)
-        elsewhere = self.promote(manifest=self.operator / 'binary.sha256')
-        self.assertNotEqual(elsewhere.returncode, 0)
-        self.assertIn('manifest outside the executable directory', elsewhere.stderr)
+        self.boards.chmod(0o770)
+        unsafe = self.promote()
+        self.boards.chmod(0o700)
+        self.assertNotEqual(unsafe.returncode, 0)
+        self.assertIn('manifest directory that is not trusted', unsafe.stderr)
+        self.sessions.chmod(0o777)
+        open_directory = self.promote()
+        self.sessions.chmod(0o700)
+        self.assertNotEqual(open_directory.returncode, 0)
+        self.assertIn('untrusted promotion input directory', open_directory.stderr)
         self.assertEqual(self.restarts(), restarts)
         self.assertEqual(len(self.assets()), downloads)
 

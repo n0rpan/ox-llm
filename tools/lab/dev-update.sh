@@ -81,6 +81,18 @@ if [[ ${prefix%/*} != "$root" ]]; then
   echo 'Refusing a dev prefix outside the protected dev-builds directory' >&2
   exit 1
 fi
+# Read-only form of the stock ancestor rule, used before anything is activated:
+# real directories owned by root or this account, never writable by another
+# account unless sticky.
+trusted_parent() {
+  local path=$1 parent owner mode
+  test -n "$path" && test -d "$path" && test ! -L "$path" || return 1
+  [[ $path == / ]] || trusted_parent "${path%/*}" || return 1
+  read -r owner mode < <(stat -c '%u %a' -- "$path") || return 1
+  [[ $owner == 0 || $owner == "$EUID" ]] || return 1
+  (( (8#$mode & 8#022) == 0 || (8#$mode & 8#1000) != 0 ))
+}
+
 # Promotion activates an existing service, so it never creates its own install.
 if test "$mode" = promote; then
   { test -d "$prefix" && test ! -L "$prefix"; } || {
@@ -103,15 +115,23 @@ if test "$mode" = promote; then
       exit 1
     }
   done
-  # Both files are renamed inside their own directory, so they must share it.
-  [[ ${binary%/*} == "${manifest%/*}" ]] || {
-    echo 'Refusing a manifest outside the executable directory' >&2
+  # Each file is staged and renamed inside its own directory, so the two live
+  # paths may differ (the N0 layout keeps board-bin/oxa and board/binary.sha256);
+  # each parent chain must be trusted on its own.
+  trusted_parent "${binary%/*}" || {
+    echo 'Refusing an executable directory that is not trusted' >&2
     exit 1
   }
-  (( (8#$(stat -c %a -- "${binary%/*}") & 8#022) == 0 )) || {
-    echo 'Refusing an executable directory another account can write' >&2
+  trusted_parent "${manifest%/*}" || {
+    echo 'Refusing a manifest directory that is not trusted' >&2
     exit 1
   }
+  for input in "$install_lock" "$session" "$rollout"; do
+    trusted_parent "${input%/*}" || {
+      echo 'Refusing an untrusted promotion input directory' >&2
+      exit 1
+    }
+  done
   binary_real=$(realpath -ms -- "$binary")
   # The canary is a loopback denial probe, never a remote or proxied request.
   [[ $lead_url =~ ^http://(127\.0\.0\.1|\[::1\]):[0-9]{1,5}/chat$ ]] || {
@@ -186,6 +206,7 @@ no_baseline() {
   echo 'No deploy: no verified source baseline for the current install' >&2
   exit 1
 }
+
 
 # Owner-owned, not a symlink, and never writable by another account: a checksum
 # manifest and a receipt are not secrets, but they must not be replaceable.
