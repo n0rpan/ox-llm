@@ -103,7 +103,7 @@ fn value_label(value: &Value) -> String {
                 GateEvidence::Queue => "Merge queue",
                 GateEvidence::HardwareMeasurement => "Hardware measurement",
             }));
-            format!("{tier} · Required evidence: {evidence}")
+            format!("{tier} · Additional evidence: {evidence}")
         }
         Value::Reserve { classes } => {
             let classes = list(classes.iter().map(|class| match class {
@@ -257,6 +257,7 @@ mod tests {
         for label in ["T3", "PR build", "Review", "Merge queue"] {
             assert!(gate.contains(label));
         }
+        assert!(gate.contains("Additional evidence:"));
         let reserve = rule(
             Kind::Reserve,
             Scope::Host("worker-example".into()),
