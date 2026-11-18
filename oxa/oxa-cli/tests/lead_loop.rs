@@ -1,7 +1,7 @@
 use oxa_config::Dirs;
 use oxa_fake::{FakeOpts, FakeServer, TestEnv};
 use oxa_session::{FsStore, Goal, SessionStore};
-use oxa_work::board::{Action, Board, Entry};
+use oxa_work::board::{Action, Board, Entry, Lease};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -11,30 +11,29 @@ use std::{
     process::{Command, Stdio},
 };
 
-fn write_board(path: &Path, observed_at: u64, rows: &[(u64, Action, bool)]) {
+fn write_board(path: &Path, observed_at: u64, rows: &[(u64, Action, bool, Option<u64>)]) {
     let board = Board {
         observed_at,
         entries: rows
             .iter()
-            .map(|&(number, action, eligible)| Entry {
+            .map(|&(number, action, eligible, expires_at)| Entry {
                 number,
                 head: "a".repeat(40),
                 release_pinned: false,
                 action,
-                lease: None,
+                lease: expires_at.map(|expires_at| Lease {
+                    holder: "fixture".into(),
+                    expires_at,
+                    claimed_at: Some(expires_at - 1),
+                    generation: (expires_at / 86_400, 1),
+                }),
                 attempts_today: 0,
                 eligible,
             })
             .collect(),
     };
-    fs::write(
-        path,
-        format!(
-            "{}\n",
-            json!({"schema_version":1,"observed_at":observed_at,"board":board})
-        ),
-    )
-    .unwrap();
+    let sample = json!({"schema_version":1,"observed_at":observed_at,"board":board});
+    fs::write(path, format!("{sample}\n")).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
@@ -69,7 +68,14 @@ fn running_lead_reopens_the_same_owner_ask_after_process_kill() {
 
     assert!(command().output().unwrap().status.success());
     assert_eq!(Goal::revision(&store.load(&session).unwrap()), 0);
-    write_board(&board, 1, &[(42, Action::Ready, true)]);
+    write_board(&board, 1, &[(42, Action::Ready, true, None)]);
+    let agent = command()
+        .env("AI_AGENT", "")
+        .args(["run", "--once"])
+        .output()
+        .unwrap();
+    assert!(!agent.status.success());
+    assert_eq!(Goal::revision(&store.load(&session).unwrap()), 0);
     let stale = command().args(["run", "--once"]).output().unwrap();
     assert!(stale.status.success(), "{stale:?}");
     let stale: Value = serde_json::from_slice(&stale.stdout).unwrap();
@@ -81,9 +87,9 @@ fn running_lead_reopens_the_same_owner_ask_after_process_kill() {
         &board,
         now,
         &[
-            (8, Action::FixFindings, false),
-            (42, Action::Ready, true),
-            (66, Action::FixRequiredCi, true),
+            (8, Action::FixFindings, false, Some(now + 60)),
+            (42, Action::Ready, true, None),
+            (66, Action::FixRequiredCi, true, Some(now)),
         ],
     );
     let mut running = command().arg("run").stdout(Stdio::piped()).spawn().unwrap();
@@ -98,7 +104,7 @@ fn running_lead_reopens_the_same_owner_ask_after_process_kill() {
     assert_eq!(first["asks"].as_array().unwrap().len(), 1);
     assert_eq!(first["asks"][0]["id"], "lead:board:66");
 
-    write_board(&board, now, &[(12, Action::BuildIssue, true)]);
+    write_board(&board, now, &[(12, Action::BuildIssue, true, None)]);
     assert!(first["asks"][0].get("question").is_none());
     let reopened = command().args(["run", "--once"]).output().unwrap();
     assert!(reopened.status.success(), "{reopened:?}");

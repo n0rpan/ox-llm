@@ -14,12 +14,7 @@ fn unavailable() -> OxaError {
 }
 
 fn binding(dirs: &Dirs, cwd: &Path, env: &Env) -> Result<(LeadOwnerBinding, u32), OxaError> {
-    if env.pairs().iter().any(|(key, _)| {
-        matches!(
-            key.as_str(),
-            "OXA_CODING_AGENT" | "AI_AGENT" | "OXA_SUBAGENT_DEPTH"
-        )
-    }) {
+    if crate::dispatch::is_agent(env) {
         return Err(OxaError::new(codes::INVALID, "Use Lead from the owner session."));
     }
     let uid = fs::metadata("/proc/self").map_err(|_| unavailable())?.uid();
@@ -32,7 +27,7 @@ fn proposal(board: &Board, revision: u64) -> Option<OpenGoalAsk> {
     let entry = board
         .entries
         .iter()
-        .filter(|entry| entry.eligible && entry.lease.is_none() && entry.action <= Action::Ready)
+        .filter(|entry| entry.eligible && entry.action <= Action::Ready)
         .min_by_key(|entry| (!entry.release_pinned, entry.action, entry.number))?;
     let action = match entry.action {
         Action::FixFindings => "address the review findings",
@@ -132,13 +127,7 @@ pub(crate) fn asks(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> R
     let result = binding.with_goal_store(|store, session| {
         let entries = store.load(session)?;
         let goal = Goal::latest(&entries)?;
-        if goal
-            .as_ref()
-            .and_then(|goal| goal.lead.as_ref())
-            .is_some_and(|lead| !lead.open_asks.is_empty())
-        {
-            store.sync(session)?;
-        }
+        store.sync(session)?;
         Ok(view(goal.as_ref(), Goal::revision(&entries), "observed", true))
     })?;
     write(out, &result)?;

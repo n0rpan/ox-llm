@@ -31,6 +31,16 @@ use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+pub(crate) fn is_agent(env: &Env) -> bool {
+    // Marker presence, including an empty value, is enough to refuse.
+    env.pairs().iter().any(|(name, _)| {
+        matches!(
+            name.as_str(),
+            "OXA_CODING_AGENT" | "AI_AGENT" | "OXA_SUBAGENT_DEPTH"
+        )
+    })
+}
+
 /// The process's standard streams and terminal facts, injectable for tests.
 pub struct Stdio {
     pub stdin: Box<dyn Read + Send>,
@@ -160,7 +170,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
 
     #[cfg(feature = "share")]
     if !a.share_models.is_empty() || a.share_bind.is_some() {
-        let refusal = if crate::share_cmd::is_agent(env) {
+        let refusal = if is_agent(env) {
             Some(OxaError::new(
                 codes::INVALID,
                 "Guest serving requires the owner outside an agent tool",
@@ -222,7 +232,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             #[cfg(feature = "share")]
             Subcommand::Share(words) => {
                 let serve = words.first().is_some_and(|word| word == "serve");
-                if crate::share_cmd::is_agent(env) {
+                if is_agent(env) {
                     return report(
                         &mut *stderr,
                         &OxaError::new(
