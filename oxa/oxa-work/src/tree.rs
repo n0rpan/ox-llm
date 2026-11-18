@@ -307,7 +307,7 @@ fn release_review_branch(
     {
         return Err(blocked.into());
     }
-    let prior_lock = lock_task(policy, prior_id)?;
+    let prior_lock = lock_task(policy, prior_id, true)?;
     let prior = load_task_checkpoint(policy, prior_id)?.ok_or(blocked)?;
     if prior.task.id != prior_id
         || prior.task.reviewed_head().is_none()
