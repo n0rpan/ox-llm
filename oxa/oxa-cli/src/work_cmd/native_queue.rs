@@ -1,9 +1,6 @@
 //! Explicit one-shot execution of an existing, fully bound native board packet.
-use super::{protected_storage, Context};
-use oxa_work::{
-    board::{assignment::Worker, Claims},
-    LockedTask, NativeQueueOwner, QueueOptions, QueueRun, Task,
-};
+use super::{protected_storage, registered_native_worker, Context};
+use oxa_work::{board::Claims, LockedTask, NativeQueueOwner, QueueOptions, QueueRun, Task};
 use serde_json::Value;
 use std::{
     fs,
@@ -96,11 +93,7 @@ pub(super) fn run(
     let directory = owner_path("queue")?;
     let claims_path = owner_path("claims")?;
     let claims = Claims::open(&claims_path)?;
-    let worker: Worker =
-        serde_json::from_value(value["worker"].clone()).map_err(|_| "invalid authenticated worker export")?;
-    if !oxa_work::board::assignment::valid_worker_id(&worker.id) {
-        return Err("invalid native worker identity".into());
-    }
+    let (worker, host) = registered_native_worker(&value)?;
     let rows = claims.assignments()?;
     let mut owned = rows.into_values().filter(|row| {
         row.state
@@ -111,6 +104,14 @@ pub(super) fn run(
     let Some(row) = owned.next() else { return Ok(0) };
     if owned.next().is_some() {
         return Err("native worker has multiple active assignments".into());
+    }
+    if !row
+        .data
+        .item_owner
+        .as_ref()
+        .is_some_and(|owner| owner.host_id == host)
+    {
+        return Err("native claim does not belong to the authenticated host".into());
     }
     let binding = row
         .data

@@ -23,7 +23,7 @@ pub struct ItemOwner {
 }
 
 impl Saved {
-    fn item_lease(&self) -> Option<ItemLease> {
+    pub(super) fn item_lease(&self) -> Option<ItemLease> {
         let owner = self.data.item_owner.as_ref()?;
         Some(ItemLease {
             lease: self.state.lease.clone()?,
@@ -43,6 +43,21 @@ impl Saved {
 }
 
 impl Claims {
+    /// Hosted automatic admission retains the existing atomic idle/bootstrap fence.
+    /// Its observer receives the current retained binding under that same lock,
+    /// so a replacement packet can check the prior branch as well as its new branch.
+    pub fn claim_idle_item_for(
+        &self,
+        entry: &Entry,
+        policy: &Policy,
+        worker: &Worker,
+        host_id: &str,
+        timing: (u64, u64),
+        observe: impl FnOnce(u64, Option<&NativeBinding>) -> Result<Option<ExistingWork>>,
+    ) -> Result<Option<ItemLease>> {
+        self.claim_item_checked(entry, policy, worker, host_id, timing, true, observe)
+    }
+
     /// Explicit opt-in before any new work. The trusted observer must check complete, fresh
     /// PR and branch evidence for this repository/item or fail. It runs under the Claims lock
     /// and must not call Claims. All hosts must use this same protected authority.
@@ -55,17 +70,35 @@ impl Claims {
         timing: (u64, u64),
         observe: impl FnOnce(u64) -> Result<Option<ExistingWork>>,
     ) -> Result<Option<ItemLease>> {
+        self.claim_item_checked(entry, policy, worker, host_id, timing, false, |number, _| {
+            observe(number)
+        })
+    }
+
+    fn claim_item_checked(
+        &self,
+        entry: &Entry,
+        policy: &Policy,
+        worker: &Worker,
+        host_id: &str,
+        timing: (u64, u64),
+        idle: bool,
+        observe: impl FnOnce(u64, Option<&NativeBinding>) -> Result<Option<ExistingWork>>,
+    ) -> Result<Option<ItemLease>> {
         if !valid_worker_id(host_id) {
             return Err("authenticated host identity required".into());
         }
         self.claim_checked(entry, policy, &worker.id, timing, Some(host_id), |row| {
-            if let Some(existing) = observe(entry.number)? {
+            if idle && !self.idle_for(entry.number, &worker.id, row)? {
+                return Ok(false);
+            }
+            if let Some(existing) = observe(entry.number, row.data.native_binding.as_ref())? {
                 let (owner, kind) = match existing {
                     ExistingWork::PullRequest { number, owner } if number > 0 => (owner, "open PR"),
                     ExistingWork::Branch { name, owner } if !name.is_empty() => (owner, "branch"),
                     _ => return Err("invalid existing work evidence".into()),
                 };
-                if !valid_worker_id(&owner) {
+                if !valid_worker_id(owner.strip_suffix("[bot]").unwrap_or(&owner)) {
                     return Err("existing work requires an identified owner".into());
                 }
                 return Err(format!("item {}: {kind} owned by {owner}", entry.number));

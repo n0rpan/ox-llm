@@ -29,7 +29,7 @@ pub mod mirrors;
 pub mod shadow;
 mod state;
 mod status;
-pub use status::{status, task_usage, Liveness, Status, TaskUsage};
+pub use status::{status, task_usage, task_usage_for_binding, Liveness, Status, TaskUsage};
 mod tree;
 pub use state::{CheckpointKind, CheckpointObserver, Step};
 mod worker;
@@ -51,7 +51,7 @@ pub mod events;
 mod facts_io;
 pub use facts_io::require_private_directory;
 mod github;
-pub use github::pull_request_task;
+pub use github::{pull_request_task, ReviewedPullRequest};
 pub mod incidents;
 pub mod situation;
 pub mod standing;
@@ -71,6 +71,9 @@ pub struct Task {
     pub prompt: String,
     #[serde(default = "default_max_time")]
     pub max_time: u64,
+    /// Reviewed source for attempts whose execution IDs use a different namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_pull_request: Option<ReviewedPullRequest>,
 }
 fn default_max_time() -> u64 {
     45 * 60
@@ -98,6 +101,9 @@ pub struct Record {
     pub outcome: Outcome,
     pub detail: String,
     pub worker: Option<WorkerResult>,
+    /// Durable runner revision immediately before the native invocation that produced this result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_launch_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_tokens: Option<TaskTokens>,
     pub session_id: Option<String>,
@@ -149,6 +155,7 @@ pub struct PlannedTask {
     commands: Vec<String>,
     checkpoint_revision: Option<u64>,
     base_alias: Option<tree::BaseAlias>,
+    native: bool,
 }
 impl PlannedTask {
     pub fn task(&self) -> &Task {
@@ -192,6 +199,7 @@ fn plan_new_task(repo: &Path, task: Task, policy: &RunPolicy, native: bool) -> R
         commands,
         checkpoint_revision: None,
         base_alias,
+        native,
     })
 }
 
@@ -245,6 +253,7 @@ fn plan_task_mode(
             commands: execution.commands,
             checkpoint_revision: Some(saved.record.checkpoint_revision),
             base_alias: None,
+            native,
         });
     }
     plan_new_task(repo, task, policy, native)
@@ -586,6 +595,9 @@ fn valid_task_id(id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
 }
 fn validate(task: &Task) -> Result<()> {
+    if task.reviewed_pull_request.is_some() && task.reviewed_source().is_none() {
+        return Err("invalid reviewed pull request source".into());
+    }
     if !valid_task_id(&task.id) {
         return Err("task id must contain 1..128 letters, digits, - or _".into());
     }
@@ -644,6 +656,7 @@ pub fn issue_task(
         base: default_base(),
         prompt: issue_prompt(number, &issue)?,
         max_time: default_max_time(),
+        reviewed_pull_request: None,
     })
 }
 
@@ -933,6 +946,7 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
         outcome: Outcome::Blocked,
         detail,
         worker: None,
+        worker_launch_revision: None,
         task_tokens: None,
         session_id: None,
         base_sha: None,
@@ -1239,6 +1253,7 @@ fn run_locked(
         observer,
         scrub_note,
         base_alias: planned.base_alias.as_ref(),
+        native: planned.native,
         #[cfg(target_os = "linux")]
         managed_steering: locked.managed_steering.as_ref(),
     })

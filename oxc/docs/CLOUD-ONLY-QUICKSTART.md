@@ -1,4 +1,7 @@
-# Cloud-only quickstart
+# Legacy v0.2.0 cloud-only quickstart
+
+This guide applies to the Python controller shipped in v0.2.0. For the native
+v0.2.1 release target, see the [native install and upgrade guide](https://github.com/oxstack/ox-llm/blob/main/docs/NATIVE-INSTALL.md).
 
 oxc (the controller and its cloud gateway) plus oxa, with **no local engine and no model
 download**. Every model is a cloud model that oxc proxies over its loopback OpenAI v1
@@ -19,7 +22,8 @@ budget.
 
 ## 1. Install the controller
 
-From `oxc/` in a checkout of this repository. First create a venv outside the checkout and
+From `oxc/` in a checkout of the [published v0.2.0 source](https://github.com/oxstack/ox-llm/tree/83fe1019d08059efc1dd6ac6932099482d55fd10).
+First create a venv outside that checkout and
 install the pinned Anthropic SDK (`anthropic==0.125.0`, the `cloud` extra in `pyproject.toml`) into it,
 then run the installer with that venv's Python, because the installer bakes the interpreter that runs
 it into the launcher and the unit:
