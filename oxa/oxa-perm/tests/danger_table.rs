@@ -652,6 +652,48 @@ const ROWS: &[Row] = &[
         cwd: ".",
         expect: NONE,
     },
+    Row {
+        name: "cd_option_then_root",
+        cmd: "cd -P / && rm -rf var/tmp/victim",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
+        name: "shell_option_terminator_before_script",
+        cmd: "bash -c -- 'rm -rf /var/tmp/victim'",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
+        name: "kill_process_group_zero",
+        cmd: "kill 0",
+        cwd: ".",
+        expect: KILL,
+    },
+    Row {
+        name: "find_traversal_option_before_root",
+        cmd: "find -P /var/tmp/victim -delete",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
+        name: "sed_expression_option_keeps_the_file",
+        cmd: "sed -i --expression='s/a/b/' ~/.ssh/authorized_keys",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
+        name: "cp_into_home_slash_checks_the_name",
+        cmd: "cp .npmrc \"$HOME/\"",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
+        name: "sql_drop_split_by_whitespace",
+        cmd: "sqlite3 app.db 'DROP\nTABLE t'",
+        cwd: ".",
+        expect: SQL,
+    },
 ];
 
 fn setup() -> (TestEnv, PathGuard) {

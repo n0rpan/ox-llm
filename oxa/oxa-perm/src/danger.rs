@@ -413,6 +413,18 @@ impl DangerRules {
                     None => {
                         if let Some(t) = ops.last() {
                             self.write_hit(t, seg, ctx, hits);
+                            // A directory destination writes each source's own name into it.
+                            let dir_like =
+                                t.ends_with('/') || ctx.resolve(t).is_some_and(|path| path.is_dir());
+                            if dir_like && ops.len() > 1 {
+                                let dir = t.trim_end_matches('/');
+                                for source in ops.iter().take(ops.len() - 1) {
+                                    if let Some(name) = Path::new(source).file_name() {
+                                        let target = format!("{dir}/{}", name.to_string_lossy());
+                                        self.write_hit(&target, seg, ctx, hits);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -422,7 +434,17 @@ impl DangerRules {
                     .iter()
                     .any(|a| short_has(a, 'i') || a.starts_with("--in-place"))
                 {
-                    for t in ops.iter().skip(1) {
+                    // With `-e`/`--expression`/`-f`/`--file` the script is not an operand, so
+                    // the first input file is an operand.
+                    let script_in_option = args.iter().any(|a| {
+                        a.starts_with("--expression")
+                            || a.starts_with("--file")
+                            || (a.starts_with('-')
+                                && !a.starts_with("--")
+                                && (a.contains('e') || a.contains('f')))
+                    });
+                    let skip = usize::from(!script_in_option);
+                    for t in ops.iter().skip(skip) {
                         self.write_hit(t, seg, ctx, hits);
                     }
                 }
@@ -499,7 +521,19 @@ impl DangerRules {
         seg: &str,
         hits: &mut Vec<DangerHit>,
     ) {
+        // The traversal and depth options (`-P`, `-L`, `-H`, `-D debug`, `-O2`) come before the
+        // roots and are not roots themselves.
+        let mut from = 0usize;
+        while from < args.len() {
+            match args[from].as_str() {
+                "-P" | "-L" | "-H" | "-O0" | "-O1" | "-O2" | "-O3" => from += 1,
+                "-D" => from += 2,
+                _ => break,
+            }
+        }
         let roots: Vec<&str> = args
+            .get(from..)
+            .unwrap_or(&[])
             .iter()
             .map(String::as_str)
             .take_while(|a| !is_find_expr(a))
@@ -537,7 +571,17 @@ impl DangerRules {
             self.push(hits, "oxa-self-approve", seg);
         }
         let p = path.to_string_lossy();
-        if p.starts_with("/dev/sd") || p.starts_with("/dev/nvme") || p.starts_with("/dev/mmcblk") {
+        if [
+            "/dev/sd",
+            "/dev/nvme",
+            "/dev/mmcblk",
+            "/dev/vd",
+            "/dev/xvd",
+            "/dev/hd",
+        ]
+        .iter()
+        .any(|prefix| p.starts_with(prefix))
+        {
             self.push(hits, "disk-destroy", seg);
         }
     }
@@ -1091,7 +1135,15 @@ fn cd_target(words: &[String], ctx: &Ctx<'_>) -> Option<Option<PathBuf>> {
     if !matches!(name, "cd" | "pushd") {
         return None;
     }
-    match argv.get(1).map(String::as_str) {
+    // `cd -L`, `cd -P`, `cd --` before the destination.
+    let mut k = 1usize;
+    while argv
+        .get(k)
+        .is_some_and(|word| word.starts_with('-') && word.len() > 1 && word.as_str() != "-")
+    {
+        k += 1;
+    }
+    match argv.get(k).map(String::as_str) {
         None | Some("") => Some(Some(ctx.guard.home.to_path_buf())),
         Some("-") => Some(None),
         Some(arg) => Some(ctx.resolve(arg)),
@@ -1177,7 +1229,11 @@ fn shell_script(argv: &[String]) -> Option<String> {
             continue;
         }
         if a.starts_with('-') && a[1..].contains('c') {
-            return argv.get(k + 1).cloned();
+            let mut next = k + 1;
+            if argv.get(next).is_some_and(|word| word == "--") {
+                next += 1;
+            }
+            return argv.get(next).cloned();
         }
         k += 1;
     }
@@ -1318,7 +1374,8 @@ fn kill_foreign(args: &[String]) -> bool {
             continue;
         }
         if let Ok(pid) = a.parse::<i64>() {
-            if pid == 1 || pid < 0 {
+            // 1 is init, 0 is this process group, and a negative pid is another group.
+            if pid == 0 || pid == 1 || pid < 0 {
                 return true;
             }
         }
@@ -1329,11 +1386,12 @@ fn kill_foreign(args: &[String]) -> bool {
 /// A SQL `DROP` of a table, database or schema, or a `TRUNCATE` statement, in any word.
 fn sql_drop(words: &[String]) -> bool {
     words.iter().any(|w| {
-        let l = w.to_lowercase();
+        // The keywords may be separated by any whitespace, a newline included.
+        let l = w.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ");
         l.contains("drop table")
             || l.contains("drop database")
             || l.contains("drop schema")
-            || l.trim_start().starts_with("truncate ")
+            || l.starts_with("truncate ")
     })
 }
 
