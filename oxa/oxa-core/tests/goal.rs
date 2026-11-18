@@ -911,6 +911,226 @@ fn goal_command_set_is_refused_while_busy() {
     assert_eq!(session.goal().unwrap().objective, "First objective");
 }
 
+#[test]
+fn wait_returns_early_when_follow_up_arrives() {
+    use oxa_proto::{AgentEvent, EventSink};
+    struct InboxDuringWait(oxa_core::Handle, String);
+    impl EventSink for InboxDuringWait {
+        fn emit(&mut self, event: &AgentEvent) {
+            if matches!(event, AgentEvent::ToolExecutionUpdate { tool_name, .. } if tool_name == "wait") {
+                self.0.follow_up_for(&self.1, "Synthetic input.".into());
+            }
+        }
+    }
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("wait", "wait", r#"{"seconds":3600,"reason":"Input wake test"}"#),
+        ScriptTurn::text("Input received."),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Synthetic input handled."}"#,
+        ),
+    ]));
+    let mut session =
+        Session::open(deps(&env, Arc::new(MemStore::new()), engine.clone()), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let id = session.inner().sref.id.clone();
+    let start = std::time::Instant::now();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut InboxDuringWait(session.handle(), id),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert!(engine.requests()[1]
+        .messages
+        .iter()
+        .any(|m| m.tool_call_id.as_deref() == Some("wait")
+            && m.content.as_deref() == Some("Wait ended: input arrived.")));
+}
+
+#[test]
+fn follow_up_after_wait_is_the_next_user_message() {
+    use oxa_proto::{AgentEvent, EventSink};
+    struct FollowUpDuringWait(oxa_core::Handle);
+    impl EventSink for FollowUpDuringWait {
+        fn emit(&mut self, event: &AgentEvent) {
+            if matches!(event, AgentEvent::ToolExecutionUpdate { tool_name, .. } if tool_name == "wait") {
+                self.0.follow_up("Synthetic input.".into());
+            }
+        }
+    }
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("wait", "wait", r#"{"seconds":3600,"reason":"Next message test"}"#),
+        ScriptTurn::text("Input received."),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Synthetic input handled."}"#,
+        ),
+    ]));
+    let mut session =
+        Session::open(deps(&env, Arc::new(MemStore::new()), engine.clone()), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut FollowUpDuringWait(session.handle()),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    let requests = engine.requests();
+    let messages = &requests.last().unwrap().messages;
+    let wait_result = messages
+        .iter()
+        .position(|m| m.tool_call_id.as_deref() == Some("wait"))
+        .unwrap();
+    let next_user = messages
+        .iter()
+        .position(|m| m.content.as_deref() == Some("Synthetic input."))
+        .unwrap();
+    assert!(next_user > wait_result);
+    assert_eq!(messages[next_user].role, oxa_proto::Role::User);
+}
+
+#[test]
+fn wait_keeps_input_admitted_before_it_starts() {
+    use oxa_proto::{AgentEvent, EventSink};
+    struct InboxAtStart(oxa_core::Handle, String);
+    impl EventSink for InboxAtStart {
+        fn emit(&mut self, event: &AgentEvent) {
+            if matches!(event, AgentEvent::ToolExecutionStart { tool_name, .. } if tool_name == "wait") {
+                self.0.follow_up_for(&self.1, "Early input.".into());
+            }
+        }
+    }
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("wait", "wait", r#"{"seconds":3600,"reason":"Early input test"}"#),
+        ScriptTurn::text("Input received."),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Early input handled."}"#,
+        ),
+    ]));
+    let mut session =
+        Session::open(deps(&env, Arc::new(MemStore::new()), engine.clone()), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let id = session.inner().sref.id.clone();
+    let start = std::time::Instant::now();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut InboxAtStart(session.handle(), id),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+}
+
+#[test]
+fn wait_woken_by_follow_up_delivers_it_before_the_next_request() {
+    use oxa_proto::{AgentEvent, EventSink};
+    struct FollowUpDuringWait(oxa_core::Handle);
+    impl EventSink for FollowUpDuringWait {
+        fn emit(&mut self, event: &AgentEvent) {
+            if matches!(event, AgentEvent::ToolExecutionUpdate { tool_name, .. } if tool_name == "wait") {
+                self.0.follow_up("Woken input.".into());
+            }
+        }
+    }
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("wait", "wait", r#"{"seconds":3600,"reason":"Delivery test"}"#),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Woken input handled."}"#,
+        ),
+    ]));
+    let mut session =
+        Session::open(deps(&env, Arc::new(MemStore::new()), engine.clone()), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut FollowUpDuringWait(session.handle()),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    // The request right after the wait already carries the follow-up as a user message.
+    let messages = &engine.requests()[1].messages;
+    let wait_result = messages
+        .iter()
+        .position(|m| m.tool_call_id.as_deref() == Some("wait"))
+        .unwrap();
+    let woken = messages
+        .iter()
+        .position(|m| m.content.as_deref() == Some("Woken input."))
+        .unwrap();
+    assert!(woken > wait_result);
+    assert_eq!(messages[woken].role, oxa_proto::Role::User);
+}
+
+#[test]
+fn wait_for_inactive_session_message_keeps_waiting() {
+    use oxa_proto::{AgentEvent, EventSink};
+    struct InactiveDuringWait(oxa_core::Handle);
+    impl EventSink for InactiveDuringWait {
+        fn emit(&mut self, event: &AgentEvent) {
+            if matches!(event, AgentEvent::ToolExecutionUpdate { tool_name, .. } if tool_name == "wait") {
+                self.0
+                    .follow_up_for("inactive-session", "Other session input.".into());
+            }
+        }
+    }
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("wait", "wait", r#"{"seconds":1,"reason":"Inactive inbox test"}"#),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Synthetic wait finished."}"#,
+        ),
+    ]));
+    let mut session =
+        Session::open(deps(&env, Arc::new(MemStore::new()), engine.clone()), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let start = std::time::Instant::now();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut InactiveDuringWait(session.handle()),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert!(start.elapsed() >= std::time::Duration::from_secs(1));
+    assert!(engine.requests()[1]
+        .messages
+        .iter()
+        .any(|m| m.tool_call_id.as_deref() == Some("wait") && m.content.as_deref() == Some("Wait ended.")));
+}
+
 /// Delegates to a MemStore; `sync` counts its calls and fails while `fail_sync` is set.
 #[derive(Default)]
 struct SyncFailStore {
