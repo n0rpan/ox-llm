@@ -15,6 +15,10 @@ pub struct RerunKey {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RerunIntent {
     pub key: RerunKey,
+    pub repository: String,
+    pub workflow_path: String,
+    pub check_suite_id: u64,
+    pub check_run_id: u64,
     pub job_id: u64,
     pub run_attempt: u64,
 }
@@ -27,6 +31,9 @@ impl RerunIntent {
             && !self.key.logical_job.trim().is_empty()
             && self.key.logical_job.len() <= 512
             && !self.key.logical_job.chars().any(char::is_control)
+            && !self.workflow_path.is_empty()
+            && self.check_suite_id > 0
+            && self.check_run_id > 0
             && self.job_id > 0
             && self.run_attempt > 0
     }
@@ -36,16 +43,6 @@ impl RerunIntent {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RerunAcknowledgment {
     pub intent: RerunIntent,
-}
-
-impl RerunAcknowledgment {
-    /// The caller supplies a newly verified observation from the existing Reader.
-    pub fn reconciles(&self, observed: &RerunIntent) -> bool {
-        observed.valid()
-            && observed.key == self.intent.key
-            && observed.run_attempt > self.intent.run_attempt
-            && observed.job_id != self.intent.job_id
-    }
 }
 
 pub(crate) struct RerunTarget(Repository);
@@ -97,6 +94,10 @@ pub(crate) fn test_intent() -> RerunIntent {
             workflow_run_id: 4,
             logical_job: "required build".into(),
         },
+        repository: "sample/repo".into(),
+        workflow_path: ".github/workflows/checks.yml".into(),
+        check_suite_id: 7,
+        check_run_id: 8,
         job_id: 9,
         run_attempt: 2,
     }
@@ -107,20 +108,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn acknowledgment_requires_a_201_envelope_and_separate_attempt_evidence() {
+    fn acknowledgment_requires_a_201_envelope_and_preserves_the_exact_attempt() {
         let intent = test_intent();
         for response in ["", "HTTP/2 201", "HTTP/2 200\n\n201", "HTTP/2 202\n\n"] {
             assert!(acknowledgment(intent.clone(), response).is_err());
         }
         let ack = acknowledgment(intent.clone(), "HTTP/2 201\r\ncontent-length: 0\r\n\r\n").unwrap();
-        assert!(!ack.reconciles(&intent));
-        let mut later = RerunIntent {
-            run_attempt: 3,
-            job_id: 10,
-            ..intent
-        };
-        assert!(ack.reconciles(&later));
-        later.key.head = "b".repeat(40);
-        assert!(!ack.reconciles(&later));
+        assert_eq!(ack.intent, intent);
     }
 }
