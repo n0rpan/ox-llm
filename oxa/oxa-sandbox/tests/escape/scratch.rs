@@ -1,6 +1,8 @@
 //! #457: the session directory at `/tmp` (persistent scratch and a writable cache home).
 
-use crate::harness::{assert_ok, assert_refused, home_file, run, run_result, sandbox_with_layout, sh, write};
+use crate::harness::{
+    assert_ok, assert_refused, home_file, run, run_result_with_timeout, sandbox_with_layout, sh, write,
+};
 use oxa_fake::TestEnv;
 use oxa_sandbox::{scratch_root, Bwrap, Layout, LayoutInputs};
 use std::path::Path;
@@ -378,10 +380,11 @@ fn cargo_builds_in_tmp_across_calls() {
     let Some((sb, _dir)) = session(&env) else {
         return;
     };
-    // This crate has no dependencies. Keep Cargo's cache database in the session scratch
-    // rather than trying to update the toolchain user's cache through the registry-only bind.
-    let build = "printf 'fixture.phase=prepare\\n' && mkdir -p /tmp/p/src && printf '[package]\\nname=\"p\"\\nversion=\"0.1.0\"\\nedition=\"2021\"\\n' > /tmp/p/Cargo.toml && printf 'fn main(){println!(\"hi457\")}' > /tmp/p/src/main.rs && cd /tmp/p && printf 'fixture.phase=cargo-build\\n' && CARGO_HOME=/tmp/cargo-home cargo build --offline -vv 2>&1";
-    let result = run_result(&sb, &env.work(), build, true, false);
+    // One dependency-free source file, an empty scratch Cargo home and no network.
+    // Disable debug/incremental output and bound build parallelism; cold CI toolchain
+    // startup/linking can still exceed the ordinary 30-second command budget.
+    let build = "printf 'fixture.phase=prepare\\n' && mkdir -p /tmp/p/src && printf '[package]\\nname=\"p\"\\nversion=\"0.1.0\"\\nedition=\"2021\"\\n' > /tmp/p/Cargo.toml && printf 'fn main(){println!(\"hi457\")}' > /tmp/p/src/main.rs && cd /tmp/p && printf 'fixture.phase=cargo-build\\n' && CARGO_HOME=/tmp/cargo-home CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 cargo build --offline --jobs 1 -vv 2>&1";
+    let result = run_result_with_timeout(&sb, &env.work(), build, true, false, 120);
     assert_ok(
         result.exit,
         &format!(
