@@ -5,7 +5,7 @@ use crate::work_refill::{Consumer, Packet, Partition};
 use oxa_work::board::Action;
 use std::{fs, os::unix::fs::MetadataExt, path::PathBuf};
 
-fn private(path: &Path, uid: u32) -> Result<Value, String> {
+pub(super) fn private(path: &Path, uid: u32) -> Result<Value, String> {
     let mut bytes = Vec::new();
     crate::lead_input::open(path, uid)?
         .take(65_537)
@@ -15,6 +15,39 @@ fn private(path: &Path, uid: u32) -> Result<Value, String> {
         return Err("board input exceeds capacity".into());
     }
     serde_json::from_slice(&bytes).map_err(|_| "invalid private board input".into())
+}
+
+pub(super) fn configuration(
+    config: &Path,
+    root: &Path,
+    env: &oxa_config::Env,
+    dirs: &oxa_config::Dirs,
+) -> Result<(Value, PathBuf, u32), String> {
+    if !crate::work_cmd::trusted(root, env, dirs)? {
+        return Err("source project is not trusted".into());
+    }
+    let config = config.canonicalize().map_err(|_| "board config unavailable")?;
+    let authority = dirs
+        .agent_dir
+        .canonicalize()
+        .map_err(|_| "owner controls unavailable")?;
+    if config.starts_with(root) || !config.starts_with(&authority) {
+        return Err("board config must be in protected owner controls outside the source project".into());
+    }
+    let uid = fs::metadata(&dirs.home)
+        .map_err(|_| "owner home unavailable")?
+        .uid();
+    Ok((private(&config, uid)?, authority, uid))
+}
+
+pub(super) fn partition(value: &Value) -> Result<Partition, String> {
+    Ok(Partition {
+        modulus: value["partition"]["modulus"]
+            .as_u64()
+            .ok_or("missing partition modulus")?,
+        residues: serde_json::from_value(value["partition"]["residues"].clone())
+            .map_err(|_| "invalid partition residues")?,
+    })
 }
 
 pub(super) fn run(
@@ -53,23 +86,7 @@ pub(super) fn run(
     if policy.offline {
         return Err("GitHub board is unavailable in offline mode".into());
     }
-    if !crate::work_cmd::trusted(root, env, dirs)? {
-        return Err("source project is not trusted".into());
-    }
-    let config = Path::new(config)
-        .canonicalize()
-        .map_err(|_| "board config unavailable")?;
-    let authority = dirs
-        .agent_dir
-        .canonicalize()
-        .map_err(|_| "owner controls unavailable")?;
-    if config.starts_with(root) || !config.starts_with(&authority) {
-        return Err("board config must be in protected owner controls outside the source project".into());
-    }
-    let uid = fs::metadata(&dirs.home)
-        .map_err(|_| "owner home unavailable")?
-        .uid();
-    let value = private(&config, uid)?;
+    let (value, authority, uid) = configuration(Path::new(config), root, env, dirs)?;
     if value["enabled"] != true {
         return Ok(0);
     }
@@ -87,13 +104,7 @@ pub(super) fn run(
     }
     let claims = oxa_work::board::Claims::open(&owner_path("claims")?)?;
     let (worker, host) = crate::work_cmd::registered_native_worker(&value)?;
-    let partition = Partition {
-        modulus: value["partition"]["modulus"]
-            .as_u64()
-            .ok_or("missing partition modulus")?,
-        residues: serde_json::from_value(value["partition"]["residues"].clone())
-            .map_err(|_| "invalid partition residues")?,
-    };
+    let partition = partition(&value)?;
     let rows = value["packets"]
         .as_array()
         .filter(|rows| rows.len() <= 20)
