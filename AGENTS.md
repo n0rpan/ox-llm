@@ -95,10 +95,12 @@ maintainer, who says in the PR when a hardware check is needed.
 
 ## Build and test capacity (owner rule)
 
-All builds and tests run in GitHub CI. Local compiler work is limited to `cargo check -p <edited-crate>`
-and `cargo clippy -p <edited-crate> -- -D warnings`, niced, with `CARGO_BUILD_JOBS=3`. Never run local
-`cargo build`, `cargo test`, Python/unit/end-to-end tests, or whole-workspace compiler sweeps.
-Formatting and read-only source inspection do not build or run tests.
+GitHub-hosted CI is the judge for every PR. On the lab hosts (n0rpan and Air), agents may
+run targeted `cargo check -p <edited-crate>`, `cargo clippy -p <edited-crate> -- -D warnings`,
+and `cargo test -p <edited-crate>`, using `nice` and `CARGO_BUILD_JOBS=3`. Test only touched
+crates, and use the results for iteration while CI runs the required gates. Never run agent
+builds or tests on the maintainer's laptop. Whole-workspace sweeps and Python or end-to-end
+suites run in CI. Formatting and read-only source inspection do not build or run tests.
 
 Keep target directories and large scratch under your own clone or `~/.cache`; never put them under
 `/tmp` (it is RAM on the owner's machines). Use isolated HOME/XDG. Remove your finished temporary
