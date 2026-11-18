@@ -117,7 +117,7 @@ impl StdioTransport {
     /// * `env` = the parent environment + `expanded_env` (values already expanded by
     ///   `crate::expand_value`).
     /// * The child is the leader of a new process group (`setsid`) and dies with the parent
-    ///   (`PR_SET_PDEATHSIG`).
+    ///   (`PR_SET_PDEATHSIG` on Linux; not available on other platforms).
     /// * A reader thread parses stdout lines (non-JSON lines are dropped), another keeps the
     ///   last 20 stderr lines.
     ///
@@ -149,6 +149,9 @@ impl StdioTransport {
                 if libc::setsid() < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
+                // Linux only: macOS has no PR_SET_PDEATHSIG. There the child runs without it;
+                // the parent still ends the whole process group on shutdown (`close`).
+                #[cfg(target_os = "linux")]
                 if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
                     return Err(std::io::Error::last_os_error());
                 }

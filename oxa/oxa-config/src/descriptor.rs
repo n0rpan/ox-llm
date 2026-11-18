@@ -1,14 +1,16 @@
 //! Setting descriptors: what the TUI `/settings` menu and the lead web settings page show for a key
 //! (issue #1489, design section 4.1).
 //!
-//! This module holds the types, the `const fn` builder and the lookups. The entries live in
-//! `descriptor/*.rs`, one slice per group file; each file's `DISPLAY`-style table is concatenated
-//! into `TABLE` below. `KeyDef` and `SCHEMA` are untouched: validation and merge do not read
-//! descriptors.
+//! This module holds the types, the `const fn` builder and the lookups. The entries themselves go
+//! in `descriptor/*.rs` (one `ENTRIES` slice per file); `table()` joins them. `KeyDef` and `SCHEMA`
+//! are untouched: validation and merge do not read descriptors.
 
+mod advanced;
 mod display;
+mod lead;
+mod safety;
 
-use std::sync::LazyLock;
+use std::sync::OnceLock;
 
 /// A settings menu group, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -239,6 +241,8 @@ pub struct Descriptor {
 
 /// Starts a descriptor. Every other field has a safe default: a raw editor, `Apply::Restart`
 /// unchecked, read-only on the web, not secret, not advanced. The builder methods change them.
+// Unused outside tests until the per-group data tables (A2a-d, #1489) fill the table.
+#[allow(dead_code)]
 pub const fn d(
     key: &'static str,
     group: Group,
@@ -349,27 +353,41 @@ impl Descriptor {
     }
 }
 
-/// The data table, in display order. Each group file adds its slice to the array below.
-static TABLE: LazyLock<Vec<Descriptor>> = LazyLock::new(|| [display::DISPLAY].concat());
+/// The data table, in display order: the Display rows, then the Lead and web, the Safety and the
+/// Advanced entries.
+fn table() -> &'static [Descriptor] {
+    static TABLE: OnceLock<Vec<Descriptor>> = OnceLock::new();
+    TABLE
+        .get_or_init(|| {
+            [
+                display::ENTRIES,
+                lead::ENTRIES,
+                safety::ENTRIES,
+                advanced::ENTRIES,
+            ]
+            .concat()
+        })
+        .as_slice()
+}
 
 /// Every descriptor, in display order.
 pub fn descriptors() -> &'static [Descriptor] {
-    TABLE.as_slice()
+    table()
 }
 
 /// The descriptor for one key (a schema key or a field key).
 pub fn descriptor(key: &str) -> Option<&'static Descriptor> {
-    TABLE.iter().find(|d| d.key == key)
+    table().iter().find(|d| d.key == key)
 }
 
 /// The descriptors of one group, in display order.
 pub fn in_group(group: Group) -> impl Iterator<Item = &'static Descriptor> {
-    TABLE.iter().filter(move |d| d.group == group)
+    table().iter().filter(move |d| d.group == group)
 }
 
 /// The field descriptors below one object key, in display order.
 pub fn fields_of(schema_key: &'static str) -> impl Iterator<Item = &'static Descriptor> {
-    TABLE.iter().filter(move |d| is_field_of(d.key, schema_key))
+    table().iter().filter(move |d| is_field_of(d.key, schema_key))
 }
 
 /// True when `key` is `schema_key` followed by "." and a field path.
@@ -476,12 +494,14 @@ mod tests {
     }
 
     #[test]
-    fn groups_without_a_data_slice_have_no_entries() {
-        // Only Display has data so far (A2a); the other groups arrive in A2b-d.
+    fn unwired_groups_have_no_entries() {
+        // Display (A2a) and Lead, Safety and Advanced (A2d) have data; the other groups arrive in
+        // A2b and A2c.
         assert!(descriptor("oxa.bash.defaultTimeout").is_none());
         assert_eq!(in_group(Group::Tools).count(), 0);
-        assert_eq!(fields_of("oxa.lead.serve").count(), 0);
-        assert_eq!(descriptors().len(), in_group(Group::Display).count());
+        assert_eq!(fields_of("oxa.lead.serve").count(), 9);
+        assert_eq!(in_group(Group::Display).count(), 30);
+        assert_eq!(descriptors().len(), 69);
     }
 
     #[test]

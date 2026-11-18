@@ -12,7 +12,7 @@ const INPUT: &str = "Input";
 
 /// The 30 Display rows, in display order. Hand-wrapped (not rustfmt'd) so each row stays two lines.
 #[rustfmt::skip]
-pub(super) const DISPLAY: &[Descriptor] = &[
+pub(super) const ENTRIES: &[Descriptor] = &[
     d("theme", G, LOOK, "Theme", "Colour theme of the terminal UI.")
         .control(Control::Theme).apply(Apply::Now).web(WebEdit::Edit),
     d("ui.skin", G, LOOK, "Skin", "Look of the interactive UI: oxa, plain (pi) or ASCII only.")
