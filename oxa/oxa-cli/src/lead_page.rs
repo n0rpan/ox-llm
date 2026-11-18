@@ -14,6 +14,8 @@ pub use pages::{Page, Prompt};
 pub struct View<'a> {
     pub board: Option<&'a Board>,
     pub situation: Option<&'a Snapshot>,
+    /// C's selected checkpoint observation; the renderer never acquires runner state.
+    pub selected_task_usage: Option<&'a oxa_work::Result<Option<oxa_work::TaskUsage>>>,
     pub main_red: bool,
     pub main_merge_stalled: bool,
     pub stalled_runs: &'a [u64],
@@ -944,6 +946,111 @@ return true;
             assert!(page.contains(unknown));
         }
         assert!(page.contains("0 / 1 reported complete"));
+    }
+
+    fn usage_page(observation: Option<&oxa_work::Result<Option<oxa_work::TaskUsage>>>) -> String {
+        content_for(
+            Page::Usage,
+            &View {
+                selected_task_usage: observation,
+                ..View::default()
+            },
+            100,
+        )
+    }
+
+    #[test]
+    fn selected_usage_preserves_unavailable_absent_and_saved_unknown_states() {
+        let failure = Err("private-error-marker".into());
+        for observation in [None, Some(&failure)] {
+            let page = usage_page(observation);
+            assert!(page.contains("Task usage observations unavailable."));
+            assert!(!page.contains("No saved checkpoint") && !page.contains("private-error-marker"));
+        }
+        let absent = Ok(None);
+        let page = usage_page(Some(&absent));
+        assert!(page.contains("No saved checkpoint for the selected task."));
+        assert!(!page.contains("Task usage observations unavailable."));
+        let unknown = Ok(Some(oxa_work::TaskUsage {
+            task: "<task>&example".into(),
+            checkpoint_revision: 41,
+            task_tokens: None,
+        }));
+        let page = usage_page(Some(&unknown));
+        assert!(page.contains("Task &lt;task&gt;&amp;example"));
+        assert!(page.contains("Checkpoint revision 41"));
+        assert!(page.contains("Saved token aggregate unknown."));
+        assert!(!page.contains("<task>") && !page.contains("<dd>0</dd>"));
+        assert!(!page.contains("Prompt tokens"));
+    }
+
+    #[test]
+    fn selected_usage_keeps_measured_zero_and_partial_counters_distinct() {
+        let complete_zero = Ok(Some(oxa_work::TaskUsage {
+            task: "selected-example".into(),
+            checkpoint_revision: 42,
+            task_tokens: Some(oxa_work::TaskTokens {
+                attempts: 1,
+                complete_attempts: 1,
+                prompt: Some(0),
+                completion: Some(0),
+                cached: Some(0),
+                complete: true,
+            }),
+        }));
+        let page = usage_page(Some(&complete_zero));
+        assert!(page.contains("Usage coverage: complete"));
+        assert!(page.contains("<dt>Task attempts</dt><dd>1</dd>"));
+        assert!(page.contains("<dt>Attempts with complete usage</dt><dd>1</dd>"));
+        assert_eq!(page.matches("<dd>0</dd>").count(), 3);
+        assert!(!page.contains("<dd>Unknown</dd>"));
+        assert!(page.contains("Task-scoped checkpoint; merged-PR attribution unavailable."));
+        assert!(page.contains("<h2>Plans and quotas</h2><p>Usage observations unavailable.</p>"));
+        assert!(page.contains("aria-current=page>Usage"));
+        assert!(!page.contains("<form") && !page.contains("<button"));
+        let partial = Ok(Some(oxa_work::TaskUsage {
+            task: "selected-example".into(),
+            checkpoint_revision: 43,
+            task_tokens: Some(oxa_work::TaskTokens {
+                attempts: 2,
+                complete_attempts: 1,
+                prompt: None,
+                completion: Some(0),
+                cached: None,
+                complete: false,
+            }),
+        }));
+        let page = usage_page(Some(&partial));
+        assert!(page.contains("Usage coverage: partial"));
+        assert!(!page.contains("Usage coverage: complete"));
+        assert!(page.contains("<dt>Task attempts</dt><dd>2</dd>"));
+        assert!(page.contains("<dt>Prompt tokens</dt><dd>Unknown</dd>"));
+        assert!(page.contains("<dt>Completion tokens</dt><dd>0</dd>"));
+        assert!(page.contains("<dt>Cached input tokens</dt><dd>Unknown</dd>"));
+        assert!(page.contains("Cached tokens are included in prompt when both are reported."));
+    }
+
+    #[test]
+    fn selected_partial_usage_keeps_large_known_fields_without_inventing_totals() {
+        let usage = Ok(Some(oxa_work::TaskUsage {
+            task: "selected-example".into(),
+            checkpoint_revision: 44,
+            task_tokens: Some(oxa_work::TaskTokens {
+                attempts: 2,
+                complete_attempts: 1,
+                prompt: Some(u64::MAX),
+                completion: Some(u64::MAX),
+                cached: Some(1),
+                complete: false,
+            }),
+        }));
+        let page = usage_page(Some(&usage));
+        assert!(page.contains("Usage coverage: partial"));
+        for label in ["Prompt tokens", "Completion tokens"] {
+            assert!(page.contains(&format!("<dt>{label}</dt><dd>{}</dd>", u64::MAX)));
+        }
+        assert!(!page.contains("Total tokens") && !page.contains("Estimated cost"));
+        assert!(page.contains("merged-PR attribution unavailable"));
     }
 
     #[test]
