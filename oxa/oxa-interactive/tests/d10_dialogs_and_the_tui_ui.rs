@@ -692,8 +692,7 @@ fn dangerous_dialog_always_writes_user_settings_never_project() {
     let mut vm = ViewModel::default();
     let (tx, rx) = channel();
     host.handle(danger_request(tx), &mut vm, 0);
-    // Deny is focused: two steps up reach "Always allow".
-    press(&mut host, &keymap, "up");
+    // Deny is focused: one step up is "Always allow".
     press(&mut host, &keymap, "up");
     assert_eq!(press(&mut host, &keymap, "enter"), DialogKey::Closed);
     assert!(rx.try_recv().is_err(), "the worker waits for the save");
@@ -727,7 +726,6 @@ fn dangerous_dialog_always_write_failure_still_grants_session() {
     let mut vm = ViewModel::default();
     let (tx, rx) = channel();
     host.handle(danger_request(tx), &mut vm, 0);
-    press(&mut host, &keymap, "up");
     press(&mut host, &keymap, "up");
     press(&mut host, &keymap, "enter");
     let (keys, reply) = host.take_danger_always().expect("always is pending");

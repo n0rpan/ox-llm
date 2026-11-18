@@ -710,6 +710,22 @@ impl Built {
     }
 }
 
+/// #1512 S2: the dangerous-command rules of the user settings. `[]` (the default) is every
+/// built-in rule; a plain entry replaces the built-ins and `+id` / `-id` patch them.
+fn dangerous_rules(user_settings: &Settings) -> (DangerRules, Vec<String>) {
+    let builtin_ids: Vec<String> = oxa_perm::BUILTIN_RULES
+        .iter()
+        .map(|row| row.0.to_string())
+        .collect();
+    let patch = user_settings.list(oxa_perm::SETTING_DANGEROUS);
+    let entries = if patch.is_empty() {
+        builtin_ids
+    } else {
+        oxa_config::apply_list_patch(&builtin_ids, &patch)
+    };
+    DangerRules::from_list(&entries)
+}
+
 /// Settings, trust, resources, engine, sandbox and the open mode. Notices are printed by the
 /// caller once the session is open, so a failed start prints only its one error line.
 fn prepare(
@@ -751,14 +767,7 @@ fn prepare(
     let mut notices: Vec<(Level, String)> = Vec::new();
     let user_settings = Settings::load(dirs, cwd, false);
     // #1512 S2: the dangerous-command rules come from the user settings only.
-    let builtin_ids: Vec<String> = oxa_perm::BUILTIN_RULES
-        .iter()
-        .map(|row| row.0.to_string())
-        .collect();
-    let (danger, danger_warnings) = DangerRules::from_list(&oxa_config::apply_list_patch(
-        &builtin_ids,
-        &user_settings.list(oxa_perm::SETTING_DANGEROUS),
-    ));
+    let (danger, danger_warnings) = dangerous_rules(&user_settings);
     notices.extend(danger_warnings.into_iter().map(|w| (Level::Warning, w)));
     // Only user settings may enable this default-off proposal session.
     if a.lead && !user_settings.bool(crate::lead_preset::SETTING, false) {
@@ -2782,6 +2791,8 @@ mod session_scratch_tests {
         let dirs = Dirs::under(env.root());
         let cwd = env.work();
         let key = "git-push-force git push --force origin main";
+        // The default list is every built-in rule (an empty list never means "no rules").
+        assert_eq!(dangerous_rules(&Settings::default()).0, DangerRules::builtin());
         let dangerous = Access::Exec {
             command: "git push --force origin main".into(),
             net: false,
