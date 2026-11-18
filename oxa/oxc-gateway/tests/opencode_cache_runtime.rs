@@ -294,3 +294,72 @@ fn go_plan_usage_cache_respects_age_and_current_credential() {
         .is_some_and(|value| value == format!("Bearer {ROTATED}")));
     mock.assert_healthy();
 }
+
+#[test]
+fn go_plan_usage_falls_back_to_a_protected_read_only_key_after_auth_refusal() {
+    use oxa_proto::CancelToken;
+
+    const READER: &str = "synthetic-usage-reader";
+    const ROTATED: &str = "synthetic-rotated-usage-reader";
+    let fixture = go_fixture();
+    let set_keys = |reader| {
+        fs::write(
+            &fixture.key_path,
+            json!({"opencode": CREDENTIAL, "opencode_usage": reader}).to_string(),
+        )
+        .unwrap();
+    };
+    set_keys(READER);
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::error(403, "forbidden", "synthetic usage scope refusal"),
+            Reply::json(json!({"usage":{"weekly":{"percent":24}}})),
+            Reply::error(401, "unauthenticated", "synthetic usage scope refusal"),
+            Reply::json(json!({"usage":{"weekly":{"percent":41}}})),
+            Reply::error(429, "rate_limited", "synthetic rate limit").buffer_header_refusal(),
+        ]
+    });
+    let base = format!("http://{}/inference/go", mock.address());
+    let mut gateway = go_gateway(&fixture, Access::Enabled);
+    gateway.discover_opencode(&base, TIMEOUT).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let cancel = CancelToken::new();
+    let read = |max_age| runtime.block_on(gateway.opencode_plan_observation(TIMEOUT, max_age, &cancel));
+    let max_age = Duration::from_secs(60);
+    let first = read(max_age).unwrap().unwrap();
+    assert_eq!(first.usage.weekly.as_ref().unwrap().used_percent, Some(24.0));
+    assert_eq!(read(max_age).unwrap().unwrap(), first);
+    assert_eq!(mock.requests().len(), 3);
+    set_keys(ROTATED);
+    let rotated = read(max_age).unwrap().unwrap();
+    assert_eq!(rotated.usage.weekly.unwrap().used_percent, Some(41.0));
+    let refusal = read(Duration::ZERO).unwrap_err();
+    assert_eq!(refusal.refusal().code, "cloud_rate_limited");
+    assert!(!format!("{refusal:?} {refusal}").contains(ROTATED));
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 6);
+    for (index, (request, credential)) in requests
+        .iter()
+        .zip([CREDENTIAL, CREDENTIAL, READER, CREDENTIAL, ROTATED, CREDENTIAL])
+        .enumerate()
+    {
+        assert_eq!(request.method, "GET");
+        assert_eq!(
+            request.target,
+            if index == 0 {
+                "/inference/go/v1/models"
+            } else {
+                "/inference/go/v1/usage"
+            }
+        );
+        assert!(request
+            .header("authorization")
+            .is_some_and(|header| header == format!("Bearer {credential}")));
+    }
+    mock.assert_healthy();
+}
