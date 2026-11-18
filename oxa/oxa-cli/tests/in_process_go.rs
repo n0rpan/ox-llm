@@ -974,13 +974,14 @@ fn native_go_rejected_requests_release_tokens_before_the_next_valid_request() {
 }
 
 #[test]
-fn native_go_5xx_usage_stays_reserved_and_the_token_cap_still_refuses() {
+fn native_go_5xx_usage_stays_reserved_and_the_token_limit_warns() {
     let env = TestEnv::new();
     let mock = MockOpenAi::start_with(|base| {
         vec![
             Reply::json(discovery(base)),
             Reply::error(500, "inference_failed", CREDENTIAL),
             Reply::json(discovery(base)),
+            stream(json!({"content":"Synthetic next reply"}), "stop"),
         ]
     });
     setup(&env, &format!("http://{}", mock.address()));
@@ -995,12 +996,19 @@ fn native_go_5xx_usage_stays_reserved_and_the_token_cap_still_refuses() {
     assert_eq!(ledger[0]["settled"], "reserved");
     assert_eq!(ledger[0]["subscription_tokens"], 32768 + 512);
     assert_eq!(ledger[0]["usage_missing"], true);
-    let blocked = run(
+    let next = run(
         &env,
         &["--no-session", "--no-tools", "-p", "Synthetic next request"],
     );
-    assert_eq!(terminal(&blocked)["error_class"], "budget_exhausted");
-    assert_eq!(mock.requests().len(), 3, "cap must refuse before another chat");
+    let stderr = String::from_utf8_lossy(&next.stderr);
+    assert!(next.status.success(), "{stderr}");
+    assert!(stderr.contains("projected usage reached 100%"), "{stderr}");
+    assert!(String::from_utf8_lossy(&next.stdout).contains("Synthetic next reply"));
+    assert_eq!(mock.requests().len(), 4);
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 2);
+    assert_eq!(ledger[0]["subscription_tokens"], 32768 + 512);
+    assert_eq!(ledger[1]["subscription_tokens"], 105);
     mock.assert_healthy();
 }
 
