@@ -19,6 +19,11 @@ pub(crate) const SETTING: &str = "oxa.engine.inProcessCloud";
 const GO_SETTING: &str = "oxa.cloud.opencode.enabled";
 type Selected = (Arc<dyn Engine>, Vec<String>);
 
+enum SelectPurpose<'a> {
+    Model(Option<&'a str>),
+    Inventory,
+}
+
 pub(crate) fn credential_path(dirs: &Dirs) -> std::path::PathBuf {
     dirs.home.join(".config/oxc/llm/cloud-secrets.json")
 }
@@ -200,6 +205,22 @@ fn go_state(user: &Settings, dirs: &Dirs) -> ProviderState {
     }
 }
 
+pub(crate) fn select_catalog(
+    user: &Settings,
+    dirs: &Dirs,
+    http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
+) -> Result<Selected, OxaError> {
+    select_for(
+        user,
+        user,
+        dirs,
+        SelectPurpose::Inventory,
+        None,
+        SharedEngines::default(),
+        http,
+    )
+}
+
 pub(crate) fn select_observed(
     user: &Settings,
     effective: &Settings,
@@ -209,6 +230,30 @@ pub(crate) fn select_observed(
     shared: SharedEngines,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Selected, OxaError> {
+    select_for(
+        user,
+        effective,
+        dirs,
+        SelectPurpose::Model(requested),
+        diagnostics,
+        shared,
+        http,
+    )
+}
+
+fn select_for(
+    user: &Settings,
+    effective: &Settings,
+    dirs: &Dirs,
+    purpose: SelectPurpose<'_>,
+    diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
+    shared: SharedEngines,
+    http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
+) -> Result<Selected, OxaError> {
+    let (requested, show_status) = match purpose {
+        SelectPurpose::Model(requested) => (requested, false),
+        SelectPurpose::Inventory => (None, true),
+    };
     let local_engine = || match shared.local {
         Some(engine) => Ok(engine as Arc<dyn Engine>),
         None => {
@@ -223,7 +268,7 @@ pub(crate) fn select_observed(
     let native_local = user.bool(oxc_local::LOCAL_SETTING, false);
     let native_cloud = user.bool(SETTING, false) || (go_enabled && (requested.is_none() || go_requested));
     let availability_notice = || {
-        if requested.is_none() {
+        if show_status {
             vec![go.notice("OpenCode Go", GO_SETTING)]
         } else {
             Vec::new()
@@ -250,7 +295,7 @@ pub(crate) fn select_observed(
             Some(opened) => opened,
             None => open_gateway_with_go(user, effective, dirs, diagnostics, Ok, go_enabled)?,
         };
-        if requested.is_none() {
+        if show_status {
             let notice = go_failure
                 .as_ref()
                 .map_or_else(|| go.notice("OpenCode Go", GO_SETTING), ToString::to_string);
@@ -273,11 +318,7 @@ pub(crate) fn select_observed(
             Ok((engine, notices, go_failure)) => (Ok(engine), notices, go_failure),
             Err(error) => {
                 let notice = go_error.unwrap_or(&error).to_string();
-                let notices = if requested.is_none() {
-                    vec![notice]
-                } else {
-                    Vec::new()
-                };
+                let notices = if show_status { vec![notice] } else { Vec::new() };
                 (Err(error), notices, None)
             }
         };

@@ -322,18 +322,11 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let user = Settings::load(&dirs, &cwd, false);
-        let (engine, catalog_notices) = match crate::in_process::select_observed(
-            &user,
-            &user,
-            &dirs,
-            None,
-            None,
-            crate::in_process::SharedEngines::default(),
-            || engine_for(&endpoint),
-        ) {
-            Ok(e) => e,
-            Err(e) => return report(&mut *stderr, &e),
-        };
+        let (engine, catalog_notices) =
+            match crate::in_process::select_catalog(&user, &dirs, || engine_for(&endpoint)) {
+                Ok(e) => e,
+                Err(e) => return report(&mut *stderr, &e),
+            };
         write_diagnostics(
             &mut *stderr,
             catalog_notices.into_iter().map(|text| (Level::Info, text)),
