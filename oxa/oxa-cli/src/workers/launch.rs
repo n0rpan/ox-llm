@@ -10,7 +10,11 @@
 //!   <repo-parent>/.oxa-worktrees/<repo>/<name> <base>`: hooks are off for the checkout.
 //! * **Child env.** `OXA_WORKER_DEPTH=1`; the parent's `OXA_TRUST_PROJECT` and `OXA_SESSION_HINT`
 //!   are not inherited.
-use oxa_proto::Mode;
+//! * **Integration boundary (K4).** `child_env` copies whatever GitHub token variables the caller
+//!   puts in the parent environment. A runner-owned packet must go through the existing worker
+//!   spawn's credential removal and authority marker (`restrict_child_github` in `oxa-work`);
+//!   this module does not strip them.
+use oxa_proto::{Autonomy, Mode};
 use std::path::Path;
 
 /// A permission level a worker can run at, narrowest first (the derived order is the ladder).
@@ -66,14 +70,18 @@ pub fn valid_name(name: &str) -> bool {
     }
 }
 
-/// The widest level a worker of a parent in `parent_mode` may run at. `plan` denies writes
-/// whatever the autonomy; a yolo parent (`parent_yolo`) allows yolo.
-fn ceiling(parent_mode: Mode, parent_yolo: bool) -> WorkerMode {
-    match parent_mode {
-        Mode::Plan => WorkerMode::Plan,
-        _ if parent_yolo => WorkerMode::Yolo,
-        Mode::Ask => WorkerMode::Ask,
-        Mode::Workspace => WorkerMode::Workspace,
+/// The widest level a worker of a parent running in table mode `parent_mode` with autonomy
+/// `parent_autonomy` may run at. The table mode and the autonomy are separate fields of the
+/// session: a workspace table with auto autonomy is the effective `auto` mode (as
+/// `PermissionMode::of` shows it), so its ceiling is `Auto`, not `Workspace`. `plan` denies
+/// writes whatever the autonomy.
+fn ceiling(parent_mode: Mode, parent_autonomy: Autonomy) -> WorkerMode {
+    match (parent_mode, parent_autonomy) {
+        (Mode::Plan, _) => WorkerMode::Plan,
+        (_, Autonomy::Yolo) => WorkerMode::Yolo,
+        (_, Autonomy::Auto) => WorkerMode::Auto,
+        (Mode::Ask, Autonomy::Standard) => WorkerMode::Ask,
+        (Mode::Workspace, Autonomy::Standard) => WorkerMode::Workspace,
     }
 }
 
@@ -88,11 +96,12 @@ fn check_value(label: &str, value: &str) -> Result<(), String> {
 
 /// The argv of the child (without the program): `--mode json --session-id <id> --model <m>
 /// --permission-mode <p> --goal <file> -n <name>`, and a notice when the requested mode was
-/// clamped to the parent's ceiling.
+/// clamped to the parent's ceiling. The parent is given as its table mode and its autonomy (the
+/// two fields a session keeps), not as a yolo flag.
 pub fn child_argv(
     spec: &WorkerSpec,
     parent_mode: Mode,
-    parent_yolo: bool,
+    parent_autonomy: Autonomy,
 ) -> Result<(Vec<String>, Option<String>), String> {
     if !valid_name(&spec.name) {
         return Err(format!("invalid worker name: {:?}", spec.name));
@@ -101,7 +110,7 @@ pub fn child_argv(
     check_value("model", &spec.model)?;
     check_value("goal file", &spec.goal_file)?;
     let wanted = spec.mode.unwrap_or(WorkerMode::Workspace);
-    let ceil = ceiling(parent_mode, parent_yolo);
+    let ceil = ceiling(parent_mode, parent_autonomy);
     let mode = wanted.min(ceil);
     let notice = (mode < wanted).then(|| {
         format!(
@@ -206,34 +215,75 @@ mod tests {
     #[test]
     fn argv_never_widens_permission_mode() {
         // Plan parent: nothing wider than plan, whatever the autonomy.
-        let (args, notice) = child_argv(&spec(Some(WorkerMode::Auto)), Mode::Plan, true).unwrap();
+        let (args, notice) = child_argv(&spec(Some(WorkerMode::Auto)), Mode::Plan, Autonomy::Auto).unwrap();
         assert_eq!(perm(&args), "plan");
         assert!(notice.is_some());
         // Ask parent: a workspace request is clamped to ask.
-        let (args, notice) = child_argv(&spec(Some(WorkerMode::Workspace)), Mode::Ask, false).unwrap();
+        let (args, notice) =
+            child_argv(&spec(Some(WorkerMode::Workspace)), Mode::Ask, Autonomy::Standard).unwrap();
         assert_eq!(perm(&args), "ask");
         assert!(notice.is_some());
         // Workspace parent without yolo: yolo is never passed, even when asked for.
-        let (args, notice) = child_argv(&spec(Some(WorkerMode::Yolo)), Mode::Workspace, false).unwrap();
+        let (args, notice) =
+            child_argv(&spec(Some(WorkerMode::Yolo)), Mode::Workspace, Autonomy::Standard).unwrap();
         assert_eq!(perm(&args), "workspace");
         assert!(!args.iter().any(|a| a == "yolo"));
         assert!(notice.is_some());
         // No requested mode: workspace, no notice, never yolo.
-        let (args, notice) = child_argv(&spec(None), Mode::Workspace, true).unwrap();
+        let (args, notice) = child_argv(&spec(None), Mode::Workspace, Autonomy::Yolo).unwrap();
         assert_eq!(perm(&args), "workspace");
         assert!(notice.is_none());
         // Yolo parent with yolo asked for explicitly: yolo, no notice.
-        let (args, notice) = child_argv(&spec(Some(WorkerMode::Yolo)), Mode::Workspace, true).unwrap();
+        let (args, notice) =
+            child_argv(&spec(Some(WorkerMode::Yolo)), Mode::Workspace, Autonomy::Yolo).unwrap();
         assert_eq!(perm(&args), "yolo");
         assert!(notice.is_none());
         // Yolo parent, plan table mode: still plan.
-        let (args, _) = child_argv(&spec(Some(WorkerMode::Yolo)), Mode::Plan, true).unwrap();
+        let (args, _) = child_argv(&spec(Some(WorkerMode::Yolo)), Mode::Plan, Autonomy::Yolo).unwrap();
         assert_eq!(perm(&args), "plan");
     }
 
     #[test]
+    fn auto_parent_keeps_auto_worker_not_workspace() {
+        // A workspace table with auto autonomy is the effective `auto` mode: an auto child is
+        // passed as auto (not clamped to workspace, which the CLI reads as standard prompts).
+        let (args, notice) =
+            child_argv(&spec(Some(WorkerMode::Auto)), Mode::Workspace, Autonomy::Auto).unwrap();
+        assert_eq!(perm(&args), "auto");
+        assert!(notice.is_none());
+        // The same effective mode with an ask table: auto as well.
+        let (args, notice) = child_argv(&spec(Some(WorkerMode::Auto)), Mode::Ask, Autonomy::Auto).unwrap();
+        assert_eq!(perm(&args), "auto");
+        assert!(notice.is_none());
+        // An auto parent never widens to yolo, even when yolo is asked for.
+        let (args, notice) =
+            child_argv(&spec(Some(WorkerMode::Yolo)), Mode::Workspace, Autonomy::Auto).unwrap();
+        assert_eq!(perm(&args), "auto");
+        assert!(!args.iter().any(|a| a == "yolo"));
+        assert!(notice.is_some());
+        // An auto parent with no requested mode still runs workspace.
+        let (args, notice) = child_argv(&spec(None), Mode::Workspace, Autonomy::Auto).unwrap();
+        assert_eq!(perm(&args), "workspace");
+        assert!(notice.is_none());
+        // The argv value is read back by the real CLI parser as auto, not as standard prompts.
+        let pair = ["--permission-mode".to_string(), perm(&args).to_string()];
+        let parsed = crate::parse_args(&pair, &[]).unwrap();
+        assert_eq!(parsed.level, Some(oxa_proto::PermissionMode::Auto));
+    }
+
+    #[test]
+    fn ask_table_with_standard_autonomy_keeps_ask_ceiling() {
+        // The effective mode of ask+standard is standard, but its ceiling stays ask: a
+        // workspace request is clamped to ask, not widened to workspace.
+        let (args, notice) =
+            child_argv(&spec(Some(WorkerMode::Workspace)), Mode::Ask, Autonomy::Standard).unwrap();
+        assert_eq!(perm(&args), "ask");
+        assert!(notice.is_some());
+    }
+
+    #[test]
     fn argv_has_session_id_goal_model_and_json_mode() {
-        let (args, notice) = child_argv(&spec(None), Mode::Workspace, false).unwrap();
+        let (args, notice) = child_argv(&spec(None), Mode::Workspace, Autonomy::Standard).unwrap();
         assert_eq!(
             args,
             [
@@ -255,10 +305,10 @@ mod tests {
         // Invalid name, and values that would read as flags, are refused.
         let mut bad = spec(None);
         bad.name = "Bad_Name".into();
-        assert!(child_argv(&bad, Mode::Workspace, false).is_err());
+        assert!(child_argv(&bad, Mode::Workspace, Autonomy::Standard).is_err());
         let mut flag = spec(None);
         flag.model = "--yolo".into();
-        assert!(child_argv(&flag, Mode::Workspace, false).is_err());
+        assert!(child_argv(&flag, Mode::Workspace, Autonomy::Standard).is_err());
     }
 
     #[test]
