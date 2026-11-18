@@ -445,3 +445,62 @@ fn queued_run_preserves_settings_supplied_by_the_session_caller() {
     );
     assert_eq!(session.inner().settings.string("theme").as_deref(), Some("dark"));
 }
+
+#[test]
+fn follow_up_started_during_settle_uses_live_settings() {
+    struct QueueFollowUp {
+        handle: oxa_core::Handle,
+        path: Option<std::path::PathBuf>,
+        events: Vec<AgentEvent>,
+    }
+    impl oxa_proto::EventSink for QueueFollowUp {
+        fn emit(&mut self, event: &AgentEvent) {
+            self.events.push(event.clone());
+            if matches!(
+                event,
+                AgentEvent::AgentEnd {
+                    will_retry: false,
+                    ..
+                }
+            ) {
+                if let Some(path) = self.path.take() {
+                    std::fs::write(path, r#"{"theme":"light-theme"}"#).unwrap();
+                    self.handle.follow_up("waiting".to_string());
+                }
+            }
+        }
+    }
+
+    let env = TestEnv::new();
+    let (engine, _started) = Holding::new(vec![ScriptTurn::text("first"), ScriptTurn::text("next")]);
+    let mut session = open(&env, engine.clone(), Vec::new(), r#"{"theme":"dark"}"#);
+    let mut sink = QueueFollowUp {
+        handle: session.handle(),
+        path: Some(Dirs::under(env.root()).settings_file()),
+        events: Vec::new(),
+    };
+    session
+        .prompt(
+            "first".to_string(),
+            Vec::new(),
+            &mut sink,
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        engine.log().iter().filter(|(kind, _, _)| kind == "chat").count(),
+        2
+    );
+    let mut starts = 0;
+    for event in sink.events {
+        match event {
+            AgentEvent::AgentStart => starts += 1,
+            AgentEvent::Notice { text, .. } if text == "settings changed: theme" => {
+                assert_eq!(starts, 1, "refresh must precede the follow-up");
+                return;
+            }
+            _ => {}
+        }
+    }
+    panic!("the follow-up did not observe the edit");
+}
