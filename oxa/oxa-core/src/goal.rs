@@ -189,14 +189,9 @@ impl crate::Session {
         if applied_revision == revision {
             return result.map(|()| applied_revision);
         }
-        let state = self.inner();
-        state.store.sync(&state.sref).map_err(|error| {
-            OxaError::new("goal_sync_failed", error.message).with_hint(
-                "The goal revision advanced. Confirm durability before acknowledging the transition.",
-            )
-        })?;
+        self.sync_goal_transition()?;
         crate::progress::notify(
-            state,
+            self.inner(),
             crate::Progress::GoalControlCommitted {
                 revision: applied_revision,
             },
@@ -206,6 +201,33 @@ impl crate::Session {
                 .with_hint("The goal transition was saved. Refresh the session prefix before running again.")
         })?;
         Ok(applied_revision)
+    }
+
+    /// Make the goal revision advanced by the last transition durable. Every goal
+    /// transition goes through here before it is acknowledged, so a failed sync is
+    /// never reported as success.
+    fn sync_goal_transition(&self) -> Result<(), oxa_proto::OxaError> {
+        let state = self.inner();
+        state.store.sync(&state.sref).map_err(|error| {
+            oxa_proto::OxaError::new("goal_sync_failed", error.message).with_hint(
+                "The goal revision advanced. Confirm durability before acknowledging the transition.",
+            )
+        })
+    }
+
+    /// Apply a `/goal` set or clear and wait for the store sync before it is reported.
+    fn commit_goal(
+        &mut self,
+        goal: Option<Goal>,
+        sink: &mut dyn oxa_proto::EventSink,
+    ) -> Result<(), oxa_proto::OxaError> {
+        let before = self.goal_revision();
+        let result = self.set_goal(goal, sink);
+        if result.is_err() && self.goal_revision() == before {
+            return result;
+        }
+        self.sync_goal_transition()?;
+        result
     }
 }
 
@@ -703,11 +725,11 @@ impl crate::Session {
                 let goal = Goal::new(objective, GoalBudget::default(), now_ms)?;
                 let line = format!("Goal set: {}", goal.objective);
                 let prompt = crate::prompt::goal_start(&goal.objective);
-                self.set_goal(Some(goal), sink)?;
+                self.commit_goal(Some(goal), sink)?;
                 Ok((vec![line], Some(prompt)))
             }
             GoalCommand::Clear => {
-                self.set_goal(None, sink)?;
+                self.commit_goal(None, sink)?;
                 Ok((vec!["Goal cleared.".into()], None))
             }
             GoalCommand::Pause => {
