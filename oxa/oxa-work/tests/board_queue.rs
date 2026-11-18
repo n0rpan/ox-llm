@@ -160,7 +160,8 @@ fn changed_pr_head_refuses_the_snapshot() {
 
 #[test]
 fn the_owner_journal_matches_only_the_previously_queued_head_and_group() {
-    use oxa_work::board::landing::Next;
+    use oxa_work::board::landing::{LatestReviews, Next};
+    use oxa_work::board::queue::report::{VerifiedArchive, VerifiedReports};
     use shadow::{LandingDecision, LandingSample, QueueObservation};
     use std::collections::BTreeMap;
 
@@ -189,6 +190,8 @@ fn the_owner_journal_matches_only_the_previously_queued_head_and_group() {
                         LandingDecision {
                             next: Next::AlreadyQueued,
                             queue_alarm: false,
+                            latest_reviews: LatestReviews::Clear,
+                            would_notify_rejection: None,
                             queue: Some(QueueObservation {
                                 enqueued_at: prior.observed_at - 5,
                                 group_head: Some(GROUP.into()),
@@ -208,27 +211,57 @@ fn the_owner_journal_matches_only_the_previously_queued_head_and_group() {
     let other = "cccccccccccccccccccccccccccccccccccccccc";
     let first_main = "dddddddddddddddddddddddddddddddddddddddd";
     let later_main = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
-    for (head, group, main, newly_queued) in [
-        (HEAD, GROUP, first_main, false),
-        (HEAD, other, later_main, false),
-        (HEAD, GROUP, later_main, false),
-        (HEAD, GROUP, later_main, true),
-        (HEAD, other, later_main, false),
-        (other, GROUP, later_main, false),
-    ] {
+    for (index, (head, group, main, report_ids, reviews)) in [
+        (HEAD, GROUP, first_main, &[][..], LatestReviews::Clear),
+        (HEAD, GROUP, later_main, &[11][..], LatestReviews::Clear),
+        (HEAD, GROUP, later_main, &[11, 15][..], LatestReviews::Clear),
+        (HEAD, GROUP, later_main, &[11, 15][..], LatestReviews::Unresolved),
+        (HEAD, other, later_main, &[11, 15][..], LatestReviews::Clear),
+        (HEAD, GROUP, later_main, &[11, 15][..], LatestReviews::Clear),
+        (HEAD, other, later_main, &[11, 15][..], LatestReviews::Clear),
+        (other, GROUP, later_main, &[11, 15][..], LatestReviews::Clear),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let mut log = shadow::open_log(&path).unwrap();
         current.entries[0].head = head.into();
         let mut evidence = fixture("FAILURE");
+        evidence["p42"]["id"] = "pr-42".into();
+        evidence["p42"]["author"] = json!({"__typename":"User","id":"user-1","login":"sample-author"});
         evidence["p42"]["headRefOid"] = head.into();
         let group_event = &mut evidence["p42"]["timelineItems"]["nodes"][0]["beforeCommit"];
         group_event["oid"] = group.into();
         group_event["statusCheckRollup"]["commit"]["oid"] = group.into();
-        let rejections = queue::read(&current, |_| Ok((evidence.clone(), 4096))).unwrap();
+        for check in group_event["statusCheckRollup"]["contexts"]["nodes"]
+            .as_array_mut()
+            .unwrap()
+        {
+            check["checkSuite"] = json!({
+                "databaseId": 51, "commit": {"oid": group},
+                "workflowRun": {"databaseId": 61, "event": "merge_group", "runAttempt": 1}
+            });
+        }
+        let mut rejections = queue::read(&current, |_| Ok((evidence.clone(), 4096))).unwrap();
+        if !report_ids.is_empty() {
+            rejections[0].record_verified_reports(VerifiedReports {
+                failed_check_runs: report_ids.to_vec(),
+                workflow_run: 61,
+                run_attempt: 1,
+                archives: vec![VerifiedArchive {
+                    id: 71,
+                    sha256: "a".repeat(64),
+                }],
+                failed_tests: std::iter::once("example::failed".into())
+                    .chain(report_ids.iter().map(|id| format!("example::failed_{id}")))
+                    .collect(),
+            });
+        }
         shadow::run_with_landing(
             &mut log,
             true,
             || {
-                let queued = newly_queued.then(|| QueueObservation {
+                let queued = (index == 5).then(|| QueueObservation {
                     enqueued_at: current.observed_at,
                     group_head: Some(other.into()),
                 });
@@ -241,11 +274,15 @@ fn the_owner_journal_matches_only_the_previously_queued_head_and_group() {
                         LandingDecision {
                             next: if queued.is_some() {
                                 Next::AlreadyQueued
+                            } else if reviews == LatestReviews::Unresolved {
+                                Next::HoldFindings
                             } else {
                                 Next::WaitQueue
                             },
                             queue_alarm: false,
                             queue: queued,
+                            latest_reviews: reviews,
+                            would_notify_rejection: None,
                         },
                     )]),
                     ..Default::default()
@@ -273,25 +310,43 @@ fn the_owner_journal_matches_only_the_previously_queued_head_and_group() {
             "rejection_baseline":{"main":first_main,"observed_at":prior.observed_at+3}
         })
     );
-    assert_eq!(rows[3]["landing_main"], later_main);
+    assert_eq!(rows[2]["landing_main"], later_main);
     assert_eq!(
-        rows[3]["matched_queue_admissions"],
+        rows[2]["matched_queue_admissions"],
         rows[1]["matched_queue_admissions"]
     );
-    assert_eq!(rows[2]["queue_rejections"][0]["merge_group_head"], other);
-    assert_eq!(
-        rows[4]["matched_queue_admissions"],
-        rows[1]["matched_queue_admissions"]
-    );
-    assert_eq!(rows[4]["landing"]["42"]["next"], "already_queued");
+    let notice = json!({
+        "pr_head":HEAD,"merge_group_head":GROUP,"removal_event":"removal-1",
+        "target":{"pull_request_id":"pr-42","author_id":"user-1","login":"sample-author"},
+        "failed_tests":["example::failed", "example::failed_11", "example::failed_15"]
+    });
+    for row in &rows[1..=2] {
+        assert_eq!(row["landing"]["42"]["next"], "wait_notification");
+        assert!(row["landing"]["42"].get("would_notify_rejection").is_none());
+    }
+    assert_eq!(rows[3]["landing"]["42"]["next"], "wait_notification");
+    assert_eq!(rows[3]["landing"]["42"]["would_notify_rejection"], notice);
+    assert_eq!(rows[4]["landing"]["42"]["next"], "hold_findings");
+    assert_eq!(rows[4]["landing"]["42"]["would_notify_rejection"], notice);
+    assert!(rows[5].get("matched_queue_admissions").is_none());
     assert_eq!(rows[5]["queue_rejections"][0]["merge_group_head"], other);
     assert_eq!(
-        rows[5]["queue_rejections"][0]["removed_at"],
+        rows[6]["matched_queue_admissions"],
+        rows[1]["matched_queue_admissions"]
+    );
+    assert_eq!(rows[6]["landing"]["42"]["next"], "already_queued");
+    assert!(rows[6]["landing"]["42"].get("would_notify_rejection").is_none());
+    assert!(rows[7].get("matched_queue_admissions").is_none());
+    assert_eq!(rows[7]["queue_rejections"][0]["merge_group_head"], other);
+    assert_eq!(
+        rows[7]["queue_rejections"][0]["removed_at"],
         "2026-01-01T00:00:01Z"
     );
-    assert_eq!(rows[6]["queue_rejections"][0]["merge_group_head"], GROUP);
-    for row in [&rows[2], &rows[5], &rows[6]] {
-        assert!(row.get("matched_queue_admissions").is_none());
+    assert!(rows[8].get("matched_queue_admissions").is_none());
+    assert_eq!(rows[8]["queue_rejections"][0]["merge_group_head"], GROUP);
+    for row in [&rows[5], &rows[7], &rows[8]] {
+        assert_eq!(row["landing"]["42"]["next"], "wait_queue");
+        assert!(row["landing"]["42"].get("would_notify_rejection").is_none());
     }
 }
 

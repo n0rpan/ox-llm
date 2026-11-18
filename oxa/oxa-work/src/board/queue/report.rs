@@ -91,6 +91,25 @@ impl RejectionEvidence {
             self.verified_test_reports.push(report);
         }
     }
+    /// Project test identities only when each failing required check is explained.
+    pub(crate) fn reported_failure_names(&self) -> Vec<&str> {
+        let mut checks = BTreeSet::new();
+        let mut names = BTreeSet::new();
+        for report in &self.verified_test_reports {
+            if report.archives.is_empty()
+                || report.failed_tests.is_empty()
+                || report.failed_check_runs.iter().any(|id| !checks.insert(*id))
+            {
+                return Vec::new();
+            }
+            names.extend(report.failed_tests.iter().map(String::as_str));
+        }
+        if checks.iter().eq(&self.failed_required_check_runs) {
+            names.into_iter().collect()
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 /// Read addresses derived from the rejected group's verified check suite.
@@ -200,6 +219,7 @@ mod tests {
             number: 17,
             removal_event: "removal".into(),
             removed_at: "2026-01-01T00:09:00Z".into(),
+            notification_target: None,
             merge_group_head: HEAD.into(),
             failed_required_check_runs: vec![42],
             failed_required_workflows: [(
