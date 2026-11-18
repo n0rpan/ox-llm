@@ -1103,7 +1103,12 @@ fn compact_inner(
                         summary_error = Some(e.message.clone());
                         let mechanical =
                             oxa_compact::mechanical_summary(&st.transcript.wire()[..cut], &read, &modified);
-                        (with_lists(&mechanical), details, false, None)
+                        // The mechanical summary carries its own file lists already: only the
+                        // skills block is appended, within the summary budget.
+                        let used = count(&mechanical);
+                        let block =
+                            active_skills_block_within(&skills, summary_max.saturating_sub(used), &count);
+                        (format!("{mechanical}{block}"), details, false, None)
                     }
                 }
             }
