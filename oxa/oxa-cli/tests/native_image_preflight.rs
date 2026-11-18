@@ -74,6 +74,10 @@ fn typed_arguments_preserve_request_and_owner_selected_weights() {
     assert_eq!(defaults.size, (512, 512));
     assert_eq!(defaults.seed, None);
     assert_eq!(defaults.steps, 4);
+
+    let (limits, _) = run(&env, &["Synthetic", "--size", "256x1024", "--steps", "8"]).unwrap();
+    assert_eq!(limits.size, (256, 1024));
+    assert_eq!(limits.steps, 8);
 }
 
 #[test]
@@ -84,9 +88,13 @@ fn malformed_arguments_fail_before_settings_or_model_checks() {
         &[" "],
         &["Synthetic", "--size", "511x512"],
         &["Synthetic", "--size", "0x512"],
+        &["Synthetic", "--size", "240x512"],
+        &["Synthetic", "--size", "512x1040"],
         &["Synthetic", "--size", "4294967280x4294967280"],
         &["Synthetic", "--size", "512x"],
         &["Synthetic", "--steps", "0"],
+        &["Synthetic", "--steps", "9"],
+        &["Synthetic", "--steps", "4294967295"],
         &["Synthetic", "--seed", "-1"],
         &["Synthetic", "--seed", "18446744073709551616"],
         &["Synthetic", "--out", "--steps"],
