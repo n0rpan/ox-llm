@@ -234,6 +234,8 @@ pub struct Descriptor {
 
 /// Starts a descriptor. Every other field has a safe default: a raw editor, `Apply::Restart`
 /// unchecked, read-only on the web, not secret, not advanced. The builder methods change them.
+// Unused outside tests until the per-group data tables (A2a-d, #1489) fill the table.
+#[allow(dead_code)]
 pub const fn d(
     key: &'static str,
     group: Group,
