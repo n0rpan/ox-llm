@@ -713,6 +713,15 @@ fn run_inner(
             }
             // Steering drains after the tool batch, each message as a user message.
             deliver_steering(st, sink, ui, run_msgs)?;
+            // A wait that input woke hands that input to the model now: a follow-up is
+            // otherwise only drained when the run stops, after the model has answered
+            // the wait result without it.
+            if calls.iter().any(|call| call.name == "wait") && st.shared.wait_wake.is_cancelled() {
+                st.shared.wait_wake.reset();
+                for text in drain_follow_ups(st, sink) {
+                    push_user(st, text, sink, ui, run_msgs)?;
+                }
+            }
             // L5 mid-run (`oxa.compaction.midRun`): past the soft limit, compact before the next
             // request, keeping this unanswered batch verbatim. A failed or cancelled attempt
             // leaves the wire unchanged and the run goes on (the hard-limit check below still
@@ -932,6 +941,20 @@ fn drain_steering(st: &SessionState, sink: &mut dyn EventSink) -> Vec<String> {
         sink.emit(&AgentEvent::QueueUpdate { steering, follow_up });
     }
     let taken = st.shared.take_steering();
+    if !taken.is_empty() {
+        let (steering, follow_up) = st.shared.snapshot();
+        sink.emit(&AgentEvent::QueueUpdate { steering, follow_up });
+    }
+    taken
+}
+
+/// Take follow-ups from the shared queue (same announcements as [`drain_steering`]).
+fn drain_follow_ups(st: &SessionState, sink: &mut dyn EventSink) -> Vec<String> {
+    if st.shared.dirty.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        let (steering, follow_up) = st.shared.snapshot();
+        sink.emit(&AgentEvent::QueueUpdate { steering, follow_up });
+    }
+    let taken = st.shared.take_follow_up();
     if !taken.is_empty() {
         let (steering, follow_up) = st.shared.snapshot();
         sink.emit(&AgentEvent::QueueUpdate { steering, follow_up });

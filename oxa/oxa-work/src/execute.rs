@@ -174,6 +174,7 @@ impl Runner<'_> {
                     let launch_revision = state.record.checkpoint_revision;
                     let result = worker::run(
                         self.binary,
+                        self.repo,
                         &tree,
                         &task,
                         &prompt,

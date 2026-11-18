@@ -311,6 +311,15 @@ impl Shared {
         }
     }
 
+    /// Arm the wait wakeup: reset it, then re-check the queues. Input is queued before the
+    /// handle cancels, so input admitted at any moment either is seen here or wakes the wait.
+    pub(crate) fn arm_wait_wake(&self) {
+        self.wait_wake.reset();
+        if self.has_input() {
+            self.wait_wake.cancel();
+        }
+    }
+
     /// Steering or follow-up messages for the active session are queued.
     pub fn has_input(&self) -> bool {
         let q = lock(&self.queue);
