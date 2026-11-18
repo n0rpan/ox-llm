@@ -211,7 +211,7 @@ impl Engine for EmbeddedEngine {
             on(event);
         }
         let level = request.effective_level();
-        let mut turn = assembler.finish(level)?;
+        let mut turn = assembler.finish_unreported_usage_ok(level)?;
         if let Some(bind) = history {
             turn.msg.provider_history = Some(bind(&turn.msg)?);
         }

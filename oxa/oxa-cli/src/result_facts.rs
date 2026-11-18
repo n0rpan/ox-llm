@@ -106,6 +106,9 @@ impl ResultFacts {
         } else {
             state.active -= 1;
         }
+        // The embedded gateway reports a reply with no usage as zero tokens and unknown cache:
+        // that request is unreported, never a complete count of zero.
+        let usage = usage.filter(|u| !(u.cached_missing && u.prompt == 0 && u.completion == 0));
         if let Some(usage) = usage {
             add(&mut state.prompt, usage.prompt.into());
             add(&mut state.completion, usage.completion.into());
