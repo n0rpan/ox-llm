@@ -13,7 +13,9 @@ pub use controls::{Assignment, AssignmentBoard, AssignmentData, ReleaseRecord};
 mod imports;
 mod native;
 pub use native::NativeBinding;
+mod ownership;
 mod reviews;
+pub use ownership::{ExistingWork, ItemLease};
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
