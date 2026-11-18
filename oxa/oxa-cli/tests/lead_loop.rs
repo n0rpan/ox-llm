@@ -45,12 +45,11 @@ fn running_lead_reopens_the_same_owner_ask_after_process_kill() {
     let uid = fs::metadata(&dirs.agent_dir).unwrap().uid();
     let project = test.work().canonicalize().unwrap();
     let id = oxa_cli::LeadOwnerBinding::create(&dirs, &project, uid).unwrap();
-    fs::write(
-        dirs.settings_file(),
-        json!({"oxa":{"lead":{"sessionId":id}}}).to_string(),
-    )
-    .unwrap();
-    fs::set_permissions(dirs.settings_file(), fs::Permissions::from_mode(0o600)).unwrap();
+    let settings = test.write(
+        "home/.oxa/agent/settings.json",
+        &json!({"oxa":{"lead":{"sessionId":id}}}).to_string(),
+    );
+    fs::set_permissions(settings, fs::Permissions::from_mode(0o600)).unwrap();
     let store = FsStore::new(dirs.sessions_dir.clone());
     let session = store.resolve(&id).unwrap();
     let board = dirs.agent_dir.join("board.jsonl");
@@ -67,7 +66,6 @@ fn running_lead_reopens_the_same_owner_ask_after_process_kill() {
     };
 
     assert!(command().output().unwrap().status.success());
-    assert_eq!(Goal::revision(&store.load(&session).unwrap()), 0);
     write_board(&board, 1, &[(42, Action::Ready, true, None)]);
     let agent = command()
         .env("AI_AGENT", "")

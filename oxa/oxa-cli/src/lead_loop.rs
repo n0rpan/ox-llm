@@ -38,7 +38,7 @@ fn proposal(board: &Board, revision: u64) -> Option<OpenGoalAsk> {
         Action::PromoteDraft => "review the draft for promotion",
         Action::Ready => "review the pull request for the merge queue",
         Action::WaitRequiredCi | Action::WaitMergeability | Action::WaitReview | Action::WaitIssue => {
-            return None;
+            return None
         }
     };
     Some(OpenGoalAsk {
