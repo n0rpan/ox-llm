@@ -118,7 +118,9 @@ pub(crate) fn load(path: &Path) -> Result<State> {
     let value: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|e| format!("task checkpoint: {e}"))?;
     let fields = value.as_object().ok_or("invalid task checkpoint")?;
-    if fields.len() != 6
+    // `native_binding` is present only for native attempts.
+    let optional = usize::from(fields.contains_key("native_binding"));
+    if fields.len() != 6 + optional
         || [
             "version",
             "record",
