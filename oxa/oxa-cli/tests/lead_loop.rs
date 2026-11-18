@@ -172,6 +172,11 @@ fn a_missing_protected_board_observation_keeps_the_saved_ask_and_names_the_cause
         Some("the protected Board observation is missing"),
         "{missing}"
     );
+    assert_eq!(
+        missing["hint"].as_str(),
+        Some("write a fresh protected Board observation and rerun the Lead loop"),
+        "{missing}"
+    );
     assert!(!missing.to_string().contains(&*dirs.agent_dir.to_string_lossy()));
     let saved = Goal::latest(&store.load(&session).unwrap()).unwrap().unwrap();
     assert_eq!(saved.lead.unwrap().open_asks.len(), 1);
