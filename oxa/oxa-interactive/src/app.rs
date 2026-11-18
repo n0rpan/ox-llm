@@ -1665,11 +1665,26 @@ fn execute(
         }
         SessionCmd::SetLabel { target, label } => (s.set_label(&target, label.as_deref()), false),
         SessionCmd::Reload => (s.reload(sink, ui).map(|_| ()), false),
+        SessionCmd::Goal(args) => (run_goal(s, &args, sink, ui), false),
         SessionCmd::UserBash { command, excluded } => (s.user_bash(&command, excluded, sink, ui), false),
         SessionCmd::Reopen(_)
         | SessionCmd::Snapshot
         | SessionCmd::Shutdown
         | SessionCmd::PrefillDraft { .. } => (Ok(()), false),
+    }
+}
+
+/// `/goal`: apply the command on the idle session, show its lines as notices, then run the
+/// prompt it returns (a new objective or a resume), if any.
+fn run_goal(s: &mut Session, args: &str, sink: &mut dyn EventSink, ui: &mut dyn Ui) -> Result<(), OxaError> {
+    let cmd = oxa_core::goal::parse_goal_command(args);
+    let (lines, prompt) = s.apply_goal_command(cmd, now_ms(), sink)?;
+    for line in lines {
+        sink.emit(&notice_event(&line));
+    }
+    match prompt {
+        Some(text) => run_prompt(s, text, Vec::new(), sink, ui),
+        None => Ok(()),
     }
 }
 
@@ -2514,5 +2529,7 @@ mod toolcall_stream_tests {
     }
 }
 
+#[cfg(test)]
+mod goal_tests;
 #[cfg(test)]
 mod steering_tests;

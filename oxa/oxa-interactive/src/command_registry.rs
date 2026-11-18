@@ -182,6 +182,19 @@ commands! {
         surfaces: Surfaces { cli: Availability::Supported, ..LEAD_PENDING },
         requirements: Requirements { owner_only: true, ..NO_REQUIREMENTS },
     },
+    Goal {
+        path: &["goal"],
+        aliases: &[],
+        summary: "Set, show or clear the session goal",
+        arguments: &[Argument { name: "text|clear|pause|resume", kind: ArgumentKind::Tail, required: false }],
+        surfaces: Surfaces {
+            cli: Availability::Exception("The goal belongs to a running session"),
+            slash: Availability::Supported,
+            menu: Availability::Exception("Slash handler is the only goal surface for now"),
+            web: Availability::Exception("No web frontend is shipped"),
+        },
+        requirements: NO_REQUIREMENTS,
+    },
 }
 
 #[derive(Debug)]
@@ -349,6 +362,17 @@ mod tests {
                 assert_eq!(help(surface).contains(declaration.summary), shown);
             }
         }
+    }
+
+    #[test]
+    fn goal_is_declared_for_the_slash_surface_only() {
+        let input = words("goal pause");
+        let parsed = dispatch_slash(&input).expect("goal resolves as a slash command");
+        assert_eq!(parsed.command.id, CommandId::Goal);
+        assert_eq!(parsed.args, &input[1..]);
+        assert!(parse_cli(&input).is_none());
+        assert!(entries(Surface::Slash).any(|entry| entry.id == CommandId::Goal));
+        assert!(!entries(Surface::Cli).any(|entry| entry.id == CommandId::Goal));
     }
 
     #[test]
