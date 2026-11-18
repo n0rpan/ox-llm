@@ -134,3 +134,15 @@ fn missing_credentials_and_ledger_errors_keep_their_public_classification() {
         "model",
     );
 }
+
+#[test]
+fn null_cap_still_refuses_when_ledger_disabled() {
+    // The absent cap skips only the cap check; the durable ledger stays a precondition.
+    refusal(
+        daily_budget(&json!(null), false, Some(0.0), 0.0, 0.0).unwrap_err(),
+        503,
+        "cloud_ledger_unavailable",
+        "cloud_error",
+        "model",
+    );
+}
