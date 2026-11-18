@@ -9,11 +9,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  # Unrelated label events get their own group, so they never cancel a running review (Codex P2 on #987).
-  group: go-review-${{ github.event.pull_request.number }}-${{ github.event.action == 'labeled' && github.event.label.name != 'ok-to-review' && github.event.label.name != 'two-review' && format('label-{0}', github.run_id) || 'review' }}
-  cancel-in-progress: true
-
 jobs:
   review:
     if: >-
@@ -27,6 +22,10 @@ jobs:
       (github.event.action != 'labeled' || github.event.label.name == 'ok-to-review' || github.event.label.name == 'two-review') &&
       (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) ||
        contains(github.event.pull_request.labels.*.name, 'ok-to-review'))
+    # Serialize quota reads and reservations across admitted jobs, not skipped label events.
+    concurrency:
+      group: go-review-daily-quota
+      queue: max
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
@@ -44,6 +43,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # JSON list; second model runs only for two-review label/core paths. Unset: DeepSeek only.
           GO_REVIEW_MODELS: ${{ vars.GO_REVIEW_MODELS }}
+          GO_REVIEW_MAX_PER_DAY: ${{ vars.GO_REVIEW_MAX_PER_DAY }}
           OPENCODE_CI_CLIENT_ID: ${{ vars.OPENCODE_CI_CLIENT_ID }}
         run: |
           if [ ! -f tools/ci/go_review.py ]; then
