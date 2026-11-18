@@ -126,19 +126,29 @@ fn live_invalid_native_branch_is_skipped_before_reservation() {
     durable_publication(true, Some(Leading::InvalidBranch));
 }
 
+#[test]
+fn live_known_work_is_not_starved_by_twenty_published_identities() {
+    durable_publication(true, Some(Leading::Published));
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Leading {
     Fork,
     Unknown,
     RetainedLeases,
     InvalidBranch,
+    Published,
 }
 
 fn durable_publication(pull_request: bool, leading: Option<Leading>) {
     use oxa_work::board::{assignment::ManualAuthority, AttemptState, Claims, ImportState, Lease};
+    use sha2::{Digest, Sha256};
     use std::collections::BTreeMap;
     let live = leading.is_some();
-    let twenty = matches!(leading, Some(Leading::Unknown | Leading::RetainedLeases));
+    let twenty = matches!(
+        leading,
+        Some(Leading::Unknown | Leading::RetainedLeases | Leading::Published)
+    );
     let (env, controls) = fixture();
     let queue = controls.join("queue");
     let root = controls.join("claims");
@@ -347,6 +357,7 @@ cat "$0.reply"
         fs::write(&reply, original).unwrap();
     }
     let mut preserved = BTreeMap::new();
+    let mut published = BTreeMap::new();
     if live {
         let numbers: Vec<u64> = if twenty {
             (1..=11).chain(22..=30).collect()
@@ -367,6 +378,12 @@ cat "$0.reply"
                                 claimed_at: Some(now - 60),
                                 expires_at: now - 30,
                             }),
+                        }
+                    } else if leading == Some(Leading::Published) {
+                        AttemptState {
+                            utc_day: now / 86_400,
+                            attempts: 1,
+                            lease: None,
                         }
                     } else {
                         AttemptState::default()
@@ -413,7 +430,7 @@ cat "$0.reply"
         }
         repository["pullRequests"]["totalCount"] = json!(numbers.len() + 1);
         fs::write(&reply, response.to_string()).unwrap();
-        for number in numbers {
+        for (index, number) in numbers.into_iter().enumerate() {
             let mut context = response.clone();
             context["data"]["repository"]["pullRequest"]["headRefName"] =
                 if leading == Some(Leading::InvalidBranch) {
@@ -428,6 +445,50 @@ cat "$0.reply"
                 context.to_string(),
             )
             .unwrap();
+            if leading == Some(Leading::Published) {
+                let identity = serde_json::to_vec(&(
+                    "example/project",
+                    number,
+                    &revision,
+                    oxa_work::board::Action::ResolveConflict,
+                ))
+                .unwrap();
+                let key = format!("{:x}", Sha256::digest(identity));
+                let packet =
+                    format!("c{number} local/fake agent/{number} agent/{number}\nSynthetic prior packet.\n");
+                let pinned = index % 2 == 0;
+                assert!(oxa_work::helper_queue::publish(
+                    &queue,
+                    &key,
+                    &packet,
+                    pinned,
+                    &oxa_work::board::Policy {
+                        enabled: true,
+                        ..Default::default()
+                    }
+                )
+                .unwrap());
+                let name = format!("{}board-{key}.txt", if pinned { "p1-" } else { "" });
+                let ready = queue.join(&name);
+                // Retained private identities in each supported spool layout.
+                // These are publication facts, not execution/completion receipts.
+                let retained = match index % 3 {
+                    1 => queue.join("started").join(&name),
+                    2 => {
+                        let directory = queue
+                            .join("started")
+                            .join(format!("native-{}", name.trim_end_matches(".txt")));
+                        fs::create_dir(&directory).unwrap();
+                        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+                        directory.join(format!("board-{key}-{}-1.txt", now / 86_400))
+                    }
+                    _ => ready.clone(),
+                };
+                if retained != ready {
+                    fs::rename(&ready, &retained).unwrap();
+                }
+                published.insert(retained.clone(), fs::read(retained).unwrap());
+            }
         }
     }
     let result = invoke(&env, &config, "synthetic\n", false);
@@ -439,7 +500,7 @@ cat "$0.reply"
     let tasks: Vec<_> = fs::read_dir(&queue)
         .unwrap()
         .map(|entry| entry.unwrap().path())
-        .filter(|path| path.is_file())
+        .filter(|path| path.is_file() && !published.contains_key(path))
         .collect();
     assert_eq!(tasks.len(), 1);
     assert_eq!(fs::read_to_string(&tasks[0]).unwrap(), valid);
@@ -460,6 +521,13 @@ cat "$0.reply"
         format!("board-{}.txt", binding.key)
     );
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
+    for (path, bytes) in &published {
+        assert_eq!(
+            fs::read(path).unwrap(),
+            *bytes,
+            "prior packet bytes remain untouched"
+        );
+    }
     let rows = claims.assignments().unwrap();
     for (number, before) in preserved {
         assert_eq!(
@@ -467,11 +535,11 @@ cat "$0.reply"
             before,
             "skipped candidates retain their original lease, attempts and assignment"
         );
-        if leading == Some(Leading::RetainedLeases) {
+        if matches!(leading, Some(Leading::RetainedLeases | Leading::Published)) {
             let queries = fs::read_to_string(env.tmp().join("gh.queries")).unwrap();
             assert!(
                 !queries.contains(&format!("pullRequest(number:{number}) {{")),
-                "retained leases are excluded before context acquisition and the packet cap"
+                "inadmissible identities are excluded before context acquisition and the packet cap"
             );
         }
     }
