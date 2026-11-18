@@ -210,7 +210,7 @@ fn dedicated_lead_session_keeps_its_own_history_across_cli_turns() {
 }
 
 const LEAD_PTY: &str = r#"
-import os, pty, select, signal, subprocess, sys, time
+import errno, os, pty, select, subprocess, sys, time
 master, slave = pty.openpty()
 child = subprocess.Popen([sys.argv[1], 'lead'], stdin=slave, stdout=slave, stderr=slave)
 os.close(slave)
@@ -231,8 +231,20 @@ try:
     wait_for(b'attached to its dedicated session')
     os.write(master, b'Terminal follow-up.\r')
     wait_for(b'Interactive reply')
-    child.send_signal(signal.SIGHUP)
-    assert child.wait(timeout=5) == 129
+    os.write(master, b'/quit\r')
+    assert child.wait(timeout=5) == 0
+    while select.select([master], [], [], 0)[0]:
+        try:
+            chunk = os.read(master, 65536)
+        except OSError as error:
+            if error.errno == errno.EIO:
+                break
+            raise
+        if not chunk:
+            break
+        output += chunk
+    assert b'To resume this session:\x1b[22m oxa lead' in output, output[-2000:]
+    assert b'oxa --session' not in output, output[-2000:]
 finally:
     os.close(master)
     if child.poll() is None:
@@ -295,4 +307,34 @@ fn normal_lead_tui_and_direct_print_use_one_dedicated_session() {
     let sessions = FsStore::new(test.agent_dir().join("sessions")).list(None);
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].sref.id, id.trim());
+}
+
+#[test]
+fn empty_agent_marker_refuses_the_dedicated_owner_session_before_provider_io() {
+    let test = TestEnv::new();
+    let server = FakeServer::start(
+        vec![ScriptTurn::text(
+            r#"{"text":"Unexpected owner reply.","facts":[],"action":null}"#,
+        )],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    std::fs::set_permissions(test.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let created = run(&test, &server, &["lead", "chat", "--init"]);
+    assert!(created.status.success(), "{created:?}");
+    let id = String::from_utf8(created.stdout).unwrap();
+    let config = serde_json::json!({"oxa": {"lead":{"sessionId":id.trim()}}});
+    let settings = test.write("home/.oxa/agent/settings.json", &config.to_string());
+    std::fs::set_permissions(settings, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["lead", "-p", "Open owner chat."])
+        .env_clear()
+        .envs(test.envs(&server.url()))
+        .env("AI_AGENT", "")
+        .current_dir(test.work())
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Use Lead from the owner session."));
+    assert!(server.requests().is_empty());
 }
