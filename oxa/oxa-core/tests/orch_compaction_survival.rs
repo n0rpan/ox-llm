@@ -201,11 +201,13 @@ fn goal_section_and_continue_survive_two_compactions() {
         "goal section in the prefix"
     );
 
-    // The goal-continue prompt is the newest user message, so the cut lands on it and it is kept.
+    // The goal-continue prompt is the newest message, so the keep_tokens: 1 cut lands on it and
+    // it is kept. A manual compaction moves the cut forward to a valid point, so a trailing
+    // assistant reply after the prompt would be summarised (only a mid-run cut is clamped to
+    // the last user message).
     say(&mut st, "the task");
     push(&mut st, WireMsg::assistant("working"));
     push(&mut st, WireMsg::user(GOAL_CONTINUE));
-    push(&mut st, WireMsg::assistant("still working"));
     compact(&mut st);
     assert!(
         section(&st, "goal").is_some_and(|t| t.contains(expected.as_str())),
@@ -216,7 +218,9 @@ fn goal_section_and_continue_survive_two_compactions() {
         "goal-continue prompt after one compaction"
     );
 
+    // The next continuation prompt is again the newest message when the second compaction runs.
     push(&mut st, WireMsg::assistant("more work"));
+    push(&mut st, WireMsg::user(GOAL_CONTINUE));
     compact(&mut st);
     assert!(
         section(&st, "goal").is_some_and(|t| t.contains(expected.as_str())),
