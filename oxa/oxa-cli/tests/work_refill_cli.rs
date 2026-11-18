@@ -210,6 +210,11 @@ cat "$0.reply"
             Some(json!({"name":"agent/44","target":{"committer":{"user":{"login":"worker-a[bot]"}}}})),
             None,
         ] {
+            let expected = if observed.is_some() {
+                "worker-a[bot]"
+            } else {
+                "branch observation"
+            };
             let mut response: serde_json::Value = serde_json::from_slice(&original).unwrap();
             if let Some(branch) = observed {
                 response["data"]["repository"]["b44"] = branch;
@@ -223,10 +228,7 @@ cat "$0.reply"
             let refused = invoke(&env, &config, "synthetic\n", false);
             assert_eq!(refused.status.code(), Some(2));
             let reason = String::from_utf8_lossy(&refused.stderr);
-            assert!(
-                reason.contains("worker-a[bot]") || reason.contains("branch observation"),
-                "{reason}"
-            );
+            assert!(reason.contains(expected), "{reason}");
             assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
         }
         fs::write(&reply, original).unwrap();

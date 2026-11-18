@@ -44,7 +44,11 @@ impl Source for Fake<'_> {
     fn host_id(&self) -> oxa_work::Result<Option<&str>> {
         Ok(self.host)
     }
-    fn existing_work(&mut self, _entry: &Entry) -> oxa_work::Result<Option<ExistingWork>> {
+    fn existing_work(
+        &mut self,
+        _entry: &Entry,
+        _retained: Option<&NativeBinding>,
+    ) -> oxa_work::Result<Option<ExistingWork>> {
         if let Some(path) = self.on_observe {
             fs::write(path, b"owner paused").unwrap();
         }

@@ -99,7 +99,7 @@ fn all_metadata_pages_preserve_linked_issue_refusal_and_explicit_intake() {
         .unwrap();
     entry.action = Action::BuildIssue;
     assert!(
-        matches!(hosted.existing_work(&entry).unwrap(), Some(ExistingWork::PullRequest { number: 101, owner }) if owner == "worker-a[bot]")
+        matches!(hosted.existing_work(&entry, None).unwrap(), Some(ExistingWork::PullRequest { number: 101, owner }) if owner == "worker-a[bot]")
     );
     let mut off = Input::new(&gh, &path, "example/project", "synthetic", &packets, false);
     assert!(!off.snapshot().unwrap().issues[0].approved);

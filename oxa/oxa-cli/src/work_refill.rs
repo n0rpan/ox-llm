@@ -11,8 +11,13 @@ pub trait Source: GitHub {
         Ok(None)
     }
     /// Revalidate source and complete existing-work facts under the Claims lock.
+    /// The retained binding comes from that locked row, not a caller's cached snapshot.
     /// This callback must not call Claims; unavailable evidence must fail closed.
-    fn existing_work(&mut self, _entry: &Entry) -> Result<Option<ExistingWork>> {
+    fn existing_work(
+        &mut self,
+        _entry: &Entry,
+        _retained: Option<&NativeBinding>,
+    ) -> Result<Option<ExistingWork>> {
         Err("hosted admission requires complete existing-work evidence".into())
     }
 }
@@ -156,8 +161,8 @@ impl Consumer<'_> {
                                 self.worker,
                                 host,
                                 (now, self.ttl),
-                                |_| {
-                                    let existing = source.existing_work(entry)?;
+                                |_, retained| {
+                                    let existing = source.existing_work(entry, retained)?;
                                     if self.paused()? {
                                         return Err("refill paused during observation".into());
                                     }

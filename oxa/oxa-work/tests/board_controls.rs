@@ -812,14 +812,14 @@ fn hosted_idle_admission_keeps_bootstrap_and_cross_item_worker_fences() {
     let mut second = first.clone();
     second.number = 2;
     assert!(store
-        .claim_idle_item_for(&first, &policy(), &worker, "host-a", (10, 20), |_| panic!(
+        .claim_idle_item_for(&first, &policy(), &worker, "host-a", (10, 20), |_, _| panic!(
             "unknown row"
         ))
         .unwrap()
         .is_none());
     fixture.establish([first.number, second.number]);
     let receipt = store
-        .claim_idle_item_for(&first, &policy(), &worker, "host-a", (10, 20), |_| Ok(None))
+        .claim_idle_item_for(&first, &policy(), &worker, "host-a", (10, 20), |_, _| Ok(None))
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -833,7 +833,7 @@ fn hosted_idle_admission_keeps_bootstrap_and_cross_item_worker_fences() {
     );
     for now in [11, 31] {
         assert!(store
-            .claim_idle_item_for(&second, &policy(), &worker, "host-b", (now, 20), |_| panic!(
+            .claim_idle_item_for(&second, &policy(), &worker, "host-b", (now, 20), |_, _| panic!(
                 "busy worker"
             ))
             .unwrap()
@@ -849,7 +849,7 @@ fn hosted_idle_admission_keeps_bootstrap_and_cross_item_worker_fences() {
         )
         .unwrap());
     assert!(store
-        .claim_idle_item_for(&second, &policy(), &worker, "host-b", (33, 20), |_| Ok(None))
+        .claim_idle_item_for(&second, &policy(), &worker, "host-b", (33, 20), |_, _| Ok(None))
         .unwrap()
         .is_some());
 }

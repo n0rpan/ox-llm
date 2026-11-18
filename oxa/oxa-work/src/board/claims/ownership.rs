@@ -44,6 +44,8 @@ impl Saved {
 
 impl Claims {
     /// Hosted automatic admission retains the existing atomic idle/bootstrap fence.
+    /// Its observer receives the current retained binding under that same lock,
+    /// so a replacement packet can check the prior branch as well as its new branch.
     pub fn claim_idle_item_for(
         &self,
         entry: &Entry,
@@ -51,7 +53,7 @@ impl Claims {
         worker: &Worker,
         host_id: &str,
         timing: (u64, u64),
-        observe: impl FnOnce(u64) -> Result<Option<ExistingWork>>,
+        observe: impl FnOnce(u64, Option<&NativeBinding>) -> Result<Option<ExistingWork>>,
     ) -> Result<Option<ItemLease>> {
         self.claim_item_checked(entry, policy, worker, host_id, timing, true, observe)
     }
@@ -68,7 +70,9 @@ impl Claims {
         timing: (u64, u64),
         observe: impl FnOnce(u64) -> Result<Option<ExistingWork>>,
     ) -> Result<Option<ItemLease>> {
-        self.claim_item_checked(entry, policy, worker, host_id, timing, false, observe)
+        self.claim_item_checked(entry, policy, worker, host_id, timing, false, |number, _| {
+            observe(number)
+        })
     }
 
     fn claim_item_checked(
@@ -79,7 +83,7 @@ impl Claims {
         host_id: &str,
         timing: (u64, u64),
         idle: bool,
-        observe: impl FnOnce(u64) -> Result<Option<ExistingWork>>,
+        observe: impl FnOnce(u64, Option<&NativeBinding>) -> Result<Option<ExistingWork>>,
     ) -> Result<Option<ItemLease>> {
         if !valid_worker_id(host_id) {
             return Err("authenticated host identity required".into());
@@ -88,7 +92,7 @@ impl Claims {
             if idle && !self.idle_for(entry.number, &worker.id, row)? {
                 return Ok(false);
             }
-            if let Some(existing) = observe(entry.number)? {
+            if let Some(existing) = observe(entry.number, row.data.native_binding.as_ref())? {
                 let (owner, kind) = match existing {
                     ExistingWork::PullRequest { number, owner } if number > 0 => (owner, "open PR"),
                     ExistingWork::Branch { name, owner } if !name.is_empty() => (owner, "branch"),

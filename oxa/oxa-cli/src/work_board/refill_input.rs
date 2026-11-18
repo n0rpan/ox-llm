@@ -1,7 +1,7 @@
 //! Read-only prepared-input normalization through the existing board Reader.
 use super::*;
 use crate::work_refill::Source;
-use oxa_work::board::{Action, Entry, ExistingWork, Issue, Snapshot};
+use oxa_work::board::{Action, Entry, ExistingWork, Issue, NativeBinding, Snapshot};
 pub(super) fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
     value[key]
         .as_str()
@@ -15,12 +15,33 @@ pub struct Prepared {
     pub branch: String,
     pub task: String,
 }
+fn branches<'a>(
+    packet: &'a Prepared,
+    retained: Option<&'a NativeBinding>,
+) -> Vec<(&'static str, &'a str, Option<&'a str>)> {
+    let retained = retained.filter(|binding| binding.number == packet.number);
+    let mut refs = vec![(
+        "b",
+        packet.branch.as_str(),
+        retained
+            .filter(|binding| binding.branch == packet.branch)
+            .map(|binding| binding.lease.holder.as_str()),
+    )];
+    if let Some(binding) = retained.filter(|binding| binding.branch != packet.branch) {
+        refs.insert(
+            0,
+            ("r", binding.branch.as_str(), Some(binding.lease.holder.as_str())),
+        );
+    }
+    refs
+}
 pub struct Input<'a> {
     reader: Reader<'a>,
     packets: &'a [Prepared],
     intake: bool,
     host: Option<&'a str>,
     existing: BTreeMap<u64, ExistingWork>,
+    retained: Option<NativeBinding>,
 }
 impl<'a> Input<'a> {
     /// Caller authorizes the source, trusted executable and App token before acquisition.
@@ -38,6 +59,7 @@ impl<'a> Input<'a> {
             intake,
             host: None,
             existing: BTreeMap::new(),
+            retained: None,
         }
     }
     pub fn with_host(mut self, host: &'a str) -> Self {
@@ -56,9 +78,11 @@ impl GitHub for Input<'_> {
                 packet.number, packet.number
             ));
             if self.host.is_some() {
-                let branch = serde_json::to_string(&format!("refs/heads/{}", packet.branch))
-                    .map_err(|_| "invalid branch query")?;
-                issue_fields.push_str(&format!(" b{}:ref(qualifiedName:{branch}){{name target{{... on Commit{{committer{{user{{login}}}}}}}}}}", packet.number));
+                for (alias, branch, _) in branches(packet, self.retained.as_ref()) {
+                    let branch = serde_json::to_string(&format!("refs/heads/{branch}"))
+                        .map_err(|_| "invalid branch query")?;
+                    issue_fields.push_str(&format!(" {alias}{}:ref(qualifiedName:{branch}){{name target{{... on Commit{{committer{{user{{login}}}}}}}}}}", packet.number));
+                }
             }
         }
         let (mut metadata, mut rows, mut cursor, mut cursors) =
@@ -152,21 +176,30 @@ impl GitHub for Input<'_> {
         }
         let mut issues = vec![];
         for packet in self.packets.iter().filter(|p| p.action == Action::BuildIssue) {
-            if self.host.is_some() && !self.existing.contains_key(&packet.number) {
-                let branch = metadata
-                    .get(format!("b{}", packet.number))
-                    .ok_or("incomplete branch observation")?;
-                if !branch.is_null() {
-                    if text(branch, "name")? != packet.branch {
-                        return Err("observed branch changed identity".into());
+            if self.host.is_some() {
+                for (alias, name, owner) in branches(packet, self.retained.as_ref()) {
+                    if self.existing.contains_key(&packet.number) {
+                        break;
                     }
-                    self.existing.insert(
-                        packet.number,
-                        ExistingWork::Branch {
-                            name: packet.branch.clone(),
-                            owner: text(&branch["target"]["committer"]["user"], "login")?.into(),
-                        },
-                    );
+                    let branch = metadata
+                        .get(format!("{alias}{}", packet.number))
+                        .ok_or("incomplete branch observation")?;
+                    if !branch.is_null() {
+                        if text(branch, "name")? != name {
+                            return Err("observed branch changed identity".into());
+                        }
+                        let owner = match owner {
+                            Some(owner) => owner,
+                            None => text(&branch["target"]["committer"]["user"], "login")?,
+                        };
+                        self.existing.insert(
+                            packet.number,
+                            ExistingWork::Branch {
+                                name: name.into(),
+                                owner: owner.into(),
+                            },
+                        );
+                    }
                 }
             }
             let issue = &metadata[format!("i{}", packet.number)];
@@ -193,9 +226,19 @@ impl Source for Input<'_> {
             .map(Some)
             .ok_or_else(|| "native refill requires an authenticated host".into())
     }
-    fn existing_work(&mut self, entry: &Entry) -> Result<Option<ExistingWork>, String> {
+    fn existing_work(
+        &mut self,
+        entry: &Entry,
+        retained: Option<&NativeBinding>,
+    ) -> Result<Option<ExistingWork>, String> {
         self.host_id()?;
-        let valid = self.revalidate(entry)?;
+        if retained.is_some_and(|binding| binding.number != entry.number) {
+            return Err("retained source belongs to another item".into());
+        }
+        self.retained = retained.cloned();
+        let valid = self.revalidate(entry);
+        self.retained = None;
+        let valid = valid?;
         if let Some(existing) = self.existing.remove(&entry.number) {
             return Ok(Some(existing));
         }
