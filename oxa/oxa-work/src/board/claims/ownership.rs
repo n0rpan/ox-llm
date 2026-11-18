@@ -43,6 +43,37 @@ impl Saved {
 }
 
 impl Claims {
+    /// Retain the same directory lock across each authenticated active-item update.
+    pub(super) fn active_item_for(
+        &self,
+        worker_id: &str,
+        host_id: &str,
+        binding: &NativeBinding,
+        receipt: &ItemLease,
+        now: u64,
+    ) -> Result<Option<(File, Saved)>> {
+        binding.validate()?;
+        if !valid_worker_id(host_id)
+            || worker_id != binding.lease.holder
+            || receipt.host_id != host_id
+            || receipt.lease != binding.lease
+        {
+            return Err("authenticated item observer and original binding required".into());
+        }
+        let lock = self.lock(binding.number)?;
+        let row = self.load(binding.number)?;
+        if row.item_lease().as_ref() != Some(receipt)
+            || row.data.native_binding.as_ref() != Some(binding)
+            || now >= receipt.expires_at
+        {
+            return Ok(None);
+        }
+        if receipt.lease.claimed_at.is_none_or(|start| now < start) {
+            return Err("item observation clock moved backwards".into());
+        }
+        Ok(Some((lock, row)))
+    }
+
     /// Hosted automatic admission retains the existing atomic idle/bootstrap fence.
     /// Its observer receives the current retained binding under that same lock,
     /// so a replacement packet can check the prior branch as well as its new branch.

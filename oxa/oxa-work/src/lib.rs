@@ -51,7 +51,10 @@ pub mod events;
 mod facts_io;
 pub use facts_io::require_private_directory;
 mod github;
-pub use github::{pull_request_task, ReviewedPullRequest};
+pub use github::{
+    prepare_pull_request_context, pull_request_fields, pull_request_task, PullRequestContext,
+    ReviewedPullRequest,
+};
 pub mod incidents;
 pub mod situation;
 pub mod standing;
@@ -1210,6 +1213,14 @@ fn run_locked(
             return Err("task specification changed; use a new task id".into());
         }
         writer.replay(&old, observer).map_err(RunError::Checkpoint)?;
+        if planned.native
+            && old.record.checkpoint_kind == CheckpointKind::WorkerFinished
+            && old.record.worker_launch_revision.is_some()
+        {
+            // Other tasks can acknowledge the shared repository cursor. The task lock
+            // still fences this exact worker result and the consumer deduplicates it.
+            observer.checkpoint(&old.record).map_err(RunError::Checkpoint)?;
+        }
         // Action recovery cannot turn a changed HEAD into fresh acceptance.
         // Only an explicit rerun starts a new execution for these checkpoints.
         if !rerun && matches!(old.record.step, Step::Publishing | Step::Reporting) {
@@ -1637,6 +1648,12 @@ mod comment_packet_tests {
 
 /// Decode the response captured from GitHub CLI with headers included.
 pub fn github_http_response(text: &str) -> std::result::Result<(u16, &str), &'static str> {
+    let (status, _, body) = github_http_response_with_headers(text)?;
+    Ok((status, body))
+}
+
+/// Decode the same GitHub CLI response while retaining the borrowed header block.
+pub fn github_http_response_with_headers(text: &str) -> std::result::Result<(u16, &str, &str), &'static str> {
     let (headers, body) = text
         .split_once("\r\n\r\n")
         .or_else(|| text.split_once("\n\n"))
@@ -1649,7 +1666,7 @@ pub fn github_http_response(text: &str) -> std::result::Result<(u16, &str), &'st
         .and_then(|value| value.parse::<u16>().ok())
         .filter(|value| (100..600).contains(value))
         .ok_or("invalid GitHub HTTP status")?;
-    Ok((status, body))
+    Ok((status, headers, body))
 }
 
 pub use publish::{RerunAcknowledgment, RerunIntent, RerunKey};

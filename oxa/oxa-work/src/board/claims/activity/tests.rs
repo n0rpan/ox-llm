@@ -3,7 +3,7 @@ use crate::board::assignment::{ManualAuthority, Role, Worker, WorkerKind};
 use crate::test_dir::PrivateDir;
 use crate::{blocked_record, Task, WorkerOutcome, WorkerResult};
 
-fn fixture() -> (PrivateDir, Claims, ItemLease, NativeBinding) {
+pub(in crate::board::claims) fn fixture() -> (PrivateDir, Claims, ItemLease, NativeBinding) {
     let dir = PrivateDir::new("lease-activity");
     let claims = Claims::open(dir.path()).unwrap();
     let receipt = reserve(&claims, 10);
@@ -12,7 +12,7 @@ fn fixture() -> (PrivateDir, Claims, ItemLease, NativeBinding) {
     (dir, claims, receipt, binding)
 }
 
-fn reserve(claims: &Claims, now: u64) -> ItemLease {
+pub(in crate::board::claims) fn reserve(claims: &Claims, now: u64) -> ItemLease {
     let entry = Entry {
         number: 1,
         head: "synthetic-source".into(),

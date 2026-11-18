@@ -147,7 +147,11 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
                 path.into()
             };
             let response = get(port, &path, &authority, "");
-            assert!(response.starts_with("HTTP/1.1 200"), "{path}");
+            assert!(
+                response.starts_with("HTTP/1.1 200"),
+                "{path}: {}",
+                response.lines().next().unwrap_or("<empty response>")
+            );
             assert!(response.contains(&format!(">{title}</h1>")), "{path}");
             assert_eq!(response.contains("<!doctype html>"), !fragment, "{path}");
         }

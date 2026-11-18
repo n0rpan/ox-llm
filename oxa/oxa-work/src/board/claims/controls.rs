@@ -21,6 +21,8 @@ pub struct AssignmentData {
     pub item_owner: Option<super::ownership::ItemOwner>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease_activity: Option<super::activity::LeaseActivity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependency: Option<super::dependencies::DependencyWait>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -171,7 +173,8 @@ impl Claims {
 
     /// Helper admission checks idleness and reserves under the SAME directory lock.
     /// The target must have validated Saved state; transient lock markers are not bootstrap facts.
-    /// Every outstanding target/worker lease, including expired work, requires fenced completion.
+    /// Every target and unparked worker lease needs fenced completion, including expired work.
+    /// Verified dependency waits retain item ownership while permitting other eligible work.
     /// Worker identity and roles must come from the trusted frontend, as with `claim_for`.
     /// Generic manual reservations retain their separate `assign`/`claim_for` semantics.
     pub fn claim_idle_for(
@@ -194,12 +197,9 @@ impl Claims {
     pub(super) fn idle_for(&self, number: u64, worker_id: &str, row: &Saved) -> Result<bool> {
         Ok(self.established(number)?
             && row.state.lease.is_none()
-            && !self.rows_locked()?.values().any(|saved| {
-                saved
-                    .state
-                    .lease
-                    .as_ref()
-                    .is_some_and(|lease| lease.holder == worker_id)
-            }))
+            && !self
+                .rows_locked()?
+                .values()
+                .any(|saved| saved.busy_for(worker_id)))
     }
 }
