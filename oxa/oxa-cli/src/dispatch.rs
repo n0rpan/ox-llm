@@ -238,6 +238,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::LeadStatus
                     | CommandId::LeadAsks
                     | CommandId::LeadChat
+                    | CommandId::Goal
                     | CommandId::Help
                     | CommandId::WorkStatus
                     | CommandId::WorkBoard => Err(OxaError::new(
