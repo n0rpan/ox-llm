@@ -568,6 +568,90 @@ const ROWS: &[Row] = &[
         cwd: ".",
         expect: NONE,
     },
+    Row {
+        name: "su_alone_is_privileged",
+        cmd: "su",
+        cwd: ".",
+        expect: SUDO,
+    },
+    Row {
+        name: "su_c_script_is_privileged",
+        cmd: "su -c 'echo hi'",
+        cwd: ".",
+        expect: SUDO,
+    },
+    Row {
+        name: "chmod_r_symbolic_other_write",
+        cmd: "chmod -R o+w build",
+        cwd: ".",
+        expect: CHMOD,
+    },
+    Row {
+        name: "chmod_r_symbolic_all_write",
+        cmd: "chmod -R a+w build",
+        cwd: ".",
+        expect: CHMOD,
+    },
+    Row {
+        name: "chmod_r_octal_other_write",
+        cmd: "chmod -R 757 build",
+        cwd: ".",
+        expect: CHMOD,
+    },
+    Row {
+        name: "chmod_r_0644_is_safe",
+        cmd: "chmod -R 644 build",
+        cwd: ".",
+        expect: NONE,
+    },
+    Row {
+        name: "cp_target_directory_ssh",
+        cmd: "cp -t ~/.ssh authorized_keys",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
+        name: "cp_target_directory_equals_ssh",
+        cmd: "cp --target-directory=~/.ssh authorized_keys",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
+        name: "env_split_string_keeps_trailing_arguments",
+        cmd: "env -S 'rm -rf' /var/tmp/victim",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
+        name: "cd_root_then_relative_rm_is_outside",
+        cmd: "cd / && rm -rf var/tmp/victim",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
+        name: "cd_computed_then_relative_rm_is_unknown",
+        cmd: "cd \"$DIR\" && rm -rf victim",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
+        name: "cd_workspace_subdir_then_relative_rm_is_safe",
+        cmd: "cd build && rm -rf out",
+        cwd: ".",
+        expect: NONE,
+    },
+    Row {
+        name: "heredoc_unquoted_substitution_runs",
+        cmd: "cat <<EOF\n$(rm -rf /var/tmp/victim)\nEOF",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
+        name: "heredoc_quoted_substitution_is_text",
+        cmd: "cat <<'EOF'\n$(rm -rf /var/tmp/victim)\nEOF",
+        cwd: ".",
+        expect: NONE,
+    },
 ];
 
 fn setup() -> (TestEnv, PathGuard) {
@@ -613,6 +697,25 @@ fn danger_table_matches() {
         }
     }
     assert!(bad.is_empty(), "{} rows differ:\n{}", bad.len(), bad.join("\n"));
+}
+
+#[test]
+fn a_parent_dir_after_a_symlink_is_not_resolved_lexically() {
+    use std::os::unix::fs::symlink;
+    let (env, guard) = setup();
+    let workspace = env.work();
+    let outer = env.root().join("outer");
+    std::fs::create_dir_all(outer.join("child")).unwrap();
+    symlink(outer.join("child"), workspace.join("link")).unwrap();
+    let rules = DangerRules::builtin();
+    // Lexically `<workspace>/victim`, which is safe; the shell resolves the `..` inside the
+    // link's target and deletes `<outer>/victim`.
+    let got = ids(&rules.classify("rm -rf link/../victim", &workspace, &guard));
+    assert_eq!(got, vec!["rm-recursive-outside".to_string()], "{got:?}");
+    // Without a `..` the same link is an ordinary workspace path.
+    std::fs::create_dir_all(workspace.join("link")).ok();
+    let got = ids(&rules.classify("rm -rf link/child", &workspace, &guard));
+    assert!(got.is_empty(), "{got:?}");
 }
 
 #[test]

@@ -148,7 +148,11 @@ impl DangerRules {
     /// Every simple command of `command` that matches an enabled rule. `cwd` is the workspace
     /// (relative paths are taken from it) and `guard` decides which paths are credentials.
     pub fn classify(&self, command: &str, cwd: &Path, guard: &PathGuard) -> Vec<DangerHit> {
-        let ctx = Ctx { cwd, guard };
+        let ctx = Ctx {
+            cwd,
+            root: cwd,
+            guard,
+        };
         let mut hits: Vec<DangerHit> = Vec::new();
         match parse_line(command) {
             Some(stages) => self.check_stages(&stages, &ctx, 0, false, &mut hits),
@@ -188,20 +192,38 @@ impl DangerRules {
     ) {
         // The names of the earlier stages of the current pipeline (`curl x | python3`).
         let mut pipeline: Vec<String> = Vec::new();
+        // A literal `cd` moves the directory the later stages run in; a computed one makes
+        // their relative targets unknown.
+        let mut cwd = ctx.cwd.to_path_buf();
+        let mut untracked = false;
         for stage in stages {
             if !stage.pipe_in {
                 pipeline.clear();
             }
-            let name = self.check_words(
-                &stage.words,
-                &stage.redirects,
-                stage.pipe_in,
-                &pipeline,
-                unknown,
-                ctx,
-                depth,
-                hits,
-            );
+            let (name, next) = {
+                let scoped = Ctx {
+                    cwd: cwd.as_path(),
+                    root: ctx.root,
+                    guard: ctx.guard,
+                };
+                let name = self.check_words(
+                    &stage.words,
+                    &stage.redirects,
+                    stage.pipe_in,
+                    &pipeline,
+                    unknown || untracked,
+                    &scoped,
+                    depth,
+                    hits,
+                );
+                let next = cd_target(&stage.words, &scoped);
+                (name, next)
+            };
+            match next {
+                Some(Some(dir)) => cwd = dir,
+                Some(None) => untracked = true,
+                None => {}
+            }
             if let Some(name) = name {
                 pipeline.push(name);
             }
@@ -245,15 +267,17 @@ impl DangerRules {
         } else {
             &[]
         };
+        // Privilege escalation is reported before the peeled argv is inspected: `su` and
+        // `su -c ...` run as root even though nothing is left to peel after them.
+        if peeled.privileged {
+            self.push(hits, "sudo", &seg);
+        }
         if !argv.is_empty() {
             let name_raw = argv[0].as_str();
             let name = base_name(name_raw);
             // The command name itself is computed at run time: `$x -rf /`, `$(which rm)`.
             if has_dynamic(name_raw) {
                 self.push(hits, "eval-dynamic", &seg);
-            }
-            if peeled.privileged {
-                self.push(hits, "sudo", &seg);
             }
             if SHELLS.contains(&name) {
                 if pipe_in || heredoc {
@@ -377,8 +401,20 @@ impl DangerRules {
                 }
             }
             "cp" | "ln" | "install" => {
-                if let Some(t) = ops.last() {
-                    self.write_hit(t, seg, ctx, hits);
+                // `-t DIR` / `--target-directory[=]DIR` names the destination; the operands are
+                // then the sources, so every one of them is written into that directory.
+                match target_directory(args) {
+                    Some(dir) => {
+                        self.write_hit(&dir, seg, ctx, hits);
+                        for t in ops.iter().filter(|t| (*t).to_string() != dir) {
+                            self.write_hit(&Path::new(&dir).join(t).to_string_lossy(), seg, ctx, hits);
+                        }
+                    }
+                    None => {
+                        if let Some(t) = ops.last() {
+                            self.write_hit(t, seg, ctx, hits);
+                        }
+                    }
                 }
             }
             "sed" => {
@@ -507,21 +543,59 @@ impl DangerRules {
     }
 }
 
-/// The workspace and the guard, passed down the checks.
+/// The workspace boundary, the directory the current command runs in, and the guard.
 struct Ctx<'a> {
+    /// Where the current command runs: a `cd` in an earlier stage of the same line moves it.
     cwd: &'a Path,
+    /// The workspace boundary, which a `cd` never moves.
+    root: &'a Path,
     guard: &'a PathGuard,
 }
 
 impl Ctx<'_> {
-    /// `raw` as an absolute, normalised path; `None` when the shell computes part of it.
+    /// `raw` as an absolute, normalised path; `None` when the shell computes part of it, or when
+    /// lexical normalisation of a `..` would hide where the file system really resolves it (a
+    /// symlinked directory before the `..`, as in `link/../victim`).
     fn resolve(&self, raw: &str) -> Option<PathBuf> {
         let expanded = expand_home(raw, &self.guard.home);
         if has_dynamic(&expanded) {
             return None;
         }
-        Some(normalize(Path::new(&expanded), self.cwd))
+        let absolute = normalize(Path::new(&expanded), self.cwd);
+        if parent_dir_after_a_link(&expanded, self.cwd) {
+            return None;
+        }
+        Some(absolute)
     }
+}
+
+/// `true` when a `..` in `raw` comes after a symbolic link: the file system then resolves the
+/// `..` inside the link's target, which lexical normalisation cannot see (`link/../victim`).
+fn parent_dir_after_a_link(raw: &str, cwd: &Path) -> bool {
+    let parts: Vec<&str> = raw
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+    if !parts.iter().any(|part| *part == "..") {
+        return false;
+    }
+    let mut so_far = if raw.starts_with('/') {
+        PathBuf::from("/")
+    } else {
+        cwd.to_path_buf()
+    };
+    for (i, part) in parts.iter().enumerate() {
+        if *part == ".." {
+            continue;
+        }
+        so_far.push(part);
+        if std::fs::symlink_metadata(&so_far).is_ok_and(|m| m.file_type().is_symlink())
+            && parts[i + 1..].iter().any(|later| *later == "..")
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// A tokenized simple command. `pipe_in`: it reads the stdout of the stage before it.
@@ -548,7 +622,7 @@ fn parse_depth(src: &str, depth: usize) -> Option<Vec<Stage>> {
     let n = chars.len();
     let mut out: Vec<Stage> = Vec::new();
     let mut cur = Stage::default();
-    let mut heredocs: Vec<(String, bool)> = Vec::new();
+    let mut heredocs: Vec<Heredoc> = Vec::new();
     let mut p = 0usize;
     while p < n {
         let c = chars[p];
@@ -558,8 +632,17 @@ fn parse_depth(src: &str, depth: usize) -> Option<Vec<Stage>> {
             '\n' => {
                 end_stage(&mut out, &mut cur, false);
                 p += 1;
-                for (delim, strip) in std::mem::take(&mut heredocs) {
-                    p = skip_heredoc(&chars, p, &delim, strip);
+                for heredoc in std::mem::take(&mut heredocs) {
+                    let end = skip_heredoc(&chars, p, &heredoc.delim, heredoc.strip);
+                    // An unquoted delimiter expands the body: its command substitutions run in
+                    // the invoking shell before the command sees the text.
+                    if heredoc.expands {
+                        let body: Vec<char> = chars[p..end.min(chars.len())].to_vec();
+                        for inner in heredoc_substitutions(&body) {
+                            out.extend(parse_depth(&inner, depth + 1)?);
+                        }
+                    }
+                    p = end;
                 }
             }
             ';' | '(' | ')' => {
@@ -666,16 +749,25 @@ fn redirect(
     op: &'static str,
     depth: usize,
     cur: &mut Stage,
-    heredocs: &mut Vec<(String, bool)>,
+    heredocs: &mut Vec<Heredoc>,
     out: &mut Vec<Stage>,
 ) -> Option<usize> {
     let mut p = start;
     while p < chars.len() && (chars[p] == ' ' || chars[p] == '\t') {
         p += 1;
     }
+    let raw_start = p;
     let (target, np) = read_word(chars, p, depth, out)?;
     if op == "<<" || op == "<<-" {
-        heredocs.push((target.clone(), op == "<<-"));
+        // A quoted or escaped delimiter (`<<'EOF'`, `<<"EOF"`, `<<\EOF`) turns expansion off.
+        let quoted = chars[raw_start..np]
+            .iter()
+            .any(|c| matches!(c, '\'' | '"' | '\\'));
+        heredocs.push(Heredoc {
+            delim: target.clone(),
+            strip: op == "<<-",
+            expands: !quoted,
+        });
     }
     cur.redirects.push((op.to_string(), target));
     Some(np)
@@ -954,6 +1046,23 @@ fn peel(words: &[String], unknown_in: bool) -> Peeled {
     out
 }
 
+/// Where the next stages run after this one: `None` when it does not change the directory,
+/// `Some(Some(dir))` for a literal `cd`/`pushd`, `Some(None)` when the target is computed (a
+/// variable, a glob or `cd -`), so later relative targets are unknown.
+fn cd_target(words: &[String], ctx: &Ctx<'_>) -> Option<Option<PathBuf>> {
+    let peeled = peel(words, false);
+    let argv: &[String] = words.get(peeled.start..).unwrap_or(&[]);
+    let name = base_name(argv.first()?);
+    if !matches!(name, "cd" | "pushd") {
+        return None;
+    }
+    match argv.get(1).map(String::as_str) {
+        None | Some("") => Some(Some(ctx.guard.home.to_path_buf())),
+        Some("-") => Some(None),
+        Some(arg) => Some(ctx.resolve(arg)),
+    }
+}
+
 /// Skips the options from `from`; an option in `with_arg` takes the next word too.
 fn skip_flags(words: &[String], from: usize, with_arg: &[&str]) -> usize {
     let mut i = from;
@@ -985,10 +1094,17 @@ fn skip_env(words: &[String], from: usize, inline: &mut Vec<String>) -> usize {
     let mut i = from;
     while i < words.len() {
         let w = words[i].as_str();
-        if w == "-S" {
-            if let Some(script) = words.get(i + 1) {
-                inline.push(script.clone());
-            }
+        if w == "-S" || w == "--split-string" {
+            let Some(split) = words.get(i + 1) else {
+                return words.len();
+            };
+            // The words after the split string are that command's own arguments.
+            let rest = &words[i + 2..];
+            inline.push(if rest.is_empty() {
+                split.clone()
+            } else {
+                format!("{split} {}", rest.join(" "))
+            });
             return words.len();
         }
         if w == "-u" || w == "-C" {
@@ -1033,6 +1149,35 @@ fn shell_script(argv: &[String]) -> Option<String> {
     None
 }
 
+/// The destination directory of `cp`/`ln`/`install`: `-t DIR`, `--target-directory DIR` or
+/// `--target-directory=DIR`.
+fn target_directory(args: &[String]) -> Option<String> {
+    let mut i = 0usize;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--" {
+            return None;
+        }
+        if a == "-t" || a == "--target-directory" {
+            return args.get(i + 1).cloned();
+        }
+        if let Some(rest) = a.strip_prefix("--target-directory=") {
+            return Some(rest.to_string());
+        }
+        // `-tDIR` and a short cluster ending in `t` (`-vt DIR`).
+        if a.starts_with('-') && !a.starts_with("--") && a.len() > 2 {
+            if let Some(rest) = a.strip_prefix("-t") {
+                return Some(rest.to_string());
+            }
+            if a.ends_with('t') {
+                return args.get(i + 1).cloned();
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 /// The words that are not options (after `--`, everything is an operand).
 fn operands(args: &[String]) -> Vec<&str> {
     let mut out: Vec<&str> = Vec::new();
@@ -1057,9 +1202,60 @@ fn is_recursive(args: &[String]) -> bool {
     })
 }
 
-/// A `chmod` mode that opens a file to everyone.
+/// A `chmod` mode that opens a file to everyone: an octal mode whose "other" digit grants
+/// write (`777`, `666`, `757`, `o+w`), or a symbolic clause that grants write to `o` or `a`
+/// (also with no `who`, which means all).
 fn mode_is_open(mode: &str) -> bool {
-    mode.contains("777") || mode.contains("666") || mode.contains("a+rwx") || mode.contains("o+w")
+    if mode.contains("777") || mode.contains("666") || mode.contains("a+rwx") || mode.contains("o+w") {
+        return true;
+    }
+    if mode.len() >= 3 && mode.len() <= 4 && mode.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
+        let other = mode.as_bytes()[mode.len() - 1] - b'0';
+        return other & 0o2 != 0;
+    }
+    symbolic_grants_other_write(mode)
+}
+
+/// `[ugoa]*([-+=]([rwxXst]*|[ugo]))+` clauses; true when one adds write for `o` or `a`.
+fn symbolic_grants_other_write(mode: &str) -> bool {
+    let chars: Vec<char> = mode.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let mut who_other = false;
+        let mut who_seen = false;
+        while i < chars.len() && matches!(chars[i], 'u' | 'g' | 'o' | 'a') {
+            if matches!(chars[i], 'o' | 'a') {
+                who_other = true;
+            }
+            who_seen = true;
+            i += 1;
+        }
+        if i >= chars.len() || !matches!(chars[i], '+' | '-' | '=') {
+            return false;
+        }
+        let op = chars[i];
+        i += 1;
+        let start = i;
+        while i < chars.len() && matches!(chars[i], 'r' | 'w' | 'x' | 'X' | 's' | 't' | 'u' | 'g' | 'o') {
+            i += 1;
+        }
+        if start == i {
+            return false;
+        }
+        // No `who` means all, like `a`.
+        let adds_write = op != '-' && chars[start..i].contains(&'w');
+        if adds_write && (who_other || !who_seen) {
+            return true;
+        }
+        // A clause list continues with `,`.
+        if i < chars.len() {
+            if chars[i] != ',' {
+                return false;
+            }
+            i += 1;
+        }
+    }
+    false
 }
 
 /// `true` when `value` is a short-option cluster (`-abc`, not `--long`) with `letter`.
@@ -1158,7 +1354,7 @@ fn segment(words: &[String], redirects: &[(String, String)]) -> String {
 /// `true` when removing or changing `raw` reaches outside the workspace (or is a top-level
 /// glob, a variable, `/` or the home directory itself).
 fn target_outside(raw: &str, ctx: &Ctx<'_>) -> bool {
-    let home = normalize(&ctx.guard.home, ctx.cwd);
+    let home = normalize(&ctx.guard.home, ctx.root);
     let is_dynamic = |c: char| matches!(c, '$' | '`' | '*' | '?' | '[');
     if raw.chars().any(is_dynamic) {
         // A glob or a variable: safe only under a literal sub-directory of the workspace.
@@ -1172,12 +1368,12 @@ fn target_outside(raw: &str, ctx: &Ctx<'_>) -> bool {
             return true;
         }
         return match ctx.resolve(cut) {
-            Some(p) => !(p.as_path() != ctx.cwd && is_inside(&p, ctx.cwd) && p != home),
+            Some(p) => !(p.as_path() != ctx.root && is_inside(&p, ctx.root) && p != home),
             None => true,
         };
     }
     match ctx.resolve(raw) {
-        Some(path) => path.as_path() == Path::new("/") || path == home || !is_inside(&path, ctx.cwd),
+        Some(path) => path.as_path() == Path::new("/") || path == home || !is_inside(&path, ctx.root),
         None => true,
     }
 }
