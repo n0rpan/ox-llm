@@ -49,22 +49,27 @@ class CliContract(unittest.TestCase):
 def invoke(args):
     with tempfile.TemporaryDirectory(prefix='oxc-conformance-') as directory:
         home = Path(directory)
-        # Fix argv[0] to the public executable name for argparse output. Using a
-        # link also exercises Python's installed entry script without importing it.
-        executable = home / 'oxc'
-        executable.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
-        command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(executable)]
         # Do not inherit credentials, proxy configuration, XDG paths or controller
         # overrides. These cases terminate in the parser before any HTTP request.
         env = {'HOME': str(home), 'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8',
-               'LC_ALL': 'C.UTF-8', 'TERM': 'dumb', 'COLUMNS': '80',
-               'PYTHONPATH': str(ROOT / 'oxc/src')}
+               'LC_ALL': 'C.UTF-8', 'TERM': 'dumb', 'COLUMNS': '80'}
+        expected_entries = set()
+        if 'OXC_COMMAND' in os.environ:
+            command = shlex.split(os.environ['OXC_COMMAND'])
+        else:
+            # Fix argv[0] to the public name for argparse output. The link
+            # exercises Python's installed entry script without importing it.
+            executable = home / 'oxc'
+            executable.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
+            expected_entries.add(executable)
+            command = [sys.executable, str(executable)]
+            env['PYTHONPATH'] = str(ROOT / 'oxc/src')
         for key, subdir in (('XDG_CONFIG_HOME', 'config'), ('XDG_STATE_HOME', 'state'),
                             ('XDG_DATA_HOME', 'data'), ('XDG_CACHE_HOME', 'cache')):
             env[key] = str(home / subdir)
         result = subprocess.run(command + args, env=env, cwd=home,
                                 capture_output=True, timeout=10)
-        if set(home.iterdir()) != {executable}:
+        if set(home.iterdir()) != expected_entries:
             raise AssertionError('Parser-only invocation wrote installation state')
         return {'exit': result.returncode, 'stdout': result.stdout.decode(),
                 'stderr': result.stderr.decode()}
