@@ -126,7 +126,15 @@ pub(super) fn run(
         if model.is_empty() || model.bytes().any(|b| b.is_ascii_whitespace() || b == 0) {
             return Err("live model must be one task header field".into());
         }
-        Some(model)
+        let capture_bytes = match value.get("pr_context_capture_bytes") {
+            Some(limit) => limit
+                .as_u64()
+                .filter(|&bytes| (1..=MAX_RESPONSE as u64).contains(&bytes))
+                .ok_or("pr_context_capture_bytes must be a positive integer within the snapshot budget")?
+                as usize,
+            None => MAX_RESPONSE / 2,
+        };
+        Some((model, capture_bytes))
     } else {
         None
     };
@@ -216,10 +224,10 @@ pub(super) fn run(
         policy: &board_policy,
         ttl: 1800,
     };
-    if let Some(model) = model {
+    if let Some((model, capture_bytes)) = model {
         packets = Input::new(&gh, &policy.host_path, repo, &token, &[], false)
             .with_host(host)
-            .prepare_live(&consumer, now, model)?;
+            .prepare_live(&consumer, now, model, capture_bytes)?;
     }
     let mut source = Input::new(&gh, &policy.host_path, repo, &token, &packets, intake).with_host(host);
     let inputs: Vec<_> = packets

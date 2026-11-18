@@ -117,6 +117,11 @@ fn live_fork_context_cannot_exhaust_the_budget_before_eligible_work() {
 }
 
 #[test]
+fn live_context_limit_notices_truncation_and_keeps_later_work_eligible() {
+    durable_publication(true, Some(Leading::LimitedContext));
+}
+
+#[test]
 fn live_known_work_is_not_starved_by_twenty_unknown_candidates() {
     durable_publication(true, Some(Leading::Unknown));
 }
@@ -140,6 +145,7 @@ fn live_known_work_is_not_starved_by_twenty_published_identities() {
 enum Leading {
     Fork,
     LargeFork,
+    LimitedContext,
     Unknown,
     RetainedLeases,
     InvalidBranch,
@@ -151,6 +157,7 @@ fn durable_publication(pull_request: bool, leading: Option<Leading>) {
     use sha2::{Digest, Sha256};
     use std::collections::BTreeMap;
     let live = leading.is_some();
+    let limited = leading == Some(Leading::LimitedContext);
     let twenty = matches!(
         leading,
         Some(Leading::Unknown | Leading::RetainedLeases | Leading::Published)
@@ -219,6 +226,9 @@ fn durable_publication(pull_request: bool, leading: Option<Leading>) {
     }
     if twenty {
         settings["partition"]["residues"] = json!((0..12).collect::<Vec<_>>());
+    }
+    if limited {
+        settings["pr_context_capture_bytes"] = json!(4096);
     }
     fs::write(&config, settings.to_string()).unwrap();
     fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
@@ -465,6 +475,10 @@ cat "$0.reply"
                 // An outside contributor controls rich context, not the fixed identity fields.
                 context["data"]["repository"]["pullRequest"]["body"] = json!("x".repeat(4 * 1024 * 1024));
             }
+            if limited {
+                context["data"]["repository"]["pullRequest"]["body"] =
+                    json!("Additional project notes. ".repeat(200));
+            }
             fs::write(
                 env.tmp().join(format!("gh.context-{number}")),
                 context.to_string(),
@@ -515,6 +529,46 @@ cat "$0.reply"
                 published.insert(retained.clone(), fs::read(retained).unwrap());
             }
         }
+    }
+    if limited {
+        let queries_path = env.tmp().join("gh.queries");
+        fs::write(&queries_path, "").unwrap();
+        let result = invoke(&env, &config, "synthetic\n", false);
+        assert!(result.status.success());
+        let notice = "PR #22 context truncated at the capture limit";
+        assert!(String::from_utf8_lossy(&result.stderr).contains(notice));
+        let queries = fs::read_to_string(queries_path).unwrap();
+        assert!(queries
+            .lines()
+            .any(|line| line.contains("pullRequest(number:44) {")
+                && !line.contains("headRefOid headRefName isCrossRepository")));
+        let binding = claims.assignments().unwrap()[&22]
+            .data
+            .native_binding
+            .clone()
+            .unwrap();
+        assert_eq!(binding.reviewed_head.as_deref(), Some(revision.as_str()));
+        let ready = queue.join(format!("board-{}.txt", binding.key));
+        let packet = fs::read_to_string(&ready).unwrap();
+        assert!(packet.starts_with("c22 local/fake agent/22 agent/22\n"));
+        assert!(packet.contains("PR context truncated at the capture limit"));
+        assert!(!packet.contains("Additional project notes"));
+        assert_eq!(claims.snapshot().unwrap()[&22].attempts, 1);
+        assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
+        assert!(claims
+            .release_for(
+                22,
+                &binding.lease.holder,
+                &binding.lease,
+                binding.lease.claimed_at.unwrap(),
+                "fixture completed",
+            )
+            .unwrap());
+        published.insert(ready, packet.into_bytes());
+        preserved.insert(
+            22,
+            serde_json::to_value(&claims.assignments().unwrap()[&22]).unwrap(),
+        );
     }
     let result = invoke(&env, &config, "synthetic\n", false);
     assert!(

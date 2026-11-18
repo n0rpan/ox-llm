@@ -73,6 +73,7 @@ impl<'a> Input<'a> {
         consumer: &Consumer<'_>,
         now: u64,
         model: &str,
+        capture_bytes: usize,
     ) -> Result<Vec<Prepared>, String> {
         self.host_id()?;
         let board = consumer.partition.assignment_board(
@@ -109,7 +110,10 @@ impl<'a> Input<'a> {
             // Fork-controlled rich text must not consume the shared snapshot budget.
             let fields =
                 format!("pullRequest(number:{number}) {{ headRefOid headRefName isCrossRepository }}");
-            let (identity, _) = self.reader.repository_read(&fields)?;
+            let Some(identity) = self.reader.repository_context(&fields, MAX_RESPONSE)? else {
+                eprintln!("oxa work board refill: PR #{number} identity unavailable within the remaining capture budget");
+                break;
+            };
             let identity = &identity["pullRequest"];
             match identity["isCrossRepository"].as_bool() {
                 Some(true) => continue,
@@ -124,29 +128,45 @@ impl<'a> Input<'a> {
                 continue;
             }
             let fields = oxa_work::pull_request_fields(number)?;
-            let (snapshot, _) = self.reader.repository_read(&fields)?;
-            if snapshot["pullRequest"]["isCrossRepository"] == true {
-                continue;
-            }
-            let context =
-                oxa_work::prepare_pull_request_context(number, &entry.head, &snapshot["pullRequest"])?;
-            if context.branch != branch {
-                return Err("pull request branch changed during context acquisition".into());
-            }
-            let mut prompt = String::with_capacity(context.prompt.len());
-            for line in context.prompt.split_inclusive('\n') {
+            let context = match self.reader.repository_context(&fields, capture_bytes)? {
+                Some(snapshot) => {
+                    if snapshot["pullRequest"]["isCrossRepository"] == true {
+                        continue;
+                    }
+                    let context = oxa_work::prepare_pull_request_context(
+                        number,
+                        &entry.head,
+                        &snapshot["pullRequest"],
+                    )?;
+                    if context.branch != branch {
+                        return Err("pull request branch changed during context acquisition".into());
+                    }
+                    context.prompt
+                }
+                None => {
+                    eprintln!("oxa work board refill: PR #{number} context truncated at the capture limit");
+                    format!(
+                        "{}Address pull request #{number} at {}.\n\n\
+                         PR context truncated at the capture limit. Description, discussion, \
+                         changed files, and check details are unavailable.\n",
+                        oxa_work::github_runner_guidance("pull request"),
+                        entry.head,
+                    )
+                }
+            };
+            let mut prompt = String::with_capacity(context.len());
+            for line in context.split_inclusive('\n') {
                 if line.trim() == "---" {
                     prompt.push('\\');
                 }
                 prompt.push_str(line);
             }
-            let branch = context.branch;
             prepared.push(Prepared {
                 number,
                 revision: entry.head.clone(),
                 action: entry.action,
                 task: format!("c{number} {model} {branch} {branch}\n{prompt}"),
-                branch,
+                branch: branch.into(),
             });
             if prepared.len() == 20 {
                 break;

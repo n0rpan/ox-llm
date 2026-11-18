@@ -336,4 +336,10 @@ The same config supplies the registered worker, host, Claims path, queue, pause
 marker and item partition. Each round reads current assignment candidates and PR
 context through the explicit App credential, then uses the existing admission and
 publication path. A changed head or action cannot publish the prepared packet.
+Set `pr_context_capture_bytes` in the same protected config to limit each live
+PR context read. It defaults to 2 MiB within the unchanged 4 MiB round budget.
+The reservation includes one byte to detect overflow. When the limit is reached,
+refill logs the cause and prepares the packet with its verified identity and a
+truncation notice. If the remaining round budget cannot verify a later identity,
+refill keeps the packets already prepared and stops preparing further candidates.
 This mode does not execute a worker or select a default host, model or Claims store.

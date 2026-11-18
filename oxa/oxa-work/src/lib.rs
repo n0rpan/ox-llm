@@ -451,6 +451,24 @@ pub fn command_output_bytes(
     Some((out.status.code().unwrap_or(1), out.stdout))
 }
 
+pub enum BoundedOutput {
+    Complete(Output),
+    Limit(Output),
+}
+
+/// Capture at most `reservation` bytes, including the byte that detects a limit.
+/// Only callers that explicitly handle a limit can inspect the partial output.
+pub fn command_output_reserved(
+    command: Command,
+    reservation: usize,
+    deadline: Duration,
+) -> io::Result<BoundedOutput> {
+    let limit = reservation
+        .checked_sub(1)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty command output reservation"))?;
+    capture_output(command, Some(limit), deadline, Stdio::null(), false)
+}
+
 /// Capture through the same deadline and byte limit while a supervised child holds a supplied stdin.
 pub fn command_runner_with_stdin(
     command: Command,
@@ -465,28 +483,45 @@ pub fn command_runner_with_stdin(
     ))
 }
 
+#[derive(Default)]
+struct CapturedPipe {
+    bytes: Vec<u8>,
+    limited: bool,
+}
+
 fn read_output(
     pipe: impl Read + Send + 'static,
     limit: Option<usize>,
-) -> std::thread::JoinHandle<io::Result<Vec<u8>>> {
+) -> std::thread::JoinHandle<io::Result<CapturedPipe>> {
     std::thread::spawn(move || {
         let ceiling = limit.map_or(u64::MAX, |limit| limit.saturating_add(1) as u64);
         let mut bytes = Vec::new();
         pipe.take(ceiling).read_to_end(&mut bytes)?;
-        if limit.is_some_and(|limit| bytes.len() > limit) {
-            return Err(io::Error::other("command output exceeds limit"));
-        }
-        Ok(bytes)
+        let limited = limit.is_some_and(|limit| bytes.len() > limit);
+        Ok(CapturedPipe { bytes, limited })
     })
 }
 
 fn capture_command(
-    mut command: Command,
+    command: Command,
     limit: Option<usize>,
     deadline: Duration,
     stdin: Stdio,
     keep_stderr: bool,
 ) -> io::Result<Output> {
+    match capture_output(command, limit, deadline, stdin, keep_stderr)? {
+        BoundedOutput::Complete(output) => Ok(output),
+        BoundedOutput::Limit(_) => Err(io::Error::other("command output exceeds limit")),
+    }
+}
+
+fn capture_output(
+    mut command: Command,
+    limit: Option<usize>,
+    deadline: Duration,
+    stdin: Stdio,
+    keep_stderr: bool,
+) -> io::Result<BoundedOutput> {
     let start = Instant::now();
     let timeout = || io::Error::new(io::ErrorKind::TimedOut, "command timed out");
     if deadline.is_zero() {
@@ -527,15 +562,23 @@ fn capture_command(
         let _ = child.wait();
     }
     let status = status?;
-    let collected = |reader: std::thread::JoinHandle<io::Result<Vec<u8>>>| {
+    let collected = |reader: std::thread::JoinHandle<io::Result<CapturedPipe>>| {
         reader
             .join()
             .map_err(|_| io::Error::other("command output reader failed"))?
     };
-    Ok(Output {
+    let stdout = collected(stdout)?;
+    let stderr = stderr.map(collected).transpose()?.unwrap_or_default();
+    let limited = stdout.limited || stderr.limited;
+    let output = Output {
         status,
-        stdout: collected(stdout)?,
-        stderr: stderr.map(collected).transpose()?.unwrap_or_default(),
+        stdout: stdout.bytes,
+        stderr: stderr.bytes,
+    };
+    Ok(if limited {
+        BoundedOutput::Limit(output)
+    } else {
+        BoundedOutput::Complete(output)
     })
 }
 
@@ -1369,6 +1412,23 @@ mod tests {
         );
         assert_eq!(command_output_bytes(command(), Some(1), deadline), None);
         assert_eq!(command_runner(command(), Some(2), deadline), None);
+    }
+
+    #[test]
+    fn reserved_command_output_accounts_for_the_limit_detection_byte() {
+        let command = || {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", "printf abc"]);
+            command
+        };
+        let complete = command_output_reserved(command(), 4, COMMAND_DEADLINE).unwrap();
+        assert!(matches!(complete, BoundedOutput::Complete(output) if output.stdout == b"abc"));
+        let limited = command_output_reserved(command(), 3, COMMAND_DEADLINE).unwrap();
+        assert!(matches!(limited, BoundedOutput::Limit(output) if output.stdout == b"abc"));
+        assert!(matches!(
+            command_output_reserved(command(), 3, Duration::ZERO),
+            Err(error) if error.kind() == io::ErrorKind::TimedOut
+        ));
     }
 
     #[test]

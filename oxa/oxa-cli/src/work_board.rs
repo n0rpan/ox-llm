@@ -59,6 +59,7 @@ fn charge(bytes: &mut usize, read: usize) -> Result<(), String> {
 
 enum QueryError {
     Http(u16),
+    ContextLimit,
     Other(&'static str),
 }
 
@@ -131,9 +132,21 @@ impl QueryError {
     fn message(self) -> String {
         match self {
             Self::Http(status) => format!("GitHub read failed (HTTP {status})"),
+            Self::ContextLimit => "GitHub PR context capture limit reached".into(),
             Self::Other(message) => message.into(),
         }
     }
+}
+
+fn http_status(headers: &str) -> Result<u16, QueryError> {
+    headers
+        .lines()
+        .next()
+        .filter(|line| line.starts_with("HTTP/"))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|value| (100..600).contains(value))
+        .ok_or(QueryError::Other("invalid GitHub HTTP status"))
 }
 
 impl<'a> Reader<'a> {
@@ -162,7 +175,15 @@ impl<'a> Reader<'a> {
     /// Fixed repository fields from native callers share the bounded, redacted transport.
     /// The byte count lets callers enforce an aggregate snapshot budget across queries.
     pub(crate) fn repository_read(&self, fields: &str) -> Result<(Value, usize), String> {
-        self.query(fields).map_err(QueryError::message)
+        self.query(fields, None).map_err(QueryError::message)
+    }
+
+    fn repository_context(&self, fields: &str, limit: usize) -> Result<Option<Value>, String> {
+        match self.query(fields, Some(limit)) {
+            Ok((value, _)) => Ok(Some(value)),
+            Err(QueryError::ContextLimit) => Ok(None),
+            Err(error) => Err(error.message()),
+        }
     }
 
     fn listing(&self) -> Result<(Value, Value), SnapshotError> {
@@ -209,10 +230,10 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn query(&self, fields: &str) -> Result<(Value, usize), QueryError> {
+    fn query(&self, fields: &str, context_limit: Option<usize>) -> Result<(Value, usize), QueryError> {
         let mut retries = 0;
         loop {
-            match self.query_once(fields) {
+            match self.query_once(fields, context_limit) {
                 Err(error) if error.retryable() && retries < 2 => {
                     let pause = Duration::from_millis(200 << retries);
                     if self.time_left()? <= pause {
@@ -226,16 +247,13 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn query_once(&self, fields: &str) -> Result<(Value, usize), QueryError> {
+    fn query_once(&self, fields: &str, context_limit: Option<usize>) -> Result<(Value, usize), QueryError> {
         let invalid = QueryError::Other;
         let (owner, name) = self.repo.split_once('/').ok_or(invalid("expected OWNER/REPO"))?;
         let query = format!("query{{repository(owner:{owner:?},name:{name:?}){{{fields}}}}}");
         let mut command = self.api_command();
         command.args(["--include", "graphql", "-f", &format!("query={query}")]);
-        let (remaining, duration) = self.read_budget()?;
-        let (code, text) = oxa_work::command_runner(command, Some(remaining), duration).ok_or(invalid(
-            "GitHub read failed: snapshot exceeds byte limit, capture refused or deadline reached",
-        ))?;
+        let (code, text) = self.capture_query(command, context_limit)?;
         // Charge captured bytes, including headers and non-2xx bodies, before interpreting them.
         self.charge_capture(text.len())?;
         let (status, body) = self.response(&text, GitHubResource::Graphql)?;
@@ -262,20 +280,60 @@ impl<'a> Reader<'a> {
         Ok((repository, text.len()))
     }
 
+    fn capture_query(
+        &self,
+        command: Command,
+        context_limit: Option<usize>,
+    ) -> Result<(i32, String), QueryError> {
+        use oxa_work::BoundedOutput;
+        use std::os::unix::process::ExitStatusExt;
+
+        let failed = QueryError::Other(
+            "GitHub read failed: snapshot exceeds byte limit, capture refused or deadline reached",
+        );
+        let Some(limit) = context_limit else {
+            let (remaining, duration) = self.read_budget()?;
+            return oxa_work::command_runner(command, Some(remaining), duration).ok_or(failed);
+        };
+        let duration = oxa_work::COMMAND_DEADLINE.min(self.time_left()?);
+        let reservation = limit.min(self.remaining_capture());
+        if reservation < b"HTTP/1.1 200 OK\r\n".len() {
+            return Err(QueryError::ContextLimit);
+        }
+        match oxa_work::command_output_reserved(command, reservation, duration).map_err(|_| failed)? {
+            BoundedOutput::Complete(output) => Ok((
+                output.status.code().unwrap_or(1),
+                String::from_utf8(output.stdout).map_err(|_| QueryError::Other("invalid GitHub response"))?,
+            )),
+            BoundedOutput::Limit(output) => {
+                self.charge_capture(output.stdout.len())?;
+                // Use only the transport status. A partial JSON response is never a snapshot.
+                let status = output
+                    .stdout
+                    .split_inclusive(|&byte| byte == b'\n')
+                    .next()
+                    .filter(|line| line.ends_with(b"\n"))
+                    .and_then(|line| std::str::from_utf8(line).ok())
+                    .ok_or(QueryError::Other("missing GitHub HTTP status"))?;
+                let status = http_status(status)?;
+                if !(200..300).contains(&status) {
+                    return Err(QueryError::Http(status));
+                }
+                if !output.status.success() && output.status.signal() != Some(signal_hook::consts::SIGPIPE) {
+                    return Err(QueryError::Other("GitHub context command failed"));
+                }
+                Err(QueryError::ContextLimit)
+            }
+        }
+    }
+
     fn response<'b>(&self, text: &'b str, resource: GitHubResource) -> Result<(u16, &'b str), QueryError> {
         let invalid = QueryError::Other;
         let (headers, body) = text
             .split_once("\r\n\r\n")
             .or_else(|| text.split_once("\n\n"))
             .ok_or(invalid("GitHub command failed without an HTTP response"))?;
-        let status = headers
-            .lines()
-            .next()
-            .filter(|line| line.starts_with("HTTP/"))
-            .and_then(|line| line.split_whitespace().nth(1))
-            .and_then(|value| value.parse::<u16>().ok())
-            .filter(|value| (100..600).contains(value))
-            .ok_or(invalid("invalid GitHub HTTP status"))?;
+        let status = http_status(headers)?;
         if let Some(quota) = &self.app_quota {
             let headers = if (200..300).contains(&status) { headers } else { "" };
             quota.borrow_mut().observe(GitHubIdentity::App, resource, headers);
@@ -284,11 +342,15 @@ impl<'a> Reader<'a> {
     }
 
     fn read_budget(&self) -> Result<(usize, Duration), QueryError> {
-        let remaining = MAX_RESPONSE
-            .checked_sub(self.bytes.get())
-            .filter(|n| *n > 0)
-            .ok_or(QueryError::Other("GitHub snapshot exceeds byte limit"))?;
+        let remaining = self.remaining_capture();
+        if remaining == 0 {
+            return Err(QueryError::Other("GitHub snapshot exceeds byte limit"));
+        }
         Ok((remaining, oxa_work::COMMAND_DEADLINE.min(self.time_left()?)))
+    }
+
+    fn remaining_capture(&self) -> usize {
+        MAX_RESPONSE.saturating_sub(self.bytes.get())
     }
 
     fn charge_capture(&self, bytes: usize) -> Result<(), QueryError> {
@@ -422,7 +484,7 @@ impl Reader<'_> {
                 }}}}}}}}}}}}}}"#
                 ));
             }
-            let (page, _) = match self.query(&fields) {
+            let (page, _) = match self.query(&fields, None) {
                 Ok(page) => page,
                 Err(error) if error.retryable() && end - offset > 1 => {
                     size = (end - offset) / 2;
@@ -734,6 +796,33 @@ mod deadline_tests {
     use super::*;
     use oxa_fake::TestEnv;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn context_capture_charges_truncation_and_preserves_http_refusal() {
+        let reader = Reader::new(
+            Path::new("/bin/false"),
+            std::ffi::OsStr::new("/usr/bin:/bin"),
+            "example/repo",
+            "synthetic-app-token",
+        );
+        let mut accepted = Command::new("/bin/sh");
+        accepted.args(["-c", "printf 'HTTP/2.0 200 OK\\r\\n\\r\\nOrdinary project notes'"]);
+        assert!(matches!(
+            reader.capture_query(accepted, Some(32)),
+            Err(QueryError::ContextLimit)
+        ));
+        assert_eq!(reader.bytes.get(), 32);
+        let mut refused = Command::new("/bin/sh");
+        refused.args([
+            "-c",
+            "printf 'HTTP/2.0 403 Forbidden\\r\\n\\r\\nAccess unavailable'; exit 1",
+        ]);
+        assert!(matches!(
+            reader.capture_query(refused, Some(32)),
+            Err(QueryError::Http(403))
+        ));
+        assert_eq!(reader.bytes.get(), 64);
+    }
 
     #[test]
     fn exhausted_budget_refuses_launch_and_remaining_time_bounds_the_child() {
