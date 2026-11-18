@@ -44,7 +44,11 @@ fn gather(st: &SessionState) -> Inputs {
     }
     if let Some(goal) = st.goal.as_ref().filter(|goal| goal.pursuing()) {
         all.retain(|t| !matches!(t.spec().name.as_str(), "goal_done" | "wait"));
-        all.extend(goal.tools(&st.shared));
+        all.extend(goal.tools(
+            &st.shared,
+            &st.hooks,
+            crate::goal::WaitPolicy::from_settings(&st.settings),
+        ));
         extra.push((
             "goal".into(),
             crate::prompt::goal_start(&goal.snapshot().objective),

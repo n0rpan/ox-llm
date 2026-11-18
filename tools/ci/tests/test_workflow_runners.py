@@ -27,6 +27,9 @@ EXCEPTIONS = {
     'release-build.yml': 'builds the published binaries; they are never built on the project\'s own runners',
 }
 
+# #795: the native arm64 macOS build (macos.yml) is the only job that may name the hosted macOS image.
+MACOS_EXCEPTIONS = {('macos.yml', 'test', 'macos-15')}
+
 FIX = (
     "Run the job on the hosted ARM image ({arm}) or copy the runner expression from "
     ".github/workflows/checks.yml:\n    runs-on: {expr}"
@@ -75,6 +78,8 @@ def problems(name, text):
             continue
         if value is None:
             continue  # reusable-workflow call: no runner of its own
+        if (name, job, value) in MACOS_EXCEPTIONS:
+            continue
         # Owner lane CI: standard free Linux runners, including explicit matrix overrides.
         free = {'ubuntu-24.04', ARM_IMAGE}
         if ((name, job, value) == ('lane.yml', 'test', '${{ matrix.runner }}')
@@ -125,6 +130,18 @@ class WorkflowRunners(unittest.TestCase):
         self.assertTrue(problems('x.yml', text))
         expr = RUNNER_EXPRESSION.replace("|| 'ubuntu-24.04' }}", "|| 'ubuntu-22.04' }}")
         self.assertTrue(problems('x.yml', f'jobs:\n  a:\n    runs-on: {expr}\n'))
+
+    def test_macos_arm_qualification_is_exact(self):
+        text = 'jobs:\n  test:\n    runs-on: macos-15\n'
+        self.assertFalse(problems('macos.yml', text))
+        self.assertTrue(problems('other.yml', text))
+        self.assertTrue(problems('macos.yml', text.replace('test:', 'other:')))
+        for image in ('macos-13', 'macos-15-intel', 'ubuntu-latest', 'self-hosted'):
+            self.assertTrue(problems('macos.yml', text.replace('macos-15', image)), image)
+
+    def test_macos_workflow_stays_out_of_merge_queue(self):
+        text = (WORKFLOWS / 'macos.yml').read_text()
+        self.assertNotIn('merge_group', text)
 
     def test_lane_matrix_accepts_only_its_fixed_free_runners(self):
         text = ('jobs:\n  test:\n    runs-on: ${{ matrix.runner }}\n'

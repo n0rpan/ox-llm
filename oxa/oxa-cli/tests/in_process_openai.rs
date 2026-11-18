@@ -290,6 +290,44 @@ fn unpriced_discovery_uses_owner_rates_for_admission_and_estimated_ledger_spend(
 }
 
 #[test]
+fn openai_responses_without_cap_succeeds_and_records_cost() {
+    let env = TestEnv::new();
+    let peer = mock::MockOpenAi::start(vec![final_reply("Synthetic uncapped answer")]);
+    settings(&env, &peer.base_url(), false);
+    let path = env.agent_dir().join("settings.json");
+    let mut config: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    // No owner cap: no budget check, and the request is still recorded.
+    config["oxa"]["cloud"]
+        .as_object_mut()
+        .unwrap()
+        .remove("daily_budget_usd");
+    fs::write(&path, config.to_string()).unwrap();
+    private_file(
+        &env.home().join(".config/oxc/llm/cloud-secrets.json"),
+        &json!({"openai":KEY}).to_string(),
+    );
+    let output = run(
+        &env,
+        &["-p", "--no-session", "--no-tools", "Synthetic prompt"],
+        None,
+    );
+    success(&output);
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("Synthetic uncapped answer"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(peer.requests().len(), 1);
+    let rows = rows(&env);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["remote_provider"], "openai");
+    assert_eq!(rows[0]["settled"], "usage");
+    assert!(rows[0]["cost_usd"].as_f64().unwrap() > 0.0);
+    assert!(rows[0].get("cost_unknown").is_none());
+    peer.assert_healthy();
+}
+
+#[test]
 fn chatgpt_token_read_failure_does_not_claim_an_api_key_store_failure() {
     let env = TestEnv::new();
     let upstream = mock::MockOpenAi::start(vec![]);

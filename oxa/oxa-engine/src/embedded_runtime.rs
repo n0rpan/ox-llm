@@ -91,8 +91,8 @@ fn normalize(error: Error) -> OxaError {
     if refusal.code == "budget_not_configured" {
         // The refusal keeps its own stable code so the owner-facing diagnostic and
         // the lead service journal can name the absent cap instead of a generic
-        // HTTP error. The budget rule itself is unchanged: metered without a
-        // positive cap stays refused.
+        // HTTP error. An unset cap is no budget check and never reaches here; only
+        // a configured but unusable cap (zero, negative, non-numeric) does.
         return OxaError::new(
             "budget_not_configured",
             "Cloud models need a positive oxa.cloud.daily_budget_usd in oxa user settings.",

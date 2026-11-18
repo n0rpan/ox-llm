@@ -265,3 +265,67 @@ fn an_unpaid_append_failure_preserves_its_refusal_and_blocks_a_new_runtime() {
     );
     assert!(mock.requests().is_empty());
 }
+
+#[test]
+fn native_unknown_cost_survives_reopen_and_closes_capped_admission() {
+    const UNBOUNDED: &str = "synthetic-unbounded";
+    const BOUNDED: &str = "synthetic-bounded";
+    let mock = anthropic::MockAnthropic::start(vec![]);
+    let fixture = skeleton::Fixture::new(&mock);
+    let price = || Price::from_model(&fixture.config["cloud"]["models"][skeleton::MODEL]).unwrap();
+    let open = |cap: Option<f64>| {
+        let endpoint = fixture.config["cloud"]["models"][skeleton::MODEL]["base_url"]
+            .as_str()
+            .unwrap();
+        // The first alias has a context beyond the price-bound ceiling; the second is ordinary.
+        let aliases = [(UNBOUNDED, 200_000_000), (BOUNDED, 4096)].map(|(id, context)| {
+            let model =
+                Model::new(id, Provider::Anthropic, skeleton::UPSTREAM, endpoint, context, 16).unwrap();
+            (model, Some(oxc_gateway::runtime::Billing::Metered(price())))
+        });
+        Runtime::new(
+            aliases,
+            fixture.key_path.clone(),
+            fixture.ledger_dir.clone(),
+            Options {
+                access: Access::Enabled,
+                daily_budget_usd: cap,
+                ledger_enabled: true,
+                subscription: None,
+                subscription_limits: None,
+            },
+        )
+        .unwrap()
+    };
+    let uncapped = open(None);
+    let mut call = uncapped
+        .begin(&json!({"model":UNBOUNDED}), Context::default())
+        .unwrap();
+    call.mark_forwarded().unwrap();
+    // Finished without any final usage: the real settlement path writes the durable row.
+    call.finish(oxc_gateway::accounting::Outcome::Complete, 200, None)
+        .unwrap();
+    let rows = rows(&fixture);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["remote_model"], skeleton::UPSTREAM);
+    assert_eq!(rows[0]["cost_unknown"], true);
+    assert_eq!(rows[0]["usage_missing"], true);
+    assert_eq!(rows[0]["cost_usd"], 0.0);
+    // Uncapped admission keeps working on the ordinary alias.
+    uncapped
+        .begin(&json!({"model":BOUNDED}), Context::default())
+        .unwrap()
+        .finish(oxc_gateway::accounting::Outcome::Complete, 200, None)
+        .unwrap();
+    // Reopened with a cap: the persisted unknown cost closes admission for the bounded
+    // alias, whose own price bound would otherwise fit well under the cap.
+    let capped = open(Some(100.0));
+    refusal(
+        capped
+            .begin(&json!({"model":BOUNDED}), Context::default())
+            .err()
+            .unwrap(),
+        429,
+        "budget_exceeded",
+    );
+}
