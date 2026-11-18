@@ -991,6 +991,7 @@ fn advisor_returns_to_the_same_worker_and_does_not_repeat_the_call() {
                 pool: "fixture-advisor".into(),
             },
             dispatcher: advisor.clone(),
+            scrub: Arc::new(str::to_owned),
         });
         let (end, _) = run(&mut st, "find the bug in a.txt");
         if retry_same {

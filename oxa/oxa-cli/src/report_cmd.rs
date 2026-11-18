@@ -70,6 +70,11 @@ impl ScrubCtx {
     }
 }
 
+/// Use the existing native worker privacy policy for outbound advisor diagnostics.
+pub fn advisor_scrubber(ctx: ScrubCtx) -> oxa_core::advice::AdviceScrubber {
+    std::sync::Arc::new(move |text| scrub(text, &ctx))
+}
+
 struct Patterns {
     pem: Regex,
     url_cred: Regex,

@@ -13,6 +13,10 @@ use std::{fmt, fmt::Write as _, sync::Arc};
 
 const FIELD_BYTES: usize = 1024;
 const RECENT_MESSAGES: usize = 8;
+const MAX_SCRUB_INPUT: usize = 64 * FIELD_BYTES;
+
+/// Supplied by the protected frontend. The Session is never scrubbed in place.
+pub type AdviceScrubber = Arc<dyn Fn(&str) -> String + Send + Sync>;
 
 pub struct AdviceContext {
     pub objective: String,
@@ -42,6 +46,7 @@ pub struct BoundAdvisor {
     pub policy: AdvicePolicy,
     pub route: AdvisorRoute,
     pub dispatcher: Arc<dyn AdviceDispatcher>,
+    pub scrub: AdviceScrubber,
 }
 
 impl fmt::Debug for BoundAdvisor {
@@ -120,7 +125,7 @@ pub(crate) fn on_repeat(
         _ => return Ok(AdviceResult::Refused),
     };
 
-    let context = build_context(st, &advisor.objective, evidence);
+    let context = build_context(st, &advisor, evidence);
     let _request = st.shared.enter_request()?;
     persist(st, receipt.body(), sink)?;
     st.store.sync(&st.sref)?;
@@ -148,30 +153,31 @@ pub(crate) fn on_repeat(
     })
 }
 
-fn build_context(st: &SessionState, objective: &str, evidence: &str) -> AdviceContext {
+fn build_context(st: &SessionState, advisor: &BoundAdvisor, evidence: &str) -> AdviceContext {
     let wire = st.transcript.wire();
     let mut delta = String::new();
     for message in wire.iter().skip(wire.len().saturating_sub(RECENT_MESSAGES)) {
-        let _ = writeln!(
-            delta,
-            "{}: {}",
-            message.role.as_str(),
-            clip(message.content.as_deref().unwrap_or(""), FIELD_BYTES)
-        );
+        if let Some(content) = message.content.as_deref().filter(|text| !text.is_empty()) {
+            let content = scrub_field(advisor, content, FIELD_BYTES);
+            let _ = writeln!(delta, "{}: {content}", message.role.as_str());
+        }
         for call in message.tool_calls.iter().take(2) {
-            let _ = writeln!(
-                delta,
-                "{} {}",
-                clip(&call.name, 128),
-                clip(&call.args_raw, FIELD_BYTES / 2)
-            );
+            let name = scrub_field(advisor, &call.name, 128);
+            let _ = writeln!(delta, "tool: {name}");
         }
     }
     AdviceContext {
-        objective: clip(objective, 2 * FIELD_BYTES).into(),
+        objective: scrub_field(advisor, &advisor.objective, 2 * FIELD_BYTES),
         delta,
-        failing_evidence: clip(evidence, FIELD_BYTES).into(),
+        failing_evidence: scrub_field(advisor, evidence, FIELD_BYTES),
     }
+}
+
+fn scrub_field(advisor: &BoundAdvisor, text: &str, limit: usize) -> String {
+    if text.len() > MAX_SCRUB_INPUT {
+        return "[oversize diagnostic omitted]".into();
+    }
+    clip(&(advisor.scrub)(text), limit).into()
 }
 
 fn clip(text: &str, limit: usize) -> &str {
