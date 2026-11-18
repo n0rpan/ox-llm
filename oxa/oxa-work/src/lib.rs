@@ -51,7 +51,10 @@ pub mod events;
 mod facts_io;
 pub use facts_io::require_private_directory;
 mod github;
-pub use github::{pull_request_task, ReviewedPullRequest};
+pub use github::{
+    prepare_pull_request_context, pull_request_fields, pull_request_task, PullRequestContext,
+    ReviewedPullRequest,
+};
 pub mod incidents;
 pub mod situation;
 pub mod standing;
