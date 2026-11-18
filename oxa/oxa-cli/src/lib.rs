@@ -43,6 +43,7 @@ pub mod lead_serve;
 mod limits;
 mod login_cmd;
 mod mcp_cmd;
+mod memory_cmd;
 mod netguard;
 mod pkg_cmd;
 mod report_cmd;
@@ -70,6 +71,7 @@ pub use help::{requested, text};
 pub use hooks::{build_hooks, HookInputs, HookSets, EXTENSIONS_LOG};
 pub use identity_cmd::{identity_facts, run_identity, write_identity};
 pub use mcp_cmd::run_mcp;
+pub use memory_cmd::run_memory;
 pub use pkg_cmd::run_pkg;
 pub use report_cmd::{
     advisor_scrubber, clean_notes, parse_draft, process_runner, report_repo, run_report_issue, save_draft,

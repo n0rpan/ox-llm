@@ -50,6 +50,8 @@ pub enum Subcommand {
     Work(Vec<String>),
     /// `oxa mcp add|remove|list|login|logout ..`: the words after `mcp`.
     Mcp(Vec<String>),
+    /// M3: `oxa memory list|show <name>|rm <name>`: the words after `memory`.
+    Memory(Vec<String>),
     /// `oxa install|remove|update|list ..`: the verb and the words after it.
     Pkg(String, Vec<String>),
     /// `oxa config ..`.
@@ -279,6 +281,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "Manage MCP servers: add, remove, list, login, logout",
     ),
     (
+        "oxa memory <list|show|rm>",
+        "Show the memory index, or show or remove one memory entry",
+    ),
+    (
         "oxa identity [--refresh]",
         "Show, or rewrite from this machine and the engine, the identity in the system prompt",
     ),
@@ -506,6 +512,7 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         "login" => Subcommand::Login(false, LoginArgs(rest.to_vec())),
         "logout" => Subcommand::Login(true, LoginArgs(rest.to_vec())),
         "mcp" => Subcommand::Mcp(rest.to_vec()),
+        "memory" => Subcommand::Memory(rest.to_vec()),
         "install" | "remove" | "uninstall" | "update" | "list" => {
             Subcommand::Pkg(word.to_string(), rest.to_vec())
         }

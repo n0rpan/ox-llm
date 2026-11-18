@@ -92,6 +92,16 @@ const BASE: &[Entry] = &[
         example: "oxa send 20260101-120000-abcd \"task finished\"",
     },
     Entry {
+        path: &["memory"],
+        summary: "Show the memory index, or show or remove one memory entry",
+        usage: &[
+            "oxa memory list",
+            "oxa memory show <name>",
+            "oxa memory rm <name>",
+        ],
+        example: "oxa memory rm build-notes",
+    },
+    Entry {
         path: &["config"],
         summary: "Print every setting with its value and source",
         usage: &["oxa config [-l]"],
