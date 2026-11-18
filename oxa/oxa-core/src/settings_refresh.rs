@@ -55,7 +55,7 @@ pub(crate) fn check(
     if *previous == now {
         return Refresh::Unchanged;
     }
-    let project_changed = now.project_changed_since(previous);
+    let project_changed = now.project_changed_since(original);
     watch.seen = Some(now.clone());
     let fresh = load(now, project_changed);
     if fresh.layer_failed() {
@@ -173,10 +173,22 @@ pub(crate) fn refresh_at_run_start(st: &mut SessionState, sink: &mut dyn EventSi
             prompt,
         } => {
             if changed.is_empty() {
+                st.settings = settings;
                 return;
             }
             let prev_enabled = st.settings.compaction().enabled;
             let budget = changed.iter().any(|k| touches_budget(k));
+            let retry = settings.retry().enabled;
+            if retry != st.settings.retry().enabled {
+                st.auto_retry = retry;
+            }
+            let steer = settings.steering_mode();
+            let follow = settings.follow_up_mode();
+            let steer = (steer != st.settings.steering_mode()).then_some(steer);
+            let follow = (follow != st.settings.follow_up_mode()).then_some(follow);
+            if steer.is_some() || follow.is_some() {
+                st.shared.update_modes(steer, follow);
+            }
             let mut message = format!("settings changed: {}", changed.join(", "));
             let mut level = Level::Info;
             for diagnostic in settings.diagnostics() {

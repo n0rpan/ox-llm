@@ -1327,12 +1327,12 @@ fn settle_runs(
         if end == RunEnd::Stopped && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
             return run_loop(st, sink, ui);
         }
-        while end == RunEnd::Stopped {
+        while end == RunEnd::Stopped && st.shared.has_follow_up() {
+            crate::settings_refresh::refresh_at_run_start(st, sink);
             let follow = st.shared.take_follow_up();
             if follow.is_empty() {
                 break;
             }
-            crate::settings_refresh::refresh_at_run_start(st, sink);
             flush_queue(st, sink);
             for msg in follow {
                 push_user(st, msg, sink)?;
@@ -1366,18 +1366,20 @@ fn queued_run(
     ui: &mut dyn Ui,
     turn_start: bool,
 ) -> Result<Option<RunEnd>, OxaError> {
-    let mut taken = st.shared.take_steering();
-    taken.extend(st.shared.take_follow_up());
-    if taken.is_empty()
-        && !st
-            .goal
-            .as_ref()
-            .is_some_and(|goal| goal.pursuing() && goal.has_pending_steer())
-    {
+    let goal_pending = st
+        .goal
+        .as_ref()
+        .is_some_and(|goal| goal.pursuing() && goal.has_pending_steer());
+    if !st.shared.has_input() && !goal_pending {
         return Ok(None);
     }
-    // L1: a queued run starts a run of its own, without `run_from_wire`.
+    // Apply delivery modes before taking messages for this run.
     crate::settings_refresh::refresh_at_run_start(st, sink);
+    let mut taken = st.shared.take_steering();
+    taken.extend(st.shared.take_follow_up());
+    if taken.is_empty() && !goal_pending {
+        return Ok(None);
+    }
     let can_run = !turn_start || compact_before_run(st, sink, ui)?;
     flush_queue(st, sink);
     for msg in taken {

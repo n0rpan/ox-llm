@@ -134,7 +134,10 @@ impl Settings {
 
     /// If the project layer did not change or lacks fresh approval, preserve the
     /// layer admitted at launch. In either case its file does not get read again.
-    pub fn refresh_files(&self, files: SettingsFiles, read_project: bool) -> Settings {
+    pub fn refresh_files(&self, mut files: SettingsFiles, read_project: bool) -> Settings {
+        if !read_project {
+            files.project_stamp = self.files().and_then(|loaded| loaded.project_stamp.clone());
+        }
         Self::read_files(files, (!read_project).then_some(&self.project)).with_overrides_of(self)
     }
 

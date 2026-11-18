@@ -328,6 +328,16 @@ impl Shared {
         !q.steering.is_empty() || q.follow_ups().next().is_some()
     }
 
+    pub(crate) fn has_follow_up(&self) -> bool {
+        lock(&self.queue).follow_ups().next().is_some()
+    }
+
+    pub(crate) fn update_modes(&self, steering: Option<QueueMode>, follow_up: Option<QueueMode>) {
+        let mut modes = lock(&self.modes);
+        *modes = (steering.unwrap_or(modes.0), follow_up.unwrap_or(modes.1));
+        self.dirty.store(true, Ordering::SeqCst);
+    }
+
     /// ENG-002: arm the background cancel for one background request. Returns `false` (send
     /// nothing) when user input is already queued or the run was aborted. The token is cleared
     /// BEFORE the queue is read, and the handle queues before it cancels, so input that arrives
@@ -652,8 +662,7 @@ impl Handle {
         self.shared.snapshot()
     }
     pub fn set_modes(&self, steering: QueueMode, follow_up: QueueMode) {
-        *lock(&self.shared.modes) = (steering, follow_up);
-        self.shared.dirty.store(true, Ordering::SeqCst);
+        self.shared.update_modes(Some(steering), Some(follow_up));
     }
 }
 
