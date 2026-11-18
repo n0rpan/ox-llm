@@ -38,6 +38,11 @@ fn encode_entry_inner(e: &Entry, out: &mut Vec<u8>, private: bool) {
             _ => None,
         };
         strip_nested_history(messages, false).expect("visible encoding does not parse private state");
+        if matches!(&e.body, EntryBody::Custom { custom_type, .. } if custom_type == crate::GOAL_ENTRY) {
+            if let Some(data) = fields.get_mut("data").and_then(Value::as_object_mut) {
+                data.remove("lead");
+            }
+        }
     }
     let mut m = Map::new();
     m.insert("type".into(), Value::from(ty));

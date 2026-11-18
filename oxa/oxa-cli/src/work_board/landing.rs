@@ -91,6 +91,8 @@ pub(super) fn review_decisions(
                     next: plan.next,
                     queue_alarm: plan.queue_alarm,
                     queue: queued.remove(&number),
+                    latest_reviews: observations[&number].reviews,
+                    would_notify_rejection: None,
                 },
             )
         })

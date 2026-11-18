@@ -767,12 +767,13 @@ pub fn serve_outcome(
 /// Serve an assigned session using the frontend's existing guarded lease read.
 #[cfg(all(target_os = "linux", feature = "a2a-control"))]
 pub fn serve_outcome_with_steering_authority(
-    session: Session,
+    mut session: Session,
     dirs: oxa_config::Dirs,
     input: Box<dyn BufRead + Send>,
     out: Out,
     authority: Arc<oxa_core::goal::SteeringAuthority>,
 ) -> Result<RunOutcome, OxaError> {
+    session.bind_lead_steering_authority(authority.clone());
     serve_inner(session, dirs, input, out, authority)
 }
 

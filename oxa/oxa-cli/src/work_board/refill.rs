@@ -88,6 +88,10 @@ pub(super) fn run(
     let claims = oxa_work::board::Claims::open(&owner_path("claims")?)?;
     let worker: Worker =
         serde_json::from_value(value["worker"].clone()).map_err(|_| "invalid authenticated worker export")?;
+    let host = value["host_id"]
+        .as_str()
+        .filter(|host| oxa_work::board::valid_worker_id(host))
+        .ok_or("native refill requires an authenticated host_id")?;
     let partition = Partition {
         modulus: value["partition"]["modulus"]
             .as_u64()
@@ -157,7 +161,7 @@ pub(super) fn run(
         crate::netguard::trusted_executable_for("gh", Some(&policy.host_path), Some(root), Some(&dirs.home))
             .ok_or("no trusted gh executable")?;
     let intake = value["intake"] == true;
-    let mut source = Input::new(&gh, &policy.host_path, repo, &token, &packets, intake);
+    let mut source = Input::new(&gh, &policy.host_path, repo, &token, &packets, intake).with_host(host);
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_err(|_| "invalid system clock")?

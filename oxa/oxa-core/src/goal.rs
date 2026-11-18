@@ -23,13 +23,7 @@ pub struct GoalObservation<'a> {
     pub status: Option<GoalStatus>,
 }
 
-/// The existing lease identity supplied by the trusted assignment owner.
-/// Renewing a lease does not change its holder or generation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SteeringLease {
-    pub holder: String,
-    pub generation: (u64, u32),
-}
+pub use oxa_session::SteeringLease;
 
 /// Identity captured for a steering request at submission.
 #[derive(Debug)]
@@ -70,6 +64,9 @@ fn stale_steering() -> oxa_proto::OxaError {
 /// guard holds, supplying the current lease identity. If verification is
 /// unavailable or fails, never invoke the operation.
 pub type SteeringAuthority = dyn Fn(&SessionRef, &mut dyn FnMut(Option<&SteeringLease>)) + Send + Sync;
+
+mod lead;
+pub(crate) use lead::{deliver_saved, reanchor_resumed, BoundLeadAuthority};
 
 /// One typed steering input. Its callback reports the result of appending.
 pub struct GoalSteering {
@@ -233,6 +230,27 @@ impl GoalRuntime {
     pub fn snapshot(&self) -> Goal {
         self.lock().goal.clone()
     }
+    fn replace_snapshot(&self, goal: Goal) {
+        self.lock().goal = goal;
+    }
+
+    pub(crate) fn has_pending_steer(&self) -> bool {
+        self.lock()
+            .goal
+            .lead
+            .as_ref()
+            .is_some_and(|lead| lead.pending_steer.is_some())
+    }
+
+    pub(crate) fn reserves_entry_id(&self, id: &str) -> bool {
+        self.lock()
+            .goal
+            .lead
+            .as_ref()
+            .and_then(|lead| lead.pending_steer.as_ref())
+            .is_some_and(|steer| steer.entry_id == id)
+    }
+
     pub fn pursuing(&self) -> bool {
         self.status() == GoalStatus::Pursuing
     }

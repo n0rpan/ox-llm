@@ -377,6 +377,7 @@ pub fn run_json_outcome_with_steering_authority(
     use serde_json::json;
     use std::sync::{Arc, Mutex};
 
+    session.bind_lead_steering_authority(authority.clone());
     let mut writer = SharedRecords(out.clone());
     write_json_header(session, &mut writer)?;
     let handle = session.handle();

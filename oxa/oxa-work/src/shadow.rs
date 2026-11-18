@@ -1,5 +1,10 @@
 //! Read-only sampling: this runner has no executor or GitHub mutation interface.
-use crate::board::{landing::Next, queue::RejectionEvidence, review, Board, Entry};
+use crate::board::{
+    landing,
+    landing::Next,
+    queue::{NotificationTarget, RejectionEvidence},
+    review, Board, Entry,
+};
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -302,6 +307,19 @@ pub struct LandingDecision {
     pub queue_alarm: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queue: Option<QueueObservation>,
+    #[serde(skip)]
+    pub latest_reviews: landing::LatestReviews,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub would_notify_rejection: Option<RejectionNotice>,
+}
+
+#[derive(Serialize)]
+pub struct RejectionNotice {
+    pr_head: String,
+    merge_group_head: String,
+    removal_event: String,
+    target: NotificationTarget,
+    failed_tests: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -335,7 +353,7 @@ pub fn run_with_landing(
             board,
             reviews,
             queue_rejections,
-            landing,
+            mut landing,
             landing_main,
         } = snapshot()?;
         let matched_queue_admissions = if landing.is_empty() {
@@ -350,6 +368,13 @@ pub fn run_with_landing(
                 queue_rejections.iter().map(RejectionEvidence::admission_identity),
             )
         };
+        plan_matched_rejections(
+            &board,
+            &mut landing,
+            landing_main.as_deref().unwrap_or_default(),
+            &queue_rejections,
+            &matched_queue_admissions,
+        );
         let sample = Sample {
             schema_version: 1,
             observed_at: board.observed_at,
@@ -381,5 +406,70 @@ pub fn run_with_landing(
             return Ok(());
         }
         wait(INTERVAL.saturating_sub(started.elapsed()));
+    }
+}
+
+fn plan_matched_rejections(
+    board: &Board,
+    decisions: &mut BTreeMap<u64, LandingDecision>,
+    main: &str,
+    rejections: &[RejectionEvidence],
+    admissions: &BTreeMap<u64, AdmissionEvidence>,
+) {
+    let rejections: BTreeMap<_, _> = rejections
+        .iter()
+        .map(|rejection| (rejection.admission_identity().number, rejection))
+        .collect();
+    for entry in &board.entries {
+        let Some(decision) = decisions
+            .get_mut(&entry.number)
+            .filter(|decision| decision.queue.is_none())
+        else {
+            continue;
+        };
+        let (Some(admission), Some(rejection)) =
+            (admissions.get(&entry.number), rejections.get(&entry.number))
+        else {
+            continue;
+        };
+        let failed_tests = rejection.reported_failure_names();
+        let plan = landing::Policy { enabled: true }.plan(
+            entry,
+            decision.latest_reviews,
+            landing::Queue::Rejected(landing::Rejection {
+                head: &entry.head,
+                main: admission.baseline_main(),
+                merge_group_head: rejection.admission_identity().group,
+                removal_event: rejection.removal_event(),
+                cause: if failed_tests.is_empty() {
+                    landing::RejectionCause::Unknown
+                } else {
+                    landing::RejectionCause::FailedTests(&failed_tests)
+                },
+                notified_event: None,
+                retry: landing::Retry::Unknown,
+            }),
+            main,
+            board.observed_at,
+        );
+        decision.next = plan.next;
+        if let (
+            Some(landing::Notice {
+                head,
+                merge_group_head,
+                removal_event,
+                cause: landing::RejectionCause::FailedTests(tests),
+            }),
+            Some(target),
+        ) = (plan.notify_rejection, rejection.notification_target())
+        {
+            decision.would_notify_rejection = Some(RejectionNotice {
+                pr_head: head.to_owned(),
+                merge_group_head: merge_group_head.to_owned(),
+                removal_event: removal_event.to_owned(),
+                target: target.clone(),
+                failed_tests: tests.iter().map(|name| (*name).to_owned()).collect(),
+            });
+        }
     }
 }

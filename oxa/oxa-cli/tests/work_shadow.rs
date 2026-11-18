@@ -1007,7 +1007,9 @@ exit 94
 "#,
     );
     fs::set_permissions(gh, fs::Permissions::from_mode(0o700)).unwrap();
-    let second_head = "second-synthetic-head";
+    let head = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let second_head = "dddddddddddddddddddddddddddddddddddddddd";
+    let main = "cccccccccccccccccccccccccccccccccccccccc";
     let group = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     let workflow_path = ".github/workflows/checks.yml";
     let mut queue = queue_rejection(group);
@@ -1026,6 +1028,8 @@ exit 94
         fs::write(env.work().join(file), value.to_string()).unwrap();
     };
     let repo = &mut detail["data"]["repository"];
+    repo["p42"]["headRefOid"] = head.into();
+    repo["pullRequests"]["nodes"][0]["headRefOid"] = head.into();
     let mut second = repo["p42"].clone();
     second["number"] = 43.into();
     second["headRefOid"] = second_head.into();
@@ -1037,8 +1041,13 @@ exit 94
     write("first.json", detail.clone());
     write("detail.json", detail);
     let rows = &mut queue["data"]["repository"];
+    rows["p42"]["headRefOid"] = head.into();
+    rows["p42"]["id"] = "pr-42".into();
+    rows["p42"]["author"] = json!({"__typename":"User","id":"user-1","login":"sample-author"});
     let mut second = rows["p42"].clone();
     second["number"] = 43.into();
+    second["id"] = "pr-43".into();
+    second["author"] = json!({"__typename":"Bot","id":"bot-2","login":"sample-agent[bot]"});
     second["headRefOid"] = second_head.into();
     second["timelineItems"]["nodes"][0]["id"] = "removal-2".into();
     rows["p43"] = second;
@@ -1110,6 +1119,7 @@ exit 94
     let log = log_for(&env, "example/repo");
     let saved = fs::read_to_string(&log).unwrap();
     let sample: Value = serde_json::from_str(saved.trim()).unwrap();
+    assert!(sample.get("landing").is_none());
     for (index, number, event) in [(0, 42, "removal-1"), (1, 43, "removal-2")] {
         let row = &sample["queue_rejections"][index];
         assert_eq!(row["number"], number);
@@ -1234,6 +1244,97 @@ exit 94
     assert_eq!(result.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&result.stderr).contains("invalid CI report archive"));
     assert_eq!(fs::read_to_string(log_for(&env, "example/repo")).unwrap(), text);
+    fs::write(env.work().join("report.zip"), &bytes).unwrap();
+    write("report-artifacts.json", listing(&digest));
+
+    let mut historical: Value = serde_json::from_str(saved.trim()).unwrap();
+    historical["observed_at"] = 1_767_225_600.into();
+    historical["board"]["observed_at"] = 1_767_225_600.into();
+    historical["queue_rejections"] = json!([]);
+    let admission = json!({"next":"already_queued","queue_alarm":false,
+        "queue":{"enqueued_at":1_767_225_595u64,"group_head":group}});
+    historical["landing"] = json!({"42":admission,"43":admission});
+    fs::write(&log, format!("{historical}\n")).unwrap();
+    write("queue.json", valid_queue);
+    let queue_state = |rows: Vec<Value>| {
+        json!({"data":{"repository":{
+            "main":{"target":{"oid":main}},"mergeQueue":{"entries":{"totalCount":rows.len(),"nodes":rows}}
+        }}})
+    };
+    write("queue-state.json", queue_state(vec![]));
+    write(
+        "review.json",
+        json!({"data":{"repository":{
+            "p42":{"number":42,"state":"OPEN","headRefOid":head,"comments":{"totalCount":0,"nodes":[]}},
+            "p43":{"number":43,"state":"OPEN","headRefOid":second_head,"comments":{"totalCount":0,"nodes":[]}}
+        }}}),
+    );
+    let shadow_args = format!("{args} --landing-shadow");
+    let result = invoke(&env, &shadow_args);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let sampled = fs::read_to_string(&log).unwrap();
+    let row: Value = serde_json::from_str(sampled.lines().last().unwrap()).unwrap();
+    assert_eq!(
+        row["landing"]["42"]["would_notify_rejection"],
+        json!({
+            "pr_head":head,"merge_group_head":group,"removal_event":"removal-1",
+            "target":{"pull_request_id":"pr-42","author_id":"user-1","login":"sample-author"},
+            "failed_tests":["example::failed"]
+        })
+    );
+    let second_notice = json!({
+        "pr_head":second_head,"merge_group_head":group,"removal_event":"removal-2",
+        "target":{"pull_request_id":"pr-43","author_id":"bot-2","login":"sample-agent[bot]"},
+        "failed_tests":["example::failed"]
+    });
+    assert_eq!(row["landing"]["43"]["would_notify_rejection"], second_notice);
+    for rejection in row["queue_rejections"].as_array().unwrap() {
+        assert!(rejection.get("notification_target").is_none());
+    }
+
+    let queue_path = env.work().join("queue.json");
+    let original: Value = serde_json::from_str(&fs::read_to_string(queue_path).unwrap()).unwrap();
+    let mut hidden = original.clone();
+    hidden["data"]["repository"]["p42"]["author"] = Value::Null;
+    write("queue.json", hidden);
+    let result = invoke(&env, &shadow_args);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let sampled = fs::read_to_string(&log).unwrap();
+    let row: Value = serde_json::from_str(sampled.lines().last().unwrap()).unwrap();
+    assert!(row["queue_rejections"][0]["verified_test_reports"].is_array());
+    assert!(row["landing"]["42"].get("would_notify_rejection").is_none());
+    assert_eq!(row["landing"]["43"]["would_notify_rejection"], second_notice);
+    write("queue.json", original);
+
+    let current_row = |time| json!({"pullRequest":{"number":42,"headRefOid":head},"enqueuedAt":time});
+    write(
+        "queue-state.json",
+        queue_state(vec![current_row(json!("2026-01-01T00:00:00Z"))]),
+    );
+    let result = invoke(&env, &shadow_args);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let sampled = fs::read_to_string(&log).unwrap();
+    let row: Value = serde_json::from_str(sampled.lines().last().unwrap()).unwrap();
+    assert!(row["landing"]["42"]["queue"].is_object());
+    assert!(row["landing"]["42"].get("would_notify_rejection").is_none());
+
+    write("queue-state.json", queue_state(vec![current_row(Value::Null)]));
+    let result = invoke(&env, &shadow_args);
+    assert_eq!(result.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("invalid enqueue time"));
+    assert_eq!(fs::read_to_string(log).unwrap(), sampled);
     assert!(!env.work().join("unexpected-github-command").exists());
 }
 

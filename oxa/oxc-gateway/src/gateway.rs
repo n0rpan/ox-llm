@@ -168,6 +168,8 @@ impl Gateway {
         &self,
         request: &oxa_proto::ChatRequest<'_>,
         guest: &crate::share::listener::Guest<'_>,
+        temperature: Option<f64>,
+        top_p: Option<f64>,
         cancel: &Cancellation,
         on: &mut F,
     ) -> Result<Completed, Error>
@@ -184,7 +186,12 @@ impl Gateway {
         }) {
             return Err(Error::Refused(guest_history_refusal()));
         }
-        let payload = payload(request).map_err(Error::Refused)?;
+        let mut payload = payload(request).map_err(Error::Refused)?;
+        for (field, value) in [("temperature", temperature), ("top_p", top_p)] {
+            if let Some(value) = value {
+                payload[field] = json!(value);
+            }
+        }
         if !payload["tools"].as_array().is_some_and(Vec::is_empty) {
             return Err(Error::Refused(guest_history_refusal()));
         }

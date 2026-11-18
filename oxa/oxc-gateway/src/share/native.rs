@@ -97,8 +97,19 @@ where
             .ok_or(Failure::NotFound)?;
         #[cfg(feature = "anthropic-gateway")]
         if model.access == Access::Metered {
-            let gateway = self.metered.as_deref().ok_or(Failure::Forbidden)?;
-            return metered_chat(gateway, request, guest, output, cancel, &runtime).await;
+            let gateway = self.metered.clone().ok_or(Failure::Forbidden)?;
+            let guest = guest.into_owned();
+            // The provider callback can wait on the bounded output channel.
+            // Schedule it apart from the writer, disconnect and deadline futures.
+            // The listener joins this task even after requesting cancellation.
+            let mut provider = tokio::task::JoinSet::new();
+            provider
+                .spawn(async move { metered_chat(&gateway, request, guest, output, cancel, &runtime).await });
+            return provider
+                .join_next()
+                .await
+                .ok_or(Failure::Failed)?
+                .map_err(|_| Failure::Failed)?;
         }
         if model.access != Access::Local {
             return Err(Failure::Forbidden);
@@ -263,29 +274,37 @@ async fn metered_chat(
     if runtime.runtime_flavor() != tokio::runtime::RuntimeFlavor::MultiThread {
         return Err(Failure::Failed);
     }
+    let (temperature, top_p) = (request.temperature, request.top_p);
     let prepared = GuestChat::prepare(request)?;
     let reply = gateway
-        .chat_authenticated_guest(&prepared.chat(), &guest, &cancel, &mut |event| {
-            let Event::Chunk(chunk) = event else {
-                return Control::Continue;
-            };
-            let delta = &chunk["choices"][0]["delta"];
-            if delta["tool_calls"]
-                .as_array()
-                .is_some_and(|calls| !calls.is_empty())
-            {
-                cancel.cancel();
-                return Control::Stop;
-            }
-            if let Some(text) = delta["content"].as_str().filter(|text| !text.is_empty()) {
-                let sent = tokio::task::block_in_place(|| runtime.block_on(output.text(text)));
-                if sent.is_err() {
+        .chat_authenticated_guest(
+            &prepared.chat(),
+            &guest,
+            temperature,
+            top_p,
+            &cancel,
+            &mut |event| {
+                let Event::Chunk(chunk) = event else {
+                    return Control::Continue;
+                };
+                let delta = &chunk["choices"][0]["delta"];
+                if delta["tool_calls"]
+                    .as_array()
+                    .is_some_and(|calls| !calls.is_empty())
+                {
                     cancel.cancel();
                     return Control::Stop;
                 }
-            }
-            Control::Continue
-        })
+                if let Some(text) = delta["content"].as_str().filter(|text| !text.is_empty()) {
+                    let sent = tokio::task::block_in_place(|| runtime.block_on(output.text(text)));
+                    if sent.is_err() {
+                        cancel.cancel();
+                        return Control::Stop;
+                    }
+                }
+                Control::Continue
+            },
+        )
         .await
         .map_err(|_| Failure::Failed)?;
     if cancel.is_cancelled()
