@@ -4,7 +4,8 @@
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_config::{
-    dirs_from_env, resolve_model, resolve_scoped, Dirs, Endpoint, Env, ModelRef, ModelsConfig, ENV_TABLE,
+    dirs_from_env, resolve_model, resolve_scoped, CloudApi, Dirs, Endpoint, Env, ModelRef, ModelsConfig,
+    ENV_TABLE,
 };
 use oxa_fake::TestEnv;
 use oxa_proto::{codes, ThinkingLevel};
@@ -336,6 +337,75 @@ fn models_json_accepts_https_cloud_protocols_alongside_the_engine() {
     assert_eq!(cfg.default, "laptop");
     assert_eq!(cfg.endpoints.len(), 1);
     assert_eq!(cfg.endpoints[0].base_url, "http://192.168.1.7:8080");
+    assert_eq!(cfg.cloud_providers.len(), 3);
+    let chat = &cfg.cloud_providers["chatbox"];
+    assert_eq!(chat.api, CloudApi::OpenAiChat);
+    assert_eq!(chat.base_url, "https://chat.example.invalid/v1");
+    assert_eq!(chat.key, "chat-key-ref");
+    assert_eq!(chat.pool, "api-monthly");
+    assert_eq!(chat.models[0].id, "chat-model");
+    assert_eq!(chat.models[0].context, 32768);
+    assert_eq!(chat.models[0].price.as_ref().unwrap().input.as_f64(), Some(1.25));
+    let responses = &cfg.cloud_providers["responsebox"];
+    assert_eq!(responses.api, CloudApi::OpenAiResponses);
+    assert!(responses.models.is_empty());
+    let messages = &cfg.cloud_providers["messagebox"];
+    assert_eq!(messages.api, CloudApi::AnthropicMessages);
+    assert!(messages.models[0].price.is_none());
+    let debug = format!("{cfg:?}");
+    assert!(!debug.contains("chat-key-ref"));
+    assert!(!debug.contains("chat.example.invalid"));
+}
+
+#[test]
+fn invalid_cloud_entries_are_refused_without_echoing_values() {
+    use serde_json::json;
+
+    let t = TestEnv::new();
+    let dirs = Dirs::under(t.root());
+    let base = json!({"api":"openai-chat", "baseUrl":"https://chat.example.invalid/v1",
+        "key":"test-key-ref", "pool":"api-monthly", "models":[{"id":"known", "context":32768}]});
+    for (field, value) in [
+        ("apiKey", json!("inline-value-test-marker")),
+        ("api", json!("unrecognized-test-protocol")),
+        ("key", json!("$TEST_KEY_REFERENCE")),
+        ("baseUrl", json!("http://chat.example.invalid/v1")),
+        (
+            "baseUrl",
+            json!("https://inline-value-test-marker@chat.example.invalid/v1"),
+        ),
+        (
+            "baseUrl",
+            json!("https://chat.example.invalid/v1?key=inline-value-test-marker"),
+        ),
+        ("models", json!([{"id":"known", "context":0}])),
+        (
+            "models",
+            json!([{"id":"known", "context":32768,"price":{"input":-1,"output":4}}]),
+        ),
+        (
+            "models",
+            json!([{"id":"known", "context":32768},{"id":"known", "context":32768}]),
+        ),
+    ] {
+        let mut entry = base.clone();
+        entry[field] = value;
+        t.write(
+            "home/.oxa/agent/models.json",
+            &json!({"providers":{"chatbox":entry}}).to_string(),
+        );
+        let (cfg, diags) = ModelsConfig::load(&dirs, &Env::from_pairs(&[]));
+        assert!(
+            cfg.cloud_providers.is_empty(),
+            "invalid field {field} was retained"
+        );
+        assert_eq!(cfg.default, "oxe");
+        assert_eq!(diags.len(), 1);
+        assert_eq!(
+            diags[0].message,
+            "Invalid HTTPS cloud provider configuration; skipped"
+        );
+    }
 }
 
 #[test]
