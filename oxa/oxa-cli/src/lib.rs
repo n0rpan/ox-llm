@@ -34,6 +34,7 @@ pub mod lead_input;
 pub mod lead_page;
 pub mod lead_panels;
 pub mod lead_peer;
+pub mod lead_quota;
 mod lead_preset;
 pub mod lead_runs;
 pub mod lead_serve;
