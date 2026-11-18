@@ -52,6 +52,7 @@ fn build(
         modes: Mutex::new((QueueMode::All, QueueMode::OneAtATime)),
         dirty: AtomicBool::new(false),
         gate: Default::default(),
+        wake: Default::default(),
     });
     let tools: Vec<Arc<dyn Tool>> = Vec::new();
     SessionState {

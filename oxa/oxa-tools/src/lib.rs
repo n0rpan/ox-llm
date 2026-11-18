@@ -37,7 +37,7 @@ pub use diff::{apply_edits, detect_line_ending, strip_bom, unified_diff, Edit, E
 pub use edit::EditTool;
 pub use find::FindTool;
 pub use grep::GrepTool;
-pub use jobs::{JobInfo, JobRead, JobRegistry, JobStatus, BUFFER_CAP, MAX_JOBS, READ_CAP};
+pub use jobs::{JobDone, JobInfo, JobRead, JobRegistry, JobStatus, BUFFER_CAP, MAX_JOBS, READ_CAP};
 pub use ls::LsTool;
 pub use read::ReadTool;
 pub use shape::{shape, strip_ansi};

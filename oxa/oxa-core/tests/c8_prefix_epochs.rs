@@ -76,6 +76,7 @@ fn fixture(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Vec<Arc<dyn Hooks>>) -
         modes: Mutex::new((QueueMode::All, QueueMode::OneAtATime)),
         dirty: std::sync::atomic::AtomicBool::new(false),
         gate: Default::default(),
+        wake: Default::default(),
     });
     SessionState {
         goal: None,

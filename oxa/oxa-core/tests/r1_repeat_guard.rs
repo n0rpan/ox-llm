@@ -91,6 +91,7 @@ fn state_with(
         modes: Mutex::new((QueueMode::All, QueueMode::OneAtATime)),
         dirty: std::sync::atomic::AtomicBool::new(false),
         gate: Default::default(),
+        wake: Default::default(),
     });
     let st = SessionState {
         goal: None,

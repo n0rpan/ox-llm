@@ -957,7 +957,7 @@ mod tests {
         }));
         let id = jobs.spawn(wake_spec("gh run watch 1 --exit-status")).unwrap();
         wait_until("the wake is queued", || h.has_inbox_input());
-        let msgs = h.take_follow_up();
+        let msgs = h.shared.take_follow_up();
         assert_eq!(msgs.len(), 1, "{msgs:?}");
         let msg = &msgs[0];
         assert!(
@@ -972,7 +972,7 @@ mod tests {
         assert!(!msg.contains("line 5\n"), "{msg}");
         // One exit, one wake: nothing more is queued afterwards.
         std::thread::sleep(std::time::Duration::from_millis(50));
-        assert!(h.take_follow_up().is_empty());
+        assert!(h.shared.take_follow_up().is_empty());
     }
 
     #[test]
@@ -991,7 +991,7 @@ mod tests {
         assert_eq!(killed.status, oxa_tools::JobStatus::Killed);
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(!h.has_inbox_input());
-        assert!(h.take_follow_up().is_empty());
+        assert!(h.shared.take_follow_up().is_empty());
     }
 
     #[test]
@@ -1007,7 +1007,7 @@ mod tests {
         });
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(!h.has_inbox_input());
-        assert!(h.take_follow_up().is_empty());
+        assert!(h.shared.take_follow_up().is_empty());
         // The output still waits for a read.
         assert!(jobs.read(&id).unwrap().output.ends_with("line 25\n"));
     }

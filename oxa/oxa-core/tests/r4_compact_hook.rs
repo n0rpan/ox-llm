@@ -77,6 +77,7 @@ fn build(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Arc<Recorder>) -> Sessio
         modes: Mutex::new((QueueMode::All, QueueMode::OneAtATime)),
         dirty: AtomicBool::new(false),
         gate: Default::default(),
+        wake: Default::default(),
     });
     let st = SessionState {
         goal: None,
