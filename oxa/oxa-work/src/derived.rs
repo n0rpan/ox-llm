@@ -392,9 +392,9 @@ impl Manifests {
 /// The crates of the changed paths. A workspace's own manifest or lockfile selects every
 /// member (like the CI rule that unknown paths conservatively select every component);
 /// other files outside a crate select nothing.
-fn select(root: &Path, paths: &[String]) -> Result<BTreeMap<String, String>, String> {
+fn select(root: &Path, paths: &[String]) -> Result<BTreeSet<(String, String)>, String> {
     let mut manifests = Manifests::default();
-    let mut selected: BTreeMap<String, String> = BTreeMap::new();
+    let mut selected = BTreeSet::new();
     for path in paths {
         let name = path.rsplit('/').next().unwrap_or(path.as_str());
         let dir = parent_dir(path);
@@ -406,22 +406,22 @@ fn select(root: &Path, paths: &[String]) -> Result<BTreeMap<String, String>, Str
                 for member in members {
                     for member_dir in member_dirs(root, dir, &member) {
                         if let Some(package) = manifests.at(root, &member_dir)?.package.clone() {
-                            selected.insert(package, dir.to_owned());
+                            selected.insert((package, dir.to_owned()));
                         }
                     }
                 }
                 if let Some(package) = package {
-                    selected.insert(package, dir.to_owned());
+                    selected.insert((package, dir.to_owned()));
                 }
             } else if let Some(package) = manifest.package.clone() {
-                selected.insert(package, manifests.in_dir(root, dir)?);
+                selected.insert((package, manifests.in_dir(root, dir)?));
             }
             continue;
         }
         for ancestor in manifests.ancestors(root, dir)? {
             if let Some(package) = manifests.root[&ancestor].package.clone() {
                 let in_dir = manifests.in_dir(root, &ancestor)?;
-                selected.insert(package, in_dir);
+                selected.insert((package, in_dir));
                 break;
             }
         }
@@ -484,23 +484,27 @@ fn glob_dirs(root: &Path, dir: &str, pattern: &str) -> Vec<String> {
 
 /// `*` and `?` only, anchored at both ends; member globs never need character classes.
 fn simple_glob(pattern: &str, name: &str) -> bool {
-    fn matches(pattern: &[u8], name: &[u8]) -> bool {
-        match (pattern.first(), name.first()) {
-            (None, None) => true,
-            (None, Some(_)) => false,
-            (Some(b'*'), _) => {
-                matches(&pattern[1..], name) || (!name.is_empty() && matches(pattern, &name[1..]))
+    // Track which name prefixes match the preceding pattern. Each pattern
+    // byte visits each prefix once, even when several stars could match it.
+    let mut prefixes = vec![false; name.len() + 1];
+    prefixes[0] = true;
+    for byte in pattern.bytes() {
+        if byte == b'*' {
+            for index in 1..prefixes.len() {
+                prefixes[index] |= prefixes[index - 1];
             }
-            (Some(b'?'), Some(_)) => matches(&pattern[1..], &name[1..]),
-            (Some(want), Some(have)) if want == have => matches(&pattern[1..], &name[1..]),
-            _ => false,
+        } else {
+            for (index, candidate) in name.bytes().enumerate().rev() {
+                prefixes[index + 1] = prefixes[index] && (byte == b'?' || byte == candidate);
+            }
+            prefixes[0] = false;
         }
     }
-    matches(pattern.as_bytes(), name.as_bytes())
+    prefixes[name.len()]
 }
 
 /// The check entries of the selected crates: `cargo test` plus clippy, one per crate.
-fn commands(selected: &BTreeMap<String, String>) -> DerivedChecks {
+fn commands(selected: &BTreeSet<(String, String)>) -> DerivedChecks {
     let mut out = DerivedChecks::default();
     for (name, in_dir) in selected {
         out.tested.insert(name.clone());
@@ -540,7 +544,7 @@ fn clippy_entry(in_dir: &str, name: &str) -> String {
 
 /// Every crate of the tree, bounded. `None`: the walk exceeded its capacity, so declared
 /// selectors cannot be resolved and the task stays `unverified` rather than half-checked.
-pub(crate) fn discover(root: &Path) -> Option<BTreeMap<String, String>> {
+pub(crate) fn discover(root: &Path) -> Option<BTreeSet<(String, String)>> {
     let mut manifests = Manifests::default();
     let mut stack = vec![String::new()];
     let mut seen = 0usize;
@@ -573,12 +577,12 @@ pub(crate) fn discover(root: &Path) -> Option<BTreeMap<String, String>> {
             }
         }
     }
-    let mut packages = BTreeMap::new();
+    let mut packages = BTreeSet::new();
     let dirs: Vec<String> = manifests.root.keys().cloned().collect();
     for dir in dirs {
         if let Some(name) = manifests.root[&dir].package.clone() {
             let in_dir = manifests.in_dir(root, &dir).ok()?;
-            packages.insert(name, in_dir);
+            packages.insert((name, in_dir));
         }
     }
     Some(packages)
@@ -588,7 +592,7 @@ pub(crate) fn discover(root: &Path) -> Option<BTreeMap<String, String>> {
 /// that cannot run; the caller keeps the task `unverified` instead of skipping them.
 pub(crate) fn declared_entries(
     declared: &[String],
-    discovered: &BTreeMap<String, String>,
+    discovered: &BTreeSet<(String, String)>,
     already_tested: &BTreeSet<String>,
 ) -> Result<Vec<String>, Vec<String>> {
     let mut commands = Vec::new();
@@ -596,14 +600,22 @@ pub(crate) fn declared_entries(
     for selector in declared {
         if selector == UNREADABLE_DECLARATION {
             missing.push("the declared acceptance block was not readable crate names".to_owned());
-        } else if already_tested.contains(selector) {
             continue;
-        } else if let Some(in_dir) = discovered.get(selector) {
-            commands.push(test_entry(in_dir, selector));
-        } else {
-            missing.push(format!(
+        }
+        let mut dirs = discovered
+            .iter()
+            .filter_map(|(name, dir)| (name == selector).then_some(dir));
+        match (dirs.next(), dirs.next()) {
+            (Some(_), Some(_)) => missing.push(format!(
+                "the declared acceptance crate {selector} is ambiguous across workspaces"
+            )),
+            (Some(in_dir), None) if !already_tested.contains(selector) => {
+                commands.push(test_entry(in_dir, selector));
+            }
+            (Some(_), None) => {}
+            (None, _) => missing.push(format!(
                 "the declared acceptance crate {selector} is not a crate of this repository"
-            ));
+            )),
         }
     }
     if missing.is_empty() {
@@ -773,7 +785,7 @@ members = ["crates/*", "tools/pinned"]
         manifest(&dir, "crates/one/Cargo.toml", "[package]\nname = \"one\"\n");
         manifest(&dir, "crates/two/Cargo.toml", "[package]\nname = \"two\"\n");
         let selected = select(dir.path(), &["crates/two/src/lib.rs".to_owned()]).unwrap();
-        assert_eq!(selected, BTreeMap::from([("two".to_owned(), "".to_owned())]));
+        assert_eq!(selected, BTreeSet::from([("two".to_owned(), "".to_owned())]));
     }
 
     #[test]
@@ -781,7 +793,7 @@ members = ["crates/*", "tools/pinned"]
         let dir = PrivateDir::new("derived-standalone");
         manifest(&dir, "solo/Cargo.toml", "[package]\nname = \"solo\"\n");
         let selected = select(dir.path(), &["solo/src/main.rs".to_owned()]).unwrap();
-        assert_eq!(selected, BTreeMap::from([("solo".to_owned(), "solo".to_owned())]));
+        assert_eq!(selected, BTreeSet::from([("solo".to_owned(), "solo".to_owned())]));
     }
 
     #[test]
@@ -794,7 +806,7 @@ members = ["crates/*", "tools/pinned"]
         for changed in ["Cargo.toml", "Cargo.lock"] {
             let selected = select(dir.path(), &[changed.to_owned()]).unwrap();
             assert_eq!(
-                selected.keys().collect::<Vec<_>>(),
+                selected.iter().map(|(name, _)| name).collect::<Vec<_>>(),
                 ["one", "pinned", "top", "two"],
                 "workspace-wide change {changed}"
             );
@@ -806,7 +818,7 @@ members = ["crates/*", "tools/pinned"]
         let dir = PrivateDir::new("derived-standalone-lock");
         manifest(&dir, "solo/Cargo.toml", "[package]\nname = \"solo\"\n");
         let selected = select(dir.path(), &["solo/Cargo.lock".to_owned()]).unwrap();
-        assert_eq!(selected, BTreeMap::from([("solo".to_owned(), "solo".to_owned())]));
+        assert_eq!(selected, BTreeSet::from([("solo".to_owned(), "solo".to_owned())]));
     }
 
     #[test]
@@ -838,12 +850,43 @@ members = ["crates/*", "tools/pinned"]
         let dir = PrivateDir::new("derived-root-package");
         manifest(&dir, "Cargo.toml", root_package_workspace());
         let selected = select(dir.path(), &["docs/page.md".to_owned()]).unwrap();
-        assert_eq!(selected, BTreeMap::from([("top".to_owned(), "".to_owned())]));
+        assert_eq!(selected, BTreeSet::from([("top".to_owned(), "".to_owned())]));
+    }
+
+    #[test]
+    fn same_named_packages_in_independent_workspaces_have_distinct_checks() {
+        let dir = PrivateDir::new("derived-workspace-identity");
+        for workspace in ["a", "b"] {
+            manifest(
+                &dir,
+                &format!("{workspace}/Cargo.toml"),
+                "[workspace]\nmembers = [\"util\"]\n",
+            );
+            manifest(
+                &dir,
+                &format!("{workspace}/util/Cargo.toml"),
+                "[package]\nname = \"util\"\n",
+            );
+        }
+        let paths = ["a/util/src/lib.rs".to_owned(), "b/util/src/lib.rs".to_owned()];
+        let checks = commands(&select(dir.path(), &paths).unwrap());
+        assert_eq!(
+            checks.commands,
+            [
+                test_entry("a", "util"),
+                clippy_entry("a", "util"),
+                test_entry("b", "util"),
+                clippy_entry("b", "util")
+            ]
+        );
+        let discovered = discover(dir.path()).unwrap();
+        let error = declared_entries(&["util".to_owned()], &discovered, &checks.tested).unwrap_err();
+        assert!(error[0].contains("ambiguous"), "{error:?}");
     }
 
     #[test]
     fn derived_entries_are_a_fixed_cargo_shape_per_crate() {
-        let checks = commands(&BTreeMap::from([
+        let checks = commands(&BTreeSet::from([
             ("one".to_owned(), "".to_owned()),
             ("solo".to_owned(), "solo".to_owned()),
         ]));
@@ -919,7 +962,7 @@ members = ["crates/*", "tools/pinned"]
 
     #[test]
     fn declared_selectors_map_to_entries_or_keep_the_task_unverifiable() {
-        let discovered = BTreeMap::from([("one".to_owned(), "".to_owned())]);
+        let discovered = BTreeSet::from([("one".to_owned(), "".to_owned())]);
         let tested = ["one".to_owned()].into_iter().collect::<BTreeSet<_>>();
         // Already derived: no duplicate entry.
         assert!(declared_entries(&["one".to_owned()], &discovered, &tested)
@@ -1006,7 +1049,7 @@ members = ["crates/*", "tools/pinned"]
         let found = discover(dir.path()).expect("bounded tree");
         assert_eq!(
             found,
-            BTreeMap::from([
+            BTreeSet::from([
                 ("one".to_owned(), "".to_owned()),
                 ("pinned".to_owned(), "".to_owned()),
             ])

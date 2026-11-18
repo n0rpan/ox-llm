@@ -4,7 +4,7 @@ use oxa_proto::{sh_quote, CancelToken, ExecSpec, Sandbox};
 use oxa_sandbox::Bwrap;
 use oxa_work::{SupervisorOperation, SupervisorRequest};
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -401,15 +401,7 @@ fn ensure_private_check_directory(path: &Path) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(error.to_string()),
     }
-    let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
-    let uid = std::fs::metadata("/proc/self")
-        .map_err(|error| error.to_string())?
-        .uid();
-    if metadata.is_dir() && metadata.uid() == uid && metadata.mode() & 0o077 == 0 {
-        Ok(())
-    } else {
-        Err("invalid private check output directory".into())
-    }
+    oxa_work::require_private_directory(path)
 }
 
 fn git_environment() -> Vec<(String, String)> {
