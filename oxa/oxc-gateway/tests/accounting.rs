@@ -833,3 +833,27 @@ fn unknown_price_without_budget_is_admitted() {
     assert_eq!(row["usage_missing"], true);
     assert_eq!(row["cost_usd"], 0.0);
 }
+
+#[test]
+fn unknown_cost_row_closes_later_capped_admission() {
+    let home = Home::new();
+    let path = home.ledger();
+    let mut unknown = model();
+    unknown.context = 200_000_000;
+    let budget = Budget::new(path.clone());
+    let mut hold = budget.reserve(&json!(null), true, &unknown, 32).unwrap();
+    hold.mark_forwarded().unwrap();
+    hold.finish(&Usage::default(), Outcome::Complete, |row| append(&path, row))
+        .unwrap();
+    // The same daily ledger, reopened (as after a restart) with a cap configured.
+    let reopened = Budget::new(path.clone());
+    assert_eq!(
+        reopened
+            .reserve(&json!(1), true, &model(), 32)
+            .err()
+            .map(|error| (error.status, error.code)),
+        Some((429, "budget_exceeded"))
+    );
+    // Uncapped requests keep working.
+    assert!(reopened.reserve(&json!(null), true, &model(), 32).is_ok());
+}

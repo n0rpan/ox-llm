@@ -204,7 +204,8 @@ impl Budget {
             return Err(Refusal::ledger());
         }
         let spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
-        if !unbudgeted && shared.has_conservative_hold() {
+        // Earlier unbudgeted rows with unknown cost make a later cap unverifiable.
+        if !unbudgeted && (shared.has_conservative_hold() || state.reader.cost_unknown()) {
             return Err(exhausted());
         }
         policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), required)?;
@@ -269,7 +270,7 @@ impl Budget {
         }
         let spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
         let reserved = if let Some(cap) = cap {
-            if shared.has_conservative_hold() {
+            if shared.has_conservative_hold() || state.reader.cost_unknown() {
                 return Err(exhausted());
             }
             policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), 0.0)?;
