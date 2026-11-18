@@ -478,6 +478,12 @@ mod live_steering {
 
     #[test]
     fn managed_json_preserves_the_worker_header_and_delivers_only_lease_bound_input() {
+        for fail_write in [false, true] {
+            managed_json_admission(fail_write);
+        }
+    }
+
+    fn managed_json_admission(fail_write: bool) {
         let env = TestEnv::new();
         let held = HeldRun::default();
         let session = owner(
@@ -492,6 +498,8 @@ mod live_steering {
             generation: (3, 2),
         };
         let current = lease.clone();
+        let fail_next_write = Arc::new(AtomicBool::new(false));
+        let fault = fail_next_write.clone();
         let rpc = Rpc::start_with(session, &env, move |mut session, dirs, _input, out| {
             oxa_rpc::run_json_outcome_with_steering_authority(
                 &mut session,
@@ -501,7 +509,17 @@ mod live_steering {
                 &dirs.agent_dir,
                 Arc::new(move |requested, operation| {
                     if requested == &expected {
-                        operation(Some(&current));
+                        if fault.swap(false, Ordering::SeqCst) {
+                            // Only the owner-side staging write sees this fixture fault.
+                            let saved = expected.path.with_extension("fixture-saved");
+                            std::fs::rename(&expected.path, &saved).unwrap();
+                            std::fs::create_dir(&expected.path).unwrap();
+                            operation(Some(&current));
+                            std::fs::remove_dir(&expected.path).unwrap();
+                            std::fs::rename(saved, &expected.path).unwrap();
+                        } else {
+                            operation(Some(&current));
+                        }
                     }
                 }),
             )
@@ -516,17 +534,219 @@ mod live_steering {
                 "text":"Synthetic unleased input"
             }),
         );
-        assert_eq!(receipt(&rpc, "unleased", "queued")["error"], "goal_steer_stale");
-        submit(
+        assert_eq!(receipt(&rpc, "unleased", "admitted")["admitted"], false);
+        let revision = Goal::revision(&entries(&env, &binding));
+        send(
             &env,
-            &rpc,
             &binding,
-            json!({"holder":lease.holder,"generation":lease.generation}),
+            json!({
+                "method":"steer","id":"steer","revision":revision,"text":TEXT,
+                "lease":{"holder":lease.holder,"generation":lease.generation}
+            }),
         );
+        // An invalid-lease packet queued after the steer is a watcher barrier.
+        send(
+            &env,
+            &binding,
+            json!({
+                "method":"steer","id":"barrier","revision":revision,"text":"Synthetic barrier"
+            }),
+        );
+        assert_eq!(receipt(&rpc, "barrier", "admitted")["admitted"], false);
+        assert!(!rpc.records().iter().any(|row| row["data"]["id"] == "steer"));
+        fail_next_write.store(fail_write, Ordering::SeqCst);
         held.release();
-        assert_eq!(receipt(&rpc, "steer", "appended")["appended"], true);
+        let result = receipt(&rpc, "steer", "admitted");
+        assert_eq!(result["admitted"], !fail_write);
+        if fail_write {
+            assert!(result["error"].is_string());
+        }
         rpc.finish();
-        assert!(appended(&entries(&env, &binding)).is_some());
+        let entries = entries(&env, &binding);
+        assert_eq!(appended(&entries).is_some(), !fail_write);
+        if fail_write {
+            assert!(Goal::latest(&entries)
+                .unwrap()
+                .unwrap()
+                .lead
+                .and_then(|lead| lead.pending_steer)
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn managed_json_reopens_after_durable_inbox_admission() {
+        const CHILD: &str = "OXA_TEST_MANAGED_ADMISSION_CRASH";
+        const STOPPED_AFTER_STAGE: i32 = 73;
+        let lease = SteeringLease {
+            holder: "fixture/native".into(),
+            generation: (3, 2),
+        };
+
+        if let Some(root) = std::env::var_os(CHILD) {
+            struct ExitAfterAdmission;
+            impl Write for ExitAfterAdmission {
+                fn write(&mut self, line: &[u8]) -> std::io::Result<usize> {
+                    if serde_json::from_slice::<Value>(line).ok().is_some_and(|row| {
+                        row["type"] == "goal_control_receipt"
+                            && row["data"]["id"] == "crash-steer"
+                            && row["data"]["admitted"] == true
+                    }) {
+                        std::process::exit(STOPPED_AFTER_STAGE);
+                    }
+                    Ok(line.len())
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    Ok(())
+                }
+            }
+
+            let root = std::path::PathBuf::from(root);
+            let dirs = Dirs::under(&root);
+            let scratch = TestEnv::new();
+            let held = HeldRun::default();
+            let mut deps = session_deps(&scratch, held.engine(vec![ScriptTurn::text("first")]));
+            deps.cwd = root.join("work");
+            deps.dirs = dirs.clone();
+            deps.store = Arc::new(FsStore::new(dirs.agent_dir.join("sessions")));
+            let mut session = Session::open(deps, Open::New).unwrap();
+            session
+                .set_goal(
+                    Some(Goal::new("Synthetic restart goal".into(), GoalBudget::default(), 10).unwrap()),
+                    &mut NullSink,
+                )
+                .unwrap();
+            let bound = session.inner().sref.clone();
+            let agent = dirs.agent_dir.clone();
+            let revision = session.goal_revision();
+            let expected = bound.clone();
+            let packet = json!({
+                "method":"steer","id":"crash-steer","revision":revision,"text":TEXT,
+                "lease":{"holder":lease.holder,"generation":lease.generation}
+            });
+            let sender = thread::spawn(move || {
+                held.wait_until_entered();
+                send_inbox_control(&agent, &bound, &packet.to_string()).unwrap();
+                let directory = agent.join("inbox").join(&bound.id);
+                let start = Instant::now();
+                while std::fs::read_dir(&directory)
+                    .unwrap()
+                    .any(|file| file.unwrap().file_name().to_string_lossy().contains(".control-"))
+                {
+                    assert!(
+                        start.elapsed() < Duration::from_secs(10),
+                        "Inbox took the control"
+                    );
+                    thread::sleep(Duration::from_millis(5));
+                }
+                held.release();
+            });
+            let _ = oxa_rpc::run_json_outcome_with_steering_authority(
+                &mut session,
+                vec![("Start the goal".into(), vec![])],
+                Arc::new(Mutex::new(Box::new(ExitAfterAdmission))),
+                &mut Vec::new(),
+                &dirs.agent_dir,
+                Arc::new(move |requested, operation| {
+                    if requested == &expected {
+                        operation(Some(&lease));
+                    }
+                }),
+            );
+            sender.join().unwrap();
+            panic!("managed worker did not reach the durable receipt");
+        }
+
+        for stale in [false, true] {
+            use std::process::{Command, Stdio};
+            let env = TestEnv::new();
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "live_steering::managed_json_reopens_after_durable_inbox_admission",
+                ])
+                .env_clear()
+                .envs(env.envs("http://127.0.0.1:1"))
+                .env(CHILD, env.root())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let start = Instant::now();
+            let status = loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break status;
+                }
+                if start.elapsed() > Duration::from_secs(30) {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("managed child did not reach durable admission");
+                }
+                thread::sleep(Duration::from_millis(10));
+            };
+            assert_eq!(status.code(), Some(STOPPED_AFTER_STAGE));
+
+            let store = FsStore::new(env.agent_dir().join("sessions"));
+            let binding = store.list(None).pop().unwrap().sref;
+            let staged = store.load(&binding).unwrap();
+            assert!(appended(&staged).is_none());
+            let pending = Goal::latest(&staged)
+                .unwrap()
+                .unwrap()
+                .lead
+                .unwrap()
+                .pending_steer
+                .unwrap();
+            assert_eq!(pending.lease, Some(lease.clone()));
+
+            let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("continued")]));
+            let mut session =
+                Session::open(session_deps(&env, engine.clone()), Open::Resume(binding.clone())).unwrap();
+            let mut current = lease.clone();
+            if stale {
+                current.generation.1 += 1;
+            }
+            let expected = binding.clone();
+            let mut diagnostics = Vec::new();
+            let outcome = oxa_rpc::run_json_outcome_with_steering_authority(
+                &mut session,
+                vec![("Continue the goal".into(), vec![])],
+                Arc::new(Mutex::new(Box::new(std::io::sink()))),
+                &mut diagnostics,
+                &env.agent_dir(),
+                Arc::new(move |requested, operation| {
+                    if requested == &expected {
+                        operation(Some(&current));
+                    }
+                }),
+            )
+            .unwrap();
+            let entries = store.load(&binding).unwrap();
+            assert_eq!(
+                entries
+                    .iter()
+                    .filter(|entry| entry.id == pending.entry_id)
+                    .count(),
+                usize::from(!stale)
+            );
+            assert!(Goal::latest(&entries)
+                .unwrap()
+                .unwrap()
+                .lead
+                .unwrap()
+                .pending_steer
+                .is_none());
+            if stale {
+                assert!(engine.requests().is_empty());
+                assert_ne!(outcome.exit_code(), 0);
+                assert!(String::from_utf8_lossy(&diagnostics).contains("The goal or its assignment changed"));
+            } else {
+                assert!(engine.requests()[0]
+                    .messages
+                    .iter()
+                    .any(|message| message.content.as_deref() == Some(TEXT)));
+            }
+        }
     }
 
     #[test]
