@@ -80,6 +80,9 @@ pub(crate) struct State {
     pub execution: Option<Execution>,
     pub offline: bool,
     pub deadline_at_ms: u64,
+    /// The native admission receipt this attempt ran under; absent for ordinary tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_binding: Option<crate::board::NativeBinding>,
 }
 impl State {
     pub(crate) fn new(task: Task, mut record: Record, offline: bool) -> Self {
@@ -93,6 +96,7 @@ impl State {
             execution: None,
             offline,
             deadline_at_ms,
+            native_binding: None,
         }
     }
 }
@@ -114,7 +118,9 @@ pub(crate) fn load(path: &Path) -> Result<State> {
     let value: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|e| format!("task checkpoint: {e}"))?;
     let fields = value.as_object().ok_or("invalid task checkpoint")?;
-    if fields.len() != 6
+    // `native_binding` is present only for native attempts.
+    let optional = usize::from(fields.contains_key("native_binding"));
+    if fields.len() != 6 + optional
         || [
             "version",
             "record",
@@ -158,6 +164,7 @@ pub(crate) fn load(path: &Path) -> Result<State> {
         "reports",
         "acceptance_outcome",
         "task_tokens",
+        "worker_launch_revision",
     ];
     if keys.iter().any(|key| !record.contains_key(*key))
         || record
@@ -180,6 +187,11 @@ pub(crate) fn load(path: &Path) -> Result<State> {
         .is_some_and(|usage| !usage.valid())
     {
         return Err("invalid task usage evidence in checkpoint".into());
+    }
+    if state.record.worker_launch_revision.is_some_and(|revision| {
+        revision == 0 || revision >= state.record.checkpoint_revision || state.record.worker.is_none()
+    }) {
+        return Err("invalid native worker launch revision in checkpoint".into());
     }
     Ok(state)
 }
@@ -404,6 +416,49 @@ mod tests {
             .unwrap();
         assert_eq!(replayed.load(Ordering::Relaxed), 1);
         assert_eq!(read(&fixture.path()).unwrap().record.checkpoint_revision, 1);
+    }
+
+    #[test]
+    fn native_worker_receipt_replays_the_original_launch_revision() {
+        let fixture = Fixture::new();
+        let mut writer = Writer::new(fixture.path(), false);
+        let mut state = state();
+        writer
+            .save(&mut state, Step::Worker, &|_: &Record| Ok(()))
+            .unwrap();
+        let launch = state.record.checkpoint_revision;
+        state.record.worker = Some(crate::WorkerResult {
+            outcome: crate::WorkerOutcome::Done,
+            exit_code: 0,
+            error_class: None,
+            interruption: None,
+            tokens: None,
+        });
+        state.record.worker_launch_revision = Some(launch);
+        assert!(writer
+            .save_kind(
+                &mut state,
+                Step::Acceptance,
+                CheckpointKind::WorkerFinished,
+                &|_: &Record| { Err("synthetic activity append failure".into()) }
+            )
+            .is_err());
+
+        let recovered = read(&fixture.path()).unwrap();
+        let observed = AtomicU64::new(0);
+        Writer::new(fixture.path(), true)
+            .replay(&recovered, &|record: &Record| {
+                assert_eq!(record.worker_launch_revision, Some(launch));
+                assert_eq!(record.checkpoint_kind, CheckpointKind::WorkerFinished);
+                observed.store(record.checkpoint_revision, Ordering::Relaxed);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            observed.load(Ordering::Relaxed),
+            recovered.record.checkpoint_revision
+        );
+        assert!(recovered.record.checkpoint_revision > launch);
     }
 
     #[test]

@@ -101,6 +101,7 @@ pub(crate) struct Runner<'a> {
     pub observer: &'a dyn CheckpointObserver,
     pub scrub_note: &'a (dyn Fn(&crate::ProblemNote) -> Option<crate::ProblemNote> + Sync),
     pub base_alias: Option<&'a tree::BaseAlias>,
+    pub native: bool,
     #[cfg(target_os = "linux")]
     pub managed_steering: Option<&'a crate::managed_steering::Launch>,
 }
@@ -125,6 +126,7 @@ impl Runner<'_> {
                         self.binary,
                         self.policy,
                         self.lock,
+                        state.native_binding.as_ref(),
                     )?;
                     let point = state
                         .execution
@@ -168,6 +170,8 @@ impl Runner<'_> {
                         self.advance(state, step)?;
                     }
                     let remaining = worker_time(state)?;
+                    // The session-header callback can advance the revision after spawn.
+                    let launch_revision = state.record.checkpoint_revision;
                     let result = worker::run(
                         self.binary,
                         &tree,
@@ -210,6 +214,7 @@ impl Runner<'_> {
                                 state.record.task_tokens = None;
                             }
                             state.record.worker = Some(worker.result.clone());
+                            state.record.worker_launch_revision = self.native.then_some(launch_revision);
                             for note in worker.notes.iter().filter_map(self.scrub_note) {
                                 if state.record.problem_notes.len() < 5
                                     && !state.record.problem_notes.contains(&note)
@@ -222,6 +227,7 @@ impl Runner<'_> {
                         }
                         Err(error) => {
                             state.record.worker = None;
+                            state.record.worker_launch_revision = None;
                             Some(format!("worker: {error}"))
                         }
                     };

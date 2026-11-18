@@ -12,22 +12,46 @@ const CHILD: &str = "OXA_NATIVE_HANDOFF_TEST_ROOT";
 const BRANCH: &str = "agent/native";
 const PR_BRANCH: &str = "agent/reviewed";
 
-/// One native admission: each lease generation has its own task id.
-fn attempt(ordinal: u32, branch: &str, base: &str, reviewed: Option<(u64, &str)>) -> oxa_work::Task {
+/// One native admission receipt: each lease generation has its own task id.
+fn admission(
+    ordinal: u32,
+    number: u64,
+    branch: &str,
+    reviewed: Option<&str>,
+) -> oxa_work::board::NativeBinding {
     let lease = oxa_work::board::Lease {
         holder: "codex:node/slot-1".into(),
         expires_at: 2_000_000_000,
         claimed_at: Some(1_000_000_000),
         generation: (20_000, ordinal),
     };
-    let binding = oxa_work::board::NativeBinding::new(7, &"a".repeat(64), &lease, branch).unwrap();
-    let mut task = serde_json::json!({
-        "id": "i7", "model": "fake", "branch": branch, "base": base, "prompt": "Synthetic native task"
-    });
-    if let Some((number, head)) = reviewed {
-        task["reviewed_pull_request"] = serde_json::json!({"number": number, "head": head});
+    let key = "a".repeat(64);
+    match reviewed {
+        Some(head) => oxa_work::board::NativeBinding::new_reviewed(number, &key, &lease, branch, head),
+        None => oxa_work::board::NativeBinding::new(number, &key, &lease, branch),
     }
-    oxa_work::native_task(&binding, serde_json::from_value(task).unwrap()).unwrap()
+    .unwrap()
+}
+
+/// The admitted task; its typed reviewed source is the binding's pull request and head.
+fn admitted_task(binding: &oxa_work::board::NativeBinding, base: &str) -> oxa_work::Task {
+    let plain =
+        oxa_work::board::NativeBinding::new(binding.number, &binding.key, &binding.lease, &binding.branch)
+            .unwrap();
+    let task = serde_json::from_value(serde_json::json!({
+        "id": format!("i{}", binding.number), "model": "fake", "branch": binding.branch,
+        "base": base, "prompt": "Synthetic native task"
+    }))
+    .unwrap();
+    let mut task = oxa_work::native_task(&plain, task).unwrap();
+    task.reviewed_pull_request = binding
+        .reviewed_head
+        .as_ref()
+        .map(|head| oxa_work::ReviewedPullRequest {
+            number: binding.number,
+            head: head.clone(),
+        });
+    task
 }
 
 fn policy(root: &Path) -> oxa_work::RunPolicy {
@@ -51,10 +75,38 @@ fn read(project: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
-fn run(project: &Path, policy: &oxa_work::RunPolicy, task: oxa_work::Task) -> oxa_work::Record {
+/// Run through the native path, which persists the admission receipt with the attempt.
+fn run_native(
+    project: &Path,
+    policy: &oxa_work::RunPolicy,
+    binding: &oxa_work::board::NativeBinding,
+    base: &str,
+) -> oxa_work::Record {
+    let binary = Path::new(env!("CARGO_BIN_EXE_oxa"));
+    let task = admitted_task(binding, base);
+    let mut locked = oxa_work::LockedTask::acquire(&task, policy).unwrap();
+    let plan = locked.plan_native(project, false, binding).unwrap();
+    locked
+        .run_with_notes(
+            project,
+            binary,
+            &plan,
+            false,
+            &|_: &oxa_work::Record| Ok(()),
+            &|_| None,
+        )
+        .unwrap()
+}
+
+/// An ordinary task file entry that copies a native attempt's ID shape and prompt.
+fn run_forged(project: &Path, policy: &oxa_work::RunPolicy, task: oxa_work::Task) -> oxa_work::Record {
     let binary = Path::new(env!("CARGO_BIN_EXE_oxa"));
     let plan = oxa_work::plan_task(project, task, policy).unwrap();
     oxa_work::run_task_with_policy(project, binary, &plan, policy).unwrap()
+}
+
+fn attached(worktree: &Path) -> String {
+    read(worktree, &["symbolic-ref", "--quiet", "HEAD"])
 }
 
 fn branch_attempts(root: PathBuf) {
@@ -62,7 +114,7 @@ fn branch_attempts(root: PathBuf) {
     let policy = policy(&root);
     let mut records = vec![];
     for ordinal in [1, 2] {
-        let record = run(&project, &policy, attempt(ordinal, BRANCH, "main", None));
+        let record = run_native(&project, &policy, &admission(ordinal, 7, BRANCH, None), "main");
         assert_eq!(record.outcome, oxa_work::Outcome::Done, "{record:?}");
         records.push(record);
     }
@@ -78,6 +130,13 @@ fn branch_attempts(root: PathBuf) {
     );
     // The finished attempt keeps its files; only its HEAD was detached.
     assert!(records[0].worktree.join("first.txt").exists());
+
+    // A task without an admission receipt cannot take over a native attempt's branch.
+    let mut forged = admitted_task(&admission(9, 7, BRANCH, None), "main");
+    forged.id = format!("board-{}-20000-9", "a".repeat(64));
+    let refused = run_forged(&project, &policy, forged);
+    assert_eq!(refused.outcome, oxa_work::Outcome::Blocked, "{refused:?}");
+    assert_eq!(attached(&records[1].worktree), format!("refs/heads/{BRANCH}"));
 }
 
 fn reviewed_attempts(root: PathBuf) {
@@ -86,38 +145,44 @@ fn reviewed_attempts(root: PathBuf) {
     let base = read(&project, &["rev-parse", "main"]);
     let tip = |project: &Path| read(project, &["rev-parse", &format!("refs/heads/{PR_BRANCH}")]);
     let first_head = tip(&project);
-    let first = run(
+    let first = run_native(
         &project,
         &policy,
-        attempt(1, PR_BRANCH, &base, Some((42, &first_head))),
+        &admission(1, 42, PR_BRANCH, Some(&first_head)),
+        &base,
     );
     assert_eq!(first.outcome, oxa_work::Outcome::Done, "{first:?}");
     // The reviewed head moves with the saved work; the pull request number does not.
     let second_head = tip(&project);
     assert_ne!(second_head, first_head);
-    let second = run(
+    let second = run_native(
         &project,
         &policy,
-        attempt(2, PR_BRANCH, &base, Some((42, &second_head))),
+        &admission(2, 42, PR_BRANCH, Some(&second_head)),
+        &base,
     );
     assert_eq!(second.outcome, oxa_work::Outcome::Done, "{second:?}");
     assert_ne!(first.id, second.id);
     assert_ne!(first.worktree, second.worktree);
     assert!(first.worktree.join("first.txt").exists());
+    let refused = "outside a finished task for this pull request";
     let other_head = tip(&project);
-    let other = run(
+    let other = run_native(
         &project,
         &policy,
-        attempt(3, PR_BRANCH, &base, Some((43, &other_head))),
+        &admission(3, 43, PR_BRANCH, Some(&other_head)),
+        &base,
     );
     assert_eq!(other.outcome, oxa_work::Outcome::Blocked, "{other:?}");
-    assert!(
-        other
-            .detail
-            .contains("outside a finished task for this pull request"),
-        "{other:?}"
-    );
+    assert!(other.detail.contains(refused), "{other:?}");
+    // The same pull request without an admission receipt is refused as well.
+    let mut forged = admitted_task(&admission(4, 42, PR_BRANCH, Some(&other_head)), &base);
+    forged.id = format!("board-{}-20000-8", "a".repeat(64));
+    let forged = run_forged(&project, &policy, forged);
+    assert_eq!(forged.outcome, oxa_work::Outcome::Blocked, "{forged:?}");
+    assert!(forged.detail.contains(refused), "{forged:?}");
     assert_eq!(tip(&project), other_head);
+    assert_eq!(attached(&second.worktree), format!("refs/heads/{PR_BRANCH}"));
 }
 
 fn turns() -> Vec<ScriptTurn> {

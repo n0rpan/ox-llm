@@ -97,6 +97,9 @@ pub struct Record {
     pub outcome: Outcome,
     pub detail: String,
     pub worker: Option<WorkerResult>,
+    /// Durable runner revision immediately before the native invocation that produced this result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_launch_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_tokens: Option<TaskTokens>,
     pub session_id: Option<String>,
@@ -148,6 +151,8 @@ pub struct PlannedTask {
     commands: Vec<String>,
     checkpoint_revision: Option<u64>,
     base_alias: Option<tree::BaseAlias>,
+    native: bool,
+    native_binding: Option<board::NativeBinding>,
 }
 impl PlannedTask {
     pub fn task(&self) -> &Task {
@@ -196,6 +201,8 @@ fn plan_new_task(repo: &Path, task: Task, policy: &RunPolicy, native: bool) -> R
         commands,
         checkpoint_revision: None,
         base_alias,
+        native,
+        native_binding: None,
     })
 }
 
@@ -249,6 +256,8 @@ fn plan_task_mode(
             commands: execution.commands,
             checkpoint_revision: Some(saved.record.checkpoint_revision),
             base_alias: None,
+            native,
+            native_binding: None,
         });
     }
     plan_new_task(repo, task, policy, native)
@@ -941,6 +950,7 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
         outcome: Outcome::Blocked,
         detail,
         worker: None,
+        worker_launch_revision: None,
         task_tokens: None,
         session_id: None,
         base_sha: None,
@@ -1126,11 +1136,28 @@ impl<'a> LockedTask<'a> {
     }
 
     /// Plan the task admitted by the native queue while retaining its lock.
-    pub fn plan_native(&self, repo: &Path, actions: bool) -> Result<PlannedTask> {
+    /// The binding is the admission receipt; it is persisted with the attempt so a later
+    /// attempt can verify the branch it takes over came from the same admitted source.
+    pub fn plan_native(
+        &self,
+        repo: &Path,
+        actions: bool,
+        binding: &board::NativeBinding,
+    ) -> Result<PlannedTask> {
         if !self.task.id.starts_with("board-") || !self.task.runner_owns_github() {
             return Err("native planning requires an admitted board task".into());
         }
-        plan_task_mode(repo, self.task.clone(), self.policy, false, actions, true)
+        binding.validate()?;
+        let reviewed = match &binding.reviewed_head {
+            Some(head) => self.task.reviewed_source() == Some((binding.number, head.as_str())),
+            None => self.task.reviewed_pull_request.is_none(),
+        };
+        if binding.native_task_id != self.task.id || binding.branch != self.task.branch || !reviewed {
+            return Err("native planning requires the task's own admission binding".into());
+        }
+        let mut plan = plan_task_mode(repo, self.task.clone(), self.policy, false, actions, true)?;
+        plan.native_binding = Some(binding.clone());
+        Ok(plan)
     }
 
     pub fn run_with_notes(
@@ -1180,6 +1207,7 @@ fn run_locked(
         record.checkpoint_revision = revision;
         record.task_tokens = Some(TaskTokens::default());
         let mut state = state::State::new(task.clone(), record, policy.offline);
+        state.native_binding = planned.native_binding.clone();
         state.execution = Some(state::Execution {
             initial: None,
             base: planned.base_sha.clone(),
@@ -1200,7 +1228,10 @@ fn run_locked(
         {
             return Err("task checkpoint changed after planning; retry the task file".into());
         }
-        if old.task != *task || old.record.worktree != tree {
+        if old.task != *task
+            || old.record.worktree != tree
+            || old.native_binding.is_some() && old.native_binding != planned.native_binding
+        {
             return Err("task specification changed; use a new task id".into());
         }
         writer.replay(&old, observer).map_err(RunError::Checkpoint)?;
@@ -1247,6 +1278,7 @@ fn run_locked(
         observer,
         scrub_note,
         base_alias: planned.base_alias.as_ref(),
+        native: planned.native,
         #[cfg(target_os = "linux")]
         managed_steering: locked.managed_steering.as_ref(),
     })

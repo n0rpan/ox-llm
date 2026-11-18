@@ -425,6 +425,8 @@ fn native_refill_completion(source: NativeSource) {
     )
     .unwrap();
     let record = &checkpoint["record"];
+    let launch_revision = record["worker_launch_revision"].as_u64().unwrap();
+    assert!(launch_revision > 0 && launch_revision < record["checkpoint_revision"].as_u64().unwrap());
     assert_eq!(record["id"], binding.native_task_id);
     assert_eq!(record["branch"], binding.branch);
     assert_eq!(record["step"], "finished");
@@ -472,6 +474,11 @@ fn native_refill_completion(source: NativeSource) {
     assert_eq!(replayed.state.attempts, 1);
     assert!(replayed.state.lease.is_none());
     assert!(replayed.data.native_binding.as_ref() == Some(&binding));
+    let after_replay: serde_json::Value = serde_json::from_slice(
+        &fs::read(storage(&env).join(format!("{}.json", binding.native_task_id))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(after_replay, checkpoint);
 
     if source == NativeSource::Reviewed {
         let first_receipt = storage(&env).join(format!("{}.json", binding.native_task_id));

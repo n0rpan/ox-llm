@@ -6,6 +6,7 @@ use std::fmt::Write;
 mod chat;
 mod filters;
 mod pages;
+mod quotas;
 pub use filters::{Filter, Query};
 pub use pages::{Page, Prompt};
 
@@ -16,6 +17,8 @@ pub struct View<'a> {
     pub situation: Option<&'a Snapshot>,
     /// C's selected checkpoint observation; the renderer never acquires runner state.
     pub selected_task_usage: Option<&'a oxa_work::Result<Option<oxa_work::TaskUsage>>>,
+    pub github_quotas: Option<&'a crate::lead_quota::GitHubQuotas>,
+    pub model_plan: Option<&'a oxc_gateway::status::chatgpt_usage::Usage>,
     pub main_red: bool,
     pub main_merge_stalled: bool,
     pub stalled_runs: &'a [u64],
@@ -90,6 +93,10 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
     };
     let mut html = format!("<main><h1 id=main tabindex=-1>{title}</h1>");
     html.push_str(&page.navigation(view.situation.map(|snapshot| snapshot.asks.len())));
+    html.push_str("<aside id=refresh-error class=stale-notice role=status hidden><h2>Refresh unavailable</h2><p>The last rendered observations are retained. <a href=\"\">Retry</a></p></aside>");
+    if view.board.is_some_and(|board| stale(board, now)) {
+        html.push_str("<aside class=stale-notice role=status><h2>Board observation needs refreshing</h2><p>The Board timestamp is stale or ahead of this clock. <a href=\"\">Retry</a></p></aside>");
+    }
     match page {
         Page::Home => {
             html.push_str("<div class=home-layout><div class=home-decisions>");
@@ -127,7 +134,10 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
         }
         Page::Item(number) => item(&mut html, view, number, now),
         Page::Chat(prompt) => chat::render(&mut html, view, prompt),
-        Page::Usage => usage(&mut html, view),
+        Page::Usage => {
+            usage(&mut html, view);
+            quotas::render(&mut html, view, now);
+        }
     }
     html.push_str("<footer>Read-only · Chat with the lead is not connected yet.</footer></main>");
     html
@@ -311,9 +321,7 @@ fn usage(html: &mut String, view: &View<'_>) {
             );
         }
     }
-    html.push_str(
-        "</section><section><h2>Plans and quotas</h2><p>Usage observations unavailable.</p></section>",
-    );
+    html.push_str("</section>");
 }
 
 fn workers(html: &mut String, view: &View<'_>) {
@@ -422,6 +430,7 @@ pub const STYLE: &str = concat!(
     include_str!("lead_page/style.css"),
     r#"
 :root { --nav-height:3.875rem; }
+.stale-notice { padding:16px; margin:16px 0; border:1px dashed var(--muted); border-radius:var(--radius); background:var(--raised); }
 :root { --bad:#b62c24; --bad-soft:#fde7e4; }
 @media(prefers-color-scheme:dark) { :root { --bad:#ff8a80; --bad-soft:#331917; } }
 #attention .severity { font-weight:700; color:var(--warn); }
@@ -470,9 +479,13 @@ async function refresh(){
       const current=document.querySelector('main'),work=current.querySelector('details.home-work');
       const replacement=next.querySelector('details.home-work');
       if(work&&replacement)replacement.open=work.open;
-      current.replaceWith(next);badge.textContent='Live';
+      current.replaceWith(next);badge.textContent='Connected';
     }
-  }catch(error){if(!active.signal.aborted)badge.textContent='Refresh unavailable';}
+  }catch(error){if(!active.signal.aborted){
+    badge.textContent='Refresh unavailable';
+    const notice=document.getElementById('refresh-error');
+    if(notice)notice.hidden=false;
+  }}
   finally{if(pending===active){pending=null;if(!document.hidden)timer=setTimeout(refresh,15000);}}
 }
 document.addEventListener('visibilitychange',()=>{
@@ -621,29 +634,43 @@ mod tests {
         assert!(!html.contains("<form") && !html.contains("<button"));
     }
 
-    #[test]
-    fn live_refresh_keeps_the_readers_latest_work_disclosure_choice() {
+    fn refresh_runtime() -> oxa_script::Runtime {
         let mut runtime = oxa_script::Runtime::new(oxa_script::Limits::EXTENSION).unwrap();
-        runtime.eval_script("dom-fixture", r#"
-let current, supplied, closeDuringFetch;
+        runtime
+            .eval_script(
+                "dom-fixture",
+                r#"
+let current, supplied, closeDuringFetch, failureMode='ok';
+const connectionBadge={textContent:'Snapshot'};
 function makeMain(open) {
-  const work={open};
-  return {work, contains:()=>false, querySelector:selector=>selector==='details.home-work'?work:null,
+  const work={open}, notice={hidden:true};
+  return {work, notice, contains:()=>false, querySelector:selector=>selector==='details.home-work'?work:null,
     replaceWith:next=>{current=next;}};
 }
-const document={hidden:false, activeElement:{matches:()=>false}, getElementById:()=>({textContent:'Snapshot'}),
+const document={hidden:false, activeElement:{matches:()=>false},
+  getElementById:id=>id==='connection'?connectionBadge:id==='refresh-error'?current.notice:null,
   querySelector:()=>current, addEventListener:()=>{}};
 const setTimeout=()=>1, clearTimeout=()=>{};
-class AbortController { constructor(){this.signal={};} abort(){} }
+class AbortController { constructor(){this.signal={aborted:false};} abort(){this.signal.aborted=true;} }
 class URL { constructor(){this.searchParams={set(){}};} }
 const location={href:'http://example.invalid/'};
-class DOMParser { parseFromString(){return {querySelector:()=>supplied};} }
+class DOMParser { parseFromString(){return {querySelector:()=>failureMode==='missing'?null:supplied};} }
 async function fetch(){
+  if(failureMode==='network')throw new Error('private-refresh-marker');
+  if(failureMode==='abort'){pending.abort();throw new Error('aborted');}
   if(closeDuringFetch)current.work.open=false;
-  return {ok:true, text:async()=>''};
+  return {ok:failureMode!=='refused', text:async()=>''};
 }
-"#).unwrap();
+"#,
+            )
+            .unwrap();
         runtime.eval_script("live.js", SCRIPT).unwrap();
+        runtime
+    }
+
+    #[test]
+    fn live_refresh_keeps_the_readers_latest_work_disclosure_choice() {
+        let mut runtime = refresh_runtime();
         let result = runtime
             .eval_async_body(
                 "refresh",
@@ -658,6 +685,79 @@ return true;
             )
             .unwrap();
         assert_eq!(result, serde_json::json!(true));
+    }
+
+    #[test]
+    fn failed_refresh_keeps_the_last_content_and_exposes_retry_until_recovery() {
+        let mut runtime = refresh_runtime();
+        let result = runtime
+            .eval_async_body(
+                "refresh-recovery",
+                r#"
+for(failureMode of ['network','refused','missing']) {
+  current=makeMain(true); supplied=makeMain(false);
+  const retained=current;
+  await refresh();
+  if(current!==retained||current.notice.hidden||connectionBadge.textContent!=='Refresh unavailable')
+    throw new Error('refresh failure must retain content and expose retry');
+  failureMode='ok';
+  await refresh();
+  if(current!==supplied||!current.notice.hidden||connectionBadge.textContent!=='Connected')
+    throw new Error('successful refresh must clear error without claiming source freshness');
+}
+current=makeMain(true); supplied=makeMain(false); failureMode='abort';
+await refresh();
+if(!current.notice.hidden)throw new Error('aborted refresh must not expose error');
+return true;
+"#,
+            )
+            .unwrap();
+        assert_eq!(result, serde_json::json!(true));
+    }
+
+    #[test]
+    fn stale_board_observations_offer_an_ssr_retry_without_inventing_an_interval() {
+        for page in [
+            Page::Home,
+            Page::BoardQuery(Query {
+                filter: Filter::Fix,
+                page: 1,
+            }),
+            Page::Item(17),
+            Page::Asks,
+            Page::Workers,
+            Page::Usage,
+            Page::Chat(Prompt::Workers),
+        ] {
+            let render = |observed_at, now| {
+                document_for(
+                    page,
+                    &View {
+                        board: Some(&Board {
+                            observed_at,
+                            ..Board::default()
+                        }),
+                        ..View::default()
+                    },
+                    now,
+                )
+            };
+            for (observed_at, now) in [(100, 1001), (161, 100)] {
+                let html = render(observed_at, now);
+                assert!(html.contains("<h2>Board observation needs refreshing</h2>"));
+                assert!(html.contains("<a href=\"\">Retry</a>"));
+                assert_eq!(html.matches("id=refresh-error").count(), 1);
+                assert!(html.contains("id=refresh-error class=stale-notice role=status hidden"));
+                assert!(!html.contains("onclick=") && !html.contains("<form"));
+                assert!(!html.contains("sweep every") && !html.contains("Can't reach lead"));
+            }
+            for (observed_at, now) in [(100, 1000), (160, 100)] {
+                assert!(!render(observed_at, now).contains("Board observation needs refreshing"));
+            }
+            let unavailable = document_for(page, &View::default(), 1001);
+            assert!(!unavailable.contains("Board observation needs refreshing"));
+            assert!(unavailable.contains("id=refresh-error class=stale-notice role=status hidden"));
+        }
     }
 
     #[test]
