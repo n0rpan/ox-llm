@@ -426,8 +426,12 @@ mod live_steering {
     }
 
     fn owner(env: &TestEnv, engine: Arc<dyn Engine>, root: &str) -> Session {
+        owner_with_store(env, engine, Arc::new(FsStore::new(env.root().join(root))))
+    }
+
+    fn owner_with_store(env: &TestEnv, engine: Arc<dyn Engine>, store: Arc<dyn SessionStore>) -> Session {
         let mut deps = session_deps(env, engine);
-        deps.store = Arc::new(FsStore::new(env.root().join(root)));
+        deps.store = store;
         deps.session_id = Some("fixture-steer".into());
         let mut session = Session::open(deps, Open::New).unwrap();
         let goal = Goal::new("Finish the synthetic task".into(), GoalBudget::default(), 10).unwrap();
@@ -479,17 +483,94 @@ mod live_steering {
     #[test]
     fn managed_json_preserves_the_worker_header_and_delivers_only_lease_bound_input() {
         for fail_write in [false, true] {
-            managed_json_admission(fail_write);
+            managed_json_admission(fail_write, false);
         }
     }
 
-    fn managed_json_admission(fail_write: bool) {
+    #[test]
+    fn managed_json_never_recovers_a_steer_rejected_by_sync() {
+        managed_json_admission(false, true);
+    }
+
+    struct AdmissionSyncFault {
+        inner: FsStore,
+        armed: AtomicBool,
+    }
+
+    impl SessionStore for AdmissionSyncFault {
+        fn create(
+            &self,
+            cwd: &std::path::Path,
+            id: Option<&str>,
+            parent: Option<&std::path::Path>,
+        ) -> Result<SessionRef, oxa_proto::OxaError> {
+            self.inner.create(cwd, id, parent)
+        }
+
+        fn append(&self, session: &SessionRef, entry: &Entry) -> Result<(), oxa_proto::OxaError> {
+            self.inner.append(session, entry)
+        }
+
+        fn load(&self, session: &SessionRef) -> Result<Vec<Entry>, oxa_proto::OxaError> {
+            self.inner.load(session)
+        }
+
+        fn header(&self, session: &SessionRef) -> Result<oxa_session::SessionHeader, oxa_proto::OxaError> {
+            self.inner.header(session)
+        }
+
+        fn list(&self, cwd: Option<&std::path::Path>) -> Vec<oxa_session::SessionMeta> {
+            self.inner.list(cwd)
+        }
+
+        fn resolve(&self, id_or_path: &str) -> Result<SessionRef, oxa_proto::OxaError> {
+            self.inner.resolve(id_or_path)
+        }
+
+        fn delete(&self, session: &SessionRef) -> Result<(), oxa_proto::OxaError> {
+            self.inner.delete(session)
+        }
+
+        fn acquire(&self, session: &SessionRef) -> Result<(), oxa_proto::OxaError> {
+            self.inner.acquire(session)
+        }
+
+        fn commit_lock(&self) {
+            self.inner.commit_lock()
+        }
+
+        fn abort_lock(&self) {
+            self.inner.abort_lock()
+        }
+
+        fn sync(&self, session: &SessionRef) -> Result<(), oxa_proto::OxaError> {
+            if self.armed.load(Ordering::SeqCst)
+                && Goal::latest(&self.inner.load(session)?)?
+                    .and_then(|goal| goal.lead)
+                    .and_then(|lead| lead.pending_steer)
+                    .is_some_and(|steer| steer.text == TEXT)
+            {
+                self.armed.store(false, Ordering::SeqCst);
+                return Err(oxa_proto::OxaError::new(
+                    oxa_proto::codes::IO,
+                    "synthetic pending steer sync failure",
+                ));
+            }
+            self.inner.sync(session)
+        }
+    }
+
+    fn managed_json_admission(fail_write: bool, fail_sync: bool) {
         let env = TestEnv::new();
         let held = HeldRun::default();
-        let session = owner(
+        let store = Arc::new(AdmissionSyncFault {
+            inner: FsStore::new(env.root().join("first")),
+            armed: AtomicBool::new(fail_sync),
+        });
+        let session = owner_with_store(
             &env,
             held.engine(vec![ScriptTurn::text("first"), ScriptTurn::text("second")]),
-            "first",
+            store.clone(),
         );
         let binding = session.inner().sref.clone();
         let expected = binding.clone();
@@ -557,14 +638,16 @@ mod live_steering {
         fail_next_write.store(fail_write, Ordering::SeqCst);
         held.release();
         let result = receipt(&rpc, "steer", "admitted");
-        assert_eq!(result["admitted"], !fail_write);
-        if fail_write {
+        let rejected = fail_write || fail_sync;
+        assert_eq!(result["admitted"], !rejected);
+        if rejected {
             assert!(result["error"].is_string());
         }
         rpc.finish();
         let entries = entries(&env, &binding);
-        assert_eq!(appended(&entries).is_some(), !fail_write);
-        if fail_write {
+        assert!(!store.armed.load(Ordering::SeqCst));
+        assert_eq!(appended(&entries).is_some(), !rejected);
+        if rejected {
             assert!(Goal::latest(&entries)
                 .unwrap()
                 .unwrap()
