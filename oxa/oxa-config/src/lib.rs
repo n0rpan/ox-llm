@@ -38,7 +38,7 @@ pub use models::{
 };
 pub use profile::{ThinkingPolicy, BASH_TIMEOUT_DEFAULT, SUMMARY_TARGET_DEFAULT};
 pub use schema::{apply_list_patch, merge_settings, schema, validate, KeyDef, Kind};
-pub use settings::{CompactionSettings, ProviderRetrySettings, QueueMode, RetrySettings, Settings};
+pub use settings::{CompactionSettings, ProviderRetrySettings, QueueMode, RetrySettings, Settings, Source};
 
 use oxa_proto::Level;
 use std::path::{Path, PathBuf};
@@ -100,6 +100,10 @@ impl Dirs {
     }
     pub fn trust_file(&self) -> PathBuf {
         self.agent_dir.join("trust.json")
+    }
+    /// `<agent_dir>/memory`: the memory store (one Markdown file per entry, plus `MEMORY.md`).
+    pub fn memory_dir(&self) -> PathBuf {
+        self.agent_dir.join("memory")
     }
     /// `<cwd>/.oxa`.
     pub fn project_dir(&self, cwd: &Path) -> PathBuf {

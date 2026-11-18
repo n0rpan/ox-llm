@@ -502,3 +502,23 @@ fn the_mode_cycle_is_standard_auto_yolo() {
     assert_eq!(P::Plan.next(), P::Standard);
     assert_eq!(P::DEFAULT, P::Auto);
 }
+
+/// G2: `/goal text` is a session command that carries the text unparsed.
+#[test]
+fn slash_goal_text_maps_to_session_goal_cmd() {
+    let fx = Fx::new();
+    match expect_some("/goal Ship the parser", fx.run("/goal Ship the parser")) {
+        AppAction::Session(SessionCmd::Goal(text)) => assert_eq!(text, "Ship the parser"),
+        _ => panic!("/goal text should be a session goal command"),
+    }
+}
+
+/// G2: `/goal` needs an idle session, like the other session commands.
+#[test]
+fn slash_goal_while_busy_warns_idle_needed() {
+    let fx = Fx::new();
+    let line = "/goal Ship the parser";
+    let (level, text) = notice(expect_some(line, dispatch_slash(line, &fx.cx(true, None))));
+    assert_eq!(level, Level::Warning);
+    assert!(text.contains("/goal") && text.contains("idle"), "{text}");
+}
