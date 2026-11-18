@@ -65,6 +65,8 @@ pub struct ExecResult {
     /// `None` when killed by a signal, a timeout or a cancel.
     pub exit: Option<i32>,
     pub timed_out: bool,
+    /// The command ran with the user's own rights because this platform has no OS sandbox.
+    pub unsandboxed: bool,
 }
 
 /// The process sandbox (bwrap). Implemented by `oxa-sandbox`; tools reach it through
