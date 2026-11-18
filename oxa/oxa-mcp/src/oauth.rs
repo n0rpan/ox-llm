@@ -162,6 +162,18 @@ impl TokenStore {
         let mut bytes = serde_json::to_vec_pretty(&Value::Object(doc.clone()))
             .map_err(|e| OxaError::new(codes::INTERNAL, format!("cannot encode the MCP token file: {e}")))?;
         bytes.push(b'\n');
+        // The read side refuses a file larger than the limit, so never replace a usable store
+        // with one it could not read back.
+        if bytes.len() as u64 > TOKEN_FILE_LIMIT {
+            return Err(OxaError::new(
+                codes::INVALID,
+                format!(
+                    "the MCP token file would be {} bytes, more than the {TOKEN_FILE_LIMIT}-byte limit; \
+                     the stored credentials were left unchanged",
+                    bytes.len()
+                ),
+            ));
+        }
         write_private(&self.path, &bytes)
     }
 }
