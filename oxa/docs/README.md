@@ -4,12 +4,13 @@
 
 ## Quickstart
 
-Build from the `oxa/` directory of the checkout and point it at a running engine:
+For v0.2.1 packages and model setup, follow the [native install and upgrade guide](../../docs/NATIVE-INSTALL.md).
+Choose a native local or cloud model there before the first prompt. When working
+from source, build from the `oxa/` directory of the checkout:
 
 ```console
 $ cargo build --release --locked -p oxa-cli
 $ export PATH="$PWD/target/release:$PATH"
-$ export OXA_ENGINE_URL=http://127.0.0.1:8092
 $ cd ~/project
 $ oxa
 ```

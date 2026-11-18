@@ -5,6 +5,7 @@ use std::fmt::Write;
 
 mod chat;
 mod filters;
+mod goal;
 mod pages;
 mod quotas;
 pub use filters::{Filter, Query};
@@ -13,6 +14,12 @@ pub use pages::{Page, Prompt};
 /// Borrowed presentation inputs, not a second runner state store. None means unavailable.
 #[derive(Default)]
 pub struct View<'a> {
+    /// Ephemeral form credential supplied only by the authorized HTTP caller.
+    pub owner_chat: Option<OwnerChatView<'a>>,
+    pub fixed_prompt_csrf: Option<&'a str>,
+    /// Canonical goal and matching native observation from the authenticated caller.
+    /// The caller retains full SessionRef/revision authority; identities are never rendered.
+    pub owner_goal: Option<(&'a oxa_session::Goal, oxa_core::goal::GoalObservation<'a>)>,
     pub board: Option<&'a Board>,
     pub situation: Option<&'a Snapshot>,
     /// C's selected checkpoint observation; the renderer never acquires runner state.
@@ -29,6 +36,13 @@ pub struct View<'a> {
     pub release: Option<(u64, &'a [(bool, String)])>,
 }
 
+pub struct OwnerChatView<'a> {
+    pub csrf: &'a str,
+    pub(crate) reply: Option<&'a crate::lead_chat::conversation::ConversationReply>,
+    pub proposal: Option<&'a (String, serde_json::Value)>,
+    pub confirmed: bool,
+}
+
 fn escape(text: &str) -> String {
     text.chars()
         .map(|c| match c {
@@ -41,6 +55,20 @@ fn escape(text: &str) -> String {
             c => c.to_string(),
         })
         .collect()
+}
+
+/// Presentation follows the serving host's zone; native observations retain UTC timestamps.
+fn human_time(timestamp: u64, now: u64) -> String {
+    let local = |value| i64::try_from(value).ok().and_then(oxa_session::local_time);
+    let Some(at) = local(timestamp) else {
+        return "time not available (the host clock cannot format this observation)".into();
+    };
+    let date = if local(now).is_some_and(|today| today.date == at.date) {
+        String::new()
+    } else {
+        format!("{} ", at.date)
+    };
+    escape(&format!("{date}{} {}", at.hm, at.zone_label()))
 }
 fn action(value: Action) -> &'static str {
     match value {
@@ -99,20 +127,29 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
     }
     match page {
         Page::Home => {
+            goal::render(&mut html, view, now);
             html.push_str("<div class=home-layout><div class=home-decisions>");
             attention(&mut html, view);
-            asks(&mut html, view);
+            asks(&mut html, view, now);
             html.push_str("</div><div class=home-overview><section><h2>Snapshot overview</h2>");
             if let Some(board) = view.board {
-                let _ = write!(html,
-                    "<p><a href=/board>{} observed items</a></p><p class=muted>{} · observed at {} (Unix seconds)</p>",
-                    board.entries.len(), if stale(board, now) { "Stale snapshot" } else { "Board snapshot" }, board.observed_at);
+                let _ = write!(
+                    html,
+                    "<p><a href=/board>{} observed items</a></p><p class=muted>{} · observed {}</p>",
+                    board.entries.len(),
+                    if stale(board, now) {
+                        "Stale snapshot"
+                    } else {
+                        "Board snapshot"
+                    },
+                    human_time(board.observed_at, now)
+                );
             } else {
-                html.push_str("<p>Board unavailable.</p>");
+                html.push_str("<p>Board unavailable. No board observation reached this page; the source did not say why.</p>");
             }
             html.push_str("</section><details class=home-work><summary>Observed work</summary>");
             board(&mut html, view, now, Query::default());
-            workers(&mut html, view);
+            workers(&mut html, view, now);
             queue(&mut html, view);
             release(&mut html, view);
             html.push_str("</details></div></div>");
@@ -126,14 +163,14 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
             board(&mut html, view, now, query);
             queue(&mut html, view);
         }
-        Page::Workers => workers(&mut html, view),
+        Page::Workers => workers(&mut html, view, now),
         Page::Asks => {
             html.push_str("<div class=asks-layout>");
-            asks(&mut html, view);
+            asks(&mut html, view, now);
             html.push_str("</div>");
         }
         Page::Item(number) => item(&mut html, view, number, now),
-        Page::Chat(prompt) => chat::render(&mut html, view, prompt),
+        Page::Chat(prompt) => chat::render(&mut html, view, prompt, now),
         Page::Usage => {
             usage(&mut html, view);
             quotas::render(&mut html, view, now);
@@ -195,7 +232,7 @@ fn attention(html: &mut String, view: &View<'_>) {
         }
         html.push_str("</ul>");
         if alarm {
-            html.push_str("<p class=muted>Lead response observations unavailable.</p>");
+            html.push_str("<p class=muted>Lead response observations unavailable. These observations report the alarm, without a Lead response.</p>");
         }
         html.push_str("</section>");
     }
@@ -210,17 +247,17 @@ fn board(html: &mut String, view: &View<'_>, now: u64, query: Query) {
     if let Some(board) = view.board {
         let _ = write!(
             html,
-            "<p class=muted>{} · observed at {} (Unix seconds)</p>",
+            "<p class=muted>{} · observed {}</p>",
             if stale(board, now) {
                 "Stale snapshot"
             } else {
                 "GitHub snapshot"
             },
-            board.observed_at
+            human_time(board.observed_at, now)
         );
         query.navigation(html, board, view);
         if !query.filter.available(view) {
-            html.push_str("<p>Blocked observations unavailable.</p></section>");
+            html.push_str("<p>Blocked observations unavailable. The runner observation is missing or cannot associate every block and ask with a PR.</p></section>");
             return;
         }
         let rows = query.rows(board, view);
@@ -261,7 +298,9 @@ fn board(html: &mut String, view: &View<'_>, now: u64, query: Query) {
             html.push_str("</nav>");
         }
     } else {
-        html.push_str("<p>Board unavailable.</p>");
+        html.push_str(
+            "<p>Board unavailable. No board observation reached this page; the source did not say why.</p>",
+        );
     }
     html.push_str("</section>");
 }
@@ -271,7 +310,7 @@ fn lease(row: &Entry, now: u64) -> String {
         format!(
             "{} · expires {}{}",
             escape(&l.holder),
-            l.expires_at,
+            human_time(l.expires_at, now),
             if l.expires_at <= now { " (expired)" } else { "" }
         )
     })
@@ -280,24 +319,29 @@ fn lease(row: &Entry, now: u64) -> String {
 fn item(html: &mut String, view: &View<'_>, number: u64, now: u64) {
     html.push_str("<p><a href=/board>Back to Board</a></p>");
     let Some(board) = view.board else {
-        html.push_str("<p>Board unavailable.</p>");
+        html.push_str(
+            "<p>Board unavailable. No board observation reached this page; the source did not say why.</p>",
+        );
         return;
     };
     let Some(row) = board.entries.iter().find(|row| row.number == number) else {
-        html.push_str("<p>Item unavailable in this snapshot.</p>");
+        html.push_str(
+            "<p>Item unavailable in this snapshot. The board observation does not include this item.</p>",
+        );
         return;
     };
     let _ = write!(html,
-        "<section><article><h2>Next action</h2><p>{}</p></article></section><section><article><h2>State</h2><dl><dt>Priority</dt><dd>{}</dd><dt>Lease</dt><dd>{}</dd><dt>Attempts today</dt><dd>{}</dd><dt>Observed at</dt><dd>{} (Unix seconds)</dd></dl></article></section>",
+        "<section><article><h2>Next action</h2><p>{}</p></article></section><section><article><h2>State</h2><dl><dt>Priority</dt><dd>{}</dd><dt>Lease</dt><dd>{}</dd><dt>Attempts today</dt><dd>{}</dd><dt>Observed at</dt><dd>{}</dd></dl></article></section>",
         action(row.action), if row.release_pinned { "Release" } else { "Normal priority" },
-        lease(row, now), row.attempts_today, board.observed_at);
-    html.push_str("<section><h2>Details and changes</h2><p>Title, checks, findings and diff observations unavailable.</p></section>");
+        lease(row, now), row.attempts_today, human_time(board.observed_at, now));
+    html.push_str("<section><h2>Details and changes</h2><p>Title, checks, findings and diff observations unavailable. This board observation contains next actions and leases, without those details.</p></section>");
 }
 
 fn usage(html: &mut String, view: &View<'_>) {
     html.push_str("<section id=task-usage><h2>Task usage</h2>");
     match view.selected_task_usage {
-        None | Some(Err(_)) => html.push_str("<p>Task usage observations unavailable.</p>"),
+        None => html.push_str("<p>Task usage observations unavailable. No selected-task usage observation reached this page.</p>"),
+        Some(Err(_)) => html.push_str("<p>Task usage observations unavailable. The selected task usage could not be read.</p>"),
         Some(Ok(None)) => html.push_str("<p>No saved checkpoint for the selected task.</p>"),
         Some(Ok(Some(usage))) => {
             let _ = write!(
@@ -314,23 +358,24 @@ fn usage(html: &mut String, view: &View<'_>) {
                     if tokens.complete { "complete" } else { "partial" }, tokens.attempts, tokens.complete_attempts,
                     count(tokens.prompt), count(tokens.completion), count(tokens.cached));
             } else {
-                html.push_str("<p>Saved token aggregate unknown.</p>");
+                html.push_str("<p>Saved token aggregate unknown. The checkpoint has no token aggregate; this does not mean zero usage.</p>");
             }
             html.push_str(
-                "<p class=muted>Task-scoped checkpoint; merged-PR attribution unavailable.</p></article>",
+                "<p class=muted>Task-scoped checkpoint; merged-PR attribution unavailable. This checkpoint does not link usage to merged PRs.</p></article>",
             );
         }
     }
     html.push_str("</section>");
 }
 
-fn workers(html: &mut String, view: &View<'_>) {
+fn workers(html: &mut String, view: &View<'_>, now: u64) {
     html.push_str("<section id=lanes><h2>Workers</h2>");
     if let Some(s) = view.situation {
         let _ = write!(
             html,
-            "<p class=muted>Runner facts · sequence {} · observed at {} (Unix milliseconds)</p>",
-            s.as_of_seq, s.at_ms
+            "<p class=muted>Runner facts · sequence {} · observed {}</p>",
+            s.as_of_seq,
+            human_time(s.at_ms / 1000, now)
         );
         let mut ordered: Vec<_> = s
             .running
@@ -356,7 +401,7 @@ fn workers(html: &mut String, view: &View<'_>) {
             );
         }
         if s.running.is_empty() {
-            html.push_str("<p>No running tasks reported. Idle worker inventory is unavailable.</p>");
+            html.push_str("<p>No running tasks reported. Idle worker inventory is unavailable because these facts do not include a complete worker inventory.</p>");
         }
         for incident in &s.incidents {
             if let Subject::Host(host) = &incident.subject {
@@ -370,7 +415,7 @@ fn workers(html: &mut String, view: &View<'_>) {
             }
         }
     } else {
-        html.push_str("<p>Lane status unavailable.</p>");
+        html.push_str("<p>Lane status unavailable. No runner observation reached this page, so workers and their state cannot be shown; the source did not say why.</p>");
     }
     html.push_str("</section>");
 }
@@ -385,7 +430,7 @@ fn queue(html: &mut String, view: &View<'_>) {
             html.push_str("<p>Queue empty at observation.</p>");
         }
     } else {
-        html.push_str("<p>Merge queue unavailable. Ready to land does not establish queue membership.</p>");
+        html.push_str("<p>Merge queue unavailable. No queue observation reached this page. Ready to land does not establish queue membership.</p>");
     }
     html.push_str("</section>");
 }
@@ -393,7 +438,7 @@ fn queue(html: &mut String, view: &View<'_>) {
 fn release(html: &mut String, view: &View<'_>) {
     html.push_str("<section id=release><h2>Release checklist</h2>");
     if let Some((number, items)) = view.release {
-        let _ = write!(html, "<p class=muted>Issue #{number} · {} / {} reported complete; validation requires merge evidence.</p><ul>", items.iter().filter(|i| i.0).count(), items.len());
+        let _ = write!(html, "<p class=muted>Issue #{number} · {} / {} checkboxes reported checked.</p><p class=muted>Owner outcome verification unavailable. This checklist does not include release or installability evidence.</p><ul>", items.iter().filter(|i| i.0).count(), items.len());
         for (checked, text) in items {
             let _ = write!(
                 html,
@@ -404,14 +449,19 @@ fn release(html: &mut String, view: &View<'_>) {
         }
         html.push_str("</ul>");
     } else {
-        html.push_str("<p>Release checklist unavailable.</p>");
+        html.push_str("<p>Release checklist unavailable. No release issue and checklist were supplied.</p>");
     }
     html.push_str("</section>");
 }
 
-fn asks(html: &mut String, view: &View<'_>) {
+fn asks(html: &mut String, view: &View<'_>, now: u64) {
     html.push_str("<section id=asks><h2>For your decision</h2>");
     if let Some(s) = view.situation {
+        let _ = write!(
+            html,
+            "<p class=muted>Runner facts · observed {}</p>",
+            human_time(s.at_ms / 1000, now)
+        );
         html.push_str("<div class=ask-cards>");
         for ask in &s.asks {
             let _ = write!(html, "<article><p class=muted>Ask {} · {}</p><h3>{}</h3><p>Options, recommendation and meanwhile are unavailable in these facts.</p></article>", escape(&ask.id), subject(&ask.subject), escape(&ask.question));
@@ -421,7 +471,7 @@ fn asks(html: &mut String, view: &View<'_>) {
             html.push_str("<p>No open asks in these runner facts.</p>");
         }
     } else {
-        html.push_str("<p>Owner asks unavailable.</p>");
+        html.push_str("<p>Owner asks unavailable. No runner observation reached this page, so open decisions cannot be shown; the source did not say why.</p>");
     }
     html.push_str("</section>");
 }
@@ -484,6 +534,12 @@ async function refresh(){
       const current=document.querySelector('main'),work=current.querySelector('details.home-work');
       const replacement=next.querySelector('details.home-work');
       if(work&&replacement)replacement.open=work.open;
+      const draft=current.querySelector('#lead-message');
+      if(draft?.value){
+        const nextDraft=next.querySelector('#lead-message');
+        if(!nextDraft)return;
+        nextDraft.value=draft.value;
+      }
       current.replaceWith(next);badge.textContent='Connected';
     }
   }catch(error){if(!active.signal.aborted){
@@ -510,6 +566,432 @@ mod tests {
             .filter_map(|line| Snapshot::from_json(line.as_bytes()).ok())
             .find(|snapshot| !snapshot.asks.is_empty())
             .unwrap()
+    }
+
+    #[test]
+    fn timestamps_use_the_host_zone_on_every_page() {
+        const CHILD: &str = "OXA_TEST_LEAD_TIME_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "lead_page::tests::timestamps_use_the_host_zone_on_every_page",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env(CHILD, "1")
+                .env("TZ", "CET-1")
+                .env("RUST_TEST_THREADS", "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(stdout.contains("running 1 test"), "{stdout}");
+            assert!(output.status.success(), "{stdout}");
+            return;
+        }
+        let mut situation = observed_asks();
+        situation.at_ms = 0;
+        let mut board = Board {
+            observed_at: 0,
+            entries: vec![Entry {
+                number: 17,
+                head: "synthetic-head".into(),
+                release_pinned: false,
+                action: Action::Ready,
+                lease: Some(oxa_work::board::Lease {
+                    holder: "worker-example".into(),
+                    expires_at: 3600,
+                    claimed_at: None,
+                    generation: (0, 1),
+                }),
+                attempts_today: 0,
+                eligible: true,
+            }],
+        };
+        let mut quota = crate::lead_quota::GitHubQuotas::default();
+        assert!(quota.observe(
+            crate::lead_quota::GitHubIdentity::App,
+            crate::lead_quota::GitHubResource::Core,
+            "x-ratelimit-resource: core\nx-ratelimit-limit: 10\nx-ratelimit-remaining: 7\nx-ratelimit-reset: 3600",
+        ));
+        let model = oxc_gateway::status::chatgpt_usage::parse(&serde_json::json!({
+            "rate_limit": {"primary_window": {"used_percent": 0, "reset_at": 3600}}
+        }));
+        let (goal, reference) = owner_goal_fixture();
+        let observation = oxa_core::goal::GoalObservation {
+            session: &reference,
+            revision: 7,
+            status: Some(goal.status),
+        };
+        let view = View {
+            owner_goal: Some((&goal, observation)),
+            board: Some(&board),
+            situation: Some(&situation),
+            github_quotas: Some(&quota),
+            model_plan: Some(&model),
+            ..Default::default()
+        };
+        for page in [
+            Page::Home,
+            Page::Board,
+            Page::Workers,
+            Page::Asks,
+            Page::Item(17),
+            Page::Chat(Prompt::Status),
+        ] {
+            let html = document_for(page, &view, 100);
+            assert!(html.contains("01:00 CET"), "{page:?}");
+            assert!(
+                !html.contains("Unix seconds") && !html.contains("Unix milliseconds"),
+                "{page:?}"
+            );
+            assert!(!html.contains("1970-01-01"), "today needs no date: {page:?}");
+        }
+        for page in [Page::Board, Page::Item(17), Page::Usage] {
+            let html = document_for(page, &view, 100);
+            assert!(html.contains("02:00 CET"), "lease or quota reset: {page:?}");
+            assert!(!html.contains("expires 3600") && !html.contains("resets at 3600"));
+        }
+        for page in [Page::Home, Page::Chat(Prompt::Status)] {
+            let html = document_for(page, &view, 100);
+            let section = owner_goal_section(&html);
+            assert!(section.contains("Started 01:00 CET") && section.contains("Observed 02:00 CET"));
+            assert!(!section.contains("1970-01-01"));
+        }
+        let older = document_for(Page::Board, &view, 86_400);
+        assert!(older.contains("1970-01-01 01:00 CET"));
+        board.observed_at = 82_800; // 23:00 UTC is midnight of the next host-local day.
+        let midnight = document_for(
+            Page::Board,
+            &View {
+                board: Some(&board),
+                ..Default::default()
+            },
+            86_400,
+        );
+        assert!(midnight.contains("00:00 CET") && !midnight.contains("1970-01-02"));
+        board.observed_at = u64::MAX;
+        let invalid = document_for(
+            Page::Board,
+            &View {
+                board: Some(&board),
+                ..Default::default()
+            },
+            100,
+        );
+        assert!(!invalid.contains(&u64::MAX.to_string()));
+    }
+
+    fn owner_goal_fixture() -> (oxa_session::Goal, oxa_session::SessionRef) {
+        use oxa_session::{CheckResult, Goal, GoalBudget, GoalCheck, GoalPlan, Subgoal};
+        let check = |id: &str, passed: Option<bool>| GoalCheck {
+            id: id.into(),
+            acceptance: format!("Acceptance {id} <example>"),
+            done_check: format!("check-{id}"),
+            result: passed.map(|passed| CheckResult {
+                passed,
+                receipt: format!("<receipt-{id}>&"),
+                observed_at_ms: 3_600_000,
+            }),
+        };
+        let mut goal = Goal::new("Ship <example> & outcome".into(), GoalBudget::default(), 0).unwrap();
+        goal.plan = Some(GoalPlan {
+            acceptance: vec![check("owner", None)],
+            subgoals: vec![
+                Subgoal {
+                    id: "install".into(),
+                    objective: "Install <example>".into(),
+                    acceptance: vec![check("install", Some(false))],
+                    board_items: vec![17],
+                },
+                Subgoal {
+                    id: "build".into(),
+                    objective: "Build example".into(),
+                    acceptance: vec![check("build", Some(true))],
+                    board_items: vec![18],
+                },
+            ],
+        });
+        goal.lead = Some(oxa_session::LeadGoalState {
+            pending_steer: Some(oxa_session::PendingGoalSteer {
+                entry_id: "0123abcd".into(),
+                revision: 7,
+                text: "private-continuation-marker".into(),
+                lease: None,
+            }),
+            ..Default::default()
+        });
+        goal.validate().unwrap();
+        (
+            goal,
+            oxa_session::SessionRef {
+                path: "/project/private-session-reference.jsonl".into(),
+                id: "private-session-id-marker".into(),
+            },
+        )
+    }
+
+    fn owner_goal_html(
+        page: Page,
+        goal: &oxa_session::Goal,
+        reference: &oxa_session::SessionRef,
+        board: Option<&Board>,
+    ) -> String {
+        let observation = oxa_core::goal::GoalObservation {
+            session: reference,
+            revision: 7,
+            status: Some(goal.status),
+        };
+        document_for(
+            page,
+            &View {
+                owner_goal: Some((goal, observation)),
+                board,
+                ..Default::default()
+            },
+            100,
+        )
+    }
+
+    fn owner_goal_section(html: &str) -> &str {
+        html.split("<section id=owner-goal>")
+            .nth(1)
+            .unwrap()
+            .split("</section>")
+            .next()
+            .unwrap()
+    }
+
+    #[test]
+    fn canonical_goal_checks_render_without_private_binding_or_new_controls() {
+        let (goal, reference) = owner_goal_fixture();
+        for page in [Page::Home, Page::Chat(Prompt::Status)] {
+            let html = owner_goal_html(page, &goal, &reference, None);
+            let section = owner_goal_section(&html);
+            for expected in [
+                "Owner goal",
+                "Ship &lt;example&gt; &amp; outcome",
+                "revision 7",
+                "Recorded state: pursuing",
+                "Acceptance owner &lt;example&gt;",
+                "check-owner",
+                "Install &lt;example&gt;",
+                "Build example",
+                "Not checked",
+                "Failed check",
+                "Pass recorded",
+                "&lt;receipt-install&gt;&amp;",
+                "href=/items/17",
+                "href=/items/18",
+            ] {
+                assert!(section.contains(expected), "{page:?}: {expected}");
+            }
+            for private in [
+                reference.id.as_str(),
+                reference.path.to_str().unwrap(),
+                "private-continuation-marker",
+                "<receipt-install>",
+            ] {
+                assert!(!html.contains(private), "{page:?}: {private}");
+            }
+            assert!(
+                !section.contains("<form") && !section.contains("<button") && !section.contains("<script")
+            );
+            assert!(!section.contains("Every acceptance check has passing evidence recorded"));
+        }
+    }
+
+    #[test]
+    fn canonical_goal_acceptance_never_comes_from_board_readiness_or_check_counts() {
+        let (mut goal, reference) = owner_goal_fixture();
+        let before = owner_goal_html(Page::Home, &goal, &reference, None);
+        let board = Board {
+            observed_at: 100,
+            entries: vec![Entry {
+                number: 17,
+                head: "synthetic-head".into(),
+                release_pinned: false,
+                action: Action::Ready,
+                lease: None,
+                attempts_today: 0,
+                eligible: true,
+            }],
+        };
+        let ready = owner_goal_html(Page::Home, &goal, &reference, Some(&board));
+        assert_eq!(owner_goal_section(&before), owner_goal_section(&ready));
+        let plan = goal.plan.as_mut().unwrap();
+        plan.acceptance[0].result = plan.subgoals[1].acceptance[0].result.clone();
+        plan.subgoals[0].acceptance[0].result.as_mut().unwrap().passed = true;
+        assert!(plan.verified());
+        let all_pass = owner_goal_html(Page::Home, &goal, &reference, Some(&board));
+        let section = owner_goal_section(&all_pass);
+        assert!(section.contains("Every acceptance check has passing evidence recorded"));
+        assert!(section.contains("Recorded state: pursuing") && !section.contains("Recorded state: done"));
+    }
+
+    #[test]
+    fn missing_or_inconsistent_goal_observations_never_promote_acceptance() {
+        let absent = document_for(Page::Home, &View::default(), 100);
+        assert!(owner_goal_section(&absent).contains("No bound native goal observation reached this page"));
+        let (mut goal, reference) = owner_goal_fixture();
+        for (revision, status) in [
+            (0, Some(goal.status)),
+            (7, None),
+            (7, Some(oxa_session::GoalStatus::Paused)),
+        ] {
+            let html = document_for(
+                Page::Home,
+                &View {
+                    owner_goal: Some((
+                        &goal,
+                        oxa_core::goal::GoalObservation {
+                            session: &reference,
+                            revision,
+                            status,
+                        },
+                    )),
+                    ..Default::default()
+                },
+                100,
+            );
+            let section = owner_goal_section(&html);
+            assert!(section.contains("Goal observation unavailable"));
+            assert!(!section.contains("Ship &lt;example&gt;"));
+        }
+        goal.plan.as_mut().unwrap().subgoals[0].board_items = vec![0];
+        let invalid = owner_goal_html(Page::Home, &goal, &reference, None);
+        assert!(owner_goal_section(&invalid).contains("Goal observation unavailable"));
+        goal.plan = None;
+        goal.status = oxa_session::GoalStatus::Done;
+        goal.evidence = Some("Legacy outcome reported".into());
+        let legacy = owner_goal_html(Page::Home, &goal, &reference, None);
+        let section = owner_goal_section(&legacy);
+        assert!(section.contains("done reported; acceptance plan unavailable"));
+        assert!(section.contains("The native goal has no saved acceptance plan"));
+        assert!(!section.contains("Every acceptance check has passing evidence recorded"));
+    }
+
+    #[test]
+    fn missing_sections_explain_the_observation_gap_without_inventing_a_cause() {
+        for (page, explanations) in [
+            (
+                Page::Home,
+                vec![
+                    "No board observation reached this page",
+                    "No runner observation reached this page",
+                    "No queue observation reached this page",
+                    "No release issue and checklist were supplied",
+                ],
+            ),
+            (Page::Board, vec!["No board observation reached this page"]),
+            (Page::Workers, vec!["No runner observation reached this page"]),
+            (Page::Asks, vec!["No runner observation reached this page"]),
+            (Page::Item(17), vec!["No board observation reached this page"]),
+            (
+                Page::Usage,
+                vec![
+                    "No selected-task usage observation reached this page",
+                    "No GitHub quota observation reached this page",
+                    "No model plan observation reached this page",
+                ],
+            ),
+            (
+                Page::Chat(Prompt::Status),
+                vec!["This question needs a board observation"],
+            ),
+            (
+                Page::Chat(Prompt::Workers),
+                vec!["This question needs a runner observation"],
+            ),
+            (
+                Page::Chat(Prompt::Attention),
+                vec!["This question needs a runner observation"],
+            ),
+        ] {
+            let html = document_for(page, &View::default(), 100);
+            for explanation in explanations {
+                assert!(html.contains(explanation), "{page:?}: {explanation}");
+            }
+            for invented in ["Sign in again", "not configured", "Permission denied"] {
+                assert!(!html.contains(invented), "{page:?}");
+            }
+        }
+        let failed = Err("private-error-marker".into());
+        let failed_page = usage_page(Some(&failed));
+        assert!(failed_page.contains("The selected task usage could not be read"));
+        assert!(!failed_page.contains("private-error-marker"));
+        assert!(!failed_page.contains("No selected-task usage observation reached this page"));
+        let absent = usage_page(Some(&Ok(None)));
+        assert!(absent.contains("No saved checkpoint for the selected task"));
+        assert!(!absent.contains("could not be read"));
+
+        let board = Board::default();
+        let situation = observed_asks();
+        let queue = [];
+        let empty = View {
+            board: Some(&board),
+            situation: Some(&situation),
+            queue: Some(&queue),
+            ..Default::default()
+        };
+        let home = document_for(Page::Home, &empty, 100);
+        assert!(home.contains("No open PRs in this snapshot"));
+        assert!(home.contains("Queue empty at observation"));
+        assert!(!home.contains("No board observation reached this page"));
+        assert!(!home.contains("No runner observation reached this page"));
+        let missing_item = document_for(Page::Item(17), &empty, 100);
+        assert!(missing_item.contains("The board observation does not include this item"));
+        let quotas = crate::lead_quota::GitHubQuotas::default();
+        let model = oxc_gateway::status::chatgpt_usage::parse(&serde_json::json!({}));
+        let usage = document_for(
+            Page::Usage,
+            &View {
+                github_quotas: Some(&quotas),
+                model_plan: Some(&model),
+                ..Default::default()
+            },
+            100,
+        );
+        assert!(usage.contains("No valid current quota window was reported"));
+        assert!(usage.contains("No valid model plan was reported"));
+        assert!(usage.contains("No valid current model window was reported"));
+        assert!(!usage.contains("<meter "));
+    }
+
+    #[test]
+    fn release_checkboxes_do_not_claim_owner_outcome_acceptance() {
+        for (checked, total) in [(0, 0), (0, 1), (2, 2)] {
+            let items: Vec<_> = (0..total)
+                .map(|index| (index < checked, format!("Reported step {index}")))
+                .collect();
+            let html = document_for(
+                Page::Home,
+                &View {
+                    release: Some((19, &items)),
+                    ..Default::default()
+                },
+                100,
+            );
+            let checklist = html
+                .split("<section id=release>")
+                .nth(1)
+                .unwrap()
+                .split("</section>")
+                .next()
+                .unwrap();
+            assert!(checklist.contains(&format!("{checked} / {total} checkboxes reported checked")));
+            assert!(checklist.contains("Owner outcome verification unavailable"));
+            assert!(checklist.contains("release or installability evidence"));
+            assert_eq!(checklist.matches('☑').count(), checked);
+            assert_eq!(checklist.matches('☐').count(), total - checked);
+            for unverified in [
+                "reported complete",
+                "validation requires merge evidence",
+                "Goal complete",
+            ] {
+                assert!(!checklist.contains(unverified), "{unverified}");
+            }
+        }
     }
 
     #[test]
@@ -647,9 +1129,9 @@ mod tests {
                 r#"
 let current, supplied, closeDuringFetch, failureMode='ok', focusDuringFetch=false, focused='', inside=false, fetches=0;
 const connectionBadge={textContent:'Snapshot'};
-function makeMain(open) {
-  const work={open}, notice={hidden:true};
-  return {work, notice, contains:()=>inside, querySelector:selector=>selector==='details.home-work'?work:null,
+function makeMain(open, message=null) {
+  const work={open}, notice={hidden:true}, draft=message===null?null:{value:message};
+  return {work, notice, draft, contains:()=>inside, querySelector:selector=>selector==='details.home-work'?work:selector==='#lead-message'?draft:null,
     replaceWith:next=>{current=next;}};
 }
 const document={hidden:false, activeElement:{matches:selectors=>selectors.split(',').includes(focused)},
@@ -700,6 +1182,32 @@ if(current!==supplied)throw new Error('refresh did not resume after leaving main
 current=makeMain(true); supplied=makeMain(false); focusDuringFetch=true;
 await refresh();
 if(current===supplied)throw new Error('focus acquired during fetch was lost');
+return true;
+"#,
+            )
+            .unwrap();
+        assert_eq!(result, serde_json::json!(true));
+    }
+
+    #[test]
+    fn live_refresh_preserves_an_unfocused_unsent_chat_draft() {
+        let mut runtime = refresh_runtime();
+        let result = runtime
+            .eval_async_body(
+                "chat-draft",
+                r#"
+current=makeMain(false,'unsent owner message'); supplied=makeMain(false,'');
+await refresh();
+if(current!==supplied||current.draft.value!=='unsent owner message')
+  throw new Error('fragment replacement lost the draft');
+const retained=current;
+supplied=makeMain(false);
+await refresh();
+if(current!==retained||current.draft.value!=='unsent owner message')
+  throw new Error('missing composer dropped the draft');
+current.draft.value='';
+await refresh();
+if(current!==supplied)throw new Error('refresh did not resume after clearing the draft');
 return true;
 "#,
             )
@@ -1270,7 +1778,7 @@ return true;
         ] {
             assert!(page.contains(unknown));
         }
-        assert!(page.contains("0 / 1 reported complete"));
+        assert!(page.contains("0 / 1 checkboxes reported checked"));
     }
 
     fn usage_page(observation: Option<&oxa_work::Result<Option<oxa_work::TaskUsage>>>) -> String {
@@ -1411,6 +1919,11 @@ return true;
             )
         };
         let page = render(Some(&board));
+        let lease_time = format!(
+            "<dt>Lease</dt><dd>worker-example · expires {} (expired)</dd>",
+            human_time(200, 201)
+        );
+        let observed_time = format!("<dt>Observed at</dt><dd>{}</dd>", human_time(100, 201));
         for expected in [
             "<h1 id=main tabindex=-1>Item #17</h1>",
             "href=/board>Back to Board</a>",
@@ -1418,9 +1931,9 @@ return true;
             "<h2>Next action</h2><p>Fix findings</p>",
             "<h2>State</h2><dl>",
             "<dt>Priority</dt><dd>Release</dd>",
-            "<dt>Lease</dt><dd>worker-example · expires 200 (expired)</dd>",
+            lease_time.as_str(),
             "<dt>Attempts today</dt><dd>2</dd>",
-            "<dt>Observed at</dt><dd>100 (Unix seconds)</dd>",
+            observed_time.as_str(),
             "Title, checks, findings and diff observations unavailable.",
         ] {
             assert!(page.contains(expected), "{expected}");
@@ -1440,7 +1953,10 @@ return true;
             generation: (0, 1),
         });
         let leased = render(Some(&board));
-        assert!(leased.contains("&lt;worker&gt;&amp;example · expires 300</dd>"));
+        assert!(leased.contains(&format!(
+            "&lt;worker&gt;&amp;example · expires {}</dd>",
+            human_time(300, 201)
+        )));
         assert!(!leased.contains("(expired)") && !leased.contains("<worker>"));
         board.entries.clear();
         for (source, expected) in [

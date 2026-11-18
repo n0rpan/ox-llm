@@ -1,8 +1,13 @@
-//! B6: models.json (engine endpoints) and model pattern resolution.
+//! models.json providers and model pattern resolution.
 // ported from pi packages/coding-agent/src/core/model-resolver.ts (engine-only subset)
 use crate::env::{ENGINE_URL, MODELS_DEFAULT_KEY};
 use crate::{Diagnostic, Dirs, Env};
 use oxa_proto::{codes, Level, OxaError, ThinkingLevel};
+use serde::Deserialize;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 /// The endpoint name oxa gives the local engine (`OXA_PROVIDER` is always this).
 pub(crate) const ENGINE_ENDPOINT: &str = "oxe";
@@ -59,20 +64,69 @@ pub struct Endpoint {
     pub api_key: Option<String>,
 }
 
-/// The engine endpoints oxa may talk to. One provider type only: our engine.
+/// Compiled protocol for a config-defined HTTPS provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum CloudApi {
+    #[serde(rename = "openai-chat")]
+    OpenAiChat,
+    #[serde(rename = "openai-responses")]
+    OpenAiResponses,
+    #[serde(rename = "anthropic-messages")]
+    AnthropicMessages,
+}
+
+/// A user-owned provider entry. `key` is the name of an entry in the existing cloud key file.
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CloudProvider {
+    pub base_url: String,
+    pub api: CloudApi,
+    pub key: String,
+    pub pool: String,
+    #[serde(default)]
+    pub models: Vec<CloudModel>,
+}
+
+impl fmt::Debug for CloudProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CloudProvider")
+            .field("api", &self.api)
+            .field("model_count", &self.models.len())
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloudModel {
+    pub id: String,
+    pub context: u32,
+    pub price: Option<CloudPrice>,
+}
+
+/// Owner-configured USD rates per million tokens, in the gateway's input/output shape.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloudPrice {
+    pub input: serde_json::Number,
+    pub output: serde_json::Number,
+}
+
+/// User-configured models.json providers. The default is still a local engine endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelsConfig {
     pub endpoints: Vec<Endpoint>,
     /// Name of the default endpoint.
     pub default: String,
+    pub cloud_providers: BTreeMap<String, CloudProvider>,
 }
 
 impl ModelsConfig {
     /// Read `<agent_dir>/models.json`; without a file the single default endpoint is
-    /// `OXA_ENGINE_URL` or `http://127.0.0.1:8092` (the controller). An entry for a non-engine provider is a
-    /// diagnostic naming `unsupported_in_oxa`, not a failure.
+    /// `OXA_ENGINE_URL` or `http://127.0.0.1:8092` (the controller). Entries using the
+    /// cloud key or pool fields are parsed separately from the legacy engine catalog.
     ///
-    /// File shape (pi's `providers` map, engine entries only):
+    /// Legacy engine entry shape in the `providers` map:
     /// `{"default": "<name>", "providers": {"<name>": {"baseUrl": "http://..", "apiKey": "..", "api": "openai-completions"}}}`.
     /// `apiKey` is a literal, or `$NAME` / `${NAME}` read from the environment. A leading `!`
     /// command is not run; it is a diagnostic.
@@ -84,6 +138,7 @@ impl ModelsConfig {
             .to_string();
         let mut diags = Vec::new();
         let mut endpoints: Vec<Endpoint> = Vec::new();
+        let mut cloud_providers = BTreeMap::new();
         let mut default: Option<String> = None;
         let file = dirs.models_file();
         let source = file.display().to_string();
@@ -91,7 +146,15 @@ impl ModelsConfig {
         match std::fs::read_to_string(&file) {
             Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
                 Ok(value) => {
-                    default = parse_models(&value, env, &engine_url, &source, &mut endpoints, &mut diags);
+                    default = parse_models(
+                        &value,
+                        env,
+                        &engine_url,
+                        &source,
+                        &mut endpoints,
+                        &mut cloud_providers,
+                        &mut diags,
+                    );
                 }
                 Err(e) => diags.push(diag(
                     Level::Error,
@@ -129,7 +192,14 @@ impl ModelsConfig {
             }
             None => endpoints[0].name.clone(),
         };
-        (ModelsConfig { endpoints, default }, diags)
+        (
+            ModelsConfig {
+                endpoints,
+                default,
+                cloud_providers,
+            },
+            diags,
+        )
     }
 }
 
@@ -148,6 +218,7 @@ fn parse_models(
     engine_url: &str,
     source: &str,
     endpoints: &mut Vec<Endpoint>,
+    cloud_providers: &mut BTreeMap<String, CloudProvider>,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<String> {
     let Some(root) = value.as_object() else {
@@ -162,6 +233,19 @@ fn parse_models(
         match providers.as_object() {
             Some(map) => {
                 for (name, entry) in map {
+                    if is_cloud_entry(name, entry) {
+                        match parse_cloud_provider(name, entry) {
+                            Some(provider) => {
+                                cloud_providers.insert(name.clone(), provider);
+                            }
+                            None => diags.push(diag(
+                                Level::Warning,
+                                source,
+                                "Invalid HTTPS cloud provider configuration; skipped".into(),
+                            )),
+                        }
+                        continue;
+                    }
                     if let Some(ep) = parse_endpoint(name, entry, env, engine_url, source, diags) {
                         if endpoints.iter().any(|e| e.name == ep.name) {
                             diags.push(diag(
@@ -194,6 +278,64 @@ fn parse_models(
             None
         }
     }
+}
+
+fn is_cloud_entry(name: &str, entry: &serde_json::Value) -> bool {
+    let api = entry.get("api").and_then(|v| v.as_str());
+    let reserved = matches!(
+        name.to_ascii_lowercase().as_str(),
+        ENGINE_ENDPOINT | "anthropic" | "openai" | "openrouter" | "chatgpt" | "opencode"
+    );
+    !reserved && api != Some(ENGINE_API) && (entry.get("key").is_some() || entry.get("pool").is_some())
+}
+
+fn parse_cloud_provider(name: &str, entry: &serde_json::Value) -> Option<CloudProvider> {
+    let provider: CloudProvider = serde_json::from_value(entry.clone()).ok()?;
+    if ![name, &provider.key, &provider.pool]
+        .into_iter()
+        .all(valid_cloud_name)
+        || !https_base(&provider.base_url)
+    {
+        return None;
+    }
+    let mut ids = BTreeSet::new();
+    let valid_models = provider.models.iter().all(|model| {
+        !model.id.is_empty()
+            && model.id.len() <= 128
+            && model
+                .id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._:/-".contains(&b))
+            && model.context > 0
+            && ids.insert(model.id.as_str())
+            && model.price.as_ref().is_none_or(|price| {
+                [&price.input, &price.output]
+                    .into_iter()
+                    .all(|value| value.as_f64().is_some_and(|rate| rate.is_finite() && rate >= 0.0))
+            })
+    });
+    valid_models.then_some(provider)
+}
+
+fn valid_cloud_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
+
+// Reject unsupported transport and inline credentials before retaining the user entry.
+// The existing gateway URL parser validates the endpoint when constructing a route.
+fn https_base(base: &str) -> bool {
+    let Some(rest) = base.strip_prefix("https://") else {
+        return false;
+    };
+    let authority = rest.split('/').next().unwrap_or_default();
+    !authority.is_empty()
+        && !authority.contains('@')
+        && !base.contains(['?', '#', '\\'])
+        && !base.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 
 fn parse_endpoint(

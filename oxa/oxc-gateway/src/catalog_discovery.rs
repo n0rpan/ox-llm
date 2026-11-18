@@ -22,6 +22,7 @@ pub struct Status {
     pub state: State,
     pub missing_price: usize,
     pub missing_limits: usize,
+    pub estimated_price: usize,
 }
 
 #[derive(Clone)]

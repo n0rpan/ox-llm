@@ -142,6 +142,7 @@ impl Budget {
             state: Arc::new(Mutex::new(State::default())),
         }
     }
+    /// The daily budget debit, including any explicitly estimated settlements.
     pub fn spend(&self) -> Result<f64, Refusal> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.failed {
@@ -351,6 +352,39 @@ impl Hold {
                     .saturating_add(usage.cache_write.unwrap_or(0))
                     > prompt
             });
+        if price.is_estimated() {
+            let final_usage = !invalid
+                && matches!(
+                    outcome,
+                    Outcome::Complete
+                        | Outcome::Cancelled {
+                            usage_final: true,
+                            ..
+                        }
+                );
+            let estimate =
+                usage
+                    .prompt
+                    .zip(usage.output)
+                    .filter(|_| final_usage)
+                    .and_then(|(prompt, output)| {
+                        price.cost(&model.provider, &model.upstream, prompt, output, Cache::Invalid)
+                    });
+            let reported = usage.reported_cost.filter(|_| model.provider == "openrouter");
+            if let Some(cost) = reported {
+                row["reported_cost_usd"] = json!(cost);
+            }
+            row["estimated_cost_usd"] = json!(estimate.unwrap_or(self.reserved).max(reported.unwrap_or(0.0)));
+            row["settled"] = json!(if estimate.is_some() {
+                "estimated"
+            } else {
+                "reserved"
+            });
+            if estimate.is_none() {
+                row["usage_missing"] = json!(true);
+            }
+            return row;
+        }
         let cost = if invalid {
             None
         } else {

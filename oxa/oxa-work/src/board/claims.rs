@@ -109,6 +109,10 @@ impl Claims {
     /// First access to a PR counts. A state file lost after a marker exists is still
     /// corruption, so a vanished marker must not reset the cap by faking a first access.
     fn load(&self, number: u64) -> Result<Saved> {
+        self.load_with_repair(number, true)
+    }
+
+    fn load_with_repair(&self, number: u64, repair_markers: bool) -> Result<Saved> {
         let path = self.path(number);
         let created = self.root.join(format!("{number}.board-claim.created"));
         match fs::symlink_metadata(&path) {
@@ -180,7 +184,15 @@ impl Claims {
         {
             return Err("invalid board claim identity or lease".into());
         }
-        self.mark(number)?;
+        if repair_markers {
+            self.mark(number)?;
+        } else {
+            match fs::symlink_metadata(&created) {
+                Ok(_) => self.private(&created)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return io(Err(error)),
+            }
+        }
         Ok(saved)
     }
 
@@ -211,14 +223,22 @@ impl Claims {
 
     /// Atomic replacements permit a coherent per-PR read without taking execution leases.
     fn rows(&self) -> Result<BTreeMap<u64, Saved>> {
+        self.rows_with_repair(true)
+    }
+
+    fn rows_with_repair(&self, repair_markers: bool) -> Result<BTreeMap<u64, Saved>> {
         Self::open(&self.root)?;
         let lock = io(File::open(&self.root))?;
         io(lock.lock())?;
-        self.rows_locked()
+        self.rows_locked_with_repair(repair_markers)
     }
 
     /// Caller holds the directory lock used by every reservation and control update.
     fn rows_locked(&self) -> Result<BTreeMap<u64, Saved>> {
+        self.rows_locked_with_repair(true)
+    }
+
+    fn rows_locked_with_repair(&self, repair_markers: bool) -> Result<BTreeMap<u64, Saved>> {
         let mut states = BTreeMap::new();
         for entry in io(fs::read_dir(&self.root))? {
             let name = io(entry)?.file_name();
@@ -233,7 +253,7 @@ impl Claims {
             if number == 0 || id != number.to_string() {
                 return Err("invalid board claim filename".into());
             }
-            states.insert(number, self.load(number)?);
+            states.insert(number, self.load_with_repair(number, repair_markers)?);
         }
         Ok(states)
     }

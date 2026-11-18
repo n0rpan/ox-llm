@@ -161,3 +161,59 @@ fn fixed_chat_reads_runner_observations_and_handles_missing_data() {
         .contains("observations unavailable"));
     assert!(server.requests().is_empty());
 }
+
+#[test]
+fn init_creates_a_dedicated_session_offline_and_refuses_a_configured_replacement() {
+    use oxa_session::{FsStore, SessionStore};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let test = TestEnv::new();
+    let home = test.root().join("fresh-home");
+    std::fs::create_dir(&home).unwrap();
+    let env = oxa_config::Env::from_pairs(&[("HOME", home.to_str().unwrap())]);
+    let dirs = oxa_config::dirs_from_env(&env, None).unwrap();
+    let uid = std::fs::metadata(&home).unwrap().uid();
+    assert!(!dirs.agent_dir.exists());
+    let server = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+    let run_init = || {
+        command(&test)
+            .envs(test.envs(&server.url()))
+            .env("HOME", &home)
+            .env_remove("OXA_AGENT_DIR")
+            .args(["--offline", "lead", "chat", "--init"])
+            .output()
+            .unwrap()
+    };
+    let initialized = run_init();
+    assert!(initialized.status.success(), "{initialized:?}");
+    let state = std::fs::symlink_metadata(&dirs.agent_dir).unwrap();
+    assert!(state.is_dir());
+    assert_eq!(state.uid(), uid);
+    assert_eq!(state.mode() & 0o777, 0o700);
+    let initialized = String::from_utf8(initialized.stdout).unwrap();
+    let id = initialized.trim();
+    let store = FsStore::new(dirs.sessions_dir.clone());
+    assert_eq!(store.resolve(id).unwrap().id, id);
+
+    std::fs::set_permissions(&dirs.agent_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let unsafe_state = run_init();
+    assert!(!unsafe_state.status.success(), "{unsafe_state:?}");
+    assert_eq!(std::fs::metadata(&dirs.agent_dir).unwrap().mode() & 0o777, 0o755);
+    std::fs::set_permissions(&dirs.agent_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let settings = dirs.settings_file();
+    std::fs::write(
+        &settings,
+        serde_json::json!({"oxa":{"lead":{"sessionId":id}}}).to_string(),
+    )
+    .unwrap();
+    std::fs::set_permissions(settings, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let cwd = test.work().canonicalize().unwrap();
+    assert!(oxa_cli::LeadOwnerBinding::load(&dirs, &cwd, uid)
+        .unwrap()
+        .is_some());
+    let replacement = run_init();
+    assert!(!replacement.status.success(), "{replacement:?}");
+    assert!(String::from_utf8_lossy(&replacement.stderr).contains("already configured"));
+    assert!(server.requests().is_empty());
+}

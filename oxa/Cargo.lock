@@ -1167,6 +1167,7 @@ name = "oxa-a2a"
 version = "0.2.0"
 dependencies = [
  "oxa-a2a",
+ "oxa-proto",
  "serde",
  "serde_json",
 ]
@@ -1203,6 +1204,7 @@ dependencies = [
  "pulldown-cmark",
  "quick-xml",
  "regex",
+ "serde",
  "serde_json",
  "sha2",
  "signal-hook",
@@ -1339,6 +1341,7 @@ dependencies = [
  "libc",
  "oxa-fake",
  "oxa-orchestrator",
+ "oxa-proto",
  "serde",
  "serde_json",
  "sha2",

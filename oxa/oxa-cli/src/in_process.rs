@@ -300,6 +300,11 @@ pub(crate) fn open_gateway(
     .map_err(|e| OxaError::new(e.code, e.message))?;
     if discover {
         runtime = runtime.with_catalog_cache();
+        if let Some(pricing) = cloud.get("unpriced_discovered_pricing") {
+            runtime = runtime
+                .with_unpriced_discovered_pricing(pricing)
+                .map_err(|e| OxaError::new(e.code, e.message))?;
+        }
     }
     if let Some(diagnostics) = diagnostics {
         runtime = runtime.with_diagnostics(diagnostics);
@@ -327,6 +332,12 @@ pub(crate) fn open_gateway(
                     notices.push(format!(
                         "{provider} catalog omitted {} offers with unknown pricing and {} with unknown limits.",
                         status.missing_price, status.missing_limits,
+                    ));
+                }
+                if status.estimated_price > 0 {
+                    notices.push(format!(
+                        "{provider} catalog uses owner-estimated prices for {} models.",
+                        status.estimated_price,
                     ));
                 }
             }

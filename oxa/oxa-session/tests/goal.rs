@@ -319,3 +319,104 @@ fn lead_state_survives_compaction_and_stays_private_to_its_session() {
     goal.lead = None;
     assert_eq!(Goal::latest(&reopened.load(&fork).unwrap()).unwrap(), Some(goal));
 }
+
+#[test]
+fn goal_plan_reopens_failed_checks_and_requires_verified_acceptance() {
+    use oxa_session::{CheckResult, GoalCheck, GoalPlan, Subgoal};
+
+    let env = TestEnv::new();
+    let root = env.root().join("sessions");
+    let store = FsStore::new(root.clone());
+    let session = store.create(&env.work(), None, None).unwrap();
+    let check = |id: &str, acceptance: &str, done_check: &str| GoalCheck {
+        id: id.into(),
+        acceptance: acceptance.into(),
+        done_check: done_check.into(),
+        result: None,
+    };
+    let proof = |passed, receipt: &str, observed_at_ms| {
+        Some(CheckResult {
+            passed,
+            receipt: receipt.into(),
+            observed_at_ms,
+        })
+    };
+    let mut goal = objective();
+    goal.plan = Some(GoalPlan {
+        acceptance: vec![
+            check("published", "Release is published.", "release.published"),
+            check("green", "Release checks are green.", "release.checks"),
+        ],
+        subgoals: vec![
+            Subgoal {
+                id: "notes".into(),
+                objective: "Prepare release notes.".into(),
+                acceptance: vec![check("notes", "Notes match the build.", "release.notes")],
+                board_items: vec![18],
+            },
+            Subgoal {
+                id: "install".into(),
+                objective: "Qualify the installer.".into(),
+                acceptance: vec![check("install", "Exact artifact installs.", "artifact.install")],
+                board_items: vec![19, 20],
+            },
+        ],
+    });
+    assert!(goal
+        .finish(GoalStatus::Done, "Board work merged.".into())
+        .is_err());
+    let plan = goal.plan.as_mut().unwrap();
+    plan.subgoals[1].acceptance[0].result = proof(false, "run:100", 1001);
+    assert_eq!(plan.next_subgoal().unwrap().id, "install");
+    store
+        .append(&session, &entry("00000001", None, goal.body()))
+        .unwrap();
+    store.sync(&session).unwrap();
+    drop(store);
+
+    let store = FsStore::new(root);
+    let entries = store.load(&session).unwrap();
+    let mut reopened = Goal::latest(&entries).unwrap().unwrap();
+    assert_eq!(reopened, goal);
+    reopened.charge(Some(5), 1, false).unwrap();
+    let mut timeline = entries.clone();
+    timeline.push(entry(
+        "00000002",
+        Some("00000001"),
+        reopened.checkpoint_body(&timeline),
+    ));
+    assert!(Goal::allows_steering(&timeline, 1));
+    reopened.plan.as_mut().unwrap().subgoals[1].board_items.push(21);
+    timeline.push(entry(
+        "00000003",
+        Some("00000002"),
+        reopened.checkpoint_body(&timeline),
+    ));
+    assert!(!Goal::allows_steering(&timeline, 1));
+    let plan = reopened.plan.as_mut().unwrap();
+    plan.subgoals[1].acceptance[0].result = proof(true, "run:101", 1002);
+    assert_eq!(plan.next_subgoal().unwrap().id, "notes");
+    plan.subgoals[0].acceptance[0].result = proof(true, "run:102", 1003);
+    plan.acceptance[0].result = proof(true, "release:103", 1004);
+    assert_eq!(plan.next_owner_check().unwrap().id, "green");
+    assert!(reopened
+        .finish(GoalStatus::Done, "One owner check is still missing.".into())
+        .is_err());
+    reopened.plan.as_mut().unwrap().acceptance[1].result = proof(true, "run:104", 1005);
+    reopened
+        .finish(GoalStatus::Done, "All release checks verified.".into())
+        .unwrap();
+    store
+        .append(
+            &session,
+            &entry("00000002", Some("00000001"), reopened.checkpoint_body(&entries)),
+        )
+        .unwrap();
+    let entries = store.load(&session).unwrap();
+    assert_eq!(Goal::latest(&entries).unwrap(), Some(reopened.clone()));
+    assert_eq!(Goal::latest(&entries[..1]).unwrap(), Some(goal));
+
+    let mut inconsistent = reopened.value();
+    inconsistent["plan"]["acceptance"][1]["result"] = serde_json::Value::Null;
+    assert!(Goal::decode(&inconsistent).is_err());
+}

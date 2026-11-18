@@ -45,6 +45,7 @@ pub struct Runtime {
     diagnostics: Option<crate::diagnostics::Diagnostics>,
     catalog: Catalog,
     billings: BTreeMap<String, Billing>,
+    unpriced_discovered: BTreeMap<String, crate::pricing::Price>,
     #[cfg(feature = "share")]
     guest_models: BTreeSet<String>,
     go_models: BTreeMap<String, crate::opencode::Model>,
@@ -191,6 +192,7 @@ impl Runtime {
             diagnostics: None,
             catalog,
             billings,
+            unpriced_discovered: BTreeMap::new(),
             #[cfg(feature = "share")]
             guest_models: BTreeSet::new(),
             go_models: BTreeMap::new(),
@@ -209,6 +211,15 @@ impl Runtime {
     }
     pub fn discovery(&self) -> impl Iterator<Item = ModelInfo<'_>> {
         self.catalog.models().filter(|model| supported(model.provider))
+    }
+    /// Trusted user settings, keyed by the exact discovered public alias.
+    pub fn with_unpriced_discovered_pricing(mut self, raw: &Value) -> Result<Self, Refusal> {
+        let bad = || invalid("unpriced_discovered_pricing");
+        for (alias, value) in raw.as_object().ok_or_else(bad)? {
+            let price = crate::pricing::Price::conservative(value).ok_or_else(bad)?;
+            self.unpriced_discovered.insert(alias.clone(), price);
+        }
+        Ok(self)
     }
     /// Enable catalog writes only for the owner-selected discovery setting.
     pub fn with_catalog_cache(mut self) -> Self {
@@ -292,7 +303,7 @@ impl Runtime {
         &mut self,
         source: &Source,
         offers: Vec<Offer>,
-    ) -> Result<(usize, usize), Refusal> {
+    ) -> Result<(usize, usize, usize), Refusal> {
         let same_source = |model: &Model| {
             model.info().provider == source.provider()
                 && model.endpoint().as_str().trim_end_matches('/') == source.base().trim_end_matches('/')
@@ -308,6 +319,7 @@ impl Runtime {
         }
         let mut missing_price = 0;
         let mut missing_limits = 0;
+        let mut estimated_price = 0;
         for offer in offers {
             let explicit: Vec<_> = configured
                 .iter()
@@ -335,12 +347,14 @@ impl Runtime {
                     .zip(max_output)
                     .filter(|(context, output)| output <= context);
                 let price = match (self.billings.get(alias), offer.price.as_ref()) {
+                    (Some(Billing::Metered(configured)), live) if configured.is_estimated() => live.cloned(),
                     (Some(Billing::Metered(configured)), Some(live)) => {
                         Some(configured.clone().overlay_discovered(live))
                     }
                     (Some(Billing::Metered(configured)), None) => Some(configured.clone()),
                     (_, live) => live.cloned(),
-                };
+                }
+                .or_else(|| self.unpriced_discovered.get(alias).cloned());
                 let price = price.filter(|price| {
                     limits.is_none_or(|(context, output)| {
                         price
@@ -368,6 +382,7 @@ impl Runtime {
                 ) else {
                     continue;
                 };
+                estimated_price += usize::from(price.is_estimated());
                 billings.insert(alias.into(), Billing::Metered(price));
                 routes.push(model);
             }
@@ -375,7 +390,7 @@ impl Runtime {
         let catalog = Catalog::new(Access::Enabled, routes).map_err(catalog_error)?;
         self.catalog = catalog;
         self.billings = billings;
-        Ok((missing_price, missing_limits))
+        Ok((missing_price, missing_limits, estimated_price))
     }
     /// Consume the bounded stale-aware cache before any network call, then fall
     /// back to live discovery exactly as before. A cache hit is re-validated by
@@ -817,6 +832,13 @@ impl<'a> Call<'a> {
             }
             if !self.forwarded {
                 fields["settled"] = json!("not_forwarded");
+                if fields
+                    .as_object_mut()
+                    .and_then(|row| row.remove("estimated_cost_usd"))
+                    .is_some()
+                {
+                    fields["cost_usd"] = json!(0.0);
+                }
             }
             saved = entry.append_redacting(&fields, status, error, &|value| self.credential.redact(value))?;
             Ok(())
@@ -886,6 +908,10 @@ mod discovery_budget_tests {
                 ..Options::default()
             },
         )
+        .unwrap()
+        .with_unpriced_discovered_pricing(&json!({alias:{
+            "input_per_million":100, "output_per_million":100
+        }}))
         .unwrap();
         let source = Source::new(provider, base).unwrap();
         let offer = Offer {
@@ -896,7 +922,7 @@ mod discovery_budget_tests {
         };
         assert_eq!(
             runtime.apply_provider_catalog(&source, vec![offer]).unwrap(),
-            (0, 0)
+            (0, 0, 0)
         );
         let info = runtime.catalog.resolve(Some(alias)).unwrap().info();
         assert_eq!(info.context_window, 4096);

@@ -31,11 +31,18 @@ impl DependencyWait {
     }
 }
 
+impl AssignmentData {
+    pub(crate) fn busy_for(&self, state: &AttemptState, worker_id: &str) -> bool {
+        state
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease.holder == worker_id && (self.import_hold || self.dependency.is_none()))
+    }
+}
+
 impl Saved {
     pub(super) fn busy_for(&self, worker_id: &str) -> bool {
-        self.state.lease.as_ref().is_some_and(|lease| {
-            lease.holder == worker_id && (self.data.import_hold || self.data.dependency.is_none())
-        })
+        self.data.busy_for(&self.state, worker_id)
     }
 }
 

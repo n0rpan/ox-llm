@@ -196,7 +196,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     if let Some(sub) = a.subcommand.clone() {
         if let Subcommand::Registered(oxa_interactive::command_registry::CommandId::LeadChat, words) = &sub {
             return finish(
-                crate::lead_chat::run_fixed(&words.0, env, &mut *stdout),
+                crate::lead_chat::run(&words.0, &cwd, env, &mut *stdout),
                 &mut *stderr,
             );
         }
