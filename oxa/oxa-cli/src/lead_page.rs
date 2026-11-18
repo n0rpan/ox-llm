@@ -294,10 +294,18 @@ fn workers(html: &mut String, view: &View<'_>) {
             "<p class=muted>Runner facts · sequence {} · observed at {} (Unix milliseconds)</p>",
             s.as_of_seq, s.at_ms
         );
-        for running in &s.running {
-            let stalled = s.incidents.iter().any(|i| {
-                i.kind == IncidentKind::WorkerStalled && i.subject == Subject::Task(running.task.clone())
-            });
+        let mut ordered: Vec<_> = s
+            .running
+            .iter()
+            .map(|running| {
+                let stalled = s.incidents.iter().any(|i| {
+                    i.kind == IncidentKind::WorkerStalled && i.subject == Subject::Task(running.task.clone())
+                });
+                (stalled, running)
+            })
+            .collect();
+        ordered.sort_by_key(|(stalled, _)| !stalled);
+        for (stalled, running) in ordered {
             let _ = write!(
                 html,
                 "<article><b>{}</b><p>{}</p></article>",
@@ -763,6 +771,107 @@ return true;
             assert!(!render_at(&payload, MERGED + 45 * 60), "{field}");
         }
     }
+    #[test]
+    fn workers_put_reported_stalls_first_and_keep_observation_order_within_groups() {
+        use oxa_proto::work::{Event, Fact, Incident};
+        let fixture = include_str!("../../oxa-proto/tests/fixtures/work/evening.jsonl");
+        let mut snapshot = fixture
+            .lines()
+            .find_map(|line| Snapshot::from_json(line.as_bytes()).ok())
+            .unwrap();
+        let template = fixture
+            .lines()
+            .filter_map(|line| Event::from_json(line.as_bytes()).ok())
+            .find_map(|event| match event.fact {
+                Fact::TaskStarted(running) => Some(running),
+                _ => None,
+            })
+            .unwrap();
+        let tasks = [
+            "worker-ready-a",
+            "worker-stalled-b",
+            "worker-ready-c",
+            "worker-stalled-d",
+        ];
+        snapshot.running = tasks
+            .iter()
+            .map(|task| oxa_proto::work::Running {
+                task: (*task).into(),
+                ..template.clone()
+            })
+            .collect();
+        snapshot.incidents = [
+            (
+                IncidentKind::WorkerStalled,
+                Subject::Task("worker-stalled-d".into()),
+            ),
+            (
+                IncidentKind::WorkerStalled,
+                Subject::Task("worker-stalled-b".into()),
+            ),
+            (IncidentKind::MainFailed, Subject::Task("worker-ready-c".into())),
+            (
+                IncidentKind::WorkerStalled,
+                Subject::Host("worker-ready-a".into()),
+            ),
+            (IncidentKind::WorkerStalled, Subject::Task("not-running".into())),
+            (IncidentKind::HostIdle, Subject::Host(template.host.clone())),
+            (IncidentKind::HostIdle, Subject::Host("idle-example".into())),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (kind, subject))| Incident {
+            id: format!("incident-{index}"),
+            kind,
+            subject,
+            evidence: None,
+        })
+        .collect();
+        let render = |page, snapshot: &Snapshot| {
+            content_for(
+                page,
+                &View {
+                    situation: Some(snapshot),
+                    ..View::default()
+                },
+                100,
+            )
+        };
+        for page in [Page::Home, Page::Workers] {
+            let html = render(page, &snapshot);
+            let expected = [
+                "worker-stalled-b",
+                "worker-stalled-d",
+                "worker-ready-a",
+                "worker-ready-c",
+                "idle-example",
+            ];
+            let positions: Vec<_> = expected
+                .iter()
+                .map(|task| html.find(&format!("<b>{task}</b>")).unwrap())
+                .collect();
+            assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+            assert_eq!(html.matches("Stall reported").count(), 2);
+            assert_eq!(html.matches("Busy at observation").count(), 2);
+            assert_eq!(html.matches("Idle reported").count(), 1);
+            assert!(!html.contains("not-running") && !html.contains("Verified"));
+            assert!(!html.contains(&format!("<b>{}</b>", template.host)));
+            assert!(!html.contains(&template.worktree));
+            assert!(!html.contains(template.session_id.as_ref().unwrap()));
+        }
+        snapshot.incidents.clear();
+        let page = render(Page::Workers, &snapshot);
+        let positions: Vec<_> = tasks
+            .iter()
+            .map(|task| page.find(&format!("<b>{task}</b>")).unwrap())
+            .collect();
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(!page.contains("Stall reported") && !page.contains("Idle reported"));
+        snapshot.running.clear();
+        assert!(render(Page::Workers, &snapshot).contains("Idle worker inventory is unavailable"));
+        assert!(content_for(Page::Workers, &View::default(), 100).contains("Lane status unavailable"));
+    }
+
     #[test]
     fn fake_board_uses_policy_and_does_not_render_source_payloads() {
         struct Fake;
