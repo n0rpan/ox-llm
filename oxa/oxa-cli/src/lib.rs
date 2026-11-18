@@ -55,6 +55,7 @@ pub use work_board::refill_input;
 mod work_checks;
 mod work_cmd;
 pub mod work_refill;
+mod work_reports;
 
 pub use args::{
     no_tool_alias, parse_args, usage_text, ApiKey, Args, LoginArgs, ModeArg, RegistryArgs, Subcommand,

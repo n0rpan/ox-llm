@@ -199,16 +199,18 @@ fn published_checkout_policy(normalize: bool) {
     std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = synthetic_github_path(&env);
     // Only this fixture gh is reachable first, under a throwaway HOME. No real login is read.
-    let (record, _) = work::run_observed_with_env(
+    let (record, _) = work::run_observed_with(
         &env,
         vec![ScriptTurn::text("nothing")],
         &["work", "../tasks.json"],
         Some(path),
-        &[
-            ("OXA_TEST_ISOLATION", "0"),
-            ("GH_TOKEN", "SYNTH_AMBIENT_CREDENTIAL"),
-            ("GITHUB_TOKEN", "SYNTH_AMBIENT_CREDENTIAL"),
-        ],
+        |command| {
+            command.envs([
+                ("OXA_TEST_ISOLATION", "0"),
+                ("GH_TOKEN", "SYNTH_AMBIENT_CREDENTIAL"),
+                ("GITHUB_TOKEN", "SYNTH_AMBIENT_CREDENTIAL"),
+            ]);
+        },
     );
     assert_eq!(record["outcome"], "done", "{record}");
     if let Some(fetched) = normalized_base {
@@ -260,7 +262,7 @@ fn adopted_save_callbacks_have_no_ambient_authority() {
     );
     std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
     env.write("home/.config/gh/config.yml", "version: 1\n");
-    let (record, _) = work::run_observed_with_env(
+    let (record, _) = work::run_observed_with(
         &env,
         vec![
             ScriptTurn::tool(
@@ -272,11 +274,13 @@ fn adopted_save_callbacks_have_no_ambient_authority() {
         ],
         &["work", "../tasks.json"],
         Some(synthetic_github_path(&env)),
-        &[
-            ("OXA_TEST_ISOLATION", "0"),
-            ("GH_TOKEN", "SYNTH_AMBIENT_CREDENTIAL"),
-            ("GITHUB_TOKEN", "SYNTH_AMBIENT_CREDENTIAL"),
-        ],
+        |command| {
+            command.envs([
+                ("OXA_TEST_ISOLATION", "0"),
+                ("GH_TOKEN", "SYNTH_AMBIENT_CREDENTIAL"),
+                ("GITHUB_TOKEN", "SYNTH_AMBIENT_CREDENTIAL"),
+            ]);
+        },
     );
     assert_eq!(record["outcome"], "done", "{record}");
     assert_eq!(
@@ -830,16 +834,18 @@ fn automatic_merge_hooks_stay_inside_the_sandbox() {
     );
     std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
     env.write("home/.config/gh/config.yml", "version: 1\n");
-    let (record, _) = work::run_observed_with_env(
+    let (record, _) = work::run_observed_with(
         &env,
         vec![ScriptTurn::text("nothing")],
         &["work", "../tasks.json"],
         Some(synthetic_github_path(&env)),
-        &[
-            ("OXA_TEST_ISOLATION", "0"),
-            ("GH_TOKEN", "SYNTH_AMBIENT_CREDENTIAL"),
-            ("GITHUB_TOKEN", "SYNTH_AMBIENT_CREDENTIAL"),
-        ],
+        |command| {
+            command.envs([
+                ("OXA_TEST_ISOLATION", "0"),
+                ("GH_TOKEN", "SYNTH_AMBIENT_CREDENTIAL"),
+                ("GITHUB_TOKEN", "SYNTH_AMBIENT_CREDENTIAL"),
+            ]);
+        },
     );
     assert!(!env.home().join("continuation-hook-escape").exists(), "{record}");
     assert_eq!(record["outcome"], "done", "{record}");

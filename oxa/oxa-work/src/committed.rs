@@ -57,13 +57,31 @@ pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &st
         .map_err(|_| "cannot open saved task lock")?;
     lock.try_lock().map_err(|_| "task is already running")?;
     let saved = state::load(&policy.storage.join(format!("{id}.json")))?;
-    let record = saved.record;
+    let record = &saved.record;
     if saved.task.id != id
         || record.step != Step::Finished
         || !matches!(record.outcome, Outcome::Done | Outcome::NothingToDo)
     {
         return Err("only finished successful work can be verified for publication".into());
     }
+    let export = verify_commit(repo, binary, policy, &saved, &lock)?;
+    Ok(VerifiedTask {
+        record: saved.record,
+        export,
+        _lock: lock,
+        checked_at_ms: crate::state::now_ms(),
+    })
+}
+
+/// Check the saved commit while the caller holds the task lock.
+pub(crate) fn verify_commit(
+    repo: &Path,
+    binary: &Path,
+    policy: &RunPolicy,
+    saved: &state::State,
+    lock: &File,
+) -> Result<Export> {
+    let record = &saved.record;
     // An explicit later online publication never relaxes the saved check policy.
     let verification_policy = RunPolicy {
         offline: saved.offline || policy.offline,
@@ -73,6 +91,7 @@ pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &st
     let policy = &verification_policy;
     let execution = saved
         .execution
+        .as_ref()
         .ok_or("saved acceptance commands are unavailable")?;
     let head = record.head_sha.as_deref().ok_or("saved head is unavailable")?;
     let tree_id = record.tree_sha.as_deref().ok_or("saved tree is unavailable")?;
@@ -83,7 +102,7 @@ pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &st
     tree::validate(policy, repo, &record.worktree, &saved.task)?;
     tree::ensure_merged(policy, &record.worktree, base, &saved.task.branch)?;
     same_saved_commit(policy, &record.worktree, head, tree_id)?;
-    if dirty_worktree(binary, &record.worktree, repo, policy, &lock)? {
+    if dirty_worktree(binary, &record.worktree, repo, policy, lock)? {
         return Err("saved task has uncommitted changes".into());
     }
     let export = Export::create(policy, &record.worktree, head, tree_id, base)?;
@@ -100,20 +119,20 @@ pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &st
         SupervisorRequest {
             source: repo.into(),
             operation: SupervisorOperation::Checkout {
-                branch: saved.task.branch,
+                branch: saved.task.branch.clone(),
                 create: false,
                 adopted: false,
                 normalize: None,
             },
         },
         policy,
-        &lock,
+        lock,
     )?;
     if !checkout.status.success() {
         return Err("clean acceptance checkout failed; saved work is retained".into());
     }
     same_saved_commit(policy, &export.tree, head, tree_id)?;
-    if dirty_worktree(binary, &export.tree, repo, policy, &lock)? {
+    if dirty_worktree(binary, &export.tree, repo, policy, lock)? {
         return Err("clean acceptance checkout is dirty".into());
     }
     // This fresh index comes from the verified commit and lives outside both
@@ -146,18 +165,18 @@ pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &st
         SupervisorRequest {
             source: repo.into(),
             operation: SupervisorOperation::CommittedChecks {
-                commands: execution.commands,
+                commands: execution.commands.clone(),
                 index: index.clone(),
             },
         },
         policy,
-        &lock,
+        lock,
     )?)?;
     if !failed.is_empty() {
         return Err(format!("clean committed acceptance failed: {failed}"));
     }
     same_saved_commit(policy, &export.tree, head, tree_id)?;
-    if dirty_worktree(binary, &export.tree, repo, policy, &lock)? {
+    if dirty_worktree(binary, &export.tree, repo, policy, lock)? {
         return Err("acceptance changed committed source files".into());
     }
     let inspected = supervise(
@@ -168,22 +187,17 @@ pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &st
             operation: SupervisorOperation::InspectCommitted { index },
         },
         policy,
-        &lock,
+        lock,
     )?;
     if !inspected.status.success() {
         return Err("acceptance changed committed source files or could not be inspected".into());
     }
     export.verify(policy, head, base)?;
     same_saved_commit(policy, &record.worktree, head, tree_id)?;
-    if dirty_worktree(binary, &record.worktree, repo, policy, &lock)? {
+    if dirty_worktree(binary, &record.worktree, repo, policy, lock)? {
         return Err("saved work changed during committed acceptance".into());
     }
-    Ok(VerifiedTask {
-        record,
-        export,
-        _lock: lock,
-        checked_at_ms: crate::state::now_ms(),
-    })
+    Ok(export)
 }
 
 fn same_saved_commit(policy: &RunPolicy, tree: &Path, head: &str, tree_id: &str) -> Result<()> {
@@ -368,7 +382,7 @@ impl Export {
         Ok(export)
     }
 
-    fn verify(&self, policy: &RunPolicy, head: &str, base: &str) -> Result<()> {
+    pub(crate) fn verify(&self, policy: &RunPolicy, head: &str, base: &str) -> Result<()> {
         match (fs::read(self.store.join("shallow")), &self.shallow) {
             (Ok(actual), Some(expected)) if actual == *expected => {}
             (Err(error), None) if error.kind() == std::io::ErrorKind::NotFound => {}

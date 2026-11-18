@@ -1,4 +1,6 @@
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
+#[path = "work_confirm.rs"]
+mod confirm;
 use std::{path::Path, process::Command};
 pub fn git(env: &TestEnv, dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -54,33 +56,36 @@ pub fn run_observed(
     args: &[&str],
     path: Option<String>,
 ) -> (serde_json::Value, Vec<oxa_fake::Recorded>) {
-    run_observed_with_env(env, turns, args, path, &[])
+    run_observed_with(env, turns, args, path, |_| {})
 }
-pub fn run_observed_with_env(
+
+pub fn run_observed_with(
     env: &TestEnv,
     turns: Vec<ScriptTurn>,
     args: &[&str],
     path: Option<String>,
-    extra: &[(&str, &str)],
+    configure: impl FnOnce(&mut Command),
 ) -> (serde_json::Value, Vec<oxa_fake::Recorded>) {
-    let (mut records, requests) = run_batch_with_env(env, turns, args, path, extra);
+    let (mut records, requests) = run_batch_with(env, turns, args, path, configure);
     assert_eq!(records.len(), 1, "expected one task record");
     (records.remove(0), requests)
 }
+
 pub fn run_batch(
     env: &TestEnv,
     turns: Vec<ScriptTurn>,
     args: &[&str],
     path: Option<String>,
 ) -> (Vec<serde_json::Value>, Vec<oxa_fake::Recorded>) {
-    run_batch_with_env(env, turns, args, path, &[])
+    run_batch_with(env, turns, args, path, |_| {})
 }
-fn run_batch_with_env(
+
+fn run_batch_with(
     env: &TestEnv,
     turns: Vec<ScriptTurn>,
     args: &[&str],
     path: Option<String>,
-    extra: &[(&str, &str)],
+    configure: impl FnOnce(&mut Command),
 ) -> (Vec<serde_json::Value>, Vec<oxa_fake::Recorded>) {
     let server = FakeServer::start(turns, FakeOpts::default()).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
@@ -88,14 +93,14 @@ fn run_batch_with_env(
         .args(args)
         .current_dir(env.work().join("project"))
         .env_clear()
-        .envs(env.envs(&server.url()))
-        .envs(extra.iter().copied());
+        .envs(env.envs(&server.url()));
     if let Some(path) = path {
         command.env("PATH", path);
     }
+    configure(&mut command);
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        tx.send(command.output().unwrap()).unwrap();
+        tx.send(confirm::output(command)).unwrap();
     });
     let out = rx
         .recv_timeout(std::time::Duration::from_secs(90))

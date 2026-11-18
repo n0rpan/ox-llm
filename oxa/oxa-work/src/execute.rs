@@ -12,6 +12,7 @@ pub(crate) struct Runner<'a> {
     pub lock: &'a File,
     pub writer: &'a mut Writer,
     pub observer: &'a dyn CheckpointObserver,
+    pub scrub_note: &'a (dyn Fn(&crate::ProblemNote) -> Option<crate::ProblemNote> + Sync),
     pub base_alias: Option<&'a tree::BaseAlias>,
 }
 impl Runner<'_> {
@@ -77,6 +78,7 @@ impl Runner<'_> {
                     } else {
                         point.prompt.clone()
                     };
+                    let prompt = format!("{prompt}{}", crate::notes::INSTRUCTIONS);
                     let session = state.record.session_id.clone();
                     let task = state.task.clone();
                     let result = worker::run(
@@ -112,6 +114,13 @@ impl Runner<'_> {
                                 state.record.interruption = worker.result.interruption;
                             }
                             state.record.worker = Some(worker.result.clone());
+                            for note in worker.notes.iter().filter_map(self.scrub_note) {
+                                if state.record.problem_notes.len() < 5
+                                    && !state.record.problem_notes.contains(&note)
+                                {
+                                    state.record.problem_notes.push(note);
+                                }
+                            }
                             state.record.session_id = worker.session.clone();
                             worker.failure()
                         }
@@ -201,7 +210,7 @@ impl Runner<'_> {
                         self.advance(state, Step::Saving)?;
                     }
                 }
-                Step::Saving | Step::Finished => return Ok(()),
+                Step::Saving | Step::Finished | Step::Publishing | Step::Reporting => return Ok(()),
             }
         }
     }
