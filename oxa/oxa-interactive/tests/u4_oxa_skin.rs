@@ -638,11 +638,11 @@ fn yolo_toggle_shows_the_flame_the_banner_and_goes_away() {
     );
     let text = term.all_text();
     assert!(
-        text.contains("no prompts, no sandbox, no deny-list or protected paths"),
-        "the banner says that full access removes the file-tool guards too"
+        text.contains("no prompts, dangerous commands run"),
+        "the banner says what yolo drops"
     );
     assert!(
-        text.contains("YOLO full access: no prompts"),
+        text.contains("YOLO: no prompts"),
         "a notice stays in the transcript"
     );
     // Nothing drawn after it was switched off carries the flame.
@@ -667,11 +667,7 @@ fn plan_after_yolo_hides_full_access_badge_and_animation() {
                     typed("/mode auto", &["enter"]),
                 ),
                 step("auto", &["Mode: auto"], typed("/yolo on", &["enter"])),
-                step(
-                    "yolo",
-                    &["YOLO full access: no prompts"],
-                    typed("/mode plan", &["enter"]),
-                ),
+                step("yolo", &["YOLO: no prompts"], typed("/mode plan", &["enter"])),
                 step("plan", &["Mode: plan"], vec![key("ctrl+d")]),
             ],
             |_| {},
@@ -692,8 +688,8 @@ fn plan_after_yolo_hides_full_access_badge_and_animation() {
         );
         assert_eq!(
             plan.matches("YOLO full access").count(),
-            plan.matches("YOLO full access: no prompts").count(),
-            "only the historical notice, not a live full-access status, remains ({skin})"
+            0,
+            "no live full-access status remains in plan ({skin})"
         );
     }
 }
@@ -759,11 +755,7 @@ fn yolo_under_the_plain_look_is_a_footer_status() {
         (100, 30),
         vec![
             step("start", &["oxa v"], typed("/yolo", &["enter"])),
-            step(
-                "on",
-                &["YOLO full access: no prompts", "yolo"],
-                vec![key("ctrl+d")],
-            ),
+            step("on", &["YOLO: no prompts", "yolo"], vec![key("ctrl+d")]),
         ],
         |_| {},
     );
@@ -818,6 +810,20 @@ fn hud_counts_auto_approved_actions_and_reduced_motion_stills_the_flames() {
     );
     for width in 1..=200u16 {
         assert!(visible_width(&oxa_yolo_banner(360, true, width, &theme, Skin::Oxa)) <= width as usize);
+    }
+}
+
+/// #1512 S4: yolo drops the prompts only. The banner must not claim that the guards are off
+/// (no deny-list, no protected paths): the deny-list and protected paths stay on under yolo.
+#[test]
+fn yolo_banner_text_does_not_claim_guards_off() {
+    use oxa_interactive::{oxa_yolo_banner, Skin};
+    let theme = oxa_tui::builtin_theme("dark", oxa_tui::ColorMode::TrueColor, None).expect("dark");
+    for (ms, motion) in [(0, true), (240, true), (0, false)] {
+        let text = strip_ansi(&oxa_yolo_banner(ms, motion, 160, &theme, Skin::Oxa));
+        assert!(text.contains("no prompts, dangerous commands run"), "{text}");
+        assert!(!text.contains("no deny-list"), "{text}");
+        assert!(!text.contains("protected paths"), "{text}");
     }
 }
 

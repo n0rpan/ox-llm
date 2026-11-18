@@ -623,8 +623,8 @@ impl<'a> Loop<'a> {
                 self.yolo_noticed = true;
                 self.push_notice(
                     Level::Warning,
-                    "YOLO full access: no prompts, bash runs without the sandbox, the file tools \
-                     ignore the deny-list. /mode auto or Ctrl+Alt+O turns it off."
+                    "YOLO: no prompts, dangerous commands run without asking. The deny-list and \
+                     protected paths stay on. /mode auto or Ctrl+Alt+O turns it off."
                         .to_string(),
                 );
             }
@@ -965,10 +965,7 @@ impl<'a> Loop<'a> {
         let mut commands = commands;
         for (name, description) in [
             ("theme", "Select the colour theme"),
-            (
-                "yolo",
-                "Toggle yolo: full access, no prompts, bash without the sandbox",
-            ),
+            ("yolo", "Toggle yolo: no prompts"),
             ("auto", "Auto mode: no prompts; dangerous commands still ask"),
             ("debug", "Write a debug dump"),
             ("exit", "Quit oxa"),

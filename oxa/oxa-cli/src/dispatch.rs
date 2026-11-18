@@ -675,7 +675,7 @@ impl Built {
             // and codemode (E6); see `hooks.rs`.
             hooks: self.hook_sets.hooks.clone(),
             // B3: the file tools keep the deny-list and protected paths in standard/auto.
-            // #202/#314: only user-selected yolo outside plan mode bypasses that floor.
+            // #1512 S4: yolo drops prompts only; the floor stays.
             // #1512 S2: dangerous commands ask in standard and auto; the keys of "always allow"
             // are read from the user settings now, so a save covers the next session too.
             policy: Box::new(

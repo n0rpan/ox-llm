@@ -367,8 +367,8 @@ impl ModePolicy {
     pub fn new() -> ModePolicy {
         ModePolicy::default()
     }
-    /// B3: deny the paths of `guard` to the file tools, whatever the grants, except for
-    /// user-selected full-access `yolo` outside plan mode.
+    /// B3: deny the paths of `guard` to the file tools, whatever the grants and the autonomy
+    /// level (#1512 S4: yolo does not lift it).
     pub fn with_guard(mut self, guard: PathGuard) -> ModePolicy {
         self.hidden = Some(Arc::new(guard.hidden_paths()));
         self.guard = guard;
@@ -377,9 +377,9 @@ impl ModePolicy {
     /// O-182, #202: at `Autonomy::Auto` every `Decision::Ask` of the mode table becomes
     /// `Decision::Allow` and is counted on the switch; the safety floor is unchanged: the
     /// deny-list (B3) and git's files (B4) stay `Deny`, plan mode's `Deny`s stand, and a write
-    /// to the project's protected configuration (`.oxa`) still asks. At `Autonomy::Yolo` (full
-    /// access) every `Ask` and every `Deny` becomes `Allow` outside plan mode (owner's decision
-    /// on #202/#314); only questions count as auto-approved, not bypassed denials (#443).
+    /// to the project's protected configuration (`.oxa`) still asks. At `Autonomy::Yolo` every
+    /// `Ask` and every floor prompt becomes `Allow` and is counted outside plan mode (#1512 S4:
+    /// yolo drops prompts only); every `Deny` stands (the deny-list, git's files, plan mode).
     /// In plan mode it answers as `Auto`.
     pub fn with_yolo(mut self, switch: YoloSwitch) -> ModePolicy {
         self.yolo = Some(switch);
@@ -502,7 +502,8 @@ fn table(mode: Mode, a: &Access, cwd: &Path) -> Decision {
 }
 
 /// A verdict before autonomy is applied: `AskAlways` is the safety floor's prompt, which
-/// `auto` never turns into an allow. Only user-selected `yolo` outside plan mode bypasses it.
+/// `auto` never turns into an allow. Only user-selected `yolo` outside plan mode answers it
+/// with an allow (#1512 S4: a prompt, never a denial).
 #[derive(Clone, Copy)]
 enum Verdict {
     Is(Decision),
@@ -596,13 +597,13 @@ impl Policy for ModePolicy {
             }
             _ => (self.verdict(mode, a, cwd), None),
         };
-        // Owner decision (#202/#314): yolo outside plan mode lifts every file-tool
-        // guard. Resolve and pin first, so the open still uses the checked location.
+        // #1512 S4: yolo outside plan mode drops the floor's prompts (the dangerous command,
+        // the protected configuration) and counts them. Denials always stand: the deny-list,
+        // git's files and plan mode are never lifted. Resolve and pin first, so the open still
+        // uses the checked location.
         let full = self.yolo.as_ref().filter(|s| s.full() && mode != Mode::Plan);
         let decision = match verdict {
-            Verdict::Is(Decision::Deny(_)) if full.is_some() => Decision::Allow,
             Verdict::AskAlways if full.is_some() => {
-                // #443: only questions count as auto-approved; bypassed denials do not.
                 full.unwrap().count();
                 Decision::Allow
             }
@@ -675,10 +676,8 @@ impl Policy for ModePolicy {
         self.path_filter_for_mode(Mode::Workspace)
     }
 
-    fn path_filter_for_mode(&self, mode: Mode) -> Option<Arc<dyn PathFilter>> {
-        if mode != Mode::Plan && self.yolo.as_ref().is_some_and(YoloSwitch::full) {
-            return None;
-        }
+    /// #1512 S4: directory walks hide the denied paths under every mode and autonomy level.
+    fn path_filter_for_mode(&self, _mode: Mode) -> Option<Arc<dyn PathFilter>> {
         self.hidden.clone().map(|h| h as Arc<dyn PathFilter>)
     }
 }

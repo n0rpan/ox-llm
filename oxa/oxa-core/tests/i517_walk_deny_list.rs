@@ -199,7 +199,7 @@ fn a_root_reached_through_a_symlink_still_hides_the_deny_list() {
 }
 
 #[test]
-fn yolo_walks_show_credentials_but_auto_and_plan_keep_the_floor() {
+fn yolo_walks_keep_hiding_credentials_like_auto_and_plan() {
     let env = TestEnv::new();
     secrets(&env);
     let calls = [
@@ -207,8 +207,9 @@ fn yolo_walks_show_credentials_but_auto_and_plan_keep_the_floor() {
         ("find", serde_json::json!({"pattern": "*"})),
         ("ls", serde_json::json!({"path": "."})),
     ];
+    // #1512 S4: yolo drops the prompts, not the walk filter: credentials stay hidden everywhere.
     for (autonomy, mode, full) in [
-        (Autonomy::Yolo, Mode::Workspace, true),
+        (Autonomy::Yolo, Mode::Workspace, false),
         (Autonomy::Auto, Mode::Workspace, false),
         (Autonomy::Yolo, Mode::Plan, false),
     ] {

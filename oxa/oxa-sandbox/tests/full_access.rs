@@ -255,6 +255,28 @@ fn os_sandbox_on_hooks_stay_sandboxed_under_yolo() {
     assert!(!target.exists(), "the hook ran outside the wrapped sandbox");
 }
 
+/// #1512 S4: `yolo` drops the prompts, not the network rules. An offline process has no network
+/// under full access: the policy says so, and the command is never started with the user's
+/// network (bwrap with the network unshared, or refused when bwrap is missing).
+#[test]
+fn yolo_offline_still_no_network() {
+    let env = TestEnv::new();
+    let path = std::env::var("PATH").unwrap_or_default();
+    let switch = YoloSwitch::new(Autonomy::Yolo);
+    let sb = FullAccess::new(Arc::new(NoSandbox), switch, &path, env.home(), true, false);
+    assert!(!sb.network(), "offline full access has no network");
+    let s = spec(&env, "true".into(), true);
+    match sb.launch_argv(&s) {
+        // Without bwrap on this machine the offline command is refused instead.
+        Err(_) => {}
+        Ok(argv) => {
+            assert!(argv[0].ends_with("bwrap"), "{argv:?}");
+            assert!(argv.iter().any(|a| a == "--unshare-net"), "{argv:?}");
+            assert!(!argv.iter().any(|a| a == "--share-net"), "{argv:?}");
+        }
+    }
+}
+
 /// #1512 S3: `oxa.sandbox.net = off` holds without the OS sandbox: the command runs through
 /// bwrap with the network unshared, never with the user's network.
 #[test]

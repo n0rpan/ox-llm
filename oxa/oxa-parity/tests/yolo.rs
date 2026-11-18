@@ -1,6 +1,7 @@
 //! O-182, #202: the permission modes end to end with the real binary against the fake engine.
-//! `auto` (the default) removes the prompts and keeps the deny-list and the sandbox; `yolo` is
-//! full access: no prompts, bash without the sandbox, no guard for the file tools;
+//! `auto` (the default) removes the prompts and keeps the deny-list and the sandbox; `yolo` drops
+//! the prompts too, bash runs without the OS sandbox, and the deny-list and protected paths stay on
+//! (#1512 S4);
 //! `standard` asks (and print mode, with nobody to ask, refuses).
 
 use oxa_fake::{FakeOpts, FakeServer, Recorded, ScriptTurn, TestEnv};
@@ -104,27 +105,25 @@ fn the_saved_default_mode_applies_and_a_flag_wins() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("permission mode auto"));
 }
 
-/// The deny-list holds at `auto`; `yolo` removes it (owner's decision on #202): the same write
-/// to `~/.ssh` goes through.
+/// The deny-list holds at `auto` and at `yolo` (#1512 S4, owner decision: yolo drops the prompts
+/// and the in-process guards stay): the same write to `~/.ssh` is refused under both.
 #[test]
-fn auto_keeps_the_deny_list_and_yolo_removes_it() {
+fn auto_and_yolo_keep_the_deny_list() {
     let env = TestEnv::new();
     let ssh = env.home().join(".ssh");
     std::fs::create_dir_all(&ssh).expect("dir");
-    for target in [ssh.join("authorized_keys"), env.home().join(".config/oxc/token")] {
-        let (out, reqs) = run(&env, write_call(&target), &["-p", "--auto", "write it"]);
-        assert!(out.status.success());
-        assert!(!target.exists(), "{target:?} must not be written under --auto");
-        let result = tool_result(&reqs);
-        assert!(
-            result.contains("keys, tokens or agent state"),
-            "the refusal names the deny-list: {result:?}"
-        );
+    for flag in ["--auto", "--yolo"] {
+        for target in [ssh.join("authorized_keys"), env.home().join(".config/oxc/token")] {
+            let (out, reqs) = run(&env, write_call(&target), &["-p", flag, "write it"]);
+            assert!(out.status.success());
+            assert!(!target.exists(), "{target:?} must not be written under {flag}");
+            let result = tool_result(&reqs);
+            assert!(
+                result.contains("keys, tokens or agent state"),
+                "the refusal names the deny-list under {flag}: {result:?}"
+            );
+        }
     }
-    let target = ssh.join("authorized_keys");
-    let (out, _) = run(&env, write_call(&target), &["-p", "--yolo", "write it"]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(target.exists(), "--yolo removes the deny-list of the file tools");
 }
 
 /// `auto` keeps bash in the sandbox; `yolo` runs it without the sandbox.
@@ -403,7 +402,12 @@ fn auto_bash_keeps_session_scratch_between_commands() {
         FakeOpts::default(),
     )
     .unwrap();
-    let out = run_oxa(&env, &srv.url(), &["-p", "--auto", "--sandbox", "save then load"], "");
+    let out = run_oxa(
+        &env,
+        &srv.url(),
+        &["-p", "--auto", "--sandbox", "save then load"],
+        "",
+    );
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let reqs = srv.requests();
     let result = reqs

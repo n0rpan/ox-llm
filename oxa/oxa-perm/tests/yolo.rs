@@ -1,12 +1,16 @@
-//! O-182, #202: `auto` (the old YOLO) and `yolo` (full access). At `auto` every question the
-//! policy would ask is answered with "allow" and counted, and the safety floor does not move: the
-//! deny-list, git's files and plan mode still deny, a write to `.oxa` still asks. At `yolo` the
-//! sandbox of bash is lifted and the file tools keep no guard either (plan mode excepted).
+//! O-182, #202, #1512 S4: `auto` (the old YOLO) and `yolo` (full access). At `auto` every question
+//! the policy would ask is answered with "allow" and counted, and the safety floor does not move:
+//! the deny-list, git's files and plan mode still deny, a write to `.oxa` still asks. At `yolo` the
+//! prompts are dropped as well (the dangerous-command prompt and the protected-configuration
+//! question are answered and counted), but every denial stands: the deny-list, git's files, plan
+//! mode and the directory-walk filter. Owner decision #1512: "yolo drops the approval prompts as
+//! well; the in-process guards stay."
 
 use oxa_fake::TestEnv;
-use oxa_perm::{deny_reasons, ModePolicy, PathGuard};
+use oxa_perm::{deny_reasons, DangerRules, ModePolicy, PathGuard};
 use oxa_proto::{Access, Autonomy, Decision, Mode, Policy, ToolClass, YoloSwitch};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 fn policy(env: &TestEnv, switch: &YoloSwitch) -> ModePolicy {
     ModePolicy::new()
@@ -238,17 +242,14 @@ fn a_child_started_with_auto_allows_a_write_and_still_asks_for_oxa() {
     assert_eq!(switch.approved(), 1, "the asked and the denied are not counted");
 }
 
-/// #202, owner's decision on #314 ("yolo should be yolo"): outside plan mode `yolo` removes
-/// every guard of the file tools: the table's questions, the deny-list, git's files and the
-/// protected configuration (`.oxa`, the home's startup files) are all allowed. Questions are
-/// counted once; overridden denials are not approvals (#443).
+/// #1512 S4 (owner decision): `yolo` outside plan mode answers every question once and counts
+/// it. The prompts go, the denials stay: this test pins the count, the denials are pinned below.
 #[test]
-fn yolo_removes_every_guard_and_counts_only_questions_once() {
+fn yolo_counts_each_question_once() {
     let env = TestEnv::new();
     let switch = YoloSwitch::new(Autonomy::Yolo);
     let p = policy(&env, &switch);
     let cwd = env.work();
-    let home = env.home();
     for mode in [Mode::Workspace, Mode::Ask] {
         // Review of #314: a table Ask turned into Allow is counted once, not by both the
         // floor's `auto` answer and the yolo branch.
@@ -257,19 +258,95 @@ fn yolo_removes_every_guard_and_counts_only_questions_once() {
             assert_eq!(p.decide(mode, a, &cwd), Decision::Allow, "{a:?} in {mode:?}");
             assert_eq!(switch.approved(), before + 1, "{a:?} is counted once");
         }
-        // Owner decision on #314: credentials and git hooks/config are allowed.
-        // #443: overriding a denial is full access, not an auto-approved question.
-        for a in [
-            Access::Read(home.join(".ssh/id_ed25519")),
-            Access::Write(home.join(".aws/credentials")),
-            Access::Write(cwd.join(".git/hooks/x")),
-            Access::Write(cwd.join(".git/config")),
-        ] {
-            let before = switch.approved();
-            assert_eq!(p.decide(mode, &a, &cwd), Decision::Allow, "{a:?} in {mode:?}");
-            assert_eq!(switch.approved(), before, "{a:?}: a bypass is not an approval");
+    }
+    // An ordinary write inside the work tree needed no answer: not counted.
+    let before = switch.approved();
+    p.decide(Mode::Workspace, &Access::Write(cwd.join("a.txt")), &cwd);
+    assert_eq!(switch.approved(), before);
+}
+
+/// #1512 S4: the deny-list stands under `yolo` for reads and writes, in every mode.
+#[test]
+fn yolo_keeps_deny_list_for_read() {
+    let env = TestEnv::new();
+    let switch = YoloSwitch::new(Autonomy::Yolo);
+    let p = policy(&env, &switch);
+    let cwd = env.work();
+    let home = env.home();
+    let sensitive = Decision::Deny(deny_reasons::SENSITIVE);
+    for path in [
+        home.join(".ssh/id_ed25519"),
+        home.join(".aws/credentials"),
+        home.join(".netrc"),
+        env.agent_dir().join("settings.json"),
+    ] {
+        for mode in Mode::ALL {
+            assert_eq!(
+                p.decide(mode, &Access::Read(path.clone()), &cwd),
+                sensitive,
+                "read {path:?} in {mode:?} under yolo"
+            );
         }
-        // What only asked (project config, the home's startup files) is allowed and counted.
+    }
+    assert_eq!(switch.approved(), 0, "a denied read is never counted");
+}
+
+/// #1512 S4: the deny-list stands under `yolo` for writes, in every mode.
+#[test]
+fn yolo_keeps_deny_list_for_write() {
+    let env = TestEnv::new();
+    let switch = YoloSwitch::new(Autonomy::Yolo);
+    let p = policy(&env, &switch);
+    let cwd = env.work();
+    let home = env.home();
+    let sensitive = Decision::Deny(deny_reasons::SENSITIVE);
+    for path in [
+        home.join(".ssh/authorized_keys"),
+        home.join(".aws/credentials"),
+        home.join(".config/oxc/token"),
+        env.agent_dir().join("settings.json"),
+    ] {
+        for mode in Mode::ALL {
+            assert_eq!(
+                p.decide(mode, &Access::Write(path.clone()), &cwd),
+                sensitive,
+                "write {path:?} in {mode:?} under yolo"
+            );
+        }
+    }
+    assert_eq!(switch.approved(), 0, "a denied write is never counted");
+}
+
+/// #1512 S4: git's own files (hooks and config) stay denied under `yolo`, in every mode.
+#[test]
+fn yolo_keeps_git_hooks_and_config_denied() {
+    let env = TestEnv::new();
+    let switch = YoloSwitch::new(Autonomy::Yolo);
+    let p = policy(&env, &switch);
+    let cwd = env.work();
+    let git = Decision::Deny(deny_reasons::GIT_PROTECTED);
+    for rel in [".git/hooks/pre-commit", ".git/hooks/x", ".git/config"] {
+        for mode in Mode::ALL {
+            assert_eq!(
+                p.decide(mode, &Access::Write(cwd.join(rel)), &cwd),
+                git,
+                "write {rel} in {mode:?} under yolo"
+            );
+        }
+    }
+    assert_eq!(switch.approved(), 0, "a denied write is never counted");
+}
+
+/// #1512 S4: the project's configuration and the home's startup files are the floor's
+/// questions. `yolo` answers them with "allow" and counts each one; `auto` still asks.
+#[test]
+fn yolo_auto_allows_protected_config_question_and_counts() {
+    let env = TestEnv::new();
+    let switch = YoloSwitch::new(Autonomy::Yolo);
+    let p = policy(&env, &switch);
+    let cwd = env.work();
+    let home = env.home();
+    for mode in [Mode::Workspace, Mode::Ask] {
         for a in [
             Access::Write(cwd.join(".oxa/settings.json")),
             Access::Write(home.join(".bashrc")),
@@ -279,10 +356,76 @@ fn yolo_removes_every_guard_and_counts_only_questions_once() {
             assert_eq!(switch.approved(), before + 1, "{a:?} is counted once");
         }
     }
-    // An ordinary write inside the work tree needed no answer: not counted.
-    let before = switch.approved();
-    p.decide(Mode::Workspace, &Access::Write(cwd.join("a.txt")), &cwd);
-    assert_eq!(switch.approved(), before);
+    switch.set_level(Autonomy::Auto);
+    assert_eq!(
+        p.decide(
+            Mode::Workspace,
+            &Access::Write(cwd.join(".oxa/settings.json")),
+            &cwd
+        ),
+        Decision::Ask,
+        "auto still asks for the project configuration"
+    );
+}
+
+/// #1512 S4: a dangerous command is a floor prompt. `auto` asks (and counts nothing); `yolo`
+/// drops the prompt and counts it once; plan mode still denies it.
+#[test]
+fn yolo_allows_dangerous_command_without_prompt_and_counts() {
+    let env = TestEnv::new();
+    let switch = YoloSwitch::new(Autonomy::Auto);
+    let p = policy(&env, &switch).with_danger(Arc::new(DangerRules::builtin()), Vec::new());
+    let cwd = env.work();
+    let push = Access::Exec {
+        command: "git push --force origin main".to_string(),
+        net: false,
+    };
+    assert_eq!(p.decide(Mode::Workspace, &push, &cwd), Decision::Ask, "auto asks");
+    assert_eq!(
+        switch.approved(),
+        0,
+        "a floor prompt answered by no one is not counted"
+    );
+
+    switch.set_level(Autonomy::Yolo);
+    assert_eq!(
+        p.decide(Mode::Workspace, &push, &cwd),
+        Decision::Allow,
+        "yolo drops the dangerous-command prompt"
+    );
+    assert_eq!(switch.approved(), 1, "counted once");
+    assert!(
+        matches!(p.decide(Mode::Plan, &push, &cwd), Decision::Deny(_)),
+        "plan mode still denies it"
+    );
+    assert_eq!(switch.approved(), 1);
+}
+
+/// #1512 S4: the walk filter hides the denied paths under every mode and autonomy level.
+#[test]
+fn yolo_path_filter_still_hides_denied_entries() {
+    let env = TestEnv::new();
+    let secret = env.home().join(".ssh/id_test");
+    std::fs::create_dir_all(secret.parent().unwrap()).unwrap();
+    std::fs::write(&secret, "SYNTHETIC").unwrap();
+    let switch = YoloSwitch::new(Autonomy::Yolo);
+    let p = policy(&env, &switch);
+    for level in [Autonomy::Yolo, Autonomy::Auto] {
+        switch.set_level(level);
+        for mode in Mode::ALL {
+            let filter = p
+                .path_filter_for_mode(mode)
+                .unwrap_or_else(|| panic!("{level:?} keeps a walk filter in {mode:?}"));
+            assert!(
+                filter.hides(&secret),
+                "{level:?} {mode:?} walks hide the credential"
+            );
+        }
+        assert!(
+            p.path_filter().unwrap().hides(&secret),
+            "{level:?} default walk filter"
+        );
+    }
 }
 
 /// #202: the same three guarded writes keep their answers in `auto`.
@@ -366,21 +509,47 @@ fn auto_after_yolo_restores_the_floor() {
     );
 }
 
-/// Review of #314: the one-line description shown in the picker, the start notice and stderr
-/// must say what the policy does at `yolo`: every guard is gone (pinned by the tests above).
+/// #1512 S4: the one-line description shown in the picker, the start notice and stderr says
+/// what `yolo` drops and what stays on.
 #[test]
-fn yolo_description_says_every_guard_is_gone() {
+fn yolo_description_says_prompts_only() {
     use oxa_proto::PermissionMode;
     let text = PermissionMode::Yolo.describe();
-    assert!(text.contains("without the sandbox"), "{text}");
-    assert!(text.contains("no deny-list"), "{text}");
-    assert!(text.contains("no protected paths"), "{text}");
+    assert_eq!(
+        text,
+        "no prompts: dangerous commands run without asking and bash has no OS sandbox; \
+         the deny-list and protected paths stay on"
+    );
 }
 
-/// Full access also applies to the pinned path used by file tools, including directory walks.
-/// Switching down restores both the deny-list verdict and the walk filter immediately.
+/// #1512 S4: a bypassed denial never existed under `yolo`: every denied access stays `Deny`
+/// and is not counted as an approval (#443).
 #[test]
-fn yolo_pins_credential_symlinks_without_hiding_them_and_auto_restores_the_filter() {
+fn yolo_bypassed_denials_are_not_counted() {
+    let env = TestEnv::new();
+    let switch = YoloSwitch::new(Autonomy::Yolo);
+    let p = policy(&env, &switch);
+    let cwd = env.work();
+    let home = env.home();
+    for mode in [Mode::Workspace, Mode::Ask] {
+        for a in [
+            Access::Read(home.join(".ssh/id_ed25519")),
+            Access::Write(home.join(".aws/credentials")),
+            Access::Write(cwd.join(".git/config")),
+        ] {
+            assert!(
+                matches!(p.decide(mode, &a, &cwd), Decision::Deny(_)),
+                "{a:?} in {mode:?} stays denied under yolo"
+            );
+        }
+    }
+    assert_eq!(switch.approved(), 0, "denials are not approvals");
+}
+
+/// #1512 S4: a credential symlink is pinned to its real path and denied under `yolo`, and the
+/// pin is still the checked location.
+#[test]
+fn yolo_pins_credential_symlinks_and_denies_them() {
     let env = TestEnv::new();
     let cwd = env.work();
     let secret = env.home().join(".ssh/id_test");
@@ -392,20 +561,8 @@ fn yolo_pins_credential_symlinks_without_hiding_them_and_auto_restores_the_filte
     let p = policy(&env, &switch);
     for a in [Access::Read(alias.clone()), Access::Write(alias.clone())] {
         let (decision, pin) = p.decide_pinned(Mode::Workspace, &a, &cwd);
-        assert_eq!(decision, Decision::Allow);
+        assert_eq!(decision, Decision::Deny(deny_reasons::SENSITIVE), "{a:?}");
         assert_eq!(pin.as_deref(), Some(secret.as_path()));
     }
-    assert_eq!(switch.approved(), 0, "#443: bypassed denials are not approvals");
-    let visible = || p.path_filter().is_none_or(|f| !f.hides(&secret));
-    assert!(visible(), "yolo directory walks must not hide credentials");
-    assert!(
-        p.path_filter_for_mode(Mode::Plan).unwrap().hides(&secret),
-        "plan mode keeps the filter even while the switch is yolo"
-    );
-    switch.set_level(Autonomy::Auto);
-    assert!(!visible(), "auto directory walks restore the credential filter");
-    assert_eq!(
-        p.decide_pinned(Mode::Workspace, &Access::Read(alias), &cwd).0,
-        Decision::Deny(deny_reasons::SENSITIVE)
-    );
+    assert_eq!(switch.approved(), 0, "a denied symlink is not an approval");
 }
