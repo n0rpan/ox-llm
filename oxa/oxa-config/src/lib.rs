@@ -16,6 +16,7 @@
 //! * Keys and precedence are pi's (settings.md); oxa's own keys live under `oxa.*`.
 #![forbid(unsafe_code)]
 
+mod descriptor;
 mod dirs;
 mod env;
 mod keybindings;
@@ -24,6 +25,10 @@ mod profile;
 mod schema;
 mod settings;
 
+pub use descriptor::{
+    descriptor, descriptors, fields_of, in_group, Apply, Control, Descriptor, Group, Item, MapKind, Options,
+    Range, Unit, WebEdit,
+};
 pub use dirs::dirs_from_env;
 pub use env::{env_flag, Env, EnvFlag, EnvVar, ENV_TABLE, FALSE_WORDS, TRUE_WORDS};
 pub use keybindings::{ActionDef, Keymap};
