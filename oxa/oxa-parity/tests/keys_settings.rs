@@ -3666,6 +3666,10 @@ fn key_016() {
     drop(t);
     // alt+up brings the queued messages back into the editor; they are not sent.
     let t = Setup::new()
+        .fake(tui::FakeOpts {
+            done_gap_ms: 2500,
+            ..tui::FakeOpts::default()
+        })
         .script(&[held("answer A", 2500), text("unused")])
         .start();
     t.type_text("one");
@@ -3679,15 +3683,18 @@ fn key_016() {
     t.key("alt+up");
     t.wait_editor("steer me");
     t.wait_text("answer A");
-    t.settle();
+    // The answer is visible before the turn ends. Ctrl+C would abort an active turn,
+    // so clear the single restored line with an editor key and wait for the worker's
+    // read-only acknowledgement before submitting the next prompt.
+    t.key("ctrl+u");
+    t.wait_editor("");
+    t.wait_worker_reply_end("key016-after-dequeue.html");
     assert_eq!(
         t.prompts(),
         vec!["one".to_string()],
         "the dequeued message was not sent"
     );
     // Witness: the next prompt is the second request.
-    t.key("ctrl+c");
-    t.wait_editor("");
     t.prompt("two", "unused");
     assert_eq!(t.prompts(), vec!["one".to_string(), "two".to_string()]);
     drop(t);

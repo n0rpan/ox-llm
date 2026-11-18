@@ -154,9 +154,12 @@ pub(crate) fn run(
     let mut previous = None;
     loop {
         let (binding, uid) = binding(dirs, cwd, env)?;
-        let board = lead_input::board_and_app_quota(board_path, uid)
-            .map(|(board, _)| board)
-            .unwrap_or_default();
+        let (board, cause) = match lead_input::board_and_app_quota(board_path, uid) {
+            Ok((board, _)) => (board, None),
+            // The default board keeps held asks and the stale policy; only a
+            // fixed allowlisted cause and its hint reach operator status.
+            Err(error) => (Board::default(), Some(lead_input::board_cause(error))),
+        };
         let now_ms = oxa_proto::time::now_ms();
         let mut state = match tick(&binding, &board, now_ms) {
             Ok(state) => state,
@@ -166,6 +169,10 @@ pub(crate) fn run(
             }
             Err(error) => return Err(error),
         };
+        if let Some(cause) = cause {
+            state["cause"] = cause.text().into();
+            state["hint"] = cause.hint().into();
+        }
         if !lead_page::stale(&board, now_ms / 1000) {
             state["board_observed_at"] = board.observed_at.into();
         }

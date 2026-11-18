@@ -56,7 +56,8 @@ fn private_directory(path: &Path, uid: u32) -> Result<(), OxaError> {
     Ok(())
 }
 
-fn selection(dirs: &Dirs, uid: u32) -> Result<Option<String>, OxaError> {
+/// The owner-private user settings, or `None` when no settings file exists.
+fn user_settings(dirs: &Dirs, uid: u32) -> Result<Option<Value>, OxaError> {
     let path = dirs.settings_file();
     match fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -71,7 +72,15 @@ fn selection(dirs: &Dirs, uid: u32) -> Result<Option<String>, OxaError> {
     if bytes.len() as u64 > MAX_SETTINGS {
         return Err(unavailable());
     }
-    let settings: Value = serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|_| unavailable())
+}
+
+fn selection(dirs: &Dirs, uid: u32) -> Result<Option<String>, OxaError> {
+    let Some(settings) = user_settings(dirs, uid)? else {
+        return Ok(None);
+    };
     let Some(id) = settings.pointer("/oxa/lead/sessionId") else {
         return Ok(None);
     };
@@ -80,6 +89,26 @@ fn selection(dirs: &Dirs, uid: u32) -> Result<Option<String>, OxaError> {
         .filter(|id| id.len() <= 128 && crate::args::valid_session_id(id))
         .ok_or_else(unavailable)?;
     Ok(Some(id.to_owned()))
+}
+
+/// The user-only explicit model choice for the Lead conversation, read through the
+/// same owner-private settings file as the session ID. HTTP, project and prompt
+/// input never supply it; `None` keeps the ordinary startup model.
+fn lead_model(dirs: &Dirs, uid: u32) -> Result<Option<String>, OxaError> {
+    let Some(settings) = user_settings(dirs, uid)? else {
+        return Ok(None);
+    };
+    let Some(model) = settings.pointer("/oxa/lead/model") else {
+        return Ok(None);
+    };
+    let model = model
+        .as_str()
+        .filter(|model| !model.is_empty() && model.len() <= 128)
+        .ok_or_else(unavailable)?;
+    if model.chars().any(char::is_control) {
+        return Err(unavailable());
+    }
+    Ok(Some(model.to_owned()))
 }
 
 fn read_line(reader: &mut impl BufRead) -> Result<Vec<u8>, OxaError> {
@@ -318,6 +347,10 @@ impl LeadOwnerBinding {
         args.no_extensions = true;
         args.no_tools = true;
         args.no_skills = true;
+        // Prepare through the ordinary gateway, then require the configured Lead
+        // route to match its resolved model ID exactly.
+        let route = lead_model(dirs, binding.uid)?;
+        args.model = route.clone();
         let interactive = mode == RunMode::Interactive;
         prepare(
             args,
@@ -332,7 +365,21 @@ impl LeadOwnerBinding {
             Default::default(),
             Some((&binding.session, store)),
         )
-        .map_err(|_| unavailable())
+        // A configured route the normal selector cannot resolve is reported as
+        // itself; every other preparation failure keeps the bounded refusal.
+        .map_err(|error| match (&route, error.code) {
+            (Some(_), oxa_proto::codes::NOT_FOUND) => error,
+            _ => unavailable(),
+        })?;
+        if let Some(route) = route.as_deref() {
+            if prep.built.model.as_deref() != Some(route) {
+                return Err(OxaError::new(
+                    codes::NOT_FOUND,
+                    "The configured Lead model ID must match exactly",
+                ));
+            }
+        }
+        Ok(prep)
     }
 
     pub(super) fn session_ref(&self) -> &SessionRef {

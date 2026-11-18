@@ -126,6 +126,7 @@ impl Runner<'_> {
                         self.binary,
                         self.policy,
                         self.lock,
+                        state.native_binding.as_ref(),
                     )?;
                     let point = state
                         .execution
@@ -173,6 +174,7 @@ impl Runner<'_> {
                     let launch_revision = state.record.checkpoint_revision;
                     let result = worker::run(
                         self.binary,
+                        self.repo,
                         &tree,
                         &task,
                         &prompt,

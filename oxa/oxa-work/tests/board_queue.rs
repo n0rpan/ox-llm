@@ -188,6 +188,7 @@ fn the_owner_journal_matches_only_the_previously_queued_head_and_group() {
                     landing: BTreeMap::from([(
                         42,
                         LandingDecision {
+                            hold_intervention: None,
                             next: Next::AlreadyQueued,
                             queue_alarm: false,
                             latest_reviews: LatestReviews::Clear,
@@ -272,6 +273,7 @@ fn the_owner_journal_matches_only_the_previously_queued_head_and_group() {
                     landing: BTreeMap::from([(
                         42,
                         LandingDecision {
+                            hold_intervention: None,
                             next: if queued.is_some() {
                                 Next::AlreadyQueued
                             } else if reviews == LatestReviews::Unresolved {

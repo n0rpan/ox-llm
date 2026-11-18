@@ -62,6 +62,12 @@ impl StuckPoint {
         }
         Ok(Self(format!("{:x}", Sha256::digest(identity))))
     }
+
+    /// Scope runtime advice to the original task lease without persisting its raw ID.
+    pub fn for_lease(scope: &[u8; 32], identity: &[u8]) -> Result<Self, OxaError> {
+        let point = Self::from_evidence(identity)?;
+        Ok(Self(format!("{}/{}", lease_key(scope), point.0)))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,7 +96,10 @@ pub enum AdviceAdmission {
 }
 
 #[derive(Default)]
-pub struct AdviceHistory(BTreeMap<StuckPoint, AdviceReceipt>);
+pub struct AdviceHistory {
+    receipts: BTreeMap<StuckPoint, AdviceReceipt>,
+    delivery_order: Vec<StuckPoint>,
+}
 
 impl AdviceHistory {
     /// Load under the Session's existing writer lock. A reservation seen on
@@ -109,14 +118,17 @@ impl AdviceHistory {
             if in_wire != (receipt.phase == AdvicePhase::Delivered) {
                 return Err(invalid());
             }
-            let previous = history.0.get(&receipt.grant.point);
+            let previous = history.receipts.get(&receipt.grant.point);
             match previous {
                 None if receipt.phase == AdvicePhase::Reserved => {}
                 Some(previous) if previous.grant == receipt.grant && previous.phase.allows(receipt.phase) => {
                 }
                 _ => return Err(invalid()),
             }
-            history.0.insert(receipt.grant.point.clone(), receipt);
+            if receipt.phase == AdvicePhase::Delivered {
+                history.delivery_order.push(receipt.grant.point.clone());
+            }
+            history.receipts.insert(receipt.grant.point.clone(), receipt);
         }
         Ok(history)
     }
@@ -135,17 +147,17 @@ impl AdviceHistory {
             return AdviceAdmission::Disabled;
         };
         let failed = self
-            .0
+            .receipts
             .values()
             .filter(|receipt| receipt.grant.worker == worker && receipt.phase == AdvicePhase::Failed)
             .count();
         if worker < AdviceTier::Top && failed >= usize::from(policy.failures_before_escalation.get()) {
             return AdviceAdmission::Escalate;
         }
-        if self.0.contains_key(&point) {
+        if self.receipts.contains_key(&point) {
             return AdviceAdmission::AlreadyRequested;
         }
-        if self.0.len() >= usize::from(policy.max_calls.get()) {
+        if self.receipts.len() >= usize::from(policy.max_calls.get()) {
             return AdviceAdmission::LimitReached;
         }
         let Some(advisor) = advisor
@@ -165,8 +177,20 @@ impl AdviceHistory {
         })
     }
 
+    /// Never attribute the current check to an older, superseded delivery.
+    pub fn pending_delivery(&self, scope: &[u8; 32]) -> Option<&AdviceReceipt> {
+        let key = lease_key(scope);
+        let point = self
+            .delivery_order
+            .iter()
+            .rev()
+            .find(|point| point.0.split_once('/').is_some_and(|(scope, _)| scope == key))?;
+        self.receipt(point)
+            .filter(|receipt| receipt.phase == AdvicePhase::Delivered)
+    }
+
     pub fn receipt(&self, point: &StuckPoint) -> Option<&AdviceReceipt> {
-        self.0.get(point)
+        self.receipts.get(point)
     }
 }
 
@@ -230,11 +254,10 @@ impl AdviceReceipt {
         let pool = get("pool")?;
         let worker = AdviceTier::parse(get("worker")?)?;
         let tier = AdviceTier::parse(get("tier")?)?;
-        if point.len() != 64
-            || !point
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-            || tier <= worker
+        if !point.split_once('/').map_or_else(
+            || digest(point),
+            |(scope, identity)| digest(scope) && digest(identity),
+        ) || tier <= worker
             || !valid_label(model)
             || !valid_label(pool)
         {
@@ -270,6 +293,17 @@ impl AdvicePhase {
                 | (Self::Delivered, Self::Resolved | Self::Failed)
         )
     }
+}
+
+fn digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn lease_key(scope: &[u8; 32]) -> String {
+    format!("{:x}", Sha256::digest(scope))
 }
 
 fn valid_label(value: &str) -> bool {

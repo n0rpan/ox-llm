@@ -89,6 +89,7 @@ fn advisor_dispatch_uses_scrubbed_diagnostics_while_the_worker_keeps_the_origina
         lease_identity: [3; 32],
         objective: "Review the change for fixtureperson.".into(),
         worker: AdviceTier::Bulk,
+        done_checks_after: NonZeroU32::MIN,
         policy: AdvicePolicy {
             triggers: vec![AdviceTrigger::RepeatGuard],
             max_calls: NonZeroU16::MIN,

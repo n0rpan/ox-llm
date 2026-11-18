@@ -66,6 +66,52 @@ fn legacy_shadow_keeps_its_read_only_resource_floor() {
 }
 
 #[test]
+fn one_shot_lead_tail_reaches_the_registered_chat_command() {
+    let parse =
+        |args: &[&str]| oxa_cli::parse_args(&args.iter().map(|s| (*s).into()).collect::<Vec<_>>(), &[]);
+    for (args, id, tail) in [
+        (
+            vec!["lead", "one-shot", "owner", "message"],
+            oxa_interactive::command_registry::CommandId::Lead,
+            vec!["one-shot", "owner", "message"],
+        ),
+        (
+            vec!["--offline", "lead", "one-shot message"],
+            oxa_interactive::command_registry::CommandId::Lead,
+            vec!["one-shot message"],
+        ),
+        (
+            vec!["lead", "chat", "status"],
+            oxa_interactive::command_registry::CommandId::LeadChat,
+            vec!["status"],
+        ),
+        (
+            vec!["lead", "serve"],
+            oxa_interactive::command_registry::CommandId::LeadServe,
+            vec![],
+        ),
+    ] {
+        let parsed = parse(&args).unwrap();
+        assert!(
+            matches!(
+                &parsed.subcommand,
+                Some(oxa_cli::Subcommand::Registered(parsed_id, words))
+                    if *parsed_id == id && words.0 == tail
+            ),
+            "{args:?}"
+        );
+        assert!(!parsed.lead && !parsed.shadow, "{args:?}");
+    }
+    // The named lead children stay on their own surface declarations and the
+    // preset keeps its own spelling.
+    assert!(parse(&["lead", "board"]).is_err());
+    assert!(parse(&["lead", "status"]).is_err());
+    let shadow = parse(&["lead", "--shadow", "-p", "task"]).unwrap();
+    assert!(shadow.lead && shadow.shadow && shadow.subcommand.is_none());
+    assert!(parse(&["lead"]).is_ok());
+}
+
+#[test]
 fn chat_status_reads_the_protected_board_without_calling_the_provider() {
     use std::{fs, os::unix::fs::PermissionsExt};
 

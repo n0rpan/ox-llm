@@ -1,7 +1,7 @@
 //! Immutable native attempt receipts in the existing protected assignment row.
 use super::*;
 
-#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct NativeBinding {
     pub number: u64,

@@ -8,6 +8,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+pub mod owner_cli;
+
 const LINE_CAP: usize = 64 * 1024;
 const DIAGNOSTIC_CAP: usize = 8192;
 
@@ -82,6 +84,7 @@ impl Worker {
 
 pub(crate) fn run(
     binary: &Path,
+    source: &Path,
     root: &Path,
     task: &Task,
     prompt: &str,
@@ -108,15 +111,20 @@ pub(crate) fn run(
     command
         .env("PATH", &policy.host_path)
         .env_remove("OXA_TRUST_PROJECT")
+        .env_remove(crate::WORKTREE_TRUST_SOURCE_ENV)
         .current_dir(root)
         .args([
-            "-na",
             "--mode=json",
             "--model",
             &task.model,
             "--max-time",
             &remaining.as_secs_f64().to_string(),
         ]);
+    if let Some(source) = source.to_str() {
+        command.env(crate::WORKTREE_TRUST_SOURCE_ENV, source);
+    } else {
+        command.arg("-na");
+    }
     if policy.offline {
         command.arg("--offline");
     }

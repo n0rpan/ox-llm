@@ -80,6 +80,9 @@ pub(crate) struct State {
     pub execution: Option<Execution>,
     pub offline: bool,
     pub deadline_at_ms: u64,
+    /// The native admission receipt this attempt ran under; absent for ordinary tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_binding: Option<crate::board::NativeBinding>,
 }
 impl State {
     pub(crate) fn new(task: Task, mut record: Record, offline: bool) -> Self {
@@ -93,6 +96,7 @@ impl State {
             execution: None,
             offline,
             deadline_at_ms,
+            native_binding: None,
         }
     }
 }
@@ -114,7 +118,9 @@ pub(crate) fn load(path: &Path) -> Result<State> {
     let value: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|e| format!("task checkpoint: {e}"))?;
     let fields = value.as_object().ok_or("invalid task checkpoint")?;
-    if fields.len() != 6
+    // `native_binding` is present only for native attempts.
+    let optional = usize::from(fields.contains_key("native_binding"));
+    if fields.len() != 6 + optional
         || [
             "version",
             "record",
