@@ -329,8 +329,8 @@ pub(crate) fn run(args: &[String], dirs: &Dirs, cwd: &Path, out: &mut dyn Write)
     let settings = Settings::load(dirs, cwd, false);
     let prepared = prepare(&settings, &settings, dirs, config, aliases, socket, None)?;
     if let Some(warning) = &prepared.warning {
-        writeln!(out, "{warning}")
-            .and_then(|()| out.flush())
+        // Diagnostic stream: stdout stays machine-readable, its first line is the listener address.
+        writeln!(std::io::stderr(), "{warning}")
             .map_err(|_| OxaError::new(codes::INVALID, "cannot write the sharing warning"))?;
     }
     let stop = CancelToken::new();

@@ -972,3 +972,16 @@ fn unknown_cost_row_closes_later_capped_admission() {
     // Uncapped requests keep working.
     assert!(reopened.reserve(&json!(null), true, &model(), 32).is_ok());
 }
+
+#[test]
+fn budget_reserve_with_null_cap_still_refuses_when_ledger_disabled() {
+    let home = Home::new();
+    let budget = Budget::new(home.ledger());
+    assert_eq!(
+        budget
+            .reserve(&json!(null), false, &model(), 32)
+            .err()
+            .map(|error| (error.status, error.code)),
+        Some((503, "cloud_ledger_unavailable"))
+    );
+}

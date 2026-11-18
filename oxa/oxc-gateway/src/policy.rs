@@ -82,6 +82,15 @@ pub fn before_credentials(
     Ok(())
 }
 
+fn ledger_disabled() -> Refusal {
+    Refusal {
+        status: 503,
+        message: "The request ledger is disabled; cloud calls are blocked until it is enabled.",
+        code: "cloud_ledger_unavailable",
+        param: "model",
+    }
+}
+
 /// Admission math only. An unset cap (`null`) means no budget check: the owner
 /// chose no limit, so the request is admitted and its cost is still recorded. The accounting slice supplies an atomic ledger snapshot
 /// and outstanding holds, and retains the lock through creation of a new hold.
@@ -94,7 +103,12 @@ pub fn daily_budget(
     required: f64,
 ) -> Result<(), Refusal> {
     if cap.is_null() {
-        return Ok(());
+        // Only the cap check is skipped. Metered admission still needs the durable ledger.
+        return if ledger_enabled {
+            Ok(())
+        } else {
+            Err(ledger_disabled())
+        };
     }
     let Some(cap) = cap.as_f64().filter(|n| n.is_finite() && *n > 0.0) else {
         // A configured but unusable cap (zero, negative, non-numeric) is a
@@ -107,12 +121,7 @@ pub fn daily_budget(
         });
     };
     if !ledger_enabled {
-        return Err(Refusal {
-            status: 503,
-            message: "The request ledger is disabled; cloud calls are blocked until it is enabled.",
-            code: "cloud_ledger_unavailable",
-            param: "model",
-        });
+        return Err(ledger_disabled());
     }
     let spent = spent
         .filter(|n| n.is_finite() && *n >= 0.0)
