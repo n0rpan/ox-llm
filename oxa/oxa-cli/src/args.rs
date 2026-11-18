@@ -76,7 +76,18 @@ impl std::fmt::Debug for RegistryArgs {
 
 pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -> bool {
     use oxa_interactive::command_registry::CommandId;
-    !matches!(id, CommandId::Help | CommandId::WorkStatus | CommandId::WorkBoard)
+    // Declared in the registry for discovery, help and surfaces, but parsed and handled by the
+    // legacy path below; the registry route must not take them over.
+    !matches!(
+        id,
+        CommandId::Help
+            | CommandId::WorkStatus
+            | CommandId::WorkBoard
+            | CommandId::Memory
+            | CommandId::MemoryList
+            | CommandId::MemoryShow
+            | CommandId::MemoryRm
+    )
 }
 
 /// Login words can contain a mistakenly pasted callback. Never expose them
