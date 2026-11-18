@@ -422,10 +422,11 @@ nav.tabs .badge.quiet { color:var(--muted); background:var(--raised); }
 
 pub const SCRIPT: &str = r#"const badge=document.getElementById('connection');
 let timer,pending;
+function readerActive(){return document.querySelector('main').contains(document.activeElement)&&document.activeElement.matches('a,button,input,textarea,select,summary,[tabindex]');}
 async function refresh(){
   clearTimeout(timer);
   if(document.hidden)return;
-  if(document.querySelector('main').contains(document.activeElement)&&document.activeElement.matches('a,button,input,textarea,select,summary,[tabindex]')){timer=setTimeout(refresh,15000);return;}
+  if(readerActive()){timer=setTimeout(refresh,15000);return;}
   if(pending)pending.abort();
   const active=new AbortController();pending=active;
   const target=new URL(location.href);target.searchParams.set('fragment','1');
@@ -435,7 +436,7 @@ async function refresh(){
     const doc=new DOMParser().parseFromString(await response.text(),'text/html');
     const next=doc.querySelector('main');
     if(!next)throw new Error('refresh unavailable');
-    if(pending===active){
+    if(pending===active&&!readerActive()){
       const current=document.querySelector('main'),work=current.querySelector('details.home-work');
       const replacement=next.querySelector('details.home-work');
       if(work&&replacement)replacement.open=work.open;
