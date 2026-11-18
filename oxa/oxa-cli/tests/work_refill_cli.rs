@@ -112,6 +112,11 @@ fn live_fix_packet_uses_current_app_context_and_the_original_durable_binding() {
 }
 
 #[test]
+fn live_fork_context_cannot_exhaust_the_budget_before_eligible_work() {
+    durable_publication(true, Some(Leading::LargeFork));
+}
+
+#[test]
 fn live_known_work_is_not_starved_by_twenty_unknown_candidates() {
     durable_publication(true, Some(Leading::Unknown));
 }
@@ -134,6 +139,7 @@ fn live_known_work_is_not_starved_by_twenty_published_identities() {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Leading {
     Fork,
+    LargeFork,
     Unknown,
     RetainedLeases,
     InvalidBranch,
@@ -225,7 +231,12 @@ printf '%s\n' "$*" >> "$0.queries"
 printf 'HTTP/2.0 200 OK\r\n\r\n'
 for context in "$0.context-"*; do
   number="${context##*-}"
-  case "$*" in *"pullRequest(number:$number) {"*) cat "$context"; exit 0 ;; esac
+  case "$*" in
+    *"pullRequest(number:$number) { headRefOid headRefName isCrossRepository }"*)
+      if [ -f "$0.identity-$number" ]; then cat "$0.identity-$number"; else cat "$context"; fi
+      exit 0 ;;
+    *"pullRequest(number:$number) {"*) cat "$context"; exit 0 ;;
+  esac
 done
 cat "$0.reply"
 "#,
@@ -439,7 +450,21 @@ cat "$0.reply"
                     json!(format!("agent/{number}"))
                 };
             context["data"]["repository"]["pullRequest"]["isCrossRepository"] =
-                json!(leading == Some(Leading::Fork));
+                json!(matches!(leading, Some(Leading::Fork | Leading::LargeFork)));
+            if leading == Some(Leading::LargeFork) {
+                let pr = &context["data"]["repository"]["pullRequest"];
+                fs::write(
+                    env.tmp().join(format!("gh.identity-{number}")),
+                    json!({"data":{"repository":{"pullRequest":{
+                        "headRefOid":pr["headRefOid"],"headRefName":pr["headRefName"],
+                        "isCrossRepository":pr["isCrossRepository"]
+                    }}}})
+                    .to_string(),
+                )
+                .unwrap();
+                // An outside contributor controls rich context, not the fixed identity fields.
+                context["data"]["repository"]["pullRequest"]["body"] = json!("x".repeat(4 * 1024 * 1024));
+            }
             fs::write(
                 env.tmp().join(format!("gh.context-{number}")),
                 context.to_string(),
@@ -540,6 +565,19 @@ cat "$0.reply"
             assert!(
                 !queries.contains(&format!("pullRequest(number:{number}) {{")),
                 "inadmissible identities are excluded before context acquisition and the packet cap"
+            );
+        }
+        if leading == Some(Leading::LargeFork) {
+            let queries = fs::read_to_string(env.tmp().join("gh.queries")).unwrap();
+            let identity =
+                format!("pullRequest(number:{number}) {{ headRefOid headRefName isCrossRepository }}");
+            assert!(queries.contains(&identity), "read fixed identity fields first");
+            assert!(
+                queries
+                    .lines()
+                    .filter(|line| line.contains(&format!("pullRequest(number:{number}) {{")))
+                    .all(|line| line.contains(&identity)),
+                "fork rich context must never consume the shared reader budget"
             );
         }
     }
