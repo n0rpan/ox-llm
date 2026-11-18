@@ -274,7 +274,8 @@ fn native_refill_completion(source: NativeSource) {
             "commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}
     }}}).to_string()).unwrap();
     let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
-    let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
+    command
         .current_dir(env.work().join("project"))
         .env_clear()
         .envs(env.envs("http://127.0.0.1:1"))
@@ -292,16 +293,18 @@ fn native_refill_completion(source: NativeSource) {
         .arg(&config)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child.stdin.take().unwrap().write_all(b"synthetic\n").unwrap();
-    let published = child.wait_with_output().unwrap();
-    assert!(
-        published.status.success(),
-        "{}",
-        String::from_utf8_lossy(&published.stderr)
-    );
+        .stderr(Stdio::piped());
+    let mut refill = || {
+        let mut child = command.spawn().unwrap();
+        child.stdin.take().unwrap().write_all(b"synthetic\n").unwrap();
+        let published = child.wait_with_output().unwrap();
+        assert!(
+            published.status.success(),
+            "{}",
+            String::from_utf8_lossy(&published.stderr)
+        );
+    };
+    refill();
     let binding = claims.assignments().unwrap()[&44]
         .data
         .native_binding
@@ -413,7 +416,7 @@ fn native_refill_completion(source: NativeSource) {
     assert!(std::iter::once(requests[0].system.as_str())
         .chain(requests[0].messages.iter().filter_map(|m| m.content.as_deref()))
         .any(|text| text.contains("Synthetic admitted task.")));
-    run_server_records(&env, &server, &args, Some(path), &[], false);
+    run_server_records(&env, &server, &args, Some(path.clone()), &[], false);
     assert_eq!(
         server.requests().len(),
         1,
@@ -423,6 +426,61 @@ fn native_refill_completion(source: NativeSource) {
     assert_eq!(replayed.state.attempts, 1);
     assert!(replayed.state.lease.is_none());
     assert!(replayed.data.native_binding.as_ref() == Some(&binding));
+
+    if source == NativeSource::Reviewed {
+        let first_receipt = storage(&env).join(format!("{}.json", binding.native_task_id));
+        let first_bytes = fs::read(&first_receipt).unwrap();
+        let previous = Path::new(record["worktree"].as_str().unwrap());
+        git(
+            &env,
+            previous,
+            &["commit", "--allow-empty", "-m", "second reviewed round"],
+        );
+        let reviewed = git(&env, previous, &["rev-parse", "HEAD"]);
+        let edit = |file: &Path, pointers: &[&str]| {
+            let mut value: serde_json::Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+            for pointer in pointers {
+                *value.pointer_mut(pointer).unwrap() = reviewed.clone().into();
+            }
+            fs::write(file, serde_json::to_vec(&value).unwrap()).unwrap();
+        };
+        edit(&config, &["/packets/0/revision"]);
+        edit(
+            &tools.join("gh.reply"),
+            &[
+                "/data/repository/pullRequests/nodes/0/headRefOid",
+                "/data/repository/p44/headRefOid",
+            ],
+        );
+        refill();
+        let next = claims.assignments().unwrap()[&44]
+            .data
+            .native_binding
+            .clone()
+            .unwrap();
+        assert_ne!(next.native_task_id, binding.native_task_id);
+        assert_ne!(next.key, binding.key);
+        assert_ne!(next.lease.generation, binding.lease.generation);
+        assert_eq!(next.reviewed_head.as_deref(), Some(reviewed.as_str()));
+        let server = FakeServer::start(vec![ScriptTurn::text("finished")], FakeOpts::default()).unwrap();
+        let result = run_server(&env, &server, &args, Some(path), &[]);
+        assert!(result.status.success(), "{result:?}");
+        assert_eq!(server.requests().len(), 1);
+        let saved: serde_json::Value = serde_json::from_slice(
+            &fs::read(storage(&env).join(format!("{}.json", next.native_task_id))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["execution"]["initial"], reviewed);
+        assert_eq!(saved["task"]["reviewed_pull_request"]["number"], 44);
+        assert_eq!(saved["task"]["reviewed_pull_request"]["head"], reviewed);
+        assert_eq!(saved["record"]["step"], "finished");
+        assert_eq!(fs::read(first_receipt).unwrap(), first_bytes);
+        assert!(git(&env, previous, &["branch", "--show-current"]).is_empty());
+        let row = &claims.assignments().unwrap()[&44];
+        assert_eq!(row.state.attempts, 2);
+        assert!(row.state.lease.is_none());
+        assert!(row.data.native_binding.as_ref() == Some(&next));
+    }
 }
 #[test]
 fn failed_checks_get_exactly_one_retry() {
