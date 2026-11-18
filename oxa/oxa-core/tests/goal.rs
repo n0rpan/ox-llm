@@ -1044,3 +1044,182 @@ fn wait_for_inactive_session_message_keeps_waiting() {
         .iter()
         .any(|m| m.tool_call_id.as_deref() == Some("wait") && m.content.as_deref() == Some("Wait ended.")));
 }
+
+/// The wait-until probe seam: a hook set that answers `until` conditions from a closure.
+type PollFn = Box<dyn Fn(&str, &serde_json::Value) -> Option<Result<Option<String>, String>> + Send + Sync>;
+struct Probe(PollFn);
+impl oxa_proto::Hooks for Probe {
+    fn fire(
+        &self,
+        _p: oxa_proto::HookPoint,
+        _payload: &serde_json::Value,
+        _ui: &mut dyn oxa_proto::Ui,
+    ) -> oxa_proto::HookReply {
+        oxa_proto::HookReply::Continue
+    }
+    fn tools(&self) -> Vec<Arc<dyn oxa_proto::Tool>> {
+        Vec::new()
+    }
+    fn commands(&self) -> Vec<oxa_proto::CommandSpec> {
+        Vec::new()
+    }
+    fn run_command(
+        &self,
+        _name: &str,
+        _args: &str,
+        _ui: &mut dyn oxa_proto::Ui,
+    ) -> Result<(), oxa_proto::OxaError> {
+        Ok(())
+    }
+    fn prompt_sections(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    fn poll_event(&self, kind: &str, args: &serde_json::Value) -> Option<Result<Option<String>, String>> {
+        (self.0)(kind, args)
+    }
+}
+
+/// Deps with one probe hook set and a 1-second poll interval.
+fn probe_deps(env: &TestEnv, engine: Arc<ScriptedEngine>, probe: Probe) -> Deps {
+    let mut d = deps(env, Arc::new(MemStore::new()), engine);
+    d.hooks = vec![Arc::new(probe) as Arc<dyn oxa_proto::Hooks>];
+    d.settings = Settings::from_values(
+        serde_json::json!({"oxa": {"envNote": false, "wait": {"pollSeconds": 1}}}),
+        serde_json::json!({}),
+    );
+    d
+}
+
+#[test]
+fn wait_until_returns_probe_evidence() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let polls = Arc::new(AtomicUsize::new(0));
+    let counter = polls.clone();
+    let probe = Probe(Box::new(
+        move |kind: &str, args: &serde_json::Value| -> Option<Result<Option<String>, String>> {
+            if kind != "ci" || args["sha"].as_str() != Some("abc123") {
+                return None;
+            }
+            if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                Some(Ok(None))
+            } else {
+                Some(Ok(Some("CI green for abc123 (lane).".into())))
+            }
+        },
+    ));
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool(
+            "wait",
+            "wait",
+            r#"{"seconds":60,"reason":"CI probe test","until":{"kind":"ci","sha":"abc123","workflow":"lane"}}"#,
+        ),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"CI evidence seen."}"#,
+        ),
+    ]));
+    let mut session = Session::open(probe_deps(&env, engine.clone(), probe), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let start = std::time::Instant::now();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    // One pending poll, one sleep of pollSeconds, then the done poll: no full-length wait.
+    assert!(start.elapsed() >= std::time::Duration::from_secs(1));
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    assert_eq!(polls.load(Ordering::SeqCst), 2);
+    assert!(engine.requests()[1]
+        .messages
+        .iter()
+        .any(|m| m.tool_call_id.as_deref() == Some("wait")
+            && m.content.as_deref() == Some("CI green for abc123 (lane).")));
+}
+
+#[test]
+fn wait_until_deadline_reports_last_state() {
+    let probe = Probe(Box::new(
+        |kind: &str, _args: &serde_json::Value| -> Option<Result<Option<String>, String>> {
+            (kind == "pr_merged").then_some(Ok(None))
+        },
+    ));
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool(
+            "wait",
+            "wait",
+            r#"{"seconds":2,"reason":"Deadline probe test","until":{"kind":"pr_merged","pr":7}}"#,
+        ),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Deadline reported."}"#,
+        ),
+    ]));
+    let mut session = Session::open(probe_deps(&env, engine.clone(), probe), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let start = std::time::Instant::now();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert!(start.elapsed() >= std::time::Duration::from_secs(2));
+    assert!(engine.requests()[1]
+        .messages
+        .iter()
+        .any(|m| m.tool_call_id.as_deref() == Some("wait")
+            && m.content.as_deref() == Some("Wait ended: deadline; last state: none")));
+}
+
+#[test]
+fn wait_until_unknown_kind_errors_without_sleeping() {
+    let probe = Probe(Box::new(
+        |_kind: &str, _args: &serde_json::Value| -> Option<Result<Option<String>, String>> { None },
+    ));
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool(
+            "wait",
+            "wait",
+            r#"{"seconds":3600,"reason":"Unknown kind test","until":{"kind":"nope"}}"#,
+        ),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Unknown kind reported."}"#,
+        ),
+    ]));
+    let mut session = Session::open(probe_deps(&env, engine.clone(), probe), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let start = std::time::Instant::now();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert!(engine.requests()[1]
+        .messages
+        .iter()
+        .any(|m| m.tool_call_id.as_deref() == Some("wait")
+            && m.content.as_deref() == Some("Unknown wait condition: nope.")));
+}
