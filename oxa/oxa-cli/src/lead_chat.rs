@@ -89,7 +89,9 @@ pub(crate) fn run_fixed(words: &[String], env: &Env, out: &mut dyn Write) -> Res
         .uid();
     let (board, situation) = match prompt {
         Prompt::Status => (
-            protected_source(env, "OXA_LEAD_BOARD_LOG", uid, crate::lead_input::board)?,
+            protected_source(env, "OXA_LEAD_BOARD_LOG", uid, |path, uid| {
+                crate::lead_input::board_and_app_quota(path, uid).map(|(board, _)| board)
+            })?,
             None,
         ),
         _ => (

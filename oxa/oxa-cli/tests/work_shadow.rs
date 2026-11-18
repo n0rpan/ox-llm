@@ -44,7 +44,13 @@ if [ -e expect-input ]; then IFS= read -r expected < expect-input; [ "$GH_TOKEN"
 if [ -e held-pipe ]; then
   (n=0; while [ ! -e release-pipe ] && [ "$n" -lt 450 ]; do sleep 0.1; n=$((n+1)); done) &
 fi
-case " $* " in *' --include '*) printf 'HTTP/2.0 200 OK\r\n\r\n' ;; esac
+case " $* " in
+  *' --include '*)
+    printf 'HTTP/2.0 200 OK\r\n'
+    if [ -e app-quota-headers ]; then cat app-quota-headers; fi
+    printf '\r\n'
+    ;;
+esac
 if [ -e oversized ]; then
   printf '{"data":{"repository":{"pullRequests":{"totalCount":0,"nodes":[]},"padding":"'
   head -c 4194305 /dev/zero | tr '\000' 'a'
@@ -295,16 +301,28 @@ fn board_help_needs_no_repository_or_private_state() {
 #[test]
 fn refreshed_token_can_be_supplied_privately_by_the_caller() {
     let (env, _) = fixture();
-    fs::write(env.work().join("expect-input"), "synthetic-refreshed\n").unwrap();
-    let mut child = command(
-        &env,
-        "work board --shadow --repo example/repo --once --token-stdin",
+    let resets_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 600;
+    fs::write(
+        env.work().join("app-quota-headers"),
+        format!("X-RateLimit-Resource: graphql\r\nX-RateLimit-Limit: 5000\r\nX-RateLimit-Remaining: 123\r\nX-RateLimit-Reset: {resets_at}\r\n"),
     )
-    .stdin(Stdio::piped())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped())
-    .spawn()
     .unwrap();
+    let args = "work board --shadow --repo example/repo --once";
+    assert!(!invoke(&env, &format!("{args} --app-quota-shadow"))
+        .status
+        .success());
+    assert!(invoke(&env, args).status.success());
+    fs::write(env.work().join("expect-input"), "synthetic-refreshed\n").unwrap();
+    let mut child = command(&env, &format!("{args} --token-stdin --app-quota-shadow"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     child
         .stdin
         .take()
@@ -313,6 +331,20 @@ fn refreshed_token_can_be_supplied_privately_by_the_caller() {
         .unwrap();
     let out = child.wait_with_output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let log = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
+    let mut samples = log
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap());
+    assert!(samples.next().unwrap().get("app_quota").is_none());
+    assert_eq!(
+        samples.next().unwrap()["app_quota"],
+        serde_json::json!({
+            "core": null,
+            "graphql": {"limit": 5000, "remaining": 123, "resets_at": resets_at},
+        })
+    );
+    assert!(samples.next().is_none());
+    assert!(!log.contains("synthetic-refreshed"));
 }
 
 #[test]

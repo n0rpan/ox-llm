@@ -2,6 +2,7 @@
 //! These functions return facts, never raw file content or input-bearing diagnostics.
 use oxa_proto::work::{Snapshot, MAX_SNAPSHOT_BYTES};
 use oxa_work::board::{Action, Board, MAX_OPEN_PULL_REQUESTS};
+use oxa_work::shadow::{AppQuota, MAX_LEAD_SAMPLE_BYTES};
 use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
@@ -9,7 +10,6 @@ use std::{
     path::Path,
 };
 
-const MAX_SAMPLE: u64 = 1_048_576;
 // Retain the previous board row ceiling for issue intake.
 const MAX_ISSUE_ROWS: usize = 128;
 type Result<T> = std::result::Result<T, &'static str>;
@@ -34,12 +34,16 @@ pub(crate) fn open(path: &Path, uid: u32) -> Result<File> {
     Ok(file)
 }
 
-/// Read the most recent complete shared Board sample from the shadow producer's JSONL.
-/// Ignore an in-progress/torn final append, but never skip a corrupt complete record.
+#[cfg(test)]
 pub fn board(path: &Path, uid: u32) -> Result<Board> {
+    board_and_app_quota(path, uid).map(|(board, _)| board)
+}
+
+/// Read the most recent complete shadow sample, excluding an interrupted final append.
+pub(crate) fn board_and_app_quota(path: &Path, uid: u32) -> Result<(Board, Option<AppQuota>)> {
     let mut file = open(path, uid)?;
     let length = file.metadata().map_err(|_| "cannot inspect board sample")?.len();
-    let start = length.saturating_sub(MAX_SAMPLE + 1);
+    let start = length.saturating_sub(MAX_LEAD_SAMPLE_BYTES + 1);
     file.seek(SeekFrom::Start(start))
         .map_err(|_| "cannot seek board sample")?;
     let mut tail = Vec::new();
@@ -55,7 +59,7 @@ pub fn board(path: &Path, uid: u32) -> Result<Board> {
         return Err("board sample exceeds limit");
     }
     let line = &tail[previous.map_or(0, |p| p + 1)..end];
-    if line.len() as u64 > MAX_SAMPLE {
+    if line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
         return Err("board sample exceeds limit");
     }
     let sample: serde_json::Value = serde_json::from_slice(line).map_err(|_| "invalid board sample")?;
@@ -82,7 +86,10 @@ pub fn board(path: &Path, uid: u32) -> Result<Board> {
     {
         return Err("invalid board sample entries");
     }
-    Ok(board)
+    let app_quota = sample
+        .get("app_quota")
+        .and_then(|quota| serde_json::from_value(quota.clone()).ok());
+    Ok((board, app_quota))
 }
 
 /// Consume the runner's existing versioned situation document, not worker transcripts/logs.
@@ -191,7 +198,7 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(board(&path, uid).is_err());
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-        let mut oversized = vec![b'x'; MAX_SAMPLE as usize + 2];
+        let mut oversized = vec![b'x'; MAX_LEAD_SAMPLE_BYTES as usize + 2];
         oversized.push(b'\n');
         fs::write(&path, oversized).unwrap();
         assert!(board(&path, uid).is_err());
