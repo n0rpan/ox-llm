@@ -390,8 +390,7 @@ impl Settings {
     }
     /// Write `root` to `path` (the user file is private, 0600) and make it the layer in memory.
     fn persist(&mut self, path: &Path, root: Map<String, Value>, project: bool) -> Result<(), OxaError> {
-        let value = Value::Object(root);
-        let mut text = serde_json::to_string_pretty(&value)
+        let mut text = serde_json::to_string_pretty(&root)
             .map_err(|e| OxaError::new(codes::INVALID, format!("cannot serialise settings: {e}")))?;
         text.push('\n');
         // The user file is private to the user; a project file keeps the umask default.
