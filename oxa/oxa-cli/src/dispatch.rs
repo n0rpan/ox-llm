@@ -906,7 +906,6 @@ fn prepare(
             pattern: requested_model.as_deref(),
             scope: owner_scope,
             endpoint: &endpoint.name,
-            model_argument: a.model.is_some() || continued_go.is_some(),
             // Delegated model arguments still need a user-enabled provider:
             // a key or `true` in user settings, never a project file.
             owner_selected: !child.nested()
