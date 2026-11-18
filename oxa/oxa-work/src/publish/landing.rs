@@ -9,7 +9,8 @@ use serde_json::Value;
 use std::{fs::File, path::Path};
 
 const ADD_COMMENT: &str = "mutation($pr:ID!,$body:String!){addComment(input:{subjectId:$pr,body:$body}){
-    commentEdge{node{id repository{id} pullRequest{id} author{__typename
+    commentEdge{node{id repository{id} pullRequest{id headRefOid author{login ... on User{id} ... on Bot{id}}}
+    author{__typename
     ... on User{id} ... on Bot{id}} createdAt}}}}";
 const ENQUEUE: &str = "mutation($pr:ID!,$head:GitObjectID!){enqueuePullRequest(input:{
     pullRequestId:$pr,expectedHeadOid:$head}){mergeQueueEntry{id enqueuedAt
@@ -270,6 +271,9 @@ fn timestamp(value: &Value) -> Option<u64> {
 fn delivery(intent: &NoticeIntent, node: &Value) -> Result<DeliveryReceipt> {
     if node["repository"]["id"].as_str() != Some(&intent.rejection.repository_id)
         || node["pullRequest"]["id"].as_str() != Some(&intent.rejection.pull_request_id)
+        || node["pullRequest"]["headRefOid"].as_str() != Some(&intent.rejection.pr_head)
+        || node["pullRequest"]["author"]["id"].as_str() != Some(&intent.recipient_id)
+        || node["pullRequest"]["author"]["login"].as_str() != Some(&intent.recipient_login)
         || !matches!(node["author"]["__typename"].as_str(), Some("User" | "Bot"))
         || node["author"]["id"].as_str() != Some(&intent.publisher_id)
     {
@@ -363,7 +367,8 @@ case "$*" in
     printf '%s\n' '{"data":{"viewer":{"id":"U_publisher"}}}' ;;
   'api graphql --hostname example.invalid -f query=mutation('*' pr=PR_pull -f body=@synthetic-author '*)
     printf '%s\n' '{"data":{"addComment":{"commentEdge":{"node":{"id":"IC_comment",
-        "repository":{"id":"R_repo"},"pullRequest":{"id":"PR_pull"},
+        "repository":{"id":"R_repo"},"pullRequest":{"id":"PR_pull","author":{"id":"U_author","login":"synthetic-author"},
+        "headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
         "author":{"__typename":"User","id":"U_publisher"},"createdAt":"1970-01-01T01:00:00Z"}}}}}'
     ;;
   *) exit 1 ;;
@@ -393,10 +398,15 @@ esac
         assert!(body.ends_with("`suite::test’@unrelated`"));
         assert!(intent.body(&["bad\nname"]).is_err());
         let mut node = json!({
-            "id":"IC_comment","repository":{"id":"R_repo"},"pullRequest":{"id":"PR_pull"},
+            "id":"IC_comment","repository":{"id":"R_repo"},
+            "pullRequest":{"id":"PR_pull","headRefOid":intent.rejection.pr_head,
+                "author":{"id":"U_author","login":"synthetic-author"}},
             "author":{"__typename":"User","id":"U_publisher"},"createdAt":"1970-01-01T01:00:00Z"
         });
         let delivered = delivery(&intent, &node).unwrap();
+        node["pullRequest"]["author"]["id"] = json!("U_wrong_recipient");
+        assert!(delivery(&intent, &node).is_err());
+        node["pullRequest"]["author"]["id"] = json!("U_author");
         node["author"]["id"] = json!("U_unrelated");
         assert!(delivery(&intent, &node).is_err());
         assert!(data(json!({"data":{"addComment": node},"errors":[{}]})).is_err());
