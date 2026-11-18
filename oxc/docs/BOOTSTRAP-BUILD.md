@@ -16,24 +16,7 @@ Classic builds prefetch and SHA-check KleidiAI 1.32.0 and the exact b12189 prebu
 
 ## Run a fresh Flash build after source PASS
 
-Use a new build work directory and the actual SHA256 of your passed `source-result.json`. The source-manifest hash below is the frozen reviewed recipe. The build-manifest hash is revision 2, including compiler-selector normalization. Root must register the unit with its external power/status guard before scheduling it; do not overlap a second heavy job.
-
-```sh
-systemd-run --user --wait --collect \
-  --unit=oxc-bootstrap-build.service \
-  -p CPUQuota=200% -p MemoryHigh=3G -p MemoryMax=4G \
-  -p MemorySwapMax=0 -p TasksMax=160 -p RuntimeMaxSec=2700 \
-  -p TimeoutStopSec=15 -p KillMode=control-group -p SendSIGKILL=yes \
-  -p UMask=0077 -p LimitCORE=0 \
-  --setenv=PYTHONPATH="$PWD/src" --setenv=PATH="$PATH" \
-  --working-directory="$PWD" \
-  /usr/bin/python3 -B -m oxc.bootstrap_build --run --engine flash \
-  --manifest-sha256 8da8e531c0edd5a0a2047539d15311a211853e102dc44ba712bf4b8eb7d192a6 \
-  --source-manifest-sha256 b32df506b99964ce675713d0fa532c4a9e051a77b1d48724c7ef0fd104eba054 \
-  --source-receipt-sha256 YOUR_ACTUAL_SOURCE_RECEIPT_SHA256 \
-  --source-work /path/to/passed-source-work \
-  --work /path/to/new-build-work
-```
+The [archived Flash build procedure](https://github.com/oxstack/ox-llm/blob/e64b985a2ff6abf51d406471382ed95a18fd161c/oxc/docs/BOOTSTRAP-BUILD.md#run-a-fresh-flash-build-after-source-pass) records the legacy Python build command and its inputs. The command's recorded manifest digest differs from the archived build manifest, so the archived executor refuses that invocation. The [native install and upgrade guide](https://github.com/oxstack/ox-llm/blob/main/docs/NATIVE-INSTALL.md) covers v0.2.x product setup.
 
 The guard requires 8 GiB available RAM at build start and a live 2 GiB reserve, canonical exclusive lease, AC/30% start/20% cutoff, sustained-discharge monitoring and own zero swap. CPU/memory/tasks/deadlines are checked against the dedicated user unit. New global page-outs stop the job; existing global page-ins are recorded. Parent deadline is 2600 seconds inside the 2700-second unit. Combined logs are capped at 16 MiB, all children must be reaped, and actual cgroup peak/events are captured. There is no retry/fallback loop.
 

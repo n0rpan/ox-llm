@@ -24,7 +24,10 @@ mod publish;
 mod queue;
 pub use notes::{ProblemNote, ReportRecord};
 pub use publish::{inherit_report_lease, publish, report_notes};
-pub use queue::{native_task, run_queue, NativeQueueOwner, QueueEvent, QueueOptions, QueueRun, QueueStatus};
+pub use queue::{
+    native_task, run_queue, NativeQueueOwner, NativeQueueTarget, QueueEvent, QueueOptions, QueueRun,
+    QueueStatus,
+};
 pub mod mirrors;
 pub mod shadow;
 mod state;
