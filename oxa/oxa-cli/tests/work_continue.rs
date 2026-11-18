@@ -77,6 +77,10 @@ fn existing_branch_fast_forwards_to_base_before_agent() {
 
 fn published_task(env: &TestEnv) -> String {
     setup(env, "[]");
+    publish_prepared_task(env)
+}
+
+fn publish_prepared_task(env: &TestEnv) -> String {
     git(env, &project(env), &["checkout", "-b", "agent/test"]);
     commit_file(env, "pr.txt", "from the pull request\n");
     git(env, &project(env), &["push", "origin", "agent/test"]);
@@ -90,7 +94,7 @@ fn synthetic_github_path(env: &TestEnv) -> String {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     let tools = env.tmp().join("trusted-tools");
     std::fs::DirBuilder::new().mode(0o700).create(&tools).unwrap();
-    let gh = env.write("tmp/trusted-tools/gh", "#!/bin/sh\ntest \"$*\" = 'auth token --hostname github.com' || exit 9\nprintf '%s\\n' SYNTH_CHECKOUT_CREDENTIAL\n");
+    let gh = env.write("tmp/trusted-tools/gh", "#!/bin/sh\ntest \"$*\" = 'auth token --hostname github.com' || exit 9\nprintf looked > \"$0.called\"\nprintf '%s\\n' SYNTH_CHECKOUT_CREDENTIAL\n");
     std::fs::set_permissions(gh, std::fs::Permissions::from_mode(0o755)).unwrap();
     format!("{}:{}", tools.display(), std::env::var("PATH").unwrap())
 }
@@ -299,6 +303,73 @@ fn adopted_save_callbacks_have_no_ambient_authority() {
         std::fs::read_link("/proc/self/ns/net").unwrap().to_str().unwrap()
     );
     assert_eq!(git(&env, tree(&record), &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn adopted_acceptance_has_no_github_authority_and_preserves_network_policy() {
+    for offline in [false, true] {
+        let env = TestEnv::new();
+        setup(
+            &env,
+            r#"["test -f answer.txt && git diff --check && sh acceptance.sh"]"#,
+        );
+        env.write("work/project/acceptance.sh", "true\n");
+        env.write("work/project/.gitignore", "/adopted-acceptance-*\n");
+        git(&env, &project(&env), &["add", "acceptance.sh", ".gitignore"]);
+        git(&env, &project(&env), &["commit", "-m", "fixture acceptance"]);
+        publish_prepared_task(&env);
+        git(
+            &env,
+            &project(&env),
+            &["checkout", "-b", "published", "origin/agent/test"],
+        );
+        env.write("work/project/acceptance.sh", "printf ran > adopted-acceptance-ran\nif test -n \"${GH_TOKEN-}${GITHUB_TOKEN-}\"; then printf exposed > adopted-acceptance-credentials; fi\nreadlink /proc/self/ns/net > adopted-acceptance-network\n");
+        git(&env, &project(&env), &["add", "acceptance.sh"]);
+        git(
+            &env,
+            &project(&env),
+            &["commit", "-m", "fixture published acceptance"],
+        );
+        git(&env, &project(&env), &["push", "origin", "published:agent/test"]);
+        git(&env, &project(&env), &["checkout", "main"]);
+        git(&env, &project(&env), &["branch", "-D", "published"]);
+        git(&env, &project(&env), &["fetch", "origin"]);
+        let args = if offline {
+            vec!["--offline", "work", "../tasks.json"]
+        } else {
+            vec!["work", "../tasks.json"]
+        };
+        let (record, _) = work::run_observed_with(
+            &env,
+            vec![
+                ScriptTurn::tool(
+                    "edit",
+                    "write",
+                    r#"{"path":"answer.txt","content":"synthetic change\n"}"#,
+                ),
+                ScriptTurn::text("done"),
+            ],
+            &args,
+            Some(synthetic_github_path(&env)),
+            |command| {
+                command.envs([
+                    ("OXA_TEST_ISOLATION", "0"),
+                    ("GH_TOKEN", "SYNTH_AMBIENT_CREDENTIAL"),
+                    ("GITHUB_TOKEN", "SYNTH_AMBIENT_CREDENTIAL"),
+                ]);
+            },
+        );
+        assert_eq!(record["outcome"], "done", "{record}");
+        assert!(tree(&record).join("adopted-acceptance-ran").exists(), "{record}");
+        assert!(
+            !tree(&record).join("adopted-acceptance-credentials").exists(),
+            "{record}"
+        );
+        assert!(!env.tmp().join("trusted-tools/gh.called").exists(), "{record}");
+        let network = std::fs::read_to_string(tree(&record).join("adopted-acceptance-network")).unwrap();
+        let host = std::fs::read_link("/proc/self/ns/net").unwrap();
+        assert_eq!(network.trim() == host.to_str().unwrap(), !offline, "{record}");
+    }
 }
 
 #[test]
