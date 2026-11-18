@@ -337,6 +337,70 @@ fn has_tool_markup(text: &str) -> bool {
         .any(|m| text.contains(m))
 }
 
+/// Print mode with the plain session inbox (`oxa send`): [`run_print_outcome`] with
+/// [`headless_inbox`] watched for the whole run.
+pub fn run_print_outcome_with_inbox(
+    session: &mut Session,
+    prompts: Vec<(String, Vec<Part>)>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    agent_dir: &std::path::Path,
+    headless_inbox_enabled: bool,
+) -> Result<RunOutcome, OxaError> {
+    let _inbox = headless_inbox(session, agent_dir, headless_inbox_enabled, err);
+    run_print_outcome(session, prompts, out, err)
+}
+
+/// `--mode json` with the plain session inbox: [`run_json_outcome`] with [`headless_inbox`]
+/// watched for the whole run, after the header record.
+pub fn run_json_outcome_with_inbox(
+    session: &mut Session,
+    prompts: Vec<(String, Vec<Part>)>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    agent_dir: &std::path::Path,
+    headless_inbox_enabled: bool,
+) -> Result<RunOutcome, OxaError> {
+    write_json_header(session, out)?;
+    let _inbox = headless_inbox(session, agent_dir, headless_inbox_enabled, err);
+    run_json_prompts(session, prompts, out, err)
+}
+
+/// The session inbox of a headless run, watched until the returned watcher is dropped. It is
+/// installed only when `enabled` (`oxa.inbox.headless`), the session is persisted and its goal
+/// is pursuing. Each admitted message is an ordinary follow-up of this session; a refused or
+/// oversized message stays on disk. Not used by the managed-steering path.
+fn headless_inbox(
+    session: &Session,
+    agent_dir: &std::path::Path,
+    enabled: bool,
+    err: &mut dyn Write,
+) -> Option<oxa_session::Inbox> {
+    if !enabled || session.state().session_file.is_none() {
+        return None;
+    }
+    if !session
+        .goal()
+        .is_some_and(|goal| goal.status == oxa_session::GoalStatus::Pursuing)
+    {
+        return None;
+    }
+    let id = session.state().session_id;
+    let handle = session.handle();
+    let owner = id.clone();
+    // Like the RPC owner, a message that arrives once the run is wrapping up stays on disk.
+    let watch = oxa_session::Inbox::watch(agent_dir, &id, move |text| {
+        !handle.wrap_up_requested() && handle.follow_up_for(&owner, text)
+    });
+    match watch {
+        Ok(inbox) => Some(inbox),
+        Err(error) => {
+            let _ = writeln!(err, "Session inbox unavailable: {error}");
+            None
+        }
+    }
+}
+
 /// `--mode json`: write the session header record, then every event as a record, for each
 /// prompt in order. Same terminal outcomes as print.
 pub fn run_json_outcome(

@@ -624,8 +624,8 @@ pub fn goal_start(objective: &str) -> String {
 pub const GOAL_DONE_DESCRIPTION: &str =
     "End the active goal with a complete or blocked status and concrete evidence.";
 pub const GOAL_DONE_SCHEMA: &str = r#"{"type":"object","properties":{"status":{"type":"string","enum":["complete","blocked"]},"evidence":{"type":"string","minLength":1,"maxLength":8192}},"required":["status","evidence"],"additionalProperties":false}"#;
-pub const GOAL_WAIT_DESCRIPTION: &str = "Wait without polling for 1 to 3600 seconds, bounded by the remaining goal time budget. Cancellation interrupts the wait.";
-pub const GOAL_WAIT_SCHEMA: &str = r#"{"type":"object","properties":{"seconds":{"type":"integer","minimum":1,"maximum":3600},"reason":{"type":"string","minLength":1,"maxLength":1024}},"required":["seconds","reason"],"additionalProperties":false}"#;
+pub const GOAL_WAIT_DESCRIPTION: &str = "Wait without polling for 1 to 86400 seconds, capped by oxa.wait.maxSeconds and bounded by the remaining goal time budget. Cancellation interrupts the wait. With `until`, the wait checks that condition every oxa.wait.pollSeconds and returns its evidence once it is met; it ends early at the deadline or when input arrives.";
+pub const GOAL_WAIT_SCHEMA: &str = r#"{"type":"object","properties":{"seconds":{"type":"integer","minimum":1,"maximum":86400},"reason":{"type":"string","minLength":1,"maxLength":1024},"until":{"type":"object","properties":{"kind":{"type":"string","minLength":1,"maxLength":64}},"required":["kind"]}},"required":["seconds","reason"],"additionalProperties":false}"#;
 
 #[cfg(test)]
 mod tests {
