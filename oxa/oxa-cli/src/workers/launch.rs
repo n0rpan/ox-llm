@@ -59,6 +59,23 @@ pub struct WorkerSpec {
     pub exclude_tools: Vec<String>,
     /// The parent's resolved session directory, when it is not the default one.
     pub session_dir: Option<std::path::PathBuf>,
+    /// The parent's other narrowing switches (`--offline`, `--tools`, `-nt`, `-nbt`, `--no-mcp`,
+    /// `--no-web-search`, `-ne`): a worker is never wider than its parent.
+    pub narrowing: Narrowing,
+}
+
+/// The parent's narrowing command-line switches, as `args.rs` parses them. Every one reaches the
+/// worker; a new narrowing flag in `args.rs` must be added here too (`worker_inherits_every_narrowing_flag`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Narrowing {
+    pub offline: bool,
+    /// `--tools <list>`: the allowlist.
+    pub tools: Option<Vec<String>>,
+    pub no_tools: bool,
+    pub no_builtin_tools: bool,
+    pub no_mcp: bool,
+    pub no_web_search: bool,
+    pub no_extensions: bool,
 }
 
 /// The name rule: `[a-z0-9][a-z0-9-]{0,39}`.
@@ -153,6 +170,26 @@ pub fn child_argv(
         check_value("excluded tool", &excluded.join(","))?;
         args.push(format!("--exclude-tools={}", excluded.join(",")));
     }
+    let n = &spec.narrowing;
+    if let Some(tools) = &n.tools {
+        let allowed: Vec<&str> = tools.iter().map(String::as_str).collect();
+        for tool in &allowed {
+            check_value("allowed tool", tool)?;
+        }
+        args.push(format!("--tools={}", allowed.join(",")));
+    }
+    for (on, flag) in [
+        (n.offline, "--offline"),
+        (n.no_tools, "--no-tools"),
+        (n.no_builtin_tools, "--no-builtin-tools"),
+        (n.no_mcp, "--no-mcp"),
+        (n.no_web_search, "--no-web-search"),
+        (n.no_extensions, "--no-extensions"),
+    ] {
+        if on {
+            args.push(flag.to_string());
+        }
+    }
     if let Some(dir) = &spec.session_dir {
         check_value("session directory", &dir.to_string_lossy())?;
         args.push(format!("--session-dir={}", dir.display()));
@@ -233,6 +270,7 @@ mod tests {
             max_tokens: None,
             exclude_tools: Vec::new(),
             session_dir: None,
+            narrowing: Narrowing::default(),
         }
     }
 
@@ -366,6 +404,48 @@ mod tests {
         let mut bad = spec.clone();
         bad.exclude_tools = vec!["--yolo".into()];
         assert!(child_argv(&bad, Mode::Workspace, Autonomy::Standard).is_err());
+    }
+
+    #[test]
+    fn worker_inherits_every_narrowing_flag() {
+        let mut spec = spec(None);
+        spec.narrowing = Narrowing {
+            offline: true,
+            tools: Some(vec!["read".into(), "grep".into()]),
+            no_tools: true,
+            no_builtin_tools: true,
+            no_mcp: true,
+            no_web_search: true,
+            no_extensions: true,
+        };
+        let (args, _) = child_argv(&spec, Mode::Workspace, Autonomy::Standard).unwrap();
+        for expected in [
+            "--offline",
+            "--tools=read,grep",
+            "--no-tools",
+            "--no-builtin-tools",
+            "--no-mcp",
+            "--no-web-search",
+            "--no-extensions",
+        ] {
+            assert!(args.iter().any(|a| a == expected), "{expected}: {args:?}");
+        }
+        // The child's own parser accepts every forwarded flag.
+        let mut argv = vec!["oxa".to_string()];
+        argv.extend(args.iter().cloned());
+        assert!(crate::args::parse_args(&argv, &[]).is_ok(), "{argv:?}");
+        let parsed = crate::args::parse_args(&argv, &[]).unwrap();
+        assert!(parsed.offline && parsed.no_tools && parsed.no_builtin_tools);
+        assert!(parsed.no_mcp && parsed.no_web_search && parsed.no_extensions);
+        assert_eq!(parsed.tools, Some(vec!["read".to_string(), "grep".to_string()]));
+        // No narrowing flag, none forwarded.
+        let (plain, _) = child_argv(&self::spec(None), Mode::Workspace, Autonomy::Standard).unwrap();
+        assert!(!plain
+            .iter()
+            .any(|a| a.starts_with("--no-") || a == "--offline" || a.starts_with("--tools")));
+        // A value that would read as a flag is refused.
+        spec.narrowing.tools = Some(vec!["--yolo".into()]);
+        assert!(child_argv(&spec, Mode::Workspace, Autonomy::Standard).is_err());
     }
 
     #[test]

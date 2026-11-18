@@ -267,6 +267,15 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
                             max_tokens: i.args.max_tokens,
                             exclude_tools: i.args.exclude_tools.clone(),
                             session_dir: (sessions_dir != default_sessions).then(|| sessions_dir.clone()),
+                            narrowing: crate::workers::launch::Narrowing {
+                                offline: i.args.offline,
+                                tools: i.args.tools.clone(),
+                                no_tools: i.args.no_tools,
+                                no_builtin_tools: i.args.no_builtin_tools,
+                                no_mcp: i.args.no_mcp,
+                                no_web_search: i.args.no_web_search,
+                                no_extensions: i.args.no_extensions,
+                            },
                         };
                         let workers = Arc::new(WorkerHooks::new(WorkerConfig {
                             oxa_bin: bin,
