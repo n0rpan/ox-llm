@@ -644,6 +644,42 @@ mod tests {
     }
 
     #[test]
+    fn release_checkboxes_do_not_claim_owner_outcome_acceptance() {
+        for (checked, total) in [(0, 0), (0, 1), (2, 2)] {
+            let items: Vec<_> = (0..total)
+                .map(|index| (index < checked, format!("Reported step {index}")))
+                .collect();
+            let html = document_for(
+                Page::Home,
+                &View {
+                    release: Some((19, &items)),
+                    ..Default::default()
+                },
+                100,
+            );
+            let checklist = html
+                .split("<section id=release>")
+                .nth(1)
+                .unwrap()
+                .split("</section>")
+                .next()
+                .unwrap();
+            assert!(checklist.contains(&format!("{checked} / {total} checkboxes reported checked")));
+            assert!(checklist.contains("Owner outcome verification unavailable"));
+            assert!(checklist.contains("release or installability evidence"));
+            assert_eq!(checklist.matches('☑').count(), checked);
+            assert_eq!(checklist.matches('☐').count(), total - checked);
+            for unverified in [
+                "reported complete",
+                "validation requires merge evidence",
+                "Goal complete",
+            ] {
+                assert!(!checklist.contains(unverified), "{unverified}");
+            }
+        }
+    }
+
+    #[test]
     fn navigation_has_real_urls_one_current_destination_and_observed_ask_counts() {
         let mut snapshot = observed_asks();
         for (page, selected) in [
