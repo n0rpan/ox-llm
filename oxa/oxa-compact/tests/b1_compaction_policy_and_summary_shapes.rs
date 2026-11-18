@@ -427,3 +427,11 @@ fn initial_request_uses_initial_instruction() {
 fn rebase_cause_is_compaction() {
     assert_eq!(rebase_why::COMPACTION, "compaction");
 }
+
+/// Both first-summary and update-summary prompts keep identifiers verbatim under Critical Context.
+#[test]
+fn summary_prompts_require_verbatim_identifiers() {
+    let line = "- Keep verbatim: PR and issue numbers, commit SHAs, branch names, CI run ids with their conclusions, worker names and session ids, and open questions awaiting the owner.";
+    assert!(prompt::SUMMARIZATION_PROMPT.contains(line));
+    assert!(prompt::UPDATE_SUMMARIZATION_INSTRUCTIONS.contains(line));
+}

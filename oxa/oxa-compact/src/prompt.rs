@@ -55,6 +55,7 @@ Use this EXACT format:
 
 ## Critical Context
 - [Any data, examples, or references needed to continue]
+- Keep verbatim: PR and issue numbers, commit SHAs, branch names, CI run ids with their conclusions, worker names and session ids, and open questions awaiting the owner.
 - [Or "(none)" if not applicable]
 
 Keep each section concise. Preserve exact file paths, function names, and error messages."#;
@@ -94,6 +95,7 @@ Use this EXACT format:
 
 ## Critical Context
 - [Preserve important context, add new if needed]
+- Keep verbatim: PR and issue numbers, commit SHAs, branch names, CI run ids with their conclusions, worker names and session ids, and open questions awaiting the owner.
 
 Keep each section concise. Preserve exact file paths, function names, and error messages."#;
 
