@@ -13,7 +13,12 @@ const BRANCH: &str = "agent/native";
 const PR_BRANCH: &str = "agent/reviewed";
 
 /// One native admission receipt: each lease generation has its own task id.
-fn admission(ordinal: u32, number: u64, branch: &str, reviewed: Option<&str>) -> oxa_work::board::NativeBinding {
+fn admission(
+    ordinal: u32,
+    number: u64,
+    branch: &str,
+    reviewed: Option<&str>,
+) -> oxa_work::board::NativeBinding {
     let lease = oxa_work::board::Lease {
         holder: "codex:node/slot-1".into(),
         expires_at: 2_000_000_000,
@@ -82,7 +87,14 @@ fn run_native(
     let mut locked = oxa_work::LockedTask::acquire(&task, policy).unwrap();
     let plan = locked.plan_native(project, false, binding).unwrap();
     locked
-        .run_with_notes(project, binary, &plan, false, &|_: &oxa_work::Record| Ok(()), &|_| None)
+        .run_with_notes(
+            project,
+            binary,
+            &plan,
+            false,
+            &|_: &oxa_work::Record| Ok(()),
+            &|_| None,
+        )
         .unwrap()
 }
 
