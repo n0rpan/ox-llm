@@ -36,8 +36,8 @@ mod tree;
 
 pub use clock::{local_time, LocalTime};
 pub use goal::{
-    Goal, GoalBudget, GoalStatus, HeldGoalLease, LeadGoalState, OpenGoalAsk, PendingGoalSteer, SteeringLease,
-    GOAL_ENTRY,
+    CheckResult, Goal, GoalBudget, GoalCheck, GoalPlan, GoalStatus, HeldGoalLease, LeadGoalState,
+    OpenGoalAsk, PendingGoalSteer, SteeringLease, Subgoal, GOAL_ENTRY,
 };
 pub use lifecycle::SpillLifecycleLock;
 pub use lock::{lock_path_of, SessionLock, LOCKED};
