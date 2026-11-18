@@ -829,6 +829,29 @@ fn pasted_redirect_url() {
     assert!(err.message.contains("no thanks"), "{}", err.message);
 }
 
+/// an oversized update is refused before it replaces readable credentials
+#[test]
+fn an_update_over_the_read_limit_leaves_the_store_readable() {
+    let env = TestEnv::new();
+    let path = env.agent_dir().join(AUTH_FILE);
+    let store = TokenStore::open(&path);
+    store
+        .put("svc", "https://a.example/mcp", &sample_auth("at-a"))
+        .expect("stored");
+    let mut huge = sample_auth("at-huge");
+    huge.access_token = Some("t".repeat(2 * 1024 * 1024));
+    let err = store
+        .put("svc", "https://c.example/mcp", &huge)
+        .expect_err("over the read limit");
+    assert!(err.message.contains("left unchanged"), "{}", err.message);
+    assert!(
+        store.get("svc", "https://a.example/mcp").is_some(),
+        "the previous credentials are still readable"
+    );
+    assert!(store.get("svc", "https://c.example/mcp").is_none());
+    assert!(store.delete("svc", "https://a.example/mcp").expect("deleted"));
+}
+
 /// credentials removed
 #[test]
 fn logout_deletes_tokens() {
