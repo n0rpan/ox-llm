@@ -20,7 +20,9 @@ maintainer, who says in the PR when a hardware check is needed.
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
   in the ledger (an unknown cost is recorded as unknown). Limits are owner configuration: with no cap
   configured there is no cap check, and a missing price or usage field is logged and recorded, not
-  refused. Do not flag the absence of a block the owner has not configured.
+  refused. Do not flag the absence of a block the owner has not configured. This applies to
+  authenticated, allowlisted share guests too: their authority, tokens and request quotas stay, an
+  uncapped metered spend by guests is shown as a clear warning in the owner UI, not refused.
 - Go/OpenRouter parsing should tolerate compatible optional fields and stream variations,
   while validating numeric type, sign, range and finiteness before accounting or execution.
 - v0.2.1 has no Python in the product/runtime path; build/test tooling is separate.
