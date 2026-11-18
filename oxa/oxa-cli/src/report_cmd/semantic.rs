@@ -398,7 +398,7 @@ fn decision(value: &Value, candidates: &[Value]) -> Option<Option<u64>> {
     (expected == rejected).then_some(issue)
 }
 
-pub(super) fn judge(input: &str, dirs: &Dirs, settings: &Settings, env: &Env) -> Option<String> {
+pub(crate) fn judge(input: &str, dirs: &Dirs, settings: &Settings, env: &Env) -> Option<String> {
     let (models, _) = ModelsConfig::load(dirs, env);
     let endpoint = crate::dispatch::default_endpoint(&models).ok()?;
     let requested = settings

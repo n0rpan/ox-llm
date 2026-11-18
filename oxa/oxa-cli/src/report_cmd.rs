@@ -347,6 +347,41 @@ pub(super) fn submit_with_storage(
     runner: Runner<'_>,
     out: &mut dyn Write,
 ) -> Result<i32, OxaError> {
+    Ok(
+        match submit_record(draft, storage, settings, ctx, confirm, runner, out)? {
+            Submission::Created(_) | Submission::Commented(_) => 0,
+            Submission::Local(_) => 1,
+            Submission::Disabled => 3,
+        },
+    )
+}
+
+pub(crate) enum Submission {
+    Created(String),
+    Commented(String),
+    Local(String),
+    Disabled,
+}
+
+pub(crate) fn semantic_reporting(settings: &Settings) -> bool {
+    settings.bool(semantic::SETTING, false)
+}
+
+pub(crate) fn report_ledger(dirs: &Dirs) -> PathBuf {
+    dirs.agent_dir.join("issue-drafts/report-ledger")
+}
+
+pub(crate) use semantic::judge as judge_report;
+
+pub(crate) fn submit_record(
+    draft: &Path,
+    storage: &Path,
+    settings: &Settings,
+    ctx: &ScrubCtx,
+    confirm: Confirm<'_>,
+    runner: Runner<'_>,
+    out: &mut dyn Write,
+) -> Result<Submission, OxaError> {
     oxa_proto::check_online("posting the issue with `gh`")?; // P4
     let w = |e: std::io::Error| OxaError::io("cannot write to the terminal", &e);
     let text = std::fs::read_to_string(draft)
@@ -367,19 +402,19 @@ pub(super) fn submit_with_storage(
             "Not posted: the draft contains text the scrubber removes (an email, a home path, a name or a secret). Run `oxa report-issue draft` again."
         )
         .map_err(w)?;
-        return Ok(1);
+        return Ok(Submission::Local("draft needs scrubbing".into()));
     }
     let Some(repo) = report_repo(settings) else {
         writeln!(out, "{REPORT_DISABLED}\nDraft: {}", draft.display()).map_err(w)?;
-        return Ok(3);
+        return Ok(Submission::Disabled);
     };
-    let mut publication = if settings.bool(semantic::SETTING, false) {
+    let mut publication = if semantic_reporting(settings) {
         writeln!(out, "Repository: {repo}\nTitle: {title}\n\n{body}\n").map_err(w)?;
         match semantic::plan(storage, &repo, (&title, &body), ctx, confirm, runner) {
             Ok(publication) => Some(publication),
             Err(reason) => {
                 writeln!(out, "Kept locally at {} ({reason}).", draft.display()).map_err(w)?;
-                return Ok(1);
+                return Ok(Submission::Local(reason.into()));
             }
         }
     } else {
@@ -388,7 +423,7 @@ pub(super) fn submit_with_storage(
             Some(true) => {}
             Some(false) => {
                 writeln!(out, "Not posted.").map_err(w)?;
-                return Ok(1);
+                return Ok(Submission::Local("publication was declined".into()));
             }
             None => {
                 writeln!(
@@ -397,7 +432,9 @@ pub(super) fn submit_with_storage(
                     draft.display()
                 )
                 .map_err(w)?;
-                return Ok(1);
+                return Ok(Submission::Local(
+                    "publication requires confirmation through the controlling terminal".into(),
+                ));
             }
         }
         None
@@ -414,7 +451,7 @@ pub(super) fn submit_with_storage(
         )) != Some(true)
         {
             writeln!(out, "Comment retained locally at {}.", draft.display()).map_err(w)?;
-            return Ok(1);
+            return Ok(Submission::Local("comment requires confirmation".into()));
         }
         number = issue.to_string();
         vec!["issue", "comment", &number, "--repo", &repo]
@@ -436,7 +473,12 @@ pub(super) fn submit_with_storage(
                 }
             }
             writeln!(out, "Posted: {}", stdout.trim()).map_err(w)?;
-            Ok(0)
+            let url = stdout.trim().to_owned();
+            Ok(if issue.is_some() {
+                Submission::Commented(url)
+            } else {
+                Submission::Created(url)
+            })
         }
         Some((code, _)) => {
             writeln!(
@@ -445,11 +487,13 @@ pub(super) fn submit_with_storage(
                 draft.display()
             )
             .map_err(w)?;
-            Ok(1)
+            Ok(Submission::Local(format!(
+                "GitHub did not confirm the write (exit {code})"
+            )))
         }
         None => {
             writeln!(out, "Not posted: the GitHub CLI `gh` could not run.").map_err(w)?;
-            Ok(1)
+            Ok(Submission::Local("GitHub CLI could not run".into()))
         }
     }
 }
@@ -568,7 +612,7 @@ pub fn run_report_issue(
                 if program == "oxa" {
                     return semantic::judge(args.first()?, dirs, &settings, env).map(|reply| (0, reply));
                 }
-                if settings.bool(semantic::SETTING, false) {
+                if semantic_reporting(&settings) {
                     let project = cwd
                         .ancestors()
                         .find(|path| path.join(".git").exists())
@@ -592,7 +636,7 @@ pub fn run_report_issue(
             let draft = cwd.join(draft);
             submit_with_storage(
                 &draft,
-                &dirs.agent_dir.join("issue-drafts/report-ledger"),
+                &report_ledger(dirs),
                 &settings,
                 &ctx,
                 &mut confirm,

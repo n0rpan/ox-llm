@@ -14,7 +14,7 @@ pub struct ReportRecord {
     pub url: Option<String>,
     pub detail: String,
 }
-pub(crate) const INSTRUCTIONS: &str = "\n\nIf you encountered a problem with oxa, oxc or the engine, follow the report-issue skill's privacy rules. Do not post it yourself. End your final reply with <oxa-work-reports>[{\"title\":\"component and symptom\",\"notes\":\"your own brief reproduction, expected and actual behavior\",\"keywords\":[\"component symptom\",\"command error\"]}]</oxa-work-reports>. Supply two or three distinct symptom keyword queries. Never include prompts, transcripts, secrets, personal data or file contents. Omit the block when there is no problem to report. The runner only files notes when its user explicitly requests --report-problems.";
+pub(crate) const INSTRUCTIONS: &str = "\n\nIf you encountered a problem with oxa, oxc or the engine, follow the report-issue skill's privacy rules. Do not post it yourself. End your final reply with <oxa-work-reports>[{\"title\":\"component and symptom\",\"notes\":\"your own brief reproduction, expected and actual behavior\",\"keywords\":[\"component symptom\",\"command error\"]}]</oxa-work-reports>. Include two or three symptom queries. For verifiable notes, include lines `Observed: command or log line` and `Evidence: repository/path:line`. Never include prompts, transcripts, secrets, personal data or file contents. Omit the block when there is no problem to report. The runner only files notes when its user explicitly requests --report-problems.";
 pub(crate) fn parse(output: &str) -> Vec<ProblemNote> {
     let Some((_, rest)) = output.rsplit_once("<oxa-work-reports>") else {
         return vec![];

@@ -1,9 +1,10 @@
 //! The report-issue workflow for an explicit user-launched --report-problems run.
 //! Normal `report-issue submit` retains its controlling-terminal confirmation.
-use crate::report_cmd::{clean_notes, report_repo, save_draft, scrub, Confirm, Runner, ScrubCtx};
+use crate::report_cmd::{self, clean_notes, report_repo, save_draft, scrub, Confirm, Runner, ScrubCtx};
 use oxa_config::{Dirs, Settings};
-use oxa_work::{ProblemNote, ReportRecord};
+use oxa_work::{ProblemNote, Record, ReportRecord};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
     fs::File,
     path::Path,
@@ -16,9 +17,13 @@ pub(crate) fn process(
     cwd: &Path,
     lock: &File,
     gate: &File,
+    semantic_github: bool,
 ) -> Option<(i32, String)> {
     let mut command = Command::new(program);
     command.args(args).current_dir(cwd);
+    if semantic_github {
+        command.env("GH_HOST", "github.com");
+    }
     oxa_work::inherit_report_lease(&mut command, gate).ok()?;
     oxa_work::command_runner_with_stdin(
         command,
@@ -83,14 +88,10 @@ fn matches(note: &ProblemNote, candidate: &Value) -> bool {
         .collect();
     terms.len() >= 3 && terms.iter().all(|word| all.contains(word))
 }
-pub(crate) fn report(
-    note: &ProblemNote,
+fn with_report_lease(
     dirs: &Dirs,
-    settings: &Settings,
-    ctx: &ScrubCtx,
-    offline: bool,
-    confirm: Confirm<'_>,
     mut run: impl FnMut(&str, &[String], &File) -> Option<(i32, String)>,
+    report: impl FnOnce(Runner<'_>) -> Result<ReportRecord, String>,
 ) -> Result<ReportRecord, String> {
     // Retain the queue's per-user reporting lease across every effect.
     use std::os::unix::fs::OpenOptionsExt;
@@ -104,7 +105,83 @@ pub(crate) fn report(
         .open(dirs.agent_dir.join("work-report.lock"))
         .map_err(|e| e.to_string())?;
     gate.lock().map_err(|e| e.to_string())?;
-    let runner: Runner<'_> = &mut |program, args| run(program, args, &gate);
+    report(&mut |program, args| run(program, args, &gate))
+}
+
+pub(crate) fn report_semantic(
+    note: &ProblemNote,
+    origin: (&Record, &Path),
+    dirs: &Dirs,
+    settings: &Settings,
+    ctx: &ScrubCtx,
+    confirm: Confirm<'_>,
+    run_command: impl FnMut(&str, &[String], &File) -> Option<(i32, String)>,
+) -> Result<ReportRecord, String> {
+    let (record, storage) = origin;
+    let title = visible(&note.title);
+    let notes = visible(&note.notes);
+    let run = record.session_id.as_deref().unwrap_or_default();
+
+    // Use the protected project and task identity for caps, and the saved native
+    // session for occurrence attribution. The local work runner shares one daily
+    // allowance across invocations. Worker text supplies only symptom and evidence.
+    let mut key = Sha256::new();
+    key.update(storage.as_os_str().as_encoded_bytes());
+    key.update([0]);
+    key.update(record.id.as_bytes());
+    let task = format!("{:x}", key.finalize());
+    let occurrence = format!("Task: {task}\nWorker: oxa-work\nRun: {run}\n{notes}");
+    with_report_lease(dirs, run_command, |runner| {
+        let (draft, _, _) =
+            save_draft(&title, &occurrence, dirs, ctx, runner).map_err(|err| err.to_string())?;
+        let submission = report_cmd::submit_record(
+            &draft,
+            &report_cmd::report_ledger(dirs),
+            settings,
+            ctx,
+            confirm,
+            runner,
+            &mut std::io::sink(),
+        )
+        .map_err(|err| err.to_string())?;
+        let (disposition, url, detail) = match submission {
+            report_cmd::Submission::Created(url) => ("filed", Some(url), String::new()),
+            report_cmd::Submission::Commented(url) => ("existing_issue", Some(url), String::new()),
+            report_cmd::Submission::Local(reason) => ("local", None, reason),
+            report_cmd::Submission::Disabled => ("local", None, "issue reporting is not configured".into()),
+        };
+        Ok(ReportRecord {
+            disposition: disposition.into(),
+            draft,
+            url,
+            detail,
+        })
+    })
+}
+
+pub(crate) fn report(
+    note: &ProblemNote,
+    dirs: &Dirs,
+    settings: &Settings,
+    ctx: &ScrubCtx,
+    offline: bool,
+    confirm: Confirm<'_>,
+    run: impl FnMut(&str, &[String], &File) -> Option<(i32, String)>,
+) -> Result<ReportRecord, String> {
+    with_report_lease(dirs, run, |runner| {
+        report_legacy(note, dirs, settings, ctx, offline, confirm, runner)
+    })
+}
+
+fn report_legacy(
+    note: &ProblemNote,
+    dirs: &Dirs,
+    settings: &Settings,
+    ctx: &ScrubCtx,
+    offline: bool,
+    confirm: Confirm<'_>,
+    runner: Runner<'_>,
+) -> Result<ReportRecord, String> {
     let note = &ProblemNote {
         title: visible(&note.title),
         notes: visible(&note.notes),
@@ -305,7 +382,7 @@ mod tests {
         let env = TestEnv::new();
         let lock = File::open("/dev/null").unwrap();
         let args = words(&["-c", "1048577", "/dev/zero"]);
-        assert!(process("/usr/bin/head", &args, &env.work(), &lock, &lock).is_none());
+        assert!(process("/usr/bin/head", &args, &env.work(), &lock, &lock, false).is_none());
     }
 
     fn note() -> ProblemNote {

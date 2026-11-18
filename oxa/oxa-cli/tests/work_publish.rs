@@ -152,11 +152,13 @@ fn exercise_save_recovery(test_name: &str, case: SaveRecovery) {
             first.worker.as_ref().unwrap().outcome,
             oxa_work::WorkerOutcome::Done
         ));
-        let reported =
-            oxa_work::report_notes(&task, &policy, &|_: &oxa_work::Record| Ok(()), &mut |_, _, _| {
-                panic!("no notes were emitted by this worker")
-            })
-            .unwrap();
+        let reported = oxa_work::report_notes(
+            &task,
+            &policy,
+            &|_: &oxa_work::Record| Ok(()),
+            &mut |_, _, _, _| panic!("no notes were emitted by this worker"),
+        )
+        .unwrap();
         assert_eq!(reported.step, oxa_work::Step::Saving, "{reported:?}");
         assert_eq!(reported.session_id, first.session_id);
         if case == SaveRecovery::PendingPublish {
@@ -642,6 +644,138 @@ fn green_rerun_can_publish_after_red_remained_local() {
         .contains("pr create"));
 }
 #[test]
+fn semantic_work_report_without_evidence_stays_local() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let path = configure(&env);
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"defaultProjectTrust":"always","oxa":{"reportIssue":{"repo":"example/project","semanticDedupe":true}}}"#,
+    );
+    let gh = env.tmp().join("gh");
+    let script = fs::read_to_string(&gh).unwrap().replace(
+        "  *) exit 7 ;;",
+        "  'issue list') printf '[]' ;;\n  'issue create') printf '%s' 'https://github.com/example/project/issues/2' ;;\n  *) exit 7 ;;",
+    );
+    fs::write(gh, script).unwrap();
+    let text = concat!(
+        "<oxa-work-reports>",
+        r#"[{"title":"oxa work symptom","notes":"Synthetic reproduction","keywords":["oxa work","synthetic symptom"]}]"#,
+        "</oxa-work-reports>",
+    );
+    let record = run_args(
+        &env,
+        vec![ScriptTurn::text(text)],
+        &["work", "../tasks.json", "--report-problems"],
+        Some(path),
+    );
+    let report = &record["reports"][0];
+    assert_eq!(report["disposition"], "local", "{record}");
+    assert!(std::path::Path::new(report["draft"].as_str().unwrap()).is_file());
+    assert!(report["url"].is_null());
+    assert!(report["detail"]
+        .as_str()
+        .unwrap()
+        .contains("Observed and Evidence"));
+    assert!(!env.home().join("gh-calls").exists());
+}
+
+#[test]
+fn semantic_work_reports_file_once_and_comment_on_four_paraphrases() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let path = configure(&env);
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"defaultProjectTrust":"always","oxa":{"reportIssue":{"repo":"example/project","semanticDedupe":true}}}"#,
+    );
+    let gh = env.tmp().join("gh");
+    let script = fs::read_to_string(&gh).unwrap().replace(
+        "  *) exit 7 ;;",
+        r##"  'api repos/example/project') printf 'public' ;;
+  'api repos/example/project/git/ref/heads/main')
+    printf '1234567890abcdef1234567890abcdef12345678' ;;
+  'api -H') printf 'line 1\nline 2\nline 3\nline 4\nreturn an unexpected default\n' ;;
+  'search issues') printf '[]' ;;
+  'issue view')
+    printf '%s' '{"number":2,"title":"Original symptom","body":"Original failure","labels":[]}' ;;
+  'issue create')
+    for fd in /proc/self/fd/*; do
+      if test "$fd" -ef "$HOME/.oxa/agent/work-report.lock"; then
+        touch "$HOME/report-lease-inherited"
+      fi
+    done
+    printf '%s' 'https://github.com/example/project/issues/2' ;;
+  'issue comment')
+    printf '%s' 'https://github.com/example/project/issues/2#issuecomment-3' ;;
+  *) exit 7 ;;"##,
+    );
+    fs::write(gh, script).unwrap();
+    let summaries = [
+        "The worker returned the default",
+        "The result fell back without warning",
+        "Task produced an unexpected default",
+        "The worker ignored the custom result",
+        "Processing emitted the placeholder",
+    ];
+    let notes: Vec<_> = summaries
+        .iter()
+        .map(|summary| {
+            serde_json::json!({
+                "title": summary,
+                "notes": format!("Observed: oxa work: {summary}\nEvidence: src/worker.rs:5"),
+                "keywords": ["worker result", "unexpected fallback"]
+            })
+        })
+        .collect();
+    let mut turns = vec![
+        ScriptTurn::text(&format!(
+            "<oxa-work-reports>{}</oxa-work-reports>",
+            serde_json::json!(notes)
+        )),
+        ScriptTurn::text(r#"{"verified":true,"match":null,"rejected":[]}"#),
+    ];
+    turns.extend((0..4).map(|_| ScriptTurn::text(r#"{"verified":true,"match":2,"rejected":[]}"#)));
+    let (record, requests) = work::run_observed(
+        &env,
+        turns,
+        &["work", "../tasks.json", "--report-problems"],
+        Some(path),
+    );
+    let reports = record["reports"].as_array().unwrap();
+    assert_eq!(reports.len(), 5, "{record}");
+    assert_eq!(reports[0]["disposition"], "filed", "{record}");
+    for report in &reports[1..] {
+        assert_eq!(report["disposition"], "existing_issue", "{record}");
+    }
+    assert_eq!(requests.len(), 6);
+    #[cfg(target_os = "linux")]
+    assert!(env.home().join("report-lease-inherited").is_file());
+    let calls = fs::read_to_string(env.home().join("gh-calls")).unwrap();
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|line| line.starts_with("issue create "))
+            .count(),
+        1
+    );
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|line| line.starts_with("issue comment 2 "))
+            .count(),
+        4
+    );
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|line| line.starts_with("search issues ") && line.contains("--state closed"))
+            .count(),
+        10
+    );
+}
+
+#[test]
 fn a_local_report_retries_without_replaying_the_completed_task() {
     let env = TestEnv::new();
     setup(&env, "[]");
@@ -672,16 +806,29 @@ fn later_publication_and_reporting_do_not_erase_execution_policy() {
     let env = TestEnv::new();
     setup(&env, "[]");
     let path = configure(&env);
+    let mut turns = edits();
+    turns[1] = ScriptTurn::text(concat!(
+        "<oxa-work-reports>",
+        r#"[{"title":"oxa work symptom","notes":"Synthetic reproduction","keywords":["oxa work","synthetic symptom"]}]"#,
+        "</oxa-work-reports>",
+    ));
     run_args(
         &env,
-        edits(),
+        turns,
         &["--offline", "work", "../tasks.json"],
         Some(path.clone()),
     );
     let state_path = state_path(&env);
     for flag in ["--publish", "--report-problems"] {
+        let gh_calls = env.home().join("gh-calls");
+        let before = fs::read(&gh_calls).unwrap_or_default();
         let record = run_args(&env, vec![], &["work", "../tasks.json", flag], Some(path.clone()));
         assert_eq!(record["outcome"], "done", "{record}");
+        if flag == "--report-problems" {
+            assert_eq!(record["reports"][0]["disposition"], "local", "{record}");
+            assert_eq!(record["reports"][0]["detail"], "offline: report retained locally");
+            assert_eq!(fs::read(gh_calls).unwrap_or_default(), before);
+        }
         let state: serde_json::Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
         assert_eq!(state["offline"], true, "{flag} erased execution policy");
     }
