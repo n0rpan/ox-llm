@@ -128,6 +128,50 @@ fn run_server_records(
         .collect()
 }
 #[test]
+fn task_usage_reads_one_checkpoint_without_exposing_the_task_record() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let record = run(&env, vec![ScriptTurn::text("Measured worker")]);
+    assert_eq!(record["task_tokens"]["complete"], true);
+    let dir = storage(&env);
+    std::fs::write(dir.join("unrelated.json"), "not a checkpoint").unwrap();
+    let server = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+    let usage = |id| {
+        let mut rows = run_server_records(&env, &server, &["work", "status", "--usage", id], None, &[], true);
+        assert_eq!(rows.len(), 1);
+        rows.remove(0)
+    };
+    let revision = &record["checkpoint_revision"];
+    assert_eq!(
+        usage("test"),
+        serde_json::json!({"task":"test","checkpoint_revision":revision,"task_tokens":record["task_tokens"]})
+    );
+    assert!(usage("missing").is_null());
+
+    let file = dir.join("test.json");
+    let mut checkpoint: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let partial = serde_json::json!({
+        "attempts":2,"complete_attempts":1,"prompt":null,"completion":0,"cached":null,"complete":false
+    });
+    checkpoint["record"]["task_tokens"] = partial.clone();
+    std::fs::write(&file, serde_json::to_vec(&checkpoint).unwrap()).unwrap();
+    assert_eq!(
+        usage("test"),
+        serde_json::json!({"task":"test","checkpoint_revision":revision,"task_tokens":partial})
+    );
+    checkpoint["record"]
+        .as_object_mut()
+        .unwrap()
+        .remove("task_tokens");
+    std::fs::write(file, serde_json::to_vec(&checkpoint).unwrap()).unwrap();
+    assert_eq!(
+        usage("test"),
+        serde_json::json!({"task":"test","checkpoint_revision":revision,"task_tokens":null})
+    );
+    assert!(server.requests().is_empty());
+}
+
+#[test]
 fn external_checks_run_without_edits_and_retain_worktree() {
     let env = TestEnv::new();
     setup(&env, r#"["printf checked > receipt"]"#);
