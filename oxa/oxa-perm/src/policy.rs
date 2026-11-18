@@ -399,6 +399,9 @@ impl ModePolicy {
 
     /// #1512 S2: the dangerous-command hits of `a`, minus the keys a session or always grant
     /// covers. Only an exec is classified; the generic grants never cover these hits.
+    /// A segment the shell computes at run time (`$VAR`, `$(..)`, backticks) is never covered
+    /// either: the same text names another target next time (`D=$HOME; rm -rf "$D"` after
+    /// `rm -rf "$D"` was granted), so it asks every time.
     fn danger_hits(&self, a: &Access, cwd: &Path) -> Vec<DangerHit> {
         let (Access::Exec { command, .. }, Some(rules)) = (a, &self.danger) else {
             return Vec::new();
@@ -407,6 +410,9 @@ impl ModePolicy {
             .classify(command, cwd, &self.guard)
             .into_iter()
             .filter(|h| {
+                if h.segment.contains('$') || h.segment.contains('`') {
+                    return true;
+                }
                 let key = h.key();
                 !self.danger_grants.contains(&key) && !self.always.contains(&key)
             })

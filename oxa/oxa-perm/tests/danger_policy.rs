@@ -172,3 +172,24 @@ fn danger_policies_compare_their_grants() {
     b.grant_danger(&keys_of(DANGEROUS));
     assert_ne!(a, b, "a danger grant is part of the policy's state");
 }
+
+/// A grant never covers a command the shell computes at run time: `rm -rf "$D"` granted for one
+/// value of `D` would otherwise delete whatever `D` names next time, in every later session for
+/// an always key.
+#[test]
+fn dynamic_segment_grant_never_covers_another_value() {
+    let line = r#"rm -rf "$D""#;
+    let keys = keys_of(line);
+    assert!(
+        !keys.is_empty(),
+        "a variable target is outside until proven inside"
+    );
+    let mut p = policy(keys.clone(), Autonomy::Standard);
+    p.grant_danger(&keys);
+    assert_eq!(p.decide(Mode::Workspace, &exec(line), cwd()), Decision::Ask);
+    assert_eq!(
+        p.decide(Mode::Workspace, &exec(r#"D=$HOME; rm -rf "$D""#), cwd()),
+        Decision::Ask
+    );
+    assert!(!p.danger_ask(&exec(line), cwd()).is_empty());
+}
