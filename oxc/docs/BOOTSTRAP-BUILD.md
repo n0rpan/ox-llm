@@ -39,6 +39,10 @@ The guard requires 8 GiB available RAM at build start and a live 2 GiB reserve, 
 
 A passed `build-result.json` records actual tool versions, effective compiler paths, exact options, dependency identities and new binary SHA256. It remains **`qualified:false`, `models_run:false`, `profiles_enabled:false`**. Build targets include native test executables, but building them does not execute their assertions. Generated version metadata and new toolchains can change binary hashes; do not copy a historical hash into a new profile.
 
-## Historical model-free software checks
+## Run exactly four model-free native checks after build PASS
 
-The retired Python executor, its input manifest, and its test suite are preserved in the archive. Follow the [archived four-check procedure](https://github.com/oxstack/ox-llm/blob/e64b985a2ff6abf51d406471382ed95a18fd161c/oxc/docs/BOOTSTRAP-BUILD.md#run-exactly-four-model-free-native-checks-after-build-pass) from that checkout to reproduce the legacy workflow. A build receipt alone does not qualify a model or runtime. See the [complete finish gate](BOOTSTRAP-PARITY.md).
+The [archived four-check procedure](https://github.com/oxstack/ox-llm/blob/e64b985a2ff6abf51d406471382ed95a18fd161c/oxc/docs/BOOTSTRAP-BUILD.md#run-exactly-four-model-free-native-checks-after-build-pass) preserves the legacy Python runner invocation, its hashed manifest and the receipt requirements. The archived runner executes four fixed Flash test binaries without loading model weights.
+
+Use the [native install and upgrade guide](https://github.com/oxstack/ox-llm/blob/main/docs/NATIVE-INSTALL.md) for v0.2.x installations. The historical procedure records build and check evidence for the corresponding inputs.
+
+After all four pass, architecture byte-identity tests, real default MoE/Q8 and optional Dense/Flash/Q4 qualification, OpenCode/browser/image workflow, private installation/rollback and the right-side widget still need their own clean-install acceptance. [Complete finish gate](BOOTSTRAP-PARITY.md).
