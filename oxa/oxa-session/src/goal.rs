@@ -10,7 +10,7 @@ pub use lead::{HeldGoalLease, LeadGoalState, OpenGoalAsk, PendingGoalSteer, Stee
 pub const GOAL_ENTRY: &str = "oxa.goal.v1";
 const MAX_OBJECTIVE: usize = 64 * 1024;
 const MAX_EVIDENCE: usize = 8 * 1024;
-const CONTROL_FIELDS: [&str; 5] = ["objective", "status", "started_ms", "budget", "evidence"];
+const CONTROL_FIELDS: [&str; 6] = ["objective", "status", "started_ms", "budget", "evidence", "plan"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoalStatus {

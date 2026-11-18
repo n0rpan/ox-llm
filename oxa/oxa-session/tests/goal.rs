@@ -378,8 +378,22 @@ fn goal_plan_reopens_failed_checks_and_requires_verified_acceptance() {
     let entries = store.load(&session).unwrap();
     let mut reopened = Goal::latest(&entries).unwrap().unwrap();
     assert_eq!(reopened, goal);
+    reopened.charge(Some(5), 1, false).unwrap();
+    let mut timeline = entries.clone();
+    timeline.push(entry(
+        "00000002",
+        Some("00000001"),
+        reopened.checkpoint_body(&timeline),
+    ));
+    assert!(Goal::allows_steering(&timeline, 1));
+    reopened.plan.as_mut().unwrap().subgoals[1].board_items.push(21);
+    timeline.push(entry(
+        "00000003",
+        Some("00000002"),
+        reopened.checkpoint_body(&timeline),
+    ));
+    assert!(!Goal::allows_steering(&timeline, 1));
     let plan = reopened.plan.as_mut().unwrap();
-    plan.subgoals[1].board_items.push(21);
     plan.subgoals[1].acceptance[0].result = proof(true, "run:101", 1002);
     assert_eq!(plan.next_subgoal().unwrap().id, "notes");
     plan.subgoals[0].acceptance[0].result = proof(true, "run:102", 1003);
