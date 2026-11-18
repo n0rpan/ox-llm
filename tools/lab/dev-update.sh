@@ -7,9 +7,31 @@ prefix=${1:-"$HOME/oxa-lab/dev"}
 test "$#" -le 1 || { echo 'Usage: dev-update.sh [separate-dev-prefix]' >&2; exit 2; }
 for tool in curl jq gh sha256sum tar flock diff; do command -v "$tool" >/dev/null; done
 case $(uname -m) in aarch64|x86_64) arch=$(uname -m);; *) echo 'Unsupported architecture' >&2; exit 1;; esac
-test ! -L "$prefix"
-[[ $prefix != *$'\n'* && $prefix != *$'\r'* ]]
-mkdir -p -- "$prefix"
+[[ $prefix != *$'\n'* && $prefix != *$'\r'* && /$prefix/ != */../* ]]
+prefix=$(realpath -ms -- "$prefix")
+ensure_ancestor() {
+  local path=$1 parent owner mode
+  if [[ $path != / ]]; then
+    parent=${path%/*}
+    ensure_ancestor "${parent:-/}" || return 1
+  fi
+  if [[ ! -e $path && ! -L $path ]]; then
+    mkdir -m 700 -- "$path" || return 1
+  fi
+  [[ -d $path && ! -L $path ]] || return 1
+  read -r owner mode < <(stat -c '%u %a' -- "$path") || return 1
+  [[ $owner == 0 || $owner == "$EUID" ]] || return 1
+  # A trusted sticky directory protects entries owned by root or this user.
+  (( (8#$mode & 8#022) == 0 || (8#$mode & 8#1000) != 0 ))
+}
+parent=${prefix%/*}
+ensure_ancestor "${parent:-/}" || {
+  echo 'Refusing a dev prefix with an unsafe ancestor directory' >&2
+  exit 1
+}
+if [[ ! -e $prefix && ! -L $prefix ]]; then
+  mkdir -m 700 -- "$prefix"
+fi
 if ! [[ -d $prefix && ! -L $prefix && -O $prefix && $(stat -c %a -- "$prefix") == 700 ]]; then
   echo 'Refusing a dev prefix that is not an owned mode-0700 directory' >&2
   exit 1

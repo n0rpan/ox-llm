@@ -13,6 +13,8 @@ Bash, GNU coreutils/tar, flock, curl, jq and a recent GitHub CLI. No login or sa
 credentials are used. Checksums and provenance must match this repository's main commit
 and dev workflow before activation. The default private prefix is `~/oxa-lab/dev`.
 An optional argument selects another empty or already marked dev prefix. An existing
-prefix must be owned by your user and have mode `0700`. No stable
+prefix must be owned by your user and have mode `0700`. Its path must use real
+directories owned by root or your user. Ancestors writable by others must be sticky.
+No stable
 prefix, service or PATH is changed. Use `~/oxa-lab/dev/bin/oxa`; its receipt is
 `~/oxa-lab/dev/current/receipt.json`. The current and one previous build are retained.
