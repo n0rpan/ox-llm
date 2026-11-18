@@ -1624,11 +1624,8 @@ fn execute(
 /// `/goal`: apply the command on the idle session, show its lines as notices, then run the
 /// prompt it returns (a new objective or a resume), if any.
 fn run_goal(s: &mut Session, args: &str, sink: &mut dyn EventSink, ui: &mut dyn Ui) -> Result<(), OxaError> {
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
     let cmd = oxa_core::goal::parse_goal_command(args);
-    let (lines, prompt) = s.apply_goal_command(cmd, now_ms, sink)?;
+    let (lines, prompt) = s.apply_goal_command(cmd, now_ms(), sink)?;
     for line in lines {
         sink.emit(&notice_event(&line));
     }
