@@ -127,8 +127,7 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
         }
         Page::Item(number) => item(&mut html, view, number, now),
         Page::Chat(prompt) => chat::render(&mut html, view, prompt),
-        Page::Usage => html
-            .push_str("<section><h2>Plans and quotas</h2><p>Usage observations unavailable.</p></section>"),
+        Page::Usage => usage(&mut html, view),
     }
     html.push_str("<footer>Read-only · Chat with the lead is not connected yet.</footer></main>");
     html
@@ -286,6 +285,38 @@ fn item(html: &mut String, view: &View<'_>, number: u64, now: u64) {
         action(row.action), if row.release_pinned { "Release" } else { "Normal priority" },
         lease(row, now), row.attempts_today, board.observed_at);
     html.push_str("<section><h2>Details and changes</h2><p>Title, checks, findings and diff observations unavailable.</p></section>");
+}
+
+fn usage(html: &mut String, view: &View<'_>) {
+    html.push_str("<section id=task-usage><h2>Task usage</h2>");
+    match view.selected_task_usage {
+        None | Some(Err(_)) => html.push_str("<p>Task usage observations unavailable.</p>"),
+        Some(Ok(None)) => html.push_str("<p>No saved checkpoint for the selected task.</p>"),
+        Some(Ok(Some(usage))) => {
+            let _ = write!(
+                html,
+                "<article><h3>Task {}</h3><p class=muted>Checkpoint revision {}</p>",
+                escape(&usage.task),
+                usage.checkpoint_revision
+            );
+            if let Some(tokens) = &usage.task_tokens {
+                let count =
+                    |value: Option<u64>| value.map_or_else(|| "Unknown".into(), |value| value.to_string());
+                let _ = write!(html,
+                    "<p>Usage coverage: {}</p><dl><dt>Task attempts</dt><dd>{}</dd><dt>Attempts with complete usage</dt><dd>{}</dd><dt>Prompt tokens</dt><dd>{}</dd><dt>Completion tokens</dt><dd>{}</dd><dt>Cached input tokens</dt><dd>{}</dd></dl><p class=muted>Cached tokens are included in prompt when both are reported.</p>",
+                    if tokens.complete { "complete" } else { "partial" }, tokens.attempts, tokens.complete_attempts,
+                    count(tokens.prompt), count(tokens.completion), count(tokens.cached));
+            } else {
+                html.push_str("<p>Saved token aggregate unknown.</p>");
+            }
+            html.push_str(
+                "<p class=muted>Task-scoped checkpoint; merged-PR attribution unavailable.</p></article>",
+            );
+        }
+    }
+    html.push_str(
+        "</section><section><h2>Plans and quotas</h2><p>Usage observations unavailable.</p></section>",
+    );
 }
 
 fn workers(html: &mut String, view: &View<'_>) {
