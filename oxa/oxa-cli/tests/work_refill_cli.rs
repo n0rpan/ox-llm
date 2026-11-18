@@ -102,16 +102,21 @@ fn refill_startup_retains_pause_and_refuses_worker_writable_authority() {
 #[test]
 fn private_token_and_exact_task_ref_precede_one_durable_publication() {
     for pull_request in [false, true] {
-        durable_publication(pull_request, false);
+        durable_publication(pull_request, false, false);
     }
 }
 
 #[test]
 fn live_fix_packet_uses_current_app_context_and_the_original_durable_binding() {
-    durable_publication(true, true);
+    durable_publication(true, true, false);
 }
 
-fn durable_publication(pull_request: bool, live: bool) {
+#[test]
+fn live_known_work_is_not_starved_by_twenty_unknown_candidates() {
+    durable_publication(true, true, true);
+}
+
+fn durable_publication(pull_request: bool, live: bool, leading_unknowns: bool) {
     use oxa_work::board::{assignment::ManualAuthority, AttemptState, Claims, ImportState};
     use std::collections::BTreeMap;
     let (env, controls) = fixture();
@@ -176,6 +181,9 @@ fn durable_publication(pull_request: bool, live: bool) {
         )
         .unwrap();
     }
+    if leading_unknowns {
+        settings["partition"]["residues"] = json!((0..12).collect::<Vec<_>>());
+    }
     fs::write(&config, settings.to_string()).unwrap();
     fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
     let gh = env.write(
@@ -184,6 +192,10 @@ fn durable_publication(pull_request: bool, live: bool) {
 [ "$GH_TOKEN" = synthetic ] || exit 93
 printf 'read\n' >> "$0.calls"
 printf 'HTTP/2.0 200 OK\r\n\r\n'
+for context in "$0.context-"*; do
+  number="${context##*-}"
+  case "$*" in *"pullRequest(number:$number) {"*) cat "$context"; exit 0 ;; esac
+done
 cat "$0.reply"
 "#,
     );
@@ -265,10 +277,17 @@ cat "$0.reply"
             ("headRefOid", json!("b".repeat(40))),
             ("isCrossRepository", json!(true)),
         ] {
+            if leading_unknowns && field == "isCrossRepository" {
+                continue;
+            }
             let mut response: serde_json::Value = serde_json::from_slice(&original).unwrap();
             response["data"]["repository"]["pullRequest"][field] = value;
             fs::write(&reply, response.to_string()).unwrap();
-            assert_eq!(invoke(&env, &config, "synthetic\n", false).status.code(), Some(2));
+            let expected = if field == "isCrossRepository" { 0 } else { 2 };
+            assert_eq!(
+                invoke(&env, &config, "synthetic\n", false).status.code(),
+                Some(expected)
+            );
             assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
             assert!(fs::read_dir(&queue)
                 .unwrap()
@@ -306,6 +325,55 @@ cat "$0.reply"
         }
         fs::write(&reply, original).unwrap();
     }
+    if live {
+        let leading: Vec<u64> = if leading_unknowns {
+            (1..=11).chain(22..=30).collect()
+        } else {
+            claims
+                .import_snapshot(
+                    Some(ManualAuthority::Owner),
+                    &BTreeMap::from([(
+                        22,
+                        ImportState {
+                            state: AttemptState::default(),
+                            excluded: false,
+                        },
+                    )]),
+                    now,
+                )
+                .unwrap();
+            vec![22]
+        };
+        let reply = env.tmp().join("gh.reply");
+        let mut response: serde_json::Value = serde_json::from_slice(&fs::read(&reply).unwrap()).unwrap();
+        let repository = &mut response["data"]["repository"];
+        let row_template = repository["pullRequests"]["nodes"][0].clone();
+        let pr_template = repository["p44"].clone();
+        for number in &leading {
+            let mut row = row_template.clone();
+            row["number"] = json!(number);
+            row["headRefName"] = json!(format!("agent/{number}"));
+            repository["pullRequests"]["nodes"]
+                .as_array_mut()
+                .unwrap()
+                .push(row);
+            let mut pr = pr_template.clone();
+            pr["number"] = json!(number);
+            repository[format!("p{number}")] = pr;
+        }
+        repository["pullRequests"]["totalCount"] = json!(leading.len() + 1);
+        fs::write(&reply, response.to_string()).unwrap();
+        for number in leading {
+            let mut context = response.clone();
+            context["data"]["repository"]["pullRequest"]["headRefName"] = json!(format!("agent/{number}"));
+            context["data"]["repository"]["pullRequest"]["isCrossRepository"] = json!(!leading_unknowns);
+            fs::write(
+                env.tmp().join(format!("gh.context-{number}")),
+                context.to_string(),
+            )
+            .unwrap();
+        }
+    }
     let result = invoke(&env, &config, "synthetic\n", false);
     assert!(
         result.status.success(),
@@ -336,6 +404,11 @@ cat "$0.reply"
         format!("board-{}.txt", binding.key)
     );
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
+    if live && !leading_unknowns {
+        let fork = &claims.snapshot().unwrap()[&22];
+        assert_eq!(fork.attempts, 0);
+        assert!(fork.lease.is_none());
+    }
     assert!(invoke(&env, &config, "synthetic\n", false).status.success());
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
     if !pull_request {
