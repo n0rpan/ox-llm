@@ -190,7 +190,11 @@ fn go_plan_usage_reads_only_typed_windows_at_the_discovered_base() {
         .build()
         .unwrap();
     let cancel = CancelToken::new();
-    let read = |gateway: &Gateway| runtime.block_on(gateway.opencode_plan_usage(TIMEOUT, &cancel));
+    let read = |gateway: &Gateway| {
+        runtime
+            .block_on(gateway.opencode_plan_observation(TIMEOUT, Duration::ZERO, &cancel))
+            .map(|observation| observation.map(|observation| observation.usage))
+    };
     for access in [Access::Offline, Access::Disabled] {
         assert_eq!(read(&go_gateway(&fixture, access)).unwrap(), None);
     }
@@ -228,5 +232,65 @@ fn go_plan_usage_reads_only_typed_windows_at_the_discovered_base() {
             .header("authorization")
             .is_some_and(|value| value == format!("Bearer {CREDENTIAL}")));
     }
+    mock.assert_healthy();
+}
+
+#[test]
+fn go_plan_usage_cache_respects_age_and_current_credential() {
+    use oxa_proto::CancelToken;
+
+    const ROTATED: &str = "synthetic-rotated-provider-credential";
+    let fixture = go_fixture();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::json(json!({"usage":{"weekly":{"percent":3}}})),
+            Reply::json(json!({"usage":{"weekly":{"percent":8}}})),
+            Reply::json(json!({"usage":{"weekly":{"percent":14}}})),
+        ]
+    });
+    let base = format!("http://{}/inference/go", mock.address());
+    let mut gateway = go_gateway(&fixture, Access::Enabled);
+    gateway.discover_opencode(&base, TIMEOUT).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let cancel = CancelToken::new();
+    let read = |max_age| {
+        runtime
+            .block_on(gateway.opencode_plan_observation(TIMEOUT, max_age, &cancel))
+            .unwrap()
+            .unwrap()
+    };
+    let max_age = Duration::from_secs(60);
+    let first = read(max_age);
+    assert_eq!(read(max_age), first, "a reuse retains the acquisition time");
+    assert_eq!(
+        runtime
+            .block_on(gateway.opencode_plan_usage(TIMEOUT, &cancel))
+            .unwrap()
+            .as_ref(),
+        Some(&first.usage),
+    );
+    assert_eq!(mock.requests().len(), 2, "a cache hit sends no new Usage request");
+
+    let refreshed = read(Duration::ZERO);
+    assert_eq!(refreshed.usage.weekly.unwrap().used_percent, Some(8.0));
+    fs::write(&fixture.key_path, json!({"opencode":ROTATED}).to_string()).unwrap();
+    let rotated = read(max_age);
+    assert_eq!(rotated.usage.weekly.unwrap().used_percent, Some(14.0));
+    fs::write(&fixture.key_path, "{}").unwrap();
+    assert_eq!(
+        runtime
+            .block_on(gateway.opencode_plan_observation(TIMEOUT, max_age, &cancel))
+            .unwrap(),
+        None,
+    );
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 4);
+    assert!(requests[3]
+        .header("authorization")
+        .is_some_and(|value| value == format!("Bearer {ROTATED}")));
     mock.assert_healthy();
 }
