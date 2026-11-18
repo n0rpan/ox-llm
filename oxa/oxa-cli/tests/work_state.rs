@@ -626,6 +626,8 @@ fn status_works_when_the_kernel_refuses_every_flock_syscall() {
 
 #[test]
 fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
+    use std::os::unix::fs::PermissionsExt;
+
     // Failure-only facts from this isolated fixture; never print paths, IDs or state text.
     fn diagnostics(env: &TestEnv, record: &serde_json::Value, requests: usize) -> String {
         use std::io::Read;
@@ -718,7 +720,23 @@ fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
             "main",
         ],
     );
-    let (record, requests) = run_observed(
+    let tools = env.tmp().join("deadline-tools");
+    fs::create_dir(&tools).unwrap();
+    fs::set_permissions(&tools, fs::Permissions::from_mode(0o700)).unwrap();
+    let delayed_git = tools.join("git");
+    fs::write(
+        &delayed_git,
+        "#!/bin/sh\n\
+         if [ -f \"$OXA_TEST_STARTUP_STATE\" ] && /usr/bin/mkdir \"$OXA_TEST_STARTUP_DELAYED\" 2>/dev/null; then\n\
+           /usr/bin/sleep 1.2\n\
+         fi\n\
+         exec /usr/bin/git \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&delayed_git, fs::Permissions::from_mode(0o700)).unwrap();
+    let delayed = env.tmp().join("startup-delayed");
+    let command_path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    let (record, requests) = work::run_observed_with(
         &env,
         vec![
             ScriptTurn::tool(
@@ -733,7 +751,16 @@ fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
             ),
         ],
         &["work", "../tasks.json"],
-        None,
+        Some(command_path),
+        |command| {
+            command
+                .env("OXA_TEST_STARTUP_STATE", path(&env))
+                .env("OXA_TEST_STARTUP_DELAYED", &delayed);
+        },
+    );
+    assert!(
+        delayed.is_dir(),
+        "the startup delay must follow the first saved task state"
     );
     let diagnostics = || diagnostics(&env, &record, requests.len());
     assert_eq!(record["outcome"], "interrupted", "{}", diagnostics());
