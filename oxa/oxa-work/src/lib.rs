@@ -765,6 +765,8 @@ pub enum SupervisorOperation {
     Checkout {
         branch: String,
         create: bool,
+        #[serde(default)]
+        adopted: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         normalize: Option<BaseUpdate>,
     },

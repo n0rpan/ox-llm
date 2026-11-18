@@ -221,7 +221,12 @@ Finished successful work is returned without another worker or check run; add
 change requires a new ID. Unsupported or corrupt checkpoints are preserved and
 refused. A matching linked worktree is reused; the
 source checkout is never used as the task worktree. An existing branch checked
-out elsewhere is blocked. Dirty retained work is preserved and saved before
+out elsewhere is blocked. A new task branch that is already published starts at
+its pushed head instead of the base: the branch is created at the lone
+remote-tracking tip of the same name when that tip descends from the captured
+base (never for several diverging tips or an unrelated one), so reviewing or
+continuing a pull request works from its head. Fetch first; no fetch is run here.
+Dirty retained work is preserved and saved before
 retrying. A clean retained branch gets an ordinary sandboxed
 merge of the captured base; no reset, stash, force checkout or automatic fetch runs.
 
