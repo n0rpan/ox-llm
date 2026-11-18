@@ -111,6 +111,7 @@ fn interactive_opts(env: &TestEnv) -> InteractiveOpts {
         open_picker: false,
         save_trust: None,
         gated: Vec::new(),
+        engine_status: None,
         yolo: None,
     }
 }

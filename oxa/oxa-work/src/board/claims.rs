@@ -13,7 +13,9 @@ pub use controls::{Assignment, AssignmentBoard, AssignmentData, ReleaseRecord};
 mod imports;
 mod native;
 pub use native::NativeBinding;
+mod ownership;
 mod reviews;
+pub use ownership::{ExistingWork, ItemLease, ItemOwner};
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -139,6 +141,15 @@ impl Claims {
                         .is_some_and(|lease| lease != &binding.lease)
             })
             || saved.review_requests.iter().any(|key| !key.valid())
+            || saved.data.item_owner.as_ref().is_some_and(|owner| {
+                !valid_worker_id(&owner.host_id)
+                    || owner.expires_at == 0
+                    || saved
+                        .state
+                        .lease
+                        .as_ref()
+                        .is_some_and(|lease| owner.expires_at < lease.expires_at)
+            })
             || saved.state.lease.as_ref().is_some_and(|l| {
                 saved.state.attempts == 0
                     || !valid_worker_id(&l.holder)
@@ -225,7 +236,7 @@ impl Claims {
         now: u64,
         ttl: u64,
     ) -> Result<Option<Lease>> {
-        self.claim_checked(entry, policy, holder, (now, ttl), |row| {
+        self.claim_checked(entry, policy, holder, (now, ttl), None, |row| {
             Ok(entry.action != Action::BuildIssue && row.data.policy.is_none())
         })
     }
@@ -236,6 +247,7 @@ impl Claims {
         policy: &Policy,
         holder: &str,
         timing: (u64, u64),
+        host_id: Option<&str>,
         authorize: impl FnOnce(&mut Saved) -> Result<bool>,
     ) -> Result<Option<Lease>> {
         let (now, ttl) = timing;
@@ -258,6 +270,17 @@ impl Claims {
         }
         let _lock = self.lock(entry.number)?;
         let mut row = self.load(entry.number)?;
+        if let Some(lease) = row
+            .state
+            .lease
+            .as_ref()
+            .filter(|_| host_id.is_some() || row.data.item_owner.is_some())
+        {
+            return Err(format!("item {} is owned by {}", entry.number, lease.holder));
+        }
+        if row.data.item_owner.is_some() && host_id.is_none() {
+            return Err("host-bound item requires item admission".into());
+        }
         if self.established(entry.number)? {
             self.mark(entry.number)?;
         }
@@ -293,6 +316,10 @@ impl Claims {
             generation: (day, state.attempts),
         };
         state.lease = Some(lease.clone());
+        row.data.item_owner = host_id.map(|host_id| ItemOwner {
+            host_id: host_id.into(),
+            expires_at,
+        });
         row.data.native_binding = None;
         let replacing = self.established(entry.number)?;
         self.save(entry.number, row, replacing)?;

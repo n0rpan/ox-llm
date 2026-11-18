@@ -68,7 +68,7 @@ pub enum Outcome {
     },
 }
 impl Usage {
-    fn total_tokens(&self) -> Option<u64> {
+    pub(crate) fn total_tokens(&self) -> Option<u64> {
         let (prompt, output) = self.prompt.zip(self.output)?;
         let cached = self
             .cache_read

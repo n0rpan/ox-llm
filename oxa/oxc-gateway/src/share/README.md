@@ -124,10 +124,10 @@ leave key rows behind. State is capped at the same 64-connection ceiling already
 used by the listener. There is no event queue, journal, timer, worker or refresh
 loop, and no state is created until an explicitly enabled server binds.
 
-These are live activity counts, not daily usage. `Store::guest_usage` remains
-the durable per-key quota authority. Joining those counters into the existing
-owner status surface, and adding guest rows through the gateway's shared ledger,
-remain part of coordinated native host wiring; this handle starts neither.
+In an owner session started with `--share-model`, `/engine status` displays
+these live counts alongside per-key daily request and token charges (UTC).
+The command reads the existing private quota state once on demand. Revoking a
+key preserves its usage for the day.
 
 
 ## Linux tailnet identity adapter

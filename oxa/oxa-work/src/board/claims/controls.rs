@@ -17,6 +17,8 @@ pub struct AssignmentData {
     pub last_release: Option<ReleaseRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_binding: Option<NativeBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_owner: Option<super::ownership::ItemOwner>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -31,7 +33,7 @@ impl Assignment {
         self.state
             .lease
             .as_ref()
-            .filter(|lease| lease.expires_at > now)
+            .filter(|lease| self.data.item_owner.is_some() || lease.expires_at > now)
             .map(|lease| lease.holder.as_str())
     }
 }
@@ -95,10 +97,9 @@ impl Claims {
         }
         let mut board = Board::read(github, policy, &states, now)?;
         for entry in &mut board.entries {
-            if assignments
-                .get(&entry.number)
-                .is_some_and(|row| row.data.import_hold)
-            {
+            if assignments.get(&entry.number).is_some_and(|row| {
+                row.data.import_hold || (row.data.item_owner.is_some() && row.state.lease.is_some())
+            }) {
                 entry.eligible = false;
             }
         }
@@ -160,7 +161,7 @@ impl Claims {
         now: u64,
         ttl: u64,
     ) -> Result<Option<Lease>> {
-        self.claim_checked(entry, policy, &worker.id, (now, ttl), |row| {
+        self.claim_checked(entry, policy, &worker.id, (now, ttl), None, |row| {
             let controls = row.data.policy.get_or_insert_with(AssignmentPolicy::default);
             Ok(controls.allows(worker, entry.action))
         })
@@ -179,7 +180,7 @@ impl Claims {
         now: u64,
         ttl: u64,
     ) -> Result<Option<Lease>> {
-        self.claim_checked(entry, policy, &worker.id, (now, ttl), |row| {
+        self.claim_checked(entry, policy, &worker.id, (now, ttl), None, |row| {
             if !self.established(entry.number)?
                 || row.state.lease.is_some()
                 || self.rows_locked()?.values().any(|saved| {

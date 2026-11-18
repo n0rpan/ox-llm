@@ -121,6 +121,7 @@ pub(crate) fn verify_commit(
             operation: SupervisorOperation::Checkout {
                 branch: saved.task.branch.clone(),
                 create: false,
+                adopted: false,
                 normalize: None,
             },
         },

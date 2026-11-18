@@ -69,6 +69,194 @@ fn until(mut f: impl FnMut() -> bool) {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+
+#[cfg(all(target_os = "linux", feature = "managed-steering"))]
+#[test]
+fn managed_native_worker_authenticates_its_handoff_and_uses_the_owner_goal() {
+    for case in [
+        ManagedCase::Accepted,
+        ManagedCase::Expired,
+        ManagedCase::WrongAttempt,
+    ] {
+        managed_native_worker(case);
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "managed-steering"))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ManagedCase {
+    Accepted,
+    Expired,
+    WrongAttempt,
+}
+
+#[cfg(all(target_os = "linux", feature = "managed-steering"))]
+fn managed_native_worker(case: ManagedCase) {
+    use oxa_session::{send_inbox_control, FsStore, Goal, SessionStore};
+    use oxa_work::board::{
+        assignment::ManualAuthority, Action, AttemptState, Claims, Entry, ImportState, NativeBinding, Policy,
+    };
+    use serde_json::json;
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let controls = env.agent_dir().join("native-test");
+    let queue = controls.join("queue");
+    let claims_path = controls.join("claims");
+    for path in [&controls, &queue, &claims_path] {
+        fs::create_dir(path).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let claims = Claims::open(&claims_path).unwrap();
+    let worker = json!({"id":"oxa:node/helper","kind":"oxa","roles":["builder"],"skills":[]});
+    let holder = serde_json::from_value(worker.clone()).unwrap();
+    let entry = Entry {
+        number: 42,
+        head: "fixture-revision".into(),
+        release_pinned: false,
+        action: Action::BuildIssue,
+        lease: None,
+        attempts_today: 0,
+        eligible: true,
+    };
+    let policy = Policy {
+        enabled: true,
+        ..Policy::default()
+    };
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let claimed_at = if case == ManagedCase::Expired {
+        now - 120
+    } else {
+        now
+    };
+    claims
+        .import_snapshot(
+            Some(ManualAuthority::Owner),
+            &[(
+                42,
+                ImportState {
+                    state: AttemptState::default(),
+                    excluded: false,
+                },
+            )]
+            .into(),
+            claimed_at,
+        )
+        .unwrap();
+    let lease = claims
+        .claim_idle_for(&entry, &policy, &holder, claimed_at, 60)
+        .unwrap()
+        .unwrap();
+    let binding = NativeBinding::new(42, &"a".repeat(64), &lease, "agent/42").unwrap();
+    assert!(claims.bind_native(&lease.holder, &binding).unwrap());
+    assert!(oxa_work::helper_queue::publish(
+        &queue,
+        &binding.key,
+        "i42 fake agent/42 main\nSynthetic admitted task.\n",
+        false,
+        &policy,
+    )
+    .unwrap());
+    let objective = "Complete the synthetic managed task.";
+    let attempt = if case == ManagedCase::WrongAttempt {
+        "board-fixture-1-1"
+    } else {
+        &binding.native_task_id
+    };
+    let config = controls.join("config.json");
+    fs::write(
+        &config,
+        json!({"enabled":true,"nativeExecution":true,"worker":worker,
+            "queue":queue,"claims":claims_path,"pause":controls.join("pause"),
+            "nativeSteering":{"attempt":attempt,"objective":objective}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let mut completion = ScriptTurn::tool(
+        "done",
+        "goal_done",
+        r#"{"status":"complete","evidence":"Synthetic proof."}"#,
+    );
+    completion.text = Some("Synthetic final answer".into());
+    let wait = ScriptTurn::tool("wait", "wait", r#"{"seconds":5,"reason":"synthetic boundary"}"#);
+    let server = FakeServer::start(vec![wait, completion], FakeOpts::default()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"));
+    child
+        .args(["work", "--native-queue", "--config"])
+        .arg(&config)
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()));
+    let steered = "Synthetic steering from the current lease.";
+    let out = if case == ManagedCase::Accepted {
+        let run = std::thread::spawn(move || finish(child));
+        let store = FsStore::new(env.agent_dir().join("sessions"));
+        until(|| server.requests().iter().any(|request| request.max_tokens > 0));
+        let session = store.list(None).pop().expect("active worker session").sref;
+        let revision = Goal::revision(&store.load(&session).unwrap());
+        send_inbox_control(
+            &env.agent_dir(),
+            &session,
+            &json!({
+                "method":"steer","id":"fixture-steer","text":steered,"revision":revision,
+                "lease":{"holder":lease.holder,"generation":lease.generation}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let out = run.join().unwrap();
+        assert_eq!(
+            store
+                .load(&session)
+                .unwrap()
+                .iter()
+                .filter(|entry| {
+                    matches!(&entry.body, oxa_proto::EntryBody::Msg { wire, .. }
+                if wire.role == oxa_proto::Role::User && wire.content.as_deref() == Some(steered))
+                })
+                .count(),
+            1,
+            "{out:?}"
+        );
+        out
+    } else {
+        finish(child)
+    };
+    if case != ManagedCase::Accepted {
+        assert!(!out.status.success(), "{out:?}");
+        assert!(server.requests().is_empty());
+        let state = &claims.assignments().unwrap()[&42].state;
+        assert_eq!(state.lease.as_ref(), Some(&lease));
+        assert_eq!(state.attempts, 1);
+        return;
+    }
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(rows(&out)
+        .iter()
+        .any(|row| row["event"] == "task" && row["id"] == binding.native_task_id));
+    let requests: Vec<_> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.max_tokens > 0)
+        .collect();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().any(|request| request.system.contains(objective)));
+    assert!(requests[1]
+        .messages
+        .iter()
+        .any(|message| message.content.as_deref() == Some(steered)));
+    let row = &claims.assignments().unwrap()[&42];
+    assert!(row.state.lease.is_none());
+    assert!(row.data.native_binding.as_ref() == Some(&binding));
+}
+
 #[test]
 fn oldest_file_runs_first_and_restart_skips_completed_agents() {
     let env = TestEnv::new();

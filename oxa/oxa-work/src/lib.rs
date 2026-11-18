@@ -15,7 +15,10 @@ mod checkpoint;
 mod committed;
 pub use committed::{verify_saved_task, VerifiedTask};
 mod execute;
+pub use execute::TaskTokens;
 pub mod helper_queue;
+#[cfg(target_os = "linux")]
+pub mod managed_steering;
 mod notes;
 mod publish;
 mod queue;
@@ -36,6 +39,10 @@ pub use worker::{WorkerInterruption, WorkerOutcome, WorkerResult, WorkerTokens};
 #[cfg(test)]
 #[path = "../tests/support/private_dir.rs"]
 mod test_dir;
+
+#[cfg(test)]
+#[path = "../tests/support/lock_process.rs"]
+mod lock_process;
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -90,6 +97,8 @@ pub struct Record {
     pub outcome: Outcome,
     pub detail: String,
     pub worker: Option<WorkerResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_tokens: Option<TaskTokens>,
     pub session_id: Option<String>,
     pub base_sha: Option<String>,
     pub checkpoint_revision: u64,
@@ -777,6 +786,8 @@ pub enum SupervisorOperation {
     Checkout {
         branch: String,
         create: bool,
+        #[serde(default)]
+        adopted: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         normalize: Option<BaseUpdate>,
     },
@@ -930,6 +941,7 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
         outcome: Outcome::Blocked,
         detail,
         worker: None,
+        task_tokens: None,
         session_id: None,
         base_sha: None,
         checkpoint_revision: 0,
@@ -1064,6 +1076,8 @@ pub struct LockedTask<'a> {
     task: &'a Task,
     policy: &'a RunPolicy,
     lock: fs::File,
+    #[cfg(target_os = "linux")]
+    managed_steering: Option<managed_steering::Launch>,
 }
 
 impl<'a> LockedTask<'a> {
@@ -1082,7 +1096,33 @@ impl<'a> LockedTask<'a> {
         }
         verify_task_storage(&policy.storage).map_err(|error| format!("task storage: {error}"))?;
         let lock = lock_task(policy, &task.id, create)?;
-        Ok(Self { task, policy, lock })
+        Ok(Self {
+            task,
+            policy,
+            lock,
+            #[cfg(target_os = "linux")]
+            managed_steering: None,
+        })
+    }
+
+    /// The owner frontend enables steering for its exact admitted task.
+    #[cfg(target_os = "linux")]
+    pub fn bind_managed_steering(
+        &mut self,
+        claims: &Path,
+        binding: &board::NativeBinding,
+        objective: &str,
+    ) -> Result<()> {
+        if self.task.id != binding.native_task_id || self.task.branch != binding.branch {
+            return Err("managed steering requires this task's admission binding".into());
+        }
+        self.managed_steering = Some(managed_steering::Launch::new(
+            claims,
+            &self.policy.storage,
+            binding,
+            objective,
+        )?);
+        Ok(())
     }
 
     /// Plan the task admitted by the native queue while retaining its lock.
@@ -1138,6 +1178,7 @@ fn run_locked(
         record.worktree = tree.clone();
         record.base_sha = Some(planned.base_sha.clone());
         record.checkpoint_revision = revision;
+        record.task_tokens = Some(TaskTokens::default());
         let mut state = state::State::new(task.clone(), record, policy.offline);
         state.execution = Some(state::Execution {
             initial: None,
@@ -1206,6 +1247,8 @@ fn run_locked(
         observer,
         scrub_note,
         base_alias: planned.base_alias.as_ref(),
+        #[cfg(target_os = "linux")]
+        managed_steering: locked.managed_steering.as_ref(),
     })
     .drive(&mut state)
     {

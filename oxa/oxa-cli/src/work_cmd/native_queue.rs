@@ -68,6 +68,22 @@ pub(super) fn run(
     if value["enabled"] != true || value["nativeExecution"] != true {
         return Ok(0);
     }
+    let steering = value
+        .get("nativeSteering")
+        .map(|setting| {
+            let attempt = setting["attempt"]
+                .as_str()
+                .ok_or("missing native steering attempt")?;
+            let objective = setting["objective"]
+                .as_str()
+                .filter(|text| !text.trim().is_empty() && text.len() <= 2048)
+                .ok_or("invalid native steering objective")?;
+            Ok::<_, &str>((attempt, objective))
+        })
+        .transpose()?;
+    if steering.is_some() && !cfg!(all(target_os = "linux", feature = "managed-steering")) {
+        return Err("native steering is unavailable in this build".into());
+    }
     let owner_path = |key: &str| -> Result<PathBuf, String> {
         let path = PathBuf::from(value[key].as_str().ok_or("missing native board path")?);
         protected_storage(&path, root, common)?;
@@ -78,7 +94,8 @@ pub(super) fn run(
         return Ok(0);
     }
     let directory = owner_path("queue")?;
-    let claims = Claims::open(&owner_path("claims")?)?;
+    let claims_path = owner_path("claims")?;
+    let claims = Claims::open(&claims_path)?;
     let worker: Worker =
         serde_json::from_value(value["worker"].clone()).map_err(|_| "invalid authenticated worker export")?;
     if !oxa_work::board::assignment::valid_worker_id(&worker.id) {
@@ -100,6 +117,9 @@ pub(super) fn run(
         .native_binding
         .filter(|binding| row.state.lease.as_ref() == Some(&binding.lease))
         .ok_or("native worker lacks an exact retained binding")?;
+    if steering.is_some_and(|(attempt, _)| attempt != binding.native_task_id) {
+        return Err("native steering objective belongs to a different attempt".into());
+    }
     let owner = NativeQueueOwner {
         claims: &claims,
         worker_id: &worker.id,
@@ -113,9 +133,17 @@ pub(super) fn run(
     )
     .ok_or("no trusted disk-space executable outside the source project")?;
     let worker_context = Arc::clone(&context);
+    #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+    let steering_objective = steering.map(|(_, objective)| objective.to_owned());
+    #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+    let steering_binding = binding.clone();
     let run = Arc::new(move |task: &Task, lock: &mut LockedTask<'_>| {
         if paused(&pause)? {
             return Err("native board execution paused".into());
+        }
+        #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+        if let Some(objective) = &steering_objective {
+            lock.bind_managed_steering(&claims_path, &steering_binding, objective)?;
         }
         match lock.plan_native(&worker_context.cwd, worker_context.reports) {
             Ok(plan) => worker_context.planned_locked(&plan, lock),
