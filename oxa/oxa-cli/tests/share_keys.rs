@@ -415,7 +415,7 @@ fn native_cleartext_listener_refuses_wildcard_and_unverified_interfaces() {
                 ..Config::default()
             },
             CancelToken::new(),
-            |_| Err(Failure::Failed),
+            |_, _| Err(Failure::Failed),
         );
         assert!(matches!(result, Err(Failure::Forbidden)), "{address}: {result:?}");
     }
