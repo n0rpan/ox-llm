@@ -71,6 +71,9 @@ impl Assignment {
         if now < last / 1000 {
             return Err("item action clock moved backwards".into());
         }
+        if let Some(wait) = &self.data.dependency {
+            return Ok(now >= wait.deadline);
+        }
         let deadline = silence
             .checked_mul(1000)
             .and_then(|timeout| last.checked_add(timeout))
@@ -92,25 +95,9 @@ impl Claims {
         now: u64,
         signal: LeaseSignal<'_>,
     ) -> Result<bool> {
-        binding.validate()?;
-        if !valid_worker_id(host_id)
-            || worker_id != binding.lease.holder
-            || receipt.host_id != host_id
-            || receipt.lease != binding.lease
-        {
-            return Err("authenticated item observer and original binding required".into());
-        }
-        let _lock = self.lock(binding.number)?;
-        let mut row = self.load(binding.number)?;
-        if row.item_lease().as_ref() != Some(receipt)
-            || row.data.native_binding.as_ref() != Some(binding)
-            || now >= receipt.expires_at
-        {
+        let Some((_lock, mut row)) = self.active_item_for(worker_id, host_id, binding, receipt, now)? else {
             return Ok(false);
-        }
-        if receipt.lease.claimed_at.is_none_or(|start| now < start) {
-            return Err("item observation clock moved backwards".into());
-        }
+        };
         let activity = row.data.lease_activity.get_or_insert_with(|| LeaseActivity {
             generation: receipt.lease.generation,
             heartbeat_at: None,
@@ -168,4 +155,4 @@ impl Claims {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
