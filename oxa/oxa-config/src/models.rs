@@ -123,8 +123,8 @@ pub struct ModelsConfig {
 
 impl ModelsConfig {
     /// Read `<agent_dir>/models.json`; without a file the single default endpoint is
-    /// `OXA_ENGINE_URL` or `http://127.0.0.1:8092` (the controller). An entry for a non-engine provider is a
-    /// diagnostic naming `unsupported_in_oxa`, not a failure.
+    /// `OXA_ENGINE_URL` or `http://127.0.0.1:8092` (the controller). Entries using the
+    /// cloud key or pool fields are parsed separately from the legacy engine catalog.
     ///
     /// Legacy engine entry shape in the `providers` map:
     /// `{"default": "<name>", "providers": {"<name>": {"baseUrl": "http://..", "apiKey": "..", "api": "openai-completions"}}}`.
@@ -286,14 +286,7 @@ fn is_cloud_entry(name: &str, entry: &serde_json::Value) -> bool {
         name.to_ascii_lowercase().as_str(),
         ENGINE_ENDPOINT | "anthropic" | "openai" | "openrouter" | "chatgpt" | "opencode"
     );
-    !reserved
-        && api != Some(ENGINE_API)
-        && (entry.get("key").is_some()
-            || entry.get("pool").is_some()
-            || matches!(
-                api,
-                Some("openai-chat" | "openai-responses" | "anthropic-messages")
-            ))
+    !reserved && api != Some(ENGINE_API) && (entry.get("key").is_some() || entry.get("pool").is_some())
 }
 
 fn parse_cloud_provider(name: &str, entry: &serde_json::Value) -> Option<CloudProvider> {
