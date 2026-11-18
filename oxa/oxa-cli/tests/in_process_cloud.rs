@@ -709,9 +709,9 @@ fn native_silence_timeout_honors_effective_settings_and_provider_override() {
 }
 
 #[test]
-fn missing_native_budget_names_oxa_settings_before_reading_an_invalid_key() {
+fn missing_native_budget_is_no_budget_check_and_the_call_is_recorded() {
     let env = cloud_env();
-    let mock = MockAnthropic::start(vec![]);
+    let mock = MockAnthropic::start(vec![Reply::text("Synthetic answer", 11, 0, 0, 5)]);
     settings(&env, &mock.base_url(), true);
     let path = env.home().join(".oxa/agent/settings.json");
     let mut value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
@@ -720,22 +720,20 @@ fn missing_native_budget_names_oxa_settings_before_reading_an_invalid_key() {
         .unwrap()
         .remove("daily_budget_usd");
     fs::write(path, value.to_string()).unwrap();
-    write_key(&env, "invalid synthetic JSON");
+    write_key(&env, r#"{"anthropic":{"api_key":"TEST"}}"#);
     let output = run(
         &env,
         &["--no-session", "--no-tools", "-p", "Synthetic budget setup"],
         None,
     );
-    assert!(!output.status.success());
-    let diagnostic = String::from_utf8_lossy(&output.stderr);
-    assert!(diagnostic.contains("oxa.cloud.daily_budget_usd"), "{diagnostic}");
-    assert!(!diagnostic.contains(" in oxc"), "{diagnostic}");
-    assert!(mock.requests().is_empty());
+    success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Synthetic answer"));
+    assert_eq!(mock.requests().len(), 1);
     let rows = rows(&env);
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["status"], 403);
-    assert_eq!(rows[0]["error"], "budget_not_configured");
-    assert_eq!(rows[0]["cost_usd"], 0.0);
+    assert_eq!(rows[0]["status"], 200);
+    assert_ne!(rows[0]["error"], "budget_not_configured");
+    assert_eq!(rows[0]["settled"], "usage");
 }
 
 #[test]

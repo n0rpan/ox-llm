@@ -982,6 +982,9 @@ fn mcp_017() {
         &auth,
         &json!({"docs": {"https://127.0.0.1:9/mcp": {"access_token": "t"}}}),
     );
+    // oxa writes the token file 0600 and reads only a private one; the fixture matches.
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600)).unwrap();
     let out = run_oxa(&env, NO_ENGINE, &["mcp", "logout", "docs"], "");
     assert_eq!(
         out.status.code(),
