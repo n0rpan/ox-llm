@@ -163,18 +163,21 @@ fn offline_and_cloud_off_refuse_before_the_cache_or_any_network_call() {
 #[test]
 fn go_plan_usage_reads_only_typed_windows_at_the_discovered_base() {
     use oxa_proto::CancelToken;
-    use oxc_gateway::opencode::{PlanUsage, PlanWindow};
+    use oxc_gateway::opencode::{PlanUsage, PlanWindow, PlanWindowStatus};
 
     let fixture = go_fixture();
     let mock = MockOpenAi::start_with(|base| {
         vec![
             Reply::json(discovery(base)),
             Reply::json(json!({"usage": {
-                "rolling": {"percent": 0, "resetsAt": "2026-11-18T11:00:00+01:00"},
-                "weekly": {"percent": 72.5, "resetsAt": CREDENTIAL},
-                "monthly": {"percent": 101, "unknown": CREDENTIAL}
+                "rolling": {"status": "ok", "percent": 0, "resetsAt": "2026-11-18T11:00:00.001+01:00"},
+                "weekly": {"status": "rate-limited", "percent": 100, "resetsAt": CREDENTIAL},
+                "monthly": {"status": CREDENTIAL, "percent": 72.5}
             }})),
-            Reply::json(json!({"usage": {"renewed": {"fraction": 0.4}}})),
+            Reply::json(json!({"usage": {
+                "rolling": {"percent": 101},
+                "renewed": {"fraction": 0.4}
+            }})),
             Reply::error(429, CREDENTIAL, CREDENTIAL).buffer_header_refusal(),
         ]
     });
@@ -196,14 +199,20 @@ fn go_plan_usage_reads_only_typed_windows_at_the_discovered_base() {
         read(&enabled).unwrap(),
         Some(PlanUsage {
             rolling: Some(PlanWindow {
+                status: Some(PlanWindowStatus::Ok),
                 used_percent: Some(0.0),
-                resets_at: Some(1794996000),
+                resets_at: Some(1794996001),
             }),
             weekly: Some(PlanWindow {
+                status: Some(PlanWindowStatus::RateLimited),
+                used_percent: Some(100.0),
+                resets_at: None,
+            }),
+            monthly: Some(PlanWindow {
+                status: None,
                 used_percent: Some(72.5),
                 resets_at: None,
             }),
-            monthly: None,
         })
     );
     assert_eq!(read(&enabled).unwrap(), None);
