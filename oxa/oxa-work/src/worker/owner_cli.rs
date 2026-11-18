@@ -2,8 +2,9 @@
 //! The runner resolves the trusted executable and supplies the leased worktree.
 use super::{line, WorkerOutcome, WorkerResult, WorkerTokens};
 use crate::Result;
+use serde::Deserialize;
 use serde_json::Value;
-use std::io::{BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Command, ExitStatus};
@@ -49,6 +50,7 @@ pub enum CodexApproval {
 
 /// Structured CLI evidence for one invocation. Worktree and done checks still
 /// determine whether the board can accept its work.
+#[derive(Default)]
 pub struct Invocation {
     terminal: Option<Terminal>,
     invalid: bool,
@@ -66,8 +68,13 @@ impl OwnerCli {
         if !executable.is_absolute() || !worktree.is_absolute() {
             return Err("vendor executable and worktree must be absolute".into());
         }
-        if !model.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
-            || !model
+        let base = if matches!(self, Self::Claude(_)) {
+            model.strip_suffix("[1m]").unwrap_or(model)
+        } else {
+            model
+        };
+        if !base.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+            || !base
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(&byte))
         {
@@ -123,66 +130,191 @@ impl OwnerCli {
         Ok(command)
     }
 
-    /// Drain stdout using the existing worker's line cap. Keep only terminal
-    /// outcome and measurements, with no transcript or provider diagnostic.
+    /// Keep only terminal outcome and measurements, with no transcript or provider diagnostic.
     pub fn read_invocation(self, stdout: impl Read) -> Result<Invocation> {
         let mut reader = BufReader::new(stdout);
-        let mut terminal = None;
-        let mut invalid = false;
+        if matches!(self, Self::Claude(_)) {
+            return read_claude(&mut reader);
+        }
+        let mut invocation = Invocation::default();
         while let Some(bytes) = line(&mut reader)? {
             let Ok(event) = serde_json::from_slice::<Value>(&bytes) else {
                 continue;
             };
-            let success = match (self, event["type"].as_str()) {
-                (Self::Claude(_), Some("result")) => {
-                    match (event["subtype"].as_str(), event["is_error"].as_bool()) {
-                        (Some("success"), Some(false)) => true,
-                        (_, Some(true)) => false,
-                        _ => {
-                            invalid = true;
-                            continue;
-                        }
-                    }
-                }
-                (Self::Codex(_), Some("turn.completed")) => true,
-                (Self::Codex(_), Some("turn.failed")) => false,
+            let success = match event["type"].as_str() {
+                Some("turn.completed") => true,
+                Some("turn.failed") => false,
                 _ => continue,
             };
-            let tokens = self.tokens(&event["usage"], success);
-            invalid |= terminal.replace(Terminal { success, tokens }).is_some();
+            let usage = &event["usage"];
+            let tokens = counts(usage, "input_tokens", "output_tokens", "cached_input_tokens")
+                .filter(|counts| counts.cached <= counts.prompt)
+                .map(|counts| counts.tokens(success));
+            invocation.record(Terminal { success, tokens });
         }
-        Ok(Invocation { terminal, invalid })
-    }
-
-    fn tokens(self, usage: &Value, success: bool) -> Option<WorkerTokens> {
-        let (prompt, cached) = match self {
-            Self::Claude(_) => {
-                let cached = usage["cache_read_input_tokens"].as_u64()?;
-                let created = usage["cache_creation_input_tokens"].as_u64()?;
-                (
-                    usage["input_tokens"]
-                        .as_u64()?
-                        .checked_add(cached)?
-                        .checked_add(created)?,
-                    cached,
-                )
-            }
-            Self::Codex(_) => (
-                usage["input_tokens"].as_u64()?,
-                usage["cached_input_tokens"].as_u64()?,
-            ),
-        };
-        (cached <= prompt).then_some(WorkerTokens {
-            prompt: Some(prompt),
-            completion: Some(usage["output_tokens"].as_u64()?),
-            cached: Some(cached),
-            complete: success,
-            unreported_requests: None,
-        })
+        Ok(invocation)
     }
 }
 
+// Claude embeds the final answer inside its result record. Project out the
+// fields we need without retaining the answer, and retain the line boundary
+// after an invalid or oversized record so it cannot consume the next event.
+const CLAUDE_RECORD_LIMIT: u64 = 8 * 1024 * 1024;
+
+struct JsonLine<'a, R>(&'a mut R);
+
+impl<R: BufRead> Read for JsonLine<'_, R> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let input = self.0.fill_buf()?;
+        let input = &input[..input.len().min(out.len())];
+        let count = input
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .unwrap_or(input.len());
+        out[..count].copy_from_slice(&input[..count]);
+        self.0.consume(count);
+        Ok(count)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeEvent {
+    #[serde(rename = "type")]
+    kind: ClaudeKind,
+    #[serde(default)]
+    subtype: String,
+    #[serde(default, rename = "is_error")]
+    is_error: Option<bool>,
+    #[serde(default)]
+    usage: Value,
+    #[serde(default)]
+    model_usage: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ClaudeKind {
+    Result,
+    #[serde(other)]
+    Progress,
+}
+
+fn read_claude(reader: &mut impl BufRead) -> Result<Invocation> {
+    let mut invocation = Invocation::default();
+    while !reader
+        .fill_buf()
+        .map_err(|_| "cannot read vendor stdout")?
+        .is_empty()
+    {
+        let event =
+            serde_json::from_reader::<_, ClaudeEvent>(JsonLine(&mut *reader).take(CLAUDE_RECORD_LIMIT));
+        let at_end = reader
+            .fill_buf()
+            .map_err(|_| "cannot read vendor stdout")?
+            .first()
+            .is_none_or(|&byte| byte == b'\n');
+        reader
+            .skip_until(b'\n')
+            .map_err(|_| "cannot drain vendor stdout")?;
+        if !at_end {
+            continue;
+        }
+        let Ok(event) = event else { continue };
+        if !matches!(event.kind, ClaudeKind::Result) {
+            continue;
+        }
+        let success = match (event.subtype.as_str(), event.is_error) {
+            ("success", Some(false)) => true,
+            (_, Some(true)) => false,
+            _ => {
+                invocation.invalid = true;
+                continue;
+            }
+        };
+        let tokens = claude_totals(&event.model_usage)
+            .map(|totals| totals.tokens(success))
+            .or_else(|| {
+                // Top-level usage excludes delegated calls. Retain it only as partial evidence.
+                claude_counts(
+                    &event.usage,
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_read_input_tokens",
+                    "cache_creation_input_tokens",
+                )
+                .map(|counts| counts.tokens(false))
+            });
+        invocation.record(Terminal { success, tokens });
+    }
+    Ok(invocation)
+}
+
+#[derive(Default)]
+struct Counts {
+    prompt: u64,
+    completion: u64,
+    cached: u64,
+}
+
+impl Counts {
+    fn tokens(self, complete: bool) -> WorkerTokens {
+        WorkerTokens {
+            prompt: Some(self.prompt),
+            completion: Some(self.completion),
+            cached: Some(self.cached),
+            complete,
+            unreported_requests: None,
+        }
+    }
+}
+
+fn counts(usage: &Value, input: &str, output: &str, cache_read: &str) -> Option<Counts> {
+    Some(Counts {
+        prompt: usage[input].as_u64()?,
+        completion: usage[output].as_u64()?,
+        cached: usage[cache_read].as_u64()?,
+    })
+}
+
+fn claude_counts(
+    usage: &Value,
+    input: &str,
+    output: &str,
+    cache_read: &str,
+    cache_create: &str,
+) -> Option<Counts> {
+    let mut counts = counts(usage, input, output, cache_read)?;
+    counts.prompt = counts
+        .prompt
+        .checked_add(counts.cached)?
+        .checked_add(usage[cache_create].as_u64()?)?;
+    Some(counts)
+}
+
+fn claude_totals(usage: &Value) -> Option<Counts> {
+    let models = usage.as_object().filter(|models| !models.is_empty())?;
+    models.values().try_fold(Counts::default(), |totals, model| {
+        let model = claude_counts(
+            model,
+            "inputTokens",
+            "outputTokens",
+            "cacheReadInputTokens",
+            "cacheCreationInputTokens",
+        )?;
+        Some(Counts {
+            prompt: totals.prompt.checked_add(model.prompt)?,
+            completion: totals.completion.checked_add(model.completion)?,
+            cached: totals.cached.checked_add(model.cached)?,
+        })
+    })
+}
+
 impl Invocation {
+    fn record(&mut self, terminal: Terminal) {
+        self.invalid |= self.terminal.replace(terminal).is_some();
+    }
+
     pub fn finish(self, status: ExitStatus) -> WorkerResult {
         let exit_code = status
             .code()

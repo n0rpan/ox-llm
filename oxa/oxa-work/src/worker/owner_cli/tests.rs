@@ -55,7 +55,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"usage":{"i
             prompt: Some(15),
             completion: Some(3),
             cached: Some(5),
-            complete: true,
+            complete: false,
             unreported_requests: None,
         })
     );
