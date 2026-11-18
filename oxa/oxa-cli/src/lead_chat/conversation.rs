@@ -82,7 +82,13 @@ fn text_ok(text: &str, cap: usize) -> bool {
 }
 
 fn invalid_reply() -> OxaError {
-    OxaError::new(codes::INVALID, "Lead returned an invalid reply")
+    // A stable code, not `invalid`: the lead service journal and the CLI report the
+    // reply-contract failure without ever carrying reply bytes.
+    OxaError::new("lead_reply_invalid", "Lead returned an invalid reply")
+}
+
+fn incomplete_reply() -> OxaError {
+    OxaError::new("lead_reply_incomplete", "Lead reply did not complete")
 }
 
 #[derive(Default)]
@@ -124,8 +130,10 @@ impl FinalReply {
         end: Option<oxa_core::RunEnd>,
         session_id: String,
     ) -> Result<(String, standing::Source), OxaError> {
-        if end != Some(oxa_core::RunEnd::Stopped) {
-            return Err(OxaError::new(codes::INVALID, "Lead reply did not complete"));
+        match end {
+            Some(oxa_core::RunEnd::Stopped) => {}
+            Some(oxa_core::RunEnd::Failed(error)) => return Err(error),
+            Some(oxa_core::RunEnd::Aborted) | None => return Err(incomplete_reply()),
         }
         Ok((
             self.text.ok_or_else(invalid_reply)?,
@@ -164,7 +172,13 @@ pub(crate) fn converse(
         )?;
         reply.finish(end, session.inner().sref.id.clone())
     })?;
-    let reply: ModelReply = serde_json::from_str(&answer).map_err(|_| invalid_reply())?;
+    let answer = answer.trim();
+    let json = answer
+        .strip_prefix("```json\n")
+        .or_else(|| answer.strip_prefix("```json\r\n"))
+        .and_then(|body| body.strip_suffix("\n```"))
+        .unwrap_or(answer);
+    let reply: ModelReply = serde_json::from_str(json).map_err(|_| invalid_reply())?;
     let target_ok = match &reply.action {
         Some(ActionDraft::FollowUp { task, text }) => {
             evidence.contains_task(task) && text_ok(text, MAX_MESSAGE_BYTES)

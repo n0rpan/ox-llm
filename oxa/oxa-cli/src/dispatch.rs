@@ -194,11 +194,17 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     }
 
     if let Some(sub) = a.subcommand.clone() {
-        if let Subcommand::Registered(oxa_interactive::command_registry::CommandId::LeadChat, words) = &sub {
-            return finish(
-                crate::lead_chat::run(&words.0, &cwd, env, &mut *stdout),
-                &mut *stderr,
-            );
+        if let Subcommand::Registered(id, words) = &sub {
+            use oxa_interactive::command_registry::CommandId;
+            // The one-shot `oxa lead <text>` and every `lead chat` form share the
+            // one bounded owner conversation path; the bare `lead` menu was
+            // answered before parsing.
+            if id == &CommandId::LeadChat || (id == &CommandId::Lead && !words.0.is_empty()) {
+                return finish(
+                    crate::lead_chat::run(&words.0, &cwd, env, &mut *stdout),
+                    &mut *stderr,
+                );
+            }
         }
         let dirs = match dirs_from_env(env, None) {
             Ok(d) => d,

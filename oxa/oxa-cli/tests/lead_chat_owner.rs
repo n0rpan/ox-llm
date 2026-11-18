@@ -208,3 +208,152 @@ fn dedicated_lead_session_keeps_its_own_history_across_cli_turns() {
     assert!(logs.contains(first) && logs.contains(second));
     assert!(!logs.contains("Observations:"));
 }
+
+#[test]
+fn one_shot_lead_message_shares_the_bounded_owner_conversation_path() {
+    let test = TestEnv::new();
+    let dirs = oxa_config::Dirs::under(test.root());
+    std::fs::set_permissions(&dirs.agent_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::text(r#"{"text":"one-shot reply","facts":[],"action":null}"#),
+            ScriptTurn::text(r#"{"text":"chat form reply","facts":[],"action":null}"#),
+            ScriptTurn::text(
+                r#"{"text":"held","facts":[],"action":{"kind":"rule","rule":"note","scope":{"kind":"repository"},"value":{"kind":"text","value":"one-shot note"}}}"#,
+            ),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let initialized = run(&test, &server, &["lead", "chat", "--init"]);
+    assert!(initialized.status.success(), "{initialized:?}");
+    let id = String::from_utf8(initialized.stdout).unwrap().trim().to_owned();
+    let settings = test.write(
+        "home/.oxa/agent/settings.json",
+        &serde_json::json!({"oxa":{"lead":{"sessionId":id}}}).to_string(),
+    );
+    for (path, mode) in [(test.agent_dir(), 0o700), (settings, 0o600)] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    // The one-shot and the named chat form drive the exact same bounded path.
+    let message = "one-shot owner message";
+    let output = run(&test, &server, &["lead", message]);
+    assert!(output.status.success(), "{output:?}");
+    let displayed = String::from_utf8_lossy(&output.stdout);
+    assert!(displayed.contains("one-shot reply"), "{displayed}");
+    let chat = run(&test, &server, &["lead", "chat", "second turn"]);
+    assert!(chat.status.success(), "{chat:?}");
+    assert!(String::from_utf8_lossy(&chat.stdout).contains("chat form reply"));
+
+    let requests: Vec<_> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.max_tokens > 0)
+        .collect();
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        assert!(request.max_tokens <= 512);
+        assert_eq!(request.tools_json, "[]");
+    }
+    assert!(requests[0]
+        .messages
+        .iter()
+        .any(|recorded| recorded.content.as_deref() == Some(message)));
+    assert!(requests[1]
+        .messages
+        .iter()
+        .any(|recorded| { recorded.content.as_deref() == Some("second turn") }));
+    // The dedicated Session keeps its own history: the second turn carried the first.
+    assert!(requests[1]
+        .messages
+        .iter()
+        .any(|recorded| recorded.content.as_deref() == Some(message)));
+
+    // A proposal from the one-shot still awaits owner confirmation through the
+    // exact dedicated Session.
+    let proposal = run(&test, &server, &["lead", "Consider recording a repository note"]);
+    assert!(proposal.status.success(), "{proposal:?}");
+    let reply = String::from_utf8_lossy(&proposal.stdout);
+    assert!(reply.contains("Proposal awaiting owner confirmation"), "{reply}");
+    assert!(reply.contains(r#""kind":"session_entry""#), "{reply}");
+    assert!(reply.contains(r#""value":"one-shot note""#), "{reply}");
+    let store = FsStore::new(dirs.sessions_dir);
+    let selected = store.resolve(&id).unwrap();
+    let entries = store.load(&selected).unwrap();
+    let last_message = entries.iter().rev().find_map(|entry| match &entry.body {
+        oxa_proto::EntryBody::Msg { wire, .. } => Some(wire),
+        _ => None,
+    });
+    let user_entries = entries
+        .iter()
+        .filter(|entry| {
+            matches!(&entry.body, oxa_proto::EntryBody::Msg { wire, .. } if wire.role == oxa_proto::Role::User)
+        })
+        .count();
+    assert_eq!(user_entries, 3, "each turn appended to the same Session");
+    assert_eq!(last_message.unwrap().role, oxa_proto::Role::Assistant);
+
+    // Without the selected Session both forms refuse identically, with no
+    // engine request and no fallback.
+    let fresh = TestEnv::new();
+    let second = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+    for words in [
+        vec!["lead", "no binding one-shot"],
+        vec!["lead", "chat", "no binding chat"],
+    ] {
+        let output = run(&fresh, &second, &words);
+        assert!(!output.status.success(), "{words:?}: {output:?}");
+        assert!(output.stdout.is_empty(), "{words:?}: {output:?}");
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            diagnostic.contains("Lead owner chat is unavailable"),
+            "{words:?}: {diagnostic}"
+        );
+    }
+    assert!(second.requests().is_empty());
+}
+
+#[test]
+fn cli_chat_hides_private_engine_response_details() {
+    let test = TestEnv::new();
+    std::fs::set_permissions(test.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let private_detail = "synthetic-private-endpoint-detail";
+    let mut rejected = ScriptTurn::text("");
+    rejected.fault = Some(oxa_fake::Fault::Http {
+        status: 400,
+        body: serde_json::json!({"error":{"message":private_detail}}).to_string(),
+    });
+    let server = FakeServer::start(vec![rejected.clone(), rejected], FakeOpts::default()).unwrap();
+    let init = run(&test, &server, &["lead", "chat", "--init"]);
+    assert!(init.status.success(), "{init:?}");
+    let id = String::from_utf8(init.stdout).unwrap();
+    let settings = test.write(
+        "home/.oxa/agent/settings.json",
+        &serde_json::json!({"oxa":{"lead":{"sessionId":id.trim()}}}).to_string(),
+    );
+    std::fs::set_permissions(settings, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    for words in [
+        &["lead", "show the board status"][..],
+        &["lead", "chat", "show the board status"][..],
+    ] {
+        let result = run(&test, &server, words);
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(!result.status.success());
+        assert!(result.stdout.is_empty());
+        assert!(
+            !stderr.contains(private_detail),
+            "CLI exposed a private response detail"
+        );
+        assert!(stderr.contains("The Lead provider request failed."), "{stderr}");
+    }
+    assert_eq!(
+        server
+            .requests()
+            .iter()
+            .filter(|request| request.max_tokens > 0)
+            .count(),
+        2
+    );
+}
