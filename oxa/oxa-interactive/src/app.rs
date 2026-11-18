@@ -145,6 +145,14 @@ pub fn run_session(
     for (level, text) in std::mem::take(&mut opts.notices) {
         vm.blocks.push(Block::Notice { level, text });
     }
+    // G3: a stored pursuing goal is announced on open, not run; a queued run is not repeated.
+    let run_queued = opts.initial_prompt.is_some() || !opts.initial_follow_ups.is_empty();
+    if let Some(text) = resumed_goal_notice(&session, run_queued) {
+        vm.blocks.push(Block::Notice {
+            level: Level::Info,
+            text,
+        });
+    }
     let prev = StatusModel {
         cwd: cwd.display().to_string(),
         home: opts.dirs.home.display().to_string(),
@@ -775,6 +783,22 @@ fn notice_event(text: &str) -> AgentEvent {
         level: Level::Info,
         text: text.to_string(),
     }
+}
+
+/// The notice for a stored goal that is still pursuing when the session opens. Nothing runs
+/// on open: `/goal resume` continues it and `/goal clear` drops it. `None` when a run is
+/// already queued (its prompt carries the goal) or the goal is not pursuing.
+fn resumed_goal_notice(s: &Session, run_queued: bool) -> Option<String> {
+    if run_queued {
+        return None;
+    }
+    let goal = s
+        .goal()
+        .filter(|g| g.status == oxa_session::GoalStatus::Pursuing)?;
+    let first = goal.objective.lines().next().unwrap_or_default().trim();
+    Some(format!(
+        "Goal pursuing: {first}; /goal resume continues, /goal clear drops it"
+    ))
 }
 
 /// What the UI thread needs to know about the worker's session.

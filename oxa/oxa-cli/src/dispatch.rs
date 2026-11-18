@@ -701,6 +701,11 @@ impl Built {
     }
 }
 
+/// `--goal` runs in print, JSON and the interactive terminal; RPC has no goal path.
+fn goal_flag_accepted(mode: RunMode) -> bool {
+    matches!(mode, RunMode::Interactive | RunMode::Print | RunMode::Json)
+}
+
 /// Settings, trust, resources, engine, sandbox and the open mode. Notices are printed by the
 /// caller once the session is open, so a failed start prints only its one error line.
 fn prepare(
@@ -717,10 +722,10 @@ fn prepare(
     owner_open: Option<(&oxa_session::SessionRef, Arc<dyn SessionStore>)>,
 ) -> Result<Prep, OxaError> {
     let owner_chat = owner_open.is_some();
-    if a.goal.is_some() && !matches!(mode, RunMode::Print | RunMode::Json) {
+    if a.goal.is_some() && !goal_flag_accepted(mode) {
         return Err(OxaError::new(
             codes::USAGE,
-            "--goal currently requires print or JSON mode.",
+            "--goal currently requires print, JSON or interactive mode.",
         ));
     }
     let goal = crate::goal_cmd::load(a, cwd)?;
@@ -1655,7 +1660,7 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         Some((text, parts)) => ((!text.is_empty()).then_some(text), parts),
         None => (None, Vec::new()),
     };
-    let initial_follow_ups: Vec<String> = prompts.map(|(text, _)| text).collect();
+    let mut initial_follow_ups: Vec<String> = prompts.map(|(text, _)| text).collect();
 
     let Prep {
         built,
@@ -1672,6 +1677,11 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         Ok(s) => s,
         Err(e) => return report(stderr, &e),
     };
+    // `--goal` in the terminal: the objective is set at open (`open_named`) and its start is
+    // the first queued message, ahead of any further follow-ups.
+    if let Some(goal) = &built.goal {
+        initial_follow_ups.insert(0, oxa_core::prompt::goal_start(&goal.objective));
+    }
     #[cfg(feature = "share")]
     let guest_listener = match sharing.map(crate::share_cmd::Prepared::start).transpose() {
         Ok(Some((running, address))) => {
@@ -2714,6 +2724,25 @@ mod session_scratch_tests {
         assert!(b.is_dir(), "ending one session removed another's scratch");
         drop(second);
         assert!(!b.exists(), "the second session's scratch outlived it");
+    }
+}
+
+#[cfg(test)]
+mod goal_flag_tests {
+    use super::*;
+
+    /// G3: `--goal` with no print flag and a terminal on both ends opens the interactive
+    /// session, and the mode guard in `prepare` accepts it (RPC still refuses it).
+    #[test]
+    fn interactive_goal_flag_is_accepted() {
+        let argv: Vec<String> = ["--goal", "goal.txt"].iter().map(|s| s.to_string()).collect();
+        let a = parse_args(&argv, &[]).expect("--goal parses");
+        assert_eq!(a.goal.as_deref(), Some("goal.txt"));
+        let mode = choose_mode(&a, true, true);
+        assert_eq!(mode, RunMode::Interactive);
+        assert!(goal_flag_accepted(mode));
+        assert!(goal_flag_accepted(RunMode::Print));
+        assert!(!goal_flag_accepted(RunMode::Rpc));
     }
 }
 
