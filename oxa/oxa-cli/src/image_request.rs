@@ -5,6 +5,10 @@ use std::path::{Path, PathBuf};
 
 const DEFAULT_SIZE: (u32, u32) = (512, 512);
 const DEFAULT_STEPS: u32 = 4;
+// Studio's FLUX.2 klein dimension bounds and distilled-model step ceiling.
+const MIN_SIDE: u32 = 256;
+const MAX_SIDE: u32 = 1024;
+const MAX_STEPS: u32 = 8;
 // The current oxi latent grid requires both sides to be divisible by 16.
 const LATENT_FACTOR: u32 = 16;
 
@@ -27,19 +31,16 @@ fn usage(message: &'static str) -> OxaError {
 }
 
 fn size(value: &str) -> Result<(u32, u32), OxaError> {
-    let invalid = || usage("Image size must be WxH with positive dimensions divisible by 16.");
+    let invalid = || usage("Image size must be WxH with dimensions from 256 to 1024 divisible by 16.");
     let (width, height) = value.split_once('x').ok_or_else(invalid)?;
     let dimension = |value: &str| {
         value
             .parse::<u32>()
             .ok()
-            .filter(|n| *n > 0 && n % LATENT_FACTOR == 0)
+            .filter(|n| (MIN_SIDE..=MAX_SIDE).contains(n) && n % LATENT_FACTOR == 0)
             .ok_or_else(invalid)
     };
-    let width = dimension(width)?;
-    let height = dimension(height)?;
-    width.checked_mul(height).ok_or_else(invalid)?;
-    Ok((width, height))
+    Ok((dimension(width)?, dimension(height)?))
 }
 
 fn parse(args: &[String]) -> Result<ImageRequest, OxaError> {
@@ -88,8 +89,8 @@ fn parse(args: &[String]) -> Result<ImageRequest, OxaError> {
                         value
                             .parse::<u32>()
                             .ok()
-                            .filter(|n| *n > 0)
-                            .ok_or_else(|| usage("Image steps must be a positive integer."))?,
+                            .filter(|n| (1..=MAX_STEPS).contains(n))
+                            .ok_or_else(|| usage("Image steps must be an integer from 1 to 8."))?,
                     );
                 }
                 _ => return Err(usage("Image options can be supplied only once.")),
