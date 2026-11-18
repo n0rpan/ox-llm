@@ -74,6 +74,7 @@ const MAX_DECLARED: usize = 16;
 const MAX_MEMBERS: usize = 256;
 const MANIFEST_BYTES: u64 = 256 * 1024;
 const MAX_MANIFESTS: usize = 512;
+const MANIFEST_PLAN_BYTES: u64 = MANIFEST_BYTES * MAX_PACKAGES as u64;
 const MAX_WALK_ENTRIES: usize = 20_000;
 const MAX_GLOB_WORK: usize = 4_000_000;
 const DEFAULT_COMPILE_COMMAND: &str = "cargo check";
@@ -219,9 +220,23 @@ struct Manifest {
     unsupported_workspace_list: bool,
 }
 
+struct ManifestBudget {
+    files_left: usize,
+    bytes_left: u64,
+}
+
+impl Default for ManifestBudget {
+    fn default() -> Self {
+        Self {
+            files_left: MAX_MANIFESTS,
+            bytes_left: MANIFEST_PLAN_BYTES,
+        }
+    }
+}
+
 /// Read a bounded regular manifest beneath the checkout. Walk by descriptor so
 /// project-controlled symlinks cannot redirect host-side reads.
-fn read_manifest(root: &Path, dir: &str) -> Result<Option<Manifest>, String> {
+fn read_manifest(root: &Path, dir: &str, budget: &mut ManifestBudget) -> Result<Option<Manifest>, String> {
     fn open_child(parent: &File, name: &str, flags: libc::c_int) -> io::Result<File> {
         let name = CString::new(name)?;
         // SAFETY: the parent descriptor and C string remain valid across openat.
@@ -263,12 +278,31 @@ fn read_manifest(root: &Path, dir: &str) -> Result<Option<Manifest>, String> {
                 "expected a bounded regular file",
             ));
         }
+        if budget.files_left == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "aggregate manifest count exhausted",
+            ));
+        }
+        if metadata.len() > budget.bytes_left {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "aggregate manifest byte budget exhausted",
+            ));
+        }
+        let limit = MANIFEST_BYTES.min(budget.bytes_left);
         let mut bytes = Vec::new();
-        file.take(MANIFEST_BYTES + 1).read_to_end(&mut bytes)?;
+        file.take(limit + 1).read_to_end(&mut bytes)?;
         if bytes.len() as u64 > MANIFEST_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "manifest exceeds the read limit",
+            ));
+        }
+        if bytes.len() as u64 > budget.bytes_left {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "aggregate manifest byte budget exhausted",
             ));
         }
         Ok(bytes)
@@ -276,6 +310,8 @@ fn read_manifest(root: &Path, dir: &str) -> Result<Option<Manifest>, String> {
 
     match read() {
         Ok(bytes) => {
+            budget.files_left -= 1;
+            budget.bytes_left -= bytes.len() as u64;
             let path = join_dir(dir, "Cargo.toml");
             let text = std::str::from_utf8(&bytes).map_err(|_| format!("{path} is not UTF-8"))?;
             let manifest = parse_manifest(text);
@@ -466,12 +502,16 @@ fn join_dir(dir: &str, name: &str) -> String {
 #[derive(Default)]
 struct Manifests {
     root: BTreeMap<String, Manifest>,
+    budget: ManifestBudget,
 }
 
 impl Manifests {
     fn at(&mut self, root: &Path, dir: &str) -> Result<&Manifest, String> {
         if !self.root.contains_key(dir) {
-            let manifest = read_manifest(root, dir)?.unwrap_or_default();
+            if self.root.len() >= MAX_WALK_ENTRIES {
+                return Err("aggregate manifest lookup budget exhausted".into());
+            }
+            let manifest = read_manifest(root, dir, &mut self.budget)?.unwrap_or_default();
             self.root.insert(dir.to_owned(), manifest);
         }
         Ok(&self.root[dir])
@@ -671,7 +711,7 @@ pub(crate) fn discover(root: &Path) -> Option<BTreeSet<(String, String)>> {
         let entries = std::fs::read_dir(path).ok()?;
         for entry in entries {
             seen += 1;
-            if seen > MAX_WALK_ENTRIES || manifests.root.len() > MAX_MANIFESTS {
+            if seen > MAX_WALK_ENTRIES {
                 return None;
             }
             let entry = entry.ok()?;
@@ -686,7 +726,7 @@ pub(crate) fn discover(root: &Path) -> Option<BTreeSet<(String, String)>> {
                 }
             } else if file == "Cargo.toml" {
                 let manifest_dir = full.strip_suffix("/Cargo.toml").unwrap_or("").to_owned();
-                let manifest = read_manifest(root, &manifest_dir).ok()??;
+                let manifest = read_manifest(root, &manifest_dir, &mut manifests.budget).ok()??;
                 manifests.root.insert(manifest_dir, manifest);
             }
         }
@@ -984,6 +1024,30 @@ members = ["crates/*", "tools/pinned"]
             panic!("accepted more than the existing manifest limit");
         };
         assert!(error.contains("aggregate manifest count"), "{error}");
+    }
+
+    #[test]
+    fn manifest_reads_share_the_byte_budget_and_cache_hits_do_not_spend_it() {
+        let dir = PrivateDir::new("derived-manifest-bytes");
+        let package = "[package]\nname = \"one\"\n";
+        manifest(&dir, "one/Cargo.toml", package);
+        manifest(&dir, "two/Cargo.toml", package);
+        let mut manifests = Manifests {
+            budget: ManifestBudget {
+                files_left: 2,
+                bytes_left: package.len() as u64,
+            },
+            ..Manifests::default()
+        };
+        for _ in 0..2 {
+            assert_eq!(
+                manifests.at(dir.path(), "one").unwrap().package.as_deref(),
+                Some("one")
+            );
+        }
+        assert_eq!(manifests.budget.files_left, 1);
+        let error = manifests.at(dir.path(), "two").unwrap_err();
+        assert!(error.contains("aggregate manifest byte budget"), "{error}");
     }
 
     #[test]
