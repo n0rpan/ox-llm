@@ -3,7 +3,7 @@
 #[path = "common/work_repo.rs"]
 mod work;
 
-use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
+use oxa_fake::{FakeOpts, FakeServer, Fault, ScriptTurn, TestEnv};
 use oxa_work::board::{assignment::*, *};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -130,6 +130,12 @@ impl Fixture {
     fn activity(&self, enabled: bool) {
         let mut config: serde_json::Value = serde_json::from_slice(&fs::read(&self.config).unwrap()).unwrap();
         config["nativeActivity"] = enabled.into();
+        fs::write(&self.config, serde_json::to_vec(&config).unwrap()).unwrap();
+    }
+
+    fn without_steering(&self) {
+        let mut config: serde_json::Value = serde_json::from_slice(&fs::read(&self.config).unwrap()).unwrap();
+        config.as_object_mut().unwrap().remove("nativeSteering");
         fs::write(&self.config, serde_json::to_vec(&config).unwrap()).unwrap();
     }
 
@@ -364,14 +370,91 @@ fn renewed_owner_executes_and_settles_the_original_expired_receipt() {
 }
 
 #[test]
+fn expired_current_owner_without_steering_never_takes_native_packet() {
+    let fixture = Fixture::new();
+    fixture.without_steering();
+    let before = serde_json::to_value(&fixture.reopened().assignments().unwrap()[&42]).unwrap();
+    assert!(before["data"]["item_owner"]["expires_at"].as_u64().unwrap() < fixture.now);
+    let queue = files(&fixture.queue);
+    let server = FakeServer::start(vec![ScriptTurn::text("must not run")], FakeOpts::default()).unwrap();
+    let (_, output) = fixture.run(&server);
+    assert!(
+        server.requests().is_empty(),
+        "expired current owner reached model: {output:?}"
+    );
+    assert_eq!(files(&fixture.queue), queue, "ready packet must not move");
+    assert_eq!(
+        serde_json::to_value(&fixture.reopened().assignments().unwrap()[&42]).unwrap(),
+        before,
+        "expiry alone cannot settle or change the original assignment/lease/attempt"
+    );
+    assert!(
+        !fixture
+            .storage
+            .join(format!("{}.json", fixture.binding.native_task_id))
+            .exists(),
+        "refusal precedes the first task checkpoint"
+    );
+}
+
+#[test]
+fn renewed_current_owner_without_steering_keeps_the_original_attempt() {
+    let fixture = Fixture::new();
+    renew(&fixture);
+    fixture.without_steering();
+    let before = &fixture.reopened().assignments().unwrap()[&42];
+    assert!(fixture.original.lease.expires_at < fixture.now);
+    assert!(before.data.item_owner.as_ref().unwrap().expires_at > fixture.now);
+    let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let (_, output) = fixture.run(&server);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(server.requests().len(), 1);
+    let saved = checkpoint(&fixture);
+    assert_eq!(saved["record"]["id"], fixture.binding.native_task_id);
+    assert_eq!(saved["record"]["step"], "finished");
+    let after = &fixture.reopened().assignments().unwrap()[&42];
+    assert!(after.state.lease.is_none());
+    assert_eq!(after.state.attempts, before.state.attempts);
+    assert!(after.data.native_binding.as_ref() == Some(&fixture.binding));
+    assert_eq!(
+        serde_json::to_value(&after.data.item_owner).unwrap(),
+        serde_json::to_value(&before.data.item_owner).unwrap()
+    );
+}
+
+#[test]
 fn verified_reclaim_fences_replay_without_consuming_the_old_started_packet() {
     let fixture = Fixture::new();
-    let server = FakeServer::start(vec![], FakeOpts::default()).unwrap();
-    // This expired attempt launches the real child, whose managed handoff refuses
-    // before a model call. The controller joins it and retains the reservation.
+    let current = fixture
+        .claims
+        .renew_item_for(
+            42,
+            &fixture.original.lease.holder,
+            "host-a",
+            &fixture.original,
+            fixture.now - 90,
+            600,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.lease, fixture.original.lease);
+    assert!(current.expires_at > fixture.now);
+    let server = FakeServer::start(
+        vec![ScriptTurn::fault(Fault::Http {
+            status: 400,
+            body: "Synthetic nonretryable worker failure".into(),
+        })],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    // Admit with valid current ownership, then join an actual failed child.
+    // Its blocked whole-task checkpoint retains the original reservation.
     let (mut child, output) = fixture.run(&server);
     assert!(!output.status.success(), "{output:?}");
-    assert!(server.requests().is_empty());
+    assert_eq!(server.requests().len(), 1);
+    let saved = checkpoint(&fixture);
+    assert_eq!(saved["record"]["outcome"], "blocked");
+    assert_eq!(saved["record"]["worker"]["error_class"], "engine_http");
     assert_eq!(
         fixture.reopened().assignments().unwrap()[&42]
             .state
@@ -404,10 +487,10 @@ fn verified_reclaim_fences_replay_without_consuming_the_old_started_packet() {
         .reclaim_item(
             42,
             Some(ManualAuthority::Lead),
-            &fixture.original,
-            fixture.now,
+            &current,
+            current.expires_at,
             |receipt| {
-                assert_eq!(receipt, &fixture.original);
+                assert_eq!(receipt, &current);
                 Ok(child.try_wait().map_err(|error| error.to_string())?.is_some())
             },
         )
@@ -420,7 +503,7 @@ fn verified_reclaim_fences_replay_without_consuming_the_old_started_packet() {
         replay.status.success(),
         "released assignment is an idle no-op: {replay:?}"
     );
-    assert!(server.requests().is_empty());
+    assert_eq!(server.requests().len(), 1, "replay makes no new model request");
     assert_eq!(files(&fixture.queue), queue_before);
     assert_eq!(files(&fixture.storage), checkpoints_before);
     let row = &fixture.reopened().assignments().unwrap()[&42];

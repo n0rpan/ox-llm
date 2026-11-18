@@ -109,3 +109,24 @@ impl Drop for TestEnv {
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_temp_root_preserves_layout_and_cleanup() {
+        let parent = TestEnv::new();
+        let root;
+        {
+            let env = TestEnv::new_in(&parent.tmp());
+            root = env.root().to_path_buf();
+            assert_eq!(root.parent(), Some(parent.tmp().as_path()));
+            for path in [env.home(), env.agent_dir(), env.tmp(), env.work()] {
+                assert!(path.is_dir());
+            }
+            env.write("work/note.txt", "synthetic fixture");
+        }
+        assert!(!root.exists());
+    }
+}

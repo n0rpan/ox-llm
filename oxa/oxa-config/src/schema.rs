@@ -159,6 +159,10 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
+    // The owner's explicit route for the Lead conversation: an exact model id for
+    // the normal `--model` selector and the normal gateway. User settings only;
+    // unset keeps the ordinary startup model.
+    key("oxa.lead.model", Kind::String, "null"),
     // Lead web access scaffold: user-layer object, disabled by default, no listener installed yet.
     // The CLI validates the fields it reads (identity mode, loopback bind, port, allow-list).
     key("oxa.lead.serve", Kind::Object, "{}"),

@@ -1,13 +1,16 @@
 //! Bounded projection and reply references for one owner chat turn.
 use super::quick_reply;
 use crate::lead_page::Prompt;
-use oxa_proto::{codes, work::Snapshot, OxaError};
+use oxa_proto::{work::Snapshot, OxaError};
 use oxa_work::board::{Action, Board};
 use serde_json::{json, Value};
 
+/// Stable reply-stage code of a citation the bounded input never offered (or
+/// offered once and the reply repeats). Fixed text only: no reply or input bytes.
+pub(super) const INVALID: &str = "lead_evidence_invalid";
+
 const MAX_BOARD_FACTS: usize = 8;
 const MAX_RUNNER_FACTS: usize = 5;
-const MAX_REPLY_FACTS: usize = 8;
 
 #[derive(Clone)]
 pub(crate) struct FactChip {
@@ -125,11 +128,15 @@ impl EvidencePacket {
     }
 
     pub(super) fn resolve(&self, references: &[usize]) -> Result<Vec<FactChip>, OxaError> {
-        let invalid = || OxaError::new(codes::INVALID, "Lead reply supplied invalid evidence references");
-        if references.len() > MAX_REPLY_FACTS {
+        let invalid = || OxaError::new(INVALID, "Lead reply supplied invalid evidence references");
+        // The reply may cite every observation this bounded input actually
+        // offered, each at most once: the offered set is itself bounded
+        // (3 prompt facts + 8 board rows + 5 runner rows), so its size is the
+        // only cap. A longer list is oversized before any entry is examined.
+        if references.len() > self.facts.len() {
             return Err(invalid());
         }
-        let mut seen = [false; 3 + MAX_BOARD_FACTS + MAX_RUNNER_FACTS];
+        let mut seen = vec![false; self.facts.len()];
         references
             .iter()
             .map(|reference| {
@@ -141,5 +148,63 @@ impl EvidencePacket {
                 Ok(fact.clone())
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxa_work::board::Entry;
+
+    fn board(rows: u64) -> Board {
+        Board {
+            observed_at: 1_700_000_000,
+            entries: (1..=rows)
+                .map(|number| Entry {
+                    number,
+                    head: "a".repeat(40),
+                    release_pinned: false,
+                    action: Action::WaitReview,
+                    lease: None,
+                    attempts_today: 0,
+                    eligible: false,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn citations_cover_every_offered_observation_once() {
+        let board = board(8);
+        let packet = EvidencePacket::new("Summarise the board", Some(&board), None);
+        // One status observation plus eight board rows are offered, so nine
+        // unique citations are all inside the bounded input.
+        let facts = packet
+            .resolve(&[1, 2, 3, 4, 5, 6, 7, 8, 9])
+            .expect("nine offered observations");
+        assert_eq!(facts.len(), 9);
+        assert!(facts.iter().all(|fact| !fact.label.is_empty()));
+        // Nothing offered: the empty citation list is the only accepted one.
+        let empty = EvidencePacket::new("Summarise the board", None, None);
+        assert!(empty.resolve(&[]).expect("no citations").is_empty());
+    }
+
+    #[test]
+    fn citations_outside_the_bounded_input_are_refused_with_the_stable_code() {
+        let board = board(8);
+        let packet = EvidencePacket::new("Summarise the board", Some(&board), None);
+        for references in [
+            vec![0],                             // zero is not a 1-based reference
+            vec![1, 1],                          // the same observation twice
+            vec![10],                            // beyond the nine offered
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10], // more citations than observations
+        ] {
+            let error = match packet.resolve(&references) {
+                Ok(_) => panic!("{references:?} must be refused"),
+                Err(error) => error,
+            };
+            assert_eq!(error.code, INVALID, "{references:?}");
+            assert_eq!(error.message, "Lead reply supplied invalid evidence references");
+        }
     }
 }

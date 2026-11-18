@@ -18,11 +18,19 @@ type Result<T> = std::result::Result<T, &'static str>;
 /// Sources must have private parent directories; producers may atomically replace files.
 pub(crate) fn open(path: &Path, uid: u32) -> Result<File> {
     let parent = path.parent().ok_or("missing input directory")?;
-    let directory = fs::symlink_metadata(parent).map_err(|_| "input directory unavailable")?;
+    let directory = match fs::symlink_metadata(parent) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err("input missing"),
+        Err(_) => return Err("input directory unavailable"),
+    };
     if !directory.is_dir() || directory.uid() != uid || directory.mode() & 0o077 != 0 {
         return Err("input directory must be owner-only");
     }
-    let before = fs::symlink_metadata(path).map_err(|_| "input unavailable")?;
+    let before = match fs::symlink_metadata(path) {
+        Ok(before) => before,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err("input missing"),
+        Err(_) => return Err("input unavailable"),
+    };
     if !before.is_file() || before.uid() != uid || before.nlink() != 1 || before.mode() & 0o077 != 0 {
         return Err("input must be a private owner file");
     }
@@ -66,6 +74,72 @@ pub(crate) fn board_and_app_quota(path: &Path, uid: u32) -> Result<(Board, Optio
         }
         // Publication rows carry a Board for journal replay, not a Reader observation.
         end = previous.ok_or("no Reader board sample")?;
+    }
+}
+
+/// Fixed, path-free operator causes for a failed protected observation read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BoardCause {
+    Missing,
+    Changed,
+    Unreadable,
+    Malformed,
+    Oversized,
+    Unsupported,
+    Unavailable,
+}
+
+impl BoardCause {
+    /// Authenticated operator status text. Never a path, file content or provider error.
+    pub(crate) fn text(self) -> &'static str {
+        match self {
+            Self::Missing => "the protected Board observation is missing",
+            Self::Changed => "the protected Board observation changed while it was being read",
+            Self::Unreadable => "the protected Board observation is not readable by this owner",
+            Self::Malformed => "the protected Board observation is not a valid board sample",
+            Self::Oversized => "the protected Board observation exceeds the sample limit",
+            Self::Unsupported => "the protected Board observation uses an unsupported version",
+            Self::Unavailable => "the protected Board observation is unavailable",
+        }
+    }
+
+    /// The operator's next step for this cause.
+    pub(crate) fn hint(self) -> &'static str {
+        match self {
+            Self::Unreadable => {
+                "check that the observation and its directory are owner-only, then rerun the Lead loop"
+            }
+            Self::Changed => "rerun the Lead loop to read the replacement observation",
+            _ => "write a fresh protected Board observation and rerun the Lead loop",
+        }
+    }
+}
+
+/// Classify the resolver's fixed text for operator status. This match is the
+/// allowlist: resolver texts are generated in this module, and any unrecognized
+/// text stays a generic cause, so no raw diagnostic can reach output. Only an
+/// explicit NotFound is reported as missing; ambiguous open failures are not.
+pub(crate) fn board_cause(error: &'static str) -> BoardCause {
+    match error {
+        "input missing" => BoardCause::Missing,
+        "input changed during open; retry later" => BoardCause::Changed,
+        "input directory unavailable"
+        | "input directory must be owner-only"
+        | "input must be a private owner file"
+        | "cannot inspect input"
+        | "cannot inspect board sample"
+        | "cannot seek board sample"
+        | "cannot read board sample" => BoardCause::Unreadable,
+        "no complete board sample"
+        | "no Reader board sample"
+        | "invalid board sample"
+        | "invalid shared board"
+        | "invalid board sample bounds"
+        | "invalid board sample entries"
+        | "invalid publication sample" => BoardCause::Malformed,
+        "board sample exceeds limit" => BoardCause::Oversized,
+        "unsupported board sample version" => BoardCause::Unsupported,
+        _ => BoardCause::Unavailable,
     }
 }
 

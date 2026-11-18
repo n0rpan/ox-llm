@@ -16,11 +16,21 @@ const TIMEOUT_S: u32 = 600;
 /// Bytes of output kept per command (the tail).
 const OUT_CAP: usize = 4096;
 
+pub(crate) enum CheckObservation {
+    Passed,
+    Failed {
+        identity: String,
+        rounds: u32,
+        evidence: Option<String>,
+    },
+}
+
 #[derive(Default)]
 pub(crate) struct DoneState {
     /// A file tool succeeded since the last check.
     dirty: bool,
     rounds: u32,
+    pub(crate) observation: Option<CheckObservation>,
     /// Fingerprint of the work folder at the last look (`None`: too big to look at).
     tree: Option<u64>,
 }
@@ -197,6 +207,7 @@ pub(crate) fn check(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Option<String> {
+    state.observation = None;
     let cmds = st.settings.done_commands();
     if cmds.is_empty() || !state.dirty || st.shared.cancel.is_cancelled() {
         return None;
@@ -204,6 +215,7 @@ pub(crate) fn check(
     state.dirty = false;
     let _ = ui;
     let mut failed = String::new();
+    let mut failed_checks = Vec::new();
     for cmd in &cmds {
         // A cancel stops the whole done phase: no further command, no notice, no repair text.
         if st.shared.cancel.is_cancelled() {
@@ -231,6 +243,8 @@ pub(crate) fn check(
             text: text.clone(),
         });
         if !ok {
+            let (dir, command) = parse_entry(cmd);
+            failed_checks.push((dir.unwrap_or("."), command));
             failed.push_str(&text);
             failed.push_str("\n\n");
         }
@@ -242,17 +256,25 @@ pub(crate) fn check(
     // What print mode reads at the end: the last check round failed and nothing fixed it.
     st.stats.done_failed = !failed.is_empty();
     if failed.is_empty() {
+        state.observation = Some(CheckObservation::Passed);
         state.rounds = 0;
         return None;
     }
-    if state.rounds >= MAX_ROUNDS {
-        return None;
-    }
-    state.rounds += 1;
-    Some(format!(
-        "The project's done checks failed. Fix the problems, then finish.\n\n{}",
-        failed.trim_end()
-    ))
+    state.rounds = state.rounds.saturating_add(1);
+    let repair = (state.rounds <= MAX_ROUNDS).then(|| {
+        format!(
+            "The project's done checks failed. Fix the problems, then finish.\n\n{}",
+            failed.trim_end()
+        )
+    });
+    state.observation = Some(CheckObservation::Failed {
+        identity: serde_json::json!(failed_checks).to_string(),
+        rounds: state.rounds,
+        // A newly delivered suggestion can support one repair after the normal rounds.
+        // Subsequent checks can settle or escalate that advice without another call.
+        evidence: (state.rounds <= MAX_ROUNDS + 1).then_some(failed),
+    });
+    repair
 }
 
 pub(crate) fn inject(
