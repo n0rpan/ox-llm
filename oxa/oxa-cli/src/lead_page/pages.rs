@@ -1,3 +1,4 @@
+use super::Query;
 use std::fmt::Write;
 
 pub(super) const BOARD_ROWS: usize = 50;
@@ -8,7 +9,7 @@ pub enum Page {
     Home,
     Asks,
     Board,
-    BoardPage(usize),
+    BoardQuery(Query),
     Workers,
     Usage,
 }
@@ -20,7 +21,7 @@ impl Page {
         match self {
             Self::Home => "Status",
             Self::Asks => "Asks",
-            Self::Board | Self::BoardPage(_) => "Board",
+            Self::Board | Self::BoardQuery(_) => "Board",
             Self::Workers => "Workers",
             Self::Usage => "Usage",
         }
@@ -30,7 +31,7 @@ impl Page {
         match self {
             Self::Home => "/",
             Self::Asks => "/asks",
-            Self::Board | Self::BoardPage(_) => "/board",
+            Self::Board | Self::BoardQuery(_) => "/board",
             Self::Workers => "/workers",
             Self::Usage => "/usage",
         }
@@ -41,10 +42,8 @@ impl Page {
             .strip_suffix("?fragment=1")
             .or_else(|| path.strip_suffix("&fragment=1"))
             .map_or((path, false), |path| (path, true));
-        if let Some(number) = path.strip_prefix("/board?page=") {
-            let page: usize = number.parse().ok()?;
-            return (page > 0 && page.checked_mul(BOARD_ROWS).is_some() && page.to_string() == number)
-                .then_some((Self::BoardPage(page), fragment));
+        if let Some(query) = path.strip_prefix("/board?") {
+            return Some((Self::BoardQuery(Query::parse(query)?), fragment));
         }
         Self::ALL
             .into_iter()
@@ -54,7 +53,7 @@ impl Page {
 
     pub(super) fn navigation(self) -> String {
         let mut html = String::from("<nav class=tabs aria-label=Main>");
-        let selected = if matches!(self, Self::BoardPage(_)) {
+        let selected = if matches!(self, Self::BoardQuery(_)) {
             Self::Board
         } else {
             self
