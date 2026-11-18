@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 #[path = "work_cmd/native_queue.rs"]
 mod native_queue;
+pub(crate) use native_queue::authenticate_native_claim;
 
 pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs) -> Result<bool, String> {
     crate::dispatch::project_trusted(

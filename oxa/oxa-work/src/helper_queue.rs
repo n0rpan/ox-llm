@@ -1,9 +1,12 @@
 //! Atomic publication only. The caller must reserve a core claim and authorize the target first.
-use crate::{board::Policy, Result};
+use crate::{
+    board::{NativeBinding, Policy},
+    Result,
+};
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub(crate) const MAX_TASK_BYTES: usize = 64 * 1024;
 
@@ -114,17 +117,52 @@ pub fn publish_reserved(
 
 /// Take the admitted packet into the existing started directory. The native name
 /// keeps retries distinguishable from packets already started by another consumer.
-pub fn take_native_packet(queue: &Path, binding: &crate::board::NativeBinding) -> Result<String> {
-    if crate::board::NativeBinding::new(binding.number, &binding.key, &binding.lease, &binding.branch)?
-        != *binding
-    {
-        return Err("invalid native queue binding".into());
-    }
+pub fn take_native_packet(queue: &Path, binding: &NativeBinding) -> Result<String> {
+    take_native_packets(queue, &[binding], |_, _, packet| Ok(packet))?
+        .pop()
+        .ok_or_else(|| "native queue packet unavailable".into())
+}
+
+/// Read and validate the entire selection under the spool lock before moving
+/// any ready packet. The preparation callback must not reacquire that lock.
+pub(crate) fn take_native_packets<T>(
+    queue: &Path,
+    bindings: &[&NativeBinding],
+    mut prepare: impl FnMut(usize, &NativeBinding, String) -> Result<T>,
+) -> Result<Vec<T>> {
     directory(queue)?;
     let started = queue.join("started");
     directory(&started)?;
     let lock = io(File::open(queue))?;
     io(lock.lock())?;
+    let owner = io(lock.metadata())?.uid();
+    let mut prepared = Vec::with_capacity(bindings.len());
+    let mut moves = Vec::new();
+    for (index, binding) in bindings.iter().enumerate() {
+        let (packet, ready) = read_native_packet(queue, &started, owner, binding)?;
+        prepared.push(prepare(index, binding, packet)?);
+        moves.extend(ready);
+    }
+    for packet in moves {
+        packet.start(&started, &lock)?;
+    }
+    Ok(prepared)
+}
+
+struct ReadyPacket {
+    ready: PathBuf,
+    active: PathBuf,
+}
+
+fn read_native_packet(
+    queue: &Path,
+    started: &Path,
+    owner: u32,
+    binding: &NativeBinding,
+) -> Result<(String, Option<ReadyPacket>)> {
+    if NativeBinding::new(binding.number, &binding.key, &binding.lease, &binding.branch)? != *binding {
+        return Err("invalid native queue binding".into());
+    }
     let mut found = None;
     for prefix in ["board-", "p1-board-"] {
         let name = format!("{prefix}{}.txt", binding.key);
@@ -165,7 +203,7 @@ pub fn take_native_packet(queue: &Path, binding: &crate::board::NativeBinding) -
             };
             let metadata = io(file.metadata())?;
             if !metadata.is_file()
-                || metadata.uid() != io(lock.metadata())?.uid()
+                || metadata.uid() != owner
                 || metadata.nlink() != 1
                 || metadata.mode() & 0o077 != 0
                 || metadata.len() > MAX_TASK_BYTES as u64
@@ -182,18 +220,22 @@ pub fn take_native_packet(queue: &Path, binding: &crate::board::NativeBinding) -
     if packet.len() > MAX_TASK_BYTES {
         return Err("native queue packet exceeds capacity".into());
     }
-    if !renamed {
-        let active_dir = active.parent().ok_or("missing native started directory")?;
+    Ok((packet, (!renamed).then_some(ReadyPacket { ready, active })))
+}
+
+impl ReadyPacket {
+    fn start(self, started: &Path, lock: &File) -> Result<()> {
+        let active_dir = self.active.parent().ok_or("missing native started directory")?;
         match fs::DirBuilder::new().mode(0o700).create(active_dir) {
             Ok(()) => (),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
             Err(error) => return io(Err(error)),
         }
         directory(active_dir)?;
-        io(fs::rename(ready, &active))?;
+        io(fs::rename(self.ready, &self.active))?;
         io(io(File::open(active_dir))?.sync_all())?;
         io(io(File::open(started))?.sync_all())?;
         io(lock.sync_all())?;
+        Ok(())
     }
-    Ok(packet)
 }
