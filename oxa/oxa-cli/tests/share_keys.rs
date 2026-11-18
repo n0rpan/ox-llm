@@ -569,7 +569,25 @@ fn foreground_metered_cloud_requires_owner_allowlist_and_settles_a_guest_request
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
 
-    let upstream = MockAnthropic::start(vec![Reply::text("Synthetic metered reply", 7, 0, 0, 2)]);
+    let mut events = vec![
+        json!({"type":"message_start","message":{"id":"msg_synthetic","type":"message","role":"assistant",
+            "model":"synthetic-anthropic","content":[],"stop_reason":null,
+            "usage":{"input_tokens":7,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+    ];
+    let parts: Vec<_> = (1..=12)
+        .map(|part| format!("Synthetic metered reply part {part}. "))
+        .collect();
+    events.extend(parts.iter().map(
+        |part| json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":part}}),
+    ));
+    events.extend([
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},
+            "usage":{"output_tokens":24}}),
+        json!({"type":"message_stop"}),
+    ]);
+    let upstream = MockAnthropic::start(vec![Reply::events(events).unfragmented()]);
     let home = Home::new();
     let agent = home.0.join(".oxa/agent");
     fs::create_dir_all(&agent).unwrap();
@@ -577,7 +595,7 @@ fn foreground_metered_cloud_requires_owner_allowlist_and_settles_a_guest_request
         "engine":{"inProcessCloud":true},
         "cloud":{"daily_budget_usd":1.0,"models":{
             "synthetic-metered":{"provider":"anthropic","base_url":upstream.base_url(),
-                "upstream_model":"synthetic-anthropic","context_window":4096,"max_output":16,
+                "upstream_model":"synthetic-anthropic","context_window":4096,"max_output":64,
                 "pricing":{"input_per_million":2,"output_per_million":3}},
             "synthetic-unselected":{"provider":"anthropic","base_url":upstream.base_url(),
                 "upstream_model":"synthetic-other","context_window":4096,"max_output":16,
@@ -617,11 +635,22 @@ fn foreground_metered_cloud_requires_owner_allowlist_and_settles_a_guest_request
         "POST",
         "/v1/chat/completions",
         &bearer,
-        r#"{"model":"synthetic-metered","messages":[{"role":"user","content":"Synthetic guest question"}],"max_tokens":8,"stream":true}"#,
+        r#"{"model":"synthetic-metered","messages":[{"role":"user","content":"Synthetic guest question"}],"max_tokens":32,"stream":true}"#,
     );
     assert!(completion.starts_with("HTTP/1.1 200"), "{completion}");
-    assert!(completion.contains("Synthetic metered reply"), "{completion}");
     assert!(completion.contains("[DONE]"), "{completion}");
+    let text: String = completion
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|data| *data != "[DONE]")
+        .map(|data| serde_json::from_str::<serde_json::Value>(data).unwrap())
+        .filter_map(|chunk| {
+            chunk["choices"][0]["delta"]["content"]
+                .as_str()
+                .map(str::to_owned)
+        })
+        .collect();
+    assert_eq!(text, parts.concat());
 
     let calls = upstream.requests();
     assert_eq!(calls.len(), 1);

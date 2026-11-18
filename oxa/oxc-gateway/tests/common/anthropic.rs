@@ -86,6 +86,11 @@ impl Reply {
             stop_delay: Duration::ZERO,
         }
     }
+    #[allow(dead_code)] // The LAN listener control needs one upstream HTTP chunk.
+    pub fn unfragmented(mut self) -> Self {
+        self.fragment = self.bytes.len().max(1);
+        self
+    }
     pub fn error(status: u16, message: &str) -> Self {
         Self {
             status,
