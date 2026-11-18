@@ -304,7 +304,7 @@ fn native_go_unknown_cost_keeps_usd_reserved_after_process_restart() {
         &env,
         &["--no-session", "--no-tools", "-p", "Synthetic unknown usage"],
     );
-    assert!(!first.status.success());
+    assert!(first.status.success(), "a finished reply without usage is complete");
     let second = run(
         &env,
         &["--no-session", "--no-tools", "-p", "Synthetic next process"],
