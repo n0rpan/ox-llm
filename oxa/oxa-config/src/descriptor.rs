@@ -2,8 +2,13 @@
 //! (issue #1489, design section 4.1).
 //!
 //! This module holds the types, the `const fn` builder and the lookups. The entries themselves go
-//! in `descriptor/*.rs` in later slices; the table here is empty until then. `KeyDef` and `SCHEMA`
+//! in `descriptor/*.rs` (one `ENTRIES` slice per file); `table()` joins them. `KeyDef` and `SCHEMA`
 //! are untouched: validation and merge do not read descriptors.
+
+use std::sync::OnceLock;
+
+mod budgets;
+mod tools;
 
 /// A settings menu group, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -342,29 +347,49 @@ impl Descriptor {
         self.widens = sentence;
         self
     }
+    pub const fn unit(mut self, unit: Unit) -> Self {
+        self.unit = Some(unit);
+        self
+    }
+    /// An advised minimum with no maximum: values below it save with a note.
+    pub const fn advise_from(mut self, min: u64, step: u64, note: &'static str) -> Self {
+        self.range = Some(Range {
+            min,
+            max: None,
+            hard: false,
+            step,
+            note,
+        });
+        self
+    }
 }
 
-/// The data table, in display order. Empty until the A2 slices add their entries.
-const TABLE: &[Descriptor] = &[];
+/// The data table, in display order: the budgets, then the tools, then the workers.
+fn table() -> &'static [Descriptor] {
+    static TABLE: OnceLock<Vec<Descriptor>> = OnceLock::new();
+    TABLE
+        .get_or_init(|| [budgets::ENTRIES, tools::ENTRIES].concat())
+        .as_slice()
+}
 
 /// Every descriptor, in display order.
 pub fn descriptors() -> &'static [Descriptor] {
-    TABLE
+    table()
 }
 
 /// The descriptor for one key (a schema key or a field key).
 pub fn descriptor(key: &str) -> Option<&'static Descriptor> {
-    TABLE.iter().find(|d| d.key == key)
+    table().iter().find(|d| d.key == key)
 }
 
 /// The descriptors of one group, in display order.
 pub fn in_group(group: Group) -> impl Iterator<Item = &'static Descriptor> {
-    TABLE.iter().filter(move |d| d.group == group)
+    table().iter().filter(move |d| d.group == group)
 }
 
 /// The field descriptors below one object key, in display order.
 pub fn fields_of(schema_key: &'static str) -> impl Iterator<Item = &'static Descriptor> {
-    TABLE.iter().filter(move |d| is_field_of(d.key, schema_key))
+    table().iter().filter(move |d| is_field_of(d.key, schema_key))
 }
 
 /// True when `key` is `schema_key` followed by "." and a field path.
@@ -471,10 +496,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_table_has_no_entries() {
-        assert!(descriptors().is_empty());
-        assert!(descriptor("oxa.bash.defaultTimeout").is_none());
-        assert_eq!(in_group(Group::Tools).count(), 0);
+    fn unloaded_groups_have_no_entries() {
+        // Only the slices that are loaded have entries: budgets, tools and workers here.
+        assert!(descriptor("oxa.bash.defaultTimeout").is_some());
+        assert!(descriptor("oxa.nope").is_none());
+        assert_eq!(in_group(Group::Lead).count(), 0);
         assert_eq!(fields_of("oxa.lead.serve").count(), 0);
     }
 
