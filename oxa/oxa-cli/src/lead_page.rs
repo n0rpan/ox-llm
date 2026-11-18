@@ -13,6 +13,8 @@ pub use pages::{Page, Prompt};
 /// Borrowed presentation inputs, not a second runner state store. None means unavailable.
 #[derive(Default)]
 pub struct View<'a> {
+    /// Ephemeral form credential supplied only by the authorized HTTP caller.
+    pub fixed_prompt_csrf: Option<&'a str>,
     pub board: Option<&'a Board>,
     pub situation: Option<&'a Snapshot>,
     /// C's selected checkpoint observation; the renderer never acquires runner state.
