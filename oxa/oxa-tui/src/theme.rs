@@ -703,20 +703,19 @@ pub fn resolve_theme(
     if let Some(theme) = builtin_theme(setting, mode, terminal) {
         return Ok(theme);
     }
-    // A file named `<setting>.json` in a theme directory; later directories win.
-    for dir in dirs.iter().rev() {
-        let candidate = dir.join(format!("{setting}.json"));
+    // Resolve each source in precedence order. Prefer the name shown in the picker
+    // within that source, with the filename retained as an alias for theme directories.
+    for source in dirs.iter().rev() {
+        let named = list_themes(std::slice::from_ref(source))
+            .into_iter()
+            .find(|theme| theme.name == setting)
+            .and_then(|theme| theme.path);
+        if let Some(path) = named {
+            return load_theme_file(&path, mode);
+        }
+        let candidate = source.join(format!("{setting}.json"));
         if candidate.is_file() {
             return load_theme_file(&candidate, mode);
-        }
-    }
-    // A theme whose own `name` is the setting.
-    if let Some(info) = list_themes(dirs)
-        .into_iter()
-        .find(|t| t.path.is_some() && t.name == setting)
-    {
-        if let Some(path) = info.path {
-            return load_theme_file(&path, mode);
         }
     }
     // A path.
