@@ -89,23 +89,6 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         cwd,
     } = io;
 
-    if let Some(invocation) = oxa_interactive::command_registry::parse_cli(crate::help::command_words(argv)) {
-        if invocation.command.id == oxa_interactive::command_registry::CommandId::Lead
-            && invocation.args.is_empty()
-        {
-            let menu = oxa_interactive::command_menu::menu(
-                invocation.command.id,
-                oxa_interactive::command_registry::Surface::Cli,
-            )
-            .unwrap_or_default();
-            return if stdout.write_all(menu.as_bytes()).is_ok() {
-                0
-            } else {
-                2
-            };
-        }
-    }
-
     if let Some(help) = crate::help::from_argv(argv) {
         return match help {
             Ok(text) => {
@@ -194,17 +177,45 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     }
 
     if let Some(sub) = a.subcommand.clone() {
-        if let Subcommand::Registered(id, words) = &sub {
-            use oxa_interactive::command_registry::CommandId;
-            // The one-shot `oxa lead <text>` and every `lead chat` form share the
-            // one bounded owner conversation path; the bare `lead` menu was
-            // answered before parsing.
-            if id == &CommandId::LeadChat || (id == &CommandId::Lead && !words.0.is_empty()) {
+        if let Subcommand::Registered(oxa_interactive::command_registry::CommandId::Lead, words) = &sub {
+            if !words.0.is_empty() {
                 return finish(
-                    crate::lead_chat::run(&words.0, &cwd, env, &mut *stdout),
+                    crate::lead_chat::run_direct(&words.0, &cwd, env, &mut *stdout),
                     &mut *stderr,
                 );
             }
+            if !(stdin_is_tty && stdout_is_tty) {
+                return report(
+                    &mut *stderr,
+                    &OxaError::new(
+                        codes::USAGE,
+                        "Lead needs a terminal. Use oxa lead -p <prompt> for print mode.",
+                    ),
+                );
+            }
+            let result = (|| {
+                let binding = crate::lead_chat::local_binding(&cwd, env)?;
+                let dirs = dirs_from_env(env, None)?;
+                let mode = RunMode::Interactive;
+                let workspace = crate::home_cwd::check(mode, &cwd, env, &dirs, &mut *stdin, &mut *stdout)?;
+                let mut args = Args::default();
+                let prep = binding.prepare(&mut args, env, mode, workspace)?;
+                let session = binding.open(&prep)?;
+                Ok((args, prep, session, binding))
+            })();
+            return match result {
+                Ok((args, prep, session, binding)) => {
+                    run_tui(&args, env, &cwd, prep, &mut *stderr, Some((session, binding)))
+                }
+                Err(error) => report(&mut *stderr, &error),
+            };
+        }
+
+        if let Subcommand::Registered(oxa_interactive::command_registry::CommandId::LeadChat, words) = &sub {
+            return finish(
+                crate::lead_chat::run(&words.0, &cwd, env, &mut *stdout),
+                &mut *stderr,
+            );
         }
         let dirs = match dirs_from_env(env, None) {
             Ok(d) => d,
@@ -476,10 +487,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     };
 
     match mode {
-        RunMode::Interactive => {
-            let dirs = prep.built.dirs.clone();
-            run_tui(&a, env, &dirs, &cwd, prep, &mut *stderr)
-        }
+        RunMode::Interactive => run_tui(&a, env, &cwd, prep, &mut *stderr, None),
         RunMode::Rpc => {
             let dirs = prep.built.dirs.clone();
             run_rpc(prep, a.max_time, a.max_tokens, dirs, stdin, stdout, &mut *stderr)
@@ -1680,7 +1688,15 @@ fn run_rpc(
 
 /// The interactive terminal: the first prompt and the further messages come from the command
 /// line; `reopen` builds the sessions of `/new`, `/resume`, fork, clone and import.
-fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mut dyn Write) -> i32 {
+fn run_tui(
+    a: &Args,
+    env: &Env,
+    cwd: &Path,
+    prep: Prep,
+    stderr: &mut dyn Write,
+    owner: Option<(Session, LeadOwnerBinding)>,
+) -> i32 {
+    let dirs = &prep.built.dirs.clone();
     let prompts = match build_prompts(a, dirs, cwd, None) {
         Ok(p) => p,
         Err(e) => return report(stderr, &e),
@@ -1703,9 +1719,12 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         name,
         ..
     } = prep;
-    let session = match open_named(&built, session_id, open, name.as_deref()) {
-        Ok(s) => s,
-        Err(e) => return report(stderr, &e),
+    let (session, owner) = match owner {
+        Some((session, binding)) => (session, Some(binding)),
+        None => match open_named(&built, session_id, open, name.as_deref()) {
+            Ok(session) => (session, None),
+            Err(e) => return report(stderr, &e),
+        },
     };
     #[cfg(feature = "share")]
     let guest_listener = match sharing.map(crate::share_cmd::Prepared::start).transpose() {
@@ -1742,7 +1761,17 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
     let settings = built.settings.clone();
     let store = built.store.clone();
     let base = built.clone();
+    let pinned = owner.is_some();
     let reopen: ReopenFn = Box::new(move |request, carry| {
+        if let Some(binding) = &owner {
+            if !matches!(&request, Reopen::Resume(session) if session == binding.session_ref()) {
+                return Err(OxaError::new(
+                    codes::INVALID,
+                    "Lead is attached to its dedicated session.",
+                ));
+            }
+            binding.recheck()?;
+        }
         let mut deps = base.deps(None);
         // `/new` keeps the model and thinking level of the session it leaves (a `/model`
         // switch is present in the status bar but only as a `ModelChange` entry of the old
@@ -1760,6 +1789,15 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
             Reopen::Fork(sref) => Open::Fork(sref),
         };
         let mut session = Session::open(deps, how)?;
+        if let Some(binding) = &owner {
+            binding.recheck()?;
+            if &session.inner().sref != binding.session_ref() {
+                return Err(OxaError::new(
+                    codes::INVALID,
+                    "The selected Lead session changed.",
+                ));
+            }
+        }
         base.result_facts.attach(&mut session)?;
         session.set_output_schema(base.output_schema.clone());
         Ok(session)
@@ -1804,7 +1842,11 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         engine_status: None,
         yolo: Some(yolo),
     };
-    let result = run_interactive(session, opts);
+    let result = if pinned {
+        oxa_interactive::run_pinned(session, opts, "oxa lead")
+    } else {
+        run_interactive(session, opts)
+    };
     let result = match &built.status {
         Some(status) => status.finish_interactive(result, stderr),
         None => result,
