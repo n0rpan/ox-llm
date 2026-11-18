@@ -347,10 +347,12 @@ impl Transcript {
     /// tokens; an H6 prefill (`completion == 0`) leaves exactly `prompt`.
     pub fn set_usage(&mut self, u: &Usage) {
         if u.is_unreported() {
-            // The reply carried no usage: 0 is not a measurement. Keeping the previous baseline
-            // keeps `context()` and `usage_wire_len()` conservative (the estimate then grows with
-            // the appended messages) instead of resetting the context to zero and hiding the
-            // need for compaction.
+            // The reply carried no usage: 0 is not a measurement. Keep the context baseline where
+            // it was last measured, so `context()` and `usage_wire_len()` stay conservative and
+            // the size estimate keeps growing with the appended messages instead of collapsing to
+            // zero and hiding the need for compaction. Only the cache stops expecting a
+            // continuation (`expected_cache() == 0`).
+            self.expected = 0;
             return;
         }
         self.usage = Some(*u);

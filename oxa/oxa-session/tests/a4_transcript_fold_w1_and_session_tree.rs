@@ -655,4 +655,9 @@ fn unreported_usage_keeps_the_previous_context_baseline() {
         before,
         "the baseline stays where it was counted"
     );
+    assert_eq!(
+        t.expected_cache(),
+        0,
+        "an unreported usage stops the cache expecting a continuation"
+    );
 }

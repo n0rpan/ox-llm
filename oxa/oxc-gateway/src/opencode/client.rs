@@ -455,12 +455,6 @@ where
                     pending_usage = Some(parsed);
                 }
             }
-            // Usage that arrived before the finish frame is still provisional: only the finish
-            // may follow it. Content or tool output after it would be delivered to the client
-            // but never charged, because the provisional counts are what settle the request.
-            if pending_usage.is_some() && ending.is_none() {
-                return Err(terminal(TerminalCheck::FrameAfterUsage));
-            }
             if cancel.is_cancelled() || on(Event::Chunk(chunk)) == Control::Stop {
                 return Err(Error::Cancelled);
             }
