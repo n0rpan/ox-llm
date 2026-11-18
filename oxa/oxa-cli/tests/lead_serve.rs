@@ -138,6 +138,7 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
         ("/board", "Board"),
         ("/workers", "Workers"),
         ("/usage", "Usage"),
+        ("/chat", "Chat with lead"),
     ] {
         for fragment in [false, true] {
             let path = if fragment {
@@ -152,6 +153,20 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
         }
         assert!(get(port, path, "attacker.invalid", "").starts_with("HTTP/1.1 403"));
     }
+    for prompt in ["status", "workers", "attention"] {
+        for suffix in ["", "&fragment=1"] {
+            let path = format!("/chat?prompt={prompt}{suffix}");
+            let reply = get(port, &path, &authority, "");
+            assert!(reply.starts_with("HTTP/1.1 200"), "{path}");
+            assert!(reply.contains("0 tokens") && reply.contains("role=log"));
+            if prompt == "status" {
+                assert!(reply.contains("0 items") && reply.contains("href=/board>Board · observed at 10"));
+            }
+            assert_eq!(reply.contains("<!doctype html>"), suffix.is_empty());
+            assert!(get(port, &path, "attacker.invalid", "").starts_with("HTTP/1.1 403"));
+        }
+    }
+    assert!(get(port, "/chat?prompt=unknown", &authority, "").starts_with("HTTP/1.1 404"));
     let entries: Vec<_> = (1..=101)
         .map(|number| {
             serde_json::json!({

@@ -485,7 +485,12 @@ fn pull_request_packet_carries_reviews_and_failing_checks() {
     use std::os::unix::fs::PermissionsExt;
 
     let env = TestEnv::new();
-    setup(&env, "[]");
+    let host_namespace = std::fs::read_link("/proc/self/ns/net").unwrap();
+    let checks = serde_json::json!([format!(
+        "namespace=$(readlink /proc/self/ns/net) && test \"$namespace\" != '{}'",
+        host_namespace.display()
+    )]);
+    setup(&env, &checks.to_string());
     enable_test_subagent(&env);
     let project = env.work().join("project");
     git(&env, &project, &["switch", "-c", "seed-pr-head"]);
@@ -601,6 +606,17 @@ exec /bin/cat "${0%/*}/pr-packet.json"
     }
     assert!(!prompt.contains("Resolved finding"), "{prompt}");
     assert!(!prompt.contains("checks / docs"), "{prompt}");
+
+    let verified = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "verify", record["id"].as_str().unwrap()])
+        .current_dir(&project)
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert!(verified.status.success(), "{verified:?}");
+    assert_eq!(server.requests().len(), 1);
 
     std::fs::write(tree.join("second-round.txt"), "Review revision").unwrap();
     git(&env, tree, &["add", "second-round.txt"]);

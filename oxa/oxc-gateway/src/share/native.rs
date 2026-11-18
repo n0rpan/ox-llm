@@ -134,6 +134,21 @@ pub fn serve<A: Answer, T: super::listener::Tailnet>(
         .build()
         .map_err(|_| Failure::Failed)?;
     runtime.block_on(async {
+        if let super::listener::Binding::Explicit(ip) = config.binding {
+            if ip.is_unspecified() || ip.is_multicast() {
+                return Err(Failure::Forbidden);
+            }
+            if !ip.is_loopback() {
+                // This adapter serves HTTP. Outside loopback, only addresses
+                // assigned by the trusted Tailscale daemon provide encryption.
+                let addresses = tokio::time::timeout(config.read_timeout, tailnet.addresses())
+                    .await
+                    .map_err(|_| Failure::Busy)??;
+                if !addresses.contains(&ip) {
+                    return Err(Failure::Forbidden);
+                }
+            }
+        }
         let server = super::listener::Server::bind(keys, answer, tailnet, config).await?;
         ready(server.address()?)?;
         server.serve(stop).await

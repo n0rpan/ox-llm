@@ -1,16 +1,18 @@
+use super::Reviewer;
 use crate::{git, output, Result, RunPolicy};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
 const MAX_DIFF_BYTES: u64 = 2 * 1024 * 1024;
-const MAX_MAIN_MERGES: usize = 16;
+const MAX_APPROVAL_STEPS: usize = 16;
 
 /// Own-diff evidence from already available Git objects. The caller supplies the
 /// trusted base and the GitHub snapshot's exact head, never PR-provided refs.
 pub struct GitDiff {
     pub patch_id: String,
     pub main_merge_predecessors: Vec<String>,
+    pub owner_approval_predecessors: Vec<String>,
     pub files: Vec<GitFileChange>,
 }
 
@@ -23,7 +25,14 @@ pub struct GitFileChange {
 }
 
 impl GitDiff {
-    pub fn read(policy: &RunPolicy, repo: &Path, base: &str, head: &str) -> Result<Option<Self>> {
+    pub fn read(
+        policy: &RunPolicy,
+        repo: &Path,
+        base: &str,
+        head: &str,
+        approvals: &[(Reviewer, &str)],
+        carry_path: impl Fn(&str) -> bool,
+    ) -> Result<Option<Self>> {
         if !object_id(base) || !object_id(head) {
             return Err("review evidence requires full Git object IDs".into());
         }
@@ -34,29 +43,76 @@ impl GitDiff {
         let files = own_file_changes(policy, repo, &start, head)?;
         let mut current = head.to_owned();
         let mut main_merge_predecessors = Vec::new();
-        for _ in 0..MAX_MAIN_MERGES {
+        let mut owner_approval_predecessors = Vec::new();
+        let mut owner_only = false;
+        let mut candidates: Vec<_> = approvals
+            .iter()
+            .copied()
+            .filter(|&(_, reviewed)| reviewed != head)
+            .collect();
+        let mut current_patch = patch_id.clone();
+        for _ in 0..MAX_APPROVAL_STEPS {
+            if candidates.is_empty() {
+                break;
+            }
             let parents = git_line(
                 policy,
                 repo,
                 &["rev-list", "--parents", "--max-count=1", &current, "--"],
             )?;
             let fields: Vec<_> = parents.split_ascii_whitespace().collect();
-            let [_, previous, main] = fields.as_slice() else {
+            let [_, previous, rest @ ..] = fields.as_slice() else {
                 break;
             };
-            if !is_ancestor(policy, repo, main, base)?
-                || is_ancestor(policy, repo, main, previous)?
-                || own_patch_id(policy, repo, &merge_base(policy, repo, base, previous)?, previous)?.as_ref()
-                    != Some(&patch_id)
-            {
+            if rest.is_empty() {
+                // Only an existing owner approval survives an ordinary docs/test delta.
+                candidates.retain(|&(reviewer, _)| reviewer == Reviewer::Owner);
+                if candidates.is_empty()
+                    || !own_file_changes(policy, repo, previous, &current).is_ok_and(|delta| {
+                        delta.iter().all(|file| {
+                            carry_path(&file.path) && file.previous_path.as_deref().is_none_or(&carry_path)
+                        })
+                    })
+                {
+                    break;
+                }
+                owner_only = true;
+            }
+            let previous_base = merge_base(policy, repo, base, previous)?;
+            if previous_base == *previous {
+                break;
+            }
+            let Some(previous_patch) = own_patch_id(policy, repo, &previous_base, previous)? else {
+                break;
+            };
+            let can_carry = match rest {
+                [] => true,
+                [main] => {
+                    previous_patch == current_patch
+                        && is_ancestor(policy, repo, main, base)?
+                        && !is_ancestor(policy, repo, main, previous)?
+                }
+                _ => false,
+            };
+            if !can_carry {
                 break;
             }
             current = (*previous).to_owned();
-            main_merge_predecessors.push(current.clone());
+            current_patch = previous_patch;
+            let previous_count = candidates.len();
+            candidates.retain(|&(_, reviewed)| reviewed != current);
+            if candidates.len() != previous_count {
+                if owner_only {
+                    owner_approval_predecessors.push(current.clone());
+                } else {
+                    main_merge_predecessors.push(current.clone());
+                }
+            }
         }
         Ok(Some(Self {
             patch_id,
             main_merge_predecessors,
+            owner_approval_predecessors,
             files,
         }))
     }
@@ -169,6 +225,9 @@ fn own_file_changes(policy: &RunPolicy, repo: &Path, start: &str, head: &str) ->
             "--",
         ],
     ))?;
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
     let invalid = "invalid Git review file inventory";
     let raw = std::str::from_utf8(&raw).map_err(|_| invalid)?;
     let mut records = raw.strip_suffix('\0').ok_or(invalid)?.split('\0').peekable();
