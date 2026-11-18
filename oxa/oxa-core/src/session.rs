@@ -1066,6 +1066,7 @@ impl Session {
             _ => {}
         }
 
+        crate::settings_refresh::refresh_at_run_start(st, sink);
         // L5 (`oxa.compaction.turnStart`): an aborted turn left its tool result uncounted; the
         // prompt is compacted first when the context is already above the soft limit.
         let can_run = compact_before_run(st, sink, ui)?;
@@ -1127,7 +1128,7 @@ impl Session {
             _ => {}
         }
 
-        run_from_wire(st, sink, ui).map(Some)
+        run_with_current_settings(st, sink, ui).map(Some)
     }
 }
 
@@ -1288,6 +1289,14 @@ pub(crate) fn run_from_wire(
 ) -> Result<RunEnd, OxaError> {
     // L1: one stat per settings file; a changed file is applied before the first request.
     crate::settings_refresh::refresh_at_run_start(st, sink);
+    run_with_current_settings(st, sink, ui)
+}
+
+fn run_with_current_settings(
+    st: &mut SessionState,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+) -> Result<RunEnd, OxaError> {
     // X3: while the engine has not yet published metadata for the selected model (a switch
     // to a model that is not loaded, a resumed session), re-read it before the run and
     // again before the after-reply compaction decision.
@@ -2154,6 +2163,10 @@ pub(crate) fn refresh_budget(st: &mut SessionState, prev_enabled: Option<bool>, 
             format!("could not re-read the engine limits ({e}); keeping the previous ones"),
         ),
     }
+    apply_budget_settings(st, prev_enabled);
+}
+
+pub(crate) fn apply_budget_settings(st: &mut SessionState, prev_enabled: Option<bool>) {
     st.compact = policy_for_model(&st.info, &st.settings, &st.model);
     if prev_enabled.is_some_and(|p| p != st.compact.enabled) {
         st.auto_compaction = st.compact.enabled;

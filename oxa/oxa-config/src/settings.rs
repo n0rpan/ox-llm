@@ -5,6 +5,8 @@ use crate::{Diagnostic, Dirs};
 use oxa_proto::{codes, OxaError, PermissionMode, ThinkingLevel, Value};
 use serde_json::Map;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::SystemTime;
 
 /// pi's `steeringMode` / `followUpMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +62,57 @@ pub struct Settings {
     /// In-memory overrides ([`Settings::with_override`]) in the order applied, so a live
     /// refresh of the files can put them back ([`Settings::with_overrides_of`]).
     overrides: Vec<(String, Value)>,
+    files: Option<Arc<SettingsFiles>>,
+}
+
+/// The settings that were actually loaded for this session, captured before reading
+/// so an edit during the load is visible on the next turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsFiles {
+    user: PathBuf,
+    project: Option<PathBuf>,
+    user_stamp: Option<FileStamp>,
+    project_stamp: Option<FileStamp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileStamp {
+    mtime: Option<SystemTime>,
+    len: u64,
+    ino: u64,
+}
+
+fn stamp(path: &Path) -> Option<FileStamp> {
+    let metadata = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    let ino = std::os::unix::fs::MetadataExt::ino(&metadata);
+    #[cfg(not(unix))]
+    let ino = 0;
+    Some(FileStamp {
+        mtime: metadata.modified().ok(),
+        len: metadata.len(),
+        ino,
+    })
+}
+
+impl SettingsFiles {
+    fn new(user: PathBuf, project: Option<PathBuf>) -> Self {
+        Self {
+            user_stamp: stamp(&user),
+            project_stamp: project.as_deref().and_then(stamp),
+            user,
+            project,
+        }
+    }
+
+    /// Stat only the paths that were eligible at the original load.
+    pub fn observe(&self) -> Self {
+        Self::new(self.user.clone(), self.project.clone())
+    }
+
+    pub fn project_changed_since(&self, previous: &Self) -> bool {
+        self.project_stamp != previous.project_stamp
+    }
 }
 
 impl Settings {
@@ -67,15 +120,31 @@ impl Settings {
     /// merge per pi's rules ([`crate::merge_settings`]); validate ([`crate::validate`]). Missing
     /// files are empty objects. Never fails: problems become diagnostics.
     pub fn load(dirs: &Dirs, cwd: &Path, project_trusted: bool) -> Settings {
+        let files = SettingsFiles::new(
+            dirs.settings_file(),
+            project_trusted.then(|| dirs.project_settings_file(cwd)),
+        );
+        Self::read_files(files, None)
+    }
+
+    /// A session with caller-supplied settings has no files to watch.
+    pub fn files(&self) -> Option<&SettingsFiles> {
+        self.files.as_deref()
+    }
+
+    /// If the project layer did not change or lacks fresh approval, preserve the
+    /// layer admitted at launch. In either case its file does not get read again.
+    pub fn refresh_files(&self, files: SettingsFiles, read_project: bool) -> Settings {
+        Self::read_files(files, (!read_project).then_some(&self.project)).with_overrides_of(self)
+    }
+
+    fn read_files(files: SettingsFiles, keep_project: Option<&Value>) -> Settings {
         let mut diagnostics = Vec::new();
-        let user_path = dirs.settings_file();
-        let user = read_layer(&user_path, &mut diagnostics);
-        let (project, project_src) = if project_trusted {
-            let path = dirs.project_settings_file(cwd);
-            let value = read_layer(&path, &mut diagnostics);
-            (value, path.display().to_string())
-        } else {
-            (Value::Null, String::from("project settings"))
+        let user = read_layer(&files.user, &mut diagnostics);
+        let (project, project_src) = match (files.project.as_deref(), keep_project) {
+            (Some(path), Some(layer)) => (layer.clone(), path.display().to_string()),
+            (Some(path), None) => (read_layer(path, &mut diagnostics), path.display().to_string()),
+            (None, _) => (Value::Null, String::from("project settings")),
         };
         // `read_layer` is the only source of diagnostics so far.
         let layer_failed = !diagnostics.is_empty();
@@ -83,10 +152,11 @@ impl Settings {
             user,
             project,
             diagnostics,
-            &user_path.display().to_string(),
+            &files.user.display().to_string(),
             &project_src,
         );
         settings.layer_failed = layer_failed;
+        settings.files = Some(Arc::new(files));
         settings
     }
     /// Whether [`Settings::load`] met a file it could not read or parse. A caller that applies
@@ -604,6 +674,7 @@ fn build(
         diagnostics,
         layer_failed: false,
         overrides: Vec::new(),
+        files: None,
     }
 }
 
@@ -637,7 +708,11 @@ fn read_layer(path: &Path, diagnostics: &mut Vec<Diagnostic>) -> Value {
     let source = path.display().to_string();
     match std::fs::read_to_string(path) {
         Ok(text) => match serde_json::from_str::<Value>(&text) {
-            Ok(v) => v,
+            Ok(v @ Value::Object(_)) => v,
+            Ok(_) => {
+                diagnostics.push(warn(&source, "settings file must contain a JSON object"));
+                Value::Null
+            }
             Err(e) => {
                 diagnostics.push(warn(
                     &source,

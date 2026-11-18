@@ -270,8 +270,6 @@ fn reload_extension_paths(
 pub fn reload(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) -> Result<bool, OxaError> {
     ensure_idle(st)?;
     let trusted = project_trusted(st);
-    // L1: stamp the files before reading them, so a write during the load shows at the next run.
-    let stamps = crate::settings_refresh::stamps(&st.dirs, &st.cwd);
     let settings = Settings::load(&st.dirs, &st.cwd, trusted);
     for d in settings.diagnostics() {
         sink.emit(&AgentEvent::Notice {
@@ -306,7 +304,7 @@ pub fn reload(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) 
         trusted,
     );
     st.settings = settings;
-    crate::settings_refresh::resync(st, stamps);
+    crate::settings_refresh::resync(st);
     st.resources = resources;
     crate::host::observe_hooks(st, HookPoint::SessionShutdown, &Value::Null, sink, ui);
     for h in st.hooks.clone() {

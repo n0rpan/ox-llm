@@ -2,7 +2,7 @@
 //! `/reload`.
 //!
 //! On by default; `oxa.liveSettings: false` turns it off (read from the session settings).
-//! The check is one `stat` per file (user, project) compared with the values seen last
+//! The check is one `stat` per file loaded at startup compared with the values seen last
 //! (mtime, size, inode). While they match, nothing is read or parsed. On a change the files
 //! are parsed once and the result replaces `st.settings` (the path `/reload` uses for
 //! settings, without resources, hook reload or hook events). A file that no longer parses
@@ -11,56 +11,19 @@
 //! cache. Keys fixed when an epoch opens (the rest of the prefix, codemode drivers) still
 //! wait for `/reload`.
 use crate::SessionState;
-use oxa_config::{Dirs, Settings};
+use oxa_config::{Settings, SettingsFiles};
 use oxa_proto::{AgentEvent, EventSink, Level, Value};
 use std::collections::BTreeMap;
-use std::path::Path;
-use std::time::SystemTime;
-
-/// What a stat says about one file: `None` = absent.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Stamp {
-    mtime: Option<SystemTime>,
-    len: u64,
-    ino: u64,
-}
-
-type Stamps = [Option<Stamp>; 2];
-
-fn stamp(path: &Path) -> Option<Stamp> {
-    let m = std::fs::metadata(path).ok()?;
-    #[cfg(unix)]
-    let ino = std::os::unix::fs::MetadataExt::ino(&m);
-    #[cfg(not(unix))]
-    let ino = 0;
-    Some(Stamp {
-        mtime: m.modified().ok(),
-        len: m.len(),
-        ino,
-    })
-}
-
-/// The stamps of the user and the project settings file. The project file is stamped whatever
-/// its trust (a stat only); trust is decided when the files are read.
-pub(crate) fn stamps(dirs: &Dirs, cwd: &Path) -> Stamps {
-    [
-        stamp(&dirs.settings_file()),
-        stamp(&dirs.project_settings_file(cwd)),
-    ]
-}
-
-/// The stamps seen last. `None` until the first check of a session, which reads the files once
-/// and compares them with the settings the session loaded at start (an edit made between that
-/// load and the first run must not be lost).
+/// The last observation, including a change that was reported but could not be applied.
 #[derive(Debug, Default)]
 pub(crate) struct Watch {
-    seen: Option<Stamps>,
+    seen: Option<SettingsFiles>,
 }
 
-/// `/reload` has just read the files: what it stamped before reading is the new baseline.
-pub(crate) fn resync(st: &SessionState, stamps: Stamps) {
+/// `/reload` just read the files, so discard the observation from before that load.
+pub(crate) fn resync(st: &SessionState) {
     if let Ok(mut w) = st.shared.gate.settings_watch.lock() {
-        w.seen = Some(stamps);
+        w.seen = None;
     }
 }
 
@@ -81,21 +44,21 @@ pub(crate) enum Refresh {
 /// The pure core: compare stamps, and only on a difference call `load` once.
 pub(crate) fn check(
     watch: &mut Watch,
-    now: Stamps,
     current: &Settings,
-    load: &mut dyn FnMut() -> Settings,
+    load: &mut dyn FnMut(SettingsFiles, bool) -> Settings,
 ) -> Refresh {
-    let first = match watch.seen.replace(now.clone()) {
-        None => true,
-        Some(seen) if seen == now => return Refresh::Unchanged,
-        Some(_) => false,
+    let Some(original) = current.files() else {
+        return Refresh::Unchanged;
     };
-    let fresh = load();
+    let now = original.observe();
+    let previous = watch.seen.as_ref().unwrap_or(original);
+    if *previous == now {
+        return Refresh::Unchanged;
+    }
+    let project_changed = now.project_changed_since(previous);
+    watch.seen = Some(now.clone());
+    let fresh = load(now, project_changed);
     if fresh.layer_failed() {
-        // Broken at start: the start already warned.
-        if first {
-            return Refresh::Unchanged;
-        }
         let warnings = fresh
             .diagnostics()
             .iter()
@@ -103,11 +66,13 @@ pub(crate) fn check(
             .collect();
         return Refresh::Kept(warnings);
     }
-    // What the session set for itself in memory stays over the files.
-    let fresh = fresh.with_overrides_of(current);
-    let changed = changed_keys(current, &fresh);
-    if first && changed.is_empty() {
-        return Refresh::Unchanged;
+    let mut changed = changed_keys(current, &fresh);
+    // List patches can exclude an opt-in tool without changing the merged default list.
+    if current.default_tools_edits() != fresh.default_tools_edits()
+        && !changed.iter().any(|key| key == "defaultTools")
+    {
+        changed.push("defaultTools".to_string());
+        changed.sort();
     }
     let prompt = prompt_inputs(current) != prompt_inputs(&fresh);
     Refresh::Applied {
@@ -174,15 +139,21 @@ pub(crate) fn refresh_at_run_start(st: &mut SessionState, sink: &mut dyn EventSi
     if !enabled(&st.settings) {
         return;
     }
-    let now = stamps(&st.dirs, &st.cwd);
     let outcome = {
         let Ok(mut watch) = st.shared.gate.settings_watch.lock() else {
             return;
         };
-        let (dirs, cwd) = (st.dirs.clone(), st.cwd.clone());
-        // Trust is read from its store only when a file really changed.
-        let mut load = || Settings::load(&dirs, &cwd, crate::epoch::project_trusted(st));
-        check(&mut watch, now, &st.settings, &mut load)
+        let mut load = |files, project_changed| {
+            // An unchanged project layer keeps the effective launch trust, including
+            // explicit one-run approval. Changed bytes still need content approval.
+            let read_project = project_changed
+                && matches!(
+                    oxa_perm::TrustStore::load(&st.dirs.trust_file()).approval(&st.cwd),
+                    oxa_perm::Approval::Matches
+                );
+            st.settings.refresh_files(files, read_project)
+        };
+        check(&mut watch, &st.settings, &mut load)
     };
     let notice =
         |sink: &mut dyn EventSink, level, text: String| sink.emit(&AgentEvent::Notice { level, text });
@@ -206,15 +177,15 @@ pub(crate) fn refresh_at_run_start(st: &mut SessionState, sink: &mut dyn EventSi
             }
             let prev_enabled = st.settings.compaction().enabled;
             let budget = changed.iter().any(|k| touches_budget(k));
-            for d in settings.diagnostics() {
-                notice(sink, d.level, format!("{}: {}", d.source, d.message));
+            let mut message = format!("settings changed: {}", changed.join(", "));
+            let mut level = Level::Info;
+            for diagnostic in settings.diagnostics() {
+                use std::fmt::Write;
+                level = Level::Warning;
+                let _ = write!(message, "\n{}: {}", diagnostic.source, diagnostic.message);
             }
             st.settings = settings;
-            notice(
-                sink,
-                Level::Info,
-                format!("settings changed: {}", changed.join(", ")),
-            );
+            notice(sink, level, message);
             if prompt {
                 if let Err(e) = crate::epoch::open_epoch_at_run_start(st, "settings", sink) {
                     notice(
@@ -224,9 +195,10 @@ pub(crate) fn refresh_at_run_start(st: &mut SessionState, sink: &mut dyn EventSi
                     );
                 }
             }
-            crate::tune::refresh(st);
             if budget {
-                crate::session::refresh_budget(st, Some(prev_enabled), sink);
+                crate::session::apply_budget_settings(st, Some(prev_enabled));
+            } else {
+                crate::tune::refresh(st);
             }
         }
     }
@@ -235,6 +207,7 @@ pub(crate) fn refresh_at_run_start(st: &mut SessionState, sink: &mut dyn EventSi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxa_config::Dirs;
     use std::cell::Cell;
 
     fn dir(name: &str) -> std::path::PathBuf {
@@ -266,11 +239,11 @@ mod tests {
             std::fs::write(self.dirs.settings_file(), text).unwrap();
         }
         fn run(&self, watch: &mut Watch, current: &Settings) -> Refresh {
-            let mut load = || {
+            let mut load = |files, project_changed| {
                 self.reads.set(self.reads.get() + 1);
-                Settings::load(&self.dirs, &self.cwd, false)
+                current.refresh_files(files, project_changed)
             };
-            check(watch, stamps(&self.dirs, &self.cwd), current, &mut load)
+            check(watch, current, &mut load)
         }
     }
 
@@ -282,8 +255,7 @@ mod tests {
         for _ in 0..5 {
             assert_eq!(f.run(&mut w, &cur), Refresh::Unchanged);
         }
-        // Only the first check reads (the baseline against the start settings).
-        assert_eq!(f.reads.get(), 1);
+        assert_eq!(f.reads.get(), 0);
     }
 
     #[test]
@@ -316,6 +288,56 @@ mod tests {
     }
 
     #[test]
+    fn user_edit_preserves_the_project_layer_admitted_at_launch() {
+        let f = Fixture::new("launch-trust", r#"{"theme":"dark"}"#);
+        let project = f.dirs.project_settings_file(&f.cwd);
+        std::fs::create_dir_all(project.parent().unwrap()).unwrap();
+        std::fs::write(&project, r#"{"done":["make check"]}"#).unwrap();
+        let current = Settings::load(&f.dirs, &f.cwd, true);
+        f.write(r#"{"theme":"light-theme"}"#);
+        let mut watch = Watch::default();
+        let Refresh::Applied { settings, .. } = f.run(&mut watch, &current) else {
+            panic!("expected user edit");
+        };
+        assert_eq!(settings.done_commands(), ["make check"]);
+
+        std::fs::write(project, r#"{"done":["make another-check"]}"#).unwrap();
+        let mut keep_project = |files, project_changed: bool| {
+            assert!(project_changed);
+            settings.refresh_files(files, false)
+        };
+        let Refresh::Applied {
+            settings, changed, ..
+        } = check(&mut watch, &settings, &mut keep_project)
+        else {
+            panic!("expected a changed stamp");
+        };
+        assert!(changed.is_empty());
+        assert_eq!(settings.done_commands(), ["make check"]);
+    }
+
+    #[test]
+    fn tool_exclusion_applies_even_if_the_merged_tool_list_matches() {
+        let f = Fixture::new("tool-exclusion", "{}");
+        let current = Settings::load(&f.dirs, &f.cwd, false);
+        f.write(r#"{"defaultTools":["-subagent"]}"#);
+        let Refresh::Applied {
+            settings,
+            changed,
+            prompt,
+        } = f.run(&mut Watch::default(), &current)
+        else {
+            panic!("expected a tool selection change");
+        };
+        assert_eq!(
+            settings.merged()["defaultTools"],
+            current.merged()["defaultTools"]
+        );
+        assert_eq!(changed, ["defaultTools"]);
+        assert!(prompt);
+    }
+
+    #[test]
     fn live_settings_are_on_by_default_and_can_opt_out() {
         assert!(enabled(&Settings::from_values(Value::Null, Value::Null)));
         let off = Settings::from_values(serde_json::json!({"oxa": {"liveSettings": false}}), Value::Null);
@@ -343,8 +365,7 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        // The baseline read of the first check, and the one read of the change.
-        assert_eq!(f.reads.get(), 2);
+        assert_eq!(f.reads.get(), 1);
     }
 
     #[test]
@@ -352,7 +373,6 @@ mod tests {
         let f = Fixture::new("broken", r#"{"theme":"dark"}"#);
         let cur = Settings::load(&f.dirs, &f.cwd, false);
         let mut w = Watch::default();
-        f.run(&mut w, &cur);
         f.write(r#"{"theme": "#);
         match f.run(&mut w, &cur) {
             Refresh::Kept(warnings) => assert_eq!(warnings.len(), 1),
@@ -360,7 +380,8 @@ mod tests {
         }
         // The broken file is reported once, not at every turn.
         assert_eq!(f.run(&mut w, &cur), Refresh::Unchanged);
-        // The baseline read of the first check, and the one read of the change.
+        f.write(r#"["not a settings object"]"#);
+        assert!(matches!(f.run(&mut w, &cur), Refresh::Kept(_)));
         assert_eq!(f.reads.get(), 2);
     }
 
@@ -377,7 +398,6 @@ mod tests {
         assert!(prompt);
         // The next turn sees the same files: no second rebuild, no second read.
         assert_eq!(f.run(&mut w, &settings), Refresh::Unchanged);
-        // The baseline read of the first check, and the one read of the change.
-        assert_eq!(f.reads.get(), 2);
+        assert_eq!(f.reads.get(), 1);
     }
 }
