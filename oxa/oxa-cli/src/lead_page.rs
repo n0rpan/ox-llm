@@ -621,29 +621,43 @@ mod tests {
         assert!(!html.contains("<form") && !html.contains("<button"));
     }
 
-    #[test]
-    fn live_refresh_keeps_the_readers_latest_work_disclosure_choice() {
+    fn refresh_runtime() -> oxa_script::Runtime {
         let mut runtime = oxa_script::Runtime::new(oxa_script::Limits::EXTENSION).unwrap();
-        runtime.eval_script("dom-fixture", r#"
-let current, supplied, closeDuringFetch;
+        runtime
+            .eval_script(
+                "dom-fixture",
+                r#"
+let current, supplied, closeDuringFetch, failureMode='ok';
+const connectionBadge={textContent:'Snapshot'};
 function makeMain(open) {
-  const work={open};
-  return {work, contains:()=>false, querySelector:selector=>selector==='details.home-work'?work:null,
+  const work={open}, notice={hidden:true};
+  return {work, notice, contains:()=>false, querySelector:selector=>selector==='details.home-work'?work:null,
     replaceWith:next=>{current=next;}};
 }
-const document={hidden:false, activeElement:{matches:()=>false}, getElementById:()=>({textContent:'Snapshot'}),
+const document={hidden:false, activeElement:{matches:()=>false},
+  getElementById:id=>id==='connection'?connectionBadge:id==='refresh-error'?current.notice:null,
   querySelector:()=>current, addEventListener:()=>{}};
 const setTimeout=()=>1, clearTimeout=()=>{};
-class AbortController { constructor(){this.signal={};} abort(){} }
+class AbortController { constructor(){this.signal={aborted:false};} abort(){this.signal.aborted=true;} }
 class URL { constructor(){this.searchParams={set(){}};} }
 const location={href:'http://example.invalid/'};
-class DOMParser { parseFromString(){return {querySelector:()=>supplied};} }
+class DOMParser { parseFromString(){return {querySelector:()=>failureMode==='missing'?null:supplied};} }
 async function fetch(){
+  if(failureMode==='network')throw new Error('private-refresh-marker');
+  if(failureMode==='abort'){pending.abort();throw new Error('aborted');}
   if(closeDuringFetch)current.work.open=false;
-  return {ok:true, text:async()=>''};
+  return {ok:failureMode!=='refused', text:async()=>''};
 }
-"#).unwrap();
+"#,
+            )
+            .unwrap();
         runtime.eval_script("live.js", SCRIPT).unwrap();
+        runtime
+    }
+
+    #[test]
+    fn live_refresh_keeps_the_readers_latest_work_disclosure_choice() {
+        let mut runtime = refresh_runtime();
         let result = runtime
             .eval_async_body(
                 "refresh",
@@ -658,6 +672,78 @@ return true;
             )
             .unwrap();
         assert_eq!(result, serde_json::json!(true));
+    }
+
+    #[test]
+    fn failed_refresh_keeps_the_last_content_and_exposes_retry_until_recovery() {
+        let mut runtime = refresh_runtime();
+        let result = runtime
+            .eval_async_body(
+                "refresh-recovery",
+                r#"
+for(failureMode of ['network','refused','missing']) {
+  current=makeMain(true); supplied=makeMain(false);
+  const retained=current;
+  await refresh();
+  if(current!==retained||current.notice.hidden||connectionBadge.textContent!=='Refresh unavailable')
+    throw new Error('refresh failure must retain content and expose retry');
+  failureMode='ok';
+  await refresh();
+  if(current!==supplied||!current.notice.hidden)throw new Error('successful refresh must clear error');
+}
+current=makeMain(true); supplied=makeMain(false); failureMode='abort';
+await refresh();
+if(!current.notice.hidden)throw new Error('aborted refresh must not expose error');
+return true;
+"#,
+            )
+            .unwrap();
+        assert_eq!(result, serde_json::json!(true));
+    }
+
+    #[test]
+    fn stale_board_observations_offer_an_ssr_retry_without_inventing_an_interval() {
+        for page in [
+            Page::Home,
+            Page::BoardQuery(Query {
+                filter: Filter::Fix,
+                page: 1,
+            }),
+            Page::Item(17),
+            Page::Asks,
+            Page::Workers,
+            Page::Usage,
+            Page::Chat(Prompt::Workers),
+        ] {
+            let render = |observed_at, now| {
+                document_for(
+                    page,
+                    &View {
+                        board: Some(&Board {
+                            observed_at,
+                            ..Board::default()
+                        }),
+                        ..View::default()
+                    },
+                    now,
+                )
+            };
+            for (observed_at, now) in [(100, 1001), (161, 100)] {
+                let html = render(observed_at, now);
+                assert!(html.contains("<h2>Board observation needs refreshing</h2>"));
+                assert!(html.contains("<a href=\"\">Retry</a>"));
+                assert_eq!(html.matches("id=refresh-error").count(), 1);
+                assert!(html.contains("id=refresh-error class=stale-notice role=status hidden"));
+                assert!(!html.contains("onclick=") && !html.contains("<form"));
+                assert!(!html.contains("sweep every") && !html.contains("Can't reach lead"));
+            }
+            for (observed_at, now) in [(100, 1000), (160, 100)] {
+                assert!(!render(observed_at, now).contains("Board observation needs refreshing"));
+            }
+            let unavailable = document_for(page, &View::default(), 1001);
+            assert!(!unavailable.contains("Board observation needs refreshing"));
+            assert!(unavailable.contains("id=refresh-error class=stale-notice role=status hidden"));
+        }
     }
 
     #[test]
