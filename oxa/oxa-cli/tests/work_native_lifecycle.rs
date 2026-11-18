@@ -3,7 +3,7 @@
 #[path = "common/work_repo.rs"]
 mod work;
 
-use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
+use oxa_fake::{FakeOpts, FakeServer, Fault, ScriptTurn, TestEnv};
 use oxa_work::board::{assignment::*, *};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -425,12 +425,36 @@ fn renewed_current_owner_without_steering_keeps_the_original_attempt() {
 #[test]
 fn verified_reclaim_fences_replay_without_consuming_the_old_started_packet() {
     let fixture = Fixture::new();
-    let server = FakeServer::start(vec![], FakeOpts::default()).unwrap();
-    // This expired attempt launches the real child, whose managed handoff refuses
-    // before a model call. The controller joins it and retains the reservation.
+    let current = fixture
+        .claims
+        .renew_item_for(
+            42,
+            &fixture.original.lease.holder,
+            "host-a",
+            &fixture.original,
+            fixture.now - 90,
+            600,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.lease, fixture.original.lease);
+    assert!(current.expires_at > fixture.now);
+    let server = FakeServer::start(
+        vec![ScriptTurn::fault(Fault::Http {
+            status: 400,
+            body: "Synthetic nonretryable worker failure".into(),
+        })],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    // Admit with valid current ownership, then join an actual failed child.
+    // Its blocked whole-task checkpoint retains the original reservation.
     let (mut child, output) = fixture.run(&server);
     assert!(!output.status.success(), "{output:?}");
-    assert!(server.requests().is_empty());
+    assert_eq!(server.requests().len(), 1);
+    let saved = checkpoint(&fixture);
+    assert_eq!(saved["record"]["outcome"], "blocked");
+    assert_eq!(saved["record"]["worker"]["error_class"], "engine_http");
     assert_eq!(
         fixture.reopened().assignments().unwrap()[&42]
             .state
@@ -463,10 +487,10 @@ fn verified_reclaim_fences_replay_without_consuming_the_old_started_packet() {
         .reclaim_item(
             42,
             Some(ManualAuthority::Lead),
-            &fixture.original,
-            fixture.now,
+            &current,
+            current.expires_at,
             |receipt| {
-                assert_eq!(receipt, &fixture.original);
+                assert_eq!(receipt, &current);
                 Ok(child.try_wait().map_err(|error| error.to_string())?.is_some())
             },
         )
@@ -479,7 +503,7 @@ fn verified_reclaim_fences_replay_without_consuming_the_old_started_packet() {
         replay.status.success(),
         "released assignment is an idle no-op: {replay:?}"
     );
-    assert!(server.requests().is_empty());
+    assert_eq!(server.requests().len(), 1, "replay makes no new model request");
     assert_eq!(files(&fixture.queue), queue_before);
     assert_eq!(files(&fixture.storage), checkpoints_before);
     let row = &fixture.reopened().assignments().unwrap()[&42];
