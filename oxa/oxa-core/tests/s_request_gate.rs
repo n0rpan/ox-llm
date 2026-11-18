@@ -386,3 +386,34 @@ fn gate_refuses_a_reentrant_request() {
         "the park was never sent"
     );
 }
+
+/// L1: with `oxa.liveSettings` on, a settings edit made after the session opened is applied by
+/// a queued run (`run_queued`), which does not pass through `run_from_wire`; with the setting
+/// off (the default) the edit waits for `/reload`.
+#[test]
+fn queued_run_applies_changed_settings_only_when_live_settings_is_on() {
+    for (live, expect) in [(true, "light-theme"), (false, "dark")] {
+        let env = TestEnv::new();
+        let (eng, _started) = Holding::new(vec![ScriptTurn::text("answer")]);
+        let first = format!(r#"{{"theme": "dark", "oxa": {{"liveSettings": {live}}}}}"#);
+        let mut s = open(&env, eng.clone(), Vec::new(), &first);
+        let path = Dirs::under(env.root()).settings_file();
+        std::fs::write(
+            path,
+            format!(r#"{{"theme": "light-theme", "oxa": {{"liveSettings": {live}}}}}"#),
+        )
+        .unwrap();
+        s.handle().follow_up("waiting".to_string());
+        let mut sink = VecSink::default();
+        let mut ui = HeadlessUi::default();
+        assert_eq!(
+            s.run_queued(&mut sink, &mut ui).expect("run"),
+            Some(RunEnd::Stopped)
+        );
+        assert_eq!(
+            s.inner().settings.get("theme").and_then(Value::as_str),
+            Some(expect),
+            "live = {live}"
+        );
+    }
+}

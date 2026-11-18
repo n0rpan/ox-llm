@@ -1,7 +1,8 @@
 //! L1: a changed settings file reaches the session at the start of its next run, without
 //! `/reload`.
 //!
-//! The check is one `stat` per file (user, project) compared with the values seen last
+//! Off until `oxa.liveSettings` is set (read from the settings the session holds). The check
+//! is one `stat` per file (user, project) compared with the values seen last
 //! (mtime, size, inode). While they match, nothing is read or parsed. On a change the files
 //! are parsed once and the result replaces `st.settings` (the path `/reload` uses for
 //! settings, without resources, hook reload or hook events). A file that no longer parses
@@ -48,7 +49,9 @@ pub(crate) fn stamps(dirs: &Dirs, cwd: &Path) -> Stamps {
     ]
 }
 
-/// The stamps seen last. `None` until the first check of a session (which only records them).
+/// The stamps seen last. `None` until the first check of a session, which reads the files once
+/// and compares them with the settings the session loaded at start (an edit made between that
+/// load and the first run must not be lost).
 #[derive(Debug, Default)]
 pub(crate) struct Watch {
     seen: Option<Stamps>,
@@ -82,13 +85,17 @@ pub(crate) fn check(
     current: &Settings,
     load: &mut dyn FnMut() -> Settings,
 ) -> Refresh {
-    match watch.seen.replace(now.clone()) {
-        None => return Refresh::Unchanged,
+    let first = match watch.seen.replace(now.clone()) {
+        None => true,
         Some(seen) if seen == now => return Refresh::Unchanged,
-        Some(_) => {}
-    }
+        Some(_) => false,
+    };
     let fresh = load();
     if fresh.layer_failed() {
+        // Broken at start: the start already warned.
+        if first {
+            return Refresh::Unchanged;
+        }
         let warnings = fresh
             .diagnostics()
             .iter()
@@ -96,7 +103,12 @@ pub(crate) fn check(
             .collect();
         return Refresh::Kept(warnings);
     }
+    // What the session set for itself in memory stays over the files.
+    let fresh = fresh.with_overrides_of(current);
     let changed = changed_keys(current, &fresh);
+    if first && changed.is_empty() {
+        return Refresh::Unchanged;
+    }
     let prompt = prompt_inputs(current) != prompt_inputs(&fresh);
     Refresh::Applied {
         settings: fresh,
@@ -145,8 +157,23 @@ fn changed_keys(old: &Settings, new: &Settings) -> Vec<String> {
     keys
 }
 
-/// Called at the start of a run. Never fails and never blocks the run.
+/// `oxa.liveSettings`: off by default.
+pub(crate) fn enabled(s: &Settings) -> bool {
+    s.bool("oxa.liveSettings", false)
+}
+
+/// Whether a changed key moves the budget policy (`refresh_budget`): the `compaction.*` keys
+/// and `oxa.compaction.*` (the soft limit `oxa.compaction.softTokens` is read there).
+fn touches_budget(key: &str) -> bool {
+    key.starts_with("compaction.") || key.starts_with("oxa.compaction.")
+}
+
+/// Called at the start of a run (a prompt, or a queued run). Never fails and never blocks the
+/// run. Does nothing unless `oxa.liveSettings` is on.
 pub(crate) fn refresh_at_run_start(st: &mut SessionState, sink: &mut dyn EventSink) {
+    if !enabled(&st.settings) {
+        return;
+    }
     let now = stamps(&st.dirs, &st.cwd);
     let outcome = {
         let Ok(mut watch) = st.shared.gate.settings_watch.lock() else {
@@ -178,7 +205,7 @@ pub(crate) fn refresh_at_run_start(st: &mut SessionState, sink: &mut dyn EventSi
                 return;
             }
             let prev_enabled = st.settings.compaction().enabled;
-            let budget = changed.iter().any(|k| k.starts_with("compaction."));
+            let budget = changed.iter().any(|k| touches_budget(k));
             for d in settings.diagnostics() {
                 notice(sink, d.level, format!("{}: {}", d.source, d.message));
             }
@@ -255,7 +282,51 @@ mod tests {
         for _ in 0..5 {
             assert_eq!(f.run(&mut w, &cur), Refresh::Unchanged);
         }
-        assert_eq!(f.reads.get(), 0);
+        // Only the first check reads (the baseline against the start settings).
+        assert_eq!(f.reads.get(), 1);
+    }
+
+    #[test]
+    fn edit_before_the_first_check_is_applied() {
+        let f = Fixture::new("early", r#"{"theme":"dark"}"#);
+        let cur = Settings::load(&f.dirs, &f.cwd, false);
+        f.write(r#"{"theme":"light-theme"}"#);
+        let mut w = Watch::default();
+        match f.run(&mut w, &cur) {
+            Refresh::Applied { changed, .. } => assert_eq!(changed, vec!["theme".to_string()]),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn refresh_keeps_in_memory_overrides() {
+        let f = Fixture::new("override", r#"{"done":["make test"],"theme":"dark"}"#);
+        let cur = Settings::load(&f.dirs, &f.cwd, false).with_override("done", Value::Array(Vec::new()));
+        let mut w = Watch::default();
+        f.run(&mut w, &cur);
+        f.write(r#"{"done":["make test"],"theme":"light-theme"}"#);
+        let Refresh::Applied {
+            settings, changed, ..
+        } = f.run(&mut w, &cur)
+        else {
+            panic!("expected a change");
+        };
+        assert_eq!(changed, vec!["theme".to_string()]);
+        assert_eq!(settings.get("done"), Some(&Value::Array(Vec::new())));
+    }
+
+    #[test]
+    fn live_settings_are_off_by_default() {
+        assert!(!enabled(&Settings::from_values(Value::Null, Value::Null)));
+        let on = Settings::from_values(serde_json::json!({"oxa": {"liveSettings": true}}), Value::Null);
+        assert!(enabled(&on));
+    }
+
+    #[test]
+    fn soft_tokens_change_moves_the_budget() {
+        assert!(touches_budget("oxa.compaction.softTokens"));
+        assert!(touches_budget("compaction.reserveTokens"));
+        assert!(!touches_budget("theme"));
     }
 
     #[test]
@@ -272,7 +343,8 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        assert_eq!(f.reads.get(), 1);
+        // The baseline read of the first check, and the one read of the change.
+        assert_eq!(f.reads.get(), 2);
     }
 
     #[test]
@@ -288,7 +360,8 @@ mod tests {
         }
         // The broken file is reported once, not at every turn.
         assert_eq!(f.run(&mut w, &cur), Refresh::Unchanged);
-        assert_eq!(f.reads.get(), 1);
+        // The baseline read of the first check, and the one read of the change.
+        assert_eq!(f.reads.get(), 2);
     }
 
     #[test]
@@ -304,6 +377,7 @@ mod tests {
         assert!(prompt);
         // The next turn sees the same files: no second rebuild, no second read.
         assert_eq!(f.run(&mut w, &settings), Refresh::Unchanged);
-        assert_eq!(f.reads.get(), 1);
+        // The baseline read of the first check, and the one read of the change.
+        assert_eq!(f.reads.get(), 2);
     }
 }

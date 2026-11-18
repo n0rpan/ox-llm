@@ -1366,6 +1366,8 @@ fn queued_run(
     {
         return Ok(None);
     }
+    // L1: a queued run starts a run of its own, without `run_from_wire`.
+    crate::settings_refresh::refresh_at_run_start(st, sink);
     let can_run = !turn_start || compact_before_run(st, sink, ui)?;
     flush_queue(st, sink);
     for msg in taken {

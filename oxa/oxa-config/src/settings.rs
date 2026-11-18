@@ -57,6 +57,9 @@ pub struct Settings {
     diagnostics: Vec<Diagnostic>,
     /// A settings file existed but could not be read or parsed (its layer is empty).
     layer_failed: bool,
+    /// In-memory overrides ([`Settings::with_override`]) in the order applied, so a live
+    /// refresh of the files can put them back ([`Settings::with_overrides_of`]).
+    overrides: Vec<(String, Value)>,
 }
 
 impl Settings {
@@ -319,7 +322,18 @@ impl Settings {
     /// [`Settings::set`] recomposes the layers and drops the override.
     pub fn with_override(mut self, key: &str, value: Value) -> Settings {
         if let Value::Object(root) = &mut self.merged {
-            set_nested(root, key, value);
+            set_nested(root, key, value.clone());
+        }
+        self.overrides.retain(|(k, _)| k != key);
+        self.overrides.push((key.to_string(), value));
+        self
+    }
+    /// The in-memory overrides of `old` applied over these (freshly loaded) settings: a live
+    /// refresh of the files must not undo what the session set for itself (a child's soft
+    /// limit, an inherited-trust worker's empty `done`, `--verbose`, `--models`).
+    pub fn with_overrides_of(mut self, old: &Settings) -> Settings {
+        for (key, value) in &old.overrides {
+            self = self.with_override(key, value.clone());
         }
         self
     }
@@ -368,6 +382,7 @@ impl Settings {
             self.user = checked;
         }
         self.merged = compose(&self.user, &self.project);
+        self.overrides.clear();
         Ok(())
     }
 }
@@ -392,6 +407,7 @@ fn build(
         project,
         diagnostics,
         layer_failed: false,
+        overrides: Vec::new(),
     }
 }
 
