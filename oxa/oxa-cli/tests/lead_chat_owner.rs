@@ -452,3 +452,133 @@ fn cli_chat_hides_private_engine_response_details() {
         2
     );
 }
+
+const LEAD_PTY: &str = r#"
+import errno, os, pty, select, subprocess, sys, time
+master, slave = pty.openpty()
+child = subprocess.Popen([sys.argv[1], 'lead'], stdin=slave, stdout=slave, stderr=slave)
+os.close(slave)
+output = b''
+def wait_for(marker):
+    global output
+    deadline = time.monotonic() + 15
+    while marker not in output:
+        assert child.poll() is None, output[-4000:]
+        assert time.monotonic() < deadline, output[-4000:]
+        if select.select([master], [], [], .1)[0]:
+            output += os.read(master, 65536)
+try:
+    wait_for(b'READY')
+    busy = subprocess.run([sys.argv[1], 'lead', '-p', 'Do not overlap.'], capture_output=True, timeout=10)
+    assert busy.returncode != 0 and b'busy' in busy.stderr, busy.stderr
+    os.write(master, b'/clone\r')
+    wait_for(b'attached to its dedicated session')
+    os.write(master, b'Terminal follow-up.\r')
+    wait_for(b'Interactive reply')
+    os.write(master, b'/quit\r')
+    assert child.wait(timeout=5) == 0
+    while select.select([master], [], [], 0)[0]:
+        try:
+            chunk = os.read(master, 65536)
+        except OSError as error:
+            if error.errno == errno.EIO:
+                break
+            raise
+        if not chunk:
+            break
+        output += chunk
+    assert b'To resume this session:\x1b[22m oxa lead' in output, output[-2000:]
+    assert b'oxa --session' not in output, output[-2000:]
+finally:
+    os.close(master)
+    if child.poll() is None:
+        child.kill()
+    child.wait(timeout=5)
+"#;
+
+#[test]
+fn normal_lead_tui_and_direct_print_use_one_dedicated_session() {
+    let test = TestEnv::new();
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::text(r#"{"text":"first reply","facts":[],"action":null}"#),
+            ScriptTurn::text("Interactive reply"),
+            ScriptTurn::text(r#"{"text":"continued reply","facts":[],"action":null}"#),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    std::fs::set_permissions(test.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let created = run(&test, &server, &["lead", "chat", "--init"]);
+    assert!(created.status.success(), "{created:?}");
+    let id = String::from_utf8(created.stdout).unwrap();
+    let config = serde_json::json!({
+        "oxa": {"lead":{"sessionId":id.trim()},"engine":{"inProcessCloud":false,"inProcessLocal":false}},
+        "cacheWarming":"off",
+        "retry":{"enabled":false},
+    });
+    let path = test.write("home/.oxa/agent/settings.json", &config.to_string());
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let headless = run(&test, &server, &["lead"]);
+    assert!(!headless.status.success());
+    assert!(String::from_utf8_lossy(&headless.stderr).contains("needs a terminal"));
+    let direct = run(&test, &server, &["lead", "Open the conversation."]);
+    assert!(direct.status.success(), "{direct:?}");
+    let tui = Command::new("python3")
+        .args(["-I", "-c", LEAD_PTY, env!("CARGO_BIN_EXE_oxa")])
+        .current_dir(test.work())
+        .env_clear()
+        .envs(test.envs(&server.url()))
+        .env("TERM", "xterm-256color")
+        .output()
+        .unwrap();
+    assert!(tui.status.success(), "{}", String::from_utf8_lossy(&tui.stderr));
+    let printed = run(&test, &server, &["lead", "-p", "Continue after the terminal."]);
+    assert!(printed.status.success(), "{printed:?}");
+    assert!(String::from_utf8_lossy(&printed.stdout).contains("continued reply"));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[1].messages.iter().any(|msg| msg
+        .content
+        .as_deref()
+        .is_some_and(|text| text.contains("Open the conversation."))));
+    assert!(requests[2].messages.iter().any(|msg| msg
+        .content
+        .as_deref()
+        .is_some_and(|text| text.contains("Terminal follow-up."))));
+    assert!(requests.iter().all(|request| request.tools_json == "[]"));
+    let sessions = FsStore::new(test.agent_dir().join("sessions")).list(None);
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].sref.id, id.trim());
+}
+
+#[test]
+fn empty_agent_marker_refuses_the_dedicated_owner_session_before_provider_io() {
+    let test = TestEnv::new();
+    let server = FakeServer::start(
+        vec![ScriptTurn::text(
+            r#"{"text":"Unexpected owner reply.","facts":[],"action":null}"#,
+        )],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    std::fs::set_permissions(test.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let created = run(&test, &server, &["lead", "chat", "--init"]);
+    assert!(created.status.success(), "{created:?}");
+    let id = String::from_utf8(created.stdout).unwrap();
+    let config = serde_json::json!({"oxa": {"lead":{"sessionId":id.trim()}}});
+    let settings = test.write("home/.oxa/agent/settings.json", &config.to_string());
+    std::fs::set_permissions(settings, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["lead", "-p", "Open owner chat."])
+        .env_clear()
+        .envs(test.envs(&server.url()))
+        .env("AI_AGENT", "")
+        .current_dir(test.work())
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Use Lead from the owner session."));
+    assert!(server.requests().is_empty());
+}
