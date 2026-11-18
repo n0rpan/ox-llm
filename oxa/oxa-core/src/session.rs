@@ -367,6 +367,19 @@ impl Session {
         result.and(triggered).and(boundary).map(|_| ())
     }
 
+    /// Run one literal user message without expanding application commands or templates.
+    /// Build the prefix from this Session's tool selection before using its normal input queue.
+    pub fn prompt_literal(
+        &mut self,
+        text: String,
+        sink: &mut dyn EventSink,
+        ui: &mut dyn Ui,
+    ) -> Result<Option<RunEnd>, OxaError> {
+        crate::open_epoch(&mut self.st, "literal_prompt", false, sink)?;
+        self.handle().follow_up(text);
+        self.run_queued(sink, ui)
+    }
+
     pub fn handle(&self) -> Handle {
         Handle {
             shared: self.st.shared.clone(),
