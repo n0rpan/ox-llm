@@ -136,6 +136,7 @@ fn connection_fixed(
             let scheme = form.map_or("https", |form| form.scheme);
             if fields.origin != Some(format!("{scheme}://{}", r.authority).as_str())
                 || fields.kind != Some("application/x-www-form-urlencoded")
+                || (form.is_none() && fields.fetch_site != Some("same-origin"))
             {
                 return Err("403 Forbidden");
             }
@@ -432,7 +433,10 @@ mod tests {
             let mut reply = String::new();
             client.read_to_string(&mut reply).unwrap();
             handler.join().unwrap();
-            assert!(reply.starts_with(&format!("HTTP/1.1 {expected}")), "{reply}");
+            assert!(
+                reply.starts_with(&format!("HTTP/1.1 {expected}")),
+                "authorized={allowed}, origin={origin}, fetch_site={site:?}, framing={framing:?}: {reply}"
+            );
             assert_eq!(count.load(Ordering::SeqCst), usize::from(expected == "303"));
             assert_eq!(reply.contains("Location: /chat\r\n"), expected == "303");
         }
