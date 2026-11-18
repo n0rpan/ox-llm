@@ -15,6 +15,9 @@ pub use pages::{Page, Prompt};
 pub struct View<'a> {
     /// Ephemeral form credential supplied only by the authorized HTTP caller.
     pub fixed_prompt_csrf: Option<&'a str>,
+    /// Canonical goal and matching native observation from the authenticated caller.
+    /// The caller retains full SessionRef/revision authority; identities are never rendered.
+    pub owner_goal: Option<(&'a oxa_session::Goal, oxa_core::goal::GoalObservation<'a>)>,
     pub board: Option<&'a Board>,
     pub situation: Option<&'a Snapshot>,
     /// C's selected checkpoint observation; the renderer never acquires runner state.
@@ -591,7 +594,14 @@ mod tests {
         let model = oxc_gateway::status::chatgpt_usage::parse(&serde_json::json!({
             "rate_limit": {"primary_window": {"used_percent": 0, "reset_at": 3600}}
         }));
+        let (goal, reference) = owner_goal_fixture();
+        let observation = oxa_core::goal::GoalObservation {
+            session: &reference,
+            revision: 7,
+            status: Some(goal.status),
+        };
         let view = View {
+            owner_goal: Some((&goal, observation)),
             board: Some(&board),
             situation: Some(&situation),
             github_quotas: Some(&quota),
@@ -619,6 +629,12 @@ mod tests {
             assert!(html.contains("02:00 CET"), "lease or quota reset: {page:?}");
             assert!(!html.contains("expires 3600") && !html.contains("resets at 3600"));
         }
+        for page in [Page::Home, Page::Chat(Prompt::Status)] {
+            let html = document_for(page, &view, 100);
+            let section = owner_goal_section(&html);
+            assert!(section.contains("Started 01:00 CET") && section.contains("Observed 02:00 CET"));
+            assert!(!section.contains("1970-01-01"));
+        }
         let older = document_for(Page::Board, &view, 86_400);
         assert!(older.contains("1970-01-01 01:00 CET"));
         board.observed_at = 82_800; // 23:00 UTC is midnight of the next host-local day.
@@ -641,6 +657,195 @@ mod tests {
             100,
         );
         assert!(!invalid.contains(&u64::MAX.to_string()));
+    }
+
+    fn owner_goal_fixture() -> (oxa_session::Goal, oxa_session::SessionRef) {
+        use oxa_session::{CheckResult, Goal, GoalBudget, GoalCheck, GoalPlan, Subgoal};
+        let check = |id: &str, passed: Option<bool>| GoalCheck {
+            id: id.into(),
+            acceptance: format!("Acceptance {id} <example>"),
+            done_check: format!("check-{id}"),
+            result: passed.map(|passed| CheckResult {
+                passed,
+                receipt: format!("<receipt-{id}>&"),
+                observed_at_ms: 3_600_000,
+            }),
+        };
+        let mut goal = Goal::new("Ship <example> & outcome".into(), GoalBudget::default(), 0).unwrap();
+        goal.plan = Some(GoalPlan {
+            acceptance: vec![check("owner", None)],
+            subgoals: vec![
+                Subgoal {
+                    id: "install".into(),
+                    objective: "Install <example>".into(),
+                    acceptance: vec![check("install", Some(false))],
+                    board_items: vec![17],
+                },
+                Subgoal {
+                    id: "build".into(),
+                    objective: "Build example".into(),
+                    acceptance: vec![check("build", Some(true))],
+                    board_items: vec![18],
+                },
+            ],
+        });
+        goal.lead = Some(oxa_session::LeadGoalState {
+            pending_steer: Some(oxa_session::PendingGoalSteer {
+                entry_id: "0123abcd".into(),
+                revision: 7,
+                text: "private-continuation-marker".into(),
+                lease: None,
+            }),
+            ..Default::default()
+        });
+        goal.validate().unwrap();
+        (
+            goal,
+            oxa_session::SessionRef {
+                path: "/project/private-session-reference.jsonl".into(),
+                id: "private-session-id-marker".into(),
+            },
+        )
+    }
+
+    fn owner_goal_html(
+        page: Page,
+        goal: &oxa_session::Goal,
+        reference: &oxa_session::SessionRef,
+        board: Option<&Board>,
+    ) -> String {
+        let observation = oxa_core::goal::GoalObservation {
+            session: reference,
+            revision: 7,
+            status: Some(goal.status),
+        };
+        document_for(
+            page,
+            &View {
+                owner_goal: Some((goal, observation)),
+                board,
+                ..Default::default()
+            },
+            100,
+        )
+    }
+
+    fn owner_goal_section(html: &str) -> &str {
+        html.split("<section id=owner-goal>")
+            .nth(1)
+            .unwrap()
+            .split("</section>")
+            .next()
+            .unwrap()
+    }
+
+    #[test]
+    fn canonical_goal_checks_render_without_private_binding_or_new_controls() {
+        let (goal, reference) = owner_goal_fixture();
+        for page in [Page::Home, Page::Chat(Prompt::Status)] {
+            let html = owner_goal_html(page, &goal, &reference, None);
+            let section = owner_goal_section(&html);
+            for expected in [
+                "Owner goal",
+                "Ship &lt;example&gt; &amp; outcome",
+                "revision 7",
+                "Recorded state: pursuing",
+                "Acceptance owner &lt;example&gt;",
+                "check-owner",
+                "Install &lt;example&gt;",
+                "Build example",
+                "Not checked",
+                "Failed check",
+                "Pass recorded",
+                "&lt;receipt-install&gt;&amp;",
+                "href=/items/17",
+                "href=/items/18",
+            ] {
+                assert!(section.contains(expected), "{page:?}: {expected}");
+            }
+            for private in [
+                reference.id.as_str(),
+                reference.path.to_str().unwrap(),
+                "private-continuation-marker",
+                "<receipt-install>",
+            ] {
+                assert!(!html.contains(private), "{page:?}: {private}");
+            }
+            assert!(
+                !section.contains("<form") && !section.contains("<button") && !section.contains("<script")
+            );
+            assert!(!section.contains("Every acceptance check has passing evidence recorded"));
+        }
+    }
+
+    #[test]
+    fn canonical_goal_acceptance_never_comes_from_board_readiness_or_check_counts() {
+        let (mut goal, reference) = owner_goal_fixture();
+        let before = owner_goal_html(Page::Home, &goal, &reference, None);
+        let board = Board {
+            observed_at: 100,
+            entries: vec![Entry {
+                number: 17,
+                head: "synthetic-head".into(),
+                release_pinned: false,
+                action: Action::Ready,
+                lease: None,
+                attempts_today: 0,
+                eligible: true,
+            }],
+        };
+        let ready = owner_goal_html(Page::Home, &goal, &reference, Some(&board));
+        assert_eq!(owner_goal_section(&before), owner_goal_section(&ready));
+        let plan = goal.plan.as_mut().unwrap();
+        plan.acceptance[0].result = plan.subgoals[1].acceptance[0].result.clone();
+        plan.subgoals[0].acceptance[0].result.as_mut().unwrap().passed = true;
+        assert!(plan.verified());
+        let all_pass = owner_goal_html(Page::Home, &goal, &reference, Some(&board));
+        let section = owner_goal_section(&all_pass);
+        assert!(section.contains("Every acceptance check has passing evidence recorded"));
+        assert!(section.contains("Recorded state: pursuing") && !section.contains("Recorded state: done"));
+    }
+
+    #[test]
+    fn missing_or_inconsistent_goal_observations_never_promote_acceptance() {
+        let absent = document_for(Page::Home, &View::default(), 100);
+        assert!(owner_goal_section(&absent).contains("No bound native goal observation reached this page"));
+        let (mut goal, reference) = owner_goal_fixture();
+        for (revision, status) in [
+            (0, Some(goal.status)),
+            (7, None),
+            (7, Some(oxa_session::GoalStatus::Paused)),
+        ] {
+            let html = document_for(
+                Page::Home,
+                &View {
+                    owner_goal: Some((
+                        &goal,
+                        oxa_core::goal::GoalObservation {
+                            session: &reference,
+                            revision,
+                            status,
+                        },
+                    )),
+                    ..Default::default()
+                },
+                100,
+            );
+            let section = owner_goal_section(&html);
+            assert!(section.contains("Goal observation unavailable"));
+            assert!(!section.contains("Ship &lt;example&gt;"));
+        }
+        goal.plan.as_mut().unwrap().subgoals[0].board_items = vec![0];
+        let invalid = owner_goal_html(Page::Home, &goal, &reference, None);
+        assert!(owner_goal_section(&invalid).contains("Goal observation unavailable"));
+        goal.plan = None;
+        goal.status = oxa_session::GoalStatus::Done;
+        goal.evidence = Some("Legacy outcome reported".into());
+        let legacy = owner_goal_html(Page::Home, &goal, &reference, None);
+        let section = owner_goal_section(&legacy);
+        assert!(section.contains("done reported; acceptance plan unavailable"));
+        assert!(section.contains("The native goal has no saved acceptance plan"));
+        assert!(!section.contains("Every acceptance check has passing evidence recorded"));
     }
 
     #[test]
