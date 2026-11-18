@@ -112,28 +112,24 @@ fn queue_observations(queue: &Value, board: &Board) -> Result<BTreeMap<u64, Queu
         if !seen.insert(number) {
             return Err("duplicate queued PR number".into());
         }
-        let Some(head) = oid(&pr["headRefOid"]) else {
+        let Some(entry) = board.entries.iter().find(|entry| entry.number == number) else {
             continue;
         };
-        let Some(enqueued_at) = row["enqueuedAt"]
+        let head = oid(&pr["headRefOid"]).ok_or("invalid queued PR head")?;
+        if entry.head != head {
+            continue;
+        }
+        let enqueued_at = row["enqueuedAt"]
             .as_str()
             .and_then(oxa_session::parse_utc_seconds)
-        else {
-            continue;
-        };
-        if board
-            .entries
-            .iter()
-            .any(|entry| entry.number == number && entry.head == head)
-        {
-            queued.insert(
-                number,
-                QueueObservation {
-                    enqueued_at,
-                    group_head: oid(&row["headCommit"]["oid"]).map(str::to_owned),
-                },
-            );
-        }
+            .ok_or("invalid enqueue time for the current PR head")?;
+        queued.insert(
+            number,
+            QueueObservation {
+                enqueued_at,
+                group_head: oid(&row["headCommit"]["oid"]).map(str::to_owned),
+            },
+        );
     }
     Ok(queued)
 }
