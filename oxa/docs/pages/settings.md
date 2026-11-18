@@ -285,7 +285,12 @@ per request when a USD cap applies. The default is USD 0.25. Set
 `oxa.cloud.opencode.daily_budget_usd` to give Go its own host-local daily USD
 pool. Without that setting, a configured `oxa.cloud.daily_budget_usd` remains the
 combined ceiling. Active bounded Go holds are charged to the Go pool when it has
-its own cap. Existing unscoped holds keep their authority until they settle.
+its own cap. Subscription requests reserve tokens only: their cost is unknown,
+no daily USD headroom is held for them, and an unknown final cost stays recorded
+as unknown. Unscoped holds written by older versions keep their stored
+`reserved_usd` readable and their tokens still count toward the subscription
+caps, but that recorded USD no longer reserves headroom or pauses admission
+while it is in flight.
 
 The request bound is oxa's reservation, and OpenCode controls whether a call
 falls back to its paid balance. Set the bound conservatively when Extra Usage is

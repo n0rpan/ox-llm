@@ -150,15 +150,6 @@ fn check_available(cap: &Value, spent: f64, held: f64, required: f64) -> Result<
     result
 }
 
-fn protect_old_go_hold(shared: &Shared) -> Result<(), Refusal> {
-    if shared.has_conservative_hold() {
-        return Err(reserved(
-            "An in-flight OpenCode Go request holds the previous unscoped daily reservation.",
-        ));
-    }
-    Ok(())
-}
-
 impl Budget {
     /// Record an unpaid refusal under the same admission lock. A failed audit
     /// closes later spending across processes without replacing its original error.
@@ -239,7 +230,6 @@ impl Budget {
             return Err(Refusal::ledger());
         }
         let combined_spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
-        protect_old_go_hold(&shared)?;
         let (spent, held) = if separate_go_pool {
             (
                 state.reader.metered_spend().map_err(|_| Refusal::ledger())?,
@@ -321,7 +311,6 @@ impl Budget {
             });
         }
         let reserved = if let Some(budget) = budget {
-            protect_old_go_hold(&shared)?;
             let (spent, held) = if budget.separate_pool {
                 (
                     state.reader.go_spend().map_err(|_| Refusal::ledger())?,
@@ -352,7 +341,7 @@ impl Budget {
         let id = if reserved > 0.0 {
             shared.insert_go(tokens, reserved)
         } else {
-            shared.insert_subscription_with_usd(tokens, 0.0)
+            shared.insert_subscription(tokens)
         }
         .map_err(|_| Refusal::ledger())?;
         shared.save().map_err(|_| Refusal::ledger())?;

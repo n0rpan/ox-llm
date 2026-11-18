@@ -36,6 +36,9 @@ fn options() -> OpenOptions {
     options
 }
 
+/// A subscription request reserves tokens only; its cost is unknown. The USD
+/// field of a `Subscription` hold never reserves headroom: it exists solely so
+/// records written by older binaries round-trip unchanged and stay readable.
 pub(crate) enum Reserved {
     Metered(f64),
     Subscription(u64, f64),
@@ -168,8 +171,16 @@ impl Shared {
         }
         Ok(shared)
     }
+    /// USD headroom held against the capped pools. Legacy subscription
+    /// reservation USD stays readable in stored records but reserves nothing.
     pub fn reserved(&self) -> f64 {
-        self.holds.values().map(Reserved::usd).sum()
+        self.holds
+            .values()
+            .filter_map(|amount| match amount {
+                Reserved::Metered(cost) | Reserved::Go(_, cost) => Some(*cost),
+                Reserved::Subscription(_, _) => None,
+            })
+            .sum()
     }
     pub fn metered_reserved(&self) -> f64 {
         self.holds
@@ -189,13 +200,6 @@ impl Shared {
             })
             .sum()
     }
-    /// Older Go holds own unscoped headroom. Retain their protection until their
-    /// owning process settles them, even if the owner has changed the policy.
-    pub fn has_conservative_hold(&self) -> bool {
-        self.holds
-            .values()
-            .any(|amount| matches!(amount, Reserved::Subscription(_, usd) if *usd > 0.0))
-    }
     pub fn subscription_reserved(&self) -> io::Result<Counts> {
         self.holds
             .values()
@@ -212,11 +216,13 @@ impl Shared {
     pub fn insert(&mut self, cost: f64) -> io::Result<String> {
         self.insert_amount(Reserved::Metered(cost))
     }
-    pub fn insert_subscription_with_usd(&mut self, tokens: u64, usd: f64) -> io::Result<String> {
-        if tokens == 0 || !usd.is_finite() || usd < 0.0 {
+    /// A subscription request reserves tokens only. Its cost is unknown, so it
+    /// holds no USD headroom; paid Go requests reserve through `insert_go`.
+    pub fn insert_subscription(&mut self, tokens: u64) -> io::Result<String> {
+        if tokens == 0 {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        self.insert_amount(Reserved::Subscription(tokens, usd))
+        self.insert_amount(Reserved::Subscription(tokens, 0.0))
     }
     pub fn insert_go(&mut self, tokens: u64, usd: f64) -> io::Result<String> {
         if tokens == 0 || !usd.is_finite() || usd <= 0.0 {
@@ -268,7 +274,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn monetary_subscription_holds_preserve_legacy_forms_and_reject_malformed_usd() {
+    fn legacy_subscription_usd_stays_readable_and_new_subscription_holds_are_token_only() {
         for valid in [
             json!(0.01),
             json!({"subscription_tokens":120}),
@@ -278,6 +284,12 @@ mod tests {
             let hold = Reserved::from_value(&valid).unwrap();
             assert_eq!(hold.to_value(), valid);
         }
+        // New subscription holds never carry USD. The legacy field is
+        // read-only round-trip storage, never a reservation.
+        assert_eq!(
+            Reserved::Subscription(120, 0.0).to_value(),
+            json!({"subscription_tokens":120})
+        );
         for invalid in [
             json!({"subscription_tokens":120,"reserved_usd":null}),
             json!({"subscription_tokens":120,"go_usd":0}),
