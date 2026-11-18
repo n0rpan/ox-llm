@@ -14,10 +14,6 @@ fn meter<N: std::fmt::Display>(html: &mut String, label: &str, max: N, value: N,
 
 pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
     html.push_str("<section><h2>Plans and quotas</h2>");
-    if view.github_quotas.is_none() && view.model_plan.is_none() {
-        html.push_str("<p>Usage observations unavailable.</p></section>");
-        return;
-    }
     html.push_str("<dl class=quota-windows>");
     for (identity, label) in [(GitHubIdentity::App, "App"), (GitHubIdentity::Owner, "Owner")] {
         for (resource, api) in [
@@ -43,7 +39,7 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
                 );
                 html.push_str("</dd>");
             } else {
-                html.push_str("<dd>Unavailable</dd>");
+                html.push_str("<dd>Unknown</dd>");
             }
         }
     }
@@ -57,11 +53,7 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
         });
-    let _ = write!(
-        html,
-        "<dt>Model plan</dt><dd>{}</dd>",
-        plan.unwrap_or("Unavailable")
-    );
+    let _ = write!(html, "<dt>Model plan</dt><dd>{}</dd>", plan.unwrap_or("Unknown"));
     let windows = view
         .model_plan
         .map_or([None; 2], |usage| model_windows(usage, now));
@@ -82,7 +74,7 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
             );
             html.push_str("</dd>");
         } else {
-            html.push_str("<dd>Unavailable</dd>");
+            html.push_str("<dd>Unknown</dd>");
         }
     }
     html.push_str("</dl></section>");
@@ -118,7 +110,7 @@ mod tests {
             100,
         );
         assert!(html.contains("GitHub App · REST core</dt><dd>0 of 5000 remaining"));
-        assert!(html.contains("GitHub Owner · REST core</dt><dd>Unavailable"));
+        assert!(html.contains("GitHub Owner · REST core</dt><dd>Unknown"));
         assert!(html.contains("Model plan</dt><dd>fixture-plan"));
         assert!(html.contains("Primary model window</dt><dd>12.5% used"));
         assert!(html.contains("Secondary model window</dt><dd>85% used"));
@@ -195,7 +187,7 @@ mod tests {
             assert!(meter.contains(&format!("min=0 max={max} value={value} ")));
             assert!(meter.contains(&format!("aria-valuetext=\"{description}\"")));
         }
-        assert!(html.contains("GitHub Owner · GraphQL</dt><dd>Unavailable"));
+        assert!(html.contains("GitHub Owner · GraphQL</dt><dd>Unknown"));
         assert!(!html.contains("fixture-private-field"));
         assert!(!html.contains("<form") && !html.contains("<button"));
     }
@@ -215,12 +207,14 @@ mod tests {
         let boundary = usage_page(Some(&quotas), Some(&model), 120);
         assert_eq!(boundary.matches("<meter ").count(), 1);
         assert!(boundary.contains("aria-label=\"GitHub Owner · REST core remaining\""));
-        assert!(boundary.contains("GitHub App · REST core</dt><dd>Unavailable"));
-        assert!(boundary.contains("Primary model window</dt><dd>Unavailable"));
-        assert!(boundary.contains("Secondary model window</dt><dd>Unavailable"));
+        assert!(boundary.contains("GitHub App · REST core</dt><dd>Unknown"));
+        assert!(boundary.contains("Primary model window</dt><dd>Unknown"));
+        assert!(boundary.contains("Secondary model window</dt><dd>Unknown"));
         assert!(!usage_page(Some(&quotas), Some(&model), 180).contains("<meter "));
         let unknown = usage_page(None, None, 100);
-        assert!(unknown.contains("Usage observations unavailable."));
+        assert!(unknown.contains("GitHub App · GraphQL</dt><dd>Unknown"));
+        assert!(unknown.contains("GitHub Owner · REST core</dt><dd>Unknown"));
+        assert!(unknown.contains("Primary model window</dt><dd>Unknown"));
         assert!(!unknown.contains("<meter "));
         let invalid = oxc_gateway::status::chatgpt_usage::parse(&json!({
             "rate_limit": {

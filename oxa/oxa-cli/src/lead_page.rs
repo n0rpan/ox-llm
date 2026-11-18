@@ -1259,10 +1259,13 @@ return true;
         assert!(page.contains("Usage coverage: complete"));
         assert!(page.contains("<dt>Task attempts</dt><dd>1</dd>"));
         assert!(page.contains("<dt>Attempts with complete usage</dt><dd>1</dd>"));
-        assert_eq!(page.matches("<dd>0</dd>").count(), 3);
-        assert!(!page.contains("<dd>Unknown</dd>"));
+        assert!(page.contains("<dt>Prompt tokens</dt><dd>0</dd>"));
+        assert!(page.contains("<dt>Completion tokens</dt><dd>0</dd>"));
+        assert!(page.contains("<dt>Cached input tokens</dt><dd>0</dd>"));
         assert!(page.contains("Task-scoped checkpoint; merged-PR attribution unavailable."));
-        assert!(page.contains("<h2>Plans and quotas</h2><p>Usage observations unavailable.</p>"));
+        assert!(page.contains("GitHub App · GraphQL</dt><dd>Unknown"));
+        assert!(page.contains("GitHub Owner · REST core</dt><dd>Unknown"));
+        assert!(page.contains("Primary model window</dt><dd>Unknown"));
         assert!(page.contains("aria-current=page>Usage"));
         assert!(!page.contains("<form") && !page.contains("<button"));
         let partial = Ok(Some(oxa_work::TaskUsage {

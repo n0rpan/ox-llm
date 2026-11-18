@@ -71,17 +71,21 @@ impl Source {
     fn render(&self, page: crate::lead_page::Page, fragment: bool) -> String {
         // The existing bounded reader revalidates owner-only files/directories on every read.
         // Missing, stale and refused data remain explicit in the shared renderer.
-        let board = self
+        let sample = self
             .board
             .as_deref()
-            .and_then(|path| crate::lead_input::board(path, self.uid).ok());
-        let view = crate::lead_page::View {
-            board: board.as_ref(),
-            ..Default::default()
-        };
+            .and_then(|path| crate::lead_input::board_and_app_quota(path, self.uid).ok());
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
+        let github_quotas = sample.as_ref().and_then(|(board, app_quota)| {
+            crate::lead_quota::GitHubQuotas::from_app_sample((*app_quota)?, board.observed_at, now)
+        });
+        let view = crate::lead_page::View {
+            board: sample.as_ref().map(|(board, _)| board),
+            github_quotas: github_quotas.as_ref(),
+            ..Default::default()
+        };
         if fragment {
             crate::lead_page::content_for(page, &view, now)
         } else {
@@ -181,6 +185,26 @@ mod tests {
         assert!(source
             .render(crate::lead_page::Page::Home, false)
             .contains("No open PRs in this snapshot"));
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        for (observed_at, expected) in [
+            (now, "123 of 5000 remaining"),
+            (now.saturating_sub(601), "Unknown"),
+        ] {
+            let sample = serde_json::json!({
+                "schema_version": 1,
+                "observed_at": observed_at,
+                "board": {"observed_at": observed_at, "entries": []},
+                "app_quota": {
+                    "graphql": {"limit": 5000, "remaining": 123, "resets_at": now + 600},
+                },
+            });
+            std::fs::write(&path, format!("{sample}\n")).unwrap();
+            let usage = source.render(crate::lead_page::Page::Usage, true);
+            assert!(usage.contains(&format!("GitHub App · GraphQL</dt><dd>{expected}")));
+            assert!(usage.contains("GitHub Owner · GraphQL</dt><dd>Unknown"));
+            assert!(usage.contains("Primary model window</dt><dd>Unknown"));
+            assert!(usage.contains("Secondary model window</dt><dd>Unknown"));
+        }
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         let refused = source.render(crate::lead_page::Page::Home, true);
         assert!(refused.contains("Board unavailable"));

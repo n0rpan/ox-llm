@@ -1,5 +1,7 @@
 //! Per-identity quota observations and opt-in Lead admission policy.
 
+use oxa_work::shadow::AppQuota;
+pub use oxa_work::shadow::GitHubWindow;
 use oxc_gateway::status::chatgpt_usage::{Usage, Window as ProviderWindow};
 
 #[derive(Clone, Copy)]
@@ -14,19 +16,31 @@ pub enum GitHubResource {
     Graphql,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GitHubWindow {
-    pub limit: u64,
-    pub remaining: u64,
-    pub resets_at: u64,
-}
-
 #[derive(Default)]
 pub struct GitHubQuotas {
     windows: [[Option<GitHubWindow>; 2]; 2],
 }
 
 impl GitHubQuotas {
+    pub(crate) fn app_sample(&self, now: u64) -> Option<AppQuota> {
+        let core = self.window(GitHubIdentity::App, GitHubResource::Core, now);
+        let graphql = self.window(GitHubIdentity::App, GitHubResource::Graphql, now);
+        (core.is_some() || graphql.is_some()).then_some(AppQuota { core, graphql })
+    }
+
+    pub(crate) fn from_app_sample(sample: AppQuota, observed_at: u64, now: u64) -> Option<Self> {
+        if now.checked_sub(observed_at)? > 2 * oxa_work::shadow::INTERVAL.as_secs() {
+            return None;
+        }
+        let live = |window: &GitHubWindow| {
+            window.limit > 0 && window.remaining <= window.limit && now < window.resets_at
+        };
+        let app = [sample.core.filter(live), sample.graphql.filter(live)];
+        app.iter().any(Option::is_some).then_some(Self {
+            windows: [app, [None; 2]],
+        })
+    }
+
     /// Record response headers against the identity that authorized the request.
     /// A response never changes another identity or API resource's observation.
     pub fn observe(&mut self, identity: GitHubIdentity, resource: GitHubResource, headers: &str) -> bool {
