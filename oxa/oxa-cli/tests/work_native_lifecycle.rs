@@ -177,7 +177,7 @@ impl Fixture {
         Claims::open(self.config.parent().unwrap().join("claims").as_path()).unwrap()
     }
 
-    fn park(&self) -> DependencyWait {
+    fn park(&self, observed_at: u64, deadline: u64) -> DependencyWait {
         renew(self);
         let rows = self.reopened().assignments().unwrap();
         let row = &rows[&42];
@@ -188,7 +188,7 @@ impl Fixture {
         };
         let wait = DependencyWait {
             dependency: Dependency::RequiredCi(99),
-            deadline: self.now + 300,
+            deadline,
         };
         // This fixture has not launched a process or acquired a task lock.
         assert!(self
@@ -198,7 +198,7 @@ impl Fixture {
                 "host-a",
                 &self.binding,
                 &receipt,
-                self.now,
+                observed_at,
                 row.data.revision,
                 &wait,
                 |observed| Ok(observed == &wait),
@@ -467,10 +467,7 @@ fn checkpoint(fixture: &Fixture) -> serde_json::Value {
     .unwrap()
 }
 
-#[test]
-fn all_parked_native_work_keeps_its_packet_and_claim_without_a_model_call() {
-    let fixture = Fixture::new();
-    fixture.park();
+fn assert_parked_queue_untouched(fixture: &Fixture) {
     let claim = serde_json::to_value(&fixture.reopened().assignments().unwrap()[&42]).unwrap();
     let queue = files(&fixture.queue);
     let server = FakeServer::start(vec![], FakeOpts::default()).unwrap();
@@ -489,9 +486,25 @@ fn all_parked_native_work_keeps_its_packet_and_claim_without_a_model_call() {
 }
 
 #[test]
+fn all_parked_native_work_keeps_its_packet_and_claim_without_a_model_call() {
+    let fixture = Fixture::new();
+    fixture.park(fixture.now, fixture.now + 300);
+    assert_parked_queue_untouched(&fixture);
+}
+
+#[test]
+fn an_elapsed_dependency_deadline_does_not_start_a_parked_native_packet() {
+    let fixture = Fixture::new();
+    let wait = fixture.park(fixture.now - 60, fixture.now - 30);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    assert!(wait.deadline < now);
+    assert_parked_queue_untouched(&fixture);
+}
+
+#[test]
 fn parked_native_work_yields_to_one_refilled_task_and_retains_its_original_receipt() {
     let fixture = Fixture::new();
-    fixture.park();
+    fixture.park(fixture.now, fixture.now + 300);
     let parked = serde_json::to_value(&fixture.reopened().assignments().unwrap()[&42]).unwrap();
     let parked_packet = fixture.queue.join(format!("board-{}.txt", fixture.binding.key));
     let parked_bytes = fs::read(&parked_packet).unwrap();
