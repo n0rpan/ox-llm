@@ -3,8 +3,8 @@
 use crate::{Block, UiRequest, ViewModel};
 use oxa_config::Keymap;
 use oxa_proto::{
-    Access, Answer, ComponentAction, CustomOpts, KeyId, Level, Mode, Placement, ToolClass, Ui, UiComponent,
-    Value,
+    Access, Answer, ComponentAction, CustomOpts, DangerAnswer, KeyId, Level, Mode, Placement, ToolClass, Ui,
+    UiComponent, Value,
 };
 use oxa_tui::{
     frame_lines, Component, CursorPos, Editor, EditorAction, EditorOpts, Input, InputAction, Interactive,
@@ -19,6 +19,20 @@ const MAX_VISIBLE: usize = 10;
 /// stray Enter never grants access.
 const ACCESS_LABELS: [&str; 3] = ["Allow once", "Allow for this session", "Deny"];
 const ACCESS_ANSWERS: [Answer; 3] = [Answer::Once, Answer::Session, Answer::Deny];
+/// #1512 S2: the dangerous-command prompt's choices, in display order. Deny is the default focus
+/// (a stray Enter never runs a dangerous command); `Always` is saved to the user settings.
+pub const DANGER_LABELS: [&str; 4] = [
+    "Allow once",
+    "Allow for this session",
+    "Always allow (saved to your user settings)",
+    "Deny",
+];
+pub const DANGER_ANSWERS: [DangerAnswer; 4] = [
+    DangerAnswer::Once,
+    DangerAnswer::Session,
+    DangerAnswer::Always,
+    DangerAnswer::Deny,
+];
 const HINT_CHOICE: &str = "up/down move  enter choose  esc cancel";
 const HINT_TEXT: &str = "enter submit  esc cancel";
 
@@ -128,6 +142,18 @@ impl Ui for UiProxy {
         }
         rx.recv().unwrap_or(Answer::Deny)
     }
+    fn ask_dangerous(&mut self, a: &Access, reasons: &[String], keys: &[String]) -> DangerAnswer {
+        let (reply, rx) = channel();
+        if !self.post(UiRequest::AskDangerous {
+            access: a.clone(),
+            reasons: reasons.to_vec(),
+            keys: keys.to_vec(),
+            reply,
+        }) {
+            return DangerAnswer::Deny;
+        }
+        rx.recv().unwrap_or(DangerAnswer::Deny)
+    }
     fn editor_text(&mut self) -> String {
         let (reply, rx) = channel();
         if !self.post(UiRequest::EditorText { reply }) {
@@ -198,6 +224,9 @@ pub struct DialogHost {
     cursor_at: Option<CursorPos>,
     /// Edge consumed by the app, not by hooks. Queued permissions count only on opening.
     permission_opened: bool,
+    /// #1512 S2: an "always allow" answer waiting for the driver to save its keys and answer
+    /// (see [`DialogHost::take_danger_always`]).
+    danger_always: Option<(Vec<String>, Sender<DangerAnswer>)>,
 }
 
 impl DialogHost {
@@ -208,11 +237,19 @@ impl DialogHost {
             clock: 0,
             cursor_at: None,
             permission_opened: false,
+            danger_always: None,
         }
     }
 
     pub(crate) fn take_permission_opened(&mut self) -> bool {
         std::mem::take(&mut self.permission_opened)
+    }
+
+    /// #1512 S2: the keys and the reply of an "always allow" answer. The caller saves the keys
+    /// and then answers the reply (the driver's `finish_danger_always`); until it does, the
+    /// worker waits. `None` when no such answer is pending.
+    pub fn take_danger_always(&mut self) -> Option<(Vec<String>, Sender<DangerAnswer>)> {
+        self.danger_always.take()
     }
 
     /// Take a request: blocking ones open or queue a dialog; the others are applied to `vm`
@@ -309,6 +346,27 @@ impl DialogHost {
                     ChoiceKind::Access,
                     None,
                     Reply::Access(reply),
+                );
+                self.push(dialog, now_ms);
+            }
+            UiRequest::AskDangerous {
+                access,
+                reasons,
+                keys,
+                reply,
+            } => {
+                let mut lines = vec![access_prompt(&access).1];
+                lines.extend(reasons.iter().map(|r| format!("- {r}")));
+                let mut list = choice_list(&DANGER_LABELS);
+                // Deny is focused by default: a stray Enter never runs a dangerous command.
+                list.set_selected_index(DANGER_ANSWERS.len() - 1);
+                let dialog = Dialog::choice(
+                    "Dangerous command".to_string(),
+                    lines,
+                    list,
+                    ChoiceKind::Danger,
+                    None,
+                    Reply::Danger(reply, keys),
                 );
                 self.push(dialog, now_ms);
             }
@@ -524,6 +582,9 @@ impl DialogHost {
         while let Some(dialog) = self.queue.pop_front() {
             dialog.reply.settle(None);
         }
+        if let Some((_, tx)) = self.danger_always.take() {
+            let _ = tx.send(DangerAnswer::Deny);
+        }
         self.cursor_at = None;
         self.permission_opened = false;
     }
@@ -532,7 +593,7 @@ impl DialogHost {
     fn push(&mut self, mut dialog: Dialog, now_ms: u64) {
         if self.open.is_none() {
             dialog.arm(now_ms);
-            self.permission_opened |= matches!(dialog.reply, Reply::Access(_));
+            self.permission_opened |= matches!(dialog.reply, Reply::Access(_) | Reply::Danger(..));
             self.open = Some(dialog);
         } else {
             self.queue.push_back(dialog);
@@ -542,11 +603,17 @@ impl DialogHost {
     /// Close the open dialog with `out` (`None` = dismissed) and open the next queued one.
     fn close_open(&mut self, out: Option<Outcome>) {
         if let Some(dialog) = self.open.take() {
-            dialog.reply.settle(out);
+            match (dialog.reply, out) {
+                // The driver saves the keys first; it answers through `take_danger_always`.
+                (Reply::Danger(tx, keys), Some(Outcome::Danger(DangerAnswer::Always))) => {
+                    self.danger_always = Some((keys, tx));
+                }
+                (reply, out) => reply.settle(out),
+            }
         }
         if let Some(mut next) = self.queue.pop_front() {
             next.arm(self.clock);
-            self.permission_opened |= matches!(next.reply, Reply::Access(_));
+            self.permission_opened |= matches!(next.reply, Reply::Access(_) | Reply::Danger(..));
             self.open = Some(next);
         }
         self.cursor_at = None;
@@ -724,6 +791,7 @@ enum Outcome {
     Bool(bool),
     Text(String),
     Access(Answer),
+    Danger(DangerAnswer),
     Value(Value),
 }
 
@@ -733,6 +801,8 @@ enum Reply {
     Bool(Sender<Option<bool>>),
     Text(Sender<Option<String>>),
     Access(Sender<Answer>),
+    /// The dangerous-command answer and the rule keys it covers.
+    Danger(Sender<DangerAnswer>, Vec<String>),
     Value(Sender<Option<Value>>),
 }
 
@@ -764,6 +834,12 @@ impl Reply {
             (Reply::Access(tx), _) => {
                 let _ = tx.send(Answer::Deny);
             }
+            (Reply::Danger(tx, _), Some(Outcome::Danger(a))) => {
+                let _ = tx.send(a);
+            }
+            (Reply::Danger(tx, _), _) => {
+                let _ = tx.send(DangerAnswer::Deny);
+            }
             (Reply::Value(tx), Some(Outcome::Value(v))) => {
                 let _ = tx.send(Some(v));
             }
@@ -779,6 +855,7 @@ enum ChoiceKind {
     Select,
     Confirm,
     Access,
+    Danger,
 }
 
 impl ChoiceKind {
@@ -787,6 +864,9 @@ impl ChoiceKind {
             ChoiceKind::Select => Outcome::Index(i),
             ChoiceKind::Confirm => Outcome::Bool(i == 0),
             ChoiceKind::Access => Outcome::Access(ACCESS_ANSWERS.get(i).copied().unwrap_or(Answer::Deny)),
+            ChoiceKind::Danger => {
+                Outcome::Danger(DANGER_ANSWERS.get(i).copied().unwrap_or(DangerAnswer::Deny))
+            }
         }
     }
 }

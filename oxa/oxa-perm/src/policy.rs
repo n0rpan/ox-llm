@@ -1,4 +1,5 @@
 //! A10: the mode x access policy table.
+use crate::danger::{DangerHit, DangerRules};
 use crate::paths::{is_inside, is_read_only_command, resolve_real};
 use oxa_proto::guard::{
     home_protected_paths, is_home_or_above, sensitive_paths, GIT_PROTECTED_IN_CWD, PROTECTED_IN_CWD,
@@ -336,6 +337,12 @@ pub struct ModePolicy {
     /// O-182: while on, a question of the table is answered with "allow" (see
     /// [`ModePolicy::with_yolo`]).
     yolo: Option<YoloSwitch>,
+    /// #1512 S2: the dangerous-command rules (`None` = no floor prompt).
+    danger: Option<Arc<DangerRules>>,
+    /// #1512 S2: the session's dangerous-command grants (rule keys, see [`DangerHit::key`]).
+    danger_grants: Vec<String>,
+    /// #1512 S2: the keys saved by "always allow" in the user settings.
+    always: Arc<Vec<String>>,
 }
 
 impl PartialEq for ModePolicy {
@@ -345,7 +352,12 @@ impl PartialEq for ModePolicy {
             (Some(a), Some(b)) => a.same(b),
             _ => false,
         };
-        self.grants == other.grants && self.guard == other.guard && same_switch
+        self.grants == other.grants
+            && self.guard == other.guard
+            && same_switch
+            && self.danger == other.danger
+            && self.danger_grants == other.danger_grants
+            && self.always == other.always
     }
 }
 
@@ -373,8 +385,32 @@ impl ModePolicy {
         self.yolo = Some(switch);
         self
     }
+    /// #1512 S2: dangerous commands ask. `rules` decide what is dangerous (see
+    /// [`DangerRules::classify`]); `always` holds the keys saved by "always allow" (the user
+    /// settings' `oxa.approval.always`), which are never asked again.
+    pub fn with_danger(mut self, rules: Arc<DangerRules>, always: Vec<String>) -> ModePolicy {
+        self.danger = Some(rules);
+        self.always = Arc::new(always);
+        self
+    }
     pub fn grants(&self) -> &[Access] {
         &self.grants
+    }
+
+    /// #1512 S2: the dangerous-command hits of `a`, minus the keys a session or always grant
+    /// covers. Only an exec is classified; the generic grants never cover these hits.
+    fn danger_hits(&self, a: &Access, cwd: &Path) -> Vec<DangerHit> {
+        let (Access::Exec { command, .. }, Some(rules)) = (a, &self.danger) else {
+            return Vec::new();
+        };
+        rules
+            .classify(command, cwd, &self.guard)
+            .into_iter()
+            .filter(|h| {
+                let key = h.key();
+                !self.danger_grants.contains(&key) && !self.always.contains(&key)
+            })
+            .collect()
     }
 
     /// `true` when a remembered grant covers `a`.
@@ -512,10 +548,16 @@ impl ModePolicy {
             }
         }
         // Grants only turn Ask into Allow; a Deny from the table always stands.
-        Verdict::Is(match table(mode, a, cwd) {
+        let table_verdict = Verdict::Is(match table(mode, a, cwd) {
             Decision::Ask if self.granted(a) => Decision::Allow,
             d => d,
-        })
+        });
+        // #1512 S2: a dangerous command is a floor prompt: plan's Deny stands, and every other
+        // mode asks (auto and standard) unless yolo allows it outside plan mode.
+        if !self.danger_hits(a, cwd).is_empty() {
+            return stricter(table_verdict, Verdict::AskAlways);
+        }
+        table_verdict
     }
 }
 
@@ -575,6 +617,24 @@ impl Policy for ModePolicy {
             Verdict::Is(d) => d,
         };
         (decision, pin)
+    }
+
+    fn danger_ask(&self, a: &Access, cwd: &Path) -> Vec<(String, String)> {
+        self.danger_hits(a, cwd)
+            .into_iter()
+            .map(|h| {
+                let reason = format!("{}: {}", h.rule, h.reason);
+                (h.key(), reason)
+            })
+            .collect()
+    }
+
+    fn grant_danger(&mut self, keys: &[String]) {
+        for key in keys {
+            if !self.danger_grants.contains(key) {
+                self.danger_grants.push(key.clone());
+            }
+        }
     }
 
     fn set_spill_dir(&mut self, dir: &Path) {

@@ -20,7 +20,8 @@ use oxa_interactive::{
     TrustChoice,
 };
 use oxa_perm::{
-    gated_resources, resolve_trust, DefaultTrust, ModePolicy, TrustInputs, TrustOutcome, TrustStore,
+    gated_resources, resolve_trust, DangerRules, DefaultTrust, ModePolicy, TrustInputs, TrustOutcome,
+    TrustStore,
 };
 use oxa_proto::{codes, Engine, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
 use oxa_resources::{discover, DiscoverOpts, Resources};
@@ -621,6 +622,8 @@ struct Built {
     /// #202: the sandbox of the bash tool and its background jobs: the session's sandbox,
     /// bypassed while the switch is at yolo (full access).
     bash_sandbox: Arc<oxa_sandbox::FullAccess>,
+    /// #1512 S2: the dangerous-command rules of the user settings, shared by every session.
+    danger: Arc<DangerRules>,
 }
 
 /// #597: `guard` plus the session's scratch directory (`/tmp` in its sandbox), which the file
@@ -671,6 +674,8 @@ impl Built {
             hooks: self.hook_sets.hooks.clone(),
             // B3: the file tools keep the deny-list and protected paths in standard/auto.
             // #202/#314: only user-selected yolo outside plan mode bypasses that floor.
+            // #1512 S2: dangerous commands ask in standard and auto; the keys of "always allow"
+            // are read from the user settings now, so a save covers the next session too.
             policy: Box::new(
                 ModePolicy::new()
                     .with_guard(session_guard(
@@ -682,7 +687,11 @@ impl Built {
                         ),
                         sandbox.as_ref(),
                     ))
-                    .with_yolo(self.yolo.clone()),
+                    .with_yolo(self.yolo.clone())
+                    .with_danger(
+                        self.danger.clone(),
+                        Settings::load(&self.dirs, &self.cwd, false).list("oxa.approval.always"),
+                    ),
             ),
             // File names follow bash's current view, without giving hooks/extensions the
             // bash-only execution bypass. The shared switch also handles live /yolo changes.
@@ -741,6 +750,16 @@ fn prepare(
     };
     let mut notices: Vec<(Level, String)> = Vec::new();
     let user_settings = Settings::load(dirs, cwd, false);
+    // #1512 S2: the dangerous-command rules come from the user settings only.
+    let builtin_ids: Vec<String> = oxa_perm::BUILTIN_RULES
+        .iter()
+        .map(|row| row.0.to_string())
+        .collect();
+    let (danger, danger_warnings) = DangerRules::from_list(&oxa_config::apply_list_patch(
+        &builtin_ids,
+        &user_settings.list(oxa_perm::SETTING_DANGEROUS),
+    ));
+    notices.extend(danger_warnings.into_iter().map(|w| (Level::Warning, w)));
     // Only user settings may enable this default-off proposal session.
     if a.lead && !user_settings.bool(crate::lead_preset::SETTING, false) {
         return Err(OxaError::new(
@@ -1113,6 +1132,7 @@ fn prepare(
         hook_sets,
         yolo,
         bash_sandbox,
+        danger: Arc::new(danger),
     };
     Ok(Prep {
         built,
@@ -2706,6 +2726,7 @@ mod session_scratch_tests {
                 false,
             )),
             yolo,
+            danger: Arc::new(oxa_perm::DangerRules::builtin()),
         };
         let first = built.deps(None);
         let second = built.deps(None);
@@ -2749,6 +2770,73 @@ mod session_scratch_tests {
         assert!(b.is_dir(), "ending one session removed another's scratch");
         drop(second);
         assert!(!b.exists(), "the second session's scratch outlived it");
+    }
+
+    /// #1512 S2: the dangerous-command rules and the always keys come from the user settings
+    /// only. A project file that replaces the rules and lists the key changes nothing; the same
+    /// key in the user file allows the command.
+    #[test]
+    fn approval_keys_are_read_from_user_layer_only() {
+        use oxa_proto::{Access, Decision, Mode, Policy};
+        let env = oxa_fake::TestEnv::new();
+        let dirs = Dirs::under(env.root());
+        let cwd = env.work();
+        let key = "git-push-force git push --force origin main";
+        let dangerous = Access::Exec {
+            command: "git push --force origin main".into(),
+            net: false,
+        };
+        env.write(
+            "work/.oxa/settings.json",
+            &serde_json::json!({"oxa": {"approval": {"dangerous": [], "always": [key]}}}).to_string(),
+        );
+        let build = || {
+            let base: Arc<dyn Sandbox> = Arc::new(NoSandbox);
+            let yolo = oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard);
+            Built {
+                lead: false,
+                status: None,
+                result_facts: Arc::new(crate::result_facts::ResultFacts::default()),
+                output_schema: None,
+                goal: None,
+                engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
+                cloud_diagnostics: oxc_gateway::diagnostics::Diagnostics::default(),
+                store: Arc::new(MemStore::new()),
+                sandbox: base.clone(),
+                settings: Settings::default(),
+                dirs: dirs.clone(),
+                cwd: cwd.clone(),
+                resources: Resources::default(),
+                theme_paths: Vec::new(),
+                selection: ToolSelection::default(),
+                model: None,
+                thinking: None,
+                mode: None,
+                supervised_child: false,
+                ask_owner_present: true,
+                hook_sets: HookSets::default(),
+                bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
+                    base.clone(),
+                    yolo.clone(),
+                    "",
+                    env.home(),
+                    false,
+                )),
+                yolo,
+                danger: Arc::new(oxa_perm::DangerRules::builtin()),
+            }
+        };
+        let policy = build().deps(None).policy;
+        assert_eq!(policy.decide(Mode::Workspace, &dangerous, &cwd), Decision::Ask);
+        // The user layer, the same key: allowed.
+        std::fs::create_dir_all(dirs.settings_file().parent().unwrap()).unwrap();
+        std::fs::write(
+            dirs.settings_file(),
+            serde_json::json!({"oxa": {"approval": {"always": [key]}}}).to_string(),
+        )
+        .unwrap();
+        let policy = build().deps(None).policy;
+        assert_eq!(policy.decide(Mode::Workspace, &dangerous, &cwd), Decision::Allow);
     }
 }
 
