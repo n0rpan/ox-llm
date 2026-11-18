@@ -86,6 +86,30 @@ impl Session {
     }
 }
 
+/// Checkpoint Lead metadata while the protected caller holds the existing
+/// native Session writer lock and has loaded these entries under that lock.
+pub fn checkpoint_idle_lead_goal(
+    store: &dyn oxa_session::SessionStore,
+    session: &SessionRef,
+    entries: &[oxa_proto::Entry],
+    goal: &Goal,
+) -> Result<u64, OxaError> {
+    goal.validate()?;
+    let reserved = goal.lead.as_ref().and_then(|lead| lead.pending_steer.as_ref());
+    let id = oxa_session::new_entry_id(&|id| {
+        entries.iter().any(|entry| entry.id == id) || reserved.is_some_and(|steer| steer.entry_id == id)
+    });
+    crate::agent_loop::append_to_store(
+        store,
+        session,
+        id,
+        entries.last().map(|entry| entry.id.clone()),
+        goal.checkpoint_body(entries),
+    )?;
+    store.sync(session)?;
+    Ok(entries.len() as u64 + 1)
+}
+
 fn idle_goal(session: &Session, bound: &SessionRef, revision: u64) -> Result<Goal, OxaError> {
     if session.st.shared.busy.load(Ordering::SeqCst) {
         return Err(OxaError::new(

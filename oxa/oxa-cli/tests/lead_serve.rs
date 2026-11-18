@@ -245,14 +245,18 @@ fn registered_help_and_menu_work_without_home_or_runtime_inputs() {
         );
         assert!(String::from_utf8_lossy(&output.stdout).contains("lead serve"));
     }
-    for command_name in ["board", "status", "asks", "chat"] {
+    for command_name in ["board", "status", "asks", "chat", "run"] {
         let output = command(&test)
             .args(["lead", command_name])
             .env_remove("HOME")
             .output()
             .unwrap();
         assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("unavailable"));
+        let diagnostic = match command_name {
+            "asks" | "run" => "HOME is not set",
+            _ => "unavailable",
+        };
+        assert!(String::from_utf8_lossy(&output.stderr).contains(diagnostic));
     }
 }
 

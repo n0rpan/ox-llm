@@ -192,6 +192,30 @@ impl LeadOwnerBinding {
         }))
     }
 
+    /// Use the same protected native writer for goal-only work without opening a provider.
+    pub(crate) fn with_goal_store<T>(
+        &self,
+        operation: impl FnOnce(&FsStore, &SessionRef) -> Result<T, OxaError>,
+    ) -> Result<T, OxaError> {
+        let store = self.lock_store()?;
+        store.commit_lock();
+        operation(&store, &self.session)
+    }
+
+    fn lock_store(&self) -> Result<Arc<FsStore>, OxaError> {
+        self.recheck()?;
+        let store = Arc::new(FsStore::new(self.dirs.sessions_dir.clone()));
+        store.acquire(&self.session).map_err(|error| {
+            if error.code == oxa_session::LOCKED {
+                OxaError::new(codes::BUSY, "The selected Lead session is busy.")
+            } else {
+                unavailable()
+            }
+        })?;
+        self.recheck()?;
+        Ok(store)
+    }
+
     pub(crate) fn recheck(&self) -> Result<(), OxaError> {
         canonical(&self.project)?;
         private_directory(&self.dirs.sessions_dir, self.uid)?;
@@ -254,17 +278,7 @@ pub fn with_lead_owner<T>(
 ) -> Result<T, OxaError> {
     let dirs = &binding.dirs;
     let cwd = &binding.project;
-    binding.recheck()?;
-    let store = Arc::new(FsStore::new(dirs.sessions_dir.clone()));
-    // Stage the very same lock Session::open will adopt, before provider I/O.
-    store.acquire(&binding.session).map_err(|error| {
-        if error.code == oxa_session::LOCKED {
-            OxaError::new(codes::BUSY, "The selected Lead session is busy.")
-        } else {
-            unavailable()
-        }
-    })?;
-    binding.recheck()?;
+    let store = binding.lock_store()?;
     // The serving process owns the normal startup policy. Refuse a mismatch
     // before provider preparation, without changing policy for other requests.
     let (offline, remote) = crate::netguard::policy_from(false, env, &Settings::load(dirs, cwd, false));

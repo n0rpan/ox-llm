@@ -166,8 +166,15 @@ commands! {
     },
     LeadAsks {
         path: &["lead", "asks"], aliases: &[], summary: "Show lead questions",
+        arguments: &[],
+        surfaces: Surfaces { cli: Availability::Supported, ..LEAD_PENDING },
+        requirements: Requirements { owner_only: true, ..NO_REQUIREMENTS },
+    },
+    LeadRun {
+        path: &["lead", "run"], aliases: &[], summary: "Run the Lead observation loop",
         arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
-        surfaces: LEAD_PENDING, requirements: NO_REQUIREMENTS,
+        surfaces: Surfaces { cli: Availability::Supported, ..LEAD_PENDING },
+        requirements: Requirements { owner_only: true, ..NO_REQUIREMENTS },
     },
     LeadChat {
         path: &["lead", "chat"], aliases: &[], summary: "Open lead chat",
@@ -321,6 +328,7 @@ mod tests {
             (CommandId::LeadBoard, &["lead", "board"]),
             (CommandId::LeadStatus, &["lead", "status"]),
             (CommandId::LeadAsks, &["lead", "asks"]),
+            (CommandId::LeadRun, &["lead", "run"]),
             (CommandId::LeadChat, &["lead", "chat"]),
         ];
         for (id, path) in routes {
@@ -328,7 +336,8 @@ mod tests {
             assert_eq!(declaration.path, *path);
             let input: Vec<_> = path.iter().map(|part| (*part).to_string()).collect();
             let in_menu = matches!(id, CommandId::Lead | CommandId::LeadServe);
-            let in_cli = in_menu || *id == CommandId::LeadChat;
+            let in_cli =
+                in_menu || matches!(id, CommandId::LeadChat | CommandId::LeadRun | CommandId::LeadAsks);
             assert_eq!(
                 parse_cli(&input).map(|invocation| invocation.command.id),
                 in_cli.then_some(*id)

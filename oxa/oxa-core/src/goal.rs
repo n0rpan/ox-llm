@@ -66,6 +66,7 @@ fn stale_steering() -> oxa_proto::OxaError {
 pub type SteeringAuthority = dyn Fn(&SessionRef, &mut dyn FnMut(Option<&SteeringLease>)) + Send + Sync;
 
 mod lead;
+pub use lead::checkpoint_idle_lead_goal;
 pub(crate) use lead::{deliver_saved, reanchor_resumed, BoundLeadAuthority};
 
 /// One typed steering input. Its callback reports the result of appending.
