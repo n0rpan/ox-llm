@@ -27,6 +27,7 @@ pub fn due(state: &WorkerState) -> bool {
 pub fn resume_argv(
     rec: &WorkerRecord,
     parent_autonomy: Autonomy,
+    scope: &ParentScope,
 ) -> Result<(Vec<String>, Option<String>), String> {
     check_value("session id", &rec.session_id)?;
     check_value("model", &rec.model)?;
