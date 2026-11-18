@@ -382,6 +382,132 @@ mod tests {
     use super::*;
     use oxa_work::board::{GitHub, Mergeability, Policy, PullRequest as BoardPr, RequiredCi};
 
+    fn observed_asks() -> Snapshot {
+        include_str!("../../oxa-proto/tests/fixtures/work/evening.jsonl")
+            .lines()
+            .filter_map(|line| Snapshot::from_json(line.as_bytes()).ok())
+            .find(|snapshot| !snapshot.asks.is_empty())
+            .unwrap()
+    }
+
+    #[test]
+    fn navigation_has_real_urls_one_current_destination_and_observed_ask_counts() {
+        let mut snapshot = observed_asks();
+        for (page, selected) in [
+            (Page::Home, "/"),
+            (Page::Asks, "/asks"),
+            (Page::Board, "/board"),
+            (Page::Workers, "/workers"),
+            (Page::Usage, "/usage"),
+            (Page::Item(17), "/board"),
+            (
+                Page::BoardQuery(Query {
+                    filter: Filter::Fix,
+                    page: 1,
+                }),
+                "/board",
+            ),
+            (Page::Chat(Prompt::Status), "/chat"),
+        ] {
+            let html = document_for(
+                page,
+                &View {
+                    situation: Some(&snapshot),
+                    ..View::default()
+                },
+                100,
+            );
+            let nav = html
+                .split("<nav class=tabs")
+                .nth(1)
+                .unwrap()
+                .split("</nav>")
+                .next()
+                .unwrap();
+            assert_eq!(nav.matches("aria-current=page").count(), 1);
+            let current = nav
+                .split("<a ")
+                .find(|anchor| anchor.split('>').next().unwrap().contains("aria-current=page"))
+                .unwrap();
+            assert!(current.starts_with(&format!("href={selected}")), "{page:?}");
+            for path in ["/", "/asks", "/board", "/workers", "/usage", "/chat"] {
+                assert!(nav.contains(&format!("href={path}")), "{page:?} {path}");
+            }
+            assert!(nav.contains(&format!(
+                "aria-label=\"Asks, {} open in snapshot\"",
+                snapshot.asks.len()
+            )));
+            assert_eq!(nav.matches("<svg ").count(), 5);
+            assert_eq!(html.matches("<h1 ").count(), 1);
+            assert!(html.contains("href=#main>Skip to content"));
+            assert!(html.contains("id=main tabindex=-1"));
+            assert!(!nav.contains("https://") && !nav.contains("onclick="));
+        }
+        snapshot.asks.clear();
+        let quiet = content_for(
+            Page::Asks,
+            &View {
+                situation: Some(&snapshot),
+                ..View::default()
+            },
+            100,
+        );
+        assert!(quiet.contains("aria-label=\"Asks, 0 open in snapshot\""));
+        let unknown = content_for(Page::Asks, &View::default(), 100);
+        assert!(unknown.contains("aria-label=\"Asks, observations unavailable\""));
+        assert!(!unknown.contains("Asks, 0 open in snapshot"));
+        assert!(unknown.contains("Owner asks unavailable"));
+    }
+
+    #[test]
+    fn home_prioritizes_decisions_and_keeps_observed_work_in_native_details() {
+        let snapshot = observed_asks();
+        let board = Board::default();
+        let html = content_for(
+            Page::Home,
+            &View {
+                board: Some(&board),
+                situation: Some(&snapshot),
+                main_red: true,
+                ..View::default()
+            },
+            100,
+        );
+        assert!(html.contains("<div class=home-layout>"));
+        assert!(html.find("id=attention").unwrap() < html.find("id=asks").unwrap());
+        assert!(html.find("id=asks").unwrap() < html.find("<details class=home-work>").unwrap());
+        assert!(html.contains("<details class=home-work><summary>Observed work</summary>"));
+        assert!(!html.contains("<details class=home-work open"));
+        assert!(html.contains("role=alert"));
+        for ask in &snapshot.asks {
+            assert!(html.contains(&escape(&ask.question)));
+        }
+        assert!(html.contains("No open PRs in this snapshot"));
+        assert!(html.contains("Options, recommendation and meanwhile are unavailable"));
+        assert!(!html.contains("<form") && !html.contains("onclick="));
+    }
+
+    #[test]
+    fn asks_layout_keeps_questions_and_unknown_options_read_only() {
+        let snapshot = observed_asks();
+        let html = content_for(
+            Page::Asks,
+            &View {
+                situation: Some(&snapshot),
+                ..View::default()
+            },
+            100,
+        );
+        assert!(html.contains("<div class=asks-layout>"));
+        assert!(html.contains("<div class=ask-cards>"));
+        for ask in &snapshot.asks {
+            assert!(html.contains(&escape(&ask.question)));
+            assert!(html.contains(&escape(&ask.id)));
+        }
+        assert!(html.contains("Options, recommendation and meanwhile are unavailable"));
+        assert!(!html.contains("<form") && !html.contains("<button"));
+    }
+
     #[test]
     fn queue_alarm_requires_membership_at_the_exact_head() {
         let active = PullRequest {
