@@ -155,6 +155,27 @@ sys.exit(int(os.environ.get('REJECT_VERIFY', '0')))
                 self.assertEqual(list(prefix.iterdir()), [])
                 self.assertFalse((self.remote / 'verified').exists())
 
+    def test_shared_nonsticky_ancestor_is_refused_with_a_private_prefix(self):
+        self.build()
+        parent = self.root / 'shared'
+        prefix = parent / 'nested' / 'dev'
+        prefix.mkdir(mode=0o700, parents=True)
+        parent.chmod(0o777)
+        result = self.run_update(prefix)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(list(prefix.iterdir()), [])
+        self.assertFalse((self.remote / 'verified').exists())
+
+    def test_trusted_sticky_ancestor_allows_a_private_prefix(self):
+        sha, _, _ = self.build()
+        parent = self.root / 'sticky'
+        parent.mkdir()
+        parent.chmod(0o1777)
+        prefix = parent / 'nested' / 'dev'
+        result = self.run_update(prefix)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads((prefix / 'current/receipt.json').read_text())['source_sha'], sha)
+
     def test_aliased_or_nonregular_lock_cannot_touch_another_install(self):
         self.build()
         for kind in ['symlink', 'hardlink', 'fifo']:
