@@ -87,11 +87,18 @@ fn ceiling(parent_mode: Mode, parent_autonomy: Autonomy) -> WorkerMode {
 
 /// A value passed as its own argv element: it must not be empty, must not look like a flag, and
 /// must not hold control characters.
-fn check_value(label: &str, value: &str) -> Result<(), String> {
+pub(super) fn check_value(label: &str, value: &str) -> Result<(), String> {
     if value.is_empty() || value.starts_with('-') || value.chars().any(char::is_control) {
         return Err(format!("invalid worker {label}: {value:?}"));
     }
     Ok(())
+}
+
+/// K5b: the level a resumed worker runs at: the level recorded when it started, never wider than
+/// the ceiling the parent's autonomy gives now. The table mode is not known when a session opens,
+/// so it is taken as `workspace`, which only matters for a record wider than that.
+pub(super) fn resume_mode(recorded: WorkerMode, parent_autonomy: Autonomy) -> WorkerMode {
+    recorded.min(ceiling(Mode::Workspace, parent_autonomy))
 }
 
 /// The argv of the child (without the program): `--mode json --session-id <id> --model <m>

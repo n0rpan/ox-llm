@@ -11,12 +11,19 @@
 //!   `launch::child_env`. Only the removed names and the changed or new values reach argv (the
 //!   worker marker, never a value the parent already has), so no secret is listed in `ps`.
 //! * `Hooks::shutdown` stops every worker through the supervisor.
+//! * K5b: `send {name, text}` publishes `text` to the worker's session inbox (the writer behind
+//!   `oxa send`) and reports the delivery and the worker's phase. The child id is read from the
+//!   registry record of `name`. `poll_event("worker", {name})` is done when the worker finished
+//!   or its process is gone. On `session_start` (startup, resume) each dead, unfinished worker is
+//!   relaunched through the same launch path (`resume.rs`) unless `oxa.workers.resumeOnStart`
+//!   is false.
 use super::launch::{child_argv, child_env, valid_name, worktree_argv, WorkerMode, WorkerSpec};
 use super::proc::Supervisor;
 use super::registry::{self, WorkerRecord, WorkerState};
+use super::resume;
 use oxa_proto::{
-    Access, Autonomy, CommandSpec, Exposure, HookPoint, HookReply, Hooks, Host, HostAction, Mode, OxaError,
-    Source, Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec, Ui, Value, YoloSwitch,
+    Access, Autonomy, CommandSpec, Exposure, HookPoint, HookReply, Hooks, Host, HostAction, Level, Mode,
+    OxaError, Source, Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec, Ui, Value, YoloSwitch,
 };
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -40,9 +47,9 @@ pub const SETTING_MAX: &str = "oxa.workers.max";
 /// nested; only an unset variable lets the hook set be built.
 pub const ENV_WORKER_DEPTH: &str = "OXA_WORKER_DEPTH";
 
-const DESCRIPTION: &str = "Background workers: each is a separate oxa process that runs one goal in its own git worktree on branch agent/<name>. Actions: start {name, goal, model?, mode?} starts one (name: lowercase letters, digits and dashes, at most 40 characters); list shows this session's workers and their state; stop {name} stops one. mode is plan, ask, workspace, auto or yolo, never wider than this session.";
+const DESCRIPTION: &str = "Background workers: each is a separate oxa process that runs one goal in its own git worktree on branch agent/<name>. Actions: start {name, goal, model?, mode?} starts one (name: lowercase letters, digits and dashes, at most 40 characters); list shows this session's workers and their state; stop {name} stops one; send {name, text} delivers a follow-up message to a worker's session inbox and reports its phase. mode is plan, ask, workspace, auto or yolo, never wider than this session.";
 
-const SCHEMA: &str = r#"{"type":"object","properties":{"action":{"type":"string","enum":["start","list","stop"]},"name":{"type":"string"},"goal":{"type":"string"},"model":{"type":"string"},"mode":{"type":"string","enum":["plan","ask","workspace","auto","yolo"]}},"required":["action"]}"#;
+const SCHEMA: &str = r#"{"type":"object","properties":{"action":{"type":"string","enum":["start","list","stop","send"]},"name":{"type":"string"},"goal":{"type":"string"},"text":{"type":"string"},"model":{"type":"string"},"mode":{"type":"string","enum":["plan","ask","workspace","auto","yolo"]}},"required":["action"]}"#;
 
 /// Whether the worker hook set is built: not in a worker child (`worker_depth` is the value of
 /// `OXA_WORKER_DEPTH`, `None` when unset) and the setting is not false.
@@ -65,6 +72,8 @@ pub struct WorkerConfig {
     pub parent_env: Vec<(String, String)>,
     /// The process's autonomy switch (the parent's level sets the worker's ceiling).
     pub yolo: YoloSwitch,
+    /// `oxa.workers.resumeOnStart`: relaunch dead, unfinished workers when the session opens.
+    pub resume_on_start: bool,
 }
 
 /// State shared by the tool and the hook set.
@@ -75,6 +84,9 @@ pub struct WorkerCore {
     sessions_dir: PathBuf,
     parent_env: Vec<(String, String)>,
     yolo: YoloSwitch,
+    resume_on_start: bool,
+    /// Parent session ids whose workers were already considered for resume in this process.
+    resumed: Mutex<Vec<String>>,
     supervisor: Supervisor,
     /// Serializes start and stop: the registry is read, changed and written back.
     gate: Mutex<()>,
@@ -108,7 +120,7 @@ pub fn worktree_path(repo: &Path, name: &str) -> Option<PathBuf> {
     Some(repo.parent()?.join(".oxa-worktrees").join(repo_name).join(name))
 }
 
-fn parse_mode(text: &str) -> Option<WorkerMode> {
+pub(super) fn parse_mode(text: &str) -> Option<WorkerMode> {
     match text {
         "plan" => Some(WorkerMode::Plan),
         "ask" => Some(WorkerMode::Ask),
@@ -196,6 +208,30 @@ fn live_state(rec: &WorkerRecord, sessions_dir: &Path) -> WorkerState {
     registry::state(rec, status.as_ref(), alive)
 }
 
+/// How many log lines a finished worker's probe text carries.
+const LOG_LINES: usize = 20;
+/// The most bytes read from the end of a log for its tail.
+const LOG_TAIL_BYTES: u64 = 64 * 1024;
+
+/// The last [`LOG_LINES`] lines of the log at `path` (empty text when it cannot be read).
+fn log_tail(path: &Path) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = fs::File::open(path) else {
+        return String::new();
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = len.saturating_sub(LOG_TAIL_BYTES);
+    let mut bytes = Vec::new();
+    if file.seek(SeekFrom::Start(start)).is_err()
+        || file.take(LOG_TAIL_BYTES).read_to_end(&mut bytes).is_err()
+    {
+        return String::new();
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(LOG_LINES)..].join("\n")
+}
+
 fn is_live(rec: &WorkerRecord, sessions_dir: &Path) -> bool {
     matches!(
         live_state(rec, sessions_dir),
@@ -233,6 +269,8 @@ impl WorkerCore {
             sessions_dir: cfg.sessions_dir,
             parent_env: cfg.parent_env,
             yolo: cfg.yolo,
+            resume_on_start: cfg.resume_on_start,
+            resumed: Mutex::new(Vec::new()),
             supervisor: cfg.supervisor,
             gate: Mutex::new(()),
             session: Mutex::new((String::new(), String::new())),
@@ -464,6 +502,143 @@ impl WorkerCore {
         ToolOutput::ok(format!("stopped worker {name}"))
     }
 
+    /// `send {name, text}`: publish `text` to the inbox of the worker's session. The session id is
+    /// the one in the registry record, never a value from the model. Acceptance means the file was
+    /// published; the child takes it up when its headless goal run watches the inbox.
+    pub fn send(&self, args: &Value) -> ToolOutput {
+        let name = str_arg(args, "name").unwrap_or("");
+        let text = str_arg(args, "text").unwrap_or("");
+        if text.trim().is_empty() {
+            return ToolOutput::error("worker: send needs text");
+        }
+        let (parent, _) = self.session();
+        if parent.is_empty() {
+            return ToolOutput::error("worker: the session id is not known yet");
+        }
+        let records = match registry::load(&self.agent_dir, &parent) {
+            Ok(records) => records,
+            Err(e) => return ToolOutput::error(format!("worker: {e}")),
+        };
+        let Some(rec) = records.iter().find(|r| r.name == name) else {
+            return ToolOutput::error(format!("worker: no worker named {name:?}"));
+        };
+        if let Err(e) = oxa_session::send_inbox(&self.agent_dir, &rec.session_id, text) {
+            return ToolOutput::error(format!("worker: cannot deliver to {name}: {e}"));
+        }
+        ToolOutput::ok(format!(
+            "delivered to worker {name}: file accepted in the inbox of session {}; worker phase: {}",
+            rec.session_id,
+            label(&live_state(rec, &self.sessions_dir))
+        ))
+    }
+
+    /// The wait probe for `worker {name}`: `Ok(None)` while the worker runs, `Ok(Some(text))` when
+    /// it finished or its process is gone, with the outcome and the last 20 log lines.
+    pub fn probe(&self, args: &Value) -> Result<Option<String>, String> {
+        let name = str_arg(args, "name").unwrap_or("");
+        let (parent, _) = self.session();
+        if parent.is_empty() {
+            return Err("worker: the session id is not known yet".to_string());
+        }
+        let records = registry::load(&self.agent_dir, &parent).map_err(|e| format!("worker: {e}"))?;
+        let rec = records
+            .iter()
+            .find(|r| r.name == name)
+            .ok_or_else(|| format!("worker: no worker named {name:?}"))?;
+        let state = live_state(rec, &self.sessions_dir);
+        let outcome = match &state {
+            WorkerState::Finished(outcome) => format!("finished, outcome {outcome}"),
+            WorkerState::Dead => "process exited without a finished outcome".to_string(),
+            WorkerState::Stopped => "stopped".to_string(),
+            _ => return Ok(None),
+        };
+        Ok(Some(format!(
+            "worker {name}: {outcome}\nlast {LOG_LINES} log lines:\n{}",
+            log_tail(&rec.log_file)
+        )))
+    }
+
+    /// Relaunch each dead, unfinished worker of the parent session (once per session id in this
+    /// process): same launch path as `start` (env wrapper, worktree cwd, supervisor), argv from
+    /// `resume::resume_argv`. Returns one notice per worker.
+    pub fn resume(&self) -> Vec<String> {
+        if !self.resume_on_start {
+            return Vec::new();
+        }
+        let _gate = lock(&self.gate);
+        let (parent, _) = self.session();
+        if parent.is_empty() {
+            return Vec::new();
+        }
+        {
+            let mut seen = lock(&self.resumed);
+            if seen.contains(&parent) {
+                return Vec::new();
+            }
+            seen.push(parent.clone());
+        }
+        let mut records = match registry::load(&self.agent_dir, &parent) {
+            Ok(records) => records,
+            Err(e) => return vec![format!("worker: cannot resume workers: {e}")],
+        };
+        let autonomy = self.yolo.level();
+        let env = child_env(&self.parent_env);
+        let mut live = records.iter().filter(|r| is_live(r, &self.sessions_dir)).count();
+        let mut notices = Vec::new();
+        let mut changed = false;
+        for rec in records.iter_mut() {
+            if !resume::due(&live_state(rec, &self.sessions_dir)) {
+                continue;
+            }
+            if live >= self.max {
+                notices.push(format!(
+                    "worker {}: not resumed, {live} live workers already (oxa.workers.max)",
+                    rec.name
+                ));
+                continue;
+            }
+            let (argv, notice) = match resume::resume_argv(rec, autonomy) {
+                Ok(v) => v,
+                Err(e) => {
+                    notices.push(format!("worker {}: not resumed: {e}", rec.name));
+                    continue;
+                }
+            };
+            if !rec.worktree.is_dir() {
+                notices.push(format!(
+                    "worker {}: not resumed, worktree {} is gone",
+                    rec.name,
+                    rec.worktree.display()
+                ));
+                continue;
+            }
+            let mut command = env_wrapper(&rec.worktree, &self.parent_env, &env);
+            command.push(self.oxa_bin.to_string_lossy().into_owned());
+            command.extend(argv);
+            let refs: Vec<&str> = command.iter().map(String::as_str).collect();
+            match self.supervisor.spawn(&refs, &rec.log_file) {
+                Ok(pgid) => {
+                    rec.pid = pgid;
+                    rec.pgid = pgid;
+                    changed = true;
+                    live += 1;
+                    notices.push(format!(
+                        "worker {}: relaunched with --continue={}",
+                        rec.name, rec.session_id
+                    ));
+                    notices.extend(notice);
+                }
+                Err(e) => notices.push(format!("worker {}: cannot relaunch: {e}", rec.name)),
+            }
+        }
+        if changed {
+            if let Err(e) = registry::save(&self.agent_dir, &parent, &records) {
+                notices.push(format!("worker: relaunched workers were not recorded: {e}"));
+            }
+        }
+        notices
+    }
+
     /// The `workers` prompt section: one line per live worker of this session.
     fn prompt_lines(&self) -> Vec<(String, String)> {
         let (parent, _) = self.session();
@@ -517,7 +692,8 @@ impl Tool for WorkerTool {
             Some("start") => self.core.start(args, cx.cwd, cx.mode, self.core.yolo.level()),
             Some("list") => self.core.list(),
             Some("stop") => self.core.stop(args),
-            _ => ToolOutput::error("worker: action must be start, list or stop"),
+            Some("send") => self.core.send(args),
+            _ => ToolOutput::error("worker: action must be start, list, stop or send"),
         }
     }
 
@@ -552,11 +728,25 @@ impl WorkerHooks {
 }
 
 impl Hooks for WorkerHooks {
-    fn fire(&self, p: HookPoint, _payload: &Value, _ui: &mut dyn Ui) -> HookReply {
+    fn fire(&self, p: HookPoint, payload: &Value, ui: &mut dyn Ui) -> HookReply {
         if matches!(p, HookPoint::SessionStart | HookPoint::ModelSelect) {
             self.core.learn();
         }
+        // A session that is opened (a new process or `/resume`) takes its workers back up.
+        if p == HookPoint::SessionStart
+            && matches!(
+                payload.get("reason").and_then(Value::as_str),
+                Some("startup" | "resume")
+            )
+        {
+            for notice in self.core.resume() {
+                ui.notify(&notice, Level::Info);
+            }
+        }
         HookReply::Continue
+    }
+    fn poll_event(&self, kind: &str, args: &Value) -> Option<Result<Option<String>, String>> {
+        (kind == TOOL_NAME).then(|| self.core.probe(args))
     }
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         vec![self.tool.clone()]
@@ -649,6 +839,7 @@ mod tests {
             sessions_dir: agent.join("sessions"),
             parent_env: Vec::new(),
             yolo: YoloSwitch::new(Autonomy::Standard),
+            resume_on_start: true,
         })
     }
 
@@ -699,6 +890,126 @@ mod tests {
         assert!(second.is_error);
         assert!(second.text.contains("already exists"), "{}", second.text);
         assert_eq!(registry::load(&agent, "parent-1").unwrap().len(), 1);
+        let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn start_alpha(hooks: &WorkerHooks, repo: &Path) {
+        let out = hooks.core.start(
+            &json!({"action": "start", "name": "alpha", "goal": "g"}),
+            repo,
+            Mode::Workspace,
+            Autonomy::Standard,
+        );
+        assert!(!out.is_error, "{}", out.text);
+    }
+
+    #[test]
+    fn worker_send_lands_in_child_inbox_dir() {
+        let (root, repo, agent, fake) = fixture("send");
+        let hooks = hooks(&fake, &agent);
+        set_session(&hooks, "parent-1");
+        start_alpha(&hooks, &repo);
+        let rec = registry::load(&agent, "parent-1").unwrap().remove(0);
+        let out = hooks
+            .core
+            .send(&json!({"action": "send", "name": "alpha", "text": "please add tests"}));
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("file accepted"), "{}", out.text);
+        assert!(out.text.contains("worker phase"), "{}", out.text);
+        let inbox = agent.join("inbox").join(&rec.session_id);
+        let texts: Vec<String> = fs::read_dir(&inbox)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".msg"))
+            .map(|e| fs::read_to_string(e.path()).unwrap())
+            .collect();
+        assert_eq!(texts, vec!["please add tests".to_string()]);
+        // An unknown worker and empty text are refused; nothing else lands anywhere.
+        assert!(hooks.core.send(&json!({"name": "nope", "text": "x"})).is_error);
+        assert!(hooks.core.send(&json!({"name": "alpha", "text": " "})).is_error);
+        let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn worker_probe_reports_finished_outcome() {
+        let (root, repo, agent, fake) = fixture("probe");
+        let hooks = hooks(&fake, &agent);
+        set_session(&hooks, "parent-1");
+        start_alpha(&hooks, &repo);
+        let rec = registry::load(&agent, "parent-1").unwrap().remove(0);
+        let args = json!({"kind": "worker", "name": "alpha"});
+        // Running: still pending.
+        assert_eq!(hooks.poll_event("worker", &args), Some(Ok(None)));
+        // Another kind is not ours.
+        assert_eq!(hooks.poll_event("pr", &args), None);
+        // The worker reports its outcome; the log has more than 20 lines.
+        let status = json!({"session_id": rec.session_id, "pid": rec.pid, "phase": "finished",
+            "outcome": {"type": "oxa_result", "outcome": "done", "error_class": null, "exit_code": 0}});
+        fs::create_dir_all(rec.status_file.parent().unwrap()).unwrap();
+        fs::write(&rec.status_file, status.to_string()).unwrap();
+        let log: Vec<String> = (1..=25).map(|n| format!("line {n}")).collect();
+        fs::write(&rec.log_file, log.join("\n")).unwrap();
+        let text = hooks.poll_event("worker", &args).unwrap().unwrap().expect("done");
+        assert!(text.contains("outcome done"), "{text}");
+        assert!(text.contains("line 25") && text.contains("line 6"), "{text}");
+        assert!(!text.contains("line 5\n") && !text.ends_with("line 5"), "{text}");
+        // An unknown worker is a probe failure.
+        assert!(hooks
+            .poll_event("worker", &json!({"name": "nope"}))
+            .unwrap()
+            .is_err());
+        let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reopen_relaunches_unfinished_worker_with_continue() {
+        let (root, repo, agent, _fake) = fixture("resume");
+        // A fake oxa that records its argv next to itself, then sleeps.
+        let fake = root.join("argv-oxa");
+        fs::write(
+            &fake,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/argv.txt\"\nsleep 30\n",
+        )
+        .unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let hooks = hooks(&fake, &agent);
+        set_session(&hooks, "parent-1");
+        start_alpha(&hooks, &repo);
+        let before = registry::load(&agent, "parent-1").unwrap().remove(0);
+        // The parent goes away: the worker is killed but not marked stopped.
+        hooks.core.supervisor.stop(before.pgid).unwrap();
+        assert!(!registry::load(&agent, "parent-1").unwrap()[0].stopped);
+        let argv_file = root.join("argv.txt");
+        let _ = fs::remove_file(&argv_file);
+        // The parent opens again.
+        let notices = hooks.core.resume();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(
+            notices[0].contains("alpha") && notices[0].contains("--continue="),
+            "{notices:?}"
+        );
+        let mut argv = String::new();
+        for _ in 0..100 {
+            argv = fs::read_to_string(&argv_file).unwrap_or_default();
+            if argv.contains("--continue=") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            argv.lines()
+                .any(|l| l == format!("--continue={}", before.session_id)),
+            "{argv}"
+        );
+        assert!(!argv.lines().any(|l| l == "--goal"), "{argv}");
+        let after = registry::load(&agent, "parent-1").unwrap().remove(0);
+        assert_ne!(after.pid, before.pid);
+        // A second open in the same process does not launch it again, and a stopped worker is
+        // never relaunched.
+        assert!(hooks.core.resume().is_empty());
         let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
         let _ = fs::remove_dir_all(&root);
     }

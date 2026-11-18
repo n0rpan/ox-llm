@@ -268,6 +268,7 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
                             sessions_dir,
                             parent_env: i.env.pairs().to_vec(),
                             yolo: i.yolo.clone(),
+                            resume_on_start: i.settings.bool(crate::workers::resume::SETTING_RESUME, true),
                         }));
                         sets.hooks.push(workers.clone());
                         sets.workers = Some(workers);

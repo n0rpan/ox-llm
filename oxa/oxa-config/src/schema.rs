@@ -241,6 +241,8 @@ const SCHEMA: &[KeyDef] = &[
     // K5a: the `worker` tool (never in a worker child) and the most live workers a session runs.
     key("oxa.workers.enabled", Kind::Bool, "true"),
     key("oxa.workers.max", Kind::Number, "4"),
+    // K5b: relaunch the unfinished, dead workers of a session when it is opened again.
+    key("oxa.workers.resumeOnStart", Kind::Bool, "true"),
     // K4: seconds a worker gets after SIGINT before its process group gets SIGTERM.
     key("oxa.workers.stopGraceSeconds", Kind::Number, "10"),
     key("packages", Kind::Any, "[]"),
