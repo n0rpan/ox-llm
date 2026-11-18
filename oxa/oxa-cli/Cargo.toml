@@ -45,14 +45,15 @@ oxa-interactive.workspace = true
 oxa-rpc.workspace = true
 oxa-export.workspace = true
 serde_json.workspace = true
+quick-xml = "0.42"
 regex.workspace = true
 sha2.workspace = true
+zip = { version = "9.6.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 signal-hook.workspace = true
 pulldown-cmark = { version = "0.13.6", default-features = false }
 
 [dev-dependencies]
 oxa-fake.workspace = true
-zip = { version = "9.6.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 oxa-cli = { path = ".", features = ["managed-steering"] }

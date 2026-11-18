@@ -1119,7 +1119,7 @@ exit 94
             row["verified_test_reports"],
             json!([{
                 "failed_check_runs":[11,12],"workflow_run":61,"run_attempt":1,
-                "archives":[{"id":71,"sha256":digest}]
+                "archives":[{"id":71,"sha256":digest}],"failed_tests":["example::failed"]
             }])
         );
     }
@@ -1183,7 +1183,7 @@ exit 94
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    let text = fs::read_to_string(log).unwrap();
+    let text = fs::read_to_string(&log).unwrap();
     let sample: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
     assert_eq!(
         sample["queue_rejections"][0]["verified_test_reports"][0]["failed_check_runs"],
@@ -1198,7 +1198,7 @@ exit 94
         "read\nread\nread\n"
     );
 
-    let mut wrong_suite = valid_queue;
+    let mut wrong_suite = valid_queue.clone();
     let checks = &mut wrong_suite["data"]["repository"]["p43"]["timelineItems"]["nodes"][0]["beforeCommit"]
         ["statusCheckRollup"]["contexts"]["nodes"];
     for check in checks.as_array_mut().unwrap() {
@@ -1226,6 +1226,14 @@ exit 94
         fs::read_to_string(env.work().join("report-reads")).unwrap(),
         "read\nread\nread\nread\n"
     );
+    let invalid_archive = vec![0; bytes.len()];
+    let invalid_digest = format!("{:x}", Sha256::digest(&invalid_archive));
+    fs::write(env.work().join("report.zip"), invalid_archive).unwrap();
+    write("report-artifacts.json", listing(&invalid_digest));
+    let result = invoke(&env, &args);
+    assert_eq!(result.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("invalid CI report archive"));
+    assert_eq!(fs::read_to_string(log_for(&env, "example/repo")).unwrap(), text);
     assert!(!env.work().join("unexpected-github-command").exists());
 }
 
