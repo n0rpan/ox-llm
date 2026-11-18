@@ -143,10 +143,10 @@ impl AdmissionAcknowledgment {
 /// hold the owner journal lock, reserve the intent, and revalidate current
 /// Reader evidence before calling. An ambiguous outcome is never a retry signal.
 pub struct LandingPublisher<'a> {
-    repo: &'a Path,
-    policy: &'a RunPolicy,
-    gh_binary: &'a Path,
-    journal: &'a File,
+    pub(super) repo: &'a Path,
+    pub(super) policy: &'a RunPolicy,
+    pub(super) gh_binary: &'a Path,
+    pub(super) journal: &'a File,
 }
 
 impl<'a> LandingPublisher<'a> {
@@ -173,7 +173,7 @@ impl<'a> LandingPublisher<'a> {
         data(self.call(&args)?)
     }
 
-    fn host(&self, intent: &NoticeIntent) -> Result<String> {
+    pub(super) fn location(&self, repository_id: &str, publisher_id: &str) -> Result<super::Repository> {
         if self.policy.offline {
             return Err("publishing is unavailable in offline mode".into());
         }
@@ -186,22 +186,22 @@ impl<'a> LandingPublisher<'a> {
             return Err("publishing requires one origin push URL".into());
         }
         let origin = self.call(&["repo", "view", &remote, "--json", "id,nameWithOwner,url"])?;
-        if origin["id"].as_str() != Some(&intent.rejection.repository_id) {
+        if origin["id"].as_str() != Some(repository_id) {
             return Err("landing reservation does not match publication origin".into());
         }
-        let host = repository(&origin)?.host;
-        let viewer = self.graphql(&host, "query{viewer{id}}", &[])?;
-        if viewer["viewer"]["id"].as_str() != Some(&intent.publisher_id) {
+        let location = repository(&origin)?;
+        let viewer = self.graphql(&location.host, "query{viewer{id}}", &[])?;
+        if viewer["viewer"]["id"].as_str() != Some(publisher_id) {
             return Err("landing reservation does not match the publisher identity".into());
         }
-        Ok(host)
+        Ok(location)
     }
 
     pub fn notice(&self, intent: &NoticeIntent, failed_tests: &[&str]) -> Result<DeliveryReceipt> {
         let body = intent.body(failed_tests)?;
-        let host = self.host(intent)?;
+        let location = self.location(&intent.rejection.repository_id, &intent.publisher_id)?;
         let result = self.graphql(
-            &host,
+            &location.host,
             ADD_COMMENT,
             &[
                 &format!("pr={}", intent.rejection.pull_request_id),
@@ -225,9 +225,9 @@ impl<'a> LandingPublisher<'a> {
         {
             return Err("invalid landing retry reservation".into());
         }
-        let host = self.host(&intent.delivery.intent)?;
+        let location = self.location(&rejection.repository_id, &intent.delivery.intent.publisher_id)?;
         let result = self.graphql(
-            &host,
+            &location.host,
             ENQUEUE,
             &[
                 &format!("pr={}", rejection.pull_request_id),
@@ -341,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn notice_uses_the_canonical_transport_on_a_mock_executable() {
+    fn notice_and_rerun_use_the_canonical_transport_on_a_mock_executable() {
         use std::{fs, os::unix::fs::PermissionsExt};
         let temp = crate::test_dir::PrivateDir::new("landing-transport");
         let git = temp.path().join("git");
@@ -364,6 +364,8 @@ case "$*" in
         "headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
         "author":{"__typename":"User","id":"U_publisher"},"createdAt":"1970-01-01T01:00:00Z"}}}}}'
     ;;
+  'api --hostname example.invalid --include --method POST repos/sample/repo/actions/jobs/9/rerun')
+    printf 'HTTP/2 201\r\ncontent-length: 0\r\n\r\n' ;;
   *) exit 1 ;;
 esac
 "#).unwrap();
@@ -382,6 +384,12 @@ esac
         let publisher = LandingPublisher::new(temp.path(), &policy, &gh, &log);
         let receipt = publisher.notice(&test_intent(), &["synthetic::test"]).unwrap();
         assert_eq!(receipt.comment_id, "IC_comment");
+        let intent = super::rerun::test_intent();
+        let target = publisher.rerun_target(&intent, "U_publisher").unwrap();
+        assert_eq!(
+            publisher.rerun_reserved(target, intent.clone()).unwrap().intent,
+            intent
+        );
     }
 
     #[test]

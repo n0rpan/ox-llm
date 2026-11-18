@@ -22,6 +22,7 @@ struct PriorSample {
     queue_rejections: Vec<PriorRejection>,
     landing_main: Option<String>,
     landing_publication: Option<Publication>,
+    rerun_publication: Option<super::rerun::Record>,
 }
 
 #[derive(Deserialize)]
@@ -77,6 +78,7 @@ impl AdmissionEvidence {
 #[derive(Default)]
 pub(super) struct Admissions {
     pub(super) publications: Publications,
+    pub(super) reruns: super::rerun::History,
     queued: BTreeMap<u64, Admission>,
     matched: BTreeMap<u64, AdmissionEvidence>,
 }
@@ -108,6 +110,9 @@ impl Admissions {
             }
             if let Some(publication) = prior.landing_publication {
                 history.publications.observe(publication)?;
+            }
+            if let Some(record) = prior.rerun_publication {
+                history.reruns.observe(record)?;
             }
             if prior.landing.is_empty() {
                 continue;

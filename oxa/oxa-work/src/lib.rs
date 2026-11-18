@@ -1619,3 +1619,22 @@ mod comment_packet_tests {
         assert!(thread.starts_with("--- comment by a ---\nx"));
     }
 }
+
+/// Decode the response captured from GitHub CLI with headers included.
+pub fn github_http_response(text: &str) -> std::result::Result<(u16, &str), &'static str> {
+    let (headers, body) = text
+        .split_once("\r\n\r\n")
+        .or_else(|| text.split_once("\n\n"))
+        .ok_or("GitHub command failed without an HTTP response")?;
+    let status = headers
+        .lines()
+        .next()
+        .filter(|line| line.starts_with("HTTP/"))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|value| (100..600).contains(value))
+        .ok_or("invalid GitHub HTTP status")?;
+    Ok((status, body))
+}
+
+pub use publish::{RerunAcknowledgment, RerunIntent, RerunKey};

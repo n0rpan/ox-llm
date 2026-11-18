@@ -2,10 +2,12 @@
 use super::{checked, state, tree, CheckpointObserver, LockedTask, Outcome, Record, Result, RunPolicy, Task};
 use state::Step;
 mod landing;
+pub(crate) mod rerun;
 pub use landing::{
     Admission, AdmissionAcknowledgment, AdmissionReceipt, DeliveryReceipt, LandingPublisher, NoticeIntent,
     RejectedLanding, RetryIntent,
 };
+pub use rerun::{RerunAcknowledgment, RerunIntent, RerunKey};
 use std::os::{fd::AsRawFd, unix::process::CommandExt};
 use std::{
     fs::File,
@@ -44,6 +46,16 @@ fn isolate_github_environment(command: &mut Command) {
 }
 
 fn gh(binary: &Path, policy: &RunPolicy, repo: &Path, lock: &File, args: &[&str]) -> Result<String> {
+    Ok(github_capture(binary, policy, repo, lock, args)?.trim().into())
+}
+
+fn github_capture(
+    binary: &Path,
+    policy: &RunPolicy,
+    repo: &Path,
+    lock: &File,
+    args: &[&str],
+) -> Result<String> {
     let mut command = Command::new(binary);
     super::isolate_git_environment(&mut command);
     isolate_github_environment(&mut command);
@@ -58,7 +70,7 @@ fn gh(binary: &Path, policy: &RunPolicy, repo: &Path, lock: &File, args: &[&str]
         Stdio::from(lock.try_clone().map_err(|e| e.to_string())?),
         super::COMMAND_DEADLINE,
     ) {
-        Some((0, text)) => Ok(text.trim().into()),
+        Some((0, text)) => Ok(text),
         _ => Err("GitHub publication request failed".into()),
     }
 }

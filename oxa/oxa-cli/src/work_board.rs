@@ -234,18 +234,7 @@ impl<'a> Reader<'a> {
         ))?;
         // Charge captured bytes, including headers and non-2xx bodies, before interpreting them.
         self.charge_capture(text.len())?;
-        let (headers, body) = text
-            .split_once("\r\n\r\n")
-            .or_else(|| text.split_once("\n\n"))
-            .ok_or(invalid("GitHub command failed without an HTTP response"))?;
-        let status = headers
-            .lines()
-            .next()
-            .filter(|line| line.starts_with("HTTP/"))
-            .and_then(|line| line.split_whitespace().nth(1))
-            .and_then(|value| value.parse::<u16>().ok())
-            .filter(|value| (100..600).contains(value))
-            .ok_or(invalid("invalid GitHub HTTP status"))?;
+        let (status, body) = oxa_work::github_http_response(&text).map_err(invalid)?;
         if !(200..300).contains(&status) {
             return Err(QueryError::Http(status));
         }

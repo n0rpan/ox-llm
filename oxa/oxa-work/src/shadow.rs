@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 mod landing_history;
 pub mod publication;
+pub mod rerun;
 use landing_history::{AdmissionEvidence, Admissions};
 
 pub const INTERVAL: Duration = Duration::from_secs(300);
@@ -52,6 +53,8 @@ struct Sample<'a> {
     landing_main: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     landing_publication: Option<&'a publication::Publication>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rerun_publication: Option<&'a rerun::Record>,
 }
 
 pub(crate) const OWNER_FILE_FLAGS: libc::c_int = libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
@@ -62,15 +65,19 @@ pub(crate) fn regular_file_owned_by(metadata: &Metadata, owner: u32) -> bool {
 
 /// Refuse links, shared files and concurrent writers before consulting GitHub.
 pub fn open_log(path: &Path) -> Result<File> {
-    // SAFETY: geteuid has no preconditions and returns this process's effective owner.
-    open_log_for_owner(path, unsafe { libc::geteuid() })
+    open_log_with_create(path, true)
 }
 
-fn open_log_for_owner(path: &Path, owner: u32) -> Result<File> {
+fn open_log_with_create(path: &Path, create: bool) -> Result<File> {
+    // SAFETY: geteuid has no preconditions and returns this process's effective owner.
+    open_log_for_owner(path, unsafe { libc::geteuid() }, create)
+}
+
+fn open_log_for_owner(path: &Path, owner: u32, create: bool) -> Result<File> {
     let mut file = OpenOptions::new()
         .read(true)
         .append(true)
-        .create(true)
+        .create(create)
         .mode(0o600)
         .custom_flags(OWNER_FILE_FLAGS)
         .open(path)
@@ -164,7 +171,7 @@ mod tests {
         let path = path("owner");
         drop(open_log(&path).unwrap());
         let other = std::fs::metadata(&path).unwrap().uid().wrapping_add(1);
-        let refused = open_log_for_owner(&path, other).is_err();
+        let refused = open_log_for_owner(&path, other, true).is_err();
         std::fs::remove_file(path).unwrap();
         assert!(refused);
     }
@@ -392,6 +399,7 @@ pub fn run_with_landing(
             landing: &landing,
             landing_main: landing_main.as_deref(),
             landing_publication: None,
+            rerun_publication: None,
         };
         append(log, &sample)?;
         if let Some(history) = &mut history {
@@ -499,6 +507,30 @@ fn plan_matched_rejections(
             });
         }
     }
+}
+
+fn append_publication(
+    log: &mut File,
+    board: &Board,
+    landing: Option<&publication::Publication>,
+    rerun: Option<&rerun::Record>,
+) -> Result<()> {
+    append(
+        log,
+        &Sample {
+            schema_version: 1,
+            observed_at: board.observed_at,
+            board,
+            would_take: Vec::new(),
+            reviews: &BTreeMap::new(),
+            queue_rejections: &[],
+            matched_queue_admissions: &BTreeMap::new(),
+            landing: &BTreeMap::new(),
+            landing_main: None,
+            landing_publication: landing,
+            rerun_publication: rerun,
+        },
+    )
 }
 
 fn append(log: &mut File, sample: &Sample<'_>) -> Result<()> {

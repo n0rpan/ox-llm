@@ -1,5 +1,5 @@
 //! Opt-in landing dispatch through the canonical publisher under the owner journal lock.
-use super::{append, open_log, Admissions, Board, File, LandingSample, Sample};
+use super::{append_publication, open_log, Admissions, Board, File, LandingSample};
 use crate::board::{landing, queue::RejectionEvidence, Action};
 use crate::{
     Admission, AdmissionAcknowledgment, AdmissionReceipt, DeliveryReceipt, LandingPublisher, NoticeIntent,
@@ -151,21 +151,7 @@ impl Publications {
 }
 
 fn record(log: &mut File, board: &Board, publication: &Publication) -> Result<()> {
-    append(
-        log,
-        &Sample {
-            schema_version: 1,
-            observed_at: board.observed_at,
-            board,
-            would_take: Vec::new(),
-            reviews: &BTreeMap::new(),
-            queue_rejections: &[],
-            matched_queue_admissions: &BTreeMap::new(),
-            landing: &BTreeMap::new(),
-            landing_main: None,
-            landing_publication: Some(publication),
-        },
-    )
+    append_publication(log, board, Some(publication), None)
 }
 
 /// Apply one fresh Reader snapshot under the existing owner-journal lock.
