@@ -31,7 +31,12 @@ case "$1 $2" in
     printf '{"nameWithOwner":"example/project","url":"https://%s/example/project"}' "$host"
     if test -f "$HOME/oversized-repo-response"; then head -c 1048576 /dev/zero | tr '\000' ' '; fi ;;
   'pr list') if test -f "$HOME/pr-state.json"; then printf '['; cat "$HOME/pr-state.json"; printf ']'; else printf '[]'; fi ;;
-  'api graphql') if test -f "$HOME/queued"; then printf '%s' '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":{"id":"queue"}}}}}'; else printf '%s' '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":null}}}}'; fi ;;
+  'api graphql')
+    case "$(cat "$HOME/queued" 2>/dev/null)" in
+      unmergeable) printf '%s' '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":{"id":"queue","state":"UNMERGEABLE"}}}}}' ;;
+      queued) printf '%s' '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":{"id":"queue","state":"AWAITING_CHECKS"}}}}}' ;;
+      *) printf '%s' '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":null}}}}' ;;
+    esac ;;
   'pr create')
     draft=false
     body_next=false
@@ -438,24 +443,31 @@ fn queued_pr_is_never_pushed_and_publication_retries_without_agent_replay() {
     let env = TestEnv::new();
     setup(&env, "[]");
     let path = configure(&env);
-    run_args(
+    let published = run_args(
         &env,
         edits(),
         &["work", "../tasks.json", "--publish"],
         Some(path.clone()),
     );
-    env.write("home/queued", "yes");
-    let blocked = run_args(
-        &env,
-        vec![],
-        &["work", "../tasks.json", "--publish"],
-        Some(path.clone()),
-    );
-    assert_eq!(blocked["outcome"], "blocked", "{blocked}");
-    assert!(
-        blocked["detail"].as_str().unwrap().contains("merge queue"),
-        "{blocked}"
-    );
+    assert!(published["head_sha"].is_string(), "{published}");
+    for (state, message) in [
+        ("queued", "PR is in the merge queue."),
+        ("unmergeable", "PR is in the merge queue and cannot merge."),
+    ] {
+        env.write("home/queued", state);
+        let blocked = run_args(
+            &env,
+            vec![],
+            &["work", "../tasks.json", "--publish"],
+            Some(path.clone()),
+        );
+        assert_eq!(blocked["outcome"], "blocked", "{blocked}");
+        assert_eq!(blocked["head_sha"], published["head_sha"], "{blocked}");
+        assert_eq!(
+            blocked["detail"],
+            format!("{message} Preserve this branch and retry publication after queue release.")
+        );
+    }
     assert_eq!(
         fs::read_to_string(env.home().join("push-calls"))
             .unwrap()
@@ -466,6 +478,7 @@ fn queued_pr_is_never_pushed_and_publication_retries_without_agent_replay() {
     fs::remove_file(env.home().join("queued")).unwrap();
     let retried = run_args(&env, vec![], &["work", "../tasks.json", "--publish"], Some(path));
     assert_eq!(retried["outcome"], "done", "{retried}");
+    assert_eq!(retried["head_sha"], published["head_sha"], "{retried}");
 }
 #[test]
 fn offline_publication_never_starts_gh_or_push() {
