@@ -1164,7 +1164,11 @@ fn publication_never_pushes_tags_implicitly() {
     let repo = env.work().join("project");
     let token = format!("ghp_{}", "x".repeat(36));
     git(&env, &repo, &["config", "push.followTags", "true"]);
-    git(&env, &repo, &["tag", "-a", "synthetic-tag", "-m", &format!("Note {token}")]);
+    git(
+        &env,
+        &repo,
+        &["tag", "-a", "synthetic-tag", "-m", &format!("Note {token}")],
+    );
     let record = run_args(
         &env,
         edits(),
