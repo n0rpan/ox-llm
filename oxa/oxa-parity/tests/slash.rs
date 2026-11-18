@@ -258,7 +258,6 @@ fn base64(data: &[u8]) -> String {
     out
 }
 
-/// The footer's second-to-last row: model, thinking and mode (`fake-model • medium ...`).
 /// The footer's last row, above any extension status row.
 fn footer_last(s: &Screen) -> String {
     s.row(status_row::last_footer_row(s))

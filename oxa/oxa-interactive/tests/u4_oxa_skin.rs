@@ -793,7 +793,7 @@ fn hud_counts_auto_approved_actions_and_reduced_motion_stills_the_flames() {
         thinking: Some(oxa_proto::ThinkingLevel::Off),
         ..StatusModel::default()
     };
-    // #1512 S3 made the guard segment part of the line: the full line needs 160 columns.
+    // #1512 S3: wide enough for the guard segment as well as the thinking label.
     let claude_ascii = oxa_hud(&claude, 160, &oxa_tui::Theme::plain(), Skin::OxaAscii);
     assert!(claude_ascii.is_ascii(), "{claude_ascii:?}");
     assert!(claude_ascii.contains("adaptive - low"), "{claude_ascii:?}");

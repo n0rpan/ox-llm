@@ -2566,7 +2566,12 @@ fn key_003() {
     // The cursor is observed by typing a marker `|` where it stands.
     for profile in [TermProfile::xterm(), TermProfile::kitty()] {
         let name = profile.name;
-        let t = Setup::new().profile(profile).replies("first reply", 1).start();
+        // #1512 S3: 25 rows: the 20-row editor, its rules, the footer and the status row.
+        let t = Setup::new()
+            .profile(profile)
+            .size(25, 80)
+            .replies("first reply", 1)
+            .start();
         let base = "one two three";
         let cases: &[(&[&str], &str)] = &[
             (&["left"], "one two thre|e"),
@@ -2646,8 +2651,8 @@ fn key_003() {
         t.key("down");
         t.wait_editor("");
     }
-    // Regular layout: plain pageUp / pageDown page the editor.
-    let t = Setup::new().regular().start();
+    // Regular layout: plain pageUp / pageDown page the editor (25 rows, as above).
+    let t = Setup::new().regular().size(25, 80).start();
     let long: String = (1..=40)
         .map(|i| format!("L{i:02}"))
         .collect::<Vec<_>>()

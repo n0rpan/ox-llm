@@ -341,3 +341,42 @@ fn no_os_sandbox_persistence_notice_is_none() {
     );
     assert_eq!(on.persistence_notice(), Some("scratch"));
 }
+
+/// #1512 S3: with the OS sandbox on, the exec hooks' sandbox keeps the inline (`run`) path
+/// wrapped too when yolo is switched on live; without it the hooks run with the user's rights.
+#[test]
+fn os_sandbox_on_inline_hooks_stay_sandboxed_under_yolo() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work()).unwrap();
+    let target = env.root().join("inline-hook-wrote-os-on.txt");
+    let switch = YoloSwitch::new(Autonomy::Standard);
+    let full = Arc::new(FullAccess::new(
+        Arc::new(NoSandbox),
+        switch.clone(),
+        "",
+        env.home(),
+        false,
+        false,
+    ));
+    let hooks = FullAccess::hook_sandbox(&full);
+    switch.set_level(Autonomy::Yolo);
+    let s = spec(&env, format!("echo x > '{}'", target.display()), true);
+    let r = hooks.run(&s, &CancelToken::new(), &mut |_| {});
+    assert_eq!(r.exit, None, "{}", String::from_utf8_lossy(&r.output));
+    assert!(
+        !target.exists(),
+        "an inline hook ran outside the wrapped sandbox under yolo"
+    );
+
+    let off = Arc::new(
+        FullAccess::new(Arc::new(NoSandbox), switch, "", env.home(), false, false).with_os_sandbox(false),
+    );
+    let hooks = FullAccess::hook_sandbox(&off);
+    let r = hooks.run(&s, &CancelToken::new(), &mut |_| {});
+    assert_eq!(r.exit, Some(0), "{}", String::from_utf8_lossy(&r.output));
+    assert!(
+        target.exists(),
+        "without the OS sandbox the hook runs with the user's rights"
+    );
+    let _ = std::fs::remove_file(&target);
+}

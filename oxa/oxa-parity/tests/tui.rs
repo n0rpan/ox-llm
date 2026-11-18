@@ -814,7 +814,7 @@ fn tui_005() {
         // The list ends above the footer rows (cwd and HUD); the extension status row below
         // them is already skipped by `last_footer_row`.
         let end = (status_row::last_footer_row(s) as usize).saturating_sub(1);
-        rows[bottom + 1..end].to_vec()
+        rows[bottom + 1..end.max(bottom + 1)].to_vec()
     };
     rig.pty.send_text("/");
     let s = rig
@@ -1509,7 +1509,14 @@ fn tui_026() {
     let before_mode = footer(&rig.screen()).1;
     rig.pty.send_key("alt+m");
     rig.pty
-        .wait_for_named("mode changed", |s| footer(s).1 != before_mode, WAIT)
+        .wait_for_named(
+            "mode changed",
+            |s| {
+                let current = footer(s).1;
+                current != before_mode && !current.split_whitespace().any(|word| word == "auto")
+            },
+            WAIT,
+        )
         .unwrap();
     // Prefill progress and speed come from the engine's comments and timings (the fake sends
     // neither for a chat request): the footer renders them from the status.
@@ -1583,4 +1590,40 @@ fn tui_027() {
             "timeout_ms",
         ],
     );
+}
+
+/// #1512 S3: the real TUI over a PTY tells the truth about the OS sandbox. A default
+/// (attended) start shows "no sandbox · dangerous commands ask"; `--sandbox` shows "sandbox"
+/// and never the "no sandbox" text.
+#[test]
+fn sandbox_guard_is_shown_in_the_real_tui() {
+    let rig = Rig::start(replies(1), RigOpts::default());
+    rig.pty
+        .wait_for_named(
+            "no-sandbox guard",
+            |s| {
+                s.rows()
+                    .iter()
+                    .any(|r| r.contains("no sandbox · dangerous commands ask"))
+            },
+            WAIT,
+        )
+        .unwrap();
+    drop(rig);
+    let rig = Rig::start(
+        replies(1),
+        RigOpts {
+            args: vec!["--sandbox".into()],
+            ..RigOpts::default()
+        },
+    );
+    let s = rig
+        .pty
+        .wait_for_named(
+            "sandbox guard",
+            |s| s.rows().iter().any(|r| r.trim() == "sandbox"),
+            WAIT,
+        )
+        .unwrap();
+    assert!(!s.rows().iter().any(|r| r.contains("no sandbox")), "{s:?}");
 }

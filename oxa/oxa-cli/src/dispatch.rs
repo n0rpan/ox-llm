@@ -1063,7 +1063,7 @@ fn prepare(
     // The owner's `oxa.sandbox.net = off` (or a runner that owns GitHub) holds for unsandboxed
     // commands too (#1512 S3).
     let net_off = env.get(oxa_work::RUNNER_GITHUB_ENV) == Some("1")
-        || !oxa_sandbox::sandbox_net_setting(settings.string(oxa_sandbox::SETTING_SANDBOX_NET).as_deref());
+        || crate::run_kind::sandbox_net_off(&settings, &user_settings);
     let bash_sandbox = Arc::new(
         oxa_sandbox::FullAccess::new(
             sandbox.clone(),
@@ -1075,9 +1075,9 @@ fn prepare(
         )
         .with_os_sandbox(os_sandbox),
     );
-    // Exec hooks go through the same switch: without the OS sandbox they run with the user's
-    // rights (#1512 S3); with it they stay in `sandbox` as before.
-    let hook_sandbox: Arc<dyn Sandbox> = bash_sandbox.clone();
+    // Exec hooks: without the OS sandbox they run with the user's rights (#1512 S3); with it
+    // they stay in `sandbox` as before, also when yolo is switched on later.
+    let hook_sandbox = oxa_sandbox::FullAccess::hook_sandbox(&bash_sandbox);
     let hook_inputs = HookInputs {
         args: a,
         dirs,
