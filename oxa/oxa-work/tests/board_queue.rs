@@ -553,7 +553,9 @@ esac
         enabled: true,
         publisher_id: "publisher-1".into(),
     };
-    let first = rejected(GROUP, "removal-1", "2026-01-01T00:00:01Z");
+    // The Reader saw the removal before dispatch, but GitHub reports both
+    // the removal and the resulting comment in the same UTC second.
+    let first = rejected(GROUP, "removal-1", "2026-01-01T00:00:05Z");
     for (at, main, review, expected_mutations) in [
         (START + 5, ORIGINAL_MAIN, LatestReviews::Clear, "notice\n"),
         (START + 59, ADVANCED_MAIN, LatestReviews::Unresolved, "notice\n"),
