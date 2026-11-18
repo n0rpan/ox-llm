@@ -37,25 +37,32 @@ impl NotificationTarget {
     fn read(row: &Value) -> Option<Self> {
         let author = &row["author"];
         let login = author["login"].as_str()?;
-        let account = match author["__typename"].as_str()? {
-            "User" => login,
-            "Bot" => login.strip_suffix("[bot]").unwrap_or(login),
+        let is_bot = match author["__typename"].as_str()? {
+            "User" => false,
+            "Bot" => true,
             _ => return None,
         };
-        if account.len() > 100
-            || !account.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
-            || !account
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
-        {
-            return None;
-        }
+        recipient_mention(login, is_bot)?;
         Some(Self {
             pull_request_id: node_id(&row["id"])?.to_owned(),
             author_id: node_id(&author["id"])?.to_owned(),
             login: login.to_owned(),
         })
     }
+}
+
+pub(crate) fn recipient_mention(login: &str, is_bot: bool) -> Option<&str> {
+    let account = if is_bot {
+        login.strip_suffix("[bot]").unwrap_or(login)
+    } else {
+        login
+    };
+    (account.len() <= 100
+        && account.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+        && account
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b)))
+    .then_some(account)
 }
 
 pub(crate) struct Removal<'a> {
@@ -187,7 +194,7 @@ fn node_id(value: &Value) -> Option<&str> {
     value.as_str().filter(|id| is_node_id(id))
 }
 
-pub(super) fn is_node_id(id: &str) -> bool {
+pub(crate) fn is_node_id(id: &str) -> bool {
     (1..=128).contains(&id.len())
         && id
             .bytes()
