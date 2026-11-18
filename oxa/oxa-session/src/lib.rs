@@ -24,7 +24,9 @@ mod inbox;
 mod lifecycle;
 mod lock;
 
-pub use inbox::{remove_inbox, send_inbox, valid_inbox_id, Inbox, INBOX_MESSAGE_BYTES};
+pub use inbox::{
+    remove_inbox, send_inbox, send_inbox_control, valid_inbox_id, Inbox, InboxItem, INBOX_MESSAGE_BYTES,
+};
 mod meta;
 mod ops;
 mod spill;
@@ -40,9 +42,9 @@ pub use meta::{search_sessions, sort_sessions, SessionSort};
 pub use ops::{clone_session, fork_file, fork_session, set_label, set_name};
 pub use spill::{inherited_spill_dirs, remove_session_preserving_spills, remove_spill_dir_unless_forked};
 pub use store::{
-    count_files, decode_entry, decode_header, encode_entry, encode_header, encode_visible_entry,
-    new_entry_id, purge_session_file, remove_all_spill, remove_spill_dir, session_dir_name,
-    session_files_under, FsStore, MemStore,
+    count_files, decode_entry, decode_header, encode_entry, encode_header, encode_visible_entry, iso_from_ms,
+    new_entry_id, parse_utc_seconds, purge_session_file, remove_all_spill, remove_spill_dir,
+    session_dir_name, session_files_under, FsStore, MemStore,
 };
 pub use transcript::{bash_text, RebaseLog, Transcript};
 pub use tree::Tree;

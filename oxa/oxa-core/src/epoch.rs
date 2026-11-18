@@ -32,13 +32,23 @@ fn gather(st: &SessionState) -> Inputs {
     let mut all: Vec<Arc<dyn Tool>> = st
         .all_tools
         .iter()
-        .filter(|t| t.spec().source == Source::Builtin)
+        .filter(|t| {
+            t.spec().source == Source::Builtin && !matches!(t.spec().name.as_str(), "goal_done" | "wait")
+        })
         .cloned()
         .collect();
     let mut extra: Vec<(String, String)> = Vec::new();
     for h in &st.hooks {
         all.extend(h.tools());
         extra.extend(h.prompt_sections());
+    }
+    if let Some(goal) = st.goal.as_ref().filter(|goal| goal.pursuing()) {
+        all.retain(|t| !matches!(t.spec().name.as_str(), "goal_done" | "wait"));
+        all.extend(goal.tools(st.shared.cancel_retry.clone()));
+        extra.push((
+            "goal".into(),
+            crate::prompt::goal_start(&goal.snapshot().objective),
+        ));
     }
     // The CLI choices survive an epoch; `defaultTools` is read from the settings as they are now.
     let sel = ToolSelection {
@@ -249,7 +259,11 @@ pub fn reload(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) 
         ..DiscoverOpts::default()
     };
     // Packages, extension and theme paths included (E10).
-    let resources = discover(&st.dirs, &st.cwd, &settings, &opts);
+    let resources = if st.hooks.iter().any(|hook| hook.owns_resources()) {
+        st.resources.clone()
+    } else {
+        discover(&st.dirs, &st.cwd, &settings, &opts)
+    };
     for d in &resources.diagnostics {
         sink.emit(&AgentEvent::Notice {
             level: d.level,

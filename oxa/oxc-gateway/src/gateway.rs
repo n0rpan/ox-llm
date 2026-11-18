@@ -147,6 +147,57 @@ impl Gateway {
         self.runtime.discovery()
     }
 
+    #[cfg(feature = "share")]
+    pub fn with_metered_guest_models(
+        mut self,
+        aliases: std::collections::BTreeSet<String>,
+    ) -> Result<Self, Error> {
+        self.runtime
+            .set_metered_guest_models(aliases)
+            .map_err(Error::Refused)?;
+        Ok(self)
+    }
+
+    #[cfg(feature = "share")]
+    pub fn metered_guest_models(&self) -> impl Iterator<Item = crate::catalog::ModelInfo<'_>> {
+        self.runtime.metered_guest_models()
+    }
+
+    #[cfg(feature = "share")]
+    pub(crate) async fn chat_authenticated_guest<F>(
+        &self,
+        request: &oxa_proto::ChatRequest<'_>,
+        guest: &crate::share::listener::Guest<'_>,
+        cancel: &Cancellation,
+        on: &mut F,
+    ) -> Result<Completed, Error>
+    where
+        F: FnMut(Event) -> Control + ?Sized,
+    {
+        if request.messages.iter().any(|message| {
+            !matches!(
+                message.role,
+                oxa_proto::Role::User | oxa_proto::Role::Assistant | oxa_proto::Role::System
+            ) || message.tool_call_id.is_some()
+                || !message.tool_calls.is_empty()
+                || message.reasoning.is_some()
+        }) {
+            return Err(Error::Refused(guest_history_refusal()));
+        }
+        let payload = payload(request).map_err(Error::Refused)?;
+        if !payload["tools"].as_array().is_some_and(Vec::is_empty) {
+            return Err(Error::Refused(guest_history_refusal()));
+        }
+        if cancel.is_cancelled() {
+            return Err(Error::Upstream(anthropic_client::Error::Cancelled));
+        }
+        let call = self
+            .runtime
+            .begin_authenticated_guest(&payload, guest)
+            .map_err(Error::Refused)?;
+        self.forward(call, &payload, None, cancel, on).await
+    }
+
     /// Admit, read the current key, reserve, forward, meter, and settle exactly
     /// once. Done is sent only after the private ledger writer has succeeded.
     pub async fn chat<F>(
@@ -200,7 +251,7 @@ impl Gateway {
         if cancel.is_cancelled() {
             return Err(Error::Upstream(anthropic_client::Error::Cancelled));
         }
-        let mut call = self.runtime.begin(payload, context).map_err(Error::Refused)?;
+        let call = self.runtime.begin(payload, context).map_err(Error::Refused)?;
         if let Some(request) = history {
             if let Err(error) = call.verify_history(request) {
                 call.finish(Outcome::Complete, error.status, Some(error.code))
@@ -208,6 +259,20 @@ impl Gateway {
                 return Err(Error::Refused(error));
             }
         }
+        self.forward(call, payload, history, cancel, on).await
+    }
+
+    async fn forward<F>(
+        &self,
+        mut call: Call<'_>,
+        payload: &Value,
+        history: Option<&oxa_proto::ChatRequest<'_>>,
+        cancel: &Cancellation,
+        on: &mut F,
+    ) -> Result<Completed, Error>
+    where
+        F: FnMut(Event) -> Control + ?Sized,
+    {
         let model = call.model();
         #[cfg(feature = "upstream-openai")]
         if matches!(model.info().provider, Provider::OpenAi | Provider::ChatGpt) {
@@ -471,6 +536,16 @@ impl Gateway {
 
 /// Provider conversion consumes the same borrowed request the core passed to
 /// Engine. No request body or stream chunk is encoded/reparsed across that boundary.
+#[cfg(feature = "share")]
+fn guest_history_refusal() -> Refusal {
+    Refusal {
+        status: 403,
+        code: "guest_chat_only",
+        param: "messages",
+        message: "Guest cloud sharing supports text chat only.",
+    }
+}
+
 fn payload(request: &oxa_proto::ChatRequest<'_>) -> Result<Value, Refusal> {
     let mut messages = Vec::with_capacity(request.messages.len() + 1);
     messages.push(json!({"role":"system","content":request.prefix.system_text()}));

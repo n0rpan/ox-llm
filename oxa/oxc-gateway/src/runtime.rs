@@ -12,6 +12,8 @@ pub use crate::history::HistorySeal;
 use auth::Credential;
 pub use auth::{OpenAiAuthHandle, Subscription};
 use serde_json::{json, Value};
+#[cfg(feature = "share")]
+use std::collections::BTreeSet;
 #[cfg(feature = "upstream-openai")]
 use std::path::Path;
 use std::{
@@ -42,6 +44,8 @@ pub struct Runtime {
     diagnostics: Option<crate::diagnostics::Diagnostics>,
     catalog: Catalog,
     billings: BTreeMap<String, Billing>,
+    #[cfg(feature = "share")]
+    guest_models: BTreeSet<String>,
     go_models: BTreeMap<String, crate::opencode::Model>,
     key_file: Result<KeyFile, crate::secrets::Error>,
     ledger_dir: PathBuf,
@@ -68,6 +72,7 @@ pub struct Call<'a> {
     entry: Option<Entry>,
     forwarded: bool,
     go_usage: Option<Value>,
+    diagnostics: Option<crate::diagnostics::Diagnostics>,
 }
 fn invalid(param: &'static str) -> Refusal {
     Refusal {
@@ -182,6 +187,8 @@ impl Runtime {
             diagnostics: None,
             catalog,
             billings,
+            #[cfg(feature = "share")]
+            guest_models: BTreeSet::new(),
             go_models: BTreeMap::new(),
             key_file: KeyFile::prepare(&key_path),
             ledger_dir,
@@ -198,6 +205,46 @@ impl Runtime {
     pub fn discovery(&self) -> impl Iterator<Item = ModelInfo<'_>> {
         self.catalog.models().filter(|model| supported(model.provider))
     }
+    #[cfg(feature = "share")]
+    pub(crate) fn set_metered_guest_models(&mut self, aliases: BTreeSet<String>) -> Result<(), Refusal> {
+        if aliases.len() > 64
+            || aliases.iter().any(|alias| {
+                !matches!(self.billings.get(alias), Some(Billing::Metered(_)))
+                    || !self
+                        .catalog
+                        .resolve(Some(alias))
+                        .is_ok_and(|model| supported(model.info().provider))
+            })
+        {
+            return Err(invalid("share.remoteModels"));
+        }
+        self.guest_models = aliases;
+        Ok(())
+    }
+
+    #[cfg(feature = "share")]
+    pub(crate) fn metered_guest_models(&self) -> impl Iterator<Item = ModelInfo<'_>> {
+        self.discovery()
+            .filter(|model| self.guest_models.contains(model.id))
+    }
+
+    #[cfg(feature = "share")]
+    pub(crate) fn begin_authenticated_guest(
+        &self,
+        payload: &Value,
+        guest: &crate::share::listener::Guest<'_>,
+    ) -> Result<Call<'_>, Refusal> {
+        let context = Context {
+            origin: crate::ledger::Origin::Api,
+            guest_key_name: Some(guest.key_name()),
+            ..Context::default()
+        };
+        let allowed = payload["model"]
+            .as_str()
+            .is_some_and(|alias| self.guest_models.contains(alias));
+        self.begin_with_context(payload, context, allowed)
+    }
+
     fn audit(&self, model: &str, context: Context<'_>) -> Result<(Daily, Entry), Refusal> {
         if !self.ledger_enabled {
             return Err(Refusal::ledger());
@@ -285,6 +332,15 @@ impl Runtime {
         Ok(())
     }
     pub fn begin(&self, payload: &Value, context: Context<'_>) -> Result<Call<'_>, Refusal> {
+        self.begin_with_context(payload, context, false)
+    }
+
+    fn begin_with_context(
+        &self,
+        payload: &Value,
+        context: Context<'_>,
+        allow_guest: bool,
+    ) -> Result<Call<'_>, Refusal> {
         if let Some(diagnostics) = &self.diagnostics {
             diagnostics.clear();
         }
@@ -311,7 +367,8 @@ impl Runtime {
                 });
             }
             let billing = self.billings.get(alias);
-            policy::before_credentials(payload, shared, false, billing.is_some())?;
+            let guest_allowed = allow_guest && matches!(billing, Some(Billing::Metered(_)));
+            policy::before_credentials(payload, shared && !guest_allowed, false, billing.is_some())?;
             if model.info().provider == Provider::OpenCode && !owner_origin {
                 return Err(Refusal {
                     status: 403,
@@ -375,9 +432,15 @@ impl Runtime {
             let hold = match &billing.billing {
                 Billing::Metered(_) => daily.budget().reserve(&self.cap, true, &billing, output)?,
                 Billing::Subscription => {
-                    daily
-                        .budget()
-                        .reserve_subscription(self.subscription_limits, true, &billing, output)?
+                    let cap = (model.info().provider == Provider::OpenCode && !self.cap.is_null())
+                        .then_some(&self.cap);
+                    daily.budget().reserve_subscription_with_budget(
+                        self.subscription_limits,
+                        true,
+                        &billing,
+                        output,
+                        cap,
+                    )?
                 }
             };
             let (_, mut entry) = audit.take().expect("known model")?;
@@ -395,6 +458,7 @@ impl Runtime {
                 entry: Some(entry),
                 forwarded: false,
                 go_usage: None,
+                diagnostics: self.diagnostics.clone(),
             })
         })();
         if let Err(error) = &result {
@@ -517,12 +581,13 @@ impl<'a> Call<'a> {
         self.entry.as_mut().expect("unsettled call").observe();
     }
     pub(crate) fn metered_go(&mut self, usage: Option<&crate::opencode::Usage>) {
+        self.usage.reported_cost = usage.map(|usage| usage.cost);
         self.go_usage = usage.map(|usage| {
             self.usage.prompt = Some(usage.prompt);
             self.usage.output = Some(usage.completion);
             self.usage.cache_read = usage.cache_read;
             self.usage.cache_write = usage.cache_write;
-            json!({"allowance":usage.allowance,"list_cost":usage.list_cost,"tokens":usage.tokens})
+            json!({"billing_source":usage.billing_source.as_str(),"allowance":usage.allowance,"list_cost":usage.list_cost,"tokens":usage.tokens})
         });
     }
     pub fn metered(&mut self, usage: crate::anthropic_stream::Usage) {
@@ -575,6 +640,15 @@ impl<'a> Call<'a> {
             saved = entry.append_redacting(&fields, status, error, &|value| self.credential.redact(value))?;
             Ok(())
         })?;
+        if saved["settled"] == "usage" {
+            if let (Some(diagnostics), Some(cost), Some(plan)) = (
+                self.diagnostics.as_ref(),
+                saved["cost_usd"].as_f64(),
+                saved["opencode"].get("billing_source"),
+            ) {
+                diagnostics.settled_billing(crate::opencode::PlanName::from_value(plan), cost);
+            }
+        }
         Ok(saved)
     }
 }

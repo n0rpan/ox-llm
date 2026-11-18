@@ -47,10 +47,18 @@ pub struct Reply {
     headers: Vec<(&'static str, String)>,
     bytes: Vec<u8>,
     fragment: usize,
+    buffer_before_headers: bool,
     pub truncate_transfer: bool,
     gate: Option<mpsc::Receiver<()>>,
 }
 impl Reply {
+    /// Bounded replies for clients that reject the response at its headers.
+    #[allow(dead_code)] // Only header-refusal controls opt in.
+    pub fn buffer_header_refusal(mut self) -> Self {
+        assert!(self.bytes.len() <= 1024 && !self.truncate_transfer);
+        self.buffer_before_headers = true;
+        self
+    }
     #[allow(dead_code)] // Shared fixture constructor; not every consumer refreshes tokens.
     pub fn json(value: Value) -> Self {
         Self {
@@ -61,6 +69,7 @@ impl Reply {
             fragment: 7,
             truncate_transfer: false,
             gate: None,
+            buffer_before_headers: false,
         }
     }
     #[allow(dead_code)] // Shared fixture constructor for transport boundary cases.
@@ -78,6 +87,7 @@ impl Reply {
             fragment: 1024,
             truncate_transfer: false,
             gate: None,
+            buffer_before_headers: false,
         }
     }
 
@@ -97,6 +107,7 @@ impl Reply {
             fragment: 7,
             truncate_transfer: false,
             gate: None,
+            buffer_before_headers: false,
         }
     }
     pub fn error(status: u16, kind: &str, message: &str) -> Self {
@@ -110,6 +121,7 @@ impl Reply {
             fragment: 7,
             truncate_transfer: false,
             gate: None,
+            buffer_before_headers: false,
         }
     }
     /// A Responses quota refusal, including the server's retry delay in seconds.
@@ -225,6 +237,7 @@ enum IoPhase {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ReplyPart {
+    BufferedReply,
     Headers,
     HeaderEnd,
     ChunkHeader,
@@ -232,6 +245,8 @@ pub(super) enum ReplyPart {
     ChunkEnd,
     Flush,
     TransferEnd,
+    /// Final payload, chunk CRLF and terminal zero in one bounded write.
+    FinalChunk,
 }
 #[derive(Clone, Copy, Debug)]
 pub(super) struct HealthFailure {
@@ -480,6 +495,21 @@ fn serve(
     write_reply(&mut stream, &reply)
 }
 pub(super) fn write_reply(stream: &mut impl Write, reply: &Reply) -> Result<(), HealthFailure> {
+    if reply.buffer_before_headers {
+        assert!(reply.bytes.len() <= 1024 && !reply.truncate_transfer);
+        let mut wire = Vec::new();
+        write_fragmented_reply(&mut wire, reply)?;
+        stream
+            .write_all(&wire)
+            .map_err(|error| HealthFailure::reply(ReplyPart::BufferedReply, error))?;
+        return stream
+            .flush()
+            .map_err(|error| HealthFailure::reply(ReplyPart::Flush, error));
+    }
+    write_fragmented_reply(stream, reply)
+}
+
+fn write_fragmented_reply(stream: &mut impl Write, reply: &Reply) -> Result<(), HealthFailure> {
     write!(
         stream,
         "HTTP/1.1 {} Synthetic\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n",
@@ -493,9 +523,25 @@ pub(super) fn write_reply(stream: &mut impl Write, reply: &Reply) -> Result<(), 
     stream
         .write_all(b"\r\n")
         .map_err(|error| HealthFailure::reply(ReplyPart::HeaderEnd, error))?;
-    for bytes in reply.bytes.chunks(reply.fragment) {
+    let chunks = reply.bytes.chunks(reply.fragment);
+    let last = chunks.len().saturating_sub(1);
+    for (index, bytes) in chunks.enumerate() {
         write!(stream, "{:x}\r\n", bytes.len())
             .map_err(|error| HealthFailure::reply(ReplyPart::ChunkHeader, error))?;
+        if index == last && !reply.truncate_transfer {
+            // A client may stop reading as soon as it sees its semantic terminal event.
+            // Finish the HTTP message before flushing that final payload to the peer.
+            let mut complete = Vec::with_capacity(bytes.len() + 7);
+            complete.extend_from_slice(bytes);
+            complete.extend_from_slice(b"\r\n0\r\n\r\n");
+            stream
+                .write_all(&complete)
+                .map_err(|error| HealthFailure::reply(ReplyPart::FinalChunk, error))?;
+            stream
+                .flush()
+                .map_err(|error| HealthFailure::reply(ReplyPart::Flush, error))?;
+            return Ok(());
+        }
         stream
             .write_all(bytes)
             .map_err(|error| HealthFailure::reply(ReplyPart::ChunkPayload, error))?;

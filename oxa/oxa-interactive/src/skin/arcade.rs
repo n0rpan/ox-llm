@@ -32,6 +32,9 @@ pub enum Animation {
 }
 
 impl Animation {
+    /// The accepted `ui.animation` values, in help order (also `--animation`).
+    pub const ALL: [&'static str; 3] = ["arcade", "minimal", "off"];
+
     /// `"minimal"` and `"off"`; anything else (unset, `"arcade"`) is the arcade.
     pub fn from_setting(setting: Option<&str>) -> Animation {
         match setting.map(str::trim) {

@@ -228,11 +228,10 @@ impl Grant {
     pub fn materialize(self: &Arc<Self>, directory: &Path) -> io::Result<WorkingCopy> {
         let parent = directory.parent().ok_or_else(|| denied("copy needs a parent"))?;
         let parent = crate::namespace::protected_directory(parent)?;
-        // SAFETY: geteuid has no arguments or memory side effects.
-        let metadata = parent.metadata()?;
-        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
-            return Err(denied("copy parent must be private and operator-owned"));
-        }
+        crate::namespace::require_private_directory(
+            &parent,
+            "copy parent must be private and operator-owned",
+        )?;
         let name = directory.file_name().ok_or_else(|| denied("copy needs a name"))?;
         // Bind creation to the checked parent inode rather than re-resolving its
         // original path. Only the trusted controller may modify this namespace.
@@ -592,7 +591,7 @@ fn diff_path(prefix: &str, path: &RelativePath) -> String {
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
-fn bounded_json(value: &impl Serialize, max: usize) -> io::Result<()> {
+pub(crate) fn bounded_json(value: &impl Serialize, max: usize) -> io::Result<()> {
     struct Count {
         size: usize,
         max: usize,

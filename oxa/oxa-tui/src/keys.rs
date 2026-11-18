@@ -91,6 +91,8 @@ pub struct Mouse {
 /// Everything the terminal can send.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputEvent {
+    /// The terminal hung up, or stdin reached EOF/a permanent read or poll error.
+    TerminalClosed,
     Key(Key),
     /// A complete bracketed paste (markers removed, `\r\n` and `\r` normalised to `\n`).
     Paste(String),

@@ -96,7 +96,7 @@ The pinned revisions and SHA-256 of every model are listed in [`oxc/dependencies
 
 ## Build from source
 
-Linux ARM64, Rust stable, GCC 16. `.cargo/config.toml` sets `target-cpu=oryon-1`; change it for other cores.
+Linux ARM64, Rust stable, GCC 16. `.cargo/config.toml` sets `target-cpu=oryon-1`; change it for other cores (the per-target setting and the owner gate are in [`docs/CPU-TARGET-AND-PLACEMENT.md`](docs/CPU-TARGET-AND-PLACEMENT.md)).
 
 ```sh
 CARGO_BUILD_JOBS=2 nice -n 19 cargo build --release -p server -p oxe-cli
@@ -112,7 +112,7 @@ cargo test --release -p kernels-sys -p model -p sched -p tokenizer -p chat -p se
 
 ## How the two repositories fit together
 
-- **This repository** holds the engines, their correctness rules and their milestone write-ups. The write-ups are in [docs/lab-notes/](docs/lab-notes/); the index is [docs/lab-notes/INDEX.md](docs/lab-notes/INDEX.md).
+- **This repository** holds the engines, their correctness rules and their milestone write-ups. The write-ups are in [docs/lab-notes/](docs/lab-notes/); the index is [docs/lab-notes/INDEX.md](docs/lab-notes/INDEX.md). The design packet for a local HTTP completion backend is [docs/EXTERNAL-ENGINE-CONTRACT.md](docs/EXTERNAL-ENGINE-CONTRACT.md) (design only; no implementation).
 - **[lab](https://github.com/n0rpan/ox-llm/tree/main/oxc)** is the controller. It serves these engines behind one OpenAI-compatible endpoint on port 8092, with Studio for images, harness configs (OpenCode, pi, dsh), memory guards, benchmarks and every receipt cited above. Start there to use the models, reproduce numbers, or read the history.
 
 ## Layout

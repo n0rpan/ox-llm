@@ -1,10 +1,31 @@
 //! The inbox is local IPC, not a socket, and must stay in private, no-follow directories.
 use oxa_fake::TestEnv;
-use oxa_session::{send_inbox, Inbox};
+use oxa_session::{send_inbox, send_inbox_control, Inbox, InboxItem, SessionRef};
 use std::fs;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::sync::mpsc;
 use std::time::Duration;
+
+#[test]
+fn managed_controls_leave_plain_follow_ups_for_their_owner() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    let session = SessionRef {
+        path: env.root().join("managed.jsonl"),
+        id: "managed".into(),
+    };
+    let packet = r#"{"method":"steer","id":"fixture","revision":1,"text":"fixture"}"#;
+    send_inbox(&agent, &session.id, "plain fixture").unwrap();
+    send_inbox_control(&agent, &session, packet).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let managed = Inbox::watch_control(&agent, &session, move |text| tx.send(text).is_ok()).unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), packet);
+    assert!(Inbox::watch(&agent, &session.id, |_| true).is_err());
+    drop(managed);
+    let (tx, rx) = mpsc::channel();
+    let _plain = Inbox::watch(&agent, &session.id, move |text| tx.send(text).is_ok()).unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), "plain fixture");
+}
 
 #[test]
 fn inbox_backlog_live_atomic_delivery_and_restart() {
@@ -33,6 +54,67 @@ fn inbox_backlog_live_atomic_delivery_and_restart() {
         fs::read_dir(dir).unwrap().count(),
         1,
         "only unpublished temp file remains"
+    );
+}
+
+#[test]
+fn control_packets_follow_the_bound_file_and_never_become_follow_ups() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    let original = SessionRef {
+        path: env.root().join("original.jsonl"),
+        id: "shared-id".into(),
+    };
+    let other = SessionRef {
+        path: env.root().join("other.jsonl"),
+        id: original.id.clone(),
+    };
+    let packet = r#"{"method":"cancel","id":"cancel","revision":3}"#;
+    let timeout = Duration::from_secs(3);
+
+    assert_eq!(
+        send_inbox_control(&agent, &original, &"x".repeat(32 * 1024 + 1))
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+    send_inbox_control(&agent, &original, packet).unwrap();
+    send_inbox(&agent, &original.id, "legacy follow-up").unwrap();
+    let (tx, rx) = mpsc::channel();
+    let plain = Inbox::watch(&agent, &original.id, move |text| tx.send(text).is_ok()).unwrap();
+    assert_eq!(rx.recv_timeout(timeout).unwrap(), "legacy follow-up");
+    drop(plain);
+    assert!(rx.try_recv().is_err());
+
+    let (tx, rx) = mpsc::channel();
+    let watch = Inbox::watch_bound(&agent, &other, move |item| tx.send(item).is_ok()).unwrap();
+    send_inbox(&agent, &other.id, "for the active owner").unwrap();
+    assert_eq!(
+        rx.recv_timeout(timeout).unwrap(),
+        InboxItem::FollowUp("for the active owner".into())
+    );
+    assert!(Inbox::watch_bound(&agent, &original, |_| true).is_err());
+    drop(watch);
+    assert!(rx.try_recv().is_err());
+    assert_eq!(
+        fs::read_dir(agent.join("inbox").join(&original.id))
+            .unwrap()
+            .count(),
+        1
+    );
+
+    let (tx, rx) = mpsc::channel();
+    let watch = Inbox::watch_bound(&agent, &original, move |item| tx.send(item).is_ok()).unwrap();
+    assert_eq!(
+        rx.recv_timeout(timeout).unwrap(),
+        InboxItem::Control(packet.into())
+    );
+    drop(watch);
+    assert_eq!(
+        fs::read_dir(agent.join("inbox").join(&original.id))
+            .unwrap()
+            .count(),
+        0
     );
 }
 
