@@ -1823,3 +1823,42 @@ fn go_private_terminal_valid_usage_has_no_diagnostic_and_settles_exactly() {
     assert_eq!(mock.requests().len(), 2);
     mock.assert_healthy();
 }
+
+#[test]
+fn a_fresh_go_catalog_cache_serves_the_next_start_without_discovery() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| vec![Reply::json(discovery(base))]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let settings = env.home().join(".oxa/agent/settings.json");
+    let mut doc: Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
+    doc["oxa"]["cloud"]["discover_models"] = json!(true);
+    fs::write(settings, doc.to_string()).unwrap();
+    let first = run(&env, &["--list-models"]);
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(String::from_utf8_lossy(&first.stdout).contains(MODEL));
+    assert_eq!(mock.requests().len(), 1, "the first start discovers live");
+    assert!(
+        env.agent_dir().join("go-catalog-cache.json").is_file(),
+        "live discovery publishes an entry"
+    );
+    let second = run(&env, &["--list-models"]);
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert!(String::from_utf8_lossy(&second.stdout).contains(MODEL));
+    assert_eq!(
+        mock.requests().len(),
+        1,
+        "a fresh entry is consumed without a network call"
+    );
+    assert!(!String::from_utf8_lossy(&second.stderr).contains("Using a stale OpenCode model catalog."));
+    mock.assert_healthy();
+}

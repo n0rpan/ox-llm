@@ -180,6 +180,62 @@ impl Client {
         }
         builder.build().map(Self).map_err(|_| Error::Setup)
     }
+    /// List the API key's model IDs, without inferring limits or prices.
+    pub async fn models(
+        &self,
+        base: &str,
+        key: &crate::secrets::Key,
+        timeout: Duration,
+    ) -> Result<Vec<String>, Error> {
+        let mut endpoint = responses_endpoint(base, false)?;
+        endpoint
+            .path_segments_mut()
+            .map_err(|_| Error::Endpoint)?
+            .pop()
+            .push("models");
+        let mut bearer =
+            HeaderValue::from_str(&format!("Bearer {}", key.expose())).map_err(|_| Error::Credentials)?;
+        bearer.set_sensitive(true);
+        tokio::time::timeout(timeout, async {
+            let response = self
+                .0
+                .get(endpoint)
+                .header(AUTHORIZATION, bearer)
+                .send()
+                .await
+                .map_err(|_| Error::Transport)?;
+            if response.status().as_u16() != 200 {
+                return Err(Error::Http {
+                    status: response.status().as_u16(),
+                    refusal: None,
+                });
+            }
+            let bytes = bounded(
+                response,
+                crate::catalog_cache::MAX_BYTES as usize,
+                &Cancellation::new(),
+            )
+            .await?;
+            let body: Value = serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
+            if crate::redaction::contains_secret(&body, key.expose()) {
+                return Err(Error::Protocol);
+            }
+            body["data"]
+                .as_array()
+                .ok_or(Error::Protocol)?
+                .iter()
+                .map(|model| {
+                    model["id"]
+                        .as_str()
+                        .filter(|id| !id.is_empty() && id.len() <= 128)
+                        .map(str::to_owned)
+                        .ok_or(Error::Protocol)
+                })
+                .collect()
+        })
+        .await
+        .map_err(|_| Error::Transport)?
+    }
     pub async fn stream<F>(
         &self,
         chat: Chat<'_>,

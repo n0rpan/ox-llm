@@ -37,6 +37,72 @@ fn objective(budget: GoalBudget) -> Goal {
 }
 
 #[test]
+fn bounded_literal_prompt_keeps_evidence_request_local_and_caps_schema_repair() {
+    use oxa_core::{output_schema::OutputSchema, RunEnd};
+    use oxa_proto::{codes, WireMsg};
+    use std::num::NonZeroU32;
+
+    for first_completion in [6, 10] {
+        let env = TestEnv::new();
+        let mut invalid = ScriptTurn::text("try again");
+        invalid.completion_tokens = Some(first_completion);
+        let mut repaired = ScriptTurn::text(r#"{"ok":true}"#);
+        repaired.completion_tokens = Some(4);
+        let engine = Arc::new(ScriptedEngine::new(vec![
+            invalid,
+            repaired,
+            ScriptTurn::text("ordinary reply"),
+        ]));
+        let store = Arc::new(MemStore::new());
+        let mut session = Session::open(deps(&env, store.clone(), engine.clone()), Open::New).unwrap();
+        let schema = OutputSchema::new(serde_json::json!({"type": "object", "required": ["ok"]})).unwrap();
+        session.set_output_schema(Some(schema));
+        let mut sink = VecSink::default();
+        let mut ui = HeadlessUi::default();
+        let prompt = WireMsg::user("/help");
+        let evidence = WireMsg::user("Synthetic transient evidence");
+        let result = session.prompt_literal_bounded(
+            "/help".into(),
+            "Synthetic transient evidence".into(),
+            NonZeroU32::new(10).unwrap(),
+            &mut sink,
+            &mut ui,
+        );
+        let expected_limits: &[u32] = if first_completion == 6 {
+            result.unwrap();
+            &[10, 4]
+        } else {
+            let Some(RunEnd::Failed(error)) = result.unwrap() else {
+                panic!("the repair should be refused when no output remains");
+            };
+            assert_eq!(error.code, codes::BUDGET_EXHAUSTED);
+            &[10]
+        };
+        let requests: Vec<_> = engine
+            .requests()
+            .into_iter()
+            .filter(|r| r.max_tokens > 0)
+            .collect();
+        assert_eq!(
+            requests.iter().map(|r| r.max_tokens).collect::<Vec<_>>(),
+            expected_limits
+        );
+        assert!(requests.iter().all(|r| r.messages.contains(&evidence)));
+        assert!(requests[0].messages.contains(&prompt));
+        let entries = store.load(&session.inner().sref).unwrap();
+        let persisted = format!("{entries:?}");
+        assert!(persisted.contains("/help"));
+        assert!(!persisted.contains("Synthetic transient evidence"));
+
+        session.set_output_schema(None);
+        session.prompt_literal("Next".into(), &mut sink, &mut ui).unwrap();
+        let last = engine.requests().into_iter().rfind(|r| r.max_tokens > 0).unwrap();
+        assert_eq!(last.max_tokens, session.inner().info.max_output);
+        assert!(!last.messages.contains(&evidence));
+    }
+}
+
+#[test]
 fn native_goal_control_rejects_stale_requests_and_persists_terminal_cancel() {
     let env = TestEnv::new();
     let root = env.root().join("sessions");

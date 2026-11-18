@@ -19,6 +19,23 @@ pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs) -> Result<bool, String
     .map_err(|e| e.to_string())
 }
 
+/// Decode the registration from the already-verified owner config.
+pub(crate) fn registered_native_worker(
+    value: &serde_json::Value,
+) -> Result<(oxa_work::board::assignment::Worker, &str), String> {
+    use oxa_work::board::assignment::{valid_worker_id, Worker};
+    let worker: Worker =
+        serde_json::from_value(value["worker"].clone()).map_err(|_| "invalid authenticated worker export")?;
+    if !valid_worker_id(&worker.id) {
+        return Err("invalid native worker identity".into());
+    }
+    let host = value["host_id"]
+        .as_str()
+        .filter(|host| valid_worker_id(host))
+        .ok_or("native work requires an authenticated host_id")?;
+    Ok((worker, host))
+}
+
 // Keep owner state outside every worker Git bind.
 pub(crate) fn protected_storage(storage: &Path, repo: &Path, common: &Path) -> Result<(), String> {
     if !storage.is_absolute()
@@ -404,13 +421,14 @@ impl Context {
             Ok(locked) => locked,
             Err(error) => return Ok(blocked_plan(plan, error)),
         };
-        self.planned_locked(plan, &mut locked)
+        self.planned_locked(plan, &mut locked, &|_: &oxa_work::Record| Ok(()))
     }
 
     fn planned_locked(
         &self,
         plan: &oxa_work::PlannedTask,
         locked: &mut oxa_work::LockedTask<'_>,
+        observer: &dyn oxa_work::CheckpointObserver,
     ) -> Result<oxa_work::Record, String> {
         let root = &self.cwd;
         let binary = &self.binary;
@@ -427,14 +445,9 @@ impl Context {
             record
         } else {
             let ctx = crate::report_cmd::ScrubCtx::from_env(env, dirs);
-            match locked.run_with_notes(
-                root,
-                binary,
-                plan,
-                rerun,
-                &|_: &oxa_work::Record| Ok(()),
-                &|note| crate::work_reports::scrub_note(note, &ctx),
-            ) {
+            match locked.run_with_notes(root, binary, plan, rerun, observer, &|note| {
+                crate::work_reports::scrub_note(note, &ctx)
+            }) {
                 Ok(record) => record,
                 Err(oxa_work::RunError::Blocked(detail)) => blocked_plan(plan, detail),
                 Err(oxa_work::RunError::Checkpoint(error)) => return Err(error),
@@ -546,4 +559,46 @@ fn queue_options(args: &[String], cwd: &Path) -> Result<(PathBuf, oxa_work::Queu
         return Err("--max must be positive".into());
     }
     Ok((directory, options))
+}
+
+#[cfg(test)]
+mod registration_tests {
+    use super::registered_native_worker;
+    use serde_json::json;
+
+    #[test]
+    fn protected_registration_preserves_the_explicit_worker_and_adjacent_host() {
+        let value = json!({
+            "worker":{"id":"worker-a","kind":"oxa","roles":["builder"],"skills":["rust"]},
+            "host_id":"host-b"
+        });
+        let (worker, host) = registered_native_worker(&value).unwrap();
+        assert_eq!(worker.id, "worker-a");
+        assert_eq!(host, "host-b");
+        assert!(worker.roles.contains(&oxa_work::board::assignment::Role::Builder));
+        assert!(worker.skills.contains("rust"));
+    }
+
+    #[test]
+    fn protected_registration_refuses_missing_or_invalid_identities_without_fallback() {
+        let value = json!({
+            "worker":{"id":"worker-a","kind":"oxa","roles":["builder"],"skills":[]},
+            "host_id":"host-b"
+        });
+        for field in ["worker", "host_id"] {
+            let mut missing = value.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(registered_native_worker(&missing).is_err(), "missing {field}");
+        }
+        for host in [json!(null), json!(42), json!(""), json!("invalid host")] {
+            let mut invalid = value.clone();
+            invalid["host_id"] = host;
+            assert!(registered_native_worker(&invalid).is_err());
+        }
+        for id in [json!(null), json!(42), json!(""), json!("invalid worker")] {
+            let mut invalid = value.clone();
+            invalid["worker"]["id"] = id;
+            assert!(registered_native_worker(&invalid).is_err());
+        }
+    }
 }

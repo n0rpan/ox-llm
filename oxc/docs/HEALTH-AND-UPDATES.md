@@ -72,55 +72,20 @@ nor break the run. Three green days is the ship bar (`ship_ready`).
 
 ## Update and rollback
 
-```
-oxc update [STAGED-RELEASE-DIR] [--no-chat]   install a staged release, check it, roll back by itself on failure
-oxc update --check [DIR]                      check only, change nothing
-oxc rollback [--check]                        put the previous release back
-```
+For v0.2.x upgrades, follow the
+[native install and upgrade guide](https://github.com/oxstack/ox-llm/blob/main/docs/NATIVE-INSTALL.md).
+It covers package verification, moving from the legacy controller, and using
+the native binaries.
 
-`oxc update` never downloads anything. The release must already be staged on disk in the O-119 format:
-`manifest.json`, `SEAL.json`, the staged files, `rollback/rollback.py` and `tools/install_staged_release.py`.
-Some stages also carry a `tools/stage_*_final.py` generator; its `precheck` and `materialize` steps are then
-used too. Without a directory, `update` picks the newest stage it can install under `OXC_STAGE_ROOTS`
-(default `~/.local/share/ai-stack/staged`). The very first time, when the installed CLI does not yet have
-`update`, run the staged release's own CLI: `python3 <stage>/runtime-source/oxc update <stage>`.
-
-Steps:
-
-1. **Check.** The seal, the live files (they must be exactly what the stage expects to replace), the stage's own `rollback.py --check`, and the generator's `precheck` or the installer's dry run. A refusal changes nothing (exit 2).
-2. **Record.** The new release dirs are unpacked, and `service-state.json` records which services run and which release the chat controller runs.
-3. **Stop.** The chat service and Studio are stopped, and `is-active` must show both down before any file is replaced. If that cannot be proven, nothing is installed, the services are started again as they were, and `update` exits 2.
-4. **Install.** The installer replaces the files (atomic per file; it restores itself if it stops part-way).
-5. **Start.** `daemon-reload`, then the chat service starts, plus Studio if it was running.
-6. **Wait for readiness.** `/_local/status` must answer, and the controller's main process must be proven to run the staged release (its working directory is the manifest's `release_dir`). If its identity cannot be told, it is not ready. A stage without a `release_dir` (synthetic) needs only the status answer.
-7. **Test chat.** One tiny chat, sent with `X-Local-AI-Origin: lab`. If no model was loaded before, it is unloaded afterwards.
-
-If step 4, 5, 6 or 7 fails, the stage's `rollback.py` runs the same steps in reverse: it stops both services, puts the previous files back with their bytes and modes, runs `daemon-reload`, and starts the services that were running before. `update` then waits until the controller is proven to run the previous release (the recorded one, or at least not the staged one) and exits 1. If that proof does not come, it exits 3.
-
-`oxc rollback` runs the rollback of the release installed last (recorded in
-`$XDG_STATE_HOME/oxc/update/state.json`, or found by matching the live files), then waits for readiness.
-The readiness wait needs the same identity proof. Previous release dirs are never deleted.
-
-Exit codes: 0 done; 1 the update failed and the previous version is back; 2 refused, nothing changed;
-3 needs attention, and the message says what to run.
+The [archived two-service update and rollback procedure](https://github.com/oxstack/ox-llm/blob/e64b985a2ff6abf51d406471382ed95a18fd161c/oxc/docs/HEALTH-AND-UPDATES.md#update-and-rollback)
+preserves the legacy staged-release process, including its seal, preimage,
+service identity and rollback checks.
 
 ## Install, rollback and smoke checks
 
-The local staged-release lifecycle keeps its seal, preimage, service-identity and automatic
-rollback checks. The helper exposes the same operations plus a bounded local-model smoke chat:
-
-```sh
-python3 tools/oem_drills.py install ~/project/stage
-python3 tools/oem_drills.py rollback
-python3 tools/oem_drills.py smoke
-```
-
-The stage must already exist and pass the installer's checks. The smoke request is marked as
-lab usage, refuses remote models, and unloads a model only when it was not already loaded.
-It performs no process killing, memory-pressure injection or cache corruption.
-
-Model-free recovery and ownership regressions remain in `tests/test_controller_recovery.py`.
-Run those and the smoke tests with the normal isolated lab test runner.
+Use the native guide for v0.2.x installation and validation. The
+[archived developer procedure](https://github.com/oxstack/ox-llm/blob/e64b985a2ff6abf51d406471382ed95a18fd161c/oxc/docs/HEALTH-AND-UPDATES.md#install-rollback-and-smoke-checks)
+retains the legacy OEM drill commands and their isolated test guidance.
 
 ## Error messages
 
