@@ -247,6 +247,38 @@ fn a_check_that_never_ran_leaves_the_task_unverified_and_the_runner_failing() {
 }
 
 #[test]
+fn a_successful_check_keeps_its_original_command_private() {
+    let env = TestEnv::new();
+    let fixture_value = "synthetic-check-proof";
+    let command = format!("test 'token={fixture_value}' != 'token=<secret>'");
+    setup(&env, &json!([command]).to_string());
+    let record = run_args(
+        &env,
+        vec![ScriptTurn::text("finished")],
+        &["work", "../tasks.json"],
+        None,
+    );
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(record["checks"][0]["status"], "passed", "{record}");
+    assert_eq!(
+        record["checks"][0]["command"],
+        "test 'token=<secret>' != 'token=<secret>'"
+    );
+    assert!(!record.to_string().contains(fixture_value));
+
+    let common = env.work().join("project/.git").canonicalize().unwrap();
+    let key = format!("{:x}", Sha256::digest(common.as_os_str().as_encoded_bytes()));
+    let saved = env.agent_dir().join("work").join(key).join("test.json");
+    let checkpoint: serde_json::Value = serde_json::from_slice(&fs::read(saved).unwrap()).unwrap();
+    assert_eq!(checkpoint["execution"]["commands"][0], command);
+    assert!(!checkpoint["record"].to_string().contains(fixture_value));
+    assert!(
+        verify(&env, None).status.success(),
+        "saved verification uses the original"
+    );
+}
+
+#[test]
 fn a_missing_selected_toolchain_is_not_run_and_does_not_launch_repair() {
     let env = TestEnv::new();
     setup_with_files(&env, "[]", &crate_files());
