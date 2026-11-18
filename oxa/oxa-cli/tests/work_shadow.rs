@@ -1371,7 +1371,7 @@ exit 94
 }
 
 #[test]
-fn landing_shadow_holds_an_approved_head_on_unresolved_older_review() {
+fn landing_shadow_holds_an_approved_head_on_unresolved_current_or_older_reviews() {
     use serde_json::{json, Value};
     let (env, mut detail) = fixture();
     let head = "cccccccccccccccccccccccccccccccccccccccc";
@@ -1406,24 +1406,25 @@ fn landing_shadow_holds_an_approved_head_on_unresolved_older_review() {
     let save_queue = |queue: &Value| {
         fs::write(env.work().join("queue-state.json"), queue.to_string()).unwrap();
     };
-    save_queue(&queue);
     let old = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let state = json!({
-        "code_review":{"commit_sha":old,"status":"completed",
-            "has_any_findings":true,"has_unresolved_findings":true},
-        "security_review":{"commit_sha":null,"status":null,
-            "has_any_findings":null,"has_unresolved_findings":null}
-    });
-    let summary =
-        format!("<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {state} -->");
+    let completed = |commit, unresolved| {
+        json!({
+            "commit_sha":commit,"status":"completed",
+            "has_any_findings":unresolved,"has_unresolved_findings":unresolved
+        })
+    };
+    let summary = |code, security| {
+        let state = json!({"code_review":code,"security_review":security});
+        format!("<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {state} -->")
+    };
     let mut review = json!({"data":{"repository":{"p42":{
         "number":42,"headRefOid":head,"state":"OPEN",
         "comments":{"totalCount":1,"nodes":[{
-            "author":{"databaseId":199175422},"updatedAt":"2026-01-01T00:00:00Z","body":summary
+            "author":{"databaseId":199175422},"updatedAt":"2026-01-01T00:00:00Z",
+            "body":summary(completed(head, false), completed(head, false))
         }]}
     }}}});
-    let mut read = |change: fn(&mut Value)| -> Value {
-        change(&mut review);
+    let read = |review: &Value| -> Value {
         fs::write(env.work().join("review.json"), review.to_string()).unwrap();
         let output = invoke(
             &env,
@@ -1439,21 +1440,56 @@ fn landing_shadow_holds_an_approved_head_on_unresolved_older_review() {
         assert_eq!(data["board"]["entries"][0]["action"], "ready");
         data
     };
-    let observed = read(|_| {});
+    let mut absent = queue.clone();
+    absent["data"]["repository"]["mergeQueue"]["entries"] = json!({"totalCount":0,"nodes":[]});
+    save_queue(&absent);
+    assert_eq!(read(&review)["landing"]["42"]["next"], "wait_queue");
+    save_queue(&queue);
+    let admitted = read(&review);
+    assert_eq!(admitted["landing"]["42"]["next"], "already_queued");
+    assert_eq!(admitted["landing"]["42"]["queue"]["group_head"], group);
+
+    let comment = &mut review["data"]["repository"]["p42"]["comments"]["nodes"][0];
+    comment["updatedAt"] = "2026-01-01T00:00:01Z".into();
+    comment["body"] = summary(completed(head, true), completed(head, false)).into();
+    let current = read(&review);
+    assert_eq!(current["landing"]["42"]["next"], "hold_findings");
+    assert_eq!(current["landing"]["42"]["queue"]["group_head"], group);
+    let mut separate_security = review.clone();
+    separate_security["data"]["repository"]["p42"]["comments"] = json!({
+        "totalCount":2,"nodes":[{
+            "author":{"databaseId":199175422},"updatedAt":"2026-01-01T00:00:01Z",
+            "body":summary(completed(head, true), json!({
+                "commit_sha":head,"status":"completed",
+                "has_any_findings":null,"has_unresolved_findings":null
+            }))
+        },{
+            "author":{"databaseId":199175422},"updatedAt":"2026-01-01T00:00:02Z",
+            "body":"<!-- codex-review-receipt:v1 -->\nSecurity review completed with no findings."
+        }]
+    });
+    assert_eq!(read(&separate_security)["landing"]["42"]["next"], "hold_findings");
+    save_queue(&absent);
+    assert_eq!(read(&review)["landing"]["42"]["next"], "hold_findings");
+    save_queue(&queue);
+
+    review["data"]["repository"]["p42"]["comments"]["nodes"][0]["body"] = summary(
+        completed(old, true),
+        json!({"commit_sha":null,"status":null,"has_any_findings":null,"has_unresolved_findings":null}),
+    )
+    .into();
+    let observed = read(&review);
     let hold = &observed["landing"]["42"];
     assert_eq!(hold["next"], "hold_findings");
     assert_eq!(hold["queue_alarm"], true);
     assert_eq!(observed["landing_main"], main);
     assert_eq!(hold["queue"]["group_head"], group);
-    assert_eq!(
-        read(|doc| doc["data"]["repository"]["p42"]["comments"]["totalCount"] = 2.into())["landing"]["42"]
-            ["next"],
-        "wait_review"
-    );
+    review["data"]["repository"]["p42"]["comments"]["totalCount"] = 2.into();
+    assert_eq!(read(&review)["landing"]["42"]["next"], "wait_review");
     queue["data"]["repository"]["main"] = Value::Null;
     queue["data"]["repository"]["mergeQueue"]["entries"]["nodes"][0]["headCommit"] = Value::Null;
     save_queue(&queue);
-    let waiting = read(|_| {});
+    let waiting = read(&review);
     let waiting_for_group = &waiting["landing"]["42"];
     assert_eq!(waiting_for_group["queue_alarm"], true);
     assert!(waiting_for_group["queue"].get("group_head").is_none());
@@ -1461,13 +1497,13 @@ fn landing_shadow_holds_an_approved_head_on_unresolved_older_review() {
     queue["data"]["repository"]["mergeQueue"]["entries"]["nodes"][0]["pullRequest"]["headRefOid"] =
         old.into();
     save_queue(&queue);
-    let stale = read(|_| {});
+    let stale = read(&review);
     assert_eq!(stale["landing"]["42"]["queue_alarm"], false);
     assert!(stale["landing"]["42"].get("queue").is_none());
     queue["data"]["repository"]["main"]["target"]["oid"] = main.into();
     queue["data"]["repository"]["mergeQueue"]["entries"] = json!({"totalCount":0,"nodes":[]});
     save_queue(&queue);
-    let empty = read(|_| {});
+    let empty = read(&review);
     assert_eq!(empty["landing_main"], main);
     assert!(empty["landing"]["42"].get("queue").is_none());
 }
