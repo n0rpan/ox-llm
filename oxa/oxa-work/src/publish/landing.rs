@@ -1,7 +1,7 @@
 //! Typed landing operations over the canonical publisher's GitHub transport.
 use super::{gh, json, repository};
 use crate::{
-    board::queue::{is_node_id, is_object_id},
+    board::queue::{is_node_id, is_object_id, recipient_mention},
     checked, git, Result, RunPolicy,
 };
 use serde::{Deserialize, Serialize};
@@ -64,17 +64,10 @@ pub struct NoticeIntent {
 impl NoticeIntent {
     fn body(&self, failed_tests: &[&str]) -> Result<String> {
         self.rejection.check()?;
-        let login = self
-            .recipient_login
-            .strip_suffix("[bot]")
-            .unwrap_or(&self.recipient_login);
+        let login = recipient_mention(&self.recipient_login, self.recipient_login.ends_with("[bot]"))
+            .ok_or("invalid landing notice recipient")?;
         if !is_node_id(&self.recipient_id)
             || !is_node_id(&self.publisher_id)
-            || login.len() > 100
-            || !login.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
-            || !login
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
             || failed_tests.is_empty()
             || failed_tests.len() > 128
         {
@@ -110,6 +103,23 @@ pub struct RetryIntent {
     pub observed_main: String,
     pub observed_at: u64,
     pub last_admission_at: u64,
+}
+
+impl RetryIntent {
+    fn check(&self) -> Result<()> {
+        let rejection = &self.delivery.intent.rejection;
+        rejection.check()?;
+        if !is_node_id(&self.delivery.comment_id)
+            || self.delivery.created_at < rejection.removed_at
+            || self.observed_at < self.delivery.created_at
+            || self.observed_at.saturating_sub(self.last_admission_at) < 1800
+            || self.last_admission_at >= rejection.removed_at
+            || !is_object_id(&self.observed_main)
+        {
+            return Err("invalid landing retry reservation".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -221,17 +231,8 @@ impl<'a> LandingPublisher<'a> {
     /// A queue acknowledgment may precede assignment of a merge group. In
     /// that case the owner journal retains the pending reservation.
     pub fn enqueue(&self, intent: &RetryIntent) -> Result<Admission> {
+        intent.check()?;
         let rejection = &intent.delivery.intent.rejection;
-        rejection.check()?;
-        if !is_node_id(&intent.delivery.comment_id)
-            || intent.delivery.created_at <= rejection.removed_at
-            || intent.observed_at < intent.delivery.created_at
-            || intent.observed_at.saturating_sub(intent.last_admission_at) < 1800
-            || intent.last_admission_at >= rejection.removed_at
-            || !is_object_id(&intent.observed_main)
-        {
-            return Err("invalid landing retry reservation".into());
-        }
         let host = self.host(&intent.delivery.intent)?;
         let result = self.graphql(
             &host,
@@ -283,7 +284,9 @@ fn delivery(intent: &NoticeIntent, node: &Value) -> Result<DeliveryReceipt> {
         intent: intent.clone(),
         comment_id: receipt_id(&node["id"])?,
         created_at: timestamp(&node["createdAt"])
-            .filter(|time| *time > intent.rejection.removed_at)
+            // The mutation is sent after observing the removal. Both events
+            // can be reported in the same UTC second.
+            .filter(|time| *time >= intent.rejection.removed_at)
             .ok_or("invalid delivery receipt timestamp")?,
     })
 }
@@ -302,7 +305,7 @@ fn admission(intent: &RetryIntent, entry: &Value) -> Result<Admission> {
     }
     let queue_entry_id = receipt_id(&entry["id"])?;
     let enqueued_at = timestamp(&entry["enqueuedAt"])
-        .filter(|time| *time >= intent.observed_at && *time > intent.delivery.created_at)
+        .filter(|time| *time >= intent.observed_at && *time >= intent.delivery.created_at)
         .ok_or("invalid landing admission timestamp")?;
     let acknowledgment = AdmissionAcknowledgment {
         intent: intent.clone(),
@@ -339,7 +342,7 @@ mod tests {
                 pr_head: "a".repeat(40),
                 rejected_group: "b".repeat(40),
                 removal_id: "E_removed".into(),
-                removed_at: 3_500,
+                removed_at: 3_600,
             },
             recipient_id: "U_author".into(),
             recipient_login: "synthetic-author".into(),
@@ -402,8 +405,10 @@ esac
             "id":"IC_comment","repository":{"id":"R_repo"},
             "pullRequest":{"id":"PR_pull","headRefOid":intent.rejection.pr_head,
                 "author":{"id":"U_author","login":"synthetic-author"}},
-            "author":{"__typename":"User","id":"U_publisher"},"createdAt":"1970-01-01T01:00:00Z"
+            "author":{"__typename":"User","id":"U_publisher"},"createdAt":"1970-01-01T00:59:59Z"
         });
+        assert!(delivery(&intent, &node).is_err());
+        node["createdAt"] = json!("1970-01-01T01:00:00Z");
         let delivered = delivery(&intent, &node).unwrap();
         node["pullRequest"]["author"]["id"] = json!("U_wrong_recipient");
         assert!(delivery(&intent, &node).is_err());
@@ -415,11 +420,15 @@ esac
         let retry = RetryIntent {
             delivery: delivered,
             observed_main: "c".repeat(40),
-            observed_at: 3_800,
+            observed_at: 3_600,
             last_admission_at: 1_000,
         };
+        assert!(retry.check().is_ok());
+        let mut stale = retry.clone();
+        stale.delivery.created_at -= 1;
+        assert!(stale.check().is_err());
         let mut entry = json!({
-            "id":"MQE_entry","enqueuedAt":"1970-01-01T01:04:00Z",
+            "id":"MQE_entry","enqueuedAt":"1970-01-01T01:00:00Z",
             "mergeQueue":{"id":"MQ_main","repository":{"id":"R_repo"}},
             "pullRequest":{"id":"PR_pull","number":42,"headRefOid":intent.rejection.pr_head},
             "enqueuer":{"__typename":"User","id":"U_publisher"},
