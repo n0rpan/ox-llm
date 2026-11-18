@@ -23,8 +23,9 @@ pub(super) fn queue_steering(
     session: &SessionRef,
     request: Request,
     authority: &Arc<SteeringAuthority>,
+    durable: bool,
     receipt: impl FnOnce(Value) + Send + 'static,
-) -> Result<Value, Request> {
+) -> Result<Option<Value>, Request> {
     let Request::Steer {
         id,
         revision,
@@ -41,7 +42,7 @@ pub(super) fn queue_steering(
     let mut matches = false;
     authority(session, &mut |current| matches = current == lease.as_ref());
     if !matches {
-        return Ok(json!({"id":id,"error":"goal_steer_stale"}));
+        return Ok(Some(rejected(&id, "goal_steer_stale", durable)));
     }
     let receipt_id = id.clone();
     let request = GoalSteering::new(
@@ -54,15 +55,26 @@ pub(super) fn queue_steering(
         authority.clone(),
         move |result| {
             receipt(match result {
+                Ok(()) if durable => json!({"id":receipt_id,"admitted":true}),
                 Ok(()) => json!({"id":receipt_id,"appended":true}),
-                Err(code) => json!({"id":receipt_id,"error":code}),
+                Err(code) => rejected(&receipt_id, code, durable),
             });
         },
     );
+    let request = if durable { request.durable() } else { request };
     Ok(match handle.submit_goal_steering(request) {
-        Ok(()) => json!({"id":id,"queued":true}),
-        Err(code) => json!({"id":id,"error":code}),
+        Ok(()) if durable => None,
+        Ok(()) => Some(json!({"id":id,"queued":true})),
+        Err(code) => Some(rejected(&id, code, durable)),
     })
+}
+
+fn rejected(id: &str, code: &str, durable: bool) -> Value {
+    let mut receipt = json!({"id":id,"error":code});
+    if durable {
+        receipt["admitted"] = false.into();
+    }
+    receipt
 }
 
 /// A request bound to the frontend's authorized session reference at admission.

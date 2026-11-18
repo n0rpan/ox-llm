@@ -72,6 +72,7 @@ pub(crate) use lead::{deliver_saved, reanchor_resumed, BoundLeadAuthority};
 pub struct GoalSteering {
     pub(crate) binding: SteeringBinding,
     text: String,
+    durable: bool,
     authority: Arc<SteeringAuthority>,
     receipt: Box<dyn FnOnce(Result<(), &'static str>) + Send>,
 }
@@ -92,39 +93,67 @@ impl GoalSteering {
         Self {
             binding,
             text,
+            durable: false,
             authority,
             receipt: Box::new(receipt),
         }
+    }
+
+    /// A managed caller receives a success only after the native owner stages
+    /// the input durably. The same queue and binding govern both frontends.
+    pub fn durable(mut self) -> Self {
+        self.durable = true;
+        self
     }
 
     pub(crate) fn reject(self) {
         (self.receipt)(Err(STEER_STALE));
     }
 
-    pub(crate) fn deliver<T>(
+    pub(crate) fn deliver(
         self,
         owner: &mut crate::SessionState,
-        append: impl FnOnce(&mut crate::SessionState, String) -> Result<T, oxa_proto::OxaError>,
-    ) -> Result<Option<T>, oxa_proto::OxaError> {
+        sink: &mut dyn oxa_proto::EventSink,
+        append: impl FnOnce(&mut crate::SessionState, String) -> Result<oxa_proto::Entry, oxa_proto::OxaError>,
+    ) -> Result<Option<oxa_proto::Entry>, oxa_proto::OxaError> {
         let Self {
             binding,
             text,
+            durable,
             authority,
             receipt,
         } = self;
         let mut delivery = Some((append, text));
         let mut result = Err(stale_steering());
+        let mut staged_events = oxa_proto::VecSink::default();
         authority(&binding.session, &mut |current| {
             if let Some((append, text)) = delivery.take() {
-                result = binding
-                    .validate(owner, current)
-                    .and_then(|()| append(owner, text));
+                result = binding.validate(owner, current).and_then(|()| {
+                    if durable {
+                        crate::Session::stage_lead_steer_at_boundary(
+                            owner,
+                            binding.revision,
+                            text,
+                            binding.lease.clone(),
+                            &mut staged_events,
+                        )
+                        .map(|_| None)
+                    } else {
+                        append(owner, text).map(Some)
+                    }
+                });
             }
         });
+        for event in &staged_events.0 {
+            sink.emit(event);
+        }
         receipt(result.as_ref().map(|_| ()).map_err(|error| error.code));
         match result {
-            Ok(entry) => Ok(Some(entry)),
-            Err(error) if error.code == STEER_STALE => Ok(None),
+            Ok(None) if durable => lead::deliver_saved_entry(owner, sink, false),
+            Ok(entry) => Ok(entry),
+            Err(error) if error.code == STEER_STALE || (durable && error.code == oxa_proto::codes::BUSY) => {
+                Ok(None)
+            }
             Err(error) => Err(error),
         }
     }

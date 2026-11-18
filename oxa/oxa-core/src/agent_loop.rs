@@ -779,7 +779,7 @@ fn deliver_steering(
     }
     if let Some(request) = st.shared.take_goal_steering() {
         // The assignment guard covers the write, then releases before events or hooks.
-        if let Some(entry) = request.deliver(st, append_user_entry)? {
+        if let Some(entry) = request.deliver(st, sink, append_user_entry)? {
             announce_user_entry(st, entry, sink, ui, run_msgs);
             appended = true;
         }

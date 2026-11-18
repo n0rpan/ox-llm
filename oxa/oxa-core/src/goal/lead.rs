@@ -68,22 +68,50 @@ impl Session {
         lease: Option<SteeringLease>,
         sink: &mut dyn EventSink,
     ) -> Result<u64, OxaError> {
-        let mut goal = idle_goal(self, session, revision)?;
-        if !Goal::allows_steering(self.st.tree.entries(), revision) {
-            return Err(stale_steering());
-        }
-        let lead = goal.lead.get_or_insert_with(LeadGoalState::default);
-        if lead.pending_steer.is_some() {
-            return Err(OxaError::new(codes::BUSY, "A durable steer is already pending."));
-        }
-        lead.pending_steer = Some(PendingGoalSteer {
-            entry_id: oxa_session::new_entry_id(&|id| self.st.tree.get(id).is_some()),
-            revision,
-            text,
-            lease,
-        });
-        save(&mut self.st, goal, sink)
+        let goal = idle_goal(self, session, revision)?;
+        stage(&mut self.st, goal, revision, text, lease, sink)
     }
+
+    /// The existing native run queue invokes this on its sole session writer
+    /// after validating the full binding at a safe turn boundary.
+    pub(super) fn stage_lead_steer_at_boundary(
+        st: &mut SessionState,
+        revision: u64,
+        text: String,
+        lease: Option<SteeringLease>,
+        sink: &mut dyn EventSink,
+    ) -> Result<u64, OxaError> {
+        let goal = st
+            .goal
+            .as_ref()
+            .map(|runtime| runtime.snapshot())
+            .ok_or_else(stale_steering)?;
+        stage(st, goal, revision, text, lease, sink)
+    }
+}
+
+fn stage(
+    st: &mut SessionState,
+    mut goal: Goal,
+    revision: u64,
+    text: String,
+    lease: Option<SteeringLease>,
+    sink: &mut dyn EventSink,
+) -> Result<u64, OxaError> {
+    if !Goal::allows_steering(st.tree.entries(), revision) {
+        return Err(stale_steering());
+    }
+    let lead = goal.lead.get_or_insert_with(LeadGoalState::default);
+    if lead.pending_steer.is_some() {
+        return Err(OxaError::new(codes::BUSY, "A durable steer is already pending."));
+    }
+    lead.pending_steer = Some(PendingGoalSteer {
+        entry_id: oxa_session::new_entry_id(&|id| st.tree.get(id).is_some()),
+        revision,
+        text,
+        lease,
+    });
+    save(st, goal, sink)
 }
 
 fn idle_goal(session: &Session, bound: &SessionRef, revision: u64) -> Result<Goal, OxaError> {
@@ -121,14 +149,22 @@ fn save(st: &mut SessionState, goal: Goal, sink: &mut dyn EventSink) -> Result<u
 /// Called before the continuation prompt. A crash after the message append
 /// but before the goal update leaves the saved user entry as the witness.
 pub(crate) fn deliver_saved(st: &mut SessionState, sink: &mut dyn EventSink) -> Result<(), OxaError> {
+    deliver_saved_entry(st, sink, true).map(|_| ())
+}
+
+pub(super) fn deliver_saved_entry(
+    st: &mut SessionState,
+    sink: &mut dyn EventSink,
+    emit_entry: bool,
+) -> Result<Option<oxa_proto::Entry>, OxaError> {
     let Some(mut goal) = st.goal.as_ref().map(|runtime| runtime.snapshot()) else {
-        return Ok(());
+        return Ok(None);
     };
     if matches!(goal.status, GoalStatus::Paused | GoalStatus::Blocked) {
-        return Ok(());
+        return Ok(None);
     }
     let Some(pending) = goal.lead.as_mut().and_then(|lead| lead.pending_steer.take()) else {
-        return Ok(());
+        return Ok(None);
     };
     let wire = WireMsg::user(&pending.text);
     if let Some(existing) = st.tree.get(&pending.entry_id) {
@@ -137,7 +173,7 @@ pub(crate) fn deliver_saved(st: &mut SessionState, sink: &mut dyn EventSink) -> 
         }
         // Also covers retry after an append succeeded but the first sync failed.
         st.store.sync(&st.sref)?;
-        return save(st, goal, sink).map(|_| ());
+        return save(st, goal, sink).map(|_| None);
     }
 
     let binding = SteeringBinding {
@@ -178,9 +214,11 @@ pub(crate) fn deliver_saved(st: &mut SessionState, sink: &mut dyn EventSink) -> 
     }
     match result {
         Ok(entry) => {
-            sink.emit(&AgentEvent::EntryAppended { entry });
+            if emit_entry {
+                sink.emit(&AgentEvent::EntryAppended { entry: entry.clone() });
+            }
             save(st, goal, sink)?;
-            Ok(())
+            Ok(Some(entry))
         }
         Err(error) if error.code == "goal_steer_stale" => {
             save(st, goal, sink)?;

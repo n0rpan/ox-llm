@@ -497,6 +497,7 @@ fn session_loop(
                             &binding,
                             request,
                             &steering_authority,
+                            false,
                             move |receipt| {
                                 // Mark admission before publishing a result from the owner boundary.
                                 let _gate = lock(&result_gate);
@@ -504,7 +505,9 @@ fn session_loop(
                             },
                         ) {
                             Ok(admission) => {
-                                write_control_receipt(&out, admission);
+                                if let Some(admission) = admission {
+                                    write_control_receipt(&out, admission);
+                                }
                                 return true;
                             }
                             Err(request) => request,

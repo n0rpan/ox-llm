@@ -375,7 +375,6 @@ pub fn run_json_outcome_with_steering_authority(
 ) -> Result<RunOutcome, OxaError> {
     use crate::a2a_control::{queue_steering, write_control_receipt};
     use serde_json::json;
-    use std::sync::{Arc, Mutex};
 
     session.bind_lead_steering_authority(authority.clone());
     let mut writer = SharedRecords(out.clone());
@@ -384,12 +383,10 @@ pub fn run_json_outcome_with_steering_authority(
     handle.enable_goal_steering();
     let binding = session.inner().sref.clone();
     let session_ref = binding.clone();
-    let order = Arc::new(Mutex::new(()));
     let _inbox = oxa_session::Inbox::watch_control(agent_dir, &binding, move |packet| {
         if handle.wrap_up_requested() {
             return false;
         }
-        let _admission = order.lock().unwrap_or_else(|poison| poison.into_inner());
         let request = match oxa_orchestrator::control::decode(packet.as_bytes()) {
             Ok(request) => request,
             Err(rejection) => {
@@ -397,14 +394,16 @@ pub fn run_json_outcome_with_steering_authority(
                 return true;
             }
         };
-        let result_order = order.clone();
         let result_out = out.clone();
-        let response = queue_steering(&handle, &session_ref, request, &authority, move |receipt| {
-            let _receipt = result_order.lock().unwrap_or_else(|poison| poison.into_inner());
+        let response = queue_steering(&handle, &session_ref, request, &authority, true, move |receipt| {
             write_control_receipt(&result_out, receipt);
         })
-        .unwrap_or_else(|request| json!({"id":request.id(),"error":"unsupported_control"}));
-        write_control_receipt(&out, response);
+        .unwrap_or_else(|request| {
+            Some(json!({"id":request.id(),"admitted":false,"error":"unsupported_control"}))
+        });
+        if let Some(response) = response {
+            write_control_receipt(&out, response);
+        }
         true
     })
     .map_err(|error| OxaError::io("cannot mount managed steering inbox", &error))?;
