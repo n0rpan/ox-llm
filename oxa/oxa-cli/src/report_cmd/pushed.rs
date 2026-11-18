@@ -41,8 +41,7 @@ fn secret_value(value: &str) -> Option<String> {
     let value = value.trim();
     (value.chars().count() >= MIN_SECRET_VALUE_CHARS
         && !value.starts_with('/')
-        && !value.starts_with('~')
-        && !value.contains(char::is_whitespace))
+        && !value.starts_with('~'))
     .then(|| value.to_string())
 }
 
@@ -115,6 +114,10 @@ impl PushScan {
         if let Some(label) = self.secret_text(item.text) {
             return Some(found(label));
         }
+        // An existing tracked secret store gains content as well as a new one.
+        if secret_store(item.path) {
+            return Some(found("content to a file name used for secrets"));
+        }
         let registry = REGISTRY_FILES.contains(&basename(item.path).as_str());
         let line = item.text.to_ascii_lowercase();
         if registry
@@ -186,6 +189,34 @@ mod tests {
         for name in ["src/env.rs", "id_ed25519.pub", "keyboard.rs", "README.md"] {
             assert!(scan.check(&file(name)).is_none(), "{name}");
         }
+    }
+
+    #[test]
+    fn lines_added_to_an_existing_secret_store_are_refused() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        for path in [".env", "deploy/aws/credentials", "config/.env.production"] {
+            let item = PushedContent {
+                path,
+                line: Some(2),
+                text: "PLAIN=value",
+            };
+            assert!(scan.check(&item).is_some(), "{path}");
+        }
+        assert!(scan.check(&line("src/main.rs", "PLAIN=value")).is_none());
+    }
+
+    #[test]
+    fn multiword_secret_values_are_matched() {
+        let passphrase = format!("synthetic {} phrase words", "q".repeat(6));
+        let env = Env::from_pairs(&[("SYNTHETIC_PASSPHRASE", &passphrase)]);
+        let scan = PushScan::new(&env, &Settings::from_values(json!({}), json!({})));
+        let text = format!("note: {passphrase}");
+        let item = PushedContent {
+            path: "src/main.rs",
+            line: Some(1),
+            text: &text,
+        };
+        assert!(scan.check(&item).is_some());
     }
 
     #[test]

@@ -1043,3 +1043,17 @@ fn publication_refuses_a_secret_that_a_later_commit_removed() {
     assert_ne!(record["head_sha"], first["head_sha"], "{record}");
     assert_refused(&env, &record, "answer.txt:1", &token);
 }
+
+#[test]
+fn publication_refuses_an_empty_file_named_with_a_token() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let token = format!("ghp_{}", "x".repeat(36));
+    let record = run_args(
+        &env,
+        write_turns(&format!("notes/{token}.txt"), ""),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused(&env, &record, "a file whose path", &token);
+}

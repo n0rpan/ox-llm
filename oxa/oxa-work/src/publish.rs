@@ -100,7 +100,37 @@ fn scan_pushed(policy: &RunPolicy, tree: &Path, base: &str, head: &str, scan: Co
         ],
     ))
     .map_err(|_| "publishing refused: cannot scan the commits to publish".to_string())?;
-    scan_patch(&text, scan)
+    scan_patch(&text, scan)?;
+    // An empty added file has no content header in the patch, so the names of all
+    // added files are listed separately and checked as well.
+    let names = checked(super::git(
+        policy,
+        tree,
+        &[
+            "log",
+            "--format=",
+            "--name-only",
+            "-z",
+            "--diff-filter=A",
+            "--cc",
+            "--no-renames",
+            "--no-relative",
+            &range,
+            "--",
+        ],
+    ))
+    .map_err(|_| "publishing refused: cannot scan the commits to publish".to_string())?;
+    for name in names.split('\0').map(str::trim).filter(|name| !name.is_empty()) {
+        let item = PushedContent {
+            path: name,
+            line: None,
+            text: "",
+        };
+        if let Some(finding) = scan(&item) {
+            return Err(refusal(name, None, finding));
+        }
+    }
+    Ok(())
 }
 
 /// Pass every added file name and added line of `git log --patch --cc -U0` output to `scan`.
