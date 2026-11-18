@@ -137,3 +137,67 @@ fn terminal_and_exit_must_agree_and_invalid_usage_does_not_become_measured() {
         .command(Path::new("/vendor"), Path::new("/task"), "--sandbox", "synthetic")
         .is_err());
 }
+
+fn claude_result(receipt: &serde_json::Value) -> WorkerResult {
+    OwnerCli::Claude(ClaudePermission::Default)
+        .read_invocation(receipt.to_string().as_bytes())
+        .unwrap()
+        .finish(ExitStatus::from_raw(0))
+}
+
+#[test]
+fn claude_accepts_the_documented_context_suffix_as_one_argument() {
+    let cli = OwnerCli::Claude(ClaudePermission::Default);
+    let command = cli
+        .command(
+            Path::new("/vendor"),
+            Path::new("/task"),
+            "claude-opus-4-6[1m]",
+            "synthetic",
+        )
+        .unwrap();
+    assert_eq!(command.get_args().nth(7).unwrap(), "claude-opus-4-6[1m]");
+    for invalid in ["--model[1m]", "opus[1m][1m]", "opus[1m] --verbose"] {
+        assert!(cli
+            .command(Path::new("/vendor"), Path::new("/task"), invalid, "synthetic")
+            .is_err());
+    }
+}
+
+#[test]
+fn claude_preserves_a_terminal_receipt_with_a_long_final_answer() {
+    let result = claude_result(&serde_json::json!({
+        "type": "result", "subtype": "success", "is_error": false,
+        "result": "\\\" context \n".repeat(super::super::LINE_CAP),
+        "modelUsage": {"opus": {
+            "inputTokens": 3, "outputTokens": 2, "cacheReadInputTokens": 1, "cacheCreationInputTokens": 0
+        }}
+    }));
+    assert!(result.accepted());
+    assert_eq!(result.tokens.unwrap().prompt, Some(4));
+}
+
+#[test]
+fn claude_usage_covers_subagents_or_is_explicitly_partial() {
+    let mut receipt = serde_json::json!({
+        "type": "result", "subtype": "success", "is_error": false,
+        "usage": {"input_tokens": 20, "output_tokens": 3, "cache_read_input_tokens": 4,
+                  "cache_creation_input_tokens": 5},
+        "modelUsage": {
+            "opus": {"inputTokens": 20, "outputTokens": 3, "cacheReadInputTokens": 4,
+                     "cacheCreationInputTokens": 5},
+            "sonnet": {"inputTokens": 1000, "outputTokens": 15, "cacheReadInputTokens": 40,
+                       "cacheCreationInputTokens": 10}
+        }
+    });
+    let tokens = claude_result(&receipt).tokens.unwrap();
+    assert_eq!(
+        (tokens.prompt, tokens.completion, tokens.cached),
+        (Some(1079), Some(18), Some(44))
+    );
+    assert!(tokens.complete);
+    receipt["modelUsage"] = serde_json::Value::Null;
+    let tokens = claude_result(&receipt).tokens.unwrap();
+    assert_eq!(tokens.prompt, Some(29));
+    assert!(!tokens.complete);
+}
