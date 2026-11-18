@@ -249,10 +249,16 @@ impl Table {
 
     /// The signal sequence for one group. Returns once the group has no live member.
     fn teardown(&self, pgid: u32) -> io::Result<()> {
+        // A grace the monotonic clock cannot reach is a configuration error (`oxa.workers.
+        // stopGraceSeconds` takes any whole number): report it instead of panicking in the one
+        // supervisor thread, which would drop every later request and the tracked children.
+        let grace = Instant::now()
+            .checked_add(self.grace)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "worker stop grace is too large"))?;
         if leader_running(pgid)? {
             signal(&self.kill, &pgid.to_string(), "INT")?;
         }
-        if settle(pgid, Instant::now() + self.grace)? {
+        if settle(pgid, grace)? {
             return Ok(());
         }
         signal(&self.kill, &format!("-{pgid}"), "TERM")?;
@@ -341,14 +347,24 @@ fn group_alive(pgid: u32) -> io::Result<bool> {
     Ok(false)
 }
 
+/// `ESRCH`: the pid exited between the open and the read. Linux returns this from a
+/// `/proc/<pid>` read rather than `NotFound`, and `group_alive` scans unrelated processes, so
+/// ordinary host churn hits it.
+const ESRCH: i32 = 3;
+
 /// The state letter and process group of `pid` from `/proc/<pid>/stat`, or `None` once the
 /// process is gone.
 fn proc_stat(pid: u32) -> io::Result<Option<(char, u32)>> {
     match fs::read(format!("/proc/{pid}/stat")) {
         Ok(bytes) => parse_stat(&bytes).map(Some),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) if process_gone(&error) => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+/// True for the two ways a `/proc/<pid>` read reports that the process is gone.
+fn process_gone(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(ESRCH)
 }
 
 /// Parse a `/proc/<pid>/stat` record as bytes: `comm` may hold any byte (not only UTF-8), so only
@@ -751,5 +767,41 @@ mod tests {
         assert_eq!(stop_grace(&set), Duration::from_secs(3));
         let unset = Settings::from_values(json!({}), json!({}));
         assert_eq!(stop_grace(&unset), Duration::from_secs(10));
+    }
+
+    /// A `/proc/<pid>` read reports a process that exited between the open and the read as
+    /// `ESRCH`, not `NotFound`; scanning the host hits that, and it must not abort a stop.
+    #[test]
+    fn a_proc_read_that_reports_esrch_is_a_gone_process() {
+        assert!(process_gone(&io::Error::from_raw_os_error(ESRCH)));
+        assert!(process_gone(&io::Error::from(io::ErrorKind::NotFound)));
+        assert!(
+            !process_gone(&io::Error::from_raw_os_error(13)),
+            "EPERM stays an error"
+        );
+        assert!(proc_stat(u32::MAX)
+            .expect("a missing pid is not an error")
+            .is_none());
+    }
+
+    /// `oxa.workers.stopGraceSeconds` takes any whole number, including one the clock cannot
+    /// reach: stopping must report that instead of panicking in the supervisor thread.
+    #[test]
+    fn an_unreachable_stop_grace_is_an_error_not_a_panic() {
+        let dir = scratch("grace-overflow");
+        let kill = dir.join("kill");
+        script(&kill, "exit 0");
+        let sup = Supervisor::new(Duration::from_secs(u64::MAX / 2), kill).expect("supervisor");
+        let pgid = sup
+            .spawn(&["/bin/sh", "-c", "true"], &dir.join("worker.log"))
+            .expect("spawn");
+        let refused = sup.stop(pgid).expect_err("an unreachable grace is refused");
+        assert!(
+            refused.to_string().contains("stop grace is too large"),
+            "{refused}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+        // The supervisor thread survives to serve later stops.
+        let _ = sup.stop(pgid);
     }
 }
