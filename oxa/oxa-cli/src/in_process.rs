@@ -302,15 +302,19 @@ fn select_for(
             .map(|models| models.keys().cloned().collect::<std::collections::BTreeSet<_>>())
             .unwrap_or_default()
     };
-    let requested_local = native_local
-        && requested.is_some_and(|model| {
-            routing::resolve_in_catalog(model, endpoint, aliases("oxa.local.models")).is_some()
-        });
+    let local_models = aliases("oxa.local.models");
     let cloud_models = aliases("oxa.cloud.models");
+    // A configured local alias stays local whatever shape its name has, in a single `--model`
+    // and in every `--models` pattern of the scope.
+    let local_alias = |model: &str| {
+        native_local && routing::resolve_in_catalog(model, endpoint, local_models.iter().cloned()).is_some()
+    };
+    let requested_local = requested.is_some_and(local_alias);
     let requests_go = |pattern: &str| {
         routing::is_go_model(pattern, endpoint)
             && !(explicit_cloud
                 && routing::resolve_in_catalog(pattern, endpoint, cloud_models.iter().cloned()).is_some())
+            && !local_alias(pattern)
     };
     let go_requested = requested.map_or_else(
         || !scope.is_empty() && scope.iter().all(|pattern| requests_go(pattern)),

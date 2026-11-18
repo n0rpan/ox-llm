@@ -1745,6 +1745,46 @@ fn local_go_namespace_alias_with_thinking_suffix_keeps_local_ownership_offline()
     mock.assert_healthy();
 }
 
+#[test]
+fn scoped_local_alias_is_not_treated_as_an_unavailable_go_model() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start(vec![]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.home().join(".oxa/agent/settings.json");
+    let mut settings: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    // Native local on, native cloud explicitly off, and a Go-shaped local alias.
+    settings["oxa"]["engine"] = json!({"inProcessLocal": true, "inProcessCloud": false});
+    settings["oxa"]["local"] = json!({"binary":"/synthetic/not-launched-oxe",
+        "models":{"opencode/custom-local":{"model":"/synthetic/model.gguf"}},
+        "limits":{"opencode/custom-local":{"context_window":4096,"max_output":64,
+            "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,"mtp_state_bytes":0,"margin_bytes":1044480}}}});
+    fs::write(path, settings.to_string()).unwrap();
+    // The singular and the scoped spelling both stay on the configured local alias.
+    for args in [
+        vec!["--offline", "--model", "opencode/custom-local"],
+        vec!["--offline", "--models", "opencode/custom-local"],
+    ] {
+        let mut words = args.clone();
+        words.extend(["--no-session", "--no-tools", "-p", "Synthetic local scope"]);
+        let output = run(&env, &words);
+        assert_eq!(
+            terminal(&output)["error_class"],
+            "not_found",
+            "args={args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("Local weights are missing"),
+            "args={args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
+        assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
+        assert!(mock.requests().is_empty());
+    }
+    mock.assert_healthy();
+}
+
 // #798 composition controls: the ordinary reader is the only credential reader.
 // Fixtures stay outside source repositories and use only loopback HTTP.
 fn go_diagnostic_env() -> TestEnv {
