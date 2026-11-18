@@ -6,6 +6,7 @@ use std::fmt::Write;
 mod chat;
 mod filters;
 mod pages;
+mod quotas;
 pub use filters::{Filter, Query};
 pub use pages::{Page, Prompt};
 
@@ -16,6 +17,8 @@ pub struct View<'a> {
     pub situation: Option<&'a Snapshot>,
     /// C's selected checkpoint observation; the renderer never acquires runner state.
     pub selected_task_usage: Option<&'a oxa_work::Result<Option<oxa_work::TaskUsage>>>,
+    pub github_quotas: Option<&'a crate::lead_quota::GitHubQuotas>,
+    pub model_plan: Option<&'a oxc_gateway::status::chatgpt_usage::Usage>,
     pub main_red: bool,
     pub main_merge_stalled: bool,
     pub stalled_runs: &'a [u64],
@@ -127,7 +130,10 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
         }
         Page::Item(number) => item(&mut html, view, number, now),
         Page::Chat(prompt) => chat::render(&mut html, view, prompt),
-        Page::Usage => usage(&mut html, view),
+        Page::Usage => {
+            usage(&mut html, view);
+            quotas::render(&mut html, view, now);
+        }
     }
     html.push_str("<footer>Read-only · Chat with the lead is not connected yet.</footer></main>");
     html
@@ -311,9 +317,7 @@ fn usage(html: &mut String, view: &View<'_>) {
             );
         }
     }
-    html.push_str(
-        "</section><section><h2>Plans and quotas</h2><p>Usage observations unavailable.</p></section>",
-    );
+    html.push_str("</section>");
 }
 
 fn workers(html: &mut String, view: &View<'_>) {
