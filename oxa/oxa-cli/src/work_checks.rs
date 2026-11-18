@@ -179,7 +179,7 @@ git --no-replace-objects commit -m {message}
         shell_path: settings.shell_path(&dirs.home),
         command_prefix: settings.shell_command_prefix(),
     };
-    let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
+    let sandbox = crate::netguard::without_github(Arc::new(b), &settings);
     let mut failed = false;
     let mut diagnostics = Vec::new();
     for entry in commands {
