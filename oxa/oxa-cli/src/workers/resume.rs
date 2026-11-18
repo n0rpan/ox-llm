@@ -14,6 +14,13 @@ use oxa_proto::{Autonomy, Mode};
 /// Setting: relaunch dead, unfinished workers when the parent session opens (default true).
 pub const SETTING_RESUME: &str = "oxa.workers.resumeOnStart";
 
+/// Whether the owner allows resume on open: `oxa.workers.resumeOnStart` from the user settings
+/// only (default true). A project file is never read for it, so it can neither turn resume on
+/// against the owner's `false` nor turn it off.
+pub fn enabled(settings: &oxa_config::Settings) -> bool {
+    settings.user_bool(SETTING_RESUME, true)
+}
+
 /// Whether a worker is relaunched: its process is gone (`alive` false) and either it never wrote a
 /// final status ([`WorkerState::Dead`]) or its last status is `finished` with the outcome
 /// `interrupted`. The second case is what a normal parent shutdown leaves: `Supervisor::stop_all`
@@ -194,5 +201,27 @@ mod tests {
         )
         .unwrap();
         assert_eq!(mode_arg(&args), "plan");
+    }
+
+    fn settings(user: serde_json::Value, project: serde_json::Value) -> oxa_config::Settings {
+        oxa_config::Settings::from_values(user, project)
+    }
+
+    #[test]
+    fn user_false_project_true_does_not_resume() {
+        let off = serde_json::json!({"oxa": {"workers": {"resumeOnStart": false}}});
+        let on = serde_json::json!({"oxa": {"workers": {"resumeOnStart": true}}});
+        assert!(!enabled(&settings(off, on)));
+    }
+
+    #[test]
+    fn project_false_cannot_disable_user_default() {
+        let off = serde_json::json!({"oxa": {"workers": {"resumeOnStart": false}}});
+        // Nothing set by the user: the default (true) holds, whatever the project says.
+        assert!(enabled(&settings(serde_json::json!({}), off.clone())));
+        assert!(enabled(&settings(serde_json::json!({}), serde_json::json!({}))));
+        // An explicit user opt-in stays on.
+        let on = serde_json::json!({"oxa": {"workers": {"resumeOnStart": true}}});
+        assert!(enabled(&settings(on, off)));
     }
 }
