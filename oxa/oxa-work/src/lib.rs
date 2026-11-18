@@ -16,6 +16,8 @@ mod committed;
 pub use committed::{verify_saved_task, VerifiedTask};
 mod execute;
 pub mod helper_queue;
+#[cfg(target_os = "linux")]
+pub mod managed_steering;
 mod notes;
 mod publish;
 mod queue;
@@ -1054,6 +1056,8 @@ pub struct LockedTask<'a> {
     task: &'a Task,
     policy: &'a RunPolicy,
     lock: fs::File,
+    #[cfg(target_os = "linux")]
+    managed_steering: Option<managed_steering::Launch>,
 }
 
 impl<'a> LockedTask<'a> {
@@ -1072,7 +1076,33 @@ impl<'a> LockedTask<'a> {
         }
         verify_task_storage(&policy.storage).map_err(|error| format!("task storage: {error}"))?;
         let lock = lock_task(policy, &task.id, create)?;
-        Ok(Self { task, policy, lock })
+        Ok(Self {
+            task,
+            policy,
+            lock,
+            #[cfg(target_os = "linux")]
+            managed_steering: None,
+        })
+    }
+
+    /// The owner frontend enables steering for its exact admitted task.
+    #[cfg(target_os = "linux")]
+    pub fn bind_managed_steering(
+        &mut self,
+        claims: &Path,
+        binding: &board::NativeBinding,
+        objective: &str,
+    ) -> Result<()> {
+        if self.task.id != binding.native_task_id || self.task.branch != binding.branch {
+            return Err("managed steering requires this task's admission binding".into());
+        }
+        self.managed_steering = Some(managed_steering::Launch::new(
+            claims,
+            &self.policy.storage,
+            binding,
+            objective,
+        )?);
+        Ok(())
     }
 
     /// Plan the task admitted by the native queue while retaining its lock.
@@ -1196,6 +1226,8 @@ fn run_locked(
         observer,
         scrub_note,
         base_alias: planned.base_alias.as_ref(),
+        #[cfg(target_os = "linux")]
+        managed_steering: locked.managed_steering.as_ref(),
     })
     .drive(&mut state)
     {
