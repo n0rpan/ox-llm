@@ -47,6 +47,8 @@ pub struct Shared {
     pub cancel: CancelToken,
     /// Cancels a pending auto-retry wait only.
     pub cancel_retry: CancelToken,
+    /// Wakes a running `wait` tool when input for the active session arrives (reset per wait).
+    pub wait_wake: CancelToken,
     /// `true` while `prompt` is running.
     pub busy: std::sync::atomic::AtomicBool,
     pub modes: Mutex<(QueueMode, QueueMode)>,
@@ -238,7 +240,7 @@ impl Shared {
         let reserved = requested.min(turn.remaining);
         if reserved == 0 {
             return Err(oxa_proto::OxaError::new(
-                oxa_proto::codes::BUDGET_EXHAUSTED,
+                oxa_proto::codes::LITERAL_OUTPUT_EXHAUSTED,
                 "The literal turn's output limit is exhausted.",
             ));
         }
@@ -249,6 +251,13 @@ impl Shared {
             None
         };
         Ok(Some((reserved, context)))
+    }
+
+    /// `None` when no bounded literal turn is active, else the output tokens it
+    /// can still reserve. The length-recovery path consults this before it
+    /// schedules a request that could never be admitted.
+    pub(crate) fn literal_output_remaining(&self) -> Option<u32> {
+        lock(&self.gate.literal_turn).as_ref().map(|turn| turn.remaining)
     }
 
     pub(crate) fn settle_literal_output(&self, reserved: u32, completion: u32) {
@@ -264,6 +273,7 @@ impl Shared {
             queue: Mutex::new(Queue::default()),
             cancel: CancelToken::new(),
             cancel_retry: CancelToken::new(),
+            wait_wake: CancelToken::new(),
             busy: std::sync::atomic::AtomicBool::new(false),
             modes: Mutex::new((steering, follow_up)),
             dirty: std::sync::atomic::AtomicBool::new(false),
@@ -298,6 +308,15 @@ impl Shared {
             if had_input || q.follow_ups().next().is_some() {
                 self.dirty.store(true, Ordering::SeqCst);
             }
+        }
+    }
+
+    /// Arm the wait wakeup: reset it, then re-check the queues. Input is queued before the
+    /// handle cancels, so input admitted at any moment either is seen here or wakes the wait.
+    pub(crate) fn arm_wait_wake(&self) {
+        self.wait_wake.reset();
+        if self.has_input() {
+            self.wait_wake.cancel();
         }
     }
 
@@ -400,6 +419,7 @@ impl Handle {
         lock(&self.shared.queue).steering.push(text);
         self.shared.dirty.store(true, Ordering::SeqCst);
         self.shared.gate.bg_cancel.cancel();
+        self.shared.wait_wake.cancel();
     }
     /// Queue a follow-up (delivered when the agent would otherwise stop). Cancels this
     /// instance's own background request like [`Handle::steer`].
@@ -407,6 +427,7 @@ impl Handle {
         lock(&self.shared.queue).follow_up.push(text);
         self.shared.dirty.store(true, Ordering::SeqCst);
         self.shared.gate.bg_cancel.cancel();
+        self.shared.wait_wake.cancel();
     }
     /// Whether these handles control the same ordinary input queues. Reopening creates
     /// another instance; a fork within the same instance retains its existing queue semantics.
@@ -468,6 +489,7 @@ impl Handle {
         if q.session_id == session_id {
             self.shared.dirty.store(true, Ordering::SeqCst);
             self.shared.gate.bg_cancel.cancel();
+            self.shared.wait_wake.cancel();
         }
         true
     }

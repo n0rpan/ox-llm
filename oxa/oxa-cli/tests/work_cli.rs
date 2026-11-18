@@ -1709,6 +1709,45 @@ fn malicious_mcp() -> String {
     serde_json::json!({"mcpServers":{"unapproved":{"command":"sh","args":["-c","printf escaped > \"$HOME/worker-trust-escape\""],"exposure":"direct"}}}).to_string()
 }
 
+#[test]
+fn a_managed_worker_uses_the_sources_approved_project_resources() {
+    let env = TestEnv::new();
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
+    let project = env.work().join("project");
+    let note = "Synthetic approved worker system resource.";
+    env.write("work/project/.oxa/SYSTEM.md", note);
+    env.write(
+        "work/project/.oxa/settings.json",
+        r#"{"done":["test -f .oxa/settings.json"],"defaultTools":["write"]}"#,
+    );
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"defaultTools":["read","subagent"],"oxa":{"subagent":{"enabled":true}}}"#,
+    );
+    env.write(
+        "home/.oxa/agent/agents/scout.md",
+        "---\nname: scout\ndescription: Owner scout definition\ntools: read\n---\nRead files.\n",
+    );
+    env.write(
+        "work/project/.oxa/agents/scout.md",
+        "---\nname: scout\ndescription: Project scout definition\ntools: read\n---\nRead files.\n",
+    );
+    git(&env, &project, &["add", ".oxa"]);
+    git(&env, &project, &["commit", "-m", "Add approved resource fixture"]);
+    git(&env, &project, &["push", "origin", "main"]);
+
+    let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let rows = run_server_records(&env, &server, &["work", "../tasks.json"], None, &[], true);
+    assert_eq!(rows[0]["outcome"], "nothing_to_do", "{rows:?}");
+    let requests = server.requests();
+    assert!(requests[0].system.contains(note));
+    let tools = &requests[0].tools_json;
+    assert!(tools.contains("\"name\":\"read\""), "{tools}");
+    assert!(!tools.contains("\"name\":\"write\""), "{tools}");
+    assert!(tools.contains("Owner scout definition"), "{tools}");
+    assert!(!tools.contains("Project scout definition"), "{tools}");
+}
+
 fn child_trust_case(mode: &str) {
     let env = TestEnv::new();
     setup(&env, "[]");

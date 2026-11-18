@@ -39,11 +39,19 @@ fn options() -> OpenOptions {
 pub(crate) enum Reserved {
     Metered(f64),
     Subscription(u64, f64),
+    /// An admitted uncapped request whose cost no price bound could establish. It owns the
+    /// USD headroom until its settled row records the cost, across crashes and restarts.
+    Unknown,
 }
 impl Reserved {
     fn from_value(value: &Value) -> io::Result<Self> {
         if let Some(cost) = value.as_f64().filter(|cost| cost.is_finite() && *cost >= 0.0) {
             return Ok(Self::Metered(cost));
+        }
+        if let Some(object) = value.as_object() {
+            if object.len() == 1 && object.get("unknown").and_then(Value::as_bool) == Some(true) {
+                return Ok(Self::Unknown);
+            }
         }
         let object = value
             .as_object()
@@ -70,11 +78,13 @@ impl Reserved {
                 json!({"subscription_tokens":tokens,"reserved_usd":usd})
             }
             Self::Subscription(tokens, _) => json!({"subscription_tokens":tokens}),
+            Self::Unknown => json!({"unknown":true}),
         }
     }
     fn usd(&self) -> f64 {
         match self {
             Self::Metered(cost) | Self::Subscription(_, cost) => *cost,
+            Self::Unknown => 0.0,
         }
     }
 }
@@ -163,15 +173,16 @@ impl Shared {
     /// An unpriced call owns the remaining USD headroom until settlement.
     /// Do not let floating-point summation or a changed cap admit another call.
     pub fn has_conservative_hold(&self) -> bool {
-        self.holds
-            .values()
-            .any(|amount| matches!(amount, Reserved::Subscription(_, usd) if *usd > 0.0))
+        self.holds.values().any(|amount| {
+            matches!(amount, Reserved::Unknown)
+                || matches!(amount, Reserved::Subscription(_, usd) if *usd > 0.0)
+        })
     }
     pub fn subscription_reserved(&self) -> io::Result<Counts> {
         self.holds
             .values()
             .try_fold(Counts::default(), |counts, amount| match amount {
-                Reserved::Metered(_) => Ok(counts),
+                Reserved::Metered(_) | Reserved::Unknown => Ok(counts),
                 Reserved::Subscription(tokens, _) => counts
                     .add(Counts {
                         requests: 1,
@@ -182,6 +193,10 @@ impl Shared {
     }
     pub fn insert(&mut self, cost: f64) -> io::Result<String> {
         self.insert_amount(Reserved::Metered(cost))
+    }
+    /// A hold whose cost no bound establishes; it keeps the headroom closed until settlement.
+    pub fn insert_unknown(&mut self) -> io::Result<String> {
+        self.insert_amount(Reserved::Unknown)
     }
     pub fn insert_subscription_with_usd(&mut self, tokens: u64, usd: f64) -> io::Result<String> {
         if tokens == 0 || !usd.is_finite() || usd < 0.0 {
