@@ -299,6 +299,12 @@ fn native_go_processes_forward_concurrently_without_local_usd_holds() {
 fn native_go_unknown_cost_stays_unknown_and_admission_continues() {
     let env = TestEnv::new();
     let mock = MockOpenAi::start_with(|base| {
+        let finish = json!({"choices":[{"index":0,"delta":{"content":"Synthetic next process reply"},"finish_reason":"stop"}]});
+        let mut paid = usage();
+        paid["opencode"]["billing_source"] = json!("balance");
+        paid["cost"] = json!(0.02);
+        let mut estimated = paid.clone();
+        estimated["opencode"]["estimated"] = json!(true);
         vec![
             Reply::json(discovery(base)),
             terminal_frames(
@@ -306,7 +312,9 @@ fn native_go_unknown_cost_stays_unknown_and_admission_continues() {
                 true,
             ),
             Reply::json(discovery(base)),
-            stream(json!({"content":"Synthetic next process reply"}), "stop"),
+            terminal_frames(&[finish.clone(), json!({"choices":[],"usage":estimated})], true),
+            Reply::json(discovery(base)),
+            terminal_frames(&[finish, json!({"choices":[],"usage":paid})], true),
         ]
     });
     capped_go(&env, &format!("http://{}", mock.address()));
@@ -315,31 +323,30 @@ fn native_go_unknown_cost_stays_unknown_and_admission_continues() {
         &["--no-session", "--no-tools", "-p", "Synthetic unknown usage"],
     );
     assert!(!first.status.success());
-    // The unknown cost stays recorded as unknown at zero USD: no local
-    // estimate, no reservation field, and no ledger poisoning.
+    // Each new process must read earlier unknown rows and still forward.
+    for prompt in ["Synthetic estimated usage", "Synthetic paid usage"] {
+        let output = run(&env, &["--no-session", "--no-tools", "-p", prompt]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert_eq!(mock.requests().len(), 6);
     let ledger = rows(&env);
-    assert_eq!(ledger.len(), 1);
-    assert_eq!(ledger[0]["settled"], "reserved");
-    assert_eq!(ledger[0]["usage_missing"], true);
-    assert_eq!(ledger[0]["billing"], "subscription");
-    assert_eq!(ledger[0]["cost_usd"], 0.0);
-    assert!(ledger[0].get("estimated_cost_usd").is_none());
-    assert!(ledger[0].get("go_reserved_usd").is_none());
-    // A restarted process keeps working with the unknown row on disk.
-    let second = run(
-        &env,
-        &["--no-session", "--no-tools", "-p", "Synthetic next process"],
-    );
-    assert!(
-        second.status.success(),
-        "{}",
-        String::from_utf8_lossy(&second.stderr)
-    );
-    assert_eq!(mock.requests().len(), 4);
-    let ledger = rows(&env);
-    assert_eq!(ledger.len(), 2);
-    assert_eq!(ledger[1]["settled"], "usage");
-    assert_eq!(ledger[1]["cost_usd"], 0.0);
+    assert_eq!(ledger.len(), 3);
+    for row in &ledger[..2] {
+        assert_eq!(row["settled"], "reserved");
+        assert_eq!(row["usage_missing"], true);
+        assert_eq!(row["billing"], "subscription");
+        assert!(row.get("cost_usd").is_none(), "{row}");
+        assert!(row.get("reported_cost_usd").is_none(), "{row}");
+        assert!(row.get("estimated_cost_usd").is_none(), "{row}");
+        assert!(row.get("go_reserved_usd").is_none(), "{row}");
+    }
+    assert_eq!(ledger[2]["settled"], "usage");
+    assert_eq!(ledger[2]["cost_usd"], 0.02);
+    assert_eq!(ledger[2]["reported_cost_usd"], 0.02);
     mock.assert_healthy();
 }
 

@@ -146,6 +146,67 @@ fn an_overrun_paid_charge_is_recorded_and_admission_continues() {
 }
 
 #[test]
+fn legacy_go_estimate_stays_readable_without_consuming_metered_headroom() {
+    let fixture = fixture();
+    let day = Ledger::open(&fixture.ledger_dir).unwrap().today().unwrap();
+    let estimate = json!({
+        "remote": true, "remote_provider": "opencode", "remote_model": "synthetic-go",
+        "billing": "metered", "settled": "reserved", "usage_missing": true,
+        "subscription_requests": 1, "subscription_tokens": 120,
+        "estimated_cost_usd": 123.0, "go_reserved_usd": 123.0,
+    });
+    let saved = day
+        .entry(GO, Context::default())
+        .unwrap()
+        .append(&estimate, 502, None, None)
+        .unwrap();
+    assert_eq!(saved["estimated_cost_usd"], 123.0);
+    assert!(saved.get("cost_usd").is_none());
+
+    let first = runtime(&fixture, 5.0);
+    let mut go = first.begin(&json!({"model":GO}), Context::default()).unwrap();
+    go.mark_forwarded().unwrap();
+    assert_eq!(settle(go, 16, 10, Some(0.02))["cost_usd"], 0.02);
+    drop(first);
+
+    // A reopened ledger preserves the paid amount and ignores the historical estimate.
+    let day = Ledger::open(&fixture.ledger_dir).unwrap().today().unwrap();
+    assert_eq!(day.budget().spend().unwrap(), 0.02);
+    let restarted = runtime(&fixture, 5.0);
+    assert!(restarted
+        .begin(&json!({"model":API,"max_tokens":32}), Context::default())
+        .is_ok());
+}
+
+#[test]
+fn unknown_go_cost_does_not_accept_other_missing_amounts() {
+    let fixture = fixture();
+    let day = Ledger::open(&fixture.ledger_dir).unwrap().today().unwrap();
+    let unknown = json!({
+        "remote": true, "remote_provider": "opencode", "remote_model": "synthetic-go",
+        "billing": "subscription", "settled": "reserved", "usage_missing": true,
+        "subscription_requests": 1, "subscription_tokens": 120,
+    });
+    for (field, value) in [
+        ("remote_provider", json!("chatgpt")),
+        ("billing", json!("metered")),
+        ("settled", json!("usage")),
+        ("usage_missing", json!(false)),
+        ("subscription_requests", json!(0)),
+        ("cost_usd", Value::Null),
+        ("reported_cost_usd", json!(0.02)),
+    ] {
+        let mut invalid = unknown.clone();
+        invalid[field] = value;
+        assert!(day
+            .entry(GO, Context::default())
+            .unwrap()
+            .append(&invalid, 502, None, None)
+            .is_err());
+    }
+}
+
+#[test]
 fn a_legacy_unscoped_go_hold_contributes_zero_to_metered_reservations() {
     const LEGACY: &str = "00000000000000000000000000000000";
     // A missing stored hold, a token-only hold, and holds whose recorded USD
