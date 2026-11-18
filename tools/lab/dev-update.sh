@@ -86,12 +86,14 @@ else
 fi
 ln -s "releases/$id" "$prefix/.current.$$"
 mv -Tf "$prefix/.current.$$" "$prefix/current"
-# Retain this build and one previous build, only inside this marked private prefix.
-for installed in "$prefix"/releases/*; do
-  test -d "$installed" && test ! -L "$installed" || continue
-  [[ ${installed##*/} =~ ^[0-9a-f]{40}-[0-9a-f]{12}$ ]] || continue
-  test "$installed" = "$prefix/releases/$id" || test "$installed" = "$prefix/$old" || {
-    jq -e '.channel=="dev"' "$installed/receipt.json" >/dev/null && rm -rf -- "$installed"
-  }
-done
+# Prune only after switching to a different build so reinstalls retain rollback.
+if test "$old" != "releases/$id"; then
+  for installed in "$prefix"/releases/*; do
+    test -d "$installed" && test ! -L "$installed" || continue
+    [[ ${installed##*/} =~ ^[0-9a-f]{40}-[0-9a-f]{12}$ ]] || continue
+    test "$installed" = "$prefix/releases/$id" || test "$installed" = "$prefix/$old" || {
+      jq -e '.channel=="dev"' "$installed/receipt.json" >/dev/null && rm -rf -- "$installed"
+    }
+  done
+fi
 printf 'Installed dev %s (%s); receipt: %s/current/receipt.json\n' "$version" "$sha" "$prefix"
