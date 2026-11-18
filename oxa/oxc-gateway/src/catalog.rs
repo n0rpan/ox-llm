@@ -63,19 +63,21 @@ pub struct Model {
     endpoint: Url,
     context_window: u32,
     max_output: u32,
+    #[cfg(feature = "anthropic-gateway")]
     configured_route: Option<ConfiguredRoute>,
 }
 
 /// Provider identity and budget pool for a route from trusted user configuration.
 /// The credential selector stays private to the gateway.
+#[cfg(feature = "anthropic-gateway")]
 #[derive(Clone)]
 pub struct ConfiguredRoute {
     provider: String,
     pool: String,
-    #[cfg_attr(not(feature = "anthropic-gateway"), allow(dead_code))]
     key: String,
 }
 
+#[cfg(feature = "anthropic-gateway")]
 impl ConfiguredRoute {
     pub fn provider(&self) -> &str {
         &self.provider
@@ -86,14 +88,7 @@ impl ConfiguredRoute {
     }
 }
 
-fn is_identifier(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 128
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
-}
-
+#[cfg(feature = "anthropic-gateway")]
 fn is_builtin(value: &str) -> bool {
     [
         Provider::Anthropic,
@@ -161,18 +156,22 @@ impl Model {
             endpoint,
             context_window,
             max_output,
+            #[cfg(feature = "anthropic-gateway")]
             configured_route: None,
         })
     }
 
     /// Attach an HTTPS API route. Built-in credential entries stay bound to
     /// the built-in route configuration.
+    #[cfg(feature = "anthropic-gateway")]
     pub fn with_configured_route(mut self, provider: &str, pool: &str, key: &str) -> Result<Self, Error> {
         if self.endpoint.scheme() != "https" {
             return Err(Error::InvalidEndpoint);
         }
         if !matches!(self.provider, Provider::Anthropic | Provider::OpenAi)
-            || ![provider, pool, key].into_iter().all(is_identifier)
+            || ![provider, pool, key]
+                .into_iter()
+                .all(oxa_config::valid_cloud_name)
             || is_builtin(provider)
             || is_builtin(key)
         {
@@ -186,6 +185,7 @@ impl Model {
         Ok(self)
     }
 
+    #[cfg(feature = "anthropic-gateway")]
     pub fn configured_route(&self) -> Option<&ConfiguredRoute> {
         self.configured_route.as_ref()
     }

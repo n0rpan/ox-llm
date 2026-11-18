@@ -98,6 +98,7 @@ fn token_limits_are_positive_integers_and_output_fits_context() {
 }
 
 #[test]
+#[cfg(feature = "anthropic-gateway")]
 fn configured_routes_reject_http_and_builtin_credentials() {
     let http = Model::new(
         "route",
@@ -113,7 +114,11 @@ fn configured_routes_reject_http_and_builtin_credentials() {
             .unwrap_err(),
         Error::InvalidEndpoint
     );
-    for (provider, key) in [("synthetic", "Anthropic"), ("OPENAI", "synthetic-key")] {
+    for (provider, key) in [
+        ("synthetic", "Anthropic"),
+        ("OPENAI", "synthetic-key"),
+        ("synthetic", "$synthetic-key"),
+    ] {
         assert_eq!(
             model("route", Provider::Anthropic, 4096, 512)
                 .with_configured_route(provider, "synthetic-pool", key)
@@ -121,6 +126,9 @@ fn configured_routes_reject_http_and_builtin_credentials() {
             Error::InvalidModel
         );
     }
+    assert!(model("route", Provider::Anthropic, 4096, 512)
+        .with_configured_route("_synthetic", "synthetic-pool", ".synthetic-key")
+        .is_ok());
 }
 
 #[test]
