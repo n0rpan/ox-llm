@@ -1332,6 +1332,7 @@ fn settle_runs(
             if follow.is_empty() {
                 break;
             }
+            crate::settings_refresh::refresh_at_run_start(st, sink);
             flush_queue(st, sink);
             for msg in follow {
                 push_user(st, msg, sink)?;
