@@ -243,7 +243,10 @@ mod tests {
             ("SYNTHETIC_PASSWORD", &home),
             ("SYNTHETIC_KEY_PATH", &location),
         ]);
-        let settings = Settings::from_values(json!({"service":{"tokenFile": "/srv/not-a-secret-value"}}), json!({}));
+        let settings = Settings::from_values(
+            json!({"service":{"tokenFile": "/srv/not-a-secret-value"}}),
+            json!({}),
+        );
         let scan = PushScan::new(&env, &settings);
         for text in [format!("a {value}"), format!("b {home}")] {
             let item = PushedContent {
