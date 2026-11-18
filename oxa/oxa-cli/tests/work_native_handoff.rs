@@ -68,8 +68,14 @@ fn branch_attempts(root: PathBuf) {
     }
     assert_ne!(records[0].id, records[1].id);
     assert_ne!(records[0].worktree, records[1].worktree);
-    assert_eq!(read(&project, &["show", &format!("{BRANCH}:first.txt")]), "first attempt");
-    assert_eq!(read(&project, &["show", &format!("{BRANCH}:second.txt")]), "second attempt");
+    assert_eq!(
+        read(&project, &["show", &format!("{BRANCH}:first.txt")]),
+        "first attempt"
+    );
+    assert_eq!(
+        read(&project, &["show", &format!("{BRANCH}:second.txt")]),
+        "second attempt"
+    );
     // The finished attempt keeps its files; only its HEAD was detached.
     assert!(records[0].worktree.join("first.txt").exists());
 }
@@ -80,21 +86,35 @@ fn reviewed_attempts(root: PathBuf) {
     let base = read(&project, &["rev-parse", "main"]);
     let tip = |project: &Path| read(project, &["rev-parse", &format!("refs/heads/{PR_BRANCH}")]);
     let first_head = tip(&project);
-    let first = run(&project, &policy, attempt(1, PR_BRANCH, &base, Some((42, &first_head))));
+    let first = run(
+        &project,
+        &policy,
+        attempt(1, PR_BRANCH, &base, Some((42, &first_head))),
+    );
     assert_eq!(first.outcome, oxa_work::Outcome::Done, "{first:?}");
     // The reviewed head moves with the saved work; the pull request number does not.
     let second_head = tip(&project);
     assert_ne!(second_head, first_head);
-    let second = run(&project, &policy, attempt(2, PR_BRANCH, &base, Some((42, &second_head))));
+    let second = run(
+        &project,
+        &policy,
+        attempt(2, PR_BRANCH, &base, Some((42, &second_head))),
+    );
     assert_eq!(second.outcome, oxa_work::Outcome::Done, "{second:?}");
     assert_ne!(first.id, second.id);
     assert_ne!(first.worktree, second.worktree);
     assert!(first.worktree.join("first.txt").exists());
     let other_head = tip(&project);
-    let other = run(&project, &policy, attempt(3, PR_BRANCH, &base, Some((43, &other_head))));
+    let other = run(
+        &project,
+        &policy,
+        attempt(3, PR_BRANCH, &base, Some((43, &other_head))),
+    );
     assert_eq!(other.outcome, oxa_work::Outcome::Blocked, "{other:?}");
     assert!(
-        other.detail.contains("outside a finished task for this pull request"),
+        other
+            .detail
+            .contains("outside a finished task for this pull request"),
         "{other:?}"
     );
     assert_eq!(tip(&project), other_head);
