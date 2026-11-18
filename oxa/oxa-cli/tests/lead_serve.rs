@@ -34,8 +34,19 @@ fn get(port: u16, path: &str, authority: &str, extra: &str) -> String {
 }
 
 fn start(test: &TestEnv, sample: &std::path::Path) -> Running {
+    start_with_situation(test, sample, None)
+}
+fn start_with_situation(
+    test: &TestEnv,
+    sample: &std::path::Path,
+    situation: Option<&std::path::Path>,
+) -> Running {
+    let mut invocation = command(test);
+    if let Some(path) = situation {
+        invocation.env("OXA_LEAD_SITUATION", path);
+    }
     let mut child = Running(
-        command(test)
+        invocation
             .args(["lead", "serve"])
             .env("OXA_LEAD_BOARD_LOG", sample)
             .stdout(Stdio::piped())
@@ -55,6 +66,151 @@ fn start(test: &TestEnv, sample: &std::path::Path) -> Running {
         .unwrap()
         .contains("listening"));
     child
+}
+
+#[test]
+fn fixed_chat_form_posts_without_js_and_reuses_protected_observations() {
+    let test = TestEnv::new();
+    let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reservation.local_addr().unwrap().port();
+    test.write(
+        "home/.oxa/agent/settings.json",
+        &serde_json::json!({"oxa":{"lead":{"serve":{
+            "enabled":true,"fixed_prompts":true,"port":port
+        }}}})
+        .to_string(),
+    );
+    let directory = test.root().join("inputs");
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let board = directory.join("board.jsonl");
+    std::fs::write(
+        &board,
+        b"{\"schema_version\":1,\"observed_at\":10,\"board\":{\"observed_at\":10,\"entries\":[]}}\n",
+    )
+    .unwrap();
+    let situation = directory.join("situation.json");
+    let snapshot = include_str!("../../oxa-proto/tests/fixtures/work/evening.jsonl")
+        .lines()
+        .find_map(|line| oxa_proto::work::Snapshot::from_json(line.as_bytes()).ok())
+        .unwrap();
+    std::fs::write(&situation, snapshot.to_json().unwrap()).unwrap();
+    for path in [&board, &situation] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    drop(reservation);
+    let _server = start_with_situation(&test, &board, Some(&situation));
+    let authority = format!("127.0.0.1:{port}");
+    let page = get(port, "/chat", &authority, "");
+    let nonce = page
+        .split("name=csrf value=\"")
+        .nth(1)
+        .expect("no-JS form must be present")
+        .split('"')
+        .next()
+        .unwrap();
+    assert_eq!(nonce.len(), 43);
+    assert!(page.contains("method=post action=/chat"));
+    assert!(page.contains("form-action 'self'"));
+    let post = |path: &str, host: &str, origin: &str, extra: &str, body: &str| {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        write!(stream, "POST {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n{extra}\r\n{body}", body.len()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    };
+    let origin = format!("http://{authority}");
+    for prompt in ["status", "workers", "attention"] {
+        let reply = post(
+            "/chat",
+            &authority,
+            &origin,
+            "",
+            &format!("csrf={nonce}&prompt={prompt}"),
+        );
+        assert_eq!(reply.lines().next(), Some("HTTP/1.1 200 OK"));
+        assert!(reply.contains("<!doctype html>") && reply.contains("0 tokens"));
+        let fact = match prompt {
+            "status" => "0 items".to_owned(),
+            "workers" => format!("{} running tasks", snapshot.running.len()),
+            _ => format!("{} open owner decisions", snapshot.asks.len()),
+        };
+        assert!(reply.contains(&fact), "{prompt}");
+    }
+    for (path, host, source, extra, body) in [
+        (
+            "/chat",
+            authority.as_str(),
+            "https://attacker.invalid",
+            "",
+            format!("csrf={nonce}&prompt=status"),
+        ),
+        (
+            "/chat",
+            "attacker.invalid",
+            origin.as_str(),
+            "",
+            format!("csrf={nonce}&prompt=status"),
+        ),
+        (
+            "/chat",
+            authority.as_str(),
+            origin.as_str(),
+            "",
+            "csrf=wrong&prompt=status".into(),
+        ),
+        (
+            "/chat",
+            authority.as_str(),
+            origin.as_str(),
+            "",
+            format!("csrf={nonce}&prompt=status&prompt=workers"),
+        ),
+        (
+            "/chat",
+            authority.as_str(),
+            origin.as_str(),
+            "",
+            format!("csrf={nonce}&prompt=private-input-marker"),
+        ),
+        (
+            "/chat",
+            authority.as_str(),
+            origin.as_str(),
+            "Origin: https://attacker.invalid\r\n",
+            format!("csrf={nonce}&prompt=status"),
+        ),
+        (
+            "/chat",
+            authority.as_str(),
+            origin.as_str(),
+            "Transfer-Encoding: chunked\r\n",
+            format!("csrf={nonce}&prompt=status"),
+        ),
+        ("/chat", authority.as_str(), origin.as_str(), "", "x".repeat(257)),
+        (
+            "/workers",
+            authority.as_str(),
+            origin.as_str(),
+            "",
+            format!("csrf={nonce}&prompt=status"),
+        ),
+    ] {
+        let refused = post(path, host, source, extra, &body);
+        assert!(!refused.starts_with("HTTP/1.1 200"));
+        assert!(!refused.contains("private-input-marker") && !refused.contains("0 tokens"));
+    }
+    std::fs::set_permissions(&situation, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let refused = post(
+        "/chat",
+        &authority,
+        &origin,
+        "",
+        &format!("csrf={nonce}&prompt=workers"),
+    );
+    assert!(refused.contains("Snapshot observations unavailable"));
+    assert!(!refused.contains(situation.to_str().unwrap()));
 }
 
 #[test]
