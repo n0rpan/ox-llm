@@ -157,3 +157,44 @@ fn comments(value: &Value) -> Option<Vec<Comment<'_>>> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxa_work::board::Entry;
+    use serde_json::json;
+
+    #[test]
+    fn a_malformed_current_queue_row_cannot_be_read_as_absent() {
+        const HEAD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const OTHER: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let board = Board {
+            entries: vec![Entry {
+                number: 42,
+                head: HEAD.into(),
+                release_pinned: false,
+                action: Action::Ready,
+                lease: None,
+                attempts_today: 0,
+                eligible: true,
+            }],
+            observed_at: 1_767_225_601,
+        };
+        let queue = |head, time| {
+            json!({"entries":{"totalCount":1,"nodes":[{
+                "pullRequest":{"number":42,"headRefOid":head},"enqueuedAt":time,"headCommit":null
+            }]}})
+        };
+        for time in [Value::Null, json!("2026-04-31T00:00:00Z")] {
+            assert!(queue_observations(&queue(json!(HEAD), time.clone()), &board).is_err());
+            assert!(queue_observations(&queue(json!(OTHER), time), &board)
+                .unwrap()
+                .is_empty());
+        }
+        let time = json!("2026-01-01T00:00:00Z");
+        assert!(queue_observations(&queue(Value::Null, time.clone()), &board).is_err());
+        let rows = queue_observations(&queue(json!(HEAD), time), &board).unwrap();
+        assert_eq!(rows[&42].enqueued_at, 1_767_225_600);
+        assert!(rows[&42].group_head.is_none());
+    }
+}
