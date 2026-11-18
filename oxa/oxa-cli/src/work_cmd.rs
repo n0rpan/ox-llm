@@ -98,7 +98,7 @@ pub(crate) fn run(
     let result = (|| -> Result<i32, String> {
         if let [flag, request] = args {
             if flag == "--supervise" {
-                return crate::work_checks::run(request, cwd, env, dirs, err);
+                return crate::work_checks::run(request, cwd, env, dirs, out, err);
             }
         }
         let binary: PathBuf = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -387,7 +387,10 @@ pub(crate) fn run(
             };
             if matches!(
                 record.outcome,
-                oxa_work::Outcome::Red | oxa_work::Outcome::Blocked | oxa_work::Outcome::Interrupted
+                oxa_work::Outcome::Red
+                    | oxa_work::Outcome::Blocked
+                    | oxa_work::Outcome::Interrupted
+                    | oxa_work::Outcome::Unverified
             ) || record.reports.iter().any(|report| report.disposition == "failed")
             {
                 code = 1;

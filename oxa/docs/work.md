@@ -143,16 +143,35 @@ keep their normal read-only protection: a checkout that needs to populate a trac
 protected hook directory blocks with the worktree retained.
 Acceptance commands are frozen from the captured base commit before checkout
 callbacks can change settings. The runner executes those `done` commands outside the
-agent after it exits, even without edits. The source project must pass the existing
+agent after it exits, even without edits, next to the checks derived from what the
+task actually changed (#1442): the tests and clippy of every Cargo crate the diff
+touches, selected from `git diff --name-only` against the captured base plus the
+untracked files the worker created. A workspace's own manifest or lockfile change
+selects every member, like the CI rule for unknown paths. Derived commands are fixed
+shapes over validated crate names (`cargo test --frozen -p <crate>` and
+`cargo clippy --frozen -p <crate> -- -D warnings`, each guarded so a missing cargo or
+clippy is a check that did not run); worker text never becomes a command. The worker
+can also name crates whose suites must gate completion even though the diff does not
+touch them, by ending its final reply with
+`<oxa-acceptance>["crate-name"]</oxa-acceptance>`; a block that is not readable crate
+names, or a crate that is not part of the repository, keeps the task unverified.
+The source project must pass the existing
 trust and executable-content approval before a task starts. Invoking `work` does
 not approve an untrusted project. Acceptance runs in the normal bwrap sandbox;
 missing or unusable bwrap blocks the task. Checkout and each check have the same ten-minute limit
 as agent-internal done checks. `in subdirectory: command` selects a folder inside
-that sandbox; escaping the worktree is rejected.
+that sandbox; escaping the worktree is rejected. Each working-tree check round also
+gets a private writable output directory beside the worktree (exposed as
+`OXA_WORK_OUTPUT_DIR`, `CARGO_TARGET_DIR` and `TMPDIR`), so generated build outputs
+never dirty the work the round judges; committed rounds keep their export-local one.
 The final Git inspection is also sandboxed, with a read-only workspace, no network
 and fsmonitor disabled. Clean filters stay inside that sandbox; an inspection
 error blocks the task rather than producing a clean verdict.
 Agent-internal done checks may also run when the project is trusted.
+Each round records the evidence its verdict rests on: the task's record carries one
+`checks` entry per check run — its origin (`settings`, `derived` or `declared`), the
+command, the exit status, whether it timed out, and the resulting status. Saved
+verifications (`oxa work verify`) re-derive the same set from the exact saved commit.
 
 The runner reads the child's exit code, terminal `oxa_result` and session header,
 without retaining its event stream. It checkpoints the session ID as soon as the
@@ -160,11 +179,14 @@ header arrives. A blocked or failed worker remains blocked; an interrupted worke
 remains interrupted. Neither consumes a repair attempt. Failed acceptance after a successful
 worker continues that same saved session once, then acceptance runs once more.
 JSON lines include the worker result, session ID, captured `base_sha`, saved
-`head_sha`/`tree_sha`, step, checkpoint revision and time. Outcomes are `done`,
+`head_sha`/`tree_sha`, step, checkpoint revision and time, and the `checks` evidence
+of the last acceptance round. Outcomes are `done`,
 `nothing_to_do` (no worker commits or file changes), `red` (checks still fail),
-`blocked` (setup or execution failed), or `interrupted`. Deadline interruptions
+`unverified` (a check could not run — a missing toolchain or component, a timeout — so
+the change is neither accepted nor failed, and never publishable), `blocked` (setup or
+execution failed), or `interrupted`. Deadline interruptions
 carry a typed `interruption: "deadline"`. Exit codes are 0 for success, 1 if any
-task is red, blocked or interrupted, and 2 for invalid input, output or checkpoint
+task is red, unverified, blocked or interrupted, and 2 for invalid input, output or checkpoint
 errors. A checkpoint/event-append error stops the entire batch before another
 action. An ordinary task setup failure produces a blocked
 JSON line and does not skip later tasks. If a task cannot be locked or has an

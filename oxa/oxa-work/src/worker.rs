@@ -175,7 +175,8 @@ pub(crate) fn run(
             }
         };
         let session = header.join().map_err(|_| "worker header reader failed")?;
-        let terminal = terminal.join().map_err(|_| "worker result reader failed")?;        if let Some(error) = waited.failure {
+        let terminal = terminal.join().map_err(|_| "worker result reader failed")?;
+        if let Some(error) = waited.failure {
             return Err(error);
         }
         let status = waited.status;
@@ -194,7 +195,7 @@ pub(crate) fn run(
                     interruption: Some(WorkerInterruption::Deadline),
                     tokens,
                 },
-                session: session.ok().and_then(|(id, _)| id),
+                session: session.ok().and_then(|(id, _, _)| id),
                 diagnostic: "worker exceeded max_time and its wrap-up grace; worktree retained".into(),
                 notes: vec![],
                 declared: crate::derived::Declaration::Absent,
@@ -221,7 +222,11 @@ pub(crate) fn run(
 fn read_session(
     pipe: impl Read,
     on_session: &mut dyn FnMut(&str) -> Result<()>,
-) -> Result<(Option<String>, Vec<crate::ProblemNote>, crate::derived::Declaration)> {
+) -> Result<(
+    Option<String>,
+    Vec<crate::ProblemNote>,
+    crate::derived::Declaration,
+)> {
     let mut reader = BufReader::new(pipe);
     let session = line(&mut reader)?.and_then(|line| {
         let value: serde_json::Value = serde_json::from_slice(&line).ok()?;

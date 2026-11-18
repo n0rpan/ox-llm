@@ -240,7 +240,10 @@ impl Runner<'_> {
                     point.worker_error = error;
                     // Declarations accumulate across rounds: a repair cannot withdraw what
                     // an earlier run asked to be verified (#1442).
-                    point.declared = derived::merge_declaration(point.declared.take(), declared.as_ref().unwrap_or(&derived::Declaration::Absent));
+                    point.declared = derived::merge_declaration(
+                        point.declared.take(),
+                        declared.as_ref().unwrap_or(&derived::Declaration::Absent),
+                    );
                     point.merge_error =
                         tree::ensure_merged(self.policy, &tree, &point.base, &task.branch).err();
                     self.writer
@@ -263,8 +266,7 @@ impl Runner<'_> {
                     tree::validate(self.policy, self.repo, &tree, &state.task)?;
                     let point = point(state)?;
                     let merge =
-                        tree::ensure_merged(self.policy, self.repo, &tree, &point.base, &state.task.branch)
-                            .err();
+                        tree::ensure_merged(self.policy, &tree, &point.base, &state.task.branch).err();
                     // #1442: the frozen static list runs next to the change's own checks.
                     // The tests and clippy of every crate the worker touched are derived from
                     // the diff, and the worker's declared acceptance crates join them; what
@@ -353,10 +355,7 @@ impl Runner<'_> {
                     let failures = round.failures;
                     if !could_not_run.is_empty() {
                         if !errors.is_empty() {
-                            errors.push(format!(
-                                "Acceptance could not run:\n{}",
-                                could_not_run.join("\n")
-                            ));
+                            errors.push(format!("Acceptance could not run:\n{}", could_not_run.join("\n")));
                             if !failures.is_empty() {
                                 errors.push(format!("Acceptance checks:\n{failures}"));
                             }

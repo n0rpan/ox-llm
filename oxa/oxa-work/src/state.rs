@@ -335,6 +335,7 @@ mod tests {
                 base: base.clone(),
                 prompt: "saved prompt".into(),
                 commands: vec!["saved command".into()],
+                declared: None,
                 worker_error: None,
                 merge_error: None,
                 failures: String::new(),

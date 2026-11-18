@@ -50,13 +50,6 @@ pub(crate) struct DerivedChecks {
     pub tested: BTreeSet<String>,
 }
 
-/// A selected crate: its name and the workspace directory its cargo command runs in.
-#[derive(Debug, PartialEq, Eq)]
-struct Package {
-    name: String,
-    in_dir: String,
-}
-
 /// A worker's declared acceptance crates, as read from its final message. An unreadable
 /// block keeps the task unverifiable instead of silently dropping the claim.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,7 +100,14 @@ fn changed_paths(
     base: &str,
     head: Option<&str>,
 ) -> Result<Vec<String>, String> {
-    let mut diff = vec!["diff", "--name-only", "--no-ext-diff", "--no-textconv", "-z", base];
+    let mut diff = vec![
+        "diff",
+        "--name-only",
+        "--no-ext-diff",
+        "--no-textconv",
+        "-z",
+        base,
+    ];
     if let Some(head) = head {
         diff.push(head);
     }
@@ -165,7 +165,7 @@ fn read_manifest(root: &Path, dir: &str) -> Option<Manifest> {
 fn parse_manifest(text: &str) -> Manifest {
     let mut out = Manifest::default();
     let mut section = String::new();
-    let mut members = None;
+    let mut members = None::<String>;
     for line in text.lines() {
         if let Some(buffer) = &mut members {
             buffer.push(' ');
@@ -441,16 +441,32 @@ fn commands(selected: &BTreeMap<String, String>) -> DerivedChecks {
     out
 }
 
+/// The directory part of a derived entry: the tree root writes itself as `.` so the entry
+/// never reads `in : <command>`.
+fn entry_dir(in_dir: &str) -> &str {
+    if in_dir.is_empty() {
+        "."
+    } else {
+        in_dir
+    }
+}
+
 /// The tests of one crate. `--frozen` keeps the lockfile and the network out of the
 /// worktree; a cold registry or a drifted lockfile is a failure to fix, not a silent pass.
 fn test_entry(in_dir: &str, name: &str) -> String {
-    format!("in {in_dir}: command -v cargo >/dev/null 2>&1 || exit 127\ncargo test --frozen -p {name}")
+    format!(
+        "in {}: command -v cargo >/dev/null 2>&1 || exit 127\ncargo test --frozen -p {name}",
+        entry_dir(in_dir)
+    )
 }
 
 /// Clippy of one crate, guarded so a missing component is `not_run` (the task stays
 /// `unverified`) instead of cargo's generic failure.
 fn clippy_entry(in_dir: &str, name: &str) -> String {
-    format!("in {in_dir}: cargo clippy --version >/dev/null 2>&1 || exit 127\ncargo clippy --frozen -p {name} -- -D warnings")
+    format!(
+        "in {}: cargo clippy --version >/dev/null 2>&1 || exit 127\ncargo clippy --frozen -p {name} -- -D warnings",
+        entry_dir(in_dir)
+    )
 }
 
 /// Every crate of the tree, bounded. `None`: the walk exceeded its capacity, so declared
@@ -460,7 +476,11 @@ pub(crate) fn discover(root: &Path) -> Option<BTreeMap<String, String>> {
     let mut stack = vec![String::new()];
     let mut seen = 0usize;
     while let Some(dir) = stack.pop() {
-        let path = if dir.is_empty() { root.to_owned() } else { root.join(&dir) };
+        let path = if dir.is_empty() {
+            root.to_owned()
+        } else {
+            root.join(&dir)
+        };
         let entries = std::fs::read_dir(path).ok()?;
         for entry in entries {
             seen += 1;
@@ -546,7 +566,9 @@ pub(crate) fn parse_declaration(output: &str) -> Declaration {
 }
 
 /// Merge one worker run's declaration into the execution's durable set: what was claimed
-/// must be verified even if a later repair round drops the block.
+/// must be verified even if a later repair round drops the block. A set that cannot be
+/// honored whole carries the unreadable marker, so the task stays `unverified` instead of
+/// quietly dropping the surplus.
 pub(crate) fn merge_declaration(declared: Option<Vec<String>>, next: &Declaration) -> Option<Vec<String>> {
     let mut merged = declared.unwrap_or_default();
     match next {
@@ -554,12 +576,34 @@ pub(crate) fn merge_declaration(declared: Option<Vec<String>>, next: &Declaratio
         Declaration::Tests(selectors) => merged.extend(selectors.iter().cloned()),
         Declaration::Unreadable => merged.push(UNREADABLE_DECLARATION.to_owned()),
     }
-    merged.truncate(MAX_DECLARED);
+    let mut seen = BTreeSet::new();
+    merged.retain(|selector| seen.insert(selector.clone()));
+    if merged.len() > MAX_DECLARED {
+        merged.truncate(MAX_DECLARED - 1);
+        merged.push(UNREADABLE_DECLARATION.to_owned());
+    }
     (!merged.is_empty()).then_some(merged)
 }
 
-/// The per-check evidence a check supervisor reports on its stdout. `None`: no complete,
-/// matching record, which keeps the outcome `unverified` rather than trusting a bare exit.
+/// What one check's exit means: a clean run, a real verdict about the change, or a check
+/// that never executed (timeout, kill, missing executable or component). The last keeps the
+/// task `unverified` rather than counting it as passed or failed.
+pub(crate) fn classify(exit: Option<i32>, timed_out: bool) -> CheckStatus {
+    if timed_out {
+        return CheckStatus::NotRun;
+    }
+    match exit {
+        None => CheckStatus::NotRun,
+        Some(0) => CheckStatus::Passed,
+        Some(code) if NOT_RUN_EXIT.contains(&code) => CheckStatus::NotRun,
+        Some(_) => CheckStatus::Failed,
+    }
+}
+
+/// The per-check evidence a check supervisor reports on its stdout: one `exit`/`timed_out`
+/// fact per sent command, classified here. `None`: no complete, matching record, which
+/// keeps the outcome `unverified` rather than trusting a bare exit. The supervisor is a
+/// fact reporter; every verdict is decided by this side of the boundary.
 pub(crate) fn parse_evidence(stdout: &str, expected: usize) -> Option<Vec<CheckRun>> {
     let value: serde_json::Value = serde_json::from_str(stdout.trim()).ok()?;
     if value["type"] != "oxa_checks" || value["version"] != 1 {
@@ -571,12 +615,6 @@ pub(crate) fn parse_evidence(stdout: &str, expected: usize) -> Option<Vec<CheckR
     }
     let mut runs = Vec::with_capacity(checks.len());
     for check in checks {
-        let status = match check["status"].as_str()? {
-            "passed" => CheckStatus::Passed,
-            "failed" => CheckStatus::Failed,
-            "not_run" => CheckStatus::NotRun,
-            _ => return None,
-        };
         let exit = match &check["exit"] {
             serde_json::Value::Null => None,
             value => {
@@ -584,12 +622,13 @@ pub(crate) fn parse_evidence(stdout: &str, expected: usize) -> Option<Vec<CheckR
                 Some(i32::try_from(code).ok()?)
             }
         };
+        let timed_out = check["timed_out"].as_bool()?;
         runs.push(CheckRun {
             origin: CheckOrigin::Settings,
             command: bounded_command(check["command"].as_str()?),
+            status: classify(exit, timed_out),
             exit,
-            timed_out: check["timed_out"].as_bool()?,
-            status,
+            timed_out,
         });
     }
     Some(runs)
@@ -600,6 +639,290 @@ pub(crate) fn bounded_command(command: &str) -> String {
     if command.len() <= COMMAND_CAP {
         return command.to_owned();
     }
-    let end = command.floor_char_boundary(COMMAND_CAP);
+    let mut end = COMMAND_CAP;
+    while !command.is_char_boundary(end) {
+        end -= 1;
+    }
     format!("{}…[truncated]", &command[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_dir::PrivateDir;
+
+    fn manifest(dir: &PrivateDir, path: &str, text: &str) {
+        let full = dir.path().join(path);
+        std::fs::DirBuilder::new()
+            .create(full.parent().expect("manifest parent"))
+            .expect("create manifest folder");
+        std::fs::write(full, text).expect("write manifest");
+    }
+
+    fn workspace() -> &'static str {
+        r#"[workspace]
+members = ["crates/*", "tools/pinned"]
+"#
+    }
+
+    fn root_package_workspace() -> &'static str {
+        r#"[package]
+name = "top"
+[workspace]
+members = ["crates/*", "tools/pinned"]
+"#
+    }
+
+    #[test]
+    fn manifest_reading_keeps_members_globs_comments_and_names() {
+        let parsed = parse_manifest(
+            "[package]\nname = \"a-b_c\"\n[workspace]\nmembers = [\"crates/*\", # pinned below\n  \"tools/pinned\"]\n",
+        );
+        assert_eq!(parsed.package.as_deref(), Some("a-b_c"));
+        assert!(parsed.workspace);
+        assert_eq!(parsed.members, ["crates/*", "tools/pinned"]);
+
+        // An unknown shape reads as an empty manifest, never as a failure.
+        let empty = parse_manifest("] nonsense [garbage\nmembers = [\nnever closed");
+        assert_eq!(empty, Manifest::default());
+
+        // Invalid package names are ignored, not selected.
+        let broken = parse_manifest("[package]\nname = \"not a name\"\n");
+        assert_eq!(broken.package, None);
+    }
+
+    #[test]
+    fn a_workspace_members_list_split_over_lines_is_read_whole() {
+        let parsed = parse_manifest(
+            "[workspace]\nmembers = [\n  \"one\",\n  \"two\",\n]\n[package]\nname = \"root\"\n",
+        );
+        assert_eq!(parsed.members, ["one", "two"]);
+    }
+
+    #[test]
+    fn a_source_file_selects_its_crate_with_the_workspace_as_in_dir() {
+        let dir = PrivateDir::new("derived-select");
+        manifest(&dir, "Cargo.toml", workspace());
+        manifest(&dir, "crates/one/Cargo.toml", "[package]\nname = \"one\"\n");
+        manifest(&dir, "crates/two/Cargo.toml", "[package]\nname = \"two\"\n");
+        let selected = select(dir.path(), &["crates/two/src/lib.rs".to_owned()]).unwrap();
+        assert_eq!(selected, BTreeMap::from([("two".to_owned(), "".to_owned())]));
+    }
+
+    #[test]
+    fn a_standalone_crate_selects_itself_as_its_own_in_dir() {
+        let dir = PrivateDir::new("derived-standalone");
+        manifest(&dir, "solo/Cargo.toml", "[package]\nname = \"solo\"\n");
+        let selected = select(dir.path(), &["solo/src/main.rs".to_owned()]).unwrap();
+        assert_eq!(selected, BTreeMap::from([("solo".to_owned(), "solo".to_owned())]));
+    }
+
+    #[test]
+    fn a_workspace_manifest_or_lockfile_change_selects_every_member() {
+        let dir = PrivateDir::new("derived-members");
+        manifest(&dir, "Cargo.toml", root_package_workspace());
+        manifest(&dir, "crates/one/Cargo.toml", "[package]\nname = \"one\"\n");
+        manifest(&dir, "crates/two/Cargo.toml", "[package]\nname = \"two\"\n");
+        manifest(&dir, "tools/pinned/Cargo.toml", "[package]\nname = \"pinned\"\n");
+        for changed in ["Cargo.toml", "Cargo.lock"] {
+            let selected = select(dir.path(), &[changed.to_owned()]).unwrap();
+            assert_eq!(
+                selected.keys().collect::<Vec<_>>(),
+                ["one", "pinned", "top", "two"],
+                "workspace-wide change {changed}"
+            );
+        }
+    }
+
+    #[test]
+    fn files_outside_any_crate_select_nothing() {
+        let dir = PrivateDir::new("derived-none");
+        manifest(&dir, "Cargo.toml", workspace());
+        manifest(&dir, "crates/one/Cargo.toml", "[package]\nname = \"one\"\n");
+        let selected = select(
+            dir.path(),
+            &["docs/page.md".to_owned(), "unrelated/Cargo.toml".to_owned()],
+        )
+        .unwrap();
+        assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn a_file_of_a_root_package_selects_that_root_crate() {
+        let dir = PrivateDir::new("derived-root-package");
+        manifest(&dir, "Cargo.toml", root_package_workspace());
+        let selected = select(dir.path(), &["docs/page.md".to_owned()]).unwrap();
+        assert_eq!(selected, BTreeMap::from([("top".to_owned(), "".to_owned())]));
+    }
+
+    #[test]
+    fn derived_entries_are_a_fixed_cargo_shape_per_crate() {
+        let checks = commands(&BTreeMap::from([
+            ("one".to_owned(), "".to_owned()),
+            ("solo".to_owned(), "solo".to_owned()),
+        ]));
+        assert_eq!(
+            checks.commands,
+            [
+                "in .: command -v cargo >/dev/null 2>&1 || exit 127\ncargo test --frozen -p one".to_owned(),
+                "in .: cargo clippy --version >/dev/null 2>&1 || exit 127\ncargo clippy --frozen -p one -- -D warnings".to_owned(),
+                "in solo: command -v cargo >/dev/null 2>&1 || exit 127\ncargo test --frozen -p solo".to_owned(),
+                "in solo: cargo clippy --version >/dev/null 2>&1 || exit 127\ncargo clippy --frozen -p solo -- -D warnings".to_owned(),
+            ]
+        );
+        assert_eq!(
+            checks.tested,
+            ["one".to_owned(), "solo".to_owned()]
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+        );
+    }
+
+    #[test]
+    fn a_declaration_block_is_read_only_as_crate_names() {
+        assert_eq!(parse_declaration("done without a block"), Declaration::Absent);
+        assert_eq!(
+            parse_declaration("done <oxa-acceptance>[\"one\",\"two\"]</oxa-acceptance>"),
+            Declaration::Tests(["one".to_owned(), "two".to_owned()].to_vec())
+        );
+        // The last block wins when a reply carries two.
+        assert_eq!(
+            parse_declaration(
+                "<oxa-acceptance>[\"old\"]</oxa-acceptance> <oxa-acceptance>[\"new\"]</oxa-acceptance>"
+            ),
+            Declaration::Tests(["new".to_owned()].to_vec())
+        );
+        for bad in [
+            "<oxa-acceptance>[not json]</oxa-acceptance>",
+            "<oxa-acceptance>{\"one\":true}</oxa-acceptance>",
+            "<oxa-acceptance>[\"bad name\"]</oxa-acceptance>",
+            &format!("<oxa-acceptance>[{}]</oxa-acceptance>", "\"x\",".repeat(20)),
+        ] {
+            assert_eq!(parse_declaration(bad), Declaration::Unreadable, "{bad}");
+        }
+    }
+
+    #[test]
+    fn declarations_accumulate_across_rounds_and_cannot_overflow_quietly() {
+        let mut declared = merge_declaration(None, &Declaration::Tests(vec!["one".into()]));
+        declared = merge_declaration(declared, &Declaration::Absent);
+        assert_eq!(
+            declared.as_deref(),
+            Some(["one".to_owned()].as_slice()),
+            "a later round without a block keeps the earlier claim"
+        );
+        // A repeated claim is one claim.
+        let merged = merge_declaration(declared, &Declaration::Tests(vec!["one".into()]));
+        assert_eq!(merged.as_deref(), Some(["one".to_owned()].as_slice()));
+
+        // An unreadable block is never dropped.
+        let unreadable = merge_declaration(None, &Declaration::Unreadable);
+        assert_eq!(
+            unreadable.as_deref(),
+            Some([UNREADABLE_DECLARATION.to_owned()].as_slice())
+        );
+
+        // More distinct crates than the bound keeps the task unverifiable, not half-checked.
+        let many: Vec<String> = (0..MAX_DECLARED + 1).map(|i| format!("c{i}")).collect();
+        let overflow = merge_declaration(None, &Declaration::Tests(many));
+        let kept = overflow.expect("non-empty set");
+        assert_eq!(kept.len(), MAX_DECLARED);
+        assert_eq!(kept.last().map(String::as_str), Some(UNREADABLE_DECLARATION));
+    }
+
+    #[test]
+    fn declared_selectors_map_to_entries_or_keep_the_task_unverifiable() {
+        let discovered = BTreeMap::from([("one".to_owned(), "".to_owned())]);
+        let tested = ["one".to_owned()].into_iter().collect::<BTreeSet<_>>();
+        // Already derived: no duplicate entry.
+        assert!(declared_entries(&["one".to_owned()], &discovered, &tested)
+            .unwrap()
+            .is_empty());
+        // A named crate gets exactly its test entry.
+        assert_eq!(
+            declared_entries(&["one".to_owned()], &discovered, &BTreeSet::new()).unwrap(),
+            ["in .: command -v cargo >/dev/null 2>&1 || exit 127\ncargo test --frozen -p one".to_owned()]
+        );
+        // Unknown or unreadable declarations are errors, never silent skips.
+        for bad in [
+            vec!["missing".to_owned()],
+            vec![UNREADABLE_DECLARATION.to_owned()],
+            vec!["one".to_owned(), "missing".to_owned()],
+        ] {
+            let missing = declared_entries(&bad, &discovered, &tested).unwrap_err();
+            assert_eq!(missing.len(), 1, "{bad:?}");
+            assert!(!missing[0].contains("cargo test"), "{missing:?}");
+        }
+    }
+
+    #[test]
+    fn evidence_classification_separates_verdicts_from_checks_that_never_ran() {
+        assert_eq!(classify(Some(0), false), CheckStatus::Passed);
+        assert_eq!(classify(Some(1), false), CheckStatus::Failed);
+        for never in [Some(126), Some(127), None] {
+            assert_eq!(classify(never, false), CheckStatus::NotRun, "{never:?}");
+        }
+        assert_eq!(classify(Some(0), true), CheckStatus::NotRun);
+    }
+
+    #[test]
+    fn supervisor_evidence_parses_only_as_a_complete_matching_record() {
+        let record = r#"{"type":"oxa_checks","version":1,"checks":[
+            {"command":"true","exit":0,"timed_out":false},
+            {"command":"failing","exit":3,"timed_out":false},
+            {"command":"toolchain","exit":null,"timed_out":false}
+        ]}"#;
+        let runs = parse_evidence(record, 3).expect("matching evidence");
+        assert_eq!(runs[0].status, CheckStatus::Passed);
+        assert_eq!(runs[1].status, CheckStatus::Failed);
+        assert_eq!(runs[2].status, CheckStatus::NotRun);
+        assert_eq!(runs[2].exit, None);
+
+        // Anything else leaves the round without a verdict.
+        for broken in [
+            r#"{"type":"other","version":1,"checks":[]}"#,
+            r#"{"type":"oxa_checks","version":2,"checks":[]}"#,
+            r#"{"type":"oxa_checks","version":1,"checks":[{"command":"true","exit":0}]}"#,
+            r#"{"type":"oxa_checks","version":1,"checks":[{"exit":0,"timed_out":false}]}"#,
+            "not json at all",
+        ] {
+            assert!(parse_evidence(broken, 1).is_none(), "{broken}");
+        }
+        // A record that does not name every sent check exactly once is refused.
+        assert!(parse_evidence(record, 4).is_none());
+    }
+
+    #[test]
+    fn evidence_commands_are_bounded_without_splitting_characters() {
+        assert_eq!(bounded_command("true"), "true");
+        let long = "echo ".to_owned() + &"é".repeat(300);
+        let cut = bounded_command(&long);
+        assert!(cut.ends_with("…[truncated]"));
+        assert!(cut.len() <= COMMAND_CAP + "…[truncated]".len());
+        assert!(long.starts_with(cut.trim_end_matches("…[truncated]")));
+    }
+
+    #[test]
+    fn discovery_lists_the_crates_of_a_tree_with_their_workspace_dirs() {
+        let dir = PrivateDir::new("derived-discover");
+        manifest(&dir, "Cargo.toml", workspace());
+        manifest(&dir, "crates/one/Cargo.toml", "[package]\nname = \"one\"\n");
+        manifest(&dir, "tools/pinned/Cargo.toml", "[package]\nname = \"pinned\"\n");
+        // Skipped trees: a .git, target and node_modules directory.
+        for skip in [".git", "target", "node_modules"] {
+            manifest(
+                &dir,
+                &format!("{skip}/deep/Cargo.toml"),
+                "[package]\nname = \"skipped\"\n",
+            );
+        }
+        let found = discover(dir.path()).expect("bounded tree");
+        assert_eq!(
+            found,
+            BTreeMap::from([
+                ("one".to_owned(), "".to_owned()),
+                ("pinned".to_owned(), "".to_owned()),
+            ])
+        );
+    }
 }

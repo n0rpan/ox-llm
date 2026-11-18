@@ -4,6 +4,7 @@ use oxa_proto::{sh_quote, CancelToken, ExecSpec, Sandbox};
 use oxa_sandbox::Bwrap;
 use oxa_work::{SupervisorOperation, SupervisorRequest};
 use std::io::Write;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -22,63 +23,62 @@ pub(crate) fn run(
     }
     let root = cwd.canonicalize().map_err(|e| e.to_string())?;
     let committed = matches!(&request.operation, SupervisorOperation::CommittedChecks { .. });
-    let task = match &request.operation {
-        SupervisorOperation::Checks { task, .. } => Some(task.as_str()),
-        _ => None,
-    };
     let mut b = Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home).map_err(|e| e.to_string())?;
     b.layout = crate::sandbox_layout::layout(env, dirs, &root, false, &mut vec![]);
-    // #1442: both rounds get a private writable output mount. Committed checks keep their
-    // export-local directory; working-tree checks get a per-task directory beside the
-    // worktree, so generated build outputs never dirty the work the round judges.
-    let outputs = if committed {
-        root.parent()
-            .ok_or("committed checkout has no parent")?
-            .join(".committed-output")
-    } else {
-        let task = task.ok_or("working-tree checks have no task identity")?;
-        if task.is_empty()
-            || task.len() > 128
-            || !task
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
-        {
-            return Err("invalid task identity for check outputs".into());
+    // #1442: check rounds get a private writable output mount, so generated build outputs
+    // never dirty the work the round judges. Committed checks keep their export-local
+    // directory; working-tree checks get a per-task directory beside the worktree. The
+    // other supervisor operations run no project command and mount nothing extra.
+    let outputs = match &request.operation {
+        SupervisorOperation::Checks { task, .. } => {
+            if task.is_empty()
+                || task.len() > 128
+                || !task
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
+            {
+                return Err("invalid task identity for check outputs".into());
+            }
+            let scratch = root
+                .parent()
+                .ok_or("worktree has no parent for check outputs")?
+                .join(".work-output");
+            if !std::fs::symlink_metadata(&scratch).is_ok_and(|metadata| metadata.is_dir()) {
+                std::fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(&scratch)
+                    .map_err(|e| e.to_string())?;
+            }
+            let outputs = scratch.join(task);
+            if !std::fs::symlink_metadata(&outputs).is_ok_and(|metadata| metadata.is_dir()) {
+                std::fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(&outputs)
+                    .map_err(|e| e.to_string())?;
+                if !std::fs::symlink_metadata(&outputs).is_ok_and(|metadata| metadata.is_dir()) {
+                    return Err("invalid check output directory".into());
+                }
+            }
+            Some(outputs)
         }
-        let parent = root
-            .parent()
-            .ok_or("worktree has no parent for check outputs")?
-            .join(".work-output");
-        if std::fs::symlink_metadata(&parent).is_ok_and(|metadata| metadata.is_dir()) {
-            // Refuse a link placed over the scratch directory.
-        } else {
-            std::fs::DirBuilder::new()
-                .mode(0o700)
-                .create(&parent)
-                .map_err(|e| e.to_string())?;
-        }
-        parent.join(task)
-    };
-    if let Some(outputs) = &outputs {
-        if !std::fs::symlink_metadata(outputs).is_ok_and(|metadata| metadata.is_dir()) {
-            if committed {
+        SupervisorOperation::CommittedChecks { .. } => {
+            let outputs = root
+                .parent()
+                .ok_or("committed checkout has no parent")?
+                .join(".committed-output");
+            if !std::fs::symlink_metadata(&outputs).is_ok_and(|metadata| metadata.is_dir()) {
                 return Err("invalid committed-check output directory".into());
             }
-            std::fs::DirBuilder::new()
-                .mode(0o700)
-                .create(outputs)
-                .map_err(|e| e.to_string())?;
-            if !std::fs::symlink_metadata(outputs).is_ok_and(|metadata| metadata.is_dir()) {
-                return Err("invalid check output directory".into());
-            }
-        }
-        // No user cache/extra bind may reopen tracked inputs for writes.
-        if committed {
+            // No user cache/extra bind may reopen tracked inputs for writes.
             b.layout.write.retain(|path| {
                 path.canonicalize()
                     .is_ok_and(|path| !path.starts_with(&root) && !root.starts_with(path))
             });
+            Some(outputs)
         }
+        _ => None,
+    };
+    if let Some(outputs) = &outputs {
         b.layout.write.push(outputs.clone());
     }
     if let SupervisorOperation::CommittedChecks { index, .. }
@@ -209,9 +209,8 @@ git --no-replace-objects commit -m {message}
             }
             return Ok(0);
         }
-        SupervisorOperation::Checks { commands } | SupervisorOperation::CommittedChecks { commands, .. } => {
-            commands
-        }
+        SupervisorOperation::Checks { commands, .. }
+        | SupervisorOperation::CommittedChecks { commands, .. } => commands,
     };
     let shell = oxa_tools::ShellConfig {
         shell_path: settings.shell_path(&dirs.home),
@@ -220,6 +219,9 @@ git --no-replace-objects commit -m {message}
     let sandbox = crate::netguard::without_github(Arc::new(b), &settings);
     let mut failed = false;
     let mut diagnostics = Vec::new();
+    // #1442: one fact per command. The runner pairs this record with what it sent, decides
+    // each verdict itself, and keeps the list as the evidence a `done` rests on.
+    let mut evidence = Vec::new();
     for entry in commands {
         let (directory, text) = match entry.strip_prefix("in ").and_then(|s| s.split_once(':')) {
             Some((dir, command)) => (Some(dir.trim()), command.trim()),
@@ -274,6 +276,11 @@ git --no-replace-objects commit -m {message}
         let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
             keep_tail(&mut tail, bytes, 8192);
         });
+        evidence.push(serde_json::json!({
+            "command": entry,
+            "exit": result.exit,
+            "timed_out": result.timed_out,
+        }));
         if result.exit != Some(0) || result.timed_out {
             failed = true;
             let header = format!("{entry}: exit {:?}, timeout {}\n", result.exit, result.timed_out);
@@ -281,6 +288,9 @@ git --no-replace-objects commit -m {message}
             keep_tail(&mut diagnostics, &tail, 16384);
         }
     }
+    let record = serde_json::json!({"type": "oxa_checks", "version": 1, "checks": evidence});
+    serde_json::to_writer(&mut *out, &record).map_err(|e| e.to_string())?;
+    writeln!(out).map_err(|e| e.to_string())?;
     if failed {
         let ctx = crate::report_cmd::ScrubCtx::from_env(env, dirs);
         let safe = crate::report_cmd::scrub(&String::from_utf8_lossy(&diagnostics), &ctx);
@@ -289,8 +299,9 @@ git --no-replace-objects commit -m {message}
     Ok(i32::from(failed))
 }
 
-// Exit codes are the only result: repository callbacks cannot forge a clean
-// verdict by printing JSON or diagnostics. Git failures remain distinct from dirty.
+// Exit codes remain the gate: repository callbacks cannot forge a clean verdict by printing
+// JSON or diagnostics. The evidence record restates what the runner itself sent plus each
+// bare exit, and the runner pairs it with its own commands before deciding anything.
 fn inspect(sandbox: &Bwrap, root: &Path) -> Result<i32, String> {
     let spec = ExecSpec {
         command: r#"git --no-replace-objects --no-optional-locks -c core.fsmonitor=false status --porcelain=v1 -z | {

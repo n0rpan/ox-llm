@@ -950,8 +950,7 @@ fn acceptance_result(out: Output, commands: &[(CheckOrigin, String)]) -> Result<
             }
             None => Ok(Acceptance {
                 failures: diagnostic,
-                unrunnable: "the check evidence is missing, so no verdict can rest on this round"
-                    .to_owned(),
+                unrunnable: "the check evidence is missing, so no verdict can rest on this round".to_owned(),
                 ..Acceptance::default()
             }),
         },

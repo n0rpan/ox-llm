@@ -131,13 +131,10 @@ pub(crate) fn verify_commit(
     );
     let declared = execution.declared.clone().unwrap_or_default();
     if !declared.is_empty() {
-        let discovered = derived::discover(&export.tree).ok_or(
-            "clean committed acceptance could not run: the repository's crates cannot be listed",
-        )?;
+        let discovered = derived::discover(&export.tree)
+            .ok_or("clean committed acceptance could not run: the repository's crates cannot be listed")?;
         let entries = derived::declared_entries(&declared, &discovered, &derived.tested)
-            .map_err(|missing| {
-                format!("clean committed acceptance could not run: {}", missing.join("; "))
-            })?;
+            .map_err(|missing| format!("clean committed acceptance could not run: {}", missing.join("; ")))?;
         commands.extend(
             entries
                 .into_iter()
