@@ -375,17 +375,20 @@ jobs:
       RUSTUP_TOOLCHAIN: "1.99.1"
       CARGO_TERM_COLOR: always
       CARGO_BUILD_JOBS: "4"
-      HOME: ${{ runner.temp }}/home
-      CARGO_HOME: ${{ runner.temp }}/home/.cargo
-      RUSTUP_HOME: ${{ runner.temp }}/home/.rustup
-      XDG_CACHE_HOME: ${{ runner.temp }}/home/.cache
-      XDG_CONFIG_HOME: ${{ runner.temp }}/home/.config
-      XDG_DATA_HOME: ${{ runner.temp }}/home/.local/share
     steps:
       # The isolated HOME must exist before any step that uses it (git included).
       - name: Isolated HOME and XDG
         run: |
-          mkdir -p "$HOME" "$CARGO_HOME" "$RUSTUP_HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
+          ci_home="${RUNNER_TEMP:?}/home"
+          mkdir -p "$ci_home"/{.cargo,.rustup,.cache,.config,.local/share}
+          {
+            printf 'HOME=%s\n' "$ci_home"
+            printf 'CARGO_HOME=%s/.cargo\n' "$ci_home"
+            printf 'RUSTUP_HOME=%s/.rustup\n' "$ci_home"
+            printf 'XDG_CACHE_HOME=%s/.cache\n' "$ci_home"
+            printf 'XDG_CONFIG_HOME=%s/.config\n' "$ci_home"
+            printf 'XDG_DATA_HOME=%s/.local/share\n' "$ci_home"
+          } >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
