@@ -12,6 +12,7 @@ pub(crate) fn run(
     cwd: &Path,
     env: &Env,
     dirs: &Dirs,
+    out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<i32, String> {
     let request: SupervisorRequest = serde_json::from_str(request).map_err(|e| e.to_string())?;
@@ -21,26 +22,63 @@ pub(crate) fn run(
     }
     let root = cwd.canonicalize().map_err(|e| e.to_string())?;
     let committed = matches!(&request.operation, SupervisorOperation::CommittedChecks { .. });
+    let task = match &request.operation {
+        SupervisorOperation::Checks { task, .. } => Some(task.as_str()),
+        _ => None,
+    };
     let mut b = Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home).map_err(|e| e.to_string())?;
     b.layout = crate::sandbox_layout::layout(env, dirs, &root, false, &mut vec![]);
+    // #1442: both rounds get a private writable output mount. Committed checks keep their
+    // export-local directory; working-tree checks get a per-task directory beside the
+    // worktree, so generated build outputs never dirty the work the round judges.
     let outputs = if committed {
-        Some(
-            root.parent()
-                .ok_or("committed checkout has no parent")?
-                .join(".committed-output"),
-        )
+        root.parent()
+            .ok_or("committed checkout has no parent")?
+            .join(".committed-output")
     } else {
-        None
+        let task = task.ok_or("working-tree checks have no task identity")?;
+        if task.is_empty()
+            || task.len() > 128
+            || !task
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
+        {
+            return Err("invalid task identity for check outputs".into());
+        }
+        let parent = root
+            .parent()
+            .ok_or("worktree has no parent for check outputs")?
+            .join(".work-output");
+        if std::fs::symlink_metadata(&parent).is_ok_and(|metadata| metadata.is_dir()) {
+            // Refuse a link placed over the scratch directory.
+        } else {
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&parent)
+                .map_err(|e| e.to_string())?;
+        }
+        parent.join(task)
     };
     if let Some(outputs) = &outputs {
         if !std::fs::symlink_metadata(outputs).is_ok_and(|metadata| metadata.is_dir()) {
-            return Err("invalid committed-check output directory".into());
+            if committed {
+                return Err("invalid committed-check output directory".into());
+            }
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(outputs)
+                .map_err(|e| e.to_string())?;
+            if !std::fs::symlink_metadata(outputs).is_ok_and(|metadata| metadata.is_dir()) {
+                return Err("invalid check output directory".into());
+            }
         }
         // No user cache/extra bind may reopen tracked inputs for writes.
-        b.layout.write.retain(|path| {
-            path.canonicalize()
-                .is_ok_and(|path| !path.starts_with(&root) && !root.starts_with(path))
-        });
+        if committed {
+            b.layout.write.retain(|path| {
+                path.canonicalize()
+                    .is_ok_and(|path| !path.starts_with(&root) && !root.starts_with(path))
+            });
+        }
         b.layout.write.push(outputs.clone());
     }
     if let SupervisorOperation::CommittedChecks { index, .. }

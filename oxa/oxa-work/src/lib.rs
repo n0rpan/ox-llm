@@ -15,6 +15,8 @@ pub mod budget_policy;
 mod checkpoint;
 mod committed;
 pub use committed::{verify_saved_task, VerifiedTask};
+mod derived;
+pub use derived::{CheckOrigin, CheckRun, CheckStatus};
 mod execute;
 pub use execute::TaskTokens;
 pub mod helper_queue;
@@ -98,6 +100,9 @@ pub enum Outcome {
     NothingToDo,
     Red,
     Blocked,
+    /// The checks could not run (toolchain missing, timeout, unreadable evidence), so the
+    /// change is neither accepted nor failed (#1442). Never a publishable verdict.
+    Unverified,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -132,12 +137,16 @@ pub struct Record {
     pub reports: Vec<ReportRecord>,
     #[serde(default)]
     pub acceptance_outcome: Option<Outcome>,
+    /// Every check the last acceptance round ran, with its command and exit status (#1442):
+    /// what a `done` verdict rests on. Empty until checks run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<CheckRun>,
 }
 impl Record {
     pub fn failed(&self) -> bool {
         matches!(
             self.outcome,
-            Outcome::Red | Outcome::Blocked | Outcome::Interrupted
+            Outcome::Red | Outcome::Blocked | Outcome::Interrupted | Outcome::Unverified
         ) || self.reports.iter().any(|report| report.disposition == "failed")
     }
 }
@@ -810,6 +819,8 @@ pub enum SupervisorOperation {
         task_id: String,
     },
     Checks {
+        /// Task identity for the round's private output mount.
+        task: String,
         commands: Vec<String>,
     },
     CommittedChecks {
@@ -859,16 +870,29 @@ fn supervise(
         .map_err(|e| format!("work supervisor: {e}"))
 }
 
+/// One acceptance round: what ran, what failed, and what could not run (#1442). Any
+/// non-empty `unrunnable` keeps the task `unverified`; a `done` verdict needs every check
+/// `passed`, and the record keeps `runs` as the evidence it rests on.
+#[derive(Default)]
+pub(crate) struct Acceptance {
+    pub runs: Vec<CheckRun>,
+    /// Scrubbed diagnostics of the checks that ran and failed.
+    pub failures: String,
+    /// The checks that could not run, with the reason each.
+    pub unrunnable: String,
+}
+
 fn acceptance(
     binary: &Path,
     root: &Path,
     source: &Path,
-    commands: &[String],
+    task: &str,
+    commands: &[(CheckOrigin, String)],
     policy: &RunPolicy,
     lock: &fs::File,
-) -> Result<String> {
+) -> Result<Acceptance> {
     if commands.is_empty() {
-        return Ok(String::new());
+        return Ok(Acceptance::default());
     }
     let out = supervise(
         binary,
@@ -876,22 +900,84 @@ fn acceptance(
         SupervisorRequest {
             source: source.to_path_buf(),
             operation: SupervisorOperation::Checks {
-                commands: commands.to_vec(),
+                task: task.to_owned(),
+                commands: commands.iter().map(|(_, command)| command.clone()).collect(),
             },
         },
         policy,
         lock,
     )?;
-    acceptance_result(out)
+    acceptance_result(out, commands)
 }
 
-fn acceptance_result(out: Output) -> Result<String> {
+fn acceptance_result(out: Output, commands: &[(CheckOrigin, String)]) -> Result<Acceptance> {
     let diagnostic = String::from_utf8_lossy(&out.stderr).into_owned();
     match out.status.code() {
-        Some(0) => Ok(String::new()),
-        Some(1) => Ok(diagnostic),
+        Some(0) => {
+            let runs = evidence(&out, commands)
+                .ok_or("the check evidence is missing, so the round has no complete verdict")?;
+            if runs.iter().any(|run| run.status != CheckStatus::Passed) {
+                return Err("the check evidence disagrees with a clean verdict".into());
+            }
+            Ok(Acceptance {
+                runs,
+                ..Acceptance::default()
+            })
+        }
+        Some(1) => match evidence(&out, commands) {
+            Some(runs) => {
+                let unrunnable = runs
+                    .iter()
+                    .filter(|run| run.status == CheckStatus::NotRun)
+                    .map(|run| {
+                        format!(
+                            "{} ({})",
+                            first_line(&run.command),
+                            match (run.timed_out, run.exit) {
+                                (true, _) => "timed out".to_owned(),
+                                (false, Some(code)) => format!("exit {code}"),
+                                (false, None) => "killed before finishing".to_owned(),
+                            }
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Ok(Acceptance {
+                    runs,
+                    failures: diagnostic,
+                    unrunnable,
+                })
+            }
+            None => Ok(Acceptance {
+                failures: diagnostic,
+                unrunnable: "the check evidence is missing, so no verdict can rest on this round"
+                    .to_owned(),
+                ..Acceptance::default()
+            }),
+        },
         _ => Err(format!("acceptance could not run: {diagnostic}")),
     }
+}
+
+/// The per-check evidence of a supervisor run, tagged with the origins the runner sent.
+/// `None` when it does not name every sent check exactly once.
+fn evidence(out: &Output, commands: &[(CheckOrigin, String)]) -> Option<Vec<CheckRun>> {
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let runs = derived::parse_evidence(&stdout, commands.len())?;
+    Some(
+        runs.into_iter()
+            .zip(commands)
+            .map(|(mut run, (origin, command))| {
+                run.origin = *origin;
+                run.command = derived::bounded_command(command);
+                run
+            })
+            .collect(),
+    )
+}
+
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or(text)
 }
 
 fn dirty_worktree(
@@ -969,6 +1055,7 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
         problem_notes: vec![],
         reports: vec![],
         acceptance_outcome: None,
+        checks: vec![],
     }
 }
 
@@ -1198,6 +1285,7 @@ fn run_locked(
             base: planned.base_sha.clone(),
             prompt: task.prompt.clone(),
             commands: planned.commands.clone(),
+            declared: None,
             worker_error: None,
             merge_error: None,
             failures: String::new(),

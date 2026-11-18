@@ -64,6 +64,8 @@ pub(crate) struct Worker {
     pub session: Option<String>,
     pub diagnostic: String,
     pub notes: Vec<crate::ProblemNote>,
+    /// Crates the worker declared as acceptance tests in its last message (#1442).
+    pub declared: crate::derived::Declaration,
 }
 
 impl Worker {
@@ -173,8 +175,7 @@ pub(crate) fn run(
             }
         };
         let session = header.join().map_err(|_| "worker header reader failed")?;
-        let terminal = terminal.join().map_err(|_| "worker result reader failed")?;
-        if let Some(error) = waited.failure {
+        let terminal = terminal.join().map_err(|_| "worker result reader failed")?;        if let Some(error) = waited.failure {
             return Err(error);
         }
         let status = waited.status;
@@ -196,9 +197,10 @@ pub(crate) fn run(
                 session: session.ok().and_then(|(id, _)| id),
                 diagnostic: "worker exceeded max_time and its wrap-up grace; worktree retained".into(),
                 notes: vec![],
+                declared: crate::derived::Declaration::Absent,
             });
         }
-        let (session, notes) = session?;
+        let (session, notes, declared) = session?;
         let (result, diagnostic) = terminal?;
         if status.code() != Some(result.exit_code) {
             return Err("worker exit code disagrees with its oxa_result".into());
@@ -211,6 +213,7 @@ pub(crate) fn run(
             session,
             diagnostic,
             notes,
+            declared,
         })
     })
 }
@@ -218,7 +221,7 @@ pub(crate) fn run(
 fn read_session(
     pipe: impl Read,
     on_session: &mut dyn FnMut(&str) -> Result<()>,
-) -> Result<(Option<String>, Vec<crate::ProblemNote>)> {
+) -> Result<(Option<String>, Vec<crate::ProblemNote>, crate::derived::Declaration)> {
     let mut reader = BufReader::new(pipe);
     let session = line(&mut reader)?.and_then(|line| {
         let value: serde_json::Value = serde_json::from_slice(&line).ok()?;
@@ -235,6 +238,8 @@ fn read_session(
     });
     let recorded = session.as_deref().map(on_session).transpose();
     let mut notes = vec![];
+    // The worker's last message carries its declarations; a later message replaces them.
+    let mut declared = crate::derived::Declaration::Absent;
     while let Some(bytes) = line(&mut reader)? {
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
             continue;
@@ -251,10 +256,11 @@ fn read_session(
                 }
             }
             notes = crate::notes::parse(&text);
+            declared = crate::derived::parse_declaration(&text);
         }
     }
     recorded?;
-    Ok((session, notes))
+    Ok((session, notes, declared))
 }
 
 fn read_result(pipe: impl Read) -> Result<(WorkerResult, String)> {

@@ -1,7 +1,7 @@
 //! Verify a saved task from an independent, clean, hash-checked Git export.
 use crate::{
-    acceptance_result, checked, dirty_worktree, git, state, supervise, tree, valid_task_id, Outcome, Record,
-    Result, RunPolicy, Step, SupervisorOperation, SupervisorRequest,
+    acceptance_result, checked, derived, dirty_worktree, git, state, supervise, tree, valid_task_id,
+    CheckOrigin, Outcome, Record, Result, RunPolicy, Step, SupervisorOperation, SupervisorRequest,
 };
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -113,6 +113,37 @@ pub(crate) fn verify_commit(
     if crate::done_commands(policy, &export.store, base)? != execution.commands {
         return Err("saved checks disagree with their captured base".into());
     }
+    // #1442: a saved verdict is bound to the change's own crates and the declared
+    // acceptance crates, recomputed from this exact commit; the static list alone is not
+    // the evidence a `done` rested on.
+    let mut commands: Vec<(CheckOrigin, String)> = execution
+        .commands
+        .iter()
+        .map(|command| (CheckOrigin::Settings, command.clone()))
+        .collect();
+    let derived = derived::derive(policy, &export.tree, base, Some(head))
+        .map_err(|reason| format!("clean committed acceptance could not run: {reason}"))?;
+    commands.extend(
+        derived
+            .commands
+            .into_iter()
+            .map(|command| (CheckOrigin::Derived, command)),
+    );
+    let declared = execution.declared.clone().unwrap_or_default();
+    if !declared.is_empty() {
+        let discovered = derived::discover(&export.tree).ok_or(
+            "clean committed acceptance could not run: the repository's crates cannot be listed",
+        )?;
+        let entries = derived::declared_entries(&declared, &discovered, &derived.tested)
+            .map_err(|missing| {
+                format!("clean committed acceptance could not run: {}", missing.join("; "))
+            })?;
+        commands.extend(
+            entries
+                .into_iter()
+                .map(|command| (CheckOrigin::Declared, command)),
+        );
+    }
     let checkout = supervise(
         binary,
         &export.tree,
@@ -159,21 +190,31 @@ pub(crate) fn verify_commit(
     let mut refresh_index = private_git(policy, &export.tree, &["update-index", "--refresh"]);
     refresh_index.env("GIT_INDEX_FILE", &index);
     checked(refresh_index)?;
-    let failed = acceptance_result(supervise(
-        binary,
-        &export.tree,
-        SupervisorRequest {
-            source: repo.into(),
-            operation: SupervisorOperation::CommittedChecks {
-                commands: execution.commands.clone(),
-                index: index.clone(),
+    let round = acceptance_result(
+        supervise(
+            binary,
+            &export.tree,
+            SupervisorRequest {
+                source: repo.into(),
+                operation: SupervisorOperation::CommittedChecks {
+                    commands: commands.iter().map(|(_, command)| command.clone()).collect(),
+                    index: index.clone(),
+                },
             },
-        },
-        policy,
-        lock,
-    )?)?;
-    if !failed.is_empty() {
-        return Err(format!("clean committed acceptance failed: {failed}"));
+            policy,
+            lock,
+        )?,
+        &commands,
+    )
+    .map_err(|error| format!("clean committed acceptance could not run: {error}"))?;
+    if !round.unrunnable.is_empty() {
+        return Err(format!(
+            "clean committed acceptance could not run: {}",
+            round.unrunnable
+        ));
+    }
+    if !round.failures.is_empty() {
+        return Err(format!("clean committed acceptance failed: {}", round.failures));
     }
     same_saved_commit(policy, &export.tree, head, tree_id)?;
     if dirty_worktree(binary, &export.tree, repo, policy, lock)? {
