@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod claims;
 pub use claims::{
-    Assignment, AssignmentBoard, AssignmentData, Claims, ExistingWork, ItemLease, NativeBinding,
+    Assignment, AssignmentBoard, AssignmentData, Claims, ExistingWork, ItemLease, ItemOwner, NativeBinding,
     ReleaseRecord,
 };
 pub mod assignment;
