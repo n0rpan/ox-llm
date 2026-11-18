@@ -1,6 +1,7 @@
 """O-397/O-398: fake GitHub/OIDC/provider controls; no live credentials or cloud calls."""
 import contextlib
 import copy
+from datetime import UTC, datetime
 import importlib.util
 import io
 import json
@@ -38,7 +39,7 @@ def finding(**changes):
 
 class GoReview(unittest.TestCase):
     def run_review(self, *, pr=None, files=None, comments=None, answer=None, stale=False, models=None,
-                   argon=None, current_base=None):
+                   argon=None, current_base=None, daily_comments=None, max_per_day=None):
         pr = copy.deepcopy(PR if pr is None else pr)
         files = FILES if files is None else files
         calls, posted, pulls = [], [], 0
@@ -56,6 +57,8 @@ class GoReview(unittest.TestCase):
                 return value
             if '/files?' in url:
                 return files
+            if url.startswith(review.API + '/issues/comments?'):
+                return daily_comments or []
             if '/comments?' in url:
                 return comments or []
             if url == review.ARGON_URL:
@@ -86,6 +89,8 @@ class GoReview(unittest.TestCase):
                    'ACTIONS_ID_TOKEN_REQUEST_TOKEN': 'synthetic-request'}
             if models is not None:
                 env['GO_REVIEW_MODELS'] = models
+            if max_per_day is not None:
+                env['GO_REVIEW_MAX_PER_DAY'] = max_per_day
             with patch.dict(os.environ, env, clear=True), patch.object(review, 'request', request), \
                     patch.object(review, 'access_token', return_value='synthetic-access') as auth:
                 review.main()
@@ -102,6 +107,14 @@ class GoReview(unittest.TestCase):
         self.assertEqual(json.loads(marker[0]),
                          {'sha': SHA, 'model': review.MODEL, 'verdict': 'REVISE',
                           'findings': 1, 'diff_hash': review.own_diff_hash(FILES)})
+
+    def test_full_daily_quota_refuses_before_authentication(self):
+        receipt = {'sha': 'b' * 40, 'diff_hash': 'c' * 64, 'verdict': 'OK'}
+        comment = {'id': 11, 'user': {'login': 'github-actions[bot]'},
+                   'created_at': datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                   'body': '<!-- go-review:v1 ' + json.dumps(receipt) + ' -->'}
+        with self.assertRaises(review.Skipped):
+            self.run_review(daily_comments=[comment], max_per_day='1')
 
     def test_clean_comment_has_required_machine_readable_marker_on_its_own_line(self):
         _, posted, _ = self.run_review()
