@@ -27,8 +27,15 @@ pub struct Partition {
     pub residues: BTreeSet<u64>,
 }
 impl Partition {
-    fn contains(&self, number: u64) -> bool {
+    pub(crate) fn contains(&self, number: u64) -> bool {
         self.residues.contains(&(number % self.modulus))
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.modulus == 0 || self.residues.is_empty() || self.residues.iter().any(|r| *r >= self.modulus) {
+            return Err("invalid board partition".into());
+        }
+        Ok(())
     }
 }
 struct Partitioned<'a, S>(&'a mut S, &'a Partition);
@@ -89,17 +96,7 @@ impl Consumer<'_> {
             return Ok(vec![]);
         }
         let host = source.host_id()?.map(str::to_owned);
-        if self.partition.modulus == 0
-            || self.partition.residues.is_empty()
-            || self
-                .partition
-                .residues
-                .iter()
-                .any(|r| *r >= self.partition.modulus)
-            || self.policy.max_attempts_per_day > 3
-        {
-            return Err("invalid board partition or attempt cap".into());
-        }
+        self.partition.validate()?;
         let board = self.claims.assignment_board(
             &mut Partitioned(source, self.partition),
             self.policy,
@@ -140,12 +137,17 @@ impl Consumer<'_> {
                     }
                     let rows = self.claims.assignments()?;
                     // Recheck under the shared queue publication lock, including other refs.
+                    // A bound hosted wait can yield; claim_idle_item_for still checks idleness atomically.
                     if !rows.contains_key(&number)
                         || rows.values().any(|row| {
-                            row.state
-                                .lease
-                                .as_ref()
-                                .is_some_and(|l| l.holder == self.worker.id)
+                            row.state.lease.as_ref().is_some_and(|lease| {
+                                lease.holder == self.worker.id
+                                    && (row.data.import_hold
+                                        || row.data.dependency.is_none()
+                                        || host.as_deref().is_none_or(|host| {
+                                            crate::work_cmd::authenticate_native_claim(row, host).is_err()
+                                        }))
+                            })
                         })
                         || rows[&number].state.lease.is_some()
                         || (host.is_none() && !source.revalidate(entry)?)

@@ -13,6 +13,7 @@ fn command(test: &TestEnv) -> Command {
     command
         .env_clear()
         .envs(test.envs("http://127.0.0.1:1"))
+        .env("TZ", "UTC0")
         .current_dir(test.work())
         .stdin(Stdio::null());
     command
@@ -34,8 +35,19 @@ fn get(port: u16, path: &str, authority: &str, extra: &str) -> String {
 }
 
 fn start(test: &TestEnv, sample: &std::path::Path) -> Running {
+    start_with_situation(test, sample, None)
+}
+fn start_with_situation(
+    test: &TestEnv,
+    sample: &std::path::Path,
+    situation: Option<&std::path::Path>,
+) -> Running {
+    let mut invocation = command(test);
+    if let Some(path) = situation {
+        invocation.env("OXA_LEAD_SITUATION", path);
+    }
     let mut child = Running(
-        command(test)
+        invocation
             .args(["lead", "serve"])
             .env("OXA_LEAD_BOARD_LOG", sample)
             .stdout(Stdio::piped())
@@ -55,6 +67,166 @@ fn start(test: &TestEnv, sample: &std::path::Path) -> Running {
         .unwrap()
         .contains("listening"));
     child
+}
+
+fn post(port: u16, path: &str, host: &str, origin: &str, extra: &str, body: &str) -> String {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    write!(stream, "POST {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n{extra}\r\n{body}", body.len()).unwrap();
+    // Refusals may close with the rejected request body still unread.
+    let mut input = BufReader::new(stream);
+    let mut response = String::new();
+    while !response.ends_with("\r\n\r\n") {
+        assert!(input.read_line(&mut response).unwrap() > 0);
+    }
+    let length: usize = response
+        .lines()
+        .find_map(|line| line.strip_prefix("Content-Length: "))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut body = vec![0; length];
+    input.read_exact(&mut body).unwrap();
+    response.push_str(std::str::from_utf8(&body).unwrap());
+    response
+}
+
+fn form_nonce(page: &str) -> &str {
+    page.split("name=csrf value=\"")
+        .nth(1)
+        .expect("no-JS form must be present")
+        .split('"')
+        .next()
+        .unwrap()
+}
+
+fn with_fixed_chat(run: impl FnOnce(u16, &str)) {
+    let test = TestEnv::new();
+    let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reservation.local_addr().unwrap().port();
+    test.write(
+        "home/.oxa/agent/settings.json",
+        &serde_json::json!({"oxa":{"lead":{"serve":{
+            "enabled":true,"fixed_prompts":true,"port":port
+        }}}})
+        .to_string(),
+    );
+    let directory = test.root().join("inputs");
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let board = directory.join("board.jsonl");
+    std::fs::write(
+        &board,
+        b"{\"schema_version\":1,\"observed_at\":10,\"board\":{\"observed_at\":10,\"entries\":[]}}\n",
+    )
+    .unwrap();
+    let situation = directory.join("situation.json");
+    let snapshot = include_str!("../../oxa-proto/tests/fixtures/work/evening.jsonl")
+        .lines()
+        .find_map(|line| oxa_proto::work::Snapshot::from_json(line.as_bytes()).ok())
+        .unwrap();
+    std::fs::write(&situation, snapshot.to_json().unwrap()).unwrap();
+    for path in [&board, &situation] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    drop(reservation);
+    let _server = start_with_situation(&test, &board, Some(&situation));
+    let authority = format!("127.0.0.1:{port}");
+    run(port, &authority);
+}
+
+#[test]
+fn fixed_chat_form_posts_without_js_and_reuses_protected_observations() {
+    with_fixed_chat(|port, authority| {
+        let page = get(port, "/chat", authority, "");
+        let nonce = form_nonce(&page);
+        assert_eq!(nonce.len(), 43);
+        assert!(page.contains("method=post action=/chat"));
+        assert!(page.contains("form-action 'self'"));
+        let origin = format!("http://{authority}");
+        for prompt in ["status", "workers", "attention"] {
+            let reply = post(
+                port,
+                "/chat",
+                authority,
+                &origin,
+                "",
+                &format!("csrf={nonce}&prompt={prompt}"),
+            );
+            assert_eq!(reply.lines().next(), Some("HTTP/1.1 303 See Other"));
+            let target = reply
+                .lines()
+                .find_map(|line| line.strip_prefix("Location: "))
+                .unwrap();
+            assert_eq!(target, format!("/chat?prompt={prompt}"));
+            let page = get(port, target, authority, "");
+            assert!(page.contains("<!doctype html>") && page.contains("0 tokens"));
+            let fact = if prompt == "status" {
+                "0 items"
+            } else {
+                "Snapshot observations unavailable"
+            };
+            assert!(page.contains(fact), "{prompt}");
+            assert!(get(port, &format!("{target}&fragment=1"), authority, "").contains(fact));
+        }
+        let refused = |path, host, source, extra, body: &str| {
+            let reply = post(port, path, host, source, extra, body);
+            assert!(reply.starts_with("HTTP/1.1 4"));
+            assert!(!reply.contains("private-input-marker") && !reply.contains("0 tokens"));
+        };
+        let valid = format!("csrf={nonce}&prompt=status");
+        refused("/chat", authority, "https://attacker.invalid", "", &valid);
+        refused("/chat", "attacker.invalid", &origin, "", &valid);
+        for body in [
+            "csrf=wrong&prompt=status".into(),
+            format!("{valid}&prompt=workers"),
+            format!("csrf={nonce}&prompt=private-input-marker"),
+            "x".repeat(257),
+        ] {
+            refused("/chat", authority, &origin, "", &body);
+        }
+        for extra in [
+            "Origin: https://attacker.invalid\r\n",
+            "Transfer-Encoding: chunked\r\n",
+        ] {
+            refused("/chat", authority, &origin, extra, &valid);
+        }
+        refused("/workers", authority, &origin, "", &valid);
+    });
+}
+
+#[test]
+fn fixed_form_response_preserves_browser_origin() {
+    with_fixed_chat(|port, authority| {
+        assert!(get(port, "/chat", authority, "").contains("Referrer-Policy: same-origin\r\n"));
+    });
+}
+
+#[test]
+fn fixed_post_redirects_to_the_selected_refresh_url() {
+    with_fixed_chat(|port, authority| {
+        let page = get(port, "/chat", authority, "");
+        let nonce = form_nonce(&page);
+        for prompt in ["status", "workers", "attention"] {
+            let reply = post(
+                port,
+                "/chat",
+                authority,
+                &format!("http://{authority}"),
+                "",
+                &format!("csrf={nonce}&prompt={prompt}"),
+            );
+            assert_eq!(reply.lines().next(), Some("HTTP/1.1 303 See Other"));
+            assert!(reply.contains(&format!("Location: /chat?prompt={prompt}\r\n")));
+        }
+    });
+}
+
+#[test]
+fn same_uid_client_cannot_read_protected_situation() {
+    with_fixed_chat(|port, authority| {
+        assert!(get(port, "/asks", authority, "").contains("Owner asks unavailable"));
+    });
 }
 
 #[test]
@@ -132,6 +304,7 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
     let page = get(port, "/", &authority, "");
     assert!(page.starts_with("HTTP/1.1 200"));
     assert!(page.contains("No open PRs in this snapshot"));
+    assert!(!page.contains("method=post"));
     for (path, title) in [
         ("/", "Status"),
         ("/asks", "Asks"),
@@ -164,7 +337,10 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
             assert!(reply.starts_with("HTTP/1.1 200"), "{path}");
             assert!(reply.contains("0 tokens") && reply.contains("role=log"));
             if prompt == "status" {
-                assert!(reply.contains("0 items") && reply.contains("href=/board>Board · observed at 10"));
+                assert!(
+                    reply.contains("0 items")
+                        && reply.contains("href=/board>Board · observed 1970-01-01 00:00 UTC")
+                );
             }
             assert_eq!(reply.contains("<!doctype html>"), suffix.is_empty());
             assert!(get(port, &path, "attacker.invalid", "").starts_with("HTTP/1.1 403"));

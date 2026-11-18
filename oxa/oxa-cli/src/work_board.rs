@@ -3,6 +3,7 @@ use crate::lead_quota::{GitHubIdentity, GitHubQuotas, GitHubResource};
 pub mod refill_input;
 use oxa_work::board::{Board, GitHub, Mergeability, Policy, PullRequest, RequiredCi};
 use serde_json::Value;
+mod claims_readback;
 mod refill;
 use std::{
     cell::{Cell, RefCell},
@@ -464,7 +465,7 @@ impl Reader<'_> {
                 match row["state"].as_str() {
                     Some("OPEN") => (),
                     Some("CLOSED" | "MERGED") => {
-                        return Err(SnapshotError::Changed("PR changed during snapshot; retry later"))
+                        return Err(SnapshotError::Changed("PR changed during snapshot; retry later"));
                     }
                     _ => return Err(SnapshotError::from("invalid PR state")),
                 }
@@ -585,6 +586,9 @@ pub(crate) fn run(
     dirs: &oxa_config::Dirs,
     policy: &oxa_work::RunPolicy,
 ) -> Result<i32, String> {
+    if args.first().is_some_and(|arg| arg == "--claims-readback") {
+        return claims_readback::run(args, root, common, env, dirs);
+    }
     if args.first().is_some_and(|arg| arg == "--refill") {
         return refill::run(args, root, common, env, dirs, policy);
     }

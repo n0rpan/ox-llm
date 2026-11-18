@@ -1,7 +1,7 @@
 //! Explicit one-shot execution of an existing, fully bound native board packet.
 use super::{protected_storage, registered_native_worker, Context};
 use oxa_work::{
-    board::{Claims, ItemLease, LeaseSignal},
+    board::{Assignment, Claims, ItemLease, ItemOwner, LeaseSignal, NativeBinding},
     CheckpointKind, LockedTask, NativeQueueOwner, QueueOptions, QueueRun, Record, Task,
 };
 use serde_json::Value;
@@ -21,6 +21,49 @@ fn paused(path: &Path) -> Result<bool, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(_) => Err("cannot establish board pause state".into()),
     }
+}
+
+pub(crate) fn authenticate_native_claim<'a>(
+    row: &'a Assignment,
+    host: &str,
+) -> Result<(&'a NativeBinding, &'a ItemOwner), String> {
+    if row.data.import_hold {
+        return Err("native claim is held for import".into());
+    }
+    let owner = row
+        .data
+        .item_owner
+        .as_ref()
+        .filter(|owner| owner.host_id == host)
+        .ok_or("native claim does not belong to the authenticated host")?;
+    let binding = row
+        .data
+        .native_binding
+        .as_ref()
+        .filter(|binding| binding.number == row.number && row.state.lease.as_ref() == Some(&binding.lease))
+        .ok_or("native worker lacks an exact retained binding")?;
+    binding.validate()?;
+    Ok((binding, owner))
+}
+
+fn runnable_claim<'a>(
+    rows: impl Iterator<Item = &'a Assignment>,
+    worker: &str,
+    host: &str,
+) -> Result<Option<(&'a NativeBinding, &'a ItemOwner)>, String> {
+    let mut runnable = None;
+    for row in rows.filter(|row| {
+        row.state
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease.holder == worker)
+    }) {
+        let (binding, owner) = authenticate_native_claim(row, host)?;
+        if row.data.dependency.is_none() && runnable.replace((binding, owner)).is_some() {
+            return Err("native worker has multiple runnable assignments".into());
+        }
+    }
+    Ok(runnable)
 }
 
 pub(super) fn run(
@@ -101,27 +144,13 @@ pub(super) fn run(
     let claims_path = owner_path("claims")?;
     let claims = Claims::open(&claims_path)?;
     let (worker, host) = registered_native_worker(&value)?;
-    let rows = claims.assignments()?;
-    let mut owned = rows.into_values().filter(|row| {
-        row.state
-            .lease
-            .as_ref()
-            .is_some_and(|lease| lease.holder == worker.id)
-    });
-    let Some(row) = owned.next() else { return Ok(0) };
-    if owned.next().is_some() {
-        return Err("native worker has multiple active assignments".into());
-    }
-    let item_owner = row
-        .data
-        .item_owner
-        .filter(|owner| owner.host_id == host)
-        .ok_or("native claim does not belong to the authenticated host")?;
-    let binding = row
-        .data
-        .native_binding
-        .filter(|binding| row.state.lease.as_ref() == Some(&binding.lease))
-        .ok_or("native worker lacks an exact retained binding")?;
+    let (binding, item_owner) = {
+        let rows = claims.assignments()?;
+        let Some((binding, item_owner)) = runnable_claim(rows.values(), &worker.id, host)? else {
+            return Ok(0);
+        };
+        (binding.clone(), item_owner.clone())
+    };
     if steering.is_some_and(|(attempt, _)| attempt != binding.native_task_id) {
         return Err("native steering objective belongs to a different attempt".into());
     }
@@ -168,16 +197,25 @@ pub(super) fn run(
     let steering_objective = steering.map(|(_, objective)| objective.to_owned());
     #[cfg(all(target_os = "linux", feature = "managed-steering"))]
     let steering_binding = binding.clone();
-    let admission = binding.clone();
+    let admission_claims = claims.clone();
+    let admission_binding = binding.clone();
+    let admission_host = host.to_owned();
     let run = Arc::new(move |task: &Task, lock: &mut LockedTask<'_>| {
         if paused(&pause)? {
             return Err("native board execution paused".into());
+        }
+        {
+            let rows = admission_claims.assignments()?;
+            let current = runnable_claim(rows.values(), &admission_binding.lease.holder, &admission_host)?;
+            if !current.is_some_and(|(binding, _)| binding == &admission_binding) {
+                return Err("native claim is no longer runnable".into());
+            }
         }
         #[cfg(all(target_os = "linux", feature = "managed-steering"))]
         if let Some(objective) = &steering_objective {
             lock.bind_managed_steering(&claims_path, &steering_binding, objective)?;
         }
-        match lock.plan_native(&worker_context.cwd, worker_context.reports, &admission) {
+        match lock.plan_native(&worker_context.cwd, worker_context.reports, &admission_binding) {
             Ok(plan) => worker_context.planned_locked(&plan, lock, &observe),
             Err(error) => Ok(oxa_work::blocked_record(task, error)),
         }
