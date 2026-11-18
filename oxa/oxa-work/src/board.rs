@@ -8,6 +8,7 @@ pub use claims::{
     LeaseSignal, NativeBinding, ReleaseRecord, VerifiedMilestone,
 };
 pub mod assignment;
+pub use claims::ActivityTiming;
 pub use claims::{Dependency, DependencyWait};
 mod intake;
 pub mod landing;
