@@ -5,12 +5,9 @@ Run `oxa lead serve` to serve the read-only board after enabling it in user sett
 The owner must read the final authentication composition before merge or live exposure.
 Chat and owner-decision mutations remain separate work.
 
-Optional user setting `oxa.lead.serve.fixed_prompts` defaults to false. Enabling it
-adds a no-JS `/chat` form for Status, Workers and Attention with the same read identity,
-same-origin validation and a per-process CSRF nonce. These requests use zero model tokens.
-`OXA_LEAD_SITUATION` selects an absolute private runner situation export through the
-existing bounded reader; absent or refused observations stay unavailable. This does not
-enable free-text messages, Session access or owner-decision writes.
+Optional user setting `oxa.lead.serve.fixed_prompts` defaults to false.
+It enables no-JS, same-origin/CSRF-protected fixed questions at zero model tokens.
+Private situation data needs browser proof separate from tool UIDs; absent inputs stay unavailable.
 
 Only the user settings file may configure `oxa.lead.serve`; a project's settings
 cannot enable it or choose its listener or identity policy. It is disabled by
