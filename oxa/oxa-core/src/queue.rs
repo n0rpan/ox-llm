@@ -250,7 +250,7 @@ impl Shared {
         let reserved = requested.min(turn.remaining);
         if reserved == 0 {
             return Err(oxa_proto::OxaError::new(
-                oxa_proto::codes::BUDGET_EXHAUSTED,
+                oxa_proto::codes::LITERAL_OUTPUT_EXHAUSTED,
                 "The literal turn's output limit is exhausted.",
             ));
         }
@@ -261,6 +261,13 @@ impl Shared {
             None
         };
         Ok(Some((reserved, context)))
+    }
+
+    /// `None` when no bounded literal turn is active, else the output tokens it
+    /// can still reserve. The length-recovery path consults this before it
+    /// schedules a request that could never be admitted.
+    pub(crate) fn literal_output_remaining(&self) -> Option<u32> {
+        lock(&self.gate.literal_turn).as_ref().map(|turn| turn.remaining)
     }
 
     pub(crate) fn settle_literal_output(&self, reserved: u32, completion: u32) {

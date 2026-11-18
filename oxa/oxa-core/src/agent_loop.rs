@@ -4,7 +4,7 @@ use crate::exec::{fail_truncated_calls, reply_event, run_calls, RequestOpts};
 use crate::host::observe_hooks;
 use crate::SessionState;
 use oxa_proto::{
-    miss_cause, rebase_why, shown_why, AgentEvent, Entry, EntryBody, EventMessage, EventSink, Finish,
+    codes, miss_cause, rebase_why, shown_why, AgentEvent, Entry, EntryBody, EventMessage, EventSink, Finish,
     HookPoint, Level, OxaError, Part, Role, StopReason, TurnKind, Ui, Usage, Value, WireMsg,
 };
 use oxa_session::new_entry_id;
@@ -431,6 +431,44 @@ fn run_inner(
             break turn;
         };
 
+        if turn.finish == Finish::Length
+            && turn.msg.tool_calls.is_empty()
+            && st.info.caps.remote
+            && !wrapping_up
+            && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) == 0
+            && st.shared.literal_output_remaining() == Some(0)
+        {
+            // The bounded literal turn has spent its shared output budget: the
+            // recovery request could never reserve a token, so it is neither
+            // scheduled nor described with its internal instruction, and the
+            // partial answer is never presented as a valid reply. The cut stays
+            // as the audit entry; the typed local bound reaches the caller.
+            account_discarded(st, &turn);
+            let text = turn
+                .msg
+                .content
+                .clone()
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| "The reply reached its output limit before answering.".to_string());
+            persist(
+                st,
+                EntryBody::Shown {
+                    text,
+                    why: shown_why::CUT,
+                },
+                sink,
+            )?;
+            let e = OxaError::new(
+                codes::LITERAL_OUTPUT_EXHAUSTED,
+                "The literal turn's output limit is exhausted.",
+            )
+            .with_hint("Ask for a shorter answer.");
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Error,
+                text: e.to_string(),
+            });
+            return Ok(RunEnd::Failed(e));
+        }
         if turn.finish == Finish::Length
             && turn.msg.tool_calls.is_empty()
             && st.info.caps.remote
