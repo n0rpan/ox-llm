@@ -1,5 +1,7 @@
 //! Read-only checkpoint observations; never acquire, rewrite or delete a task lock.
-use crate::{state, Outcome, Record, Result, Step};
+use crate::{
+    load_task_checkpoint, state, valid_task_id, Outcome, Record, Result, RunPolicy, Step, TaskTokens,
+};
 use serde::Serialize;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -19,6 +21,33 @@ pub struct Status {
     #[serde(flatten)]
     pub record: Record,
     pub liveness: Liveness,
+}
+
+/// A bounded projection of one saved task, with no worker receipt or private paths.
+#[derive(Debug, Serialize)]
+pub struct TaskUsage {
+    pub task: String,
+    pub checkpoint_revision: u64,
+    pub task_tokens: Option<TaskTokens>,
+}
+
+/// Read one validated checkpoint. A missing task and a legacy task with no usage are distinct.
+pub fn task_usage(policy: &RunPolicy, id: &str) -> Result<Option<TaskUsage>> {
+    if !valid_task_id(id) {
+        return Err("invalid task id".into());
+    }
+    let Some(saved) = load_task_checkpoint(policy, id).map_err(|_| "task usage checkpoint unavailable")?
+    else {
+        return Ok(None);
+    };
+    if saved.record.id != id {
+        return Err("task usage checkpoint identity disagrees with the requested task".into());
+    }
+    Ok(Some(TaskUsage {
+        task: saved.record.id,
+        checkpoint_revision: saved.record.checkpoint_revision,
+        task_tokens: saved.record.task_tokens,
+    }))
 }
 
 pub fn status(storage: &Path, binary: &Path) -> Result<Vec<Status>> {
