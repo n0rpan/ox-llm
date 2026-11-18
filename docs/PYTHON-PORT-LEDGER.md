@@ -24,7 +24,7 @@ PORTED means the named Rust implementation and its contract tests replace the fe
 | oxc/src/oxc/bootstrap_sources.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
 | oxc/src/oxc/bootstrap_transfer.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
 
-Source retirement follows the v0.2.1 release cut in [#763](https://github.com/oxstack/ox-llm/issues/763). [#1198](https://github.com/oxstack/ox-llm/pull/1198) landed native packaging. Qualify remaining callers, preserve the exact pre-removal commit as `archive/python-oxc` and record it in #946 before deleting qualified source slices in ledger order. Keep each controller, CLI, Studio, metadata-refresh and test contract tied to its own disposition.
+Qualified source retirement is Feature F, ahead of release publication (Feature H) in [#1214](https://github.com/oxstack/ox-llm/issues/1214). [#1198](https://github.com/oxstack/ox-llm/pull/1198) landed native packaging. Qualify remaining callers, preserve the exact pre-removal commit as `archive/python-oxc` and record it in #946 before deleting qualified source slices in ledger order. Keep each controller, CLI, Studio, metadata-refresh and test contract tied to its own disposition.
 
 Known callers on the inspected base included packaging/release/{stage,smoke}.py, the Python lab job in .github/workflows/checks.yml, tools/{oxa-contract,openai-contract}/run.sh, tools/gates/tiny_real.sh and related documentation. The MEMLAT differential now uses the captured reference described above. Synthetic path strings in tools/ci/tests must be distinguished from executable imports before changing them.
 
@@ -291,8 +291,8 @@ merge. This clears the packaging SHIP condition for #951 rows 021
 
 The [#763](https://github.com/oxstack/ox-llm/issues/763) packaging requirement
 remains open. The tested packages contain standalone `oxe`, which still needs
-an explicit release allowlist decision. Source deletion requires the v0.2.1
-tag and the indexed pre-removal archive.
+an explicit release allowlist decision. Each source slice still requires
+its caller and evidence gates and the indexed pre-removal archive.
 
 ### Remaining controller-path evidence at `7f7bfb6a`
 
