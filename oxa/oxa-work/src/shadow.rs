@@ -148,6 +148,61 @@ mod tests {
         assert!(refused);
     }
 
+    fn snapshot_bytes() -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "observed_at": 0,
+            "board": Board::default()
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn admission_replay_rejects_and_open_log_preserves_interrupted_tail_bytes() {
+        let full = snapshot_bytes();
+        for fragment in [full.as_slice(), &full[..full.len() / 2]] {
+            let dir = path("interrupted-admission");
+            std::fs::create_dir(&dir).unwrap();
+            let journal = dir.join("owner.jsonl");
+            let mut log = open_log(&journal).unwrap();
+            log.write_all(&full).unwrap();
+            log.write_all(b"\n").unwrap();
+            log.write_all(fragment).unwrap();
+            assert!(Admissions::load(&mut log).is_err());
+            drop(log);
+
+            let mut log = open_log(&journal).unwrap();
+            assert!(Admissions::load(&mut log).is_ok());
+            drop(log);
+            assert_eq!(std::fs::read(&journal).unwrap(), [&full[..], b"\n"].concat());
+            let tail = std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| path != &journal)
+                .unwrap();
+            assert_eq!(std::fs::read(&tail).unwrap(), fragment);
+            std::fs::remove_file(tail).unwrap();
+            std::fs::remove_file(journal).unwrap();
+            std::fs::remove_dir(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn admission_replay_refuses_multiple_objects_on_one_complete_line() {
+        let journal = path("corrupt-admission");
+        let snapshot = snapshot_bytes();
+        let line = [&snapshot[..], &snapshot[..], b"\n"].concat();
+        let mut log = open_log(&journal).unwrap();
+        log.write_all(&line).unwrap();
+        drop(log);
+
+        let mut log = open_log(&journal).unwrap();
+        assert!(Admissions::load(&mut log).is_err());
+        drop(log);
+        assert_eq!(std::fs::read(&journal).unwrap(), line);
+        std::fs::remove_file(journal).unwrap();
+    }
+
     #[test]
     fn a_full_log_is_not_extended() {
         let path = path("limit");
