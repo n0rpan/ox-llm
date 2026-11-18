@@ -123,6 +123,54 @@ fn red_work_is_saved_without_reporting_local_acceptance() {
 }
 
 #[test]
+fn task_usage_retains_the_initial_worker_and_repair_after_reopening() {
+    let env = TestEnv::new();
+    setup(&env, r#"["exit 1"]"#);
+    let mut initial = ScriptTurn::text("done");
+    initial.completion_tokens = Some(5);
+    let mut repair = ScriptTurn::text("cannot repair");
+    repair.completion_tokens = Some(7);
+    let (record, requests) = run_observed(&env, vec![initial, repair], &["work", "../tasks.json"], None);
+
+    assert_eq!(record["outcome"], "red", "{record}");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(record["worker"]["tokens"]["completion"], 7);
+    let task_tokens = &record["task_tokens"];
+    assert_eq!(task_tokens["attempts"], 2, "{record}");
+    assert_eq!(task_tokens["complete_attempts"], 2, "{record}");
+    assert_eq!(task_tokens["completion"], 12, "{record}");
+    assert_eq!(task_tokens["complete"], true, "{record}");
+    assert_eq!(&load(&env)["record"]["task_tokens"], task_tokens);
+
+    let reopened = status(&env);
+    assert_eq!(&reopened[0]["task_tokens"], task_tokens);
+}
+
+#[test]
+fn a_legacy_resume_keeps_task_usage_unknown_after_a_measured_worker() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let first = run(&env, vec![ScriptTurn::text("initial")]);
+
+    let mut legacy = load(&env);
+    legacy["record"].as_object_mut().unwrap().remove("task_tokens");
+    legacy["record"]["step"] = "worker".into();
+    legacy["record"]["outcome"] = "running".into();
+    replace(&env, &legacy);
+
+    let mut turn = ScriptTurn::text("resumed");
+    turn.completion_tokens = Some(6);
+    let (resumed, requests) = run_observed(&env, vec![turn], &["work", "../tasks.json"], None);
+    assert_eq!(resumed["outcome"], "nothing_to_do", "{resumed}");
+    assert_eq!(resumed["session_id"], first["session_id"]);
+    assert_eq!(requests.len(), 1);
+    assert_eq!(resumed["worker"]["tokens"]["completion"], 6);
+    assert!(resumed.get("task_tokens").is_none(), "{resumed}");
+    assert!(load(&env)["record"].get("task_tokens").is_none());
+    assert!(status(&env)[0].get("task_tokens").is_none());
+}
+
+#[test]
 fn finished_success_is_cached_and_explicit_rerun_keeps_revisions_monotonic() {
     let env = TestEnv::new();
     setup(&env, "[]");
@@ -371,10 +419,19 @@ fn a_parent_crash_retains_session_and_child_lock_then_resumes_the_same_session()
         "{observed}"
     );
     assert_eq!(fs::read(path(&env)).unwrap(), before);
-    let resumed = run(&env, vec![ScriptTurn::text("resumed")]);
+    let mut resumed_turn = ScriptTurn::text("resumed");
+    resumed_turn.completion_tokens = Some(6);
+    let resumed = run(&env, vec![resumed_turn]);
     assert_eq!(resumed["outcome"], "nothing_to_do", "{resumed}");
     assert_eq!(resumed["session_id"], id);
     assert_eq!(resumed["step"], "finished");
+    assert_eq!(resumed["worker"]["tokens"]["completion"], 6, "{resumed}");
+    let task_tokens = &resumed["task_tokens"];
+    assert_eq!(task_tokens["attempts"], 2, "{resumed}");
+    assert_eq!(task_tokens["complete_attempts"], 1, "{resumed}");
+    assert_eq!(task_tokens["completion"], 6, "{resumed}");
+    assert_eq!(task_tokens["complete"], false, "{resumed}");
+    assert_eq!(&status(&env)[0]["task_tokens"], task_tokens);
 }
 
 #[test]
@@ -704,7 +761,14 @@ fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
 fn a_crash_between_worker_finished_and_acceptance_entry_does_not_restart_the_worker() {
     let env = TestEnv::new();
     setup(&env, r#"["printf ran >> attempts"]"#);
-    run(&env, vec![ScriptTurn::text("done")]);
+    let mut turn = ScriptTurn::text("done");
+    turn.completion_tokens = Some(5);
+    let first = run(&env, vec![turn]);
+    let task_tokens = &first["task_tokens"];
+    assert_eq!(task_tokens["attempts"], 1, "{first}");
+    assert_eq!(task_tokens["complete_attempts"], 1, "{first}");
+    assert_eq!(task_tokens["completion"], 5, "{first}");
+    assert_eq!(task_tokens["complete"], true, "{first}");
     let mut state = load(&env);
     state["record"]["step"] = "acceptance".into();
     state["record"]["outcome"] = "running".into();
@@ -714,6 +778,8 @@ fn a_crash_between_worker_finished_and_acceptance_entry_does_not_restart_the_wor
     assert!(requests.is_empty());
     assert_eq!(record["outcome"], "done", "{record}");
     assert_eq!(record["checkpoint_kind"], "task_transition");
+    assert_eq!(&record["task_tokens"], task_tokens);
+    assert_eq!(&status(&env)[0]["task_tokens"], task_tokens);
     assert_eq!(
         fs::read_to_string(tree(&record).join("attempts")).unwrap(),
         "ranran"
