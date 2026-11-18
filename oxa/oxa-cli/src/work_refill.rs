@@ -31,13 +31,9 @@ impl Partition {
         self.residues.contains(&(number % self.modulus))
     }
 
-    pub(crate) fn validate(&self, max_attempts_per_day: u32) -> Result<()> {
-        if self.modulus == 0
-            || self.residues.is_empty()
-            || self.residues.iter().any(|r| *r >= self.modulus)
-            || max_attempts_per_day > 3
-        {
-            return Err("invalid board partition or attempt cap".into());
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.modulus == 0 || self.residues.is_empty() || self.residues.iter().any(|r| *r >= self.modulus) {
+            return Err("invalid board partition".into());
         }
         Ok(())
     }
@@ -100,7 +96,7 @@ impl Consumer<'_> {
             return Ok(vec![]);
         }
         let host = source.host_id()?.map(str::to_owned);
-        self.partition.validate(self.policy.max_attempts_per_day)?;
+        self.partition.validate()?;
         let board = self.claims.assignment_board(
             &mut Partitioned(source, self.partition),
             self.policy,
