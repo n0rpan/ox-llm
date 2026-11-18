@@ -192,7 +192,7 @@ impl LeadOwnerBinding {
         }))
     }
 
-    fn recheck(&self) -> Result<(), OxaError> {
+    pub(crate) fn recheck(&self) -> Result<(), OxaError> {
         canonical(&self.project)?;
         private_directory(&self.dirs.sessions_dir, self.uid)?;
         if dedicated_file(&self.session.path, self.uid, &self.session.id, &self.project)? != Some(self.file)
@@ -201,6 +201,47 @@ impl LeadOwnerBinding {
             return Err(unavailable());
         }
         Ok(())
+    }
+
+    /// Record the owner's exact decision without opening a provider or applying a change.
+    pub(crate) fn record_confirmation(&self, proposal_id: &str, proposal: Value) -> Result<(), OxaError> {
+        const CONFIRMED: &str = "oxa.lead.proposal_confirmed";
+        self.recheck()?;
+        let store = FsStore::new(self.dirs.sessions_dir.clone());
+        store.acquire(&self.session)?;
+        store.commit_lock();
+        self.recheck()?;
+        let entries = store.load(&self.session)?;
+        let data = serde_json::json!({"proposal_id": proposal_id, "proposal": proposal});
+        for entry in &entries {
+            if let EntryBody::Custom {
+                custom_type,
+                data: existing,
+            } = &entry.body
+            {
+                if custom_type == CONFIRMED
+                    && existing.get("proposal_id").and_then(Value::as_str) == Some(proposal_id)
+                {
+                    if existing != &data {
+                        return Err(unavailable());
+                    }
+                    return store.sync(&self.session);
+                }
+            }
+        }
+        store.append(
+            &self.session,
+            &Entry {
+                id: new_entry_id(&|id| entries.iter().any(|entry| entry.id == id)),
+                parent: entries.last().map(|entry| entry.id.clone()),
+                ts_ms: oxa_proto::time::now_ms(),
+                body: EntryBody::Custom {
+                    custom_type: CONFIRMED.into(),
+                    data,
+                },
+            },
+        )?;
+        store.sync(&self.session)
     }
 }
 

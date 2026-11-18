@@ -107,6 +107,7 @@ impl std::error::Error for Error {}
 pub struct Gateway {
     runtime: Runtime,
     client: Client,
+    go_base: Option<String>,
     #[cfg(feature = "upstream-openai")]
     openai: crate::openai::client::Client,
 }
@@ -121,6 +122,7 @@ impl Gateway {
         Ok(Self {
             runtime,
             client,
+            go_base: None,
             #[cfg(feature = "upstream-openai")]
             openai,
         })
@@ -143,11 +145,33 @@ impl Gateway {
         let result = driver.block_on(self.runtime.discover_go(self.client.transport(), base, timeout));
         driver.shutdown_timeout(Duration::from_secs(1));
         if result.is_ok() {
+            self.go_base = Some(base.to_owned());
             if let Some(diagnostics) = self.runtime.diagnostics() {
                 diagnostics.clear();
             }
         }
         result.map_err(Error::OpenCode)
+    }
+    /// Refresh the Go account's Usage observation independently of chat.
+    /// The destination is the same protected base used for successful Go discovery.
+    pub async fn opencode_plan_usage(
+        &self,
+        timeout: Duration,
+        cancel: &Cancellation,
+    ) -> Result<Option<crate::opencode::PlanUsage>, Error> {
+        let Some(base) = &self.go_base else {
+            return Ok(None);
+        };
+        let Some(key) = self
+            .runtime
+            .catalog_key(crate::catalog::Provider::OpenCode)
+            .map_err(Error::Refused)?
+        else {
+            return Ok(None);
+        };
+        crate::opencode::client::plan_usage(self.client.transport(), base, &key, timeout, cancel)
+            .await
+            .map_err(Error::OpenCode)
     }
     /// One bounded background refresh of the Go catalog cache, sharing this
     /// gateway's existing HTTP pool. It never mutates the live catalog, so a

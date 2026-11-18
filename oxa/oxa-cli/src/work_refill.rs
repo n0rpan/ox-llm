@@ -137,12 +137,17 @@ impl Consumer<'_> {
                     }
                     let rows = self.claims.assignments()?;
                     // Recheck under the shared queue publication lock, including other refs.
+                    // A bound hosted wait can yield; claim_idle_item_for still checks idleness atomically.
                     if !rows.contains_key(&number)
                         || rows.values().any(|row| {
-                            row.state
-                                .lease
-                                .as_ref()
-                                .is_some_and(|l| l.holder == self.worker.id)
+                            row.state.lease.as_ref().is_some_and(|lease| {
+                                lease.holder == self.worker.id
+                                    && (row.data.import_hold
+                                        || row.data.dependency.is_none()
+                                        || host.as_deref().is_none_or(|host| {
+                                            crate::work_cmd::authenticate_native_claim(row, host).is_err()
+                                        }))
+                            })
                         })
                         || rows[&number].state.lease.is_some()
                         || (host.is_none() && !source.revalidate(entry)?)

@@ -183,9 +183,19 @@ fn run_cli_conversation(
     let uid = owner_uid()?;
     let binding = crate::dispatch::LeadOwnerBinding::load(&dirs, &project, uid)?
         .ok_or_else(|| OxaError::new(codes::USAGE, "Lead owner chat is unavailable"))?;
+    converse_bound(message, &binding, env)
+}
+
+pub(crate) fn converse_bound(
+    message: &str,
+    binding: &crate::dispatch::LeadOwnerBinding,
+    env: &Env,
+) -> Result<conversation::ConversationReply, OxaError> {
+    binding.recheck()?;
+    let uid = owner_uid()?;
     let board = protected_board(env, uid)?;
     let situation = protected_source(env, "OXA_LEAD_SITUATION", uid, crate::lead_input::situation)?;
-    converse(&binding, env, message, board.as_ref(), situation.as_ref())
+    converse(binding, env, message, board.as_ref(), situation.as_ref())
 }
 
 fn prepare_default_state(dirs: &oxa_config::Dirs) -> Result<(), OxaError> {
