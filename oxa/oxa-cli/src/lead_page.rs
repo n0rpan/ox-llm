@@ -213,13 +213,13 @@ fn board(html: &mut String, view: &View<'_>, now: u64, query: Query) {
             return;
         }
         let rows = query.rows(board, view);
-        html.push_str("<div class=scroll><table><thead><tr><th>PR</th><th>Next action</th><th>Priority</th><th>Lease</th><th>Attempts today</th></tr></thead><tbody>");
+        html.push_str("<div class=scroll role=region aria-labelledby=board-table-title tabindex=0><table><caption id=board-table-title>Observed board items</caption><thead><tr><th scope=col>PR</th><th scope=col>Next action</th><th scope=col>Priority</th><th scope=col>Lease</th><th scope=col>Attempts today</th></tr></thead><tbody>");
         let offset = query.page.saturating_mul(pages::BOARD_ROWS);
         for row in rows.iter().skip(offset).take(pages::BOARD_ROWS) {
             let lease = lease(row, now);
             let _ = write!(
                 html,
-                "<tr><td><a href=/items/{0}>#{0}</a></td><td>{1}</td><td>{2}</td><td>{lease}</td><td>{3}</td></tr>",
+                "<tr><th scope=row><a href=/items/{0}>#{0}</a></th><td>{1}</td><td>{2}</td><td>{lease}</td><td>{3}</td></tr>",
                 row.number,
                 action(row.action),
                 if row.release_pinned { "Release" } else { "Normal" },
@@ -389,6 +389,8 @@ pub const STYLE: &str = concat!(
     include_str!("lead_page/style.css"),
     r#"
 :root { --nav-height:3.875rem; }
+.scroll caption { text-align:left; padding:12px; font-weight:600; }
+.scroll th[scope=row]>a { display:inline-flex; align-items:center; min-height:44px; }
 :root { --bad:#b62c24; --bad-soft:#fde7e4; }
 @media(prefers-color-scheme:dark) { :root { --bad:#ff8a80; --bad-soft:#331917; } }
 #attention .severity { font-weight:700; color:var(--warn); }
@@ -423,7 +425,7 @@ let timer,pending;
 async function refresh(){
   clearTimeout(timer);
   if(document.hidden)return;
-  if(document.querySelector('main').contains(document.activeElement)&&document.activeElement.matches('a,button,input,textarea,select,summary')){timer=setTimeout(refresh,15000);return;}
+  if(document.querySelector('main').contains(document.activeElement)&&document.activeElement.matches('a,button,input,textarea,select,summary,[tabindex]')){timer=setTimeout(refresh,15000);return;}
   if(pending)pending.abort();
   const active=new AbortController();pending=active;
   const target=new URL(location.href);target.searchParams.set('fragment','1');
