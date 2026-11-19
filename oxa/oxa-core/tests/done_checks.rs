@@ -7,9 +7,9 @@ use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
-    Access, AgentEvent, CancelToken, CommandSpec, EventSink, ExecResult, ExecSpec, Exposure, HeadlessUi,
-    HookPoint, HookReply, Hooks, OxaError, Sandbox, Source, Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec,
-    Ui,
+    Access, AgentEvent, CancelToken, CommandSpec, EntryBody, EventSink, ExecResult, ExecSpec, Exposure,
+    HeadlessUi, HookPoint, HookReply, Hooks, Level, OxaError, Sandbox, Source, Tool, ToolClass, ToolCtx,
+    ToolOutput, ToolSpec, Ui,
 };
 use oxa_resources::Resources;
 use oxa_session::MemStore;
@@ -743,14 +743,17 @@ fn tree_change_made_by_a_check_is_not_blamed_on_the_model() {
     assert_eq!(rec.checks().len(), 1, "{:?}", rec.checks());
 }
 
-/// A run the repeat guard stopped is a failed run (exit 1, class `repeat_guard`), and the done
-/// checks still run over the files it edited before it got stuck.
+/// A run that keeps repeating past the guard's give-up point warns and continues (#1448): the
+/// reply after the loop still runs, and the ordinary done checks still gate the result.
 #[test]
-fn repeat_guard_stop_is_a_failure_and_still_runs_the_done_checks() {
+fn repeat_guard_warns_and_continues_and_still_runs_the_done_checks() {
     let env = TestEnv::new();
     std::fs::write(env.work().join("b.txt"), "x").unwrap();
     let mut turns = vec![write("w1", "a.txt")];
     turns.extend((0..8).map(|i| ScriptTurn::tool(&format!("r{i}"), "read", r#"{"path":"b.txt"}"#)));
+    turns.push(ScriptTurn::text("done"));
+    // The ordinary repair round after the failing check: one more scripted reply.
+    turns.push(ScriptTurn::text("fixed now"));
     let engine = Arc::new(ScriptedEngine::new(turns));
     let settings = Settings::from_values(json!({ "done": ["echo CHECKED; exit 1"] }), json!({}));
     let deps = Deps {
@@ -775,13 +778,40 @@ fn repeat_guard_stop_is_a_failure_and_still_runs_the_done_checks() {
     let mut rec = Rec::default();
     s.prompt("go".into(), Vec::new(), &mut rec, &mut HeadlessUi::default())
         .expect("prompt");
-    assert_eq!(*s.outcome(), oxa_core::RunOutcome::Failed("repeat_guard"));
+    // The run finished on its scripted reply; the failing done check then failed it.
+    assert_eq!(*s.outcome(), oxa_core::RunOutcome::Failed("done_checks_failed"));
     assert_eq!(s.outcome().exit_code(), 1);
     let checks = rec.checks();
     assert_eq!(checks.len(), 1, "{checks:?}");
     assert!(checks[0].contains("CHECKED"), "{checks:?}");
-    // The failure is reported; nothing is sent back to the model after the stop.
-    assert_eq!(engine.requests().len(), 7);
+    // The user was warned once — shown and persisted — and every repeat ran.
+    assert!(rec.0.iter().any(|e| matches!(
+        e,
+        AgentEvent::Notice { level: Level::Warning, text, .. }
+            if text.starts_with("The model repeated the same tool call")
+    )));
+    let shown: Vec<_> = s
+        .inner()
+        .tree
+        .branch(s.inner().tree.leaf())
+        .into_iter()
+        .filter_map(|e| match &e.body {
+            EntryBody::Shown { text, why } => Some((text.clone(), *why)),
+            _ => None,
+        })
+        .collect();
+    let warnings: Vec<_> = shown
+        .iter()
+        .filter(|(text, _)| text.starts_with("The model repeated the same tool call"))
+        .collect();
+    assert_eq!(warnings.len(), 1, "{shown:?}");
+    assert_eq!(warnings[0].1, oxa_proto::shown_why::NOTICE);
+    // The one other shown entry is the done check's own result, not a second warning.
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    // Nothing was cut short: the write, all eight repeats, the final reply and the check's
+    // ordinary repair round all ran.
+    assert_eq!(engine.requests().len(), 11);
+    assert_eq!(engine.remaining(), 0);
 }
 
 /// A hook set that offers tools (how extension, MCP and sub-agent tools reach a session).

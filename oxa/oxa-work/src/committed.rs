@@ -1,7 +1,7 @@
 //! Verify a saved task from an independent, clean, hash-checked Git export.
 use crate::{
-    acceptance_result, checked, dirty_worktree, git, state, supervise, tree, valid_task_id, Outcome, Record,
-    Result, RunPolicy, Step, SupervisorOperation, SupervisorRequest,
+    acceptance_result, checked, derived, dirty_worktree, git, state, supervise, tree, valid_task_id,
+    CheckOrigin, Outcome, Record, Result, RunPolicy, Step, SupervisorOperation, SupervisorRequest,
 };
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -81,6 +81,9 @@ pub(crate) fn verify_commit(
     saved: &state::State,
     lock: &File,
 ) -> Result<Export> {
+    // Explicit saved-work verification has its own budget. It may run long
+    // after the original worker attempt's deadline has passed.
+    let deadline_at_ms = crate::state::now_ms().saturating_add(saved.task.max_time.saturating_mul(1000));
     let record = &saved.record;
     // An explicit later online publication never relaxes the saved check policy.
     let verification_policy = RunPolicy {
@@ -135,6 +138,27 @@ pub(crate) fn verify_commit(
     if dirty_worktree(binary, &export.tree, repo, policy, lock)? {
         return Err("clean acceptance checkout is dirty".into());
     }
+    // A local compile plan cannot verify saved Rust work for publication.
+    let commands: Vec<(CheckOrigin, String)> = execution
+        .commands
+        .iter()
+        .map(|command| (CheckOrigin::Settings, command.clone()))
+        .collect();
+    let requires_hosted = derived::committed_requires_hosted(policy, &export.tree, base, head)
+        .map_err(|reason| format!("clean committed acceptance could not run: {reason}"))?;
+    let declared = execution.declared.as_deref().unwrap_or_default();
+    if requires_hosted || !declared.is_empty() {
+        return Err(crate::HOSTED_TEST_EVIDENCE_REQUIRED.into());
+    }
+    if commands.is_empty() {
+        return Err(crate::NO_ACCEPTANCE_CHECKS.into());
+    }
+    if commands.len() > derived::MAX_CHECKS {
+        return Err(format!(
+            "clean committed acceptance could not run: more than {} checks",
+            derived::MAX_CHECKS
+        ));
+    }
     // This fresh index comes from the verified commit and lives outside both
     // writable sandbox binds (checkout and Git metadata). Checks cannot hide
     // changes by setting assume-unchanged/skip-worktree or replacing their index.
@@ -159,21 +183,32 @@ pub(crate) fn verify_commit(
     let mut refresh_index = private_git(policy, &export.tree, &["update-index", "--refresh"]);
     refresh_index.env("GIT_INDEX_FILE", &index);
     checked(refresh_index)?;
-    let failed = acceptance_result(supervise(
-        binary,
-        &export.tree,
-        SupervisorRequest {
-            source: repo.into(),
-            operation: SupervisorOperation::CommittedChecks {
-                commands: execution.commands.clone(),
-                index: index.clone(),
+    let round = acceptance_result(
+        supervise(
+            binary,
+            &export.tree,
+            SupervisorRequest {
+                source: repo.into(),
+                operation: SupervisorOperation::CommittedChecks {
+                    commands: commands.iter().map(|(_, command)| command.clone()).collect(),
+                    index: index.clone(),
+                    deadline_at_ms,
+                },
             },
-        },
-        policy,
-        lock,
-    )?)?;
-    if !failed.is_empty() {
-        return Err(format!("clean committed acceptance failed: {failed}"));
+            policy,
+            lock,
+        )?,
+        &commands,
+    )
+    .map_err(|error| format!("clean committed acceptance could not run: {error}"))?;
+    if !round.unrunnable.is_empty() {
+        return Err(format!(
+            "clean committed acceptance could not run: {}",
+            round.unrunnable
+        ));
+    }
+    if !round.failures.is_empty() {
+        return Err(format!("clean committed acceptance failed: {}", round.failures));
     }
     same_saved_commit(policy, &export.tree, head, tree_id)?;
     if dirty_worktree(binary, &export.tree, repo, policy, lock)? {

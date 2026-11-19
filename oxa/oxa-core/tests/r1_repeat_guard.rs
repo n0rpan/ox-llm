@@ -13,7 +13,7 @@ use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
     shown_why, AgentEvent, CancelToken, Engine, EntryBody, ExecResult, ExecSpec, FrozenPrefix, HeadlessUi,
-    Mode, OxaError, Policy, Role, Sandbox, ThinkingLevel, Tool, Value, VecSink, WireMsg,
+    Level, Mode, OxaError, Policy, Role, Sandbox, ThinkingLevel, Tool, Value, VecSink, WireMsg,
 };
 use oxa_resources::Resources;
 use oxa_session::{MemStore, SessionStore, Transcript, Tree};
@@ -42,6 +42,7 @@ impl Sandbox for ShSandbox {
             output,
             exit: out.status.code(),
             timed_out: false,
+            unsandboxed: false,
         }
     }
 }
@@ -181,54 +182,64 @@ fn is_notice(text: &str) -> bool {
     text.starts_with(prompt::REPEAT_NOTICE_HEAD)
 }
 
-const RANGE: &str = r#"{"path":"a.txt","offset":5,"limit":3}"#;
+/// First words of the user warning the guard shows once per run (`repeat::warning_text`).
+const WARN_HEAD: &str = "The model repeated the same tool call";
 
-#[test]
-fn identical_read_loop_gets_notices_then_stops() {
-    let env = TestEnv::new();
-    // The Block 1 shape: the same call again and again, far more than the guard allows.
-    let turns: Vec<ScriptTurn> = (0..20).map(|i| read(&format!("c{i}"), RANGE)).collect();
-    let (mut st, eng) = state(&env, turns, Settings::default());
-    let (end, events) = run(&mut st, "find the bug in a.txt");
-    // Giving up is not a finished task: the run ends as failed with its own error class.
-    assert!(
-        matches!(&end, RunEnd::Failed(e) if e.code == "repeat_guard"),
-        "{end:?}"
-    );
-    let res = results(&st);
-    let n_notices = NOTICES_BEFORE_STOP as usize + 1;
-    assert_eq!(res.len(), LIMIT as usize + n_notices, "{res:#?}");
-    // The first LIMIT calls return the content, unchanged and identical.
-    for r in &res[..LIMIT as usize] {
-        assert!(r.contains("line 5") && !is_notice(r), "{r}");
-        assert_eq!(r, &res[0]);
-    }
-    // Then notices: they quote the call and say where the content is.
-    for r in &res[LIMIT as usize..] {
-        assert!(is_notice(r), "{r}");
-        assert!(r.contains(r#"read {"path":"a.txt","offset":5,"limit":3}"#), "{r}");
-        assert!(r.contains(&format!("same result {LIMIT} times in a row")), "{r}");
-        assert!(!r.contains("line 5"), "{r}");
-    }
-    // The run ended with a shown stop message after the last notice; no further request.
-    assert_eq!(eng.requests().len(), res.len());
-    let shown: Vec<_> = st
-        .tree
+/// The run's persisted `Shown` entries, with their reasons.
+fn shown_entries(st: &SessionState) -> Vec<(String, &'static str)> {
+    st.tree
         .branch(st.tree.leaf())
         .into_iter()
         .filter_map(|e| match &e.body {
             EntryBody::Shown { text, why } => Some((text.clone(), *why)),
             _ => None,
         })
-        .collect();
+        .collect()
+}
+
+const RANGE: &str = r#"{"path":"a.txt","offset":5,"limit":3}"#;
+
+#[test]
+fn identical_read_loop_warns_once_and_continues() {
+    let env = TestEnv::new();
+    // The Block 1 shape: the same call again and again, far past the give-up point.
+    let mut turns: Vec<ScriptTurn> = (0..20).map(|i| read(&format!("c{i}"), RANGE)).collect();
+    turns.push(ScriptTurn::text("the bug is on line 5"));
+    let (mut st, eng) = state(&env, turns, Settings::default());
+    let (end, events) = run(&mut st, "find the bug in a.txt");
+    // #1448 warning-and-continue: the guard no longer ends the run; the scripted reply after
+    // the loop still runs and finishes it.
+    assert_eq!(end, RunEnd::Stopped, "{end:?}");
+    let res = results(&st);
+    assert_eq!(res.len(), 20, "{res:#?}");
+    // The first LIMIT calls return the content, unchanged and identical.
+    for r in &res[..LIMIT as usize] {
+        assert!(r.contains("line 5") && !is_notice(r), "{r}");
+        assert_eq!(r, &res[0]);
+    }
+    // Then notices, also past the old stop point: they quote the call and say where the
+    // content is.
+    for r in &res[LIMIT as usize..] {
+        assert!(is_notice(r), "{r}");
+        assert!(r.contains(r#"read {"path":"a.txt","offset":5,"limit":3}"#), "{r}");
+        assert!(r.contains(&format!("same result {LIMIT} times in a row")), "{r}");
+        assert!(!r.contains("line 5"), "{r}");
+    }
+    // Every repeat reached the model; the request after the last one got the final reply.
+    assert_eq!(eng.requests().len(), 21);
+    assert!(st.transcript.wire().last().unwrap().content.as_deref() == Some("the bug is on line 5"));
+    // One shown and persisted warning for the whole run, with the remedy; not one per repeat.
+    let shown = shown_entries(&st);
     assert_eq!(shown.len(), 1, "{shown:?}");
     assert_eq!(shown[0].1, shown_why::NOTICE);
-    assert!(shown[0]
-        .0
-        .starts_with("Run stopped: the model repeated the same tool call"));
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.starts_with("Run stopped"))));
+    assert!(shown[0].0.starts_with(WARN_HEAD), "{shown:?}");
+    assert!(shown[0].0.contains("`read` kept returning"), "{shown:?}");
+    assert!(shown[0].0.contains("the run continues"), "{shown:?}");
+    assert!(shown[0].0.contains("switch model with /model"), "{shown:?}");
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::Notice { level: Level::Warning, text, .. } if text.starts_with(WARN_HEAD)
+    )));
     // W1: every request extends the one before (the notice is a new result, nothing rewritten).
     assert!(oxa_fake::check_w1(&eng.requests(), &[]).is_empty());
 }
@@ -425,26 +436,35 @@ fn bash(id: &str, command: &str) -> ScriptTurn {
 /// Block 1 Arm A: the loop moved to an identical bash command (here one that fails the same way
 /// each time: an error result is covered too).
 #[test]
-fn identical_bash_loop_gets_notices_then_stops() {
+fn identical_bash_loop_warns_once_and_continues() {
     let env = TestEnv::new();
-    let turns: Vec<ScriptTurn> = (0..20)
+    let mut turns: Vec<ScriptTurn> = (0..20)
         .map(|i| bash(&format!("b{i}"), "echo 'test result: FAILED'; exit 101"))
         .collect();
+    turns.push(ScriptTurn::text("done"));
     let (mut st, eng) = state(&env, turns, Settings::default());
-    let (end, _) = run(&mut st, "fix the failing test");
-    assert!(
-        matches!(&end, RunEnd::Failed(e) if e.code == "repeat_guard"),
-        "{end:?}"
-    );
+    let (end, events) = run(&mut st, "fix the failing test");
+    assert_eq!(end, RunEnd::Stopped, "{end:?}");
     let res = results(&st);
-    assert_eq!(res.len(), (LIMIT + NOTICES_BEFORE_STOP + 1) as usize, "{res:#?}");
+    assert_eq!(res.len(), 20, "{res:#?}");
     for r in &res[..LIMIT as usize] {
         assert!(r.contains("test result: FAILED") && !is_notice(r), "{r}");
     }
     for r in &res[LIMIT as usize..] {
         assert!(is_notice(r) && r.contains("(bash {"), "{r}");
     }
-    assert_eq!(eng.requests().len(), res.len());
+    // One warning that names the tool; every repeat still ran.
+    let shown = shown_entries(&st);
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    assert!(
+        shown[0].0.starts_with(WARN_HEAD) && shown[0].0.contains("`bash` kept returning"),
+        "{shown:?}"
+    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::Notice { level: Level::Warning, text, .. } if text.starts_with(WARN_HEAD)
+    )));
+    assert_eq!(eng.requests().len(), 21);
 }
 
 /// `cargo test` re-run after each edit: the same failing output every time, but an edit sits
@@ -574,14 +594,15 @@ impl Sandbox for Hold {
             output: Vec::new(),
             exit: None,
             timed_out: false,
+            unsandboxed: false,
         }
     }
 }
 
 /// #150 (1): a job's identical polls (same state, same output) are a stuck loop and trip the
-/// guard exactly like any identical call, with the same notices and stop.
+/// guard exactly like any identical call, with the same notices and one warning.
 #[test]
-fn identical_job_polls_trip_the_guard() {
+fn identical_job_polls_warn_and_continue() {
     let env = TestEnv::new();
     let jobs = Arc::new(oxa_tools::JobRegistry::new());
     jobs.set_sandbox(Arc::new(Hold));
@@ -593,20 +614,14 @@ fn identical_job_polls_trip_the_guard() {
         r#"{"command":"sleep 100","background":true}"#,
     )];
     turns.extend((0..20).map(|i| ScriptTurn::tool(&format!("p{i}"), "bash", r#"{"job":"job-1"}"#)));
+    turns.push(ScriptTurn::text("done"));
     let (mut st, _eng) = state_with(&env, turns, Settings::default(), "fake-model", t);
     let (end, _) = run(&mut st, "run it in the background and poll it");
     jobs.kill_all();
-    assert!(
-        matches!(&end, RunEnd::Failed(e) if e.code == "repeat_guard"),
-        "{end:?}"
-    );
+    assert_eq!(end, RunEnd::Stopped, "{end:?}");
     let res = results(&st);
     let polls = &res[1..];
-    assert_eq!(
-        res.len(),
-        1 + (LIMIT + NOTICES_BEFORE_STOP + 1) as usize,
-        "{res:#?}"
-    );
+    assert_eq!(res.len(), 1 + 20, "{res:#?}");
     assert!(res[0].starts_with("Started background job job-1"), "{}", res[0]);
     for r in &polls[..LIMIT as usize] {
         assert!(r.starts_with("Job job-1: running") && !is_notice(r), "{r}");
@@ -614,6 +629,9 @@ fn identical_job_polls_trip_the_guard() {
     for r in &polls[LIMIT as usize..] {
         assert!(is_notice(r) && r.contains("(bash {"), "{r}");
     }
+    let shown = shown_entries(&st);
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    assert!(shown[0].0.starts_with(WARN_HEAD), "{shown:?}");
 }
 
 fn job_tools(sb: Arc<dyn Sandbox>) -> (Vec<Arc<dyn Tool>>, Arc<oxa_tools::JobRegistry>) {
@@ -756,7 +774,7 @@ const BAD_WRITE: &str = r#"{"path":"a.txt/child","content":"draft"}"#;
 /// PR #563: failed writers still count as repeats themselves, including their notices,
 /// even though they do not interrupt another call's repeat sequence.
 #[test]
-fn identical_failed_writers_in_one_batch_get_notices_then_stop() {
+fn identical_failed_writers_in_one_batch_warn_and_continue() {
     for (name, args) in [("edit", BAD_EDIT), ("write", BAD_WRITE)] {
         let env = TestEnv::new();
         let count = LIMIT + NOTICES_BEFORE_STOP + 1;
@@ -766,14 +784,12 @@ fn identical_failed_writers_in_one_batch_get_notices_then_stop() {
         }
         let (mut st, eng) = state(
             &env,
-            vec![batch, ScriptTurn::text("not reached")],
+            vec![batch, ScriptTurn::text("recovering")],
             Settings::default(),
         );
-        let end = run(&mut st, "fix a.txt").0;
-        assert!(
-            matches!(&end, RunEnd::Failed(e) if e.code == "repeat_guard"),
-            "{name}: {end:?}"
-        );
+        let (end, _) = run(&mut st, "fix a.txt");
+        // The give-up point inside one batch warns; the reply after the batch still runs.
+        assert_eq!(end, RunEnd::Stopped, "{name}: {end:?}");
         let res = results(&st);
         assert_eq!(res.len(), count as usize, "{name}: {res:#?}");
         assert!(
@@ -784,11 +800,10 @@ fn identical_failed_writers_in_one_batch_get_notices_then_stop() {
             res[LIMIT as usize..].iter().all(|r| is_notice(r)),
             "{name}: {res:#?}"
         );
-        assert_eq!(
-            eng.requests().len(),
-            1,
-            "{name}: no request after the stop notice"
-        );
+        let shown = shown_entries(&st);
+        assert_eq!(shown.len(), 1, "{name}: {shown:?}");
+        assert!(shown[0].0.starts_with(WARN_HEAD), "{name}: {shown:?}");
+        assert_eq!(eng.requests().len(), 2, "{name}: the reply after the batch ran");
         assert_eq!(
             std::fs::read_to_string(env.work().join("a.txt"))
                 .unwrap()
@@ -995,12 +1010,31 @@ fn advisor_returns_to_the_same_worker_and_does_not_repeat_the_call() {
             dispatcher: advisor.clone(),
             scrub: Arc::new(str::to_owned),
         });
-        let (end, _) = run(&mut st, "find the bug in a.txt");
+        let (end, events) = run(&mut st, "find the bug in a.txt");
         if retry_same {
             assert!(matches!(end, RunEnd::Failed(error) if error.code == "advisor_escalation_required"));
         } else {
+            // #1448 Stage 1 review: with advice delivered the user still sees exactly one
+            // repeat warning — persisted and live — before the worker's final reply.
             assert_eq!(end, RunEnd::Stopped);
+            let shown: Vec<_> = shown_entries(&st)
+                .into_iter()
+                .filter(|(text, _)| text.starts_with(WARN_HEAD))
+                .collect();
+            assert_eq!(shown.len(), 1, "{shown:?}");
+            assert_eq!(shown[0].1, shown_why::NOTICE);
+            let live: Vec<_> = events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        AgentEvent::Notice { level: Level::Warning, text, .. } if text.starts_with(WARN_HEAD)
+                    )
+                })
+                .collect();
+            assert_eq!(live.len(), 1, "{events:?}");
         }
+        // One dispatch on the same worker, and the advice reached the model.
         assert_eq!(advisor.0.load(Ordering::SeqCst), 1);
         let requests = worker.requests();
         assert!(requests.iter().all(|request| request.model == "fake-model"));

@@ -164,10 +164,6 @@ impl ManagedSteering {
 }
 
 #[cfg(test)]
-#[path = "../tests/support/private_dir.rs"]
-mod fixture;
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::board::assignment::{ManualAuthority, Role, Worker, WorkerKind};
@@ -200,7 +196,7 @@ mod tests {
             return;
         }
 
-        let dir = fixture::PrivateDir::new("managed-steering");
+        let dir = crate::test_dir::PrivateDir::new("managed-steering");
         let claims_path = dir.path().join("claims");
         use std::os::unix::fs::DirBuilderExt;
         fs::DirBuilder::new().mode(0o700).create(&claims_path).unwrap();

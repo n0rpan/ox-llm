@@ -1,0 +1,15 @@
+{
+  "type": "oxa_models", "version": 1,
+  "default": "openai/gpt-6.2-sol", "lead_model": null,
+  "models": [
+    { "id": "openai/gpt-6.2-sol", "kind": "cloud", "provider": "openai", "billing": "metered",
+      "pool": "metered", "state": "ready", "source": "configured",
+      "context": 400000, "max_output": 128000, "thinking": true, "images": true, "fix": null },
+    { "id": "Qwen3.6-35B-A3B-MTP-UD-Q4_K_M", "kind": "local", "provider": "local", "billing": "local",
+      "pool": "local", "state": "not_wired", "source": "disk",
+      "file": { "path": "/home/example/.local/share/ai-stack/models/llm/Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf",
+                "bytes": 22977000000, "folder": false },
+      "fix": "local_add" }
+  ],
+  "warnings": [ { "code": "row_failed", "id": "some/model" } ]
+}

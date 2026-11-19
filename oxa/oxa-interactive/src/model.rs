@@ -371,6 +371,11 @@ impl StatusModel {
     /// #202: the permission mode as the status bar shows it, with its theme token: `plan` and
     /// `ask` from the session mode, else the autonomy level (`standard`, `auto`, `yolo`).
     pub fn mode_label(&self) -> Option<(&'static str, &'static str)> {
+        let (label, token) = self.mode_label_base()?;
+        Some((mark_no_os_sandbox(label, oxa_proto::OS_SANDBOX), token))
+    }
+
+    fn mode_label_base(&self) -> Option<(&'static str, &'static str)> {
         use oxa_proto::Autonomy;
         Some(match self.mode? {
             Mode::Plan => ("plan", "modePlan"),
@@ -381,6 +386,22 @@ impl StatusModel {
                 Autonomy::Yolo => ("yolo", "error"),
             },
         })
+    }
+}
+
+/// The status-bar mode label, with the persistent "no OS sandbox" marker when the platform has
+/// no sandbox for bash. With a sandbox the label is returned unchanged.
+pub fn mark_no_os_sandbox(label: &'static str, os_sandbox: bool) -> &'static str {
+    if os_sandbox {
+        return label;
+    }
+    match label {
+        "plan" => "plan, no OS sandbox",
+        "ask" => "ask, no OS sandbox",
+        "standard" => "standard, no OS sandbox",
+        "auto" => "auto, no OS sandbox",
+        "yolo" => "yolo, no OS sandbox",
+        other => other,
     }
 }
 
@@ -829,4 +850,17 @@ pub struct InteractiveOpts {
     /// O-182: the process's YOLO switch, shared with the policy of every session. `None` =
     /// YOLO cannot be switched here (the policy does not listen; tests, ephemeral setups).
     pub yolo: Option<oxa_proto::YoloSwitch>,
+}
+
+#[cfg(test)]
+mod no_os_sandbox_tests {
+    use super::mark_no_os_sandbox;
+
+    #[test]
+    fn status_mode_label_marks_a_missing_sandbox_and_is_unchanged_with_one() {
+        for l in ["plan", "ask", "standard", "auto", "yolo"] {
+            assert_eq!(mark_no_os_sandbox(l, true), l);
+            assert!(mark_no_os_sandbox(l, false).ends_with("no OS sandbox"));
+        }
+    }
 }
