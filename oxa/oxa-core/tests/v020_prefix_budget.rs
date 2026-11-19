@@ -150,7 +150,7 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// 2026-11-15: the built-in `pull-request` skill (#181) joined the skills section.
 /// 2026-11-16: issue #519 added `kill` to the `bash` schema and documented per-job cancellation
 /// and explicit background timeouts; both default tool prefixes intentionally changed.
-const DEFAULT_STABLE_SHA: &str = "2d4683b3fd6b9a30dce842f87a5cf0626e3e7639cc4ad456386e6eaad22757ea";
+const DEFAULT_STABLE_SHA: &str = "c9e29711fe640831bb0e3e61abc7bcaaad7610911d485fe2fa4cd681a5f409f5";
 const DEFAULT_STABLE_SHA_SUBAGENT: &str = "5ce26b9bd40a179b6dc68f67dea6ffd02f7ad2cf2922ee535d3fafcc639c2613";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
