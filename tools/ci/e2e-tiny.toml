@@ -26,10 +26,13 @@ max_tokens = 20000
 # error classes a run may end on and still count (none: the real model stops by itself)
 accept_error_classes = []
 # the tool task: the first run must leave `task_file` in the work directory holding `task_word`
-first_prompt = "Create a file named hello.txt containing the word hi."
+# "in the current directory": the 0.8B model otherwise picks /hello.txt (first real run)
+first_prompt = "Create a file named hello.txt in the current directory containing the word hi."
 task_file = "hello.txt"
 task_word = "hi"
-second_prompt = "Now say which file you were asked to create."
+# answered from the conversation: bash is off in the container (no usable bwrap), and a tool call
+# here sent the 0.8B model into a retry loop until --max-time (first real run)
+second_prompt = "Without using any tool, answer in one sentence: which file did you just create?"
 
 [budget]
 # warn above *_warn_ms; fail only above *_fail_ms.
