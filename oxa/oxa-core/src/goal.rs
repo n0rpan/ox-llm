@@ -556,16 +556,16 @@ impl Control {
                     Ok(None) => {}
                 }
             } else {
-            match self
-                .hooks
-                .iter()
-                .find_map(|h| h.poll_event(kind, until, remaining))
-            {
-                None => return ToolOutput::error(format!("Unknown wait condition: {kind}.")),
-                Some(Err(e)) => return ToolOutput::error(e),
-                Some(Ok(Some(evidence))) => return ToolOutput::ok(evidence),
-                Some(Ok(None)) => {}
-            }
+                match self
+                    .hooks
+                    .iter()
+                    .find_map(|h| h.poll_event(kind, until, remaining))
+                {
+                    None => return ToolOutput::error(format!("Unknown wait condition: {kind}.")),
+                    Some(Err(e)) => return ToolOutput::error(e),
+                    Some(Ok(Some(evidence))) => return ToolOutput::ok(evidence),
+                    Some(Ok(None)) => {}
+                }
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -602,7 +602,9 @@ impl Control {
     /// `until {kind:"job_done", job:<id>}`: the background bash job has exited or was killed.
     /// Reading the listing does not consume the job's output.
     fn job_done(&self, until: &Value) -> Result<Option<String>, String> {
-        let id = until["job"].as_str().ok_or("wait until job_done needs `job` (the job id).")?;
+        let id = until["job"]
+            .as_str()
+            .ok_or("wait until job_done needs `job` (the job id).")?;
         let info = self
             .jobs
             .list()

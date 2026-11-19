@@ -5,7 +5,9 @@ use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
-use oxa_proto::{AgentEvent, CancelToken, EventSink, ExecResult, ExecSpec, HeadlessUi, OxaError, Sandbox, VecSink};
+use oxa_proto::{
+    AgentEvent, CancelToken, EventSink, ExecResult, ExecSpec, HeadlessUi, OxaError, Sandbox, VecSink,
+};
 use oxa_sandbox::run_unsandboxed_capture;
 use oxa_session::MemStore;
 use oxa_tools::JobRegistry;
@@ -24,7 +26,12 @@ impl Sandbox for Plain {
     }
 }
 
-fn open(env: &TestEnv, engine: Arc<ScriptedEngine>, jobs: Arc<JobRegistry>, settings: serde_json::Value) -> Session {
+fn open(
+    env: &TestEnv,
+    engine: Arc<ScriptedEngine>,
+    jobs: Arc<JobRegistry>,
+    settings: serde_json::Value,
+) -> Session {
     let deps = Deps {
         engine,
         store: Arc::new(MemStore::new()),
@@ -69,11 +76,19 @@ fn a_session_without_a_goal_declares_wait_and_the_opt_out_removes_it() {
 #[test]
 fn the_prefix_is_identical_across_two_turns() {
     let env = TestEnv::new();
-    let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("one"), ScriptTurn::text("two")]));
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("one"),
+        ScriptTurn::text("two"),
+    ]));
     let mut s = open(&env, engine.clone(), Arc::new(JobRegistry::new()), plain());
     for text in ["first", "second"] {
-        s.prompt(text.into(), vec![], &mut VecSink::default(), &mut HeadlessUi::default())
-            .unwrap();
+        s.prompt(
+            text.into(),
+            vec![],
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
     }
     let seen = engine.requests();
     assert_eq!(seen.len(), 2);
@@ -104,8 +119,13 @@ fn wait_until_job_done_returns_when_the_job_finishes() {
     ]));
     let mut s = open(&env, engine.clone(), jobs, plain());
     let start = std::time::Instant::now();
-    s.prompt("go".into(), vec![], &mut VecSink::default(), &mut HeadlessUi::default())
-        .unwrap();
+    s.prompt(
+        "go".into(),
+        vec![],
+        &mut VecSink::default(),
+        &mut HeadlessUi::default(),
+    )
+    .unwrap();
     assert!(start.elapsed() < std::time::Duration::from_secs(30));
     let result = engine.requests()[1]
         .messages
