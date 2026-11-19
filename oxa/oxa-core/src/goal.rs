@@ -800,9 +800,31 @@ pub(crate) fn uncertain(error: &oxa_proto::OxaError, output: bool, pre_cancelled
     )
 }
 
+/// [`uncertain`] for a request on `remote` or local engine. A remote upstream's 503 is
+/// normalized to `ENGINE_BUSY`, which only proves a local engine refused before generating;
+/// a forwarded cloud call may have spent tokens, so it stays uncertain. Goal recovery retries
+/// that class, and the owner's token budget must fail closed instead of being bypassed.
+pub(crate) fn uncertain_on(
+    remote: bool,
+    error: &oxa_proto::OxaError,
+    output: bool,
+    pre_cancelled: bool,
+) -> bool {
+    uncertain(error, output, pre_cancelled)
+        || (remote && error.code == oxa_proto::codes::ENGINE_BUSY && !pre_cancelled)
+}
+
 #[cfg(test)]
 mod uncertain_tests {
-    use super::uncertain;
+    use super::{uncertain, uncertain_on};
+
+    #[test]
+    fn a_remote_busy_reply_may_have_spent_tokens_but_a_local_one_has_not() {
+        let busy = oxa_proto::OxaError::new(oxa_proto::codes::ENGINE_BUSY, "upstream 503");
+
+        assert!(uncertain_on(true, &busy, false, false));
+        assert!(!uncertain_on(false, &busy, false, false));
+    }
 
     #[test]
     fn unknown_cost_history_is_known_pre_admission_usage() {
