@@ -712,6 +712,21 @@ impl Built {
     }
 }
 
+/// The sandbox bash and the exec hooks use, plus a start notice when it had to be replaced. A
+/// refused bash network (`oxa.sandbox.net: off`, offline) that this platform cannot enforce must
+/// not run: without an OS sandbox the command would keep the network the owner turned off, so
+/// bash is disabled instead of running.
+fn bash_sandbox(sandbox: Arc<dyn Sandbox>) -> (Arc<dyn Sandbox>, Option<String>) {
+    if !sandbox.network() && !sandbox.network_enforced() {
+        let notice = format!(
+            "{}; bash is disabled while the bash network is off",
+            oxa_proto::NET_NOT_RESTRICTED_NOTICE
+        );
+        return (Arc::new(NoSandbox), Some(notice));
+    }
+    (sandbox, None)
+}
+
 /// Settings, trust, resources, engine, sandbox and the open mode. Notices are printed by the
 /// caller once the session is open, so a failed start prints only its one error line.
 fn prepare(
@@ -1003,10 +1018,9 @@ fn prepare(
         }
     };
     let sandbox = crate::netguard::with_net(sandbox, &settings);
-    // Off Linux a refused bash network (`oxa.sandbox.net: off`, offline) cannot be enforced:
-    // say so at start. oxa's own provider calls still obey offline.
-    if !sandbox.network() && !sandbox.network_enforced() {
-        notices.push((Level::Warning, oxa_proto::NET_NOT_RESTRICTED_NOTICE.to_string()));
+    let (sandbox, net_notice) = bash_sandbox(sandbox);
+    if let Some(notice) = net_notice {
+        notices.push((Level::Warning, notice));
     }
 
     // `--model` resolves against the engine's models; its `:level` suffix sets thinking unless
@@ -2890,5 +2904,80 @@ mod export_source_tests {
         assert_eq!(err.code, codes::INVALID);
         assert!(err.message.contains("source session"), "{}", err.message);
         assert_eq!(std::fs::read(&source).unwrap(), before);
+    }
+}
+
+#[cfg(test)]
+mod bash_sandbox_tests {
+    use super::*;
+
+    /// A platform without an OS sandbox that reports the bash network as unenforceable.
+    struct NoNetworkIsolation;
+
+    impl Sandbox for NoNetworkIsolation {
+        fn check(&self) -> Result<(), OxaError> {
+            Ok(())
+        }
+        fn network(&self) -> bool {
+            false
+        }
+        fn network_enforced(&self) -> bool {
+            false
+        }
+        fn bwrap_args(&self, _s: &oxa_proto::ExecSpec) -> Vec<String> {
+            Vec::new()
+        }
+        fn run(
+            &self,
+            _s: &oxa_proto::ExecSpec,
+            _c: &oxa_proto::CancelToken,
+            _live: &mut dyn FnMut(&[u8]),
+        ) -> oxa_proto::ExecResult {
+            oxa_proto::ExecResult::default()
+        }
+    }
+
+    /// A refused bash network that this platform cannot enforce disables bash instead of running
+    /// a command with the network the owner turned off.
+    #[test]
+    fn a_refused_network_that_cannot_be_enforced_disables_bash() {
+        let (sandbox, notice) = bash_sandbox(Arc::new(NoNetworkIsolation));
+        assert!(notice.unwrap_or_default().contains("bash is disabled"));
+        assert_eq!(
+            sandbox.check().unwrap_err().code,
+            oxa_proto::codes::NO_SANDBOX,
+            "the replacement never runs a command"
+        );
+    }
+
+    /// Without a refused network the sandbox is kept, notice and all.
+    #[test]
+    fn an_allowed_network_keeps_the_sandbox() {
+        struct NetOn;
+        impl Sandbox for NetOn {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn network(&self) -> bool {
+                true
+            }
+            fn network_enforced(&self) -> bool {
+                false
+            }
+            fn bwrap_args(&self, _s: &oxa_proto::ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+            fn run(
+                &self,
+                _s: &oxa_proto::ExecSpec,
+                _c: &oxa_proto::CancelToken,
+                _live: &mut dyn FnMut(&[u8]),
+            ) -> oxa_proto::ExecResult {
+                oxa_proto::ExecResult::default()
+            }
+        }
+        let (sandbox, notice) = bash_sandbox(Arc::new(NetOn));
+        assert!(notice.is_none());
+        assert!(sandbox.check().is_ok());
     }
 }
