@@ -721,7 +721,7 @@ pub(crate) fn failure_backoff(
     }
     let base = u64::from(
         st.settings
-            .u32("oxa.goal.failureBackoffSeconds", FAILURE_BACKOFF_SECS),
+            .user_u32("oxa.goal.failureBackoffSeconds", FAILURE_BACKOFF_SECS),
     );
     if base == 0 {
         return None;

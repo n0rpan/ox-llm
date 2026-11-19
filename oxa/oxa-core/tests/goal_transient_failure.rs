@@ -92,7 +92,12 @@ fn goal_run_continues_after_transient_failure() {
     assert_eq!(session.stats().outcome, RunOutcome::Done);
     assert_eq!(session.goal().unwrap().status, GoalStatus::Done);
     // The failed request is sent again once, after the one-second wait.
-    assert_eq!(engine.requests().len(), 2);
+    let requests = engine.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].idem_key, requests[1].idem_key,
+        "recovery resends the same logical request"
+    );
     assert_eq!(waits(&sink), vec!["Goal waiting 1 s after a transient request failure (engine_busy); no request is sent meanwhile, then the goal continues.".to_string()]);
 }
 
@@ -117,10 +122,79 @@ fn goal_failure_backoff_doubles_per_consecutive_failure() {
     assert!(notes[1].starts_with("Goal waiting 2 s "), "{notes:?}");
 }
 
+#[test]
+fn successful_request_resets_failure_backoff() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        busy(),
+        ScriptTurn::tool(
+            "edit",
+            "write",
+            r#"{"path":"result.txt","content":"Synthetic result"}"#,
+        ),
+        busy(),
+        finish(),
+    ]));
+    let store = Arc::new(MemStore::new());
+    let mut dependencies = deps(&env, store, engine, Some(1));
+    dependencies.tools = oxa_tools::builtin_tools();
+    let mut session = Session::open(dependencies, Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    session
+        .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+        .unwrap();
+    let notes = waits(&sink);
+    assert_eq!(notes.len(), 2);
+    assert!(notes.iter().all(|note| note.starts_with("Goal waiting 1 s ")));
+}
+
 /// Aborts the run from the sink as soon as the wait is announced.
 struct AbortOnWait {
     handle: Handle,
     fired: bool,
+}
+
+struct StopOrdinaryRetry {
+    handle: Handle,
+}
+
+impl EventSink for StopOrdinaryRetry {
+    fn emit(&mut self, event: &AgentEvent) {
+        if matches!(event, AgentEvent::AutoRetryStart { .. }) {
+            self.handle.abort_retry();
+        }
+    }
+}
+
+#[test]
+fn stopping_an_ordinary_retry_does_not_start_goal_recovery() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![busy(), finish()]));
+    let store = Arc::new(MemStore::new());
+    let mut dependencies = deps(&env, store, engine.clone(), Some(1));
+    dependencies.settings = Settings::from_values(
+        serde_json::json!({
+            "oxa": {"envNote": false, "goal": {"failureBackoffSeconds": 1}},
+            "retry": {"enabled": true, "maxRetries": 1, "baseDelayMs": 1000}
+        }),
+        serde_json::json!({}),
+    );
+    let mut session = Session::open(dependencies, Open::New).unwrap();
+    let mut setup = VecSink::default();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut setup)
+        .unwrap();
+    let mut sink = StopOrdinaryRetry {
+        handle: session.handle(),
+    };
+    session
+        .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+        .unwrap();
+    assert_eq!(session.stats().outcome, RunOutcome::Failed(codes::ENGINE_BUSY));
+    assert_eq!(engine.requests().len(), 1);
 }
 
 impl EventSink for AbortOnWait {
@@ -241,4 +315,96 @@ fn backoff_zero_opts_out() {
         .unwrap();
     assert_eq!(session.stats().outcome, RunOutcome::Failed(codes::ENGINE_BUSY));
     assert_eq!(engine.requests().len(), 1);
+}
+
+#[test]
+fn owner_backoff_opt_out_cannot_be_replaced_by_project_settings() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![busy()]));
+    let store = Arc::new(MemStore::new());
+    let mut dependencies = deps(&env, store, engine.clone(), Some(0));
+    dependencies.settings = Settings::from_values(
+        serde_json::json!({
+            "oxa": {"envNote": false, "goal": {"failureBackoffSeconds": 0}},
+            "retry": {"enabled": false}
+        }),
+        serde_json::json!({"oxa": {"goal": {"failureBackoffSeconds": 1}}}),
+    );
+    let mut session = Session::open(dependencies, Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    session
+        .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+        .unwrap();
+    assert_eq!(session.stats().outcome, RunOutcome::Failed(codes::ENGINE_BUSY));
+    assert_eq!(engine.requests().len(), 1);
+    assert!(waits(&sink).is_empty());
+}
+
+#[test]
+fn recovery_preserves_done_checks_from_edits_before_the_failure() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool(
+            "edit",
+            "write",
+            r#"{"path":"result.txt","content":"Synthetic result"}"#,
+        ),
+        busy(),
+        finish(),
+    ]));
+    let store = Arc::new(MemStore::new());
+    let mut dependencies = deps(&env, store, engine, Some(1));
+    dependencies.tools = oxa_tools::builtin_tools();
+    dependencies.settings = Settings::from_values(
+        serde_json::json!({
+            "done": ["exit 1"],
+            "oxa": {"envNote": false, "goal": {"failureBackoffSeconds": 1}},
+            "retry": {"enabled": false}
+        }),
+        serde_json::json!({}),
+    );
+    let mut session = Session::open(dependencies, Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    session
+        .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+        .unwrap();
+    assert_eq!(session.stats().outcome, RunOutcome::Failed("done_checks_failed"));
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Blocked);
+}
+
+#[test]
+fn recovery_preserves_the_prompt_turn_limit() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("one", "write", r#"{"path":"one.txt","content":"x"}"#),
+        busy(),
+        ScriptTurn::tool("two", "write", r#"{"path":"two.txt","content":"x"}"#),
+        finish(),
+    ]));
+    let store = Arc::new(MemStore::new());
+    let mut dependencies = deps(&env, store, engine.clone(), Some(1));
+    dependencies.tools = oxa_tools::builtin_tools();
+    dependencies.settings = Settings::from_values(
+        serde_json::json!({
+            "oxa": {"envNote": false, "maxTurns": 2, "goal": {"failureBackoffSeconds": 1}},
+            "retry": {"enabled": false}
+        }),
+        serde_json::json!({}),
+    );
+    let mut session = Session::open(dependencies, Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    session
+        .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+        .unwrap();
+    assert_eq!(session.stats().outcome, RunOutcome::Failed("turn_limit"));
+    assert_eq!(engine.requests().len(), 3);
 }

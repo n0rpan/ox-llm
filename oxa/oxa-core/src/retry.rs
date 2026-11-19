@@ -70,6 +70,7 @@ pub(crate) fn chat_with_retry_keyed(
     // A `abort_retry` only means something during a wait of this call; a stale one from an
     // earlier call must not cancel this call's wait.
     st.shared.cancel_retry.reset();
+    st.shared.gate.retry_stopped.store(false, Ordering::SeqCst);
 
     if opts.idem_key.is_empty() {
         opts.idem_key = fresh_idem_key(st);
@@ -191,6 +192,7 @@ pub(crate) fn chat_with_retry_keyed(
                     Wait::Elapsed => continue,
                     Wait::RetryCancelled => {
                         st.shared.cancel_retry.reset();
+                        st.shared.gate.retry_stopped.store(true, Ordering::SeqCst);
                         finish_failed(sink, retries, &retry_cancelled());
                         return Err(err);
                     }
@@ -231,6 +233,7 @@ pub(crate) fn chat_with_retry_keyed(
             Wait::RetryCancelled => {
                 // Consume the cancel so it does not reach a later wait.
                 st.shared.cancel_retry.reset();
+                st.shared.gate.retry_stopped.store(true, Ordering::SeqCst);
                 finish_failed(sink, retries, &retry_cancelled());
                 return Err(err);
             }
