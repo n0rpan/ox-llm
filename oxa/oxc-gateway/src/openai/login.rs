@@ -206,34 +206,30 @@ impl Login {
         result.map(Some)
     }
     fn request_code(&self, bytes: &[u8]) -> Result<Code, Error> {
-        let text = std::str::from_utf8(bytes).map_err(|_| Error::Callback)?;
-        let (head, body) = text.split_once("\r\n\r\n").ok_or(Error::Callback)?;
-        if !body.is_empty() {
+        use oxa_http::server::{content_length, parse_headers, parse_request_line, split_head};
+        // The head must be the whole input: the first CRLFCRLF is the final four bytes.
+        if bytes.windows(4).position(|w| w == b"\r\n\r\n") != bytes.len().checked_sub(4) {
             return Err(Error::Callback);
         }
-        let mut lines = head.split("\r\n");
-        let request: Vec<_> = lines.next().ok_or(Error::Callback)?.split(' ').collect();
-        let ["GET", target, "HTTP/1.1"] = request.as_slice() else {
-            return Err(Error::Callback);
-        };
-        if !target.starts_with("/auth/callback?") {
+        let (line, block) = split_head(bytes).map_err(|_| Error::Callback)?;
+        let request = parse_request_line(line).map_err(|_| Error::Callback)?;
+        if request.method != "GET"
+            || request.version != "HTTP/1.1"
+            || !request.target.starts_with("/auth/callback?")
+        {
             return Err(Error::Callback);
         }
-        let mut headers = BTreeMap::new();
-        for line in lines {
-            let (name, value) = line.split_once(':').ok_or(Error::Callback)?;
-            if name.is_empty()
-                || name.bytes().any(|b| !b.is_ascii_alphanumeric() && b != b'-')
-                || headers.insert(name.to_ascii_lowercase(), value.trim()).is_some()
-            {
-                return Err(Error::Callback);
-            }
+        let target = request.target;
+        let headers = parse_headers(block).map_err(|_| Error::Callback)?;
+        // Any repeated name is refused, not only the ones read below.
+        if headers.iter().any(|(name, _)| headers.count(name) > 1) {
+            return Err(Error::Callback);
         }
         let redirect = url::Url::parse(&self.redirect).map_err(|_| Error::Setup)?;
         let authority = format!("localhost:{}", redirect.port().ok_or(Error::Setup)?);
-        if headers.get("host") != Some(&authority.as_str())
-            || headers.contains_key("transfer-encoding")
-            || headers.get("content-length").is_some_and(|v| *v != "0")
+        if headers.get("host") != Some(authority.as_str())
+            || headers.get("transfer-encoding").is_some()
+            || !matches!(content_length(&headers), Ok(None | Some(0)))
         {
             return Err(Error::Callback);
         }
@@ -581,6 +577,109 @@ mod tests {
             flow.pasted_callback(&callback(&flow), &stop),
             Err(Error::Cancelled)
         ));
+    }
+    #[test]
+    fn request_code_maps_every_rule_to_callback_error() {
+        let flow = flow("http://127.0.0.1:9", Duration::from_secs(1));
+        let port = flow.listener.local_addr().unwrap().port();
+        let target = format!("/auth/callback?state={}&code=x", flow.state);
+        let host = format!("Host: localhost:{port}");
+        let good = format!("GET {target} HTTP/1.1\r\n{host}\r\n\r\n");
+        assert!(flow.request_code(good.as_bytes()).is_ok());
+        let ok_cl = format!("GET {target} HTTP/1.1\r\n{host}\r\nContent-Length: 0\r\n\r\n");
+        assert!(flow.request_code(ok_cl.as_bytes()).is_ok());
+        let mut cases: Vec<(&str, Vec<u8>)> = vec![
+            ("not utf-8", b"GET /auth/callback?\xff HTTP/1.1\r\n\r\n".to_vec()),
+            (
+                "no crlfcrlf",
+                format!("GET {target} HTTP/1.1\r\n{host}\r\n").into_bytes(),
+            ),
+            ("bytes after head", format!("{good}x").into_bytes()),
+            (
+                "second blank line after head",
+                format!("{good}\r\n\r\n").into_bytes(),
+            ),
+            (
+                "post",
+                format!("POST {target} HTTP/1.1\r\n{host}\r\n\r\n").into_bytes(),
+            ),
+            (
+                "http/1.0",
+                format!("GET {target} HTTP/1.0\r\n{host}\r\n\r\n").into_bytes(),
+            ),
+            (
+                "two spaces",
+                format!("GET  {target} HTTP/1.1\r\n{host}\r\n\r\n").into_bytes(),
+            ),
+            (
+                "missing version",
+                format!("GET {target}\r\n{host}\r\n\r\n").into_bytes(),
+            ),
+            (
+                "wrong path",
+                format!("GET /other?x=1 HTTP/1.1\r\n{host}\r\n\r\n").into_bytes(),
+            ),
+            (
+                "no query",
+                format!("GET /auth/callback HTTP/1.1\r\n{host}\r\n\r\n").into_bytes(),
+            ),
+            (
+                "header without colon",
+                format!("GET {target} HTTP/1.1\r\n{host}\r\nbad\r\n\r\n").into_bytes(),
+            ),
+            (
+                "empty header name",
+                format!("GET {target} HTTP/1.1\r\n{host}\r\n: v\r\n\r\n").into_bytes(),
+            ),
+            (
+                "bad header name",
+                format!("GET {target} HTTP/1.1\r\n{host}\r\nX_Y: v\r\n\r\n").into_bytes(),
+            ),
+            (
+                "space in header name",
+                format!("GET {target} HTTP/1.1\r\n{host}\r\nX Y: v\r\n\r\n").into_bytes(),
+            ),
+            (
+                "duplicate host",
+                format!("GET {target} HTTP/1.1\r\n{host}\r\nhost: localhost:{port}\r\n\r\n").into_bytes(),
+            ),
+            (
+                "duplicate unrelated",
+                format!("GET {target} HTTP/1.1\r\n{host}\r\nX-A: 1\r\nx-a: 2\r\n\r\n").into_bytes(),
+            ),
+            ("no host", format!("GET {target} HTTP/1.1\r\n\r\n").into_bytes()),
+            (
+                "wrong host",
+                format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").into_bytes(),
+            ),
+            (
+                "wrong host port",
+                format!("GET {target} HTTP/1.1\r\nHost: localhost:{}\r\n\r\n", port ^ 1).into_bytes(),
+            ),
+            (
+                "transfer-encoding",
+                format!("GET {target} HTTP/1.1\r\n{host}\r\nTransfer-Encoding: chunked\r\n\r\n").into_bytes(),
+            ),
+            (
+                "content-length 5",
+                format!("GET {target} HTTP/1.1\r\n{host}\r\nContent-Length: 5\r\n\r\n").into_bytes(),
+            ),
+            (
+                "content-length junk",
+                format!("GET {target} HTTP/1.1\r\n{host}\r\nContent-Length: 00\r\n\r\n").into_bytes(),
+            ),
+            (
+                "control byte in value",
+                format!("GET {target} HTTP/1.1\r\n{host}\r\nX-A: a\x01b\r\n\r\n").into_bytes(),
+            ),
+        ];
+        cases.push(("empty", Vec::new()));
+        for (name, bytes) in cases {
+            assert!(
+                matches!(flow.request_code(&bytes), Err(Error::Callback)),
+                "{name}"
+            );
+        }
     }
     #[test]
     fn bounded_exchange_errors_and_account_refusal_preserve_previous_bytes() {

@@ -19,6 +19,7 @@ mod batch;
 mod chrome;
 mod panels;
 mod pixel;
+pub mod stage;
 
 pub use arcade::*;
 pub use batch::*;
