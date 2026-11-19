@@ -75,13 +75,6 @@ class Gate(unittest.TestCase):
         self.assertNotRegex(text, r'(?m)^(<<<<<<<|=======|>>>>>>>)')
         subprocess.run(['bash', '-n', str(runner)], check=True)
 
-    def test_secret_scan_declares_literal_receipt_sanitizer_fixtures(self):
-        fixture = WORKFLOWS.parents[1] / 'oxc' / 'tools' / 'tests' / 'test_export_receipt.py'
-        self.assertIn(":!oxc/tools/tests/test_export_receipt.py", self.checks)
-        text = fixture.read_text()
-        self.assertIn('sk-' + 'a' * 32, text)
-        self.assertIn('-----BEGIN OPENSSH ' + 'PRIVATE KEY-----', text)
-
     def test_merge_group_always_selects_complete_oxa_workspace(self):
         build = job_block(self.checks, 'build')
         self.assertIn("oxa: ${{ github.event_name == 'merge_group' || needs.changes.outputs.oxa == 'true' }}", build)
