@@ -10,6 +10,7 @@
 - `oxa work` starts a new task branch at its published head (`origin/<branch>`) when that tip descends from the captured base, instead of always at the base. A task for an already pushed pull-request branch now audits and continues that head rather than redoing work from a tree that predates it; several diverging tips or an unrelated one keep the base. See [work.md](docs/work.md).
 ### Added
 
+- Owner confirm broker (yolo power plan S1): each session exports `OXA_CONFIRM_SOCK`, a private unix socket through which oxa commands ask the owner. Yolo answers yes and records it, standard and auto show a dialog, and the owner's typed message answers a waiting one. Commands move to it in later slices.
 - `--usage-log FILE` (#1592): one JSONL record per model call (prompt, cached and output tokens, duration, model, turn), owner-only file, no message text. Reasoning tokens are null until the engine reports them.
 - `oxa work --pr N --model MODEL` (#1019): the unattended packet for a pull request carries its title, body, reviews, issue comments and the names of failing checks at the current head, and the task branch is the pull request's own head branch. Review text and check names are labelled as data and bounded (reviews to 16 KiB, 40 check names); only failing checks travel, never passing ones. Malformed review or check lists are refused, never silently dropped.
 

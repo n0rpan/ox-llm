@@ -10,7 +10,11 @@
 use crate::skills::SKILL_FILE;
 use oxa_config::Dirs;
 use oxa_proto::OxaError;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// `(name, SKILL.md content)` of every built-in skill, sorted by name.
 pub const BUILTIN_SKILLS: &[(&str, &str)] = &[
@@ -81,15 +85,50 @@ pub fn read_identity(dirs: &Dirs) -> Option<String> {
 
 /// Write `bytes` to `path` through a temporary sibling and a rename (parents created).
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_atomic_impl(path, bytes, None, false)
+}
+
+/// Write an owner-only file atomically and durably. Used for private state whose replacement must
+/// reach the containing directory before the operation is considered complete.
+pub(crate) fn write_atomic_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_atomic_impl(path, bytes, Some(0o600), true)
+}
+
+fn write_atomic_impl(path: &Path, bytes: &[u8], mode: Option<u32>, durable: bool) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-    if let Err(e) = std::fs::write(&tmp, bytes) {
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    let nonce = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("tmp.{}.{nonce}", std::process::id()));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    if let Some(mode) = mode {
+        options.mode(mode);
+    }
+    let mut file = options.open(&tmp)?;
+    let write = (|| {
+        if let Some(mode) = mode {
+            file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+        }
+        file.write_all(bytes)?;
+        if durable {
+            file.sync_all()?;
+        }
+        Ok(())
+    })();
+    drop(file);
+    if let Err(e) = write {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
     std::fs::rename(&tmp, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
-    })
+    })?;
+    if durable {
+        if let Some(parent) = path.parent() {
+            File::open(parent)?.sync_all()?;
+        }
+    }
+    Ok(())
 }
