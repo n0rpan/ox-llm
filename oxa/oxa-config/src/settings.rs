@@ -26,6 +26,11 @@ pub struct CompactionSettings {
     pub soft_tokens: Option<u32>,
 }
 
+/// Default agent-level retries (`retry.maxRetries`): cloud routes see more transient 429/5xx.
+pub const DEFAULT_MAX_RETRIES: u32 = 10;
+/// Default stream silence limit (`httpIdleTimeoutMs`): long silent thinking at max effort is normal.
+pub const DEFAULT_IDLE_MS: u64 = 900_000;
+
 /// The `retry.*` group (pi's keys and defaults).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetrySettings {
@@ -143,7 +148,20 @@ impl Settings {
 
     fn read_files(files: SettingsFiles, keep_project: Option<&Value>) -> Settings {
         let mut diagnostics = Vec::new();
-        let user = read_layer(&files.user, &mut diagnostics);
+        let mut user = read_layer(&files.user, &mut diagnostics);
+        // A present user file that cannot be used must not drop the owner's security
+        // settings (#1449): keep the most restrictive reading of them and say so.
+        if !diagnostics.is_empty() {
+            user = fail_safe_user_layer();
+            // One warning: the read problem plus what oxa kept and how to recover.
+            for d in &mut diagnostics {
+                d.message.push_str(
+                    "; oxa keeps the most restrictive security settings (offline on, bash network \
+                     off, new projects not trusted) and uses defaults for the rest. Fix or restore \
+                     this file and restart to recover",
+                );
+            }
+        }
         let (project, project_src) = match (files.project.as_deref(), keep_project) {
             (Some(path), Some(layer)) => (layer.clone(), path.display().to_string()),
             (Some(path), None) => (read_layer(path, &mut diagnostics), path.display().to_string()),
@@ -281,7 +299,7 @@ impl Settings {
     pub fn retry(&self) -> RetrySettings {
         RetrySettings {
             enabled: self.bool("retry.enabled", true),
-            max_retries: self.u32("retry.maxRetries", 3),
+            max_retries: self.u32("retry.maxRetries", DEFAULT_MAX_RETRIES),
             base_delay_ms: self.u64("retry.baseDelayMs", 2000),
             max_delay_ms: self.u64("retry.maxAgentDelayMs", 60000),
         }
@@ -296,17 +314,23 @@ impl Settings {
         }
     }
     /// H: `httpIdleTimeoutMs`: the silence limit of the engine stream in milliseconds; `None`
-    /// when disabled (`0` or `"disabled"`). A value of another shape is the default (300000).
+    /// when disabled (`0` or `"disabled"`). A value of another shape is the default (900000).
     pub fn http_idle_timeout_ms(&self) -> Option<u64> {
         match self.get("httpIdleTimeoutMs") {
             Some(Value::String(s)) if s == "disabled" => None,
             Some(v) => match v.as_u64() {
                 Some(0) => None,
                 Some(n) => Some(n),
-                None => Some(300_000),
+                None => Some(DEFAULT_IDLE_MS),
             },
-            None => Some(300_000),
+            None => Some(DEFAULT_IDLE_MS),
         }
+    }
+    /// `oxa.emptyReplyRetries`: how many times a cloud reply with no text and no tool call is
+    /// asked again (default 1; 0 turns it off). User file only: the retries spend the owner's
+    /// cloud allowance with fresh idempotency keys, so a project file cannot raise them.
+    pub fn empty_reply_retries(&self) -> u32 {
+        self.user_u32("oxa.emptyReplyRetries", 1)
     }
     /// H: the startup thinking level of `model` (pi's sdk.ts order after the CLI choices):
     /// `modelThinkingLevels[model]` (keyed by the engine model id; pi's `provider/modelId`
@@ -481,6 +505,12 @@ impl Settings {
         project: bool,
     ) -> Result<(), OxaError> {
         check_key_shape(key)?;
+        if project && crate::descriptor(key).is_some_and(|d| d.user_only) {
+            return Err(OxaError::new(
+                codes::INVALID,
+                format!("setting `{key}` is user-only; it cannot be set in a project file"),
+            ));
+        }
         if let Some(def) = find_key(key) {
             if !kind_matches(def.kind, &value) {
                 return Err(OxaError::new(
@@ -542,8 +572,12 @@ impl Settings {
     }
     /// Make `root` the layer for `project` in memory and recompose the merged settings.
     fn adopt(&mut self, path: &Path, root: Map<String, Value>, project: bool) {
-        let (checked, _) = check_root(&Value::Object(root), &path.display().to_string());
+        let source = path.display().to_string();
+        let (mut checked, _) = check_root(&Value::Object(root), &source);
         if project {
+            // A set/unset rereads the complete file before adopting the edited layer. Apply the
+            // same trust boundary as load so an unrelated edit cannot restore rejected keys.
+            strip_user_only(&mut checked, &source);
             self.project = checked;
         } else {
             self.user = checked;
@@ -650,6 +684,25 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn empty_reply_retries_are_user_only() {
+        let user_two = Settings::from_values(
+            json!({"oxa": {"emptyReplyRetries": 2}}),
+            json!({"oxa": {"emptyReplyRetries": 9}}),
+        );
+        assert_eq!(
+            user_two.empty_reply_retries(),
+            2,
+            "the user file decides how far an empty reply may be retried"
+        );
+        let project_only = Settings::from_values(json!({}), json!({"oxa": {"emptyReplyRetries": 9}}));
+        assert_eq!(
+            project_only.empty_reply_retries(),
+            1,
+            "a project file cannot raise the retries that spend the owner's allowance"
+        );
+    }
+
+    #[test]
     fn a2a_enabled_defaults_true_and_ignores_the_project_layer() {
         assert!(Settings::from_values(json!({}), json!({})).a2a_enabled());
         let project_off = Settings::from_values(json!({}), json!({"oxa": {"a2a": {"enabled": false}}}));
@@ -728,6 +781,39 @@ mod tests {
         let keys: Vec<&str> = map.keys().map(String::as_str).collect();
         assert_eq!(keys, ["q", "r"], "pruned empty parent keeps order");
     }
+
+    #[test]
+    fn project_cannot_set_sandbox_net() {
+        let user = json!({"oxa": {"sandbox": {"net": "off"}}});
+        let project = json!({"oxa": {"sandbox": {"net": "on"}}});
+        let s = build(user, project, Vec::new(), "user", "project");
+        assert_eq!(s.merged["oxa"]["sandbox"]["net"], json!("off"));
+        assert!(s.project.get("oxa").is_none(), "pruned from the project layer");
+    }
+
+    #[test]
+    fn project_user_only_key_diagnostic() {
+        let project = json!({"oxa": {"sandbox": {"net": "on"}}, "theme": "dark"});
+        let s = build(json!({}), project, Vec::new(), "user", "project");
+        let hits: Vec<_> = s
+            .diagnostics
+            .iter()
+            .filter(|d| d.source == "project" && d.message.contains("oxa.sandbox.net"))
+            .collect();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(s.merged["theme"], json!("dark"), "other project keys still apply");
+    }
+
+    #[test]
+    fn project_set_of_user_only_key_is_refused() {
+        let root = Path::new("/nonexistent-oxa-test");
+        let dirs = Dirs::under(root);
+        let mut s = build(json!({}), json!({}), Vec::new(), "user", "project");
+        let err = s
+            .set(&dirs, root, "oxa.sandbox.net", json!("on"), true)
+            .expect_err("refused");
+        assert!(err.to_string().contains("user-only"));
+    }
 }
 
 /// Merge the layers over the built-in defaults and validate each layer. Wrongly typed values
@@ -740,9 +826,10 @@ fn build(
     project_src: &str,
 ) -> Settings {
     let (user, user_diags) = check_root(&user, user_src);
-    let (project, project_diags) = check_root(&project, project_src);
+    let (mut project, project_diags) = check_root(&project, project_src);
     diagnostics.extend(user_diags);
     diagnostics.extend(project_diags);
+    diagnostics.extend(strip_user_only(&mut project, project_src));
     let merged = compose(&user, &project);
     Settings {
         merged,
@@ -753,6 +840,28 @@ fn build(
         overrides: Vec::new(),
         files: None,
     }
+}
+
+/// Drop every key whose descriptor is `user_only` from the project layer, with one warning
+/// per key. A cloned repository must not widen the sandbox, the network or the home-folder
+/// rules; those keys count only from the user file (SECURITY.md, "Refusals that stay in yolo").
+fn strip_user_only(project: &mut Value, source: &str) -> Vec<Diagnostic> {
+    let Some(map) = project.as_object_mut() else {
+        return Vec::new();
+    };
+    let mut diags = Vec::new();
+    for d in crate::descriptors().iter().filter(|d| d.user_only) {
+        if remove_nested(map, d.key) {
+            diags.push(warn(
+                source,
+                format!(
+                    "setting `{}` is user-only and is ignored in a project file; set it in your user settings",
+                    d.key
+                ),
+            ));
+        }
+    }
+    diags
 }
 
 /// defaults < user < project. The defaults layer carries oxa's default tool list so that a
@@ -777,6 +886,16 @@ fn queue_mode(value: Option<&str>) -> QueueMode {
         Some("all") => QueueMode::All,
         _ => QueueMode::OneAtATime,
     }
+}
+
+/// The user layer used when the user's settings file exists but cannot be read, parsed or is
+/// not an object: every network and trust setting at its most restrictive value. Other
+/// settings are absent, so they take their defaults.
+fn fail_safe_user_layer() -> Value {
+    serde_json::json!({
+        "oxa": {"offline": true, "sandbox": {"net": "off"}, "engine": {"allowRemote": false}},
+        "defaultProjectTrust": "never"
+    })
 }
 
 /// Read one settings file. A missing file is an empty object; an unreadable or unparsable file
