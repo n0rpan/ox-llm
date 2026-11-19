@@ -173,7 +173,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.offline` | bool | `false` | same as `--offline`; user settings only |
 | `oxa.engine.allowRemote` | bool | `false` | allow an engine on another host; user settings only |
 | `oxa.engine.inProcessLocal` | bool | `false` | select the in-process owned local engine, including offline; user settings only |
-| `oxa.inbox.headless` | bool | `true` | a headless print or JSON run (`--mode json`) of a persisted session whose goal is pursuing takes `oxa send` follow-ups from that session's inbox for the length of the run. Each message is an ordinary follow-up user message, at most 256 KiB and 64 queued; a larger file stays on disk. Runs without a pursuing goal never watch the inbox, and `false` turns this off |
+| `oxa.inbox.headless` | bool | `true` | a headless print or JSON run (`--mode json`) of a persisted session whose goal is pursuing takes `oxa send` follow-ups from that session's inbox for the length of the run. Each message is an ordinary follow-up user message, at most 256 KiB and 64 queued; a larger file stays on disk. Runs without a pursuing goal never watch the inbox, and `false` in user settings turns this off |
 | `oxa.local` | object | `{}` | literal native binary/model/arguments/environment and model limits; user settings only; see [native local configuration](../../oxc-local/CONFIGURATION.md) |
 | `oxa.lead.shadow` | bool | `false` | enable the read-only `oxa lead --shadow` proposal preset; user settings only; no live runner actions |
 | `oxa.engine.inProcessCloud` | bool | `false` | select the in-process Rust cloud gateway for sessions and model discovery; user settings only |
@@ -319,6 +319,8 @@ ledger records the full amount and admission continues.
 | `oxa.workers.max` | number | `4` | user settings only (a project file cannot change it). Most live workers one session may run; a `start` past this limit is refused |
 | `oxa.workers.resumeOnStart` | bool | `true` | user settings only (a project file cannot change it, either way). When a session is opened again, relaunch each of its workers that did not finish and whose process is gone, with `--continue=<id>` and no goal; one notice per worker. `false` leaves them as they are |
 | `oxa.workers.stopGraceSeconds` | number (seconds) | `10` | user settings only (a project file cannot change it). How long a stopped worker gets after SIGINT before its whole process group gets SIGTERM; SIGKILL follows 2 seconds later if the group is still alive |
+
+A worker is never wider than its parent session. It runs with the parent's permission ceiling, `--exclude-tools` and `--no-<tool>` exclusions, `--tools`, `--no-tools`, `--no-builtin-tools`, `--no-mcp`, `--no-web-search`, `--no-extensions`, `--offline` and session directory. `git` and `env` for the launch come from a trusted `PATH` directory outside the project, never from a project shim. Token budgets warn and record; they never block: with `--max-tokens N` each worker gets the parent's whole allowance `N` (the start notice says so), so a session with `max` live workers can use up to (1 + `max`) times `N` in total.
 
 ## Example
 

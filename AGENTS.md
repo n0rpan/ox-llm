@@ -45,6 +45,8 @@ maintainer, who says in the PR when a hardware check is needed.
   the user docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A review finding
   that contradicts an owner decision stated in the linked issue or PR is answered by updating these
   rules in that PR, not by changing the behaviour.
+- **Headless inbox.** Read `oxa.inbox.headless` from user settings for both print and JSON
+  sessions. Preserve the owner opt-out when loading project settings.
 - **Cargo cache mounts.** The sandbox forwards an owner-set `CARGO_TARGET_DIR` as a
   toolchain location. An external cache needs a separate user-only
   `oxa.sandbox.writePaths` entry. Review environment forwarding and writable mounts independently.

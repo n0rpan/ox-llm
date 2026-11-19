@@ -14,6 +14,9 @@ Treat as **high** severity:
 - fork-PR or guest access to secrets, cloud providers or owner credentials;
 - new `unsafe`/FFI/process/network code in the engine without bounds checks.
 
+The headless inbox uses the user-only `oxa.inbox.headless` switch. An owner opt-out
+applies to both print and JSON session runs.
+
 The sandbox can forward the owner's `CARGO_TARGET_DIR` to worker shells. External cache
 paths are writable only through an explicit owner `oxa.sandbox.writePaths` mount.
 

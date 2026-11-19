@@ -160,7 +160,7 @@ const SCHEMA: &[KeyDef] = &[
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
     // K3: a headless print or JSON run of a persisted session with a pursuing goal takes
-    // `oxa send` follow-ups from the session inbox for the run; false = off.
+    // `oxa send` follow-ups from the session inbox for the run; user-only false turns it off.
     key("oxa.inbox.headless", Kind::Bool, "true"),
     // The owner's explicit route for the Lead conversation: an exact model id for
     // the normal `--model` selector and the normal gateway. User settings only;
@@ -240,6 +240,8 @@ const SCHEMA: &[KeyDef] = &[
         Kind::Enum(&["brave", "none"]),
         "\"brave\"",
     ),
+    // The worker runner reads this list from owner settings only.
+    key("oxa.work.localChecks", Kind::StringList, "[\"cargo check\"]"),
     // K5a: the `worker` tool (never in a worker child) and the most live workers a session runs.
     // The `oxa.workers.*` keys are user settings only: a project file cannot start processes,
     // raise a limit or change the stop timing (`Settings::user_bool`, `user_u32`, `user_get`).
@@ -250,8 +252,6 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.workers.resumeOnStart", Kind::Bool, "true"),
     // K4: seconds a worker gets after SIGINT before its process group gets SIGTERM.
     key("oxa.workers.stopGraceSeconds", Kind::Number, "10"),
-    // The worker runner reads this list from owner settings only.
-    key("oxa.work.localChecks", Kind::StringList, "[\"cargo check\"]"),
     key("packages", Kind::Any, "[]"),
     // #202: the permission mode at start; a project's value may only lower it
     // (`Settings::default_permission_mode`).

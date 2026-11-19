@@ -1488,6 +1488,23 @@ fn choose_open(
     Ok((Open::New, None))
 }
 
+fn headless_inbox_enabled(settings: &Settings) -> bool {
+    settings.user_bool("oxa.inbox.headless", true)
+}
+
+#[cfg(test)]
+#[test]
+fn headless_inbox_uses_the_owners_switch_instead_of_the_project() {
+    let project = serde_json::json!({"oxa": {"inbox": {"headless": true}}});
+    let owner = serde_json::json!({"oxa": {"inbox": {"headless": false}}});
+    assert!(!headless_inbox_enabled(&Settings::from_values(owner, project)));
+    let project = serde_json::json!({"oxa": {"inbox": {"headless": false}}});
+    assert!(headless_inbox_enabled(&Settings::from_values(
+        serde_json::json!({}),
+        project,
+    )));
+}
+
 /// The mode runs that print to stdout and exit: `-p` and `--mode json`.
 fn run_headless(
     mode: RunMode,
@@ -1661,7 +1678,7 @@ fn run_headless(
             stdout.as_deref_mut().unwrap(),
             stderr,
             &built.dirs.agent_dir,
-            built.settings.bool("oxa.inbox.headless", true),
+            headless_inbox_enabled(&built.settings),
         ),
         _ => run_print_outcome_with_inbox(
             &mut session,
@@ -1669,7 +1686,7 @@ fn run_headless(
             stdout.as_deref_mut().unwrap(),
             stderr,
             &built.dirs.agent_dir,
-            built.settings.bool("oxa.inbox.headless", true),
+            headless_inbox_enabled(&built.settings),
         ),
     };
     built.result_facts.goal(session.goal());
