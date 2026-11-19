@@ -184,6 +184,28 @@ maintainer, who says in the PR when a hardware check is needed.
   and workflow dispatch when the worker session refuses them; do not work around that refusal.
   Below, every `gh` command is for a session that owns GitHub access.
 
+## What to test (owner rule)
+
+**Test what the product does for users, not how many test lines exist.**
+- **Write a test when** it protects behaviour a user or a security guarantee relies on:
+  - a bug that happened;
+  - a security or sandbox standard rule;
+  - money and ledger accounting;
+  - cache and prefix stability that changes cost;
+  - release integrity;
+  - an end-to-end flow (a real turn with tools, local model wiring, publish).
+- **Prefer** one end-to-end or integration test over many unit tests of internal helpers.
+- **Do not write tests that pin:**
+  - wording in AGENTS.md, SECURITY.md, docs or workflow files;
+  - descriptor or setting counts;
+  - sort order that nothing depends on;
+  - hashes copied from CI output;
+  - implementation detail a refactor may change.
+- **Doc and env sync checks** belong in a fast lint job, not behind a full build.
+- **Do not write tests that cannot fail:** a mock that asserts itself, or a test of dead code.
+- **A reviewer asking for a test** should name the behaviour it protects. "Add a test" with no behaviour is not a finding.
+- **Delete a test that only breaks on harmless changes.** Note it on the `Removes:` line.
+
 ## Build and test capacity (owner rule)
 
 GitHub-hosted CI is the judge for builds and tests. Run it with `OXCI=off`.
