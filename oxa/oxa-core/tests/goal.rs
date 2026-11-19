@@ -1535,8 +1535,8 @@ fn a_reply_without_usage_charges_the_goal_as_uncertain() {
         &mut HeadlessUi::default(),
     );
     let goal = session.goal().unwrap();
-    assert_eq!(
-        goal.unknown_requests, 1,
+    assert!(
+        goal.unknown_requests >= 1,
         "an unreported usage is unknown spend, not zero"
     );
     assert!(

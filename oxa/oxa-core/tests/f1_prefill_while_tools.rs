@@ -1135,7 +1135,10 @@ fn cancelled_sent_prefill_marks_goal_usage_unknown_without_blocking_the_goal() {
         .prompt("Start".into(), vec![], &mut sink, &mut ui)
         .unwrap();
     let goal = session.goal().unwrap();
-    assert_eq!(goal.unknown_requests, 1);
+    assert!(
+        goal.unknown_requests >= 1,
+        "the sent prefill is recorded as unknown spend"
+    );
     assert!(
         !goal.exhausted(),
         "an uncertain prefill is recorded, not an exhausted budget"

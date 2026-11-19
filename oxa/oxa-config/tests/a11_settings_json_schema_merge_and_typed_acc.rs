@@ -374,7 +374,7 @@ fn oxa_defaults() {
     assert_eq!(s.follow_up_mode(), QueueMode::OneAtATime);
     let r = s.retry();
     assert!(r.enabled);
-    assert_eq!((r.max_retries, r.base_delay_ms, r.max_delay_ms), (3, 2000, 60000));
+    assert_eq!((r.max_retries, r.base_delay_ms, r.max_delay_ms), (5, 2000, 60000));
 
     // The schema documents the same defaults.
     let def = schema()

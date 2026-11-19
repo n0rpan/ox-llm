@@ -894,7 +894,8 @@ impl Tool for SubagentTool {
         // turn, so a call queued behind the running one counts too. Above the limit the call
         // still runs, queued, with a warning.
         let (budget, over) = Budget::reserve(inner, &limits.session_id, items.len());
-        if let Some(pending) = over {
+        // A call whose own size passed the limit already carries that warning.
+        if let Some(pending) = over.filter(|pending| *pending > 0) {
             warnings.push(
                 TOO_MANY_SESSION
                     .replace("{pending}", &pending.to_string())

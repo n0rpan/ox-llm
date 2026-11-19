@@ -625,7 +625,13 @@ fn rpc_006() {
     let mut r = Rpc::start(
         TestEnv::new(),
         held_opts(1500),
-        vec![ScriptTurn::text("first"), ScriptTurn::text("second")],
+        // One reply per run: the prompt, the steer, the follow-up and the image prompt.
+        vec![
+            ScriptTurn::text("first"),
+            ScriptTurn::text("second"),
+            ScriptTurn::text("third"),
+            ScriptTurn::text("fourth"),
+        ],
         &["--no-session"],
     );
     let started = r.cmd(json!({"id": "p", "type": "prompt", "message": "hi"}));

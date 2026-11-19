@@ -84,20 +84,27 @@ fn every_stop_and_resume_preserves_original_budget_and_accounting() {
             Some(0),
             0,
         ),
-        (
-            GoalBudget {
-                max_tokens: Some(10),
-                ..GoalBudget::default()
-            },
-            None,
-            0,
-        ),
     ] {
         let mut goal = Goal::new("Synthetic objective".into(), budget, 0).unwrap();
         goal.charge(tokens, time, true).unwrap();
         assert!(!goal.stopped(true));
         assert_eq!(goal.status, GoalStatus::Blocked);
     }
+    // Unknown usage is recorded and does not exhaust a token budget.
+    let mut goal = Goal::new(
+        "Synthetic objective".into(),
+        GoalBudget {
+            max_tokens: Some(10),
+            ..GoalBudget::default()
+        },
+        0,
+    )
+    .unwrap();
+    goal.charge(None, 0, true).unwrap();
+    assert_eq!(goal.unknown_requests, 1);
+    assert!(!goal.exhausted());
+    assert!(goal.stopped(true));
+    assert_eq!(goal.status, GoalStatus::Pursuing);
 }
 
 #[test]
