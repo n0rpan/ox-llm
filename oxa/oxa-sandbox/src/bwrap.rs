@@ -16,6 +16,9 @@ use std::path::{Path, PathBuf};
 /// Fixed base environment inside the sandbox (the `PATH` is the layout's, B2).
 const BASE_LANG: &str = "C.UTF-8";
 const BASE_TERM: &str = "dumb";
+const CONFIRM_SOCKET_ENV: &str = "OXA_CONFIRM_SOCK";
+const SANDBOX_CONFIRM_DIR: &str = "/tmp/.oxa-confirm";
+const SANDBOX_CONFIRM_SOCKET: &str = "/tmp/.oxa-confirm/confirm.sock";
 /// Seconds the probe may take before it counts as a failure.
 const PROBE_TIMEOUT_S: u32 = 10;
 
@@ -96,6 +99,7 @@ pub(crate) fn bwrap_args_pinned(
     let cwd_c = canon(&s.cwd);
     let cwd_path = cwd_c.as_path();
     let cwd = cwd_c.to_string_lossy().into_owned();
+    let confirm_socket = confirm_socket(s);
     let mut a: Vec<String> = Vec::new();
     push(&mut a, &["--unshare-all"]);
     if s.net {
@@ -133,17 +137,15 @@ pub(crate) fn bwrap_args_pinned(
     if !home_first {
         push(&mut a, &["--tmpfs", &home_c.to_string_lossy()]);
     }
-    // The confirmation broker lives below the otherwise hidden agent home. Expose that one
-    // socket, not its private parent tree. Both permission checks match the broker's creation
-    // contract and keep an injected environment value from becoming a general bind primitive.
-    if let Some(sock) = confirm_socket(s) {
-        if let Some(parent) = sock.parent() {
-            push(&mut a, &["--dir", &parent.to_string_lossy()]);
-            push(
-                &mut a,
-                &["--ro-bind", &sock.to_string_lossy(), &sock.to_string_lossy()],
-            );
-        }
+    // The broker lives below the agent directory, which the masks below deliberately hide.
+    // Bind only the socket at a separate sandbox path so masking its host parent cannot hide it.
+    // The permission checks in `confirm_socket` match the broker's creation contract.
+    if let Some(sock) = confirm_socket {
+        push(&mut a, &["--dir", SANDBOX_CONFIRM_DIR]);
+        push(
+            &mut a,
+            &["--ro-bind", &sock.to_string_lossy(), SANDBOX_CONFIRM_SOCKET],
+        );
     }
     let mode = effective_mode(s, home, layout, real_home);
     let writable = mode == CwdMode::Writable;
@@ -473,7 +475,10 @@ pub(crate) fn bwrap_args_pinned(
         }
     }
     push(&mut a, &["--chdir", &cwd, "--clearenv"]);
-    for (k, v) in base_env(s, &home_s, layout) {
+    for (k, mut v) in base_env(s, &home_s, layout) {
+        if confirm_socket.is_some() && k == CONFIRM_SOCKET_ENV {
+            v = SANDBOX_CONFIRM_SOCKET.to_string();
+        }
         push(&mut a, &["--setenv", &k, &v]);
     }
     push(&mut a, &["--", "bash", "-c", &s.command]);
@@ -485,7 +490,7 @@ fn confirm_socket(s: &ExecSpec) -> Option<&Path> {
         s.env
             .iter()
             .rev()
-            .find(|(key, _)| key == "OXA_CONFIRM_SOCK")?
+            .find(|(key, _)| key == CONFIRM_SOCKET_ENV)?
             .1
             .as_str(),
     );
@@ -524,12 +529,19 @@ mod confirm_socket_tests {
         };
         let args = bwrap_args(&spec, &env.home());
         let socket = socket.to_string_lossy();
-        assert!(args.windows(3).any(|w| w == ["--ro-bind", &*socket, &*socket]));
+        assert!(args
+            .windows(3)
+            .any(|w| w == ["--ro-bind", &*socket, "/tmp/.oxa-confirm/confirm.sock"]));
+        assert!(args
+            .windows(3)
+            .any(|w| w == ["--setenv", "OXA_CONFIRM_SOCK", "/tmp/.oxa-confirm/confirm.sock"]));
         let parent = private.to_string_lossy();
-        assert!(args.windows(2).any(|w| w == ["--dir", &*parent]));
         assert!(!args
             .windows(3)
             .any(|w| { (w[0] == "--bind" || w[0] == "--ro-bind") && w[1] == parent && w[2] == parent }));
+        assert!(!args
+            .windows(3)
+            .any(|w| { w == ["--setenv", "OXA_CONFIRM_SOCK", socket.as_ref()] }));
     }
 }
 
