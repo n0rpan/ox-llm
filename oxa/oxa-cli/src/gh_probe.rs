@@ -200,7 +200,9 @@ impl ProbeHooks {
                 "run {run}: no failed-step log (the run has no failed step yet)"
             ));
         }
-        // Cut first, then scrub the part the model sees: a credential in it never leaves here.
+        // Scrub the whole bounded log, then cut: scrubbing the tail alone would lose the
+        // `BEGIN ... PRIVATE KEY` marker a cut can remove, leaving the key material behind for
+        // a matcher that needs the envelope.
         let ctx = ScrubCtx {
             home: Some(self.home_string()),
             user: std::env::var("USER")
@@ -210,7 +212,7 @@ impl ProbeHooks {
         };
         Ok(format!(
             "run {run} failed steps:\n{}",
-            scrub(&tail(&log, LOG_TAIL_BYTES), &ctx)
+            tail(&scrub(&log, &ctx), LOG_TAIL_BYTES)
         ))
     }
 
@@ -306,6 +308,37 @@ mod tests {
                 .poll_event(&kind, &args, Duration::from_secs(30))
                 .expect("kind is answered")
         }
+    }
+
+    /// A private-key envelope that straddles the 24 KB cutoff: scrubbing after the cut would lose
+    /// the `BEGIN` marker and leave the wrapped key lines in the tail.
+    #[test]
+    fn run_log_failed_scrubs_a_key_envelope_across_the_cutoff() {
+        let f = Fake::new("log");
+        let label = "PRIVATE KEY";
+        let mut log = String::new();
+        // Lines of roughly 40 bytes: 700 of them put the cutoff inside the envelope below.
+        for i in 0..700 {
+            log.push_str(&format!("step line {i} ........................\n"));
+        }
+        log.push_str(&format!("-----BEGIN {label}-----\n"));
+        // Wrapped base64 lines shorter than the 32-character fallback boundary.
+        for _ in 0..40 {
+            log.push_str("c2hvcnQtc2VjcmV0LWxpbmU\n");
+        }
+        log.push_str(&format!("-----END {label}-----\n"));
+        log.push_str("step line 999 ........................\n");
+        f.answer("run_log", &log);
+        let out = f
+            .poll(json!({"kind": "run_log_failed", "run": 99}))
+            .unwrap()
+            .expect("answered at once");
+        assert!(out.contains("[log cut"), "the log is cut to its tail");
+        assert!(
+            !out.contains("c2hvcnQtc2VjcmV0LWxpbmU"),
+            "key material must not survive the cut: {out}"
+        );
+        assert!(!out.contains("BEGIN PRIVATE KEY"));
     }
 
     #[test]
