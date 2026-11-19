@@ -62,12 +62,7 @@ pub(crate) fn publish_hits(stages: &[Stage], cwd: &Path) -> Vec<String> {
             if matches!(first_word(&st.words), Some("cd" | "pushd" | "popd")) {
                 moved = true;
             }
-            if kind == Kind::Allowed
-                && st
-                    .redirects
-                    .iter()
-                    .any(|(_, t)| t != "/dev/null" && !t.starts_with('&'))
-            {
+            if kind == Kind::Allowed && st.redirects.iter().any(|(op, t)| !harmless_redirect(op, t)) {
                 kind = Kind::Unsafe;
             }
             out.push((i, kind));
@@ -88,6 +83,11 @@ pub(crate) fn publish_hits(stages: &[Stage], cwd: &Path) -> Vec<String> {
         }
     }
     hits
+}
+
+/// A redirect that writes no file: to `/dev/null` or a descriptor copy (`2>&1`).
+fn harmless_redirect(op: &str, target: &str) -> bool {
+    target == "/dev/null" || (op == ">&" && (target == "-" || target.chars().all(|c| c.is_ascii_digit())))
 }
 
 fn first_word(words: &[String]) -> Option<&str> {
@@ -111,10 +111,7 @@ fn base(w: &str) -> &str {
 }
 
 fn is_local(words: &[String], redirects: &[(String, String)]) -> bool {
-    if redirects
-        .iter()
-        .any(|(_, t)| t != "/dev/null" && !t.starts_with('&'))
-    {
+    if redirects.iter().any(|(op, t)| !harmless_redirect(op, t)) {
         return false;
     }
     if words.iter().any(|w| dynamic(w)) {
@@ -195,12 +192,11 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
         if a == "-C" {
             dir = rest.get(k + 1).cloned();
             k += 2;
+        } else if matches!(a, "-c" | "--git-dir" | "--work-tree" | "--namespace") {
+            opaque = true;
+            k += 2;
         } else if a.starts_with('-') {
-            if matches!(a, "-c" | "--git-dir" | "--work-tree" | "--namespace")
-                || a.starts_with("-c")
-                || a.starts_with("--git-dir=")
-                || a.starts_with("--work-tree=")
-            {
+            if a.starts_with("--git-dir=") || a.starts_with("--work-tree=") || a.starts_with("-c") {
                 opaque = true;
             }
             k += 1;
