@@ -14,6 +14,10 @@ Treat as **high** severity:
 - fork-PR or guest access to secrets, cloud providers or owner credentials;
 - new `unsafe`/FFI/process/network code in the engine without bounds checks.
 
+The native cloud gateway's default recommendations use only configured API-key providers
+and their standard endpoints. User model entries take precedence, and the owner can opt out.
+Recommendations do not initiate network discovery or confer guest access.
+
 The sandbox can forward the owner's `CARGO_TARGET_DIR` to worker shells. External cache
 paths are writable only through an explicit owner `oxa.sandbox.writePaths` mount.
 

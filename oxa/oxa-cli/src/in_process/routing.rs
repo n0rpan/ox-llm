@@ -9,6 +9,7 @@ pub(super) struct Routed {
     pub cloud: Backend,
     pub local_models: BTreeSet<String>,
     pub cloud_models: BTreeSet<String>,
+    pub recommended_models: BTreeSet<String>,
     pub dynamic_go: bool,
     pub default: Option<String>,
 }
@@ -76,7 +77,12 @@ impl Routed {
         backend.as_deref().map_err(Clone::clone)
     }
     fn models(&self) -> Vec<String> {
-        self.local_models.union(&self.cloud_models).cloned().collect()
+        let ordinary = self.local_models.union(&self.cloud_models);
+        ordinary
+            .filter(|alias| !self.recommended_models.contains(*alias))
+            .chain(self.cloud_models.intersection(&self.recommended_models))
+            .cloned()
+            .collect()
     }
 }
 impl Engine for Routed {

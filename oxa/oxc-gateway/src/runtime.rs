@@ -13,12 +13,10 @@ pub use crate::history::HistorySeal;
 use auth::Credential;
 pub use auth::{OpenAiAuthHandle, Subscription};
 use serde_json::{json, Value};
-#[cfg(feature = "share")]
-use std::collections::BTreeSet;
 #[cfg(feature = "upstream-openai")]
 use std::path::Path;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::{Arc, OnceLock},
 };
@@ -45,6 +43,7 @@ pub struct Runtime {
     diagnostics: Option<crate::diagnostics::Diagnostics>,
     catalog: Catalog,
     billings: BTreeMap<String, Billing>,
+    recommended: BTreeSet<String>,
     unpriced_discovered: BTreeMap<String, crate::pricing::Price>,
     #[cfg(feature = "share")]
     guest_models: BTreeSet<String>,
@@ -192,6 +191,7 @@ impl Runtime {
             diagnostics: None,
             catalog,
             billings,
+            recommended: BTreeSet::new(),
             unpriced_discovered: BTreeMap::new(),
             #[cfg(feature = "share")]
             guest_models: BTreeSet::new(),
@@ -211,7 +211,13 @@ impl Runtime {
     }
 
     pub fn discovery(&self) -> impl Iterator<Item = ModelInfo<'_>> {
-        self.catalog.models().filter(|model| supported(model.provider))
+        let models = || self.catalog.models().filter(|model| supported(model.provider));
+        models()
+            .filter(move |model| !self.recommended.contains(model.id))
+            .chain(models().filter(move |model| self.recommended.contains(model.id)))
+    }
+    pub(crate) fn recommended_models(&self) -> &BTreeSet<String> {
+        &self.recommended
     }
     /// Trusted user settings, keyed by the exact discovered public alias.
     pub fn with_unpriced_discovered_pricing(mut self, raw: &Value) -> Result<Self, Refusal> {
@@ -298,6 +304,57 @@ impl Runtime {
             .as_ref()
             .ok()
             .and_then(|file| file.read(provider.as_str()).ok()))
+    }
+
+    pub(crate) fn add_recommended_models(
+        &mut self,
+        models: impl IntoIterator<Item = (Model, crate::pricing::Price)>,
+    ) -> Result<(), Refusal> {
+        let candidates: Vec<_> = models
+            .into_iter()
+            .filter(|(model, _)| {
+                let info = model.info();
+                model.configured_route().is_none()
+                    && matches!(
+                        info.provider,
+                        Provider::Anthropic | Provider::OpenRouter | Provider::OpenAi
+                    )
+                    && supported(info.provider)
+                    && self.catalog.configured(info.id).is_none()
+            })
+            .collect();
+        let mut available = Vec::new();
+        for provider in [Provider::Anthropic, Provider::OpenRouter, Provider::OpenAi] {
+            if candidates
+                .iter()
+                .any(|(model, _)| model.info().provider == provider)
+                && self.catalog_key(provider)?.is_some()
+            {
+                available.push(provider);
+            }
+        }
+        let (models, billings): (Vec<_>, Vec<_>) = candidates
+            .into_iter()
+            .filter(|(model, _)| available.contains(&model.info().provider))
+            .map(|(model, price)| {
+                let billing = (model.info().id.to_owned(), Billing::Metered(price));
+                (model, billing)
+            })
+            .unzip();
+        if !models.is_empty() {
+            self.catalog = Catalog::new(
+                Access::Enabled,
+                self.catalog
+                    .models()
+                    .filter_map(|info| self.catalog.configured(info.id).cloned())
+                    .chain(models),
+            )
+            .map_err(catalog_error)?;
+            self.recommended
+                .extend(billings.iter().map(|(alias, _)| alias.clone()));
+            self.billings.extend(billings);
+        }
+        Ok(())
     }
 
     pub(crate) fn apply_provider_catalog(

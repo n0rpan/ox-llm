@@ -31,8 +31,10 @@ Merge this into `~/.oxa/agent/settings.json` (user settings only):
 ```
 
 Replace the illustrative model, limits and prices with the provider's current
-values. `oxa --list-models` lists configured routes without reading credentials or
-contacting a provider. Select one with `oxa --model example-cloud`.
+values. `oxa --list-models` lists explicitly configured routes and recommendations
+for providers with a configured API key, without contacting a provider by default.
+See [native cloud settings](settings.md#native-cloud-gateway) to opt out of the
+recommendations. Select an explicit route with `oxa --model example-cloud`.
 The default transport remains unchanged when `inProcessCloud` is false.
 Offline mode refuses the native cloud path; project settings cannot enable it.
 
