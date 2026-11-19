@@ -314,6 +314,7 @@ impl Tool for CallToolTool {
             args: call_args,
         }) {
             Ok(reply) => ToolOutput {
+                images: Vec::new(),
                 text: reply
                     .get("text")
                     .and_then(Value::as_str)
