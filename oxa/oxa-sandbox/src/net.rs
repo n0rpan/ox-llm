@@ -108,7 +108,7 @@ pub(crate) fn redact_run(
     live: &mut dyn FnMut(&[u8]),
     run: impl FnOnce(&mut dyn FnMut(&[u8])) -> ExecResult,
 ) -> ExecResult {
-    let Some(t) = token else {
+    let Some(t) = token.filter(|t| !t.is_empty()) else {
         return run(live);
     };
     let mut sr = StreamRedactor::new(t);
@@ -647,6 +647,23 @@ mod tests {
             let (_, out) = live_lens(&[&full[..at], &full[at..]]);
             assert_eq!(out, "pre [redacted] mid [redacted] post", "split at {at}");
         }
+    }
+
+    #[test]
+    fn empty_stream_mask_is_a_plain_run() {
+        let mut shown = Vec::new();
+        let result = redact_run(Some(""), &mut |bytes| shown.extend_from_slice(bytes), |live| {
+            live(b"plain output");
+            ExecResult {
+                output: b"plain output".to_vec(),
+                exit: Some(0),
+                timed_out: false,
+                unsandboxed: false,
+            }
+        });
+
+        assert_eq!(shown, b"plain output");
+        assert_eq!(result.output, b"plain output");
     }
 
     fn spec(net: bool) -> ExecSpec {
