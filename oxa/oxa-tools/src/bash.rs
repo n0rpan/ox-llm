@@ -581,7 +581,11 @@ impl BashTool {
         } else {
             output
         };
-        let ui = json!({ "exit": res.exit, "timedOut": res.timed_out });
+        let mut ui = json!({ "exit": res.exit, "timedOut": res.timed_out });
+        if res.unsandboxed {
+            // Front ends warn on this; absent (not `false`) everywhere the OS sandbox ran.
+            ui["unsandboxed"] = json!(true);
+        }
         let note = cx
             .sandbox
             .home()
@@ -792,6 +796,7 @@ echo '\''a'\'''"#
                     output: output.to_vec(),
                     exit,
                     timed_out: false,
+                    unsandboxed: false,
                 },
                 chunks: vec![output.to_vec()],
                 seen: Mutex::new(None),
@@ -1530,6 +1535,7 @@ echo '\''a'\'''"#
                 output: b"started\n".to_vec(),
                 exit: None,
                 timed_out: false,
+                unsandboxed: false,
             }
         }
     }
@@ -1804,6 +1810,7 @@ mod poll_tests {
                         output: Vec::new(),
                         exit: None,
                         timed_out: false,
+                        unsandboxed: false,
                     };
                 }
                 match rx.recv_timeout(std::time::Duration::from_millis(5)) {
@@ -1814,6 +1821,7 @@ mod poll_tests {
                             output: Vec::new(),
                             exit: Some(0),
                             timed_out: false,
+                            unsandboxed: false,
                         }
                     }
                 }
