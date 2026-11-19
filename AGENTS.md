@@ -43,6 +43,9 @@ maintainer, who says in the PR when a hardware check is needed.
   the user docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A review finding
   that contradicts an owner decision stated in the linked issue or PR is answered by updating these
   rules in that PR, not by changing the behaviour.
+- **Cargo cache mounts.** The sandbox forwards an owner-set `CARGO_TARGET_DIR` as a
+  toolchain location. An external cache needs a separate user-only
+  `oxa.sandbox.writePaths` entry. Review environment forwarding and writable mounts independently.
 - **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
   registry with its surfaces and help (P1 if added outside it or without an exception reason).
 - Owner policy: nothing blocks by default except the security invariants above (secrets,
