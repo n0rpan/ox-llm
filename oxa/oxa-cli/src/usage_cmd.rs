@@ -161,6 +161,41 @@ fn report(sums: Option<DaySums>, caps: &Caps, today: &Today) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_is_discoverable_as_a_json_only_cli_command() {
+        use crate::args::{parse_args, usage_text, Subcommand};
+        use oxa_interactive::command_registry::{self, Argument, ArgumentKind, Availability, Surface};
+
+        let argv = ["usage".to_owned(), "--json".to_owned()];
+        let command = command_registry::parse_cli(&argv).expect("usage is registered");
+        assert_eq!(command.command.path, ["usage"]);
+        assert_eq!(
+            command.command.arguments,
+            &[Argument {
+                name: "json",
+                kind: ArgumentKind::Flag,
+                required: true
+            }]
+        );
+        for surface in [Surface::Slash, Surface::Menu, Surface::Web] {
+            assert!(matches!(
+                command.command.surfaces.at(surface),
+                Availability::Exception(_)
+            ));
+        }
+        assert!(usage_text(&[])
+            .lines()
+            .any(|line| line.starts_with("  oxa usage ")));
+        assert!(crate::help::text(&["usage"])
+            .unwrap()
+            .contains("oxa usage --json"));
+        let parsed = parse_args(&argv, &[]).unwrap();
+        assert!(matches!(
+            parsed.subcommand,
+            Some(Subcommand::Registered(id, words)) if id == command.command.id && words.0 == argv[1..]
+        ));
+    }
     use std::fs;
 
     const FIXTURE: &str = include_str!("../../omarchy-panel/tests/fixtures/usage.json");

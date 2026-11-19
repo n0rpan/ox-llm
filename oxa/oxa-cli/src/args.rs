@@ -44,7 +44,6 @@ pub enum Subcommand {
     Share(Vec<String>),
     /// Read the live snapshot of a saved session.
     Status(Vec<String>),
-    Usage(Vec<String>),
     /// Explicit owner ChatGPT sign-in/sign-out.
     Login(bool, LoginArgs),
     /// `oxa work <taskfile> | --issue N --model MODEL`.
@@ -538,7 +537,6 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         "wipe" => Subcommand::Wipe(rest.to_vec()),
         "send" => Subcommand::Send(rest.to_vec()),
         "status" => Subcommand::Status(rest.to_vec()),
-        "usage" => Subcommand::Usage(rest.to_vec()),
         "work" => Subcommand::Work(rest.to_vec()),
         "auth" => return Err(OxaError::unsupported("the auth command")),
         _ => return Ok(None),

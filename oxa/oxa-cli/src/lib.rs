@@ -52,8 +52,8 @@ mod sandbox_layout;
 #[cfg(feature = "share")]
 mod share_cmd;
 mod status;
-mod usage_cmd;
 mod themes;
+mod usage_cmd;
 mod wait_probe;
 mod wipe_cmd;
 mod work_board;

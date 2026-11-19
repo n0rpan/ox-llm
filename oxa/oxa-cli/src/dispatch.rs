@@ -234,6 +234,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     CommandId::LeadAsks if words.0.is_empty() => {
                         crate::lead_loop::asks(&dirs, &cwd, env, &mut *stdout)
                     }
+                    CommandId::Usage => crate::usage_cmd::run(&words.0, &dirs, &cwd, &mut *stdout),
                     CommandId::Lead
                     | CommandId::LeadServe
                     | CommandId::LeadBoard
@@ -296,7 +297,6 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 &mut *stdout,
             ),
             Subcommand::Status(words) => crate::status::run(&words, &dirs, &cwd, env, &mut *stdout),
-            Subcommand::Usage(words) => crate::usage_cmd::run(&words, &dirs, &cwd, &mut *stdout),
             Subcommand::Work(words) => {
                 return crate::work_cmd::run(&words, &cwd, env, &dirs, &mut *stdout, &mut *stderr)
             }
