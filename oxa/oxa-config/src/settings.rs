@@ -26,6 +26,11 @@ pub struct CompactionSettings {
     pub soft_tokens: Option<u32>,
 }
 
+/// Default agent-level retries (`retry.maxRetries`): cloud routes see more transient 429/5xx.
+pub const DEFAULT_MAX_RETRIES: u32 = 10;
+/// Default stream silence limit (`httpIdleTimeoutMs`): long silent thinking at max effort is normal.
+pub const DEFAULT_IDLE_MS: u64 = 900_000;
+
 /// The `retry.*` group (pi's keys and defaults).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetrySettings {
@@ -294,7 +299,7 @@ impl Settings {
     pub fn retry(&self) -> RetrySettings {
         RetrySettings {
             enabled: self.bool("retry.enabled", true),
-            max_retries: self.u32("retry.maxRetries", 3),
+            max_retries: self.u32("retry.maxRetries", DEFAULT_MAX_RETRIES),
             base_delay_ms: self.u64("retry.baseDelayMs", 2000),
             max_delay_ms: self.u64("retry.maxAgentDelayMs", 60000),
         }
@@ -309,17 +314,23 @@ impl Settings {
         }
     }
     /// H: `httpIdleTimeoutMs`: the silence limit of the engine stream in milliseconds; `None`
-    /// when disabled (`0` or `"disabled"`). A value of another shape is the default (300000).
+    /// when disabled (`0` or `"disabled"`). A value of another shape is the default (900000).
     pub fn http_idle_timeout_ms(&self) -> Option<u64> {
         match self.get("httpIdleTimeoutMs") {
             Some(Value::String(s)) if s == "disabled" => None,
             Some(v) => match v.as_u64() {
                 Some(0) => None,
                 Some(n) => Some(n),
-                None => Some(300_000),
+                None => Some(DEFAULT_IDLE_MS),
             },
-            None => Some(300_000),
+            None => Some(DEFAULT_IDLE_MS),
         }
+    }
+    /// `oxa.emptyReplyRetries`: how many times a cloud reply with no text and no tool call is
+    /// asked again (default 1; 0 turns it off). User file only: the retries spend the owner's
+    /// cloud allowance with fresh idempotency keys, so a project file cannot raise them.
+    pub fn empty_reply_retries(&self) -> u32 {
+        self.user_u32("oxa.emptyReplyRetries", 1)
     }
     /// H: the startup thinking level of `model` (pi's sdk.ts order after the CLI choices):
     /// `modelThinkingLevels[model]` (keyed by the engine model id; pi's `provider/modelId`
@@ -671,6 +682,25 @@ fn remove_path(obj: &mut Map<String, Value>, parts: &[&str]) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn empty_reply_retries_are_user_only() {
+        let user_two = Settings::from_values(
+            json!({"oxa": {"emptyReplyRetries": 2}}),
+            json!({"oxa": {"emptyReplyRetries": 9}}),
+        );
+        assert_eq!(
+            user_two.empty_reply_retries(),
+            2,
+            "the user file decides how far an empty reply may be retried"
+        );
+        let project_only = Settings::from_values(json!({}), json!({"oxa": {"emptyReplyRetries": 9}}));
+        assert_eq!(
+            project_only.empty_reply_retries(),
+            1,
+            "a project file cannot raise the retries that spend the owner's allowance"
+        );
+    }
 
     #[test]
     fn a2a_enabled_defaults_true_and_ignores_the_project_layer() {
