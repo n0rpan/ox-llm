@@ -35,8 +35,8 @@ pub fn first_with_members(key: &str, has_members: impl Fn(&str) -> bool) -> Opti
 /// copies in the bag. The bag is refilled from `members` only when it is empty, so a caller that
 /// changes a pool's members must start a new bag for that key.
 ///
-/// Within one bag every copy plays once before any copy plays again. A refill never starts with
-/// the item that played last, when the pool has another item to start with.
+/// Each refill plays every weighted copy. Consecutive picks differ, including at refill
+/// boundaries, unless the remaining weights leave no alternative.
 #[derive(Debug, Clone)]
 pub struct Bag<T> {
     session: String,
@@ -69,23 +69,32 @@ impl<T: Clone + PartialEq> Bag<T> {
     }
 
     fn refill(&mut self, members: &[(T, u32)]) {
-        let mut items: Vec<T> = Vec::new();
+        let mut counts: Vec<(&T, u64)> = Vec::new();
         for (item, weight) in members {
-            for _ in 0..*weight {
-                items.push(item.clone());
+            if let Some((_, count)) = counts.iter_mut().find(|(known, _)| *known == item) {
+                *count += u64::from(*weight);
+            } else {
+                counts.push((item, u64::from(*weight)));
             }
         }
         let mut rng = XorShift::new(seed(&self.session, &self.key, self.refills));
-        shuffle(&mut items, &mut rng);
+        shuffle(&mut counts, &mut rng);
         self.refills += 1;
-        if let Some(last) = &self.last {
-            if items.first() == Some(last) {
-                if let Some(i) = items.iter().position(|x| x != last) {
-                    items.swap(0, i);
-                }
-            }
+        let mut previous = counts
+            .iter()
+            .position(|(item, _)| Some(*item) == self.last.as_ref());
+        // Spend the largest remaining weight that differs from the last pick. This
+        // keeps enough lighter copies to separate heavier ones. The shuffle breaks ties.
+        while let Some((index, (item, count))) = counts
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, (_, count))| *count > 0)
+            .max_by_key(|(index, (_, count))| (Some(*index) != previous, *count))
+        {
+            self.queue.push_back((*item).clone());
+            *count -= 1;
+            previous = Some(index);
         }
-        self.queue = items.into();
     }
 }
 

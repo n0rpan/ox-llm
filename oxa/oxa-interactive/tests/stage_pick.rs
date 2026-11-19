@@ -74,6 +74,28 @@ fn weights_put_classics_in_twice() {
 }
 
 #[test]
+fn weighted_picks_avoid_adjacency_inside_and_across_refills() {
+    let members = [("classic", 2), ("new", 1), ("other", 1)];
+    let mut bag = Bag::new("session-1", "think");
+    let picks = draw(&mut bag, &members, 40);
+    assert!(picks.windows(2).all(|pair| pair[0] != pair[1]), "{picks:?}");
+    for round in picks.chunks_exact(4) {
+        assert_eq!(round.iter().filter(|&&item| item == "classic").count(), 2);
+        assert!(round.contains(&"new") && round.contains(&"other"));
+    }
+}
+
+#[test]
+fn unavoidable_repeats_keep_all_weighted_copies() {
+    let members = [("classic", 1), ("new", 1), ("classic", 2)];
+    let mut bag = Bag::new("session-1", "think");
+    assert_eq!(
+        draw(&mut bag, &members, 4),
+        ["classic", "new", "classic", "classic"]
+    );
+}
+
+#[test]
 fn an_empty_pool_gives_no_pick() {
     let members: Vec<Member> = vec![("gone", 0)];
     let mut bag = Bag::new("session-4", "think");
