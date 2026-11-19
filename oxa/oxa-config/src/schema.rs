@@ -74,6 +74,11 @@ const SCHEMA: &[KeyDef] = &[
     key("compaction.enabled", Kind::Bool, "true"),
     key("compaction.keepRecentTokens", Kind::Number, "4000"),
     key("compaction.modelOverrides", Kind::Object, "null"),
+    key(
+        "compaction.profile",
+        Kind::Enum(&["auto", "local", "cloud"]),
+        "\"auto\"",
+    ),
     key("compaction.reserveTokens", Kind::Number, "16384"),
     key("defaultModel", Kind::String, "null"),
     key(
@@ -161,6 +166,9 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
+    // K3: a headless print or JSON run of a persisted session with a pursuing goal takes
+    // `oxa send` follow-ups from the session inbox for the run; false = off.
+    key("oxa.inbox.headless", Kind::Bool, "true"),
     // The owner's explicit route for the Lead conversation: an exact model id for
     // the normal `--model` selector and the normal gateway. User settings only;
     // unset keeps the ordinary startup model.

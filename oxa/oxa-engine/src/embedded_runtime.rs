@@ -159,6 +159,7 @@ impl EmbeddedGateway for Backend {
         let mut deliver = |event| {
             let event = match event {
                 Event::Chunk(chunk) => GatewayEvent::Chunk(chunk),
+                Event::Warning(text) => GatewayEvent::Warning(text),
                 // Publish the committed completion with its private binder only
                 // after Gateway::chat returns its settled completion record.
                 Event::Done => return Control::Continue,

@@ -343,6 +343,8 @@ pub struct Timings {
 /// One increment of a streaming reply, in arrival order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamEvent {
+    /// A local runtime warning for the operator. It is separate from reply data.
+    Warning(&'static str),
     /// A `: prefill <done>/<total> <secs>s` SSE comment (M2). `secs` = the engine's own count
     /// when the line carries one, else seconds since the request began.
     Prefill { done: u32, total: u32, secs: u32 },

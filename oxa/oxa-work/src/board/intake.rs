@@ -41,13 +41,14 @@ pub(super) fn entry(
     release_pinned: bool,
     action: Action,
     saved: Option<&AttemptState>,
-    policy: &Policy,
     now: u64,
 ) -> Entry {
     let attempts_today = saved
         .filter(|s| s.utc_day >= now / 86_400)
         .map_or(0, |s| s.attempts);
     let lease = saved.and_then(|s| s.lease.clone());
+    // The daily attempt threshold is advisory, so attempts alone never make an
+    // entry ineligible; leases and wait actions still do.
     let eligible = !matches!(
         action,
         Action::WaitReview
@@ -55,8 +56,7 @@ pub(super) fn entry(
             | Action::WaitMergeability
             | Action::WaitIssue
             | Action::EvidenceIncomplete
-    ) && attempts_today < policy.max_attempts_per_day
-        && lease.as_ref().is_none_or(|l| l.expires_at <= now);
+    ) && lease.as_ref().is_none_or(|l| l.expires_at <= now);
     Entry {
         number,
         head,
@@ -70,19 +70,13 @@ pub(super) fn entry(
 }
 
 /// One row for an incomplete PR: visible with its reason, and never eligible for any action.
-pub(super) fn incomplete_entry(
-    item: Incomplete,
-    saved: Option<&AttemptState>,
-    policy: &Policy,
-    now: u64,
-) -> Entry {
+pub(super) fn incomplete_entry(item: Incomplete, saved: Option<&AttemptState>, now: u64) -> Entry {
     let mut entry = entry(
         item.number,
         item.head,
         item.release_pinned,
         Action::EvidenceIncomplete,
         saved,
-        policy,
         now,
     );
     entry.eligible = false;
