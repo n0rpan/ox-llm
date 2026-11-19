@@ -69,30 +69,29 @@ fn record(html: &mut String, csrf: &str, rec: &ApprovalRecord, now: u64, scrub_c
     html.push_str("</li>");
 }
 
-/// Credential masking that keeps the command's shell syntax: each run of text between shell
-/// operators (`&`, `|`, `;`, `<`, `>`, parentheses, line breaks) is scrubbed on its own, so a
-/// masked value never swallows the operator after it. `echo token=demo&&rm -rf /srv/data` shows
-/// as `echo token=<secret>&&rm -rf /srv/data`, not with the second command hidden. Only an
-/// operator the shell acts on splits the text: one inside single or double quotes, or escaped
-/// with a backslash, is part of a word, so `password="&value"` stays one masked value.
+/// Credential masking that keeps every executable part of the command visible. The command is
+/// split into shell words at unquoted whitespace and operators (`&`, `|`, `;`, `<`, `>`,
+/// parentheses, line breaks); separators are kept verbatim, so a masked value never swallows
+/// what follows it (`token=demo&&rm` keeps `&&rm`), and quoting or a backslash keeps a
+/// metacharacter inside its word (`password="&value"` is one word). Each word is then
+/// [`mask_word`]ed on its own.
 fn scrub_shell(command: &str, ctx: &ScrubCtx) -> String {
-    let is_op = |c: char| matches!(c, '&' | '|' | ';' | '<' | '>' | '(' | ')' | '\n' | '\r');
+    let is_sep = |c: char| c.is_whitespace() || matches!(c, '&' | '|' | ';' | '<' | '>' | '(' | ')');
     let mut out = String::with_capacity(command.len());
-    let (mut word, mut ops) = (String::new(), String::new());
+    let (mut word, mut seps) = (String::new(), String::new());
     let (mut single, mut double, mut escaped) = (false, false, false);
     for c in command.chars() {
-        let operator = !single && !double && !escaped && is_op(c);
-        if operator {
+        if !single && !double && !escaped && is_sep(c) {
             if !word.is_empty() {
-                out.push_str(&scrub(&word, ctx));
+                out.push_str(&mask_word(&word, ctx));
                 word.clear();
             }
-            ops.push(c);
+            seps.push(c);
             continue;
         }
-        if !ops.is_empty() {
-            out.push_str(&ops);
-            ops.clear();
+        if !seps.is_empty() {
+            out.push_str(&seps);
+            seps.clear();
         }
         word.push(c);
         if escaped {
@@ -106,10 +105,44 @@ fn scrub_shell(command: &str, ctx: &ScrubCtx) -> String {
         }
     }
     if !word.is_empty() {
-        out.push_str(&scrub(&word, ctx));
+        out.push_str(&mask_word(&word, ctx));
     }
-    out.push_str(&ops);
+    out.push_str(&seps);
     out
+}
+
+/// One shell word, masked for display. A word with an expansion (`$`, a backtick) is shown as
+/// it is: the shell runs what it holds, so the owner must see it. A secret-named assignment
+/// (`password=...`, `--api-key=...`, `TOKEN='...'`) shows its name and `<secret>` for the whole
+/// value, quotes included. Any other word goes through the report scrubber (known token formats).
+fn mask_word(word: &str, ctx: &ScrubCtx) -> String {
+    if word.contains('$') || word.contains('`') {
+        return word.to_string();
+    }
+    if let Some(eq) = word.find('=') {
+        let name = word[..eq].trim_start_matches('-').to_ascii_lowercase();
+        let named = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+        let secret = [
+            "token",
+            "secret",
+            "password",
+            "passwd",
+            "passphrase",
+            "key",
+            "authorization",
+            "auth",
+            "credential",
+        ]
+        .iter()
+        .any(|k| name.contains(k));
+        if named && secret && eq + 1 < word.len() {
+            return format!("{}<secret>", &word[..=eq]);
+        }
+    }
+    scrub(word, ctx)
 }
 
 /// Whole seconds, minutes or hours since the request was filed. A timestamp ahead of this clock reads as new.
@@ -236,6 +269,34 @@ mod tests {
         assert!(!html.contains("token=demo"), "{html}");
     }
 
+    /// An expansion runs: a command substitution inside a quoted value is shown in full, never
+    /// hidden as part of a masked credential.
+    #[test]
+    fn approval_panel_shows_command_substitutions() {
+        let waiting = vec![ApprovalRecord {
+            id: "0123456789abcdef".into(),
+            session: "s1".into(),
+            cwd: "/work/proj".into(),
+            command: r#"password="$(rm -rf /srv/data)" git push --force origin main"#.into(),
+            keys: vec!["git-push-force".into()],
+            reasons: vec![],
+            status: "pending".into(),
+            used: false,
+            created_ms: 0,
+            answered_ms: None,
+        }];
+        let owner = View {
+            approvals: Some(&waiting),
+            approval_csrf: Some("tok"),
+            ..Default::default()
+        };
+        let html = content_for(Page::Board, &owner, 120);
+        assert!(
+            html.contains("password=&quot;$(rm -rf /srv/data)&quot; git push --force origin main</pre>"),
+            "{html}"
+        );
+    }
+
     /// A shell metacharacter inside a quoted or escaped credential value is part of the value:
     /// the whole value stays masked.
     #[test]
@@ -247,6 +308,14 @@ mod tests {
             ),
             (
                 r#"password=x\&opaque-example git push --force origin main"#,
+                "opaque-example",
+            ),
+            (
+                r#"password='&opaque-example' git push --force origin main"#,
+                "opaque-example",
+            ),
+            (
+                r#"API_KEY='a b opaque-example' git push --force origin main"#,
                 "opaque-example",
             ),
         ] {
