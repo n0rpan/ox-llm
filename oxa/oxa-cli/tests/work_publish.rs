@@ -235,7 +235,7 @@ fn exercise_save_recovery(test_name: &str, case: SaveRecovery) {
 #[test]
 fn a_legacy_done_without_checks_cannot_publish() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let record = run(&env, edits());
     assert_eq!(record["outcome"], "unverified", "{record}");
     let state_path = state_path(&env);
@@ -600,7 +600,7 @@ fn branch_drift_after_acceptance_cannot_publish_unchecked_commits() {
 #[test]
 fn own_problem_notes_are_captured_and_failed_search_keeps_a_local_draft() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     let text = "done <oxa-work-reports>[{\"title\":\"oxa work symptom\",\"notes\":\"Synthetic reproduction token=example\",\"keywords\":[\"oxa work\",\"synthetic symptom\"]}]</oxa-work-reports>";
     let record = run_args(
@@ -629,7 +629,7 @@ fn own_problem_notes_are_captured_and_failed_search_keeps_a_local_draft() {
 #[test]
 fn a_model_tool_cannot_opt_itself_into_reporting_or_publishing() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
         .args(["work", "../tasks.json", "--report-problems"])
@@ -678,7 +678,7 @@ fn green_rerun_can_publish_after_red_remained_local() {
 #[test]
 fn semantic_work_report_without_evidence_stays_local() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     env.write(
         "home/.oxa/agent/settings.json",
@@ -715,7 +715,7 @@ fn semantic_work_report_without_evidence_stays_local() {
 #[test]
 fn semantic_work_reports_file_once_and_comment_on_four_paraphrases() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     env.write(
         "home/.oxa/agent/settings.json",
@@ -810,7 +810,7 @@ fn semantic_work_reports_file_once_and_comment_on_four_paraphrases() {
 #[test]
 fn a_local_report_retries_without_replaying_the_completed_task() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     let text = "<oxa-work-reports>[{\"title\":\"oxa work symptom\",\"notes\":\"Synthetic reproduction\",\"keywords\":[\"oxa work\",\"synthetic symptom\"]}]</oxa-work-reports>";
     let first = run_args(
@@ -989,7 +989,7 @@ fn assert_refused(env: &TestEnv, record: &serde_json::Value, place: &str, secret
 #[test]
 fn publication_refuses_an_added_env_file() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let secret = format!("SERVICE_PASSWORD={}", "q".repeat(20));
     let record = run_args(
         &env,
@@ -1003,7 +1003,7 @@ fn publication_refuses_an_added_env_file() {
 #[test]
 fn publication_refuses_a_github_token_in_source() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let token = format!("ghp_{}", "x".repeat(36));
     let record = run_args(
         &env,
@@ -1020,7 +1020,7 @@ fn publication_refuses_a_github_token_in_source() {
 #[test]
 fn publication_refuses_a_private_key() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let body = "x".repeat(64);
     let key = format!(
         "-----BEGIN {kind}-----\n{body}\n-----END {kind}-----\n",
@@ -1038,7 +1038,7 @@ fn publication_refuses_a_private_key() {
 #[test]
 fn publication_refuses_the_value_of_a_secret_environment_variable() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let value = format!("synthetic{}", "Q".repeat(12));
     let (record, _) = work::run_observed_with(
         &env,
@@ -1055,7 +1055,7 @@ fn publication_refuses_the_value_of_a_secret_environment_variable() {
 #[test]
 fn publication_refuses_a_secret_that_a_later_commit_removed() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     let token = format!("ghp_{}", "x".repeat(36));
     let first = run_args(
@@ -1078,7 +1078,7 @@ fn publication_refuses_a_secret_that_a_later_commit_removed() {
 #[test]
 fn publication_refuses_an_empty_file_named_with_a_token() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let token = format!("ghp_{}", "x".repeat(36));
     let record = run_args(
         &env,
@@ -1092,7 +1092,7 @@ fn publication_refuses_an_empty_file_named_with_a_token() {
 #[test]
 fn publication_refuses_a_secret_in_a_local_base_commit_origin_lacks() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let repo = env.work().join("project");
     let token = format!("ghp_{}", "x".repeat(36));
     env.write("work/project/local.txt", &format!("{token}\n"));
@@ -1127,7 +1127,7 @@ fn local_secret_commit(env: &TestEnv, token: &str) {
 #[test]
 fn publication_refuses_a_secret_in_a_local_commit_message() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let repo = env.work().join("project");
     let token = format!("ghp_{}", "x".repeat(36));
     git(
@@ -1178,7 +1178,7 @@ fn assert_origin_lacks(env: &TestEnv, sha: &str) {
 #[test]
 fn publication_refuses_a_secret_in_an_extra_commit_header() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let repo = env.work().join("project");
     let token = format!("ghp_{}", "x".repeat(36));
     let sha = craft_header_commit(&env, &repo, &format!("x-note {token}"));
@@ -1195,7 +1195,7 @@ fn publication_refuses_a_secret_in_an_extra_commit_header() {
 #[test]
 fn publication_refuses_a_secret_in_a_multi_line_signature_header() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let repo = env.work().join("project");
     let token = format!("ghp_{}", "x".repeat(36));
     let header = format!("gpgsig -----BEGIN PGP SIGNATURE-----\n \n {token}\n -----END PGP SIGNATURE-----");
@@ -1213,7 +1213,7 @@ fn publication_refuses_a_secret_in_a_multi_line_signature_header() {
 #[test]
 fn publication_ignores_forged_remote_tracking_refs() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let repo = env.work().join("project");
     let token = format!("ghp_{}", "x".repeat(36));
     local_secret_commit(&env, &token);
@@ -1231,7 +1231,7 @@ fn publication_ignores_forged_remote_tracking_refs() {
 #[test]
 fn publication_checks_the_push_url_not_the_fetch_url() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let repo = env.work().join("project");
     let token = format!("ghp_{}", "x".repeat(36));
     local_secret_commit(&env, &token);
@@ -1257,7 +1257,7 @@ fn publication_checks_the_push_url_not_the_fetch_url() {
 #[test]
 fn publication_never_pushes_tags_implicitly() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let repo = env.work().join("project");
     let token = format!("ghp_{}", "x".repeat(36));
     git(&env, &repo, &["config", "push.followTags", "true"]);

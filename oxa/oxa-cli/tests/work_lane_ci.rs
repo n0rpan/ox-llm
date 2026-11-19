@@ -391,14 +391,14 @@ fn lane_task_with_a_fake_token_is_refused_before_push_and_no_lane_run_is_awaited
     env.write("home/lane-pass", "");
     // Built at run time so this source never carries a token-shaped literal.
     let token = format!("ghp_{}", "x".repeat(36));
-    let content = format!("fn main() {{}}\\nconst T: &str = \\\"{token}\\\";\\n");
+    let content = format!("copied {token}\\n");
     let record = run_lane(
         &env,
         vec![
             ScriptTurn::tool(
                 "write",
                 "write",
-                &format!(r#"{{"path":"src/client.rs","content":"{content}"}}"#),
+                &format!(r#"{{"path":"notes.txt","content":"{content}"}}"#),
             ),
             ScriptTurn::text("done"),
         ],
