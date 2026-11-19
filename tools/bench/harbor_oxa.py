@@ -1,7 +1,7 @@
 """Harbor 0.22.0 custom agent: oxa as a headless installed agent.
 
     PYTHONPATH=tools/bench harbor run ... --agent-import-path harbor_oxa:OxaAgent \\
-        -m opencode/kimi-k3 --ae OXA_BENCH_PROXY_URL=http://172.17.0.1:8089 \\
+        -m opencode/kimi-k3 --ae OXA_BENCH_PROXY_URL=https://bench-proxy.example.invalid:8089 \\
         --ae OXA_BENCH_BINARY=/path/to/oxa --ak agent_timeout_sec=3600
 
 Settings come from agent kwargs (`--ak`) first, then the host environment or `--ae`:

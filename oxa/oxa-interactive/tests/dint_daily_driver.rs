@@ -1082,6 +1082,44 @@ fn queued_work_of_the_old_session_is_handed_back_on_a_switch() {
         .any(|m| m.content.as_deref() == Some("left over"))));
 }
 
+#[test]
+fn expired_interactive_time_limit_leaves_the_initial_prompt_unstarted() {
+    let world = World::new(vec![ScriptTurn::text("unexpected request")]);
+    let session = Session::open(world.deps(), Open::New).expect("open");
+    session
+        .handle()
+        .request_wrap_up(oxa_core::WrapUpReason::TimeLimit);
+    let mut opts = world.opts(true);
+    opts.initial_prompt = Some("unsent".to_string());
+    let (code, last, _, _) = run_with(&world, session, opts, (90, 24), Vec::new());
+    assert_eq!(code, 130);
+    assert!(last.is_some());
+    assert!(world.requests().is_empty());
+}
+
+#[test]
+fn interactive_token_limit_allows_only_one_final_turn() {
+    let world = World::new(vec![
+        ScriptTurn::text("initial reply"),
+        ScriptTurn::text("final summary"),
+        ScriptTurn::text("unexpected later reply"),
+    ]);
+    let session = Session::open(world.deps(), Open::New).expect("open");
+    session.handle().set_token_budget(Some(1));
+    let mut opts = world.opts(true);
+    opts.initial_prompt = Some("first".to_string());
+    opts.initial_follow_ups = vec!["later instruction".to_string()];
+    let (code, last, term, _) = run_with(&world, session, opts, (90, 24), Vec::new());
+    assert_eq!(code, 130);
+    assert!(last.is_some());
+    let requests = world.requests();
+    let chats: Vec<_> = requests.iter().filter(|r| r.max_tokens > 0).collect();
+    assert_eq!(chats.len(), 2);
+    assert_eq!(last_user(chats[0]), "first");
+    assert!(last_user(chats[1]).contains("Wrap up now: this run is ending."));
+    assert!(term.all_text().contains("final summary"));
+}
+
 /// Quit while a request runs and more prompts wait: the run is cancelled, the queued prompts
 /// never start, and `run_session` returns with the worker gone.
 #[test]

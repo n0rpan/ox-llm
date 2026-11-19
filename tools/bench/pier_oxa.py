@@ -1,7 +1,7 @@
 """Pier 0.3.1 custom agent: oxa, same behaviour as harbor_oxa.py.
 
     PYTHONPATH=tools/bench pier run -p <task> --agent-import-path pier_oxa:OxaAgent \\
-        --model opencode/kimi-k3 --agent-env OXA_BENCH_PROXY_URL=http://172.17.0.1:8089 \\
+        --model opencode/kimi-k3 --agent-env OXA_BENCH_PROXY_URL=https://bench-proxy.example.invalid:8089 \\
         --agent-env OXA_BENCH_BINARY=/path/to/oxa --agent-kwarg agent_timeout_sec=3600
 
 Pier tasks may run with `allow_internet = false`: `network_allowlist()` names only the proxy host
