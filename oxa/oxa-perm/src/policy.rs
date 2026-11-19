@@ -406,10 +406,16 @@ impl ModePolicy {
         let (Access::Exec { command, .. }, Some(rules)) = (a, &self.danger) else {
             return Vec::new();
         };
-        rules
-            .classify(command, cwd, &self.guard)
+        let mut found = rules.classify(command, cwd, &self.guard);
+        // A segment a built-in rule already names (a force push) is asked and granted under that
+        // rule's key alone; the publish rule adds the rest.
+        for hit in rules.publish_classify(command, cwd) {
+            if !found.iter().any(|h| h.segment == hit.segment) {
+                found.push(hit);
+            }
+        }
+        found
             .into_iter()
-            .chain(rules.publish_classify(command, cwd))
             .filter(|h| {
                 if h.segment.contains('$') || h.segment.contains('`') {
                     return true;
