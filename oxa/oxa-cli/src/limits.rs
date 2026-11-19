@@ -251,10 +251,10 @@ mod tests {
         let stdout = child.stdout.take().unwrap();
         thread::spawn(move || {
             for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
-                if line.contains("synthetic-ready") || line.contains("synthetic-first-delivered") {
-                    if send.send(line).is_err() {
-                        break;
-                    }
+                if (line.contains("synthetic-ready") || line.contains("synthetic-first-delivered"))
+                    && send.send(line).is_err()
+                {
+                    break;
                 }
             }
         });

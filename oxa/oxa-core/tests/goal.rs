@@ -6,8 +6,29 @@ use oxa_proto::{HeadlessUi, ToolCall, VecSink};
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
 use oxa_session::{FsStore, Goal, GoalBudget, GoalStatus, MemStore, SessionStore};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+#[derive(Debug, Default)]
+struct GoalStatusTrace(Mutex<Vec<(String, Option<String>)>>);
+
+impl oxa_core::ProgressObserver for GoalStatusTrace {
+    fn notify(&self, _: &oxa_session::SessionRef, progress: oxa_core::Progress<'_>) {
+        if let oxa_core::Progress::GoalStatus { status, reason } = progress {
+            self.0
+                .lock()
+                .unwrap()
+                .push((status.into(), reason.map(str::to_owned)));
+        }
+    }
+}
 fn deps(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<ScriptedEngine>) -> Deps {
+    let engine: Arc<dyn oxa_proto::Engine> = engine;
+    deps_engine(env, store, engine)
+}
+
+/// [`deps`] over any engine: a test that rewrites the engine's replies cannot use the scripted
+/// type directly.
+fn deps_engine(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<dyn oxa_proto::Engine>) -> Deps {
     Deps {
         engine,
         store,
@@ -34,6 +55,31 @@ fn deps(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<ScriptedEngine>
 
 fn objective(budget: GoalBudget) -> Goal {
     Goal::new("Review synthetic work and wait for more.".into(), budget, 1000).unwrap()
+}
+
+#[test]
+fn direct_goal_setup_and_observer_attachment_publish_the_saved_goal() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+    let trace = Arc::new(GoalStatusTrace::default());
+    session.set_progress_observer(trace.clone());
+
+    let mut goal = objective(GoalBudget::default());
+    goal.pause();
+    goal.pause_reason = Some("synthetic saved reason".into());
+    session.set_goal(Some(goal), &mut VecSink::default()).unwrap();
+    assert_eq!(
+        trace.0.lock().unwrap().last().cloned(),
+        Some(("paused".into(), Some("synthetic saved reason".into())))
+    );
+
+    let attached = Arc::new(GoalStatusTrace::default());
+    session.set_progress_observer(attached.clone());
+    assert_eq!(
+        *attached.0.lock().unwrap(),
+        vec![("paused".into(), Some("synthetic saved reason".into()))]
+    );
 }
 
 #[test]
@@ -1427,5 +1473,128 @@ fn goal_command_clear_fails_when_store_sync_fails() {
     assert!(store.syncs.load(Ordering::SeqCst) > 0);
 
     store.fail_sync.store(false, Ordering::SeqCst);
+    session.shutdown(&mut HeadlessUi::default());
+}
+
+/// An engine whose replies carry no usage, like an upstream the embedded gateway accepts a
+/// finished reply from without one (the ledger settles that request as `usage_missing`).
+struct Unreported(Arc<ScriptedEngine>);
+impl oxa_proto::Engine for Unreported {
+    fn info(&self, target: Option<&str>) -> Result<oxa_proto::EngineInfo, oxa_proto::OxaError> {
+        self.0.info(target)
+    }
+    fn count_tokens(&self, text: &str) -> Result<u32, oxa_proto::OxaError> {
+        self.0.count_tokens(text)
+    }
+    fn chat(
+        &self,
+        r: &oxa_proto::ChatRequest,
+        cancel: &oxa_proto::CancelToken,
+        on: &mut dyn FnMut(oxa_proto::StreamEvent),
+    ) -> Result<oxa_proto::AssistantTurn, oxa_proto::OxaError> {
+        let mut turn = self.0.chat(r, cancel, on)?;
+        turn.usage = oxa_proto::Usage::unreported();
+        Ok(turn)
+    }
+}
+
+#[test]
+fn a_reply_without_usage_charges_the_goal_as_uncertain() {
+    let env = TestEnv::new();
+    let scripted = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("First answer."),
+        ScriptTurn::text("Second answer."),
+    ]));
+    let engine: Arc<dyn oxa_proto::Engine> = Arc::new(Unreported(scripted.clone()));
+    let mut session = Session::open(deps_engine(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+    session
+        .set_goal(
+            Some(objective(GoalBudget {
+                max_tokens: Some(1_000_000),
+                ..Default::default()
+            })),
+            &mut VecSink::default(),
+        )
+        .unwrap();
+    // The run ends at the token cap: an error outcome is the expected shape.
+    let _ = session.prompt(
+        "Start".into(),
+        vec![],
+        &mut VecSink::default(),
+        &mut HeadlessUi::default(),
+    );
+    let goal = session.goal().unwrap();
+    assert_eq!(
+        goal.unknown_requests, 1,
+        "an unreported usage is unknown spend, not zero"
+    );
+    assert_eq!(goal.status, GoalStatus::Blocked, "the token cap still applies");
+    assert_eq!(
+        scripted.requests().len(),
+        1,
+        "an unknown spend stops the next generation"
+    );
+}
+
+#[test]
+fn idle_pause_records_reason() {
+    use oxa_core::goal::parse_goal_command;
+    use oxa_proto::AgentEvent;
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("Idle"),
+        ScriptTurn::text("Still idle"),
+    ]));
+    let store = Arc::new(MemStore::new());
+    let mut session = Session::open(deps(&env, store, engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    let statuses = Arc::new(GoalStatusTrace::default());
+    session.set_progress_observer(statuses.clone());
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    session
+        .prompt(
+            "Start the stored goal".into(),
+            vec![],
+            &mut sink,
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert_eq!(session.stats().outcome, RunOutcome::Stalled);
+    let goal = session.goal().unwrap();
+    assert_eq!(goal.status, GoalStatus::Paused);
+    assert_eq!(
+        goal.pause_reason.as_deref(),
+        Some("two replies without an action")
+    );
+    assert_eq!(
+        statuses.0.lock().unwrap().last().cloned(),
+        Some(("paused".into(), Some("two replies without an action".into()))),
+        "the durable idle checkpoint publishes the terminal status"
+    );
+    let notices: Vec<String> = sink
+        .0
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::Notice { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        notices
+            .iter()
+            .filter(|text| text.as_str() == "Goal paused: two replies without an action; /goal resume")
+            .count(),
+        1,
+        "the pause is announced exactly once: {notices:?}"
+    );
+
+    let (lines, prompt) = session
+        .apply_goal_command(parse_goal_command("resume"), 2000, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["Goal resumed.".to_string()]);
+    assert_eq!(prompt, Some(oxa_core::prompt::GOAL_CONTINUE.to_string()));
+    assert_eq!(session.goal().unwrap().pause_reason, None);
     session.shutdown(&mut HeadlessUi::default());
 }
