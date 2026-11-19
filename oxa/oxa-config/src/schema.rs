@@ -161,6 +161,7 @@ const SCHEMA: &[KeyDef] = &[
     // V020-OPTIMIZE #1 / #2: unset = on.
     key("oxa.diet.output", Kind::Bool, "null"),
     key("oxa.diet.tools", Kind::Bool, "null"),
+    key("oxa.emptyReplyRetries", Kind::Number, "1"),
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
     key("oxa.engine.inProcessCloud", Kind::Bool, "false"),
     key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
@@ -183,7 +184,6 @@ const SCHEMA: &[KeyDef] = &[
     // L1: apply a changed settings file at the next run; on by default, `false` opts out.
     key("oxa.liveSettings", Kind::Bool, "true"),
     // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
-    key("oxa.emptyReplyRetries", Kind::Number, "1"),
     key("oxa.local", Kind::Object, "{}"),
     key("oxa.maxTurns", Kind::Number, "null"),
     key(
