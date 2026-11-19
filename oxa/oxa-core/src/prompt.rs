@@ -76,7 +76,7 @@ pub const RULE_VERIFY: &str =
     "Before you call a task done, run the project's own tests or checks and report the result; if you ran none, say so";
 /// Added with the output diet when `wait` is declared (every session, unless `oxa.tools.wait` is off).
 pub const RULE_WAIT: &str =
-    "To wait for CI, a merge or anything else, call wait (with until when a probe fits); never sleep or poll in a loop";
+    "To wait for CI, a merge or a job, call wait; never sleep-poll";
 /// L4-SUBVERIFY: added after [`RULES_DIET_OUTPUT`] only with the output diet
 /// on, and only in a subagent child (the child verifies what it reports).
 pub const RULE_CHILD_VERIFY: &str = "Before you answer, check every claim about the code with a tool; give path:line for each, and write \"not verified\" for anything you did not check";
@@ -672,8 +672,8 @@ pub fn goal_start(objective: &str) -> String {
 pub const GOAL_DONE_DESCRIPTION: &str =
     "End the active goal with a complete or blocked status and concrete evidence.";
 pub const GOAL_DONE_SCHEMA: &str = r#"{"type":"object","properties":{"status":{"type":"string","enum":["complete","blocked"]},"evidence":{"type":"string","minLength":1,"maxLength":8192}},"required":["status","evidence"],"additionalProperties":false}"#;
-pub const GOAL_WAIT_DESCRIPTION: &str = "Wait 1-86400 s (cap oxa.wait.maxSeconds) without polling. A typed message or cancel ends it. `until` ends it on a condition: {kind:\"ci\",sha,workflow}, {kind:\"pr_merged\",pr}, {kind:\"job_done\",job:<bash job id>}; instant reads: pr_view, pr_checks (pr), run_log_failed (run), issue_view (issue). Repo is origin.";
-pub const GOAL_WAIT_SCHEMA: &str = r#"{"type":"object","properties":{"seconds":{"type":"integer"},"reason":{"type":"string"},"until":{"type":"object","properties":{"kind":{"type":"string"}},"required":["kind"]}},"required":["seconds","reason"]}"#;
+pub const GOAL_WAIT_DESCRIPTION: &str = "Wait 1-86400 s without polling; typed input ends it. until: ci{sha,workflow}, pr_merged{pr}, job_done{job}, or reads pr_view/pr_checks{pr}, run_log_failed{run}, issue_view{issue}.";
+pub const GOAL_WAIT_SCHEMA: &str = r#"{"type":"object","properties":{"seconds":{"type":"integer"},"reason":{"type":"string"},"until":{"type":"object"}},"required":["seconds","reason"]}"#;
 
 #[cfg(test)]
 mod tests {
