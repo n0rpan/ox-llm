@@ -9,7 +9,7 @@ See [tools and context handling](tools-context.md) for the defaults and formats.
 | Tool | Access | What it does |
 |---|---|---|
 | `read` | read | reads a file. Parameters `path`, `offset` (first line, 1-based), `limit` (lines). A call returns at most 2000 lines or 16 KB; continue with `offset` for the rest. A call with neither `offset` nor `limit` returns a shorter first page; see [tools-context.md](tools-context.md) |
-| `bash` | exec | runs a shell command in the project in the sandbox. Parameters `command`, `timeout` (seconds). With no `timeout` it stops after 120 seconds; `oxa.bash.defaultTimeout` sets it. Output over 16 KB is cut to its first and last parts, and the full output is saved to a file the model can read |
+| `bash` | exec | runs a shell command in the project in the sandbox. Parameters `command`, `timeout` (seconds). With no `timeout` it waits 120 seconds, then moves to a background job instead of being killed; `oxa.bash.defaultTimeout` sets it, `oxa.bash.waitCap` (default 300 s) caps a job read's `wait_s`. Output over 16 KB is cut to its first and last parts, and the full output is saved to a file the model can read |
 | `edit` | write | replaces exact text in one file. Takes one `oldText` / `newText` pair per call; the array form is still accepted. See [tools-context.md](tools-context.md) |
 | `write` | write | writes a file, creating it and its parent directories, and overwrites an existing file |
 | `grep` | read | searches file contents for `pattern`. Optional `path`, `glob`, `ignoreCase`, `literal`, `context` and `limit` (default 100 matches). Respects `.gitignore`; lines are cut at 500 characters. When matches exceed `limit`, the answer is the total and one count per file instead of the lines; see [tools-context.md](tools-context.md) |
@@ -28,6 +28,8 @@ Tool names, descriptions and schemas are part of the system prompt. They stay th
 
 ## Choosing tools
 
+In a headless run (`-p`, `--mode json`) with the output diet on, the prompt adds one integrity rule: solve the task yourself, do not look up its ready-made solution online and do not read verifier, grader or hidden-test files. The `oxa_result` record reports `web_lookups`, the number of `web_search` calls. It is a prompt rule and a count, not a block: a tool call is never refused because of it.
+
 | Option or setting | Effect |
 |---|---|
 | `--tools a,b` (`-t`) | allowlist of names or patterns; `*` matches any characters. Only these tools are on |
@@ -37,6 +39,8 @@ Tool names, descriptions and schemas are part of the system prompt. They stay th
 | `--no-tools` (`-nt`) | disables all tools |
 | `--no-mcp` | no MCP servers connect and no MCP tools are offered |
 | `defaultTools` setting | the list of tools on by default. Names may include `subagent`, `web_search`, `codemode` and `tool_search`, and a list can be patched with `+name` and `-name` |
+
+With the output diet on (the default) the rules also tell the model to run the project's own checks before it calls a task done (when `bash` is on), and to use `wait` instead of polling (when a goal is pursued).
 
 Examples:
 

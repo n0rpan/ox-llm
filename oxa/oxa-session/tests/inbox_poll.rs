@@ -42,16 +42,21 @@ fn inbox_poll_path_revisits_rejected_message() {
     let callback_accept = accept.clone();
     let (tx, rx) = mpsc::channel();
     let watch = Inbox::watch(&agent, "session-poll", move |text| {
-        tx.send(text).unwrap();
-        callback_accept.load(Ordering::Relaxed)
+        // Decide before notifying: the receiver may flip `accept` as soon as it wakes.
+        let accepted = callback_accept.load(Ordering::SeqCst);
+        tx.send((text, accepted)).unwrap();
+        accepted
     })
     .unwrap();
 
-    assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), "retry me");
-    accept.store(true, Ordering::Relaxed);
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(3)).unwrap(),
-        "retry me",
+        ("retry me".to_string(), false)
+    );
+    accept.store(true, Ordering::SeqCst);
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+        ("retry me".to_string(), true),
         "a later poll retries a message rejected for lack of capacity"
     );
     drop(watch);

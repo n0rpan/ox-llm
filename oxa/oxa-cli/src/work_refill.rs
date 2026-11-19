@@ -58,6 +58,10 @@ pub struct Receipt {
     pub number: u64,
     pub key: String,
     pub lease: Lease,
+    /// Set when this claim passed the configured daily attempt threshold: the
+    /// lease generation's authoritative ordinal and UTC day, for one operator
+    /// warning.
+    pub advisory: Option<AttemptAdvisory>,
 }
 
 /// Authenticated queue target; default OFF. The operator-owned pause marker survives restarts.
@@ -179,10 +183,12 @@ impl Consumer<'_> {
                     let Some(lease) = claimed else {
                         return Ok(false);
                     };
+                    let advisory = AttemptAdvisory::at(&lease, self.policy);
                     let original = Receipt {
                         number,
                         key: key.clone(),
                         lease,
+                        advisory,
                     };
                     retain(&original)?;
                     receipt = Some(original);

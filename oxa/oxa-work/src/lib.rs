@@ -29,7 +29,7 @@ pub use notes::{ProblemNote, ReportRecord};
 pub use publish::{inherit_report_lease, publish, report_notes};
 pub use queue::{
     native_task, run_queue, NativeQueueOwner, NativeQueueTarget, QueueEvent, QueueOptions, QueueRun,
-    QueueStatus,
+    QueueStatus, DEFAULT_MAX_INPUT_TASKS, MAX_RETAINED_TASKS,
 };
 pub mod mirrors;
 pub mod shadow;

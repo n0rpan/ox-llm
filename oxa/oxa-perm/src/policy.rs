@@ -48,7 +48,10 @@ pub struct PathGuard {
     /// The home directory and its startup files, keys and agent settings
     /// (`oxa_proto::guard::PROTECTED_IN_HOME`): a write asks when the cwd is the home
     /// directory or above it (O-199 first run: oxa started in `$HOME`).
-    home: PathBuf,
+    /// Crate-private for the #1512 classifier: `~` and `$HOME` expand here.
+    pub(crate) home: PathBuf,
+    /// Crate-private for the #1512 classifier: writes here are oxa's own state.
+    pub(crate) agent_dir: PathBuf,
     home_protected: Vec<PathBuf>,
 }
 
@@ -103,6 +106,7 @@ impl PathGuard {
             paste_dir: Some(tmp_dir.to_path_buf()),
             paste_deny,
             home: home.to_path_buf(),
+            agent_dir: agent_dir.to_path_buf(),
             home_protected,
         }
     }
