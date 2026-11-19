@@ -165,6 +165,9 @@ struct BusyGuard(Arc<Shared>);
 
 impl Drop for BusyGuard {
     fn drop(&mut self) {
+        // An abort racing the reservation-to-claim transition may set this after `begin`
+        // consumed it and cancel the claimed run directly. Do not leak that bit to a later run.
+        self.0.gate.abort_next.store(false, Ordering::SeqCst);
         self.0.gate.running.store(false, Ordering::SeqCst);
         self.0.busy.store(false, Ordering::SeqCst);
     }
@@ -2299,6 +2302,25 @@ mod tests {
         assert_eq!(error.code, codes::BUSY);
         assert!(!session.handle().is_busy());
         assert!(session.handle().is_running());
+    }
+
+    /// #1717: Ctrl+C/Escape is routed to `abort` as soon as the foreground reservation is
+    /// published. The abort must survive until that reservation claims `busy`.
+    #[test]
+    fn abort_during_foreground_reservation_cancels_the_claim() {
+        let env = oxa_fake::TestEnv::new();
+        let session = Session::open(deps(&env, Arc::new(MemStore::new())), Open::New).unwrap();
+        let handle = session.handle();
+        session.st.shared.gate.running.store(true, Ordering::SeqCst);
+
+        handle.abort();
+        let guard = session
+            .begin()
+            .expect("the reserved foreground run claims the session");
+
+        assert!(handle.is_aborting(), "the reservation must retain its abort");
+        drop(guard);
+        assert!(!handle.is_busy());
     }
 
     /// #543, #555: only the active session and its fork/clone ancestors read spill output
