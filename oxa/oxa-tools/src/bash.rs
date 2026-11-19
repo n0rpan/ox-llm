@@ -335,7 +335,7 @@ pub(crate) fn git_config_note(output: &str, exit: Option<i32>) -> Option<String>
 /// #290: keep shared git metadata protected, but offer an exclusion route that needs no
 /// tracked-file edits. Only a failed shell redirection diagnostic counts, not quoted issue text.
 pub(crate) fn git_exclude_note(output: &str, exit: Option<i32>) -> Option<String> {
-    if !exit.is_some_and(|code| code != 0) {
+    if exit.is_none_or(|code| code == 0) {
         return None;
     }
     output.lines().find(|line| {

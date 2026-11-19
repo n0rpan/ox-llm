@@ -235,17 +235,22 @@ impl Table {
     /// Reap the leaders whose group is empty. A leader whose group still has members stays
     /// unreaped, which keeps its group number reserved. A probe error keeps the worker tracked.
     fn reap(&mut self) {
+        let empty: Vec<u32> = self
+            .live
+            .keys()
+            .copied()
+            .filter(|pgid| matches!(group_alive(*pgid), Ok(false)))
+            .collect();
         let mut finished = Vec::new();
-        for (pgid, child) in self.live.iter_mut() {
-            if let Ok(false) = group_alive(*pgid) {
-                // The probe skips zombies, so a member whose thread-group leader exited while other
-                // threads still run reads as gone. The leader is unreaped, so `pgid` is still ours:
-                // sweep the group before the worker is retired, as `sweep` does on stop. "No such
-                // process" is the usual outcome here, so the sweep's result is not read; the probe
-                // after it decides.
-                let _ = signal(&self.kill, &format!("-{pgid}"), "KILL");
-                if let (Ok(false), Ok(Some(status))) = (group_alive(*pgid), child.try_wait()) {
-                    finished.push((*pgid, status));
+        for pgid in empty {
+            // The process probe skips zombie thread-group leaders. Do not reap the identity anchor
+            // until the sweep has either landed or a thread-aware probe independently proves that
+            // nothing remains. In particular, a broken helper leaves the worker tracked to retry.
+            if self.sweep(pgid).is_ok() {
+                if let Some(child) = self.live.get_mut(&pgid) {
+                    if let Ok(Some(status)) = child.try_wait() {
+                        finished.push((pgid, status));
+                    }
                 }
             }
         }
@@ -304,8 +309,14 @@ impl Table {
     /// "No such process" (the usual case, the group really is empty) is not an error; the group is
     /// then probed again.
     fn sweep(&self, pgid: u32) -> io::Result<()> {
-        let _ = signal(&self.kill, &format!("-{pgid}"), "KILL");
-        if settle(pgid, Instant::now() + KILL_AFTER)? {
+        let sent = signal(&self.kill, &format!("-{pgid}"), "KILL");
+        // The ordinary process probe intentionally ignores zombie thread-group leaders. Check
+        // every task before accepting a failed signal as the normal "group already gone" case.
+        if !thread_group_alive(pgid)? {
+            Ok(())
+        } else if let Err(error) = sent {
+            Err(error)
+        } else if settle_threads(pgid, Instant::now() + KILL_AFTER)? {
             Ok(())
         } else {
             Err(io::Error::new(
@@ -326,6 +337,19 @@ impl Table {
         }
         self.done.clear();
         first.map_or(Ok(()), Err)
+    }
+}
+
+/// Poll until no live thread remains in the group (true) or `until` passes (false).
+fn settle_threads(pgid: u32, until: Instant) -> io::Result<bool> {
+    loop {
+        if !thread_group_alive(pgid)? {
+            return Ok(true);
+        }
+        if Instant::now() >= until {
+            return Ok(false);
+        }
+        thread::sleep(POLL);
     }
 }
 
@@ -424,6 +448,46 @@ fn group_alive(pgid: u32) -> io::Result<bool> {
     group_alive_with(pgid, pids, proc_stat)
 }
 
+/// Whether any non-zombie thread belongs to `pgid`. Unlike [`group_alive`], this walks each
+/// process's task directory, so a process whose main thread is a zombie cannot hide surviving
+/// threads. Inaccessible processes are unrelated (our workers have the supervisor's uid).
+#[cfg(target_os = "linux")]
+fn thread_group_alive(pgid: u32) -> io::Result<bool> {
+    for entry in fs::read_dir("/proc")? {
+        let entry = entry?;
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let tasks = match fs::read_dir(format!("/proc/{pid}/task")) {
+            Ok(tasks) => tasks,
+            Err(error) if process_gone(&error) || permission_denied(&error) => continue,
+            Err(error) => return Err(error),
+        };
+        for task in tasks {
+            let task = match task {
+                Ok(task) => task,
+                Err(error) if process_gone(&error) => continue,
+                Err(error) => return Err(error),
+            };
+            match fs::read(task.path().join("stat")) {
+                Ok(bytes) => {
+                    let (state, group) = parse_stat(&bytes)?;
+                    if group == pgid && state != 'Z' && state != 'X' {
+                        return Ok(true);
+                    }
+                }
+                Err(error) if process_gone(&error) || permission_denied(&error) => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// [`group_alive`] without procfs: a live member is an existing group that is not just our
 /// unreaped leader. `ESRCH` is an empty group; `EPERM` is a member we may not signal, which the
 /// Linux path treats the same way.
@@ -442,6 +506,11 @@ fn group_alive(pgid: u32) -> io::Result<bool> {
         Some(libc::EPERM) => Ok(true),
         _ => Err(error),
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn thread_group_alive(pgid: u32) -> io::Result<bool> {
+    group_alive(pgid)
 }
 
 /// [`group_alive`] over the given pids with an injectable stat reader. A pid that answers EPERM or
@@ -1080,6 +1149,52 @@ mod tests {
             !thread_survives(descendant),
             "a thread of a retired worker kept running: the reaper did not sweep its group"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_final_sweep_keeps_a_worker_for_retry() {
+        let python = Path::new("/usr/bin/python3");
+        if !python.exists() {
+            return;
+        }
+        let dir = scratch("failed-sweep");
+        let allow = dir.join("allow");
+        let helper = dir.join("kill");
+        script(
+            &helper,
+            &format!(
+                "[ -e '{}' ] || exit 2\nexec '{}' \"$@\"",
+                allow.display(),
+                real_kill().display()
+            ),
+        );
+        let sup = Supervisor::new(GRACE, helper).expect("supervisor");
+        let pidfile = dir.join("bg.pid");
+        let code = "import ctypes,threading,time\nthreading.Thread(target=lambda: time.sleep(60)).start()\nctypes.CDLL(None).pthread_exit(None)";
+        let body = format!("/usr/bin/python3 -c '{code}' & echo $! > {}", pidfile.display());
+        let pgid = sup
+            .spawn(&["/bin/sh", "-c", &body], &host_env(), &dir.join("worker.log"))
+            .expect("spawn");
+        let descendant = background_pid(&pidfile);
+        thread::sleep(Duration::from_millis(500));
+
+        assert!(thread_survives(descendant), "the fixture thread exited early");
+        assert!(
+            sup.stop(pgid).is_err(),
+            "a failed sweep retired a worker with a surviving thread"
+        );
+        assert!(
+            thread_survives(descendant),
+            "the failed helper somehow killed the thread"
+        );
+
+        fs::write(&allow, "").expect("allow");
+        assert!(
+            sup.stop(pgid).expect("retry stop").is_some(),
+            "the failed sweep lost the worker's identity anchor"
+        );
+        assert!(!thread_survives(descendant), "the retry did not sweep the thread");
         let _ = fs::remove_dir_all(&dir);
     }
 }
