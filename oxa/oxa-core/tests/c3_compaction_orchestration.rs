@@ -180,6 +180,7 @@ fn run(st: &mut SessionState) -> RunEnd {
 /// An assistant message that calls tools (text empty).
 fn calls(list: Vec<(&str, &str, &str)>) -> WireMsg {
     WireMsg {
+        images: Vec::new(),
         role: Role::Assistant,
         content: Some(String::new()),
         reasoning: None,

@@ -8,7 +8,8 @@
 //! kill: true}`) and [`JobRegistry::kill_all`] cancels every
 //! running job, which makes the sandbox's run loop kill the whole process group.
 //!
-//! Limits: at most [`MAX_JOBS`] jobs run at once (a further start is refused); a
+//! Limits: at most [`MAX_JOBS`] jobs run at once by default (`oxa.bash.maxJobs` sets it per
+//! registry, see [`JobRegistry::with_max_jobs`]; a further start is refused); a
 //! finished job keeps at most [`BUFFER_CAP`] bytes of output (a ring buffer), and only the
 //! last [`MAX_FINISHED`] finished jobs stay readable.
 
@@ -24,8 +25,8 @@ const WAIT_TICK: Duration = Duration::from_millis(10);
 /// How long [`JobRegistry::kill`] waits for a cancelled job to settle.
 const KILL_SETTLE: Duration = Duration::from_secs(5);
 
-/// How many background jobs may run at once.
-pub const MAX_JOBS: usize = 4;
+/// The default for how many background jobs may run at once (`oxa.bash.maxJobs`).
+pub const MAX_JOBS: usize = 16;
 /// How many finished jobs stay readable; spawning a job forgets the oldest ones beyond this.
 pub const MAX_FINISHED: usize = 16;
 /// The ring-buffer cap of a job's combined output, in bytes.
@@ -177,6 +178,8 @@ pub struct JobRegistry {
     on_finish: Arc<Mutex<Option<FinishHook>>>,
     /// W4: the id of the session these jobs belong to; each job records it at its start.
     owner: Mutex<String>,
+    /// How many jobs may run at once ([`MAX_JOBS`] unless the owner set `oxa.bash.maxJobs`).
+    max_jobs: usize,
 }
 
 impl Default for JobRegistry {
@@ -186,6 +189,7 @@ impl Default for JobRegistry {
             sandbox: Mutex::new(None),
             on_finish: Arc::new(Mutex::new(None)),
             owner: Mutex::new(String::new()),
+            max_jobs: MAX_JOBS,
         }
     }
 }
@@ -199,6 +203,14 @@ impl std::fmt::Debug for JobRegistry {
 impl JobRegistry {
     pub fn new() -> JobRegistry {
         JobRegistry::default()
+    }
+
+    /// A registry that runs at most `max` jobs at once (`oxa.bash.maxJobs`; at least 1).
+    pub fn with_max_jobs(max: usize) -> JobRegistry {
+        JobRegistry {
+            max_jobs: max.max(1),
+            ..JobRegistry::default()
+        }
     }
 
     /// The sandbox every job runs under. Set once by the session that owns the registry
@@ -235,8 +247,9 @@ impl JobRegistry {
             .count()
     }
 
-    /// Start `spec` detached and return its id. `Err` when [`MAX_JOBS`] jobs are already
-    /// running, or when no sandbox has been set.
+    /// Start `spec` detached and return its id. `Err` when the registry's limit of jobs is
+    /// already running (the refusal names the oldest one, so the model can stop it), or when no
+    /// sandbox has been set.
     pub fn spawn(&self, spec: ExecSpec) -> Result<String, String> {
         self.spawn_labeled(spec, "")
     }
@@ -251,15 +264,21 @@ impl JobRegistry {
             .clone()
             .ok_or_else(|| "background jobs are unavailable: no sandbox".to_string())?;
         let mut state = self.state.lock().unwrap();
-        if state
+        let running: Vec<String> = state
             .jobs
-            .values()
-            .filter(|j| *j.status.lock().unwrap() == JobStatus::Running)
-            .count()
-            >= MAX_JOBS
-        {
+            .iter()
+            .filter(|(_, j)| *j.status.lock().unwrap() == JobStatus::Running)
+            .map(|(id, _)| id.clone())
+            .collect();
+        if running.len() >= self.max_jobs {
+            let oldest = running
+                .iter()
+                .min_by_key(|id| job_number(id))
+                .cloned()
+                .unwrap_or_default();
             return Err(format!(
-                "At most {MAX_JOBS} background jobs can run at once; wait for one to finish"
+                "At most {} background jobs can run at once. Stop one with bash {{\"job\": \"{oldest}\", \"kill\": true}} or wait for it to finish. The limit is oxa.bash.maxJobs.",
+                self.max_jobs
             ));
         }
         // Forget the oldest finished jobs (ids grow with start order), so a long session does
@@ -587,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn fifth_job_is_refused() {
+    fn job_past_the_limit_is_refused() {
         let reg = JobRegistry::new();
         let sb = Arc::new(Blocking {
             seen: Mutex::new(None),
@@ -598,8 +617,31 @@ mod tests {
         }
         assert_eq!(reg.running(), MAX_JOBS);
         let err = reg.spawn(spec()).unwrap_err();
-        assert!(err.contains("At most 4 background jobs"), "{err}");
+        assert!(
+            err.contains(&format!("At most {MAX_JOBS} background jobs")),
+            "{err}"
+        );
+        assert!(err.contains("\"job\": \"job-1\""), "{err}");
         reg.kill_all();
+    }
+
+    /// `oxa.bash.maxJobs` is the registry's limit: a registry built with 2 refuses the third
+    /// start and names the oldest running job; the default registry keeps [`MAX_JOBS`].
+    #[test]
+    fn jobs_limit_is_per_registry() {
+        let reg = JobRegistry::with_max_jobs(2);
+        let sb = Arc::new(Blocking {
+            seen: Mutex::new(None),
+        });
+        reg.set_sandbox(sb.clone());
+        reg.spawn(spec()).unwrap();
+        reg.spawn(spec()).unwrap();
+        let err = reg.spawn(spec()).unwrap_err();
+        assert!(err.contains("At most 2 background jobs"), "{err}");
+        assert!(err.contains("\"job\": \"job-1\""), "{err}");
+        reg.kill_all();
+        assert_eq!(JobRegistry::with_max_jobs(0).max_jobs, 1);
+        assert_eq!(JobRegistry::new().max_jobs, MAX_JOBS);
     }
 
     #[test]
