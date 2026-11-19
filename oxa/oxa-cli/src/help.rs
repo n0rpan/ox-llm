@@ -32,6 +32,12 @@ const BASE: &[Entry] = &[
         example: "oxa status 20260101-120000-abcd",
     },
     Entry {
+        path: &["models"],
+        summary: "List the models the engine serves, as a table or as JSON",
+        usage: &["oxa models [--json]"],
+        example: "oxa models --json",
+    },
+    Entry {
         path: &["install"],
         summary: "Install a package source and add it to settings",
         usage: &["oxa install <source> [-l]"],

@@ -44,6 +44,7 @@ mod limits;
 mod login_cmd;
 mod mcp_cmd;
 mod memory_cmd;
+mod models_cmd;
 mod netguard;
 mod pkg_cmd;
 mod report_cmd;

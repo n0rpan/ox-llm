@@ -8,6 +8,7 @@
 - `oxa work` starts a new task branch at its published head (`origin/<branch>`) when that tip descends from the captured base, instead of always at the base. A task for an already pushed pull-request branch now audits and continues that head rather than redoing work from a tree that predates it; several diverging tips or an unrelated one keep the base. See [work.md](docs/work.md).
 ### Added
 
+- `oxa models [--json]` (#1542): lists the models the in-process catalog serves, as the `--list-models` table or as one `oxa_models` JSON object (default, lead model, provider, billing, usage pool, state, limits). It reads no key and no ledger and runs no model. A known word is no longer a prompt: before this, `oxa models` was sent to the model as text. Part of the ox AI panel (#951).
 - `oxa work --pr N --model MODEL` (#1019): the unattended packet for a pull request carries its title, body, reviews, issue comments and the names of failing checks at the current head, and the task branch is the pull request's own head branch. Review text and check names are labelled as data and bounded (reviews to 16 KiB, 40 check names); only failing checks travel, never passing ones. Malformed review or check lists are refused, never silently dropped.
 
 ### Changed

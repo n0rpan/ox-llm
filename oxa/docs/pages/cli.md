@@ -100,6 +100,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa login chatgpt --experimental [--paste] [--replace]` | explicit owner-only native ChatGPT sign-in |
 | `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa status <session-id\|session-file> [--session-dir <dir>]` | read a saved session's progress and stall signal without contacting an engine |
+| `oxa models [--json]` | list the models the engine serves (the `--list-models` table, or one `oxa_models` JSON object); reads no key and no ledger, runs no model |
 | `oxa send <session-id> "text"` | queue one follow-up for the session's TUI or RPC owner |
 | `oxa config [-l]` | print every setting with its value and where it comes from |
 | `oxa mcp <command>` | manage MCP servers, see below |
