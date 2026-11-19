@@ -6,13 +6,15 @@
 //! A crash can lose an admitted message or replay one whose file wasn't removed yet.
 use crate::SessionRef;
 use sha2::{Digest, Sha256};
-#[cfg(target_os = "linux")]
+#[cfg(not(target_os = "linux"))]
 use std::ffi::CString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
-#[cfg(target_os = "linux")]
 use std::os::fd::FromRawFd;
+#[cfg(not(target_os = "linux"))]
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -433,23 +435,25 @@ fn scan_batch(
     follow_ups: bool,
     deliver: &mut impl FnMut(InboxItem) -> bool,
     stopped: &AtomicBool,
-    after: &mut Option<PathBuf>,
+    after: &mut Option<OsString>,
 ) -> bool {
-    let Ok(entries) = fs::read_dir(dir.path()) else {
+    let Ok(names) = entry_names(dir) else {
         return false;
     };
-    // Keep only a bounded sorted batch, not one PathBuf per file in a stopped inbox.
+    // Keep only a bounded sorted batch, not one name per file in a stopped inbox.
     let mut paths = std::collections::BTreeMap::new();
     let mut retry = false;
-    for entry in entries.filter_map(Result::ok) {
+    for name in names {
         if stopped.load(Ordering::Relaxed) {
             return false;
         }
-        let path = entry.path();
-        if after.as_ref().is_some_and(|last| &path <= last) {
+        if after.as_ref().is_some_and(|last| &name <= last) {
             continue;
         }
-        let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
+        let Some(extension) = Path::new(&name)
+            .extension()
+            .and_then(|extension| extension.to_str())
+        else {
             continue;
         };
         let (limit, item): (usize, fn(String) -> InboxItem) = if follow_ups && extension == "msg" {
@@ -459,13 +463,7 @@ fn scan_batch(
         } else {
             continue;
         };
-        let Ok(meta) = fs::symlink_metadata(&path) else {
-            continue;
-        };
-        if !meta.is_file() || meta.nlink() != 1 || meta.len() > limit as u64 {
-            continue;
-        }
-        paths.insert(path, (limit, item));
+        paths.insert(name, (limit, item));
         if paths.len() > 64 {
             paths.pop_last();
             retry = true;
@@ -473,15 +471,11 @@ fn scan_batch(
     }
     // Advance even past unreadable/invalid UTF-8 files, without deleting those files.
     *after = paths.last_key_value().map(|(path, _)| path.clone());
-    for (path, (limit, item)) in paths {
+    for (name, (limit, item)) in paths {
         if stopped.load(Ordering::Relaxed) {
             return false;
         }
-        let Ok(file) = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(&path)
-        else {
+        let Ok(file) = open_entry(dir, &name) else {
             continue;
         };
         // Don't follow symlinks, read devices/FIFOs, or consume hardlinks to other files.
@@ -497,7 +491,102 @@ fn scan_batch(
         if !deliver(item(text)) {
             return false;
         }
-        let _ = fs::remove_file(path);
+        remove_entry(dir, &name);
     }
     retry
+}
+
+/// The names in `dir`, read through the pinned descriptor so a renamed or replaced path
+/// cannot redirect the scan.
+#[cfg(target_os = "linux")]
+fn entry_names(dir: &Directory) -> io::Result<Vec<OsString>> {
+    Ok(fs::read_dir(dir.path())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .collect())
+}
+
+/// The names in `dir`, read through the pinned descriptor so a renamed or replaced path
+/// cannot redirect the scan.
+#[cfg(not(target_os = "linux"))]
+fn entry_names(dir: &Directory) -> io::Result<Vec<OsString>> {
+    // fdopendir owns the duplicate and readdir is inode-relative, so the scan keeps the
+    // directory this watcher opened and locked even after the pathname is replaced.
+    // SAFETY: dup of a live descriptor; the failure branch closes it.
+    let dup = unsafe { libc::dup(dir.file.as_raw_fd()) };
+    if dup < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `dup` is a live descriptor this call takes ownership of.
+    let stream = unsafe { libc::fdopendir(dup) };
+    if stream.is_null() {
+        let error = io::Error::last_os_error();
+        // SAFETY: fdopendir failed, so `dup` is still ours to close.
+        unsafe { libc::close(dup) };
+        return Err(error);
+    }
+    let mut names = Vec::new();
+    loop {
+        // SAFETY: `stream` is a live directory stream; the returned entry is borrowed from it.
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            break;
+        }
+        // SAFETY: d_name is a NUL-terminated name inside the entry.
+        let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        if name == b"." || name == b".." {
+            continue;
+        }
+        names.push(OsStr::from_bytes(name).to_os_string());
+    }
+    // SAFETY: `stream` is live and not used after this point.
+    unsafe { libc::closedir(stream) };
+    Ok(names)
+}
+
+/// Open one inbox entry with `O_NOFOLLOW` through `dir`'s descriptor: the file comes from the
+/// pinned directory, never from a path that may have been replaced.
+#[cfg(target_os = "linux")]
+fn open_entry(dir: &Directory, name: &OsStr) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(dir.path().join(name))
+}
+
+/// Open one inbox entry with `O_NOFOLLOW` through `dir`'s descriptor: the file comes from the
+/// pinned directory, never from a path that may have been replaced.
+#[cfg(not(target_os = "linux"))]
+fn open_entry(dir: &Directory, name: &OsStr) -> io::Result<File> {
+    let name = CString::new(name.as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "inbox name holds a NUL"))?;
+    // SAFETY: a single name component relative to a live descriptor; no memory is shared.
+    let fd = unsafe {
+        libc::openat(
+            dir.file.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: openat returned a new owned descriptor.
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+/// Remove one delivered inbox entry in the pinned directory.
+#[cfg(target_os = "linux")]
+fn remove_entry(dir: &Directory, name: &OsStr) {
+    let _ = fs::remove_file(dir.path().join(name));
+}
+
+/// Remove one delivered inbox entry in the pinned directory.
+#[cfg(not(target_os = "linux"))]
+fn remove_entry(dir: &Directory, name: &OsStr) {
+    let Ok(name) = CString::new(name.as_bytes()) else {
+        return;
+    };
+    // SAFETY: a single name component relative to a live descriptor.
+    unsafe { libc::unlinkat(dir.file.as_raw_fd(), name.as_ptr(), 0) };
 }

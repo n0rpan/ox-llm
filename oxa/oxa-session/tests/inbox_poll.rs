@@ -52,3 +52,41 @@ fn inbox_poll_path_skips_symlinks_and_oversize_files() {
     assert!(fs::metadata(dir.join("2-big.msg")).is_ok());
     assert_eq!(fs::read_to_string(&outside).unwrap(), "outside");
 }
+
+/// The poll is pinned to the directory this watcher opened and locked: replacing the pathname
+/// afterwards must not hand it another directory's messages.
+#[test]
+fn inbox_poll_path_stays_pinned_when_the_directory_is_replaced() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    let dir = agent.join("inbox/session-poll");
+    fs::create_dir_all(&dir).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let watch = Inbox::watch(&agent, "session-poll", move |text| tx.send(text).is_ok()).unwrap();
+
+    // Swap the pinned path for a symlink to a directory holding a message.
+    let attacker = env.root().join("attacker");
+    fs::create_dir_all(&attacker).unwrap();
+    fs::write(attacker.join("1-stolen.msg"), "stolen").unwrap();
+    let moved = env.root().join("moved");
+    fs::rename(&dir, &moved).unwrap();
+    symlink(&attacker, &dir).unwrap();
+
+    assert!(
+        rx.recv_timeout(Duration::from_millis(1500)).is_err(),
+        "a replaced inbox path must not redirect the watcher"
+    );
+    assert!(
+        attacker.join("1-stolen.msg").exists(),
+        "the replacement directory's file is left alone"
+    );
+
+    // The pinned directory still works: what lands in it is delivered.
+    fs::write(moved.join("2-pinned.msg"), "pinned").unwrap();
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+        "pinned",
+        "the watcher keeps reading the directory it opened"
+    );
+    drop(watch);
+}
