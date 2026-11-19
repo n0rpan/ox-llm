@@ -915,10 +915,13 @@ fn prepare(
             pattern: requested_model.as_deref(),
             scope: &owner_scope,
             endpoint: &endpoint.name,
-            // An explicit model argument is enabled by a user-layer key (unless the user set
-            // false), for work tasks and nested children too. A restored session model and a
-            // project default are provenance-less and never select Go on key alone.
-            model_argument: a.model.is_some(),
+            // Delegated model arguments still need a user-enabled provider:
+            // a key or `true` in user settings, never a project file.
+            // A restored session model and a nested child are provenance-less as well: only an
+            // argument the owner typed in this run may use the key-only path.
+            model_argument: a.model.is_some()
+                && !child.nested()
+                && env.get(oxa_work::PlannedTask::DELEGATED_MODEL_ENV).is_none(),
             owner_selected: !child.nested()
                 && env.get(oxa_work::PlannedTask::DELEGATED_MODEL_ENV).is_none()
                 && (a.model.is_some()
