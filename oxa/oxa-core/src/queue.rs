@@ -56,8 +56,6 @@ pub struct Shared {
     pub dirty: std::sync::atomic::AtomicBool,
     /// S1 / ENG-001 / ENG-002: the request gate and the background cancel (see [`Gate`]).
     pub gate: Gate,
-    /// The owner confirm broker of this session (`Session::enable_owner_confirm`).
-    pub owner_confirm: Mutex<Option<Arc<crate::owner_confirm::OwnerConfirm>>>,
 }
 
 /// What an extension asked for: a new session, or another one (a path or an id).
@@ -120,6 +118,8 @@ pub struct Gate {
     /// Coalesce worker wakes for ordinary editor queues, independently of bound inbox wakes.
     pub queued_wake_pending: std::sync::atomic::AtomicBool,
     pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
+    /// The owner confirm broker of this session (`Session::enable_owner_confirm`).
+    pub(crate) owner_confirm: Mutex<Option<Arc<crate::owner_confirm::OwnerConfirm>>>,
     pub in_flight: std::sync::atomic::AtomicBool,
     /// Sticky headless interruption: abort now, without a final wrap-up turn.
     pub interrupted: std::sync::atomic::AtomicBool,
@@ -305,12 +305,11 @@ impl Shared {
             modes: Mutex::new((steering, follow_up)),
             dirty: std::sync::atomic::AtomicBool::new(false),
             gate: Gate::default(),
-            owner_confirm: Mutex::new(None),
         }
     }
 
     pub(crate) fn owner_confirm(&self) -> Option<Arc<crate::owner_confirm::OwnerConfirm>> {
-        lock(&self.owner_confirm).clone()
+        lock(&self.gate.owner_confirm).clone()
     }
 
     /// The owner typed `text`: it answers a waiting owner confirmation. Only the handle's

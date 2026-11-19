@@ -430,6 +430,7 @@ impl Session {
         let old = self
             .st
             .shared
+            .gate
             .owner_confirm
             .lock()
             .unwrap_or_else(|p| p.into_inner())
