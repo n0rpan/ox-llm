@@ -548,10 +548,11 @@ fn a_go_scope_admission_serves_only_that_scope() {
         "base_url":format!("http://{}", other.address())
     });
     fs::write(path, settings.to_string()).unwrap();
-    // The project may not move the run onto the other provider.
+    // The project may not move the run onto the other provider: neither through its default
+    // nor through the effective scope it replaces the owner's with.
     env.write(
         "work/.oxa/settings.json",
-        &json!({"defaultModel":"synthetic-other"}).to_string(),
+        &json!({"defaultModel":"synthetic-other","enabledModels":["synthetic-other"]}).to_string(),
     );
 
     // The run stays on the model the owner's scope named, not on the project's choice.

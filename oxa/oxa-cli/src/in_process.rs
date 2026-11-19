@@ -439,6 +439,25 @@ fn select_for(
     if let Some(error) = go_failure.filter(|_| go_requested) {
         return Err(error);
     }
+    // A gateway opened by the owner's Go scope answers for that scope here too: without a
+    // local backend there is no `Routed`, so the same bound is applied around the catalog the
+    // effective settings are resolved against.
+    if !explicit_go && !explicit_cloud && !scope.is_empty() {
+        return Ok((
+            routing::Routed {
+                local: Err(OxaError::new(codes::INVALID, "Native local is not enabled.")),
+                cloud: Ok(engine),
+                local_models: Default::default(),
+                cloud_models,
+                go_error: None,
+                endpoint: endpoint.to_owned(),
+                default: effective.string("defaultModel"),
+                admitted: scope.to_vec(),
+            }
+            .into_engine(requested)?,
+            notices,
+        ));
+    }
     Ok((engine, notices))
 }
 
