@@ -19,7 +19,6 @@ path = "src/main.rs"
 [features]
 default = []
 share = ["oxc-gateway/share"]
-managed-steering = ["oxa-rpc/managed-steering"]
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 libc.workspace = true
@@ -60,9 +59,9 @@ pulldown-cmark = { version = "0.13.6", default-features = false }
 [dev-dependencies]
 oxa-fake.workspace = true
 
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-oxa-cli = { path = ".", features = ["managed-steering"] }
-oxa-orchestrator = { path = "../oxa-orchestrator", features = ["a2a"] }
+[target.'cfg(target_os = "linux")'.dependencies]
+oxa-orchestrator = { path = "../oxa-orchestrator" }
+oxa-a2a = { path = "../oxa-a2a" }
 
 [lints]
 workspace = true

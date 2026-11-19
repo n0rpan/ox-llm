@@ -6,6 +6,7 @@
 //! * Randomness comes only from a seed the caller passes in, so a session replays the same picks.
 
 pub mod context;
+pub mod director;
 pub mod pick;
 pub mod probe;
 pub mod render;
@@ -16,6 +17,7 @@ pub use data::{
     ascii_text, glyph_allowed, load_pack, Frame, Intensity, Loaded, Looping, Scene, Skip, Tier, CAPTION_LONG,
     CAPTION_SHORT, INKS, SIZES, STEP_MS, WIN_MAX_MS,
 };
+pub use director::{pending_of, Director, Pending};
 
 /// The built-in pack. Compiled in: no file and no network at start.
 const BASE_PACK: &str = include_str!("pack/base.json");

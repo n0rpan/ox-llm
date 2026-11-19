@@ -214,6 +214,10 @@ Offline mode is about the network only. It does not limit what those programs re
 
 oxa refuses to send prompts to an engine on another host. The check is on the engine address (`OXA_ENGINE_URL` or `models.json`). Loopback addresses (`localhost`, `127.0.0.0/8`, `::1`) are always allowed. For any other host, set `oxa.engine.allowRemote: true` in the user settings. A project file cannot set it. oxa prints a warning at start-up while it is on.
 
+## Agent control channel
+
+A headless session (`--mode json` or `--mode rpc`) started by `oxa work` or a lead can accept control requests (steer, pause, resume, cancel) besides plain follow-ups. Control requests are accepted only from the same user. The session owner checks each one against the lease it was handed and the goal revision before acting; a stale or foreign request is refused with a receipt. `oxa.a2a.enabled: false` in the user settings turns the lane off: sessions then use the plain file inbox, and `nativeSteering` is refused.
+
 ## Extensions, hooks and MCP
 
 - Extensions run in an embedded JavaScript runtime with no file, network or process access of their own. Each host function they call (`exec`, `fs`, `fetch`, session actions) goes through the same policy as the model's tools.
