@@ -1557,7 +1557,13 @@ fn run_locked(
         }
         // Lane CI is the acceptance evidence for an opted-in task. Nothing is
         // done until its run for this exact head concluded successfully.
-        if !task.lane_ci || !matches!(state.record.outcome, Outcome::Done | Outcome::NothingToDo) {
+        // Locally checked work that only lacks hosted evidence (Rust tests) enters
+        // the lane to collect it; it stays unverified until that run is green.
+        let hosted_pending = state.record.outcome == Outcome::Unverified
+            && state.record.detail == HOSTED_TEST_EVIDENCE_REQUIRED;
+        if !task.lane_ci
+            || !(hosted_pending || matches!(state.record.outcome, Outcome::Done | Outcome::NothingToDo))
+        {
             break;
         }
         if state.record.outcome == Outcome::NothingToDo {
@@ -1572,6 +1578,10 @@ fn run_locked(
             .as_ref()
             .is_some_and(|verdict| verdict.head == head && verdict.passed())
         {
+            if hosted_pending {
+                state.record.outcome = Outcome::Done;
+                state.record.detail.clear();
+            }
             break;
         }
         if state.record.step != Step::Lane {
@@ -1583,6 +1593,11 @@ fn run_locked(
         match lane::accept(&root, binary, &policy, lock_file, &state) {
             Ok(lane::LaneAcceptance::Pass(verdict)) => {
                 state.record.lane = Some(verdict);
+                if hosted_pending {
+                    // The exact-head lane run is the hosted evidence that was missing.
+                    state.record.outcome = Outcome::Done;
+                    state.record.detail.clear();
+                }
                 break;
             }
             Ok(lane::LaneAcceptance::Blocked { verdict, detail }) => {

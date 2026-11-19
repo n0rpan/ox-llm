@@ -1008,13 +1008,13 @@ fn publication_refuses_a_github_token_in_source() {
     let record = run_args(
         &env,
         write_turns(
-            "src/client.rs",
+            "src/client.txt",
             &format!("fn main() {{}}\nconst T: &str = \"{token}\";\n"),
         ),
         &["work", "../tasks.json", "--publish"],
         Some(configure(&env)),
     );
-    assert_refused(&env, &record, "src/client.rs:2", &token);
+    assert_refused(&env, &record, "src/client.txt:2", &token);
 }
 
 #[test]

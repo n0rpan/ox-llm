@@ -97,6 +97,20 @@ pub(crate) fn verify_commit(
     saved: &state::State,
     lock: &File,
 ) -> Result<Export> {
+    verify_commit_with(repo, binary, policy, saved, lock, false)
+}
+
+/// As `verify_commit`; `collecting_lane` lets a lane task's own exact-head lane run
+/// stand in for the hosted evidence its Rust changes require, so that run can be
+/// started. A saved green lane run at the head counts the same way.
+pub(crate) fn verify_commit_with(
+    repo: &Path,
+    binary: &Path,
+    policy: &RunPolicy,
+    saved: &state::State,
+    lock: &File,
+    collecting_lane: bool,
+) -> Result<Export> {
     // Explicit saved-work verification has its own budget. It may run long
     // after the original worker attempt's deadline has passed.
     let deadline_at_ms = crate::state::now_ms().saturating_add(saved.task.max_time.saturating_mul(1000));
@@ -163,7 +177,8 @@ pub(crate) fn verify_commit(
     let requires_hosted = derived::committed_requires_hosted(policy, &export.tree, base, head)
         .map_err(|reason| format!("clean committed acceptance could not run: {reason}"))?;
     let declared = execution.declared.as_deref().unwrap_or_default();
-    if requires_hosted || !declared.is_empty() {
+    let lane_covers_hosted = saved.task.lane_ci && (collecting_lane || require_lane_evidence(saved).is_ok());
+    if (requires_hosted || !declared.is_empty()) && !lane_covers_hosted {
         return Err(crate::HOSTED_TEST_EVIDENCE_REQUIRED.into());
     }
     if commands.is_empty() {

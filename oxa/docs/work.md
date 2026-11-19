@@ -387,6 +387,11 @@ workflow run whose `headSha` is exactly that commit and whose event is the push,
 and records its terminal conclusion in the task record (`lane`). A crash during
 the wait resumes the saved `lane` step instead of rerunning the worker.
 
+Rust work that passed its local checks but needs hosted tests enters the lane
+anyway: the exact-head lane run is that hosted evidence. The task stays `unverified`
+while the run is pending and becomes `done` only when it is green; the push still
+passes the structural checks, owner confirmation and content scan first.
+
 A green run accepts the task (`done`). A completed `failure` spends the task's
 single repair round, shared with a local acceptance repair, with the failed job,
 step and test names; the runner saves and pushes the repaired commit and observes

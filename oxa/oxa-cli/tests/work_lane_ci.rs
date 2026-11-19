@@ -391,14 +391,14 @@ fn lane_task_with_a_fake_token_is_refused_before_push_and_no_lane_run_is_awaited
     env.write("home/lane-pass", "");
     // Built at run time so this source never carries a token-shaped literal.
     let token = format!("ghp_{}", "x".repeat(36));
-    let content = format!("copied {token}\\n");
+    let content = format!("fn main() {{}}\\nconst T: &str = \\\"{token}\\\";\\n");
     let record = run_lane(
         &env,
         vec![
             ScriptTurn::tool(
                 "write",
                 "write",
-                &format!(r#"{{"path":"notes.txt","content":"{content}"}}"#),
+                &format!(r#"{{"path":"src/client.rs","content":"{content}"}}"#),
             ),
             ScriptTurn::text("done"),
         ],
@@ -426,4 +426,31 @@ fn lane_task_with_a_fake_token_is_refused_before_push_and_no_lane_run_is_awaited
             .any(|line| line.starts_with("run list") || line.starts_with("run view")),
         "a lane run was awaited: {gh_calls}"
     );
+}
+
+#[test]
+fn rust_unverified_work_collects_lane_evidence_and_becomes_done_on_green() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    lane_task(&env);
+    let path = configure(&env);
+    env.write("home/lane-pass", "");
+    let record = run_lane(
+        &env,
+        vec![
+            ScriptTurn::tool(
+                "write",
+                "write",
+                r#"{"path":"src/client.rs","content":"fn main() {}\n"}"#,
+            ),
+            ScriptTurn::text("done"),
+        ],
+        path,
+    );
+    assert_eq!(record["outcome"], "done", "{record}");
+    assert_eq!(record["lane"]["conclusion"], "success", "{record}");
+    assert_eq!(record["lane"]["head"], record["head_sha"], "{record}");
+    assert_eq!(origin_head(&env), record["head_sha"].as_str().unwrap());
+    let push_calls = fs::read_to_string(env.home().join("push-calls")).unwrap();
+    assert_eq!(push_calls.lines().count(), 1, "{push_calls}");
 }

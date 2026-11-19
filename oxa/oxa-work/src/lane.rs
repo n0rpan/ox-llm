@@ -389,7 +389,7 @@ pub(crate) fn accept(
         .ok_or("lane acceptance needs the saved base")?;
     // Reuse the existing publication proof: a clean, object-verified export whose
     // captured checks run for this commit. Nothing is pushed before it passes.
-    let proof = crate::committed::verify_commit(repo, binary, policy, saved, lock)?;
+    let proof = crate::committed::verify_commit_with(repo, binary, policy, saved, lock, true)?;
     proof.verify(policy, head, base)?;
     protected_controls_unchanged(policy, repo, base, head)?;
     let repository = crate::publish::origin_repository(repo, gh, policy, lock)?;
