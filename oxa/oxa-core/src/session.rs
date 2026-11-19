@@ -219,6 +219,8 @@ impl Session {
             session_id,
             jobs,
         } = d;
+        // W4: `oxa.jobs.wakeOnFinish` (default on, user settings only) is applied by
+        // `sync_job_wake` once the state exists.
         // H: `defaultModel` (pi settings.md "Startup model ID") when no model was chosen and the
         // engine serves it; otherwise the engine's own model, as before.
         let model = match model {
@@ -312,11 +314,22 @@ impl Session {
         let mut sink = VecSink::default();
         let mut ui = HeadlessUi::default();
         enter(&mut st, how, Some(&cli), &mut sink, &mut ui)?;
-        Ok(Session {
+        let session = Session {
             st,
             preloaded: false,
             startup_limit: None,
-        })
+        };
+        session.bind_jobs_owner();
+        sync_job_wake(&session.st);
+        // The hook is always installed: `wake_job` asks the live setting, which a reload updates.
+        let handle = session.handle();
+        session
+            .st
+            .jobs
+            .set_on_finish(Arc::new(move |job: oxa_tools::JobDone| {
+                handle.wake_job(&job);
+            }));
+        Ok(session)
     }
 
     /// Run one user prompt to settlement (blocks). A line naming an extension command runs it
@@ -551,6 +564,12 @@ impl Session {
         crate::navigate(&mut self.st, target, summarize, instructions, sink, ui)
     }
 
+    /// W4: name the session now bound as the owner of the jobs started from here on. A job
+    /// that started earlier keeps its own owner, so its wake never lands in a later session.
+    fn bind_jobs_owner(&self) {
+        self.st.jobs.set_owner(&self.st.sref.id);
+    }
+
     /// `/fork`: new session file from the branch ending at `entry`; this session switches to it.
     pub fn fork(&mut self, entry: &str) -> Result<SessionRef, OxaError> {
         let _guard = self.begin()?;
@@ -559,6 +578,7 @@ impl Session {
         if r.is_ok() {
             drop(self.startup_limit.take());
             self.st.jobs.reset();
+            self.bind_jobs_owner();
         }
         r
     }
@@ -571,6 +591,7 @@ impl Session {
         if r.is_ok() {
             drop(self.startup_limit.take());
             self.st.jobs.reset();
+            self.bind_jobs_owner();
         }
         r
     }
@@ -586,6 +607,7 @@ impl Session {
         self.st.jobs.reset();
         enter(&mut self.st, how, None, sink, ui)?;
         drop(self.startup_limit.take());
+        self.bind_jobs_owner();
         self.preloaded = false;
         Ok(())
     }
@@ -1779,10 +1801,20 @@ fn latest_of(store: &dyn SessionStore, cwd: &std::path::Path) -> Option<SessionR
         .map(|m| m.sref)
 }
 
+/// W4: apply `oxa.jobs.wakeOnFinish` (user settings only) to the live session. Called at open and
+/// after each settings replacement, so a reload turns wakes off or on without a restart.
+pub(crate) fn sync_job_wake(st: &SessionState) {
+    st.shared
+        .set_job_wake_enabled(st.settings.user_bool("oxa.jobs.wakeOnFinish", true));
+}
+
 /// Point the per-session paths at the current session id.
 pub(crate) fn attach_ids(st: &mut SessionState) {
     let id = st.sref.id.clone();
     st.shared.bind_session(&id);
+    // W4: every identity switch (open, fork, clone, navigation, extension fork) names the new
+    // session as the owner of the jobs started from here on.
+    st.jobs.set_owner(&id);
     st.spill_dir = st.dirs.tmp_dir.join(&id);
     st.policy.set_spill_dir(&st.spill_dir);
     // Fork/clone history still names its ancestors' spills, even after those sessions are
@@ -2350,6 +2382,31 @@ mod tests {
             session_id: None,
             jobs: Arc::new(oxa_tools::JobRegistry::new()),
         }
+    }
+
+    /// W4: the wake switch follows the setting at open and after a reload (user layer only).
+    #[test]
+    fn wake_setting_follows_open_and_reload() {
+        let env = oxa_fake::TestEnv::new();
+        let mut d = deps(&env, Arc::new(MemStore::new()));
+        d.settings = Settings::from_values(
+            serde_json::json!({"oxa": {"jobs": {"wakeOnFinish": false}}}),
+            serde_json::Value::Null,
+        );
+        let mut s = Session::open(d, Open::New).expect("open");
+        assert!(!s.st.shared.job_wake_enabled());
+        s.st.settings = Settings::from_values(serde_json::Value::Null, serde_json::Value::Null);
+        sync_job_wake(&s.st);
+        assert!(s.st.shared.job_wake_enabled(), "the default is on");
+        s.st.settings = Settings::from_values(
+            serde_json::Value::Null,
+            serde_json::json!({"oxa": {"jobs": {"wakeOnFinish": false}}}),
+        );
+        sync_job_wake(&s.st);
+        assert!(
+            s.st.shared.job_wake_enabled(),
+            "a project file cannot turn wakes off"
+        );
     }
 
     /// A published foreground start is itself exclusive, even before the session claim is

@@ -48,6 +48,7 @@ fn state(env: &TestEnv, turns: Vec<ScriptTurn>, settings: Settings) -> (SessionS
         modes: Mutex::new((QueueMode::All, QueueMode::OneAtATime)),
         dirty: std::sync::atomic::AtomicBool::new(false),
         gate: Default::default(),
+        wake: Default::default(),
     });
     let tools = tools();
     let st = SessionState {

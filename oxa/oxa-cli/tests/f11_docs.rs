@@ -1,6 +1,4 @@
 //! F11 acceptance tests: Docs.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_fake::{parse_script, FakeOpts, FakeServer, TestEnv};
@@ -268,6 +266,34 @@ fn security_documents_headless_inbox_policy() {
             security.contains(required),
             "SECURITY.md must document the headless inbox policy: missing {required:?}"
         );
+    }
+}
+
+/// Memory persistence is a security policy, so the review rules, security policy and user guide
+/// must all retain the owner-only modes and the upgrade behaviour for an existing loose directory.
+#[test]
+fn memory_store_policy_is_documented_everywhere() {
+    let root = repo_root();
+    let repository = root.parent().expect("repository root");
+
+    for (page, path, anchor) in [
+        ("AGENTS.md", repository.join("AGENTS.md"), "memory store's"),
+        ("SECURITY.md", repository.join("SECURITY.md"), "memory store"),
+        (
+            "docs/pages/cli.md",
+            root.join("docs/pages/cli.md"),
+            "agent directory's `memory/`",
+        ),
+    ] {
+        let text = fs::read_to_string(path).expect("read memory policy documentation");
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        for required in [anchor, "`0700`", "`0600`", "existing", "tighten"] {
+            assert!(
+                text.contains(required),
+                "{page} must document the memory-store permission policy: missing {required:?}"
+            );
+        }
     }
 }
 
