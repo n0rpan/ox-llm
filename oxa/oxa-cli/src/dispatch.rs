@@ -683,6 +683,9 @@ struct Built {
     supervised_child: bool,
     /// RPC hosts opt into owner questions; unattended hosts need not handle UI requests.
     ask_owner_present: bool,
+    /// #1552: an interactive session offers `report_publish`, whose approval dialog only a
+    /// person's key press can answer; print, json and RPC runs keep the terminal confirmation.
+    report_dialog: Option<Env>,
     /// The hook sets of the process (E-INT 4), shared by every session it opens.
     hook_sets: HookSets,
     /// O-182: the YOLO switch (`--yolo`, `/yolo`), shared by the policy of every session.
@@ -732,6 +735,22 @@ impl Built {
                 oxa_tools::AskTool::new(self.dirs.agent_dir.join("asks.jsonl"))
                     .with_owner_present(self.ask_owner_present),
             ));
+        }
+        if !self.supervised_child && !self.lead {
+            if let Some(env) = &self.report_dialog {
+                tools.push(Arc::new(
+                    crate::PublishTool::new(
+                        self.dirs.clone(),
+                        env.clone(),
+                        // Reporting is an owner-consent boundary.  In particular, a trusted
+                        // project's settings must not enable semantic dedupe (and thereby send
+                        // report text to GitHub and the judge) on the owner's behalf.
+                        Settings::load(&self.dirs, &self.cwd, false),
+                        self.cwd.clone(),
+                    )
+                    .with_yolo(self.yolo.clone()),
+                ));
+            }
         }
         if self.lead {
             tools.retain(|tool| crate::lead_preset::READ_TOOLS.contains(&tool.spec().name.as_str()));
@@ -871,12 +890,12 @@ fn prepare(
     // #1512 S2: the dangerous-command rules come from the user settings only.
     let (danger, danger_warnings) = dangerous_rules(&user_settings);
     notices.extend(danger_warnings.into_iter().map(|w| (Level::Warning, w)));
-    // Only user settings may enable this default-off proposal session.
-    if a.lead && !user_settings.bool(crate::lead_preset::SETTING, false) {
+    // The read-only proposal session is on by default; only the user's own `false` turns it off.
+    if a.lead && !user_settings.bool(crate::lead_preset::SETTING, true) {
         return Err(OxaError::new(
             codes::USAGE,
             format!(
-                "lead --shadow is disabled; set \"{}\": true in the user settings.json to enable it",
+                "lead --shadow is turned off; remove \"{}\": false from the user settings.json to use it",
                 crate::lead_preset::SETTING
             ),
         ));
@@ -1341,6 +1360,7 @@ fn prepare(
         mode: table_mode,
         supervised_child: child.nested(),
         ask_owner_present: mode != RunMode::Rpc || env.get("OXA_RPC_OWNER_PRESENT") == Some("1"),
+        report_dialog: (mode == RunMode::Interactive).then(|| env.clone()),
         hook_sets,
         yolo,
         bash_sandbox,
@@ -2018,7 +2038,14 @@ fn run_tui(
         Some((session, binding)) => (session, Some(binding)),
         None => match open_named(&built, session_id, open, name.as_deref()) {
             Ok(session) => (session, None),
-            Err(e) => return report(stderr, &e),
+            Err(e) => {
+                let code = report(stderr, &e);
+                // A fresh install has no model yet: say how to get one, after the error.
+                if let Some(help) = crate::key_hints::no_model_help(&e, dirs, env) {
+                    let _ = writeln!(stderr, "{help}");
+                }
+                return code;
+            }
         },
     };
     // `--goal` in the terminal: the objective is set at open (`open_named`) and its start leads
@@ -2041,6 +2068,8 @@ fn run_tui(
         Err(error) => return report(stderr, &error),
     };
     notices.extend(startup_notices(&built, &session));
+    // First run only: which optional keys are missing and how to add each. Never blocking.
+    notices.extend(crate::key_hints::first_run_notice(dirs, env, &built.settings));
     let yolo = built.yolo.clone();
     // Its diagnostics are among the startup notices (`prepare`).
     let (keymap, _) = Keymap::load(dirs);
@@ -3079,6 +3108,7 @@ mod session_scratch_tests {
             mode: None,
             supervised_child: false,
             ask_owner_present: true,
+            report_dialog: None,
             hook_sets: HookSets::default(),
             bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
                 base.clone(),
@@ -3223,6 +3253,7 @@ mod session_scratch_tests {
                 )),
                 yolo,
                 danger: Arc::new(oxa_perm::DangerRules::builtin()),
+                report_dialog: None,
             }
         };
         let policy = build().deps(None).policy;

@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import platform
+import shutil
+import socket
 import subprocess
 import sys
 import tarfile
@@ -38,6 +40,7 @@ class Fixture(unittest.TestCase):
                     'FIXTURE_CANARY': 'http://127.0.0.1:8743/chat',
                     'FIXTURE_UNIT': 'oxa-lead.service',
                     'FIXTURE_BOARD_UNIT': 'oxa-board-sample.service'}
+        self.env['REAL_CURL'] = shutil.which('curl', path=os.defpath)
         self.stub('getent', '''import os, sys
 uid = os.geteuid()
 assert sys.argv[1:] == ['passwd', str(uid)]
@@ -50,18 +53,14 @@ url = next(arg for arg in args if arg.startswith('http'))
 with pathlib.Path(os.environ['FIXTURES'], 'requests.log').open('a') as log:
     log.write(url + '\\n')
 if url.startswith('http://'):
-    # The promotion canary: a loopback denial probe, never a real request.
+    # The promotion canary: a loopback denial probe, never a remote request.
     assert url == os.environ['FIXTURE_CANARY']
     assert args[args.index('--noproxy') + 1] == '*'
-    refused = int(os.environ.get('FIXTURE_CANARY_REFUSED', '0'))
-    if refused:
-        # Model curl's built-in connection-refused retries without delaying the
-        # test. Without the readiness options this remains the initial refusal.
-        required = {'--retry-connrefused', '--retry-max-time', '--retry-delay'}
-        if not required.issubset(args) or int(args[args.index('--retry') + 1]) < refused:
-            sys.exit(7)
+    if os.environ.get('FIXTURE_REAL_CANARY'):
+        pathlib.Path(os.environ['FIXTURES'], 'canary-started').touch()
+        os.execv(os.environ['REAL_CURL'], [os.environ['REAL_CURL'], *args])
     with pathlib.Path(os.environ['FIXTURES'], 'canary.log').open('a') as log:
-        log.write((url + '\\n') * (refused + 1))
+        log.write(url + '\\n')
     sys.stdout.write(os.environ.get('FIXTURE_DENY', '403'))
     sys.exit(0)
 assert url.startswith(('https://api.github.com/repos/oxstack/ox-llm/',
@@ -445,6 +444,29 @@ class DevPromote(Fixture):
         path = self.remote / 'canary.log'
         return path.read_text().split() if path.exists() else []
 
+    def delayed_canary(self, delay=1.5):
+        """Start a real loopback listener only after curl's first attempt."""
+        listener = subprocess.Popen([
+            sys.executable, '-c', '''import http.server, pathlib, sys, time
+marker, log, port, delay = sys.argv[1:]
+while not pathlib.Path(marker).exists():
+    time.sleep(0.01)
+time.sleep(float(delay))
+class Denied(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        pathlib.Path(log).write_text(self.path + "\\n")
+        self.send_response(403)
+        self.end_headers()
+    def log_message(self, *_):
+        pass
+server = http.server.HTTPServer(('127.0.0.1', int(port)), Denied)
+server.handle_request()
+''', str(self.remote / 'canary-started'), str(self.remote / 'canary.log'),
+            str(self.canary_port), str(delay)
+        ], start_new_session=True)
+        self.addCleanup(lambda: listener.poll() is None and listener.terminate())
+        return listener
+
     def promote(self, **overrides):
         args = ['bash', str(SCRIPT)]
         if overrides.get('prefix'):
@@ -638,10 +660,16 @@ class DevPromote(Fixture):
 
     def test_connection_refusal_is_retried_while_listener_becomes_ready(self):
         self.prepare()
-        self.env['FIXTURE_CANARY_REFUSED'] = '2'
-        result = self.promote()
+        with socket.socket() as reservation:
+            reservation.bind(('127.0.0.1', 0))
+            self.canary_port = reservation.getsockname()[1]
+        self.env['FIXTURE_CANARY'] = f'http://127.0.0.1:{self.canary_port}/chat'
+        self.env['FIXTURE_REAL_CANARY'] = '1'
+        listener = self.delayed_canary()
+        result = self.promote(lead_url=self.env['FIXTURE_CANARY'])
+        listener.wait(timeout=5)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.canary(), ['http://127.0.0.1:8743/chat'] * 3)
+        self.assertEqual(self.canary(), ['/chat'])
         self.assertEqual(json.loads(self.rollout.read_text())['action'], 'promoted')
 
     def test_replaced_executable_is_not_taken_for_the_running_binary(self):

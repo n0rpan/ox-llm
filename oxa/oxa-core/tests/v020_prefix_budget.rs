@@ -154,12 +154,14 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// 2026-11-16: issue #519 added `kill` to the `bash` schema and documented per-job cancellation
 /// and explicit background timeouts; both default tool prefixes intentionally changed.
 /// 2026-11-19: S12 documents explicit zero in the bash timeout schema.
+/// 2026-11-19: #1552 updates the built-in report-issue skill description.
 /// 2026-11-19: R2 rewrote the built-in `ox-llm` skill description (no controller), and the
 /// new identity text (Rust-only suite, cloud models as one provider line) and the done-check
 /// rule; hashes copied from the `stable sha256` lines of this test in CI.
+/// 2026-11-19: #1552 updates the built-in report-issue skill description.
 /// 2026-11-19: N1 changed the bash tool text (wait cap 300, timeout moves to a background job).
-const DEFAULT_STABLE_SHA: &str = "1cd45063add45a653c65bbcf8cd197e7e8dd3d00bab34f5c6ce4758a577afa9c";
-const DEFAULT_STABLE_SHA_SUBAGENT: &str = "039c756ef6ffab30c82adea27ef1330e295f140c44bf91a54209442bfa978663";
+const DEFAULT_STABLE_SHA: &str = "6e8b2b42f28555b2fad0217a64efad92c350dd193de4e34821a98e3d9d83e1b7";
+const DEFAULT_STABLE_SHA_SUBAGENT: &str = "faf3003090abc984e2435f74f87b2a767f0eb5e8aa91e6335e9ece2d9d3729ae";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
 fn has_date(s: &str) -> bool {
@@ -270,12 +272,9 @@ fn prefix_bytes_and_the_anchor() {
 
     // The default prefix stays byte-identical to the pinned bytes.
     assert_eq!(
-        default_sha[0], DEFAULT_STABLE_SHA,
-        "the default prefix bytes drifted"
-    );
-    assert_eq!(
-        default_sha[1], DEFAULT_STABLE_SHA_SUBAGENT,
-        "the default prefix bytes with a subagent drifted"
+        (default_sha[0].as_str(), default_sha[1].as_str()),
+        (DEFAULT_STABLE_SHA, DEFAULT_STABLE_SHA_SUBAGENT),
+        "the default prefix bytes drifted (without and with a subagent)"
     );
 
     // The diet costs prefix bytes (its rules replace one line): exactly the rule lines' bytes,

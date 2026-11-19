@@ -7,7 +7,7 @@
 //! * **Concurrency 1 on the local engine.** A lock held for the whole call serialises calls that
 //!   arrive concurrently (e.g. from codemode). A `tasks` call whose children all run locally
 //!   runs them in call order and shows the rest as `subagent k/n, queued`; when some child runs
-//!   on a remote (cloud) model, up to `oxa.subagent.remoteConcurrency` (default 4) children run
+//!   on a remote (cloud) model, up to `oxa.subagent.remoteConcurrency` (default 8) children run
 //!   at once, local ones still one at a time, and results come back in call order (#458);
 //!   more than [`MAX_PARALLEL_TASKS`] tasks run anyway, with a warning in the result. Depth 1: a
 //!   child gets `OXA_SUBAGENT_DEPTH=1` and the binary then does not build this hook set.
@@ -115,7 +115,7 @@ pub const SETTING_SMALL_CONTEXT: &str = "oxa.subagent.smallContext";
 pub const DEFAULT_SOFT_TOKENS: u32 = 24_000;
 pub const DEFAULT_RESULT_CAP: usize = 6144;
 pub const SETTING_REMOTE_CONCURRENCY: &str = "oxa.subagent.remoteConcurrency";
-pub const DEFAULT_REMOTE_CONCURRENCY: usize = 4;
+pub const DEFAULT_REMOTE_CONCURRENCY: usize = 8;
 
 /// pi's limit on `tasks`, and the default of `oxa.subagent.maxChildren`: the most children one
 /// parent session runs or queues over every call in flight, and the most steps one call takes.
