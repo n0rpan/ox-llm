@@ -224,11 +224,11 @@ Tools|prompts
 Tools|extensions
 Tools|oxa.reportIssue.repo
 Tools|oxa.reportIssue.semanticDedupe
-Tools|oxa.subagent.enabled
-Tools|oxa.subagent.smallContext
-Tools|oxa.subagent.remoteConcurrency
-Tools|oxa.subagent.softTokens
-Tools|oxa.subagent.resultCap
+Workers|oxa.subagent.enabled
+Workers|oxa.subagent.smallContext
+Workers|oxa.subagent.remoteConcurrency
+Workers|oxa.subagent.softTokens
+Workers|oxa.subagent.resultCap
 Compaction|compaction.profile
 Compaction|compaction.enabled
 Compaction|oxa.compaction.softTokens

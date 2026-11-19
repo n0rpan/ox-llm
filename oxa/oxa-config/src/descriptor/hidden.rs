@@ -7,12 +7,6 @@ use crate::schema::Kind;
 
 /// The hidden rows, sorted by key.
 pub(super) const ENTRIES: &[Descriptor] = &[
-    d("defaultTools", Group::Advanced, "", "defaultTools", "")
-        .key(
-            Kind::StringList,
-            "[\"read\",\"bash\",\"edit\",\"write\",\"grep\",\"find\",\"ls\"]",
-        )
-        .hidden(),
     // F5: seconds; unset = 120; 0 = none.
     // Background jobs that may run at once (`bash {background: true}`); at least 1.
     d("oxa.bash.maxJobs", Group::Advanced, "", "oxa.bash.maxJobs", "")
@@ -78,15 +72,6 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .key(Kind::Number, "30")
     .hidden(),
     // O-169: `web_search` (oxa-web); declared only with a Brave key and never offline.
-    d(
-        "oxa.webSearch.provider",
-        Group::Advanced,
-        "",
-        "oxa.webSearch.provider",
-        "",
-    )
-    .key(Kind::Enum(&["brave", "none"]), "\"brave\"")
-    .hidden(),
     // The worker runner reads this list from owner settings only.
     d(
         "oxa.work.localChecks",
