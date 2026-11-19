@@ -234,6 +234,7 @@ pub const ENTRIES: &[Descriptor] = &[
     )
     .number(Unit::Count)
     .zero("off")
+    .user_only()
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
     d(

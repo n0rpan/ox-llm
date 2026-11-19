@@ -161,7 +161,7 @@ const SCHEMA: &[KeyDef] = &[
     // V020-OPTIMIZE #1 / #2: unset = on.
     key("oxa.diet.output", Kind::Bool, "null"),
     key("oxa.diet.tools", Kind::Bool, "null"),
-    key("oxa.emptyReplyRetries", Kind::Number, "1"),
+    verdict_o("oxa.emptyReplyRetries", Kind::Number, "1"),
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
     key("oxa.engine.inProcessCloud", Kind::Bool, "false"),
     key("oxa.engine.inProcessLocal", Kind::Bool, "false"),

@@ -292,9 +292,10 @@ impl Settings {
         }
     }
     /// `oxa.emptyReplyRetries`: how many times a cloud reply with no text and no tool call is
-    /// asked again (default 1; 0 turns it off).
+    /// asked again (default 1; 0 turns it off). User file only: the retries spend the owner's
+    /// cloud allowance with fresh idempotency keys, so a project file cannot raise them.
     pub fn empty_reply_retries(&self) -> u32 {
-        self.u32("oxa.emptyReplyRetries", 1)
+        self.user_u32("oxa.emptyReplyRetries", 1)
     }
     /// H: the startup thinking level of `model` (pi's sdk.ts order after the CLI choices):
     /// `modelThinkingLevels[model]` (keyed by the engine model id; pi's `provider/modelId`
@@ -629,6 +630,25 @@ fn remove_path(obj: &mut Map<String, Value>, parts: &[&str]) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn empty_reply_retries_are_user_only() {
+        let user_two = Settings::from_values(
+            json!({"oxa": {"emptyReplyRetries": 2}}),
+            json!({"oxa": {"emptyReplyRetries": 9}}),
+        );
+        assert_eq!(
+            user_two.empty_reply_retries(),
+            2,
+            "the user file decides how far an empty reply may be retried"
+        );
+        let project_only = Settings::from_values(json!({}), json!({"oxa": {"emptyReplyRetries": 9}}));
+        assert_eq!(
+            project_only.empty_reply_retries(),
+            1,
+            "a project file cannot raise the retries that spend the owner's allowance"
+        );
+    }
 
     #[test]
     fn headless_inbox_setting_is_user_only() {
