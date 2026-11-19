@@ -151,21 +151,16 @@ fn served_mock() -> MockOpenAi {
 }
 
 #[test]
-fn key_only_go_is_not_available_to_a_delegated_worker() {
+fn key_only_go_is_available_to_a_delegated_worker() {
     let env = TestEnv::new();
     let mock = served_mock();
-    let (output, record) = run_go_work_taskfile(&env, &mock, None);
-    assert!(record["worker"].is_object(), "{record}");
-    assert!(!output.status.success(), "{record}");
+    let (_, record) = run_go_work_taskfile(&env, &mock, None);
     assert!(
-        mock.requests().iter().all(|r| r.method != "POST"),
-        "a delegated model is not the owner selection: {:?}",
-        mock.requests()
+        matches!(record["worker"]["exit_code"].as_i64(), Some(0 | 4)),
+        "{record}"
     );
-    assert!(
-        !env.agent_dir().join("cloud-ledger").exists(),
-        "no Go request, no ledger row"
-    );
+    assert_eq!(mock.requests().iter().filter(|r| r.method == "POST").count(), 1);
+    assert_eq!(rows(&env)[0]["remote_provider"], "opencode");
     mock.assert_healthy();
 }
 
