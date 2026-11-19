@@ -83,7 +83,7 @@ fn rpc_fork_question_reaches_owner() {
     )
     .unwrap();
     seed(&env, &server);
-    let (mut child, mut stdin, rx, raw) = spawn_rpc(&env, &server, &other_dir(&env));
+    let (mut child, mut stdin, rx, _raw) = spawn_rpc(&env, &server, &other_dir(&env));
     let request = next_request(&rx);
     assert_eq!(request["method"], "confirm");
     assert!(request["title"]
@@ -91,16 +91,18 @@ fn rpc_fork_question_reaches_owner() {
         .unwrap()
         .starts_with("Session found in different project:"));
     assert_eq!(request["message"], "Fork this session into current directory?");
+    // A command may arrive while the startup dialog is pending. It must be replayed after the
+    // matching answer rather than consumed by the confirmation adapter.
+    writeln!(stdin, "{}", json!({"type":"prompt", "message":"four"})).unwrap();
     writeln!(
         stdin,
         "{}",
         json!({"type":"extension_ui_response", "id":request["id"], "confirmed":true})
     )
     .unwrap();
-    writeln!(stdin, "{}", json!({"type":"prompt", "message":"four"})).unwrap();
     let mut answered = false;
     while let Ok(record) = rx.recv_timeout(Duration::from_secs(10)) {
-        if record["type"] == "agent_end" {
+        if record["type"] == "agent_settled" {
             answered = true;
             break;
         }
@@ -118,8 +120,8 @@ fn rpc_fork_question_reaches_owner() {
         .iter()
         .filter_map(|m| m.content.clone())
         .collect();
-    assert!(texts.contains(&"one".to_string()), "{texts:?}");
-    assert!(texts.contains(&"four".to_string()), "{texts:?}");
+    assert!(texts.iter().any(|text| text.starts_with("one\n")), "{texts:?}");
+    assert!(texts.iter().any(|text| text.starts_with("four\n")), "{texts:?}");
 }
 
 #[test]

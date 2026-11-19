@@ -4,6 +4,7 @@ use crate::server::write_out;
 use crate::{Out, RpcCommand};
 use oxa_proto::{Access, Answer, Level, Placement, Ui, Value};
 use serde_json::{json, Map};
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -106,6 +107,67 @@ fn is_cancelled(v: &Value) -> bool {
     v.get("cancelled").and_then(Value::as_bool) == Some(true)
 }
 
+fn confirmed(v: &Value) -> Option<bool> {
+    if is_cancelled(v) {
+        return None;
+    }
+    v.get("confirmed")?.as_bool()
+}
+
+/// Ask a confirmation before the RPC server's input thread exists.
+///
+/// This is the synchronous adapter for the same extension-UI confirmation protocol used by
+/// [`RpcUi::confirm`]. Commands that are not the matching response are saved in `early` so the
+/// server can replay them after startup. EOF, malformed matching responses and cancellation are
+/// all declines.
+pub fn confirm_before_start(
+    stdin: &mut dyn Read,
+    stdout: &mut dyn Write,
+    early: &mut Vec<u8>,
+    title: &str,
+    message: &str,
+) -> bool {
+    let id = new_id();
+    let mut request = request_base(id.clone(), "confirm");
+    request.insert("title".to_string(), Value::from(title));
+    request.insert("message".to_string(), Value::from(message));
+    if writeln!(stdout, "{}", Value::Object(request))
+        .and_then(|()| stdout.flush())
+        .is_err()
+    {
+        return false;
+    }
+
+    loop {
+        let mut line = Vec::new();
+        let mut byte = [0u8; 1];
+        let mut eof = false;
+        loop {
+            match stdin.read(&mut byte) {
+                Ok(1) => {
+                    line.push(byte[0]);
+                    if byte[0] == b'\n' {
+                        break;
+                    }
+                }
+                _ => {
+                    eof = true;
+                    break;
+                }
+            }
+        }
+        match crate::parse_command(std::str::from_utf8(&line).unwrap_or_default()) {
+            Ok(cmd) if cmd.kind == "extension_ui_response" && cmd.id.as_deref() == Some(&id) => {
+                return confirmed(&cmd.body) == Some(true);
+            }
+            _ => early.extend_from_slice(&line),
+        }
+        if eof {
+            return false;
+        }
+    }
+}
+
 fn placement_name(at: Placement) -> &'static str {
     match at {
         Placement::AboveEditor => "aboveEditor",
@@ -175,10 +237,7 @@ impl Ui for RpcUi {
         f.insert("title".to_string(), Value::from(title));
         f.insert("message".to_string(), Value::from(body));
         let v = self.dialog("confirm", f, timeout_ms)?;
-        if is_cancelled(&v) {
-            return None;
-        }
-        v.get("confirmed")?.as_bool()
+        confirmed(&v)
     }
 
     fn input(&mut self, title: &str, placeholder: &str) -> Option<String> {

@@ -24,7 +24,7 @@ use oxa_perm::{
 };
 use oxa_proto::{codes, Engine, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
 use oxa_resources::{discover, DiscoverOpts, Resources};
-use oxa_rpc::{run_json_outcome, run_print_outcome, serve_outcome, Out};
+use oxa_rpc::{confirm_before_start, run_json_outcome, run_print_outcome, serve_outcome, Out};
 use oxa_sandbox::Bwrap;
 #[cfg(target_os = "linux")]
 use oxa_sandbox::NoSandbox;
@@ -439,7 +439,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 if !rpc_owner_present(mode, env) {
                     return false;
                 }
-                return rpc_owner_confirm(&mut *stdin, &mut *stdout, &mut rpc_early, notice, question);
+                return confirm_before_start(&mut *stdin, &mut *stdout, &mut rpc_early, notice, question);
             }
             let _ = writeln!(stdout, "{notice}");
             let _ = write!(stdout, "{question} [y/N] ");
@@ -2287,58 +2287,6 @@ const FORK_DECLINED: &str = "oxa_cli_fork_declined";
 /// An RPC client is listening for owner questions (the host sets `OXA_RPC_OWNER_PRESENT=1`).
 fn rpc_owner_present(mode: RunMode, env: &Env) -> bool {
     mode == RunMode::Rpc && env.get("OXA_RPC_OWNER_PRESENT") == Some("1")
-}
-
-/// The owner's yes or no for a question asked before the RPC server starts (the fork offer):
-/// an `extension_ui_request` `confirm` that the client answers with an `extension_ui_response`
-/// of the same id. Other input read on the way is kept in `early` and replayed to the server.
-/// Only `confirmed: true` is yes; EOF, a cancel or a malformed answer declines.
-fn rpc_owner_confirm(
-    stdin: &mut dyn Read,
-    stdout: &mut dyn Write,
-    early: &mut Vec<u8>,
-    title: &str,
-    message: &str,
-) -> bool {
-    const ID: &str = "pre-start-confirm-1";
-    let request = serde_json::json!({
-        "type": "extension_ui_request", "id": ID, "method": "confirm",
-        "title": title, "message": message,
-    });
-    if writeln!(stdout, "{request}")
-        .and_then(|()| stdout.flush())
-        .is_err()
-    {
-        return false;
-    }
-    loop {
-        let mut line = Vec::new();
-        let mut byte = [0u8; 1];
-        let mut eof = false;
-        loop {
-            match stdin.read(&mut byte) {
-                Ok(1) => {
-                    line.push(byte[0]);
-                    if byte[0] == b'\n' {
-                        break;
-                    }
-                }
-                _ => {
-                    eof = true;
-                    break;
-                }
-            }
-        }
-        match serde_json::from_slice::<Value>(&line) {
-            Ok(v) if v["type"] == "extension_ui_response" && v["id"] == ID => {
-                return v["cancelled"] != true && v["confirmed"] == true;
-            }
-            _ => early.extend_from_slice(&line),
-        }
-        if eof {
-            return false;
-        }
-    }
 }
 
 /// One line from `stdin`, read byte by byte (nothing after the newline is consumed).
