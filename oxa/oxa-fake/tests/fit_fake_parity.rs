@@ -463,6 +463,7 @@ fn f6_overflow_only_when_the_prompt_does_not_fit() {
 fn f13_bad_tool_arguments_are_refused() {
     let p = prefix();
     let call = WireMsg {
+        images: Vec::new(),
         role: oxa_proto::Role::Assistant,
         content: None,
         reasoning: None,

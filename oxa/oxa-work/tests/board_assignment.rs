@@ -104,6 +104,7 @@ fn release_pins_then_manual_pins_rank_before_automatic_picks() {
         lease: None,
         attempts_today: 0,
         eligible: true,
+        evidence_incomplete: None,
     };
     assert!(pinned.rank(&worker, &entry) < automatic.rank(&worker, &entry));
     let nonrelease = pinned.rank(&worker, &entry).unwrap();

@@ -26,6 +26,7 @@ use std::{
 
 pub enum Event {
     Chunk(Value),
+    Warning(&'static str),
     Done,
 }
 
@@ -437,6 +438,17 @@ impl Gateway {
                 call.finish(Outcome::Complete, error.status, Some(error.code))
                     .map_err(Error::Refused)?;
                 return Err(Error::Refused(error));
+            }
+        }
+        if let Some(warning) = call.budget_warning() {
+            if on(Event::Warning(warning)) == Control::Stop {
+                return self.finish(
+                    call,
+                    Err(Error::Upstream(anthropic_client::Error::Cancelled)),
+                    None,
+                    false,
+                    on,
+                );
             }
         }
         self.forward(call, payload, history, cancel, on).await

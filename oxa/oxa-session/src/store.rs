@@ -4,7 +4,7 @@ use crate::meta::meta_of_parts;
 use crate::{SessionHeader, SessionMeta, SessionRef, SessionStore};
 use oxa_proto::{
     codes, names, shown_why, Entry, EntryBody, FrozenPrefix, Mode, OxaError, Part, ProviderHistory, Role,
-    ThinkingLevel, ToolCall, ToolMeta, Usage, WireMsg,
+    ThinkingLevel, ToolCall, ToolMeta, Usage, WireImage, WireMsg,
 };
 use serde_json::{Map, Value};
 use std::fs::{self, File, OpenOptions};
@@ -814,6 +814,20 @@ fn wire_value_inner(w: &WireMsg, private: bool) -> Value {
     if let Some(id) = &w.tool_call_id {
         m.insert("tool_call_id".into(), Value::from(id.as_str()));
     }
+    if !w.images.is_empty() {
+        // B2a: written only when present, so a message without images keeps its old bytes.
+        let images: Vec<Value> = w
+            .images
+            .iter()
+            .map(|i| {
+                let mut o = Map::new();
+                o.insert("mime".into(), Value::from(i.mime.as_str()));
+                o.insert("base64".into(), Value::from(i.base64.as_str()));
+                Value::Object(o)
+            })
+            .collect();
+        m.insert("images".into(), Value::Array(images));
+    }
     Value::Object(m)
 }
 
@@ -990,6 +1004,7 @@ pub(crate) fn decode_wire_value(w: &Value) -> Result<WireMsg, OxaError> {
                 .transpose()
                 .map_err(|e| replay_invalid(e.to_string()))?,
             tool_call_id: opt_str(w, "tool_call_id")?,
+            images: decode_images(w.get("images"))?,
         })
     })();
     result.map_err(|error: OxaError| {
@@ -1024,7 +1039,30 @@ fn decode_pi_wire(msg: &Map<String, Value>, role_str: &str) -> Result<WireMsg, O
         } else {
             None
         },
+        images: Vec::new(),
     })
+}
+
+/// The `images` of a stored wire message (B2a). Absent in every session written before images
+/// existed: that is an empty list, not an error.
+fn decode_images(v: Option<&Value>) -> Result<Vec<WireImage>, OxaError> {
+    match v {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(items)) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                let o = item
+                    .as_object()
+                    .ok_or_else(|| invalid("image is not an object"))?;
+                out.push(WireImage {
+                    mime: get_str(o, "mime")?.to_string(),
+                    base64: get_str(o, "base64")?.to_string(),
+                });
+            }
+            Ok(out)
+        }
+        Some(_) => Err(invalid("images is not an array")),
+    }
 }
 
 /// Text of a pi content value (a string or content blocks) and its tool calls.

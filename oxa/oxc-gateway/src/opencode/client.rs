@@ -5,9 +5,9 @@ use crate::{
     anthropic_client::{Control, KeyRedactor},
     anthropic_stream::{Completed, Field, Redactor},
     secrets::Key,
-    sse::Framer,
 };
 use futures_util::StreamExt;
+use oxa_http::sse::{Frame, Framer};
 use oxa_proto::CancelToken;
 use reqwest::{
     header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT},
@@ -304,7 +304,9 @@ where
             .filter(|n| *n <= MAX_BODY)
             .ok_or(Error::TooLarge)?;
         for byte in bytes {
-            let Some(data) = decoder.push(byte) else { continue };
+            let Some(Frame::Data(data)) = decoder.push(byte) else {
+                continue;
+            };
             if data == b"[DONE]" {
                 let finish_reason = finish.ok_or_else(|| terminal(TerminalCheck::DoneWithoutFinish))?;
                 // A valid finish plus [DONE] without usage is a complete

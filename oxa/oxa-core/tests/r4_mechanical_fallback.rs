@@ -153,6 +153,7 @@ fn push(st: &mut SessionState, wire: WireMsg) {
 
 fn read_call(id: &str, path: &str) -> WireMsg {
     WireMsg {
+        images: Vec::new(),
         role: Role::Assistant,
         content: Some(String::new()),
         reasoning: None,
