@@ -166,6 +166,24 @@ pub(crate) fn committed_packages(
         .collect())
 }
 
+/// The package names this committed change selects in the engine workspace (the owning
+/// workspace directory is `engine`). The lane runs only the portable engine crates; the
+/// other engine suites ride the self-hosted route, so a green lane run is never evidence
+/// for them.
+pub(crate) fn committed_engine_packages(
+    policy: &RunPolicy,
+    root: &Path,
+    base: &str,
+    head: &str,
+) -> Result<Vec<String>, String> {
+    Ok(committed_selection(policy, root, base, head)?
+        .packages
+        .into_iter()
+        .filter(|(_, workspace)| workspace == "engine")
+        .map(|(name, _)| name)
+        .collect())
+}
+
 fn committed_selection(policy: &RunPolicy, root: &Path, base: &str, head: &str) -> Result<Selected, String> {
     let diff = output(git(
         policy,
@@ -991,6 +1009,28 @@ members = ["crates/*", "tools/pinned"]
         assert_eq!(
             selected.packages,
             BTreeSet::from([("solo".to_owned(), "solo".to_owned())])
+        );
+    }
+
+    #[test]
+    fn an_engine_crate_selects_with_the_engine_workspace_as_in_dir() {
+        // The owning workspace directory is what separates engine crates, whose suites
+        // ride the self-hosted route, from the crates a lane run actually tests.
+        let dir = PrivateDir::new("derived-engine");
+        manifest(
+            &dir,
+            "engine/Cargo.toml",
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        );
+        manifest(
+            &dir,
+            "engine/crates/model/Cargo.toml",
+            "[package]\nname = \"model\"\n",
+        );
+        let selected = select(dir.path(), &["engine/crates/model/src/main.rs".to_owned()]).unwrap();
+        assert_eq!(
+            selected.packages,
+            BTreeSet::from([("model".to_owned(), "engine".to_owned())])
         );
     }
 

@@ -211,17 +211,29 @@ pub(crate) fn verify_commit_with(
     if requires_hosted && !lane_evidence {
         return Err(crate::HOSTED_TEST_EVIDENCE_REQUIRED.into());
     }
-    if !declared.is_empty() {
-        if !lane_evidence {
-            return Err(crate::HOSTED_TEST_EVIDENCE_REQUIRED.into());
-        }
-        // A green lane run only covers a declared crate when the diff selects it: the
-        // lane runs the suites of the crates that changed, and its reverse-dependency
-        // expansion only widens that set. A declaration the head does not touch has no
-        // evidence of having run, so the work stays unverified rather than guessed.
-        let selected = derived::committed_packages(policy, &export.tree, base, head)
+    if !declared.is_empty() && !lane_evidence {
+        return Err(crate::HOSTED_TEST_EVIDENCE_REQUIRED.into());
+    }
+    if lane_evidence {
+        // A green lane run only counts for what it actually ran, and the lane runs the
+        // suites of the crates the diff selects (its reverse-dependency expansion only
+        // widens that set) — except the engine workspace, whose nonportable suites ride
+        // the self-hosted route, so no engine change is ever covered by the lane.
+        let engine = derived::committed_engine_packages(policy, &export.tree, base, head)
             .map_err(|reason| format!("clean committed acceptance could not run: {reason}"))?;
-        declared_covered_by_selection(declared, &selected)?;
+        if !engine.is_empty() {
+            return Err(format!(
+                "the lane run does not run the engine suites: {}; engine work needs the hosted route",
+                engine.join(", ")
+            ));
+        }
+        if !declared.is_empty() {
+            let selected = derived::committed_packages(policy, &export.tree, base, head)
+                .map_err(|reason| format!("clean committed acceptance could not run: {reason}"))?;
+            // A declaration the head does not touch has no evidence of having run, so
+            // the work stays unverified rather than guessed.
+            declared_covered_by_selection(declared, &selected)?;
+        }
     }
     if commands.is_empty() {
         return Err(crate::NO_ACCEPTANCE_CHECKS.into());
