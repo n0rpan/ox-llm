@@ -192,3 +192,19 @@ pub(super) fn catalog_owns(pattern: &str, endpoint: &str, models: impl IntoItera
         .iter()
         .any(|model| without_endpoint(&model.model) == want)
 }
+
+/// `true` when every pattern of `scope` resolves in `models` (the local catalog): such a scope
+/// names local models only, so it may not open the cloud gateway.
+pub(super) fn scope_resolves_in_catalog(
+    scope: &[String],
+    endpoint: &str,
+    models: impl IntoIterator<Item = String>,
+) -> bool {
+    let available = model_refs(endpoint, models);
+    !scope.is_empty()
+        && scope.iter().all(|pattern| {
+            !oxa_config::resolve_scoped(std::slice::from_ref(pattern), &available)
+                .0
+                .is_empty()
+        })
+}

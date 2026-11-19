@@ -324,16 +324,16 @@ fn select_for(
     // Go pattern (or a wildcard no local alias owns) may.
     let scope_go = !scope.is_empty()
         && !(native_local
-            && scope
-                .iter()
-                .all(|pattern| routing::catalog_owns(pattern, endpoint, local_models.iter().cloned())));
+            && routing::scope_resolves_in_catalog(scope, endpoint, local_models.iter().cloned()));
     // A keyed catalog is available for inventory and owner model selection.
     // A project default alone cannot choose a new cloud transport.
     let native_cloud = explicit_cloud
         || (go_enabled
             && (show_status
                 || owner_selected && (requested.is_some() && (!requested_local || explicit_go) || scope_go)
-                || explicit_go && (requested.is_none() || go_requested)));
+                // The owner's explicit opt-in opens the gateway only for a model this run
+                // actually asks for; a project scope alone never opens it.
+                || explicit_go && (go_requested || (requested.is_some() && !requested_local) || scope_go)));
     let availability_notice = || {
         if show_status {
             vec![go.notice("OpenCode Go", GO_SETTING)]
