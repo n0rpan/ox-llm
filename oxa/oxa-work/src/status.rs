@@ -235,6 +235,7 @@ mod tests {
             runner_owns_github: true,
             autonomy: Default::default(),
             worker_github: Default::default(),
+            autonomy_now: None,
             storage: directory.path().into(),
         };
         let lease = Lease {
