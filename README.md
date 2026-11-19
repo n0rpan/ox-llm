@@ -35,12 +35,8 @@ history lives in the client. oxa is the client that is tuned for this engine. Se
 - **Native v0.2.1:** use the [native install and upgrade guide](docs/NATIVE-INSTALL.md)
   with the published v0.2.1 artifacts once the release is available.
 - **Legacy v0.2.0:** [oxc/README.md](oxc/README.md#quick-start) covers engine downloads and verification.
-  The controller bootstrap installs source into an explicit sandbox HOME; see its
-  [installation status and limits](oxc/docs/BOOTSTRAP-INSTALL.md).
 - **Prebuilt, any Linux:** each release attaches `ox-llm-<version>-linux-aarch64.tar.gz` and
   `ox-llm-<version>-linux-x86_64.tar.gz` (oxc, oxa, oxe, licences) with SBOMs, `SHA256SUMS` and build provenance.
-- **Legacy v0.2.0 cloud-only setup:** [Python controller quickstart](oxc/docs/CLOUD-ONLY-QUICKSTART.md)
-  (any Linux, x86_64 or arm64; cloud models through oxc, plus oxa).
 - **Code (installed runtime):** run `oxc code` in a project directory, or press the code button in the widget. Both
   start oxa against the controller.
 - **Other clients:** any OpenAI-compatible client can use `http://127.0.0.1:8092/v1`. See
@@ -66,7 +62,7 @@ For reproduction, the Flash expert sidecar (public model weights only) may live 
 partition such as `/var/lib/local-ai-models/flash/`. SSD read latency is part of every decoded Flash
 token, and disk encryption adds to it. Prompts, sessions, KV and state caches, request ledgers, logs and
 receipts stay on the encrypted disk. Flash also works with the sidecar on an encrypted volume, more
-slowly. Setup, measurements and the fallback: [oxc/docs/FLASH-STORAGE.md](oxc/docs/FLASH-STORAGE.md).
+slowly. The Flash storage setup notes were archived on 2026-11-19; see git history before that date.
 
 ## NPU (Hexagon): bring your own SDK
 

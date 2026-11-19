@@ -112,7 +112,7 @@ cargo test --release -p kernels-sys -p model -p sched -p tokenizer -p chat -p se
 
 ## How the two repositories fit together
 
-- **This repository** holds the engines, their correctness rules and their milestone write-ups. The write-ups are in [docs/lab-notes/](docs/lab-notes/); the index is [docs/lab-notes/INDEX.md](docs/lab-notes/INDEX.md). The design packet for a local HTTP completion backend is [docs/EXTERNAL-ENGINE-CONTRACT.md](docs/EXTERNAL-ENGINE-CONTRACT.md) (design only; no implementation).
+- **This repository** holds the engines, their correctness rules and their milestone write-ups. The milestone write-ups were archived on 2026-11-19; see git history before that date. The design packet for a local HTTP completion backend is [docs/EXTERNAL-ENGINE-CONTRACT.md](docs/EXTERNAL-ENGINE-CONTRACT.md) (design only; no implementation).
 - **[lab](https://github.com/n0rpan/ox-llm/tree/main/oxc)** is the controller. It serves these engines behind one OpenAI-compatible endpoint on port 8092, with Studio for images, harness configs (OpenCode, pi, dsh), memory guards, benchmarks and every receipt cited above. Start there to use the models, reproduce numbers, or read the history.
 
 ## Layout
@@ -133,7 +133,7 @@ crates/
 
 ## Correctness
 
-Every change declares a class before it is measured: **lossless** (bit-identical logits or state against the reference or the previous path), **reorder** (different float order, mean KLD within twice the reference's own batch noise) or **lossy** (opt-in only). Bit identity is the bug detector; the milestone notes in [docs/lab-notes/](docs/lab-notes/) hold the gates and measurements.
+Every change declares a class before it is measured: **lossless** (bit-identical logits or state against the reference or the previous path), **reorder** (different float order, mean KLD within twice the reference's own batch noise) or **lossy** (opt-in only). Bit identity is the bug detector; the milestone notes in the archived docs/lab-notes/ (git history before 2026-11-19) hold the gates and measurements.
 
 ## Help wanted
 
