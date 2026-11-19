@@ -98,7 +98,8 @@ async fn a_rejected_sign_in_and_a_failed_list_are_typed_errors() {
         Reply::json(json!({"models":[{"slug":"synthetic-account"}]})),
     ]);
     let client = Client::new().unwrap();
-    let call = || client.plan_models(&backend.base_url(), &path, refresh(), Duration::from_secs(5));
+    let base = backend.base_url();
+    let call = || client.plan_models(&base, &path, refresh(), Duration::from_secs(5));
     assert!(matches!(call().await, Err(client::Error::SignedOut)));
     assert!(matches!(
         call().await,
