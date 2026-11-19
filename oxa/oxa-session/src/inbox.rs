@@ -6,12 +6,11 @@
 //! A crash can lose an admitted message or replay one whose file wasn't removed yet.
 use crate::SessionRef;
 use sha2::{Digest, Sha256};
-use std::ffi::{CString, OsStr, OsString};
+use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
-#[cfg(not(target_os = "linux"))]
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -56,15 +55,7 @@ impl Directory {
             .read(true)
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(path)?;
-        let meta = file.metadata()?;
-        // SAFETY: geteuid has no preconditions.
-        if meta.uid() != unsafe { libc::geteuid() } {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "inbox is not owned by this user",
-            ));
-        }
-        file.set_permissions(fs::Permissions::from_mode(0o700))?;
+        make_private(&file)?;
         Ok(Self {
             file,
             #[cfg(not(target_os = "linux"))]
@@ -80,7 +71,7 @@ impl Directory {
     }
     #[cfg(target_os = "linux")]
     fn path(&self) -> PathBuf {
-        PathBuf::from(format!("/proc/self/fd/{}", self.file.as_raw_fd()))
+        fd_path(&self.file)
     }
     #[cfg(not(target_os = "linux"))]
     fn path(&self) -> PathBuf {
@@ -95,6 +86,22 @@ impl Directory {
         }
         Self::open(&path)
     }
+}
+
+fn make_private(dir: &File) -> io::Result<()> {
+    // SAFETY: geteuid has no preconditions.
+    if dir.metadata()?.uid() != unsafe { libc::geteuid() } {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "inbox is not owned by this user",
+        ));
+    }
+    dir.set_permissions(fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(target_os = "linux")]
+fn fd_path(dir: &File) -> PathBuf {
+    PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd()))
 }
 
 fn directory(agent_dir: &Path, id: &str) -> io::Result<Directory> {
@@ -112,29 +119,105 @@ fn directory(agent_dir: &Path, id: &str) -> io::Result<Directory> {
 /// orphaned queues and unpublished temporary files. Pin each parent before deleting so a
 /// symlink at `agent_dir` or `inbox` cannot redirect a session-specific wipe.
 pub fn remove_inbox(agent_dir: &Path, id: Option<&str>) -> Result<usize, oxa_proto::OxaError> {
-    let remove = || -> Result<usize, oxa_proto::OxaError> {
-        let agent = match Directory::open(agent_dir) {
-            Ok(dir) => dir,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
-            Err(e) => return Err(oxa_proto::OxaError::io("cannot open inbox parent", &e)),
-        };
-        let root = agent.path().join("inbox");
-        match id {
-            None => crate::remove_all_spill(&root),
-            Some(id) => {
-                let inbox = match Directory::open(&root) {
-                    Ok(dir) => dir,
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
-                    Err(e) => return Err(oxa_proto::OxaError::io("cannot open inbox", &e)),
-                };
-                crate::remove_spill_dir(&inbox.path(), id)
-            }
-        }
-    };
     if let Some(id) = id {
         crate::store::validate_session_id(id)?;
     }
-    remove()
+    let agent = match Directory::open(agent_dir) {
+        Ok(dir) => dir,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(oxa_proto::OxaError::io("cannot open inbox parent", &e)),
+    };
+    remove_pinned_inbox(&agent.file, id).map_err(|e| oxa_proto::OxaError::io("cannot remove inbox", &e))
+}
+
+fn remove_pinned_inbox(agent: &File, id: Option<&str>) -> io::Result<usize> {
+    let Some(inbox) = open_directory_at(agent, c"inbox")? else {
+        return Ok(0);
+    };
+    if let Some(id) = id {
+        make_private(&inbox)?;
+        let name = CString::new(id)?;
+        if let Some(session) = open_directory_at(&inbox, &name)? {
+            return remove_open_directory(&inbox, &name, &session);
+        }
+        return Ok(0);
+    }
+    remove_open_directory(agent, c"inbox", &inbox)
+}
+
+fn open_directory_at(parent: &File, name: &CStr) -> io::Result<Option<File>> {
+    // SAFETY: parent is a live directory descriptor and name is a single NUL-terminated component.
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd >= 0 {
+        // SAFETY: openat returned a newly owned descriptor.
+        return Ok(Some(unsafe { File::from_raw_fd(fd) }));
+    }
+    let error = io::Error::last_os_error();
+    match error.kind() {
+        io::ErrorKind::NotFound => Ok(None),
+        _ => Err(error),
+    }
+}
+
+fn remove_open_directory(parent: &File, name: &CStr, directory: &File) -> io::Result<usize> {
+    let mut removed = 0;
+    let mut result = Ok(());
+    for_each_entry_name(directory, |entry| {
+        result = remove_wipe_entry(directory, &entry).map(|count| removed += count);
+        result.is_ok()
+    })?;
+    result?;
+    unlink_at(parent, name, libc::AT_REMOVEDIR)?;
+    Ok(removed)
+}
+
+fn remove_wipe_entry(parent: &File, name: &OsStr) -> io::Result<usize> {
+    let name = CString::new(name.as_bytes())?;
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: parent is a live descriptor, name is one component, and stat is writable storage.
+    if unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        let error = io::Error::last_os_error();
+        return match error.kind() {
+            io::ErrorKind::NotFound => Ok(0),
+            _ => Err(error),
+        };
+    }
+    // SAFETY: fstatat succeeded and initialized stat.
+    let kind = unsafe { stat.assume_init() }.st_mode & libc::S_IFMT;
+    if kind == libc::S_IFDIR {
+        return match open_directory_at(parent, &name)? {
+            Some(dir) => remove_open_directory(parent, &name, &dir),
+            None => Ok(0),
+        };
+    }
+    let unlinked = unlink_at(parent, &name, 0)?;
+    Ok(usize::from(unlinked && kind == libc::S_IFREG))
+}
+
+fn unlink_at(parent: &File, name: &CStr, flags: libc::c_int) -> io::Result<bool> {
+    // SAFETY: parent is a live directory descriptor and name is a single NUL-terminated component.
+    if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), flags) } == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    match error.kind() {
+        io::ErrorKind::NotFound => Ok(false),
+        _ => Err(error),
+    }
 }
 
 /// Publish exactly one message without contacting an engine or requiring a running owner.
@@ -438,7 +521,7 @@ fn scan_batch(
     // Keep only a bounded sorted batch, not one name per file in a stopped inbox.
     let mut paths = std::collections::BTreeMap::new();
     let mut retry = false;
-    let enumerated = for_each_entry_name(dir, |name| {
+    let enumerated = for_each_entry_name(&dir.file, |name| {
         if stopped.load(Ordering::Relaxed) {
             return false;
         }
@@ -498,8 +581,8 @@ fn scan_batch(
 /// Visit names in `dir` through the pinned descriptor without first allocating the entire
 /// directory listing.
 #[cfg(target_os = "linux")]
-fn for_each_entry_name(dir: &Directory, mut visit: impl FnMut(OsString) -> bool) -> io::Result<()> {
-    for entry in fs::read_dir(dir.path())?.flatten() {
+fn for_each_entry_name(dir: &File, mut visit: impl FnMut(OsString) -> bool) -> io::Result<()> {
+    for entry in fs::read_dir(fd_path(dir))?.flatten() {
         if !visit(entry.file_name()) {
             break;
         }
@@ -510,12 +593,12 @@ fn for_each_entry_name(dir: &Directory, mut visit: impl FnMut(OsString) -> bool)
 /// Visit names in `dir` through a fresh descriptor for the pinned directory. Opening `.`
 /// rather than duplicating `dir.file` gives every poll an independent directory offset.
 #[cfg(not(target_os = "linux"))]
-fn for_each_entry_name(dir: &Directory, mut visit: impl FnMut(OsString) -> bool) -> io::Result<()> {
+fn for_each_entry_name(dir: &File, mut visit: impl FnMut(OsString) -> bool) -> io::Result<()> {
     let dot = c".";
     // SAFETY: `.` is one component relative to the live, pinned directory descriptor.
     let fd = unsafe {
         libc::openat(
-            dir.file.as_raw_fd(),
+            dir.as_raw_fd(),
             dot.as_ptr(),
             libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
         )
@@ -596,4 +679,30 @@ fn remove_entry(dir: &Directory, name: &OsStr) {
     };
     // SAFETY: a single name component relative to a live descriptor.
     unsafe { libc::unlinkat(dir.file.as_raw_fd(), name.as_ptr(), 0) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inbox_wipe_keeps_the_open_parent_after_a_rename() {
+        for id in [None, Some("session-wipe")] {
+            let env = oxa_fake::TestEnv::new();
+            let agent = env.root().join("agent");
+            send_inbox(&agent, "session-wipe", "remove").unwrap();
+            let pinned = Directory::open(&agent).unwrap();
+            let moved = env.root().join("moved");
+            fs::rename(&agent, &moved).unwrap();
+            send_inbox(&agent, "session-wipe", "keep").unwrap();
+
+            assert_eq!(remove_pinned_inbox(&pinned.file, id).unwrap(), 1);
+            assert!(!moved.join("inbox/session-wipe").exists());
+            assert_eq!(moved.join("inbox").exists(), id.is_some());
+            let mut remaining = fs::read_dir(agent.join("inbox/session-wipe")).unwrap();
+            let kept = remaining.next().unwrap().unwrap();
+            assert_eq!(fs::read_to_string(kept.path()).unwrap(), "keep");
+            assert!(remaining.next().is_none());
+        }
+    }
 }
