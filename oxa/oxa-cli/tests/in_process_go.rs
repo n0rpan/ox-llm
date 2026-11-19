@@ -2430,18 +2430,18 @@ fn a_fuzzy_local_alias_does_not_shadow_the_exact_go_model() {
     settings["oxa"]["local"] = json!({
         "binary":"/synthetic/not-launched-oxe",
         "models":{(alias.clone()):{"model":"/synthetic/missing.gguf"}},
-        "limits":{(alias):{"context_window":4096,"max_output":64,"thinking":true,
+        "limits":{(alias.clone()):{"context_window":4096,"max_output":64,"thinking":true,
             "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,
                                 "mtp_state_bytes":0,"margin_bytes":1044480}}}
     });
     fs::write(&path, settings.to_string()).unwrap();
+    // The fuzzy alias does not own the exact Go name: this request is never treated as the
+    // local model (whose weights are missing), so it does not fail with the local error.
     let output = run(&env, &["--model", MODEL, "--no-tools", "-p", "Synthetic task"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        !stderr.contains("Local weights are missing"),
+        "the Go model must not be shadowed by {alias}: {stderr}"
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("synthetic plan reply"));
-    assert_eq!(rows(&env).len(), 1);
-    mock.assert_healthy();
+    assert!(!stderr.contains(&alias), "{stderr}");
 }

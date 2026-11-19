@@ -169,9 +169,18 @@ impl Engine for Routed {
 /// `…flash`) does not make the local catalog the owner, so it may not exclude the cloud model of
 /// exactly that name.
 pub(super) fn catalog_owns(pattern: &str, endpoint: &str, models: impl IntoIterator<Item = String>) -> bool {
+    /// The name without a `:thinking` suffix, case-folded: the resolver's own spelling rules.
+    fn bare(model: &str) -> String {
+        let model = model.trim().to_ascii_lowercase();
+        match model.find(':') {
+            Some(i) => model[..i].to_string(),
+            None => model,
+        }
+    }
     let available = model_refs(endpoint, models);
+    let want = bare(pattern);
     oxa_config::resolve_scoped(&[pattern.to_string()], &available)
         .0
         .iter()
-        .any(|model| model.model == pattern)
+        .any(|model| bare(&model.model) == want)
 }
