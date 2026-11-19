@@ -4,7 +4,7 @@ use crate::goal::GoalSteering;
 use oxa_config::QueueMode;
 use oxa_proto::CancelToken;
 use oxa_session::SessionRef;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -143,8 +143,11 @@ pub struct Gate {
     /// Coalesce frontend inbox wakes while a model run drains follow-ups internally.
     pub inbox_wake_pending: std::sync::atomic::AtomicBool,
     /// Coalesce finished-background-job wakes, independently of inbox wakes: the two kinds
-    /// have different run conditions, so one must not swallow the other.
-    pub job_wake_pending: std::sync::atomic::AtomicBool,
+    /// have different run conditions, so one must not swallow the other. Coalesced per
+    /// destination: an extension fork keeps the parent's running jobs, so a parent and a child
+    /// job can finish before the front end takes the first wake, and a wake for one session must
+    /// never suppress the other's.
+    pub job_wake_pending: Mutex<BTreeSet<String>>,
     /// Set when `oxa.jobs.wakeOnFinish` is off (applied by `session::sync_job_wake` at open and
     /// on every settings refresh). Left unset, finished jobs wake the session (the default).
     pub job_wake_off: std::sync::atomic::AtomicBool,
@@ -547,7 +550,7 @@ impl Handle {
         }
         let notify = lock(&self.shared.wake).as_ref().map(|w| w.0.clone());
         if let Some(notify) = notify {
-            if self.request_job_wake() {
+            if self.request_job_wake(&session_id) {
                 notify(&session_id);
             }
         }
@@ -586,14 +589,15 @@ impl Handle {
         self.shared.gate.inbox_wake_pending.store(false, Ordering::SeqCst);
     }
 
-    /// Claim the single pending job wake (separate from the inbox wake, see `Gate`).
-    pub fn request_job_wake(&self) -> bool {
-        !self.shared.gate.job_wake_pending.swap(true, Ordering::SeqCst)
+    /// Claim the pending job wake of one destination (separate from the inbox wake, see
+    /// `Gate`). `false` when that session already has one waiting: the front end takes it once.
+    pub fn request_job_wake(&self, session_id: &str) -> bool {
+        lock(&self.shared.gate.job_wake_pending).insert(session_id.to_string())
     }
 
-    /// The frontend has taken its job wake job, before running the queued input.
-    pub fn clear_job_wake(&self) {
-        self.shared.gate.job_wake_pending.store(false, Ordering::SeqCst);
+    /// The frontend has taken that destination's job wake job, before running its input.
+    pub fn clear_job_wake(&self, session_id: &str) {
+        lock(&self.shared.gate.job_wake_pending).remove(session_id);
     }
 
     /// Whether the active session has admitted inbox input (including after switching back).
@@ -1144,9 +1148,43 @@ mod tests {
             "a pending job wake must not swallow the inbox wake"
         );
         // And the reverse: a pending inbox wake does not swallow a job wake.
-        h.clear_job_wake();
+        h.clear_job_wake("s");
         assert!(h.wake_job(&job));
         assert_eq!(*lock(&woken), 2);
+    }
+
+    /// An extension fork keeps the parent's running jobs: both can finish before the front end
+    /// takes the first wake, and the child's completion must not be swallowed.
+    #[test]
+    fn a_job_wake_for_one_session_does_not_suppress_another() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.shared.bind_session("parent");
+        let woken = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen = woken.clone();
+        h.set_wake_notifier(Arc::new(move |session: &str| {
+            lock(&seen).push(session.to_string())
+        }));
+        let job = |session: &str| oxa_tools::JobDone {
+            id: "job-1".into(),
+            status: oxa_tools::JobStatus::Exited(0),
+            command: "make".into(),
+            session: session.into(),
+            tail: "done".into(),
+        };
+        assert!(h.wake_job(&job("parent")));
+        assert!(h.wake_job(&job("child")));
+        assert_eq!(
+            *lock(&woken),
+            vec!["parent".to_string(), "child".to_string()],
+            "each destination gets its own wake"
+        );
+        // One destination taking its wake leaves the other's pending.
+        h.clear_job_wake("parent");
+        assert!(
+            h.request_job_wake("parent"),
+            "a destination that took its wake can be woken again"
+        );
+        assert!(!h.request_job_wake("child"), "the child's wake is still waiting");
     }
 
     #[test]

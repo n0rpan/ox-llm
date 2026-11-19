@@ -62,6 +62,11 @@ maintainer, who says in the PR when a hardware check is needed.
   The repeat guard follows this: the third identical tool result gets a short note, a call that
   still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
   is the cap against loops the guard cannot see.
+  The finish wake follows it too: a background bash job that finishes on its own queues one
+  follow-up message and, when the session is idle after a normal outcome, starts a turn;
+  `oxa.jobs.wakeOnFinish` (`true` by default, `false` opts out, user settings only) is the control,
+  it wakes only the session the job started in, and a job the model or the user stopped wakes
+  nothing. A finding that asks for a default-off switch or a cross-session wake is answered here.
 - Reserve P0/P1 for violations of these invariants or concrete data loss/crash. Report only
   introduced, actionable defects with a failure scenario; skip style and speculative risks.
 - A finding is a claim to verify, not an order. Whoever acts on a review finding first shows it is
