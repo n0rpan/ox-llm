@@ -62,7 +62,7 @@ pub struct WorkerSpec {
     /// The parent's resolved session directory, when it is not the default one.
     pub session_dir: Option<std::path::PathBuf>,
     /// The parent's other narrowing switches (`--offline`, `--tools`, `-nt`, `-nbt`, `--no-mcp`,
-    /// `--no-web-search`, `-ne`): a worker is never wider than its parent.
+    /// `--no-web-search`, `-ne`, `-ns`, `-np`): a worker is never wider than its parent.
     pub narrowing: Narrowing,
 }
 
@@ -82,6 +82,10 @@ pub struct Narrowing {
     pub no_mcp: bool,
     pub no_web_search: bool,
     pub no_extensions: bool,
+    /// `--no-skills`: the worker checkout's skills stay out of the child's prompt too.
+    pub no_skills: bool,
+    /// `--no-prompt-templates`: likewise for prompt templates.
+    pub no_prompt_templates: bool,
 }
 
 /// The name rule: `[a-z0-9][a-z0-9-]{0,39}`.
@@ -195,6 +199,8 @@ pub fn child_argv(
         (n.no_mcp, "--no-mcp"),
         (n.no_web_search, "--no-web-search"),
         (n.no_extensions, "--no-extensions"),
+        (n.no_skills, "--no-skills"),
+        (n.no_prompt_templates, "--no-prompt-templates"),
     ] {
         if on {
             args.push(flag.to_string());
@@ -430,6 +436,8 @@ mod tests {
             no_mcp: true,
             no_web_search: true,
             no_extensions: true,
+            no_skills: true,
+            no_prompt_templates: true,
         };
         let (args, _) = child_argv(&spec, Mode::Workspace, Autonomy::Standard).unwrap();
         for expected in [
@@ -442,6 +450,8 @@ mod tests {
             "--no-mcp",
             "--no-web-search",
             "--no-extensions",
+            "--no-skills",
+            "--no-prompt-templates",
         ] {
             assert!(args.iter().any(|a| a == expected), "{expected}: {args:?}");
         }
@@ -453,6 +463,7 @@ mod tests {
         assert!(parsed.offline && parsed.no_tools && parsed.no_builtin_tools);
         assert_eq!(parsed.approve, Some(false));
         assert!(parsed.no_mcp && parsed.no_web_search && parsed.no_extensions);
+        assert!(parsed.no_skills && parsed.no_prompt_templates);
         assert_eq!(parsed.tools, Some(vec!["read".to_string(), "grep".to_string()]));
         // No narrowing flag, none forwarded.
         let (plain, _) = child_argv(&self::spec(None), Mode::Workspace, Autonomy::Standard).unwrap();

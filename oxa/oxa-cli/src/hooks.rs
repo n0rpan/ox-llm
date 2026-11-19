@@ -293,6 +293,8 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
                                 no_mcp: i.args.no_mcp,
                                 no_web_search: i.args.no_web_search,
                                 no_extensions: i.args.no_extensions,
+                                no_skills: i.args.no_skills,
+                                no_prompt_templates: i.args.no_prompt_templates,
                             },
                         };
                         let agent_dir = if i.dirs.agent_dir.is_absolute() {
