@@ -326,7 +326,7 @@ fn native_unknown_cost_survives_reopen_and_closes_capped_admission() {
             .err()
             .unwrap(),
         429,
-        "budget_exceeded",
+        "cost_unknown_history",
     );
 }
 

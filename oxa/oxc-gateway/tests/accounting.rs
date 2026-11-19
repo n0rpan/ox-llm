@@ -1042,7 +1042,7 @@ fn cancelled_unpriced_request_keeps_cost_unknown() {
             .reserve(&json!(1), true, &model(), 32)
             .err()
             .map(|error| (error.status, error.code)),
-        Some((429, "budget_exceeded"))
+        Some((429, "cost_unknown_history"))
     );
 }
 
