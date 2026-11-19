@@ -12,6 +12,10 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Tools on by default",
         "Tools the model gets in a new session.",
     )
+    .key(
+        Kind::StringList,
+        "[\"read\",\"bash\",\"edit\",\"write\",\"grep\",\"find\",\"ls\"]",
+    )
     .control(Control::MultiSelect(Options::Tools))
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -141,6 +145,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Search provider",
         "Search provider; none turns the tool off.",
     )
+    .key(Kind::Enum(&["brave", "none"]), "\"brave\"")
     .choice(&[
         ("brave", "Brave Search, needs a key"),
         ("none", "turns the tool off"),
