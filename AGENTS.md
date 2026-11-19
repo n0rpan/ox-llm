@@ -14,10 +14,19 @@ maintainer, who says in the PR when a hardware check is needed.
 - Keep engine transport selection, native binary/launch configuration, `allowRemote`, share
   authority, login/token paths and `oxa.inbox.headless` user-only. A project file must never override these decisions.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
-- Preserve sandbox/bwrap enforcement and file-tool denials for private paths. Only explicit
-  owner-selected yolo deliberately disables the permission floor. Off Linux there is no OS sandbox
-  (owner policy, #1512): in-process guards stay, bash gets the same cleared base environment, and
-  the bash network is not restricted there; the start notice and the model env note say so.
+- **Sandbox standard (owner decision, #1512 and 2026-11-19). Do not add an OS sandbox outside these rules:**
+  - **Interactive CLI the owner talks to:** no OS sandbox by default, on Linux and macOS alike. A
+    dangerous command gets an owner approval (once, this session, always, deny), never bwrap.
+  - **Yolo:** no OS sandbox anywhere. That covers the owner's session and every worker, subagent,
+    lead-started, headless and unattended run it starts. Yolo never asks. It hard-refuses only
+    publishing secrets and an OS-breaking wipe, and the owner's typed yes passes everything else.
+  - **Unattended runs without yolo** (workers, subagents, headless, `oxa work`) keep bwrap by default.
+  - **In-process guards stay in every mode:** secret masking, file-tool denials for private paths,
+    user-only settings, offline mode.
+  - **Reviews:** a finding that asks to sandbox an interactive or yolo path contradicts this standard.
+    Answer it by citing this rule, and do not apply it. A change that re-adds an OS sandbox to those
+    paths is a P1 finding.
+  - Off Linux the bash network is not restricted. The start notice and the model env note say so.
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
   in the ledger (an unknown cost is recorded as unknown). Limits are owner configuration: with no cap
@@ -231,7 +240,7 @@ Run these in GitHub CI before saying a task is done. Automatic local helpers mus
    `checks.yml`, the receipt scrubber, allow-lists, the oxa sandbox, permissions and secret handling. Don't
    split or obfuscate strings to get past a scanner. A test fixture that must look like a secret gets a
    narrow, exact-path exclusion with a written reason, reviewed as T3.
-   The user-selected yolo mode is the single deliberate exception, where the user has switched the permission floor off for the session.
+   The user-selected yolo mode and the interactive no-OS-sandbox default (see the sandbox standard above) are deliberate exceptions, not weakenings.
 2. **No secrets, keys, tokens, transcripts, personal data, real home paths, host names or e-mail
    addresses** in code, tests, fixtures, docs or commit messages. Use placeholder paths (`~/project`), `example.invalid` and
    synthetic data. Commit with a GitHub no-reply e-mail address.
