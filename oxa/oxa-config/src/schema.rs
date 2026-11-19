@@ -74,6 +74,11 @@ const SCHEMA: &[KeyDef] = &[
     key("compaction.enabled", Kind::Bool, "true"),
     key("compaction.keepRecentTokens", Kind::Number, "4000"),
     key("compaction.modelOverrides", Kind::Object, "null"),
+    key(
+        "compaction.profile",
+        Kind::Enum(&["auto", "local", "cloud"]),
+        "\"auto\"",
+    ),
     key("compaction.reserveTokens", Kind::Number, "16384"),
     key("defaultModel", Kind::String, "null"),
     key(
