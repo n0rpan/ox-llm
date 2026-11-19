@@ -870,10 +870,14 @@ fn prepare(
         |patterns| !patterns.is_empty(),
     );
     let resuming = owner_chat || a.continue_ || a.session.is_some() || a.fork.is_some() || a.resume;
-    let owner_scope = if a.model.is_none() && !resuming && !child.nested() {
-        a.models.as_deref().unwrap_or_default()
+    // The scope is the owner's: `--models` or the user settings' `enabledModels`. A project
+    // file setting it is not the owner choosing a transport (never used for that here).
+    let owner_scope: Vec<String> = if a.model.is_none() && !resuming && !child.nested() {
+        a.models
+            .clone()
+            .unwrap_or_else(|| user_settings.list("enabledModels"))
     } else {
-        &[]
+        Vec::new()
     };
     let requested_model = a.model.clone().or_else(|| continued_go.clone()).or_else(|| {
         // The core chooses a restored/scoped model instead of an unused default.
@@ -909,7 +913,7 @@ fn prepare(
         dirs,
         crate::in_process::ModelSelection {
             pattern: requested_model.as_deref(),
-            scope: owner_scope,
+            scope: &owner_scope,
             endpoint: &endpoint.name,
             // Delegated model arguments still need a user-enabled provider:
             // a key or `true` in user settings, never a project file.
@@ -918,7 +922,7 @@ fn prepare(
             owner_selected: !child.nested()
                 && env.get(oxa_work::PlannedTask::DELEGATED_MODEL_ENV).is_none()
                 && (a.model.is_some()
-                    || continued_go.is_some()
+                    || (continued_go.is_some() && user_settings.bool(crate::in_process::GO_SETTING, false))
                     || !owner_scope.is_empty()
                     || requested_model
                         .as_ref()

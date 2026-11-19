@@ -196,6 +196,17 @@ gateway for sessions and `--list-models`. The default is `false`. Offline mode
 refuses before opening the gateway; configuration or gateway failures are returned
 directly. Project settings cannot enable this transport or change its cloud policy.
 
+The OpenCode Go subscription is the exception to that switch: a Go key in the
+owner's secrets file (`~/.config/oxc/llm/cloud-secrets.json`, the `opencode`
+entry) already enables the Go transport for the owner's own model choice, without
+`inProcessCloud`. `oxa.cloud.opencode.enabled: false` in the user settings opts
+out again, and `true` enables Go even for a delegated or restored model. Transport
+selection stays user-only: a project settings file, a model a launcher delegated
+through `oxa work`'s task file, and a model restored by `--continue` never turn
+the transport on by themselves. A configured local alias keeps a request local
+only when the alias owns the asked model exactly; a fuzzy local match does not
+hide the Go model of that name.
+
 Set `oxa.cloud.discover_models` to `true` to discover models at startup for the
 configured OpenRouter, OpenAI and Anthropic API keys. It also enables the
 OpenCode model cache when that provider is configured. A fresh cached catalog

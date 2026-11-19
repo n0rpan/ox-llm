@@ -239,16 +239,6 @@ impl Budget {
         model: &Model,
         output: u64,
     ) -> Result<Hold, Refusal> {
-        self.reserve_subscription_with_budget(limits, ledger_enabled, model, output, None)
-    }
-    pub(crate) fn reserve_subscription_with_budget(
-        &self,
-        limits: Option<SubscriptionLimits>,
-        ledger_enabled: bool,
-        model: &Model,
-        output: u64,
-        cap: Option<&Value>,
-    ) -> Result<Hold, Refusal> {
         let go = model.provider == "opencode";
         if !go && limits.is_none() {
             return Err(SubscriptionLimits::missing());

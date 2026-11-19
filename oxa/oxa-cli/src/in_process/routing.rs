@@ -163,3 +163,24 @@ impl Engine for Routed {
         Ok(())
     }
 }
+
+/// `true` when the catalog owns `pattern` itself: a configured alias or model name equal to it,
+/// or a configured glob that matches it. A fuzzy match on a *different* name (`…-local` matching
+/// `…flash`) does not make the local catalog the owner, so it may not exclude the cloud model of
+/// exactly that name.
+pub(super) fn catalog_owns(pattern: &str, endpoint: &str, models: impl IntoIterator<Item = String>) -> bool {
+    /// The name without a `:thinking` suffix, case-folded: the resolver's own spelling rules.
+    fn bare(model: &str) -> String {
+        let model = model.trim().to_ascii_lowercase();
+        match model.find(':') {
+            Some(i) => model[..i].to_string(),
+            None => model,
+        }
+    }
+    let available = model_refs(endpoint, models);
+    let want = bare(pattern);
+    oxa_config::resolve_scoped(&[pattern.to_string()], &available)
+        .0
+        .iter()
+        .any(|model| bare(&model.model) == want)
+}

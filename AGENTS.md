@@ -26,7 +26,14 @@ maintainer, who says in the PR when a hardware check is needed.
 - OpenCode Go reserves subscription tokens only, including when the provider falls back to its
   paid balance. `oxa.cloud.daily_budget_usd` applies to metered API admission. Record actual Go
   charges reported by the provider in the ledger and include them in the shared daily spend.
-  Preserve subscription token accounting and provider-side limits.
+  Preserve subscription token accounting and provider-side limits. A configured
+  `oxa.cloud.subscription_limits` is advisory: it warns at 80% and 100% and is recorded, it is
+  not a local refusal (#1443/#1444).
+- Keyed Go: a Go key in the owner's own secrets file enables the Go subscription transport for
+  the owner's own model choice, with `oxa.cloud.opencode.enabled: false` as the opt-out. Engine
+  transport selection stays user-only: no project setting, no delegated `oxa work` model and no
+  model restored by `--continue` enables it, and a local alias owns a request only on an exact
+  match.
 - Go/OpenRouter parsing should tolerate compatible optional fields and stream variations,
   while validating numeric type, sign, range and finiteness before accounting or execution.
 - v0.2.1 has no Python in the product/runtime path; build/test tooling is separate.

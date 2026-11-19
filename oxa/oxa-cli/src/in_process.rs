@@ -16,7 +16,7 @@ use std::{sync::Arc, time::Duration};
 mod routing;
 
 pub(crate) const SETTING: &str = "oxa.engine.inProcessCloud";
-const GO_SETTING: &str = "oxa.cloud.opencode.enabled";
+pub(crate) const GO_SETTING: &str = "oxa.cloud.opencode.enabled";
 type Selected = (Arc<dyn Engine>, Vec<String>);
 
 pub(crate) struct ModelSelection<'a> {
@@ -263,9 +263,7 @@ pub(crate) fn restores_go_model(user: &Settings, model: &str) -> bool {
             && user
                 .get("oxa.local.models")
                 .and_then(Value::as_object)
-                .is_some_and(|models| {
-                    routing::resolve_in_catalog(model, "", models.keys().cloned()).is_some()
-                }))
+                .is_some_and(|models| routing::catalog_owns(model, "", models.keys().cloned())))
 }
 
 fn select_for(
@@ -307,15 +305,20 @@ fn select_for(
             .map(|models| models.keys().cloned().collect::<std::collections::BTreeSet<_>>())
             .unwrap_or_default()
     };
-    let requested_local = native_local
-        && requested.is_some_and(|model| {
-            routing::resolve_in_catalog(model, endpoint, aliases("oxa.local.models")).is_some()
-        });
+    let local_models = aliases("oxa.local.models");
     let cloud_models = aliases("oxa.cloud.models");
+    // A configured local alias stays local whatever shape its name has, in a single `--model`
+    // and in every `--models` pattern of the scope.
+    // Only an exact local owner excludes the Go model of the same name: a fuzzy match on
+    // another name (`opencode/x-local` for `opencode/x`) must not shadow it.
+    let local_alias =
+        |model: &str| native_local && routing::catalog_owns(model, endpoint, local_models.iter().cloned());
+    let requested_local = requested.is_some_and(local_alias);
     let requests_go = |pattern: &str| {
         routing::is_go_model(pattern, endpoint)
             && !(explicit_cloud
                 && routing::resolve_in_catalog(pattern, endpoint, cloud_models.iter().cloned()).is_some())
+            && !local_alias(pattern)
     };
     let go_requested = requested.map_or_else(
         || !scope.is_empty() && scope.iter().all(|pattern| requests_go(pattern)),
