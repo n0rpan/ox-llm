@@ -143,6 +143,7 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `compaction.reserveTokens` | number | `16384` | room kept free for the summary and the next reply |
 | `compaction.keepRecentTokens` | number | `4000` | recent context kept verbatim after a compaction |
 | `compaction.modelOverrides` | object | `null` | per-model `reserveTokens` and `keepRecentTokens` |
+| `compaction.profile` | `auto`, `local` or `cloud` | `auto` | `auto` takes `cloud` for a cloud model and `local` otherwise. `cloud` compacts at 90 % of the window, keeps 20000 tokens verbatim and writes a summary of about 2000 tokens. A `compaction.keepRecentTokens`, `oxa.compaction.summaryTarget` or `oxa.compaction.softTokens` set in any layer wins over the profile. `local` keeps the values above |
 | `oxa.compaction.idleSummary` | bool | unset | after a run that leaves the context between 80 % and 100 % of the soft limit, the summary of the next compaction is written in idle time, and that compaction reuses it with no model request if nothing it covers has changed. Unset is on |
 | `oxa.compaction.midRun` | bool | unset | compact between tool steps of a run when the context passes the compaction point; unset is on |
 | `oxa.compaction.summaryTarget` | number (tokens) | unset | soft length target of a compaction summary: the model is asked for about three quarters of it in words; `0` is no target. Unset is 700 |
@@ -198,6 +199,17 @@ Set `oxa.engine.inProcessCloud` in the user settings file to select the Rust
 gateway for sessions and `--list-models`. The default is `false`. Offline mode
 refuses before opening the gateway; configuration or gateway failures are returned
 directly. Project settings cannot enable this transport or change its cloud policy.
+
+The OpenCode Go subscription is the exception to that switch: a Go key in the
+owner's secrets file (`~/.config/oxc/llm/cloud-secrets.json`, the `opencode`
+entry) already enables the Go transport for the owner's own model choice, without
+`inProcessCloud`. `oxa.cloud.opencode.enabled: false` in the user settings opts
+out again, and `true` enables Go even for a delegated or restored model. Transport
+selection stays user-only: a project settings file, a model a launcher delegated
+through `oxa work`'s task file, and a model restored by `--continue` never turn
+the transport on by themselves. A configured local alias keeps a request local
+only when the alias owns the asked model exactly; a fuzzy local match does not
+hide the Go model of that name.
 
 Set `oxa.cloud.discover_models` to `true` to discover models at startup for the
 configured OpenRouter, OpenAI and Anthropic API keys. It also enables the
@@ -287,10 +299,13 @@ client's 30-second maximum. These settings contain no access or refresh token.
 Client transport tests inject loopback endpoints privately; production refresh
 configuration never supplies one.
 
-Subscription calls require their own positive request/token caps, retain actual
-token usage and settle zero USD. Unknown paid work retains its full token bound;
-the cap includes concurrent and crashed-process reservations. It never falls back
-to a paid API balance. Missing metered pricing still refuses metered requests.
+ChatGPT requires positive request and token caps. For OpenCode Go,
+`oxa.cloud.subscription_limits` is optional and has no default. If configured,
+oxa warns when projected usage reaches 80% or 100% of either limit, including
+concurrent reservations, and continues the request. Both providers keep
+recording requests and tokens, including conservative reservations for unknown
+outcomes. Provider limits and credential, offline, and LAN access checks still
+apply. Missing metered pricing still refuses metered requests.
 
 OpenCode Go and every other subscription request reserve tokens only. Their cost
 is unknown to oxa, so no daily USD headroom is held for them and no local USD

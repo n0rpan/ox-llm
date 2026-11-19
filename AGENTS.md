@@ -28,7 +28,14 @@ maintainer, who says in the PR when a hardware check is needed.
 - OpenCode Go reserves subscription tokens only, including when the provider falls back to its
   paid balance. `oxa.cloud.daily_budget_usd` applies to metered API admission. Record actual Go
   charges reported by the provider in the ledger and include them in the shared daily spend.
-  Preserve subscription token accounting and provider-side limits.
+  Preserve subscription token accounting and provider-side limits. A configured
+  `oxa.cloud.subscription_limits` is advisory: it warns at 80% and 100% and is recorded, it is
+  not a local refusal (#1443/#1444).
+- Keyed Go: a Go key in the owner's own secrets file enables the Go subscription transport for
+  the owner's own model choice, with `oxa.cloud.opencode.enabled: false` as the opt-out. Engine
+  transport selection stays user-only: no project setting, no delegated `oxa work` model and no
+  model restored by `--continue` enables it, and a local alias owns a request only on an exact
+  match.
 - Go/OpenRouter parsing should tolerate compatible optional fields and stream variations,
   while validating numeric type, sign, range and finiteness before accounting or execution.
 - v0.2.1 has no Python in the product/runtime path; build/test tooling is separate.
@@ -59,6 +66,9 @@ maintainer, who says in the PR when a hardware check is needed.
   the access it grants. Yolo needs no entry.
 - **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
   registry with its surfaces and help (P1 if added outside it or without an exception reason).
+- **Worker mode.** An `oxa work` worker is started with `--yolo` only when the owner's user-layer
+  `permissions.defaultMode` is `yolo`; otherwise it keeps the sandboxed default. Project settings
+  cannot raise it. See `oxa/docs/work.md`.
 - **Work acceptance.** In `oxa work`, zero or skipped checks leave the task `Unverified`. The
   owner-only `oxa.work.localChecks` defaults to a per-package `cargo check`. A verified Rust
   acceptance receipt requires hosted test evidence at the exact head, including for changed
