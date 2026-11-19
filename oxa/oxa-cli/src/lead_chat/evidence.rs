@@ -168,6 +168,7 @@ mod tests {
                     lease: None,
                     attempts_today: 0,
                     eligible: false,
+                    evidence_incomplete: None,
                 })
                 .collect(),
         }

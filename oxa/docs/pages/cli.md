@@ -37,7 +37,7 @@ Print, JSON and RPC runs write exactly one terminal JSON result on standard erro
 
 The `outcome` is `done`, `nothing_to_do`, `blocked`, `failed` or `interrupted`. `error_class` is a stable error code (for example `engine_http`, `stream_broken`, `done_checks_failed` or `output_limit`), or `null` for successful and no-op runs. Diagnostics remain human-readable; callers should use the result and exit code instead of matching their wording.
 
-The same record also carries `session_id`, `requests`, `turns`, `tokens`, `usage_scope`, `files_changed` and `files_changed_evidence`. The session id is the current saved session, or `null` for an ephemeral/unopened session. Request and token counters cover engine calls observed in this invocation (`usage_scope: "process"`), including discarded replies, summaries and prefills; resuming does not recount saved usage. `turns` counts attempted chat/subagent calls, including retries, and excludes summary/prefill calls. Child processes report their own usage separately.
+The same record also carries `session_id`, `requests`, `turns`, `tokens`, `usage_scope`, `web_lookups` (the number of `web_search` calls), `files_changed` and `files_changed_evidence`. The session id is the current saved session, or `null` for an ephemeral/unopened session. Request and token counters cover engine calls observed in this invocation (`usage_scope: "process"`), including discarded replies, summaries and prefills; resuming does not recount saved usage. `turns` counts attempted chat/subagent calls, including retries, and excludes summary/prefill calls. Child processes report their own usage separately.
 
 `tokens` has `prompt`, `completion`, `cached`, `complete` and `unreported_requests`. Sums are over reported usage; missing usage makes them explicit lower bounds (`complete: false`), and an omitted cache count remains `null`. An in-flight request at shutdown is incomplete. Before a session opens, counters are `null` rather than a claim of zero work. `files_changed` is `null` with evidence `"unavailable"`: this worker record has no checked filesystem/commit diff. A successful tool call or model statement does not supply that evidence; the runner reports verified worktree/commit evidence separately.
 
@@ -109,8 +109,16 @@ Commands take the place of the message. They do not start a session.
 | `oxa identity [--refresh] [--offline]` | show the identity text of the system prompt; `--refresh` rewrites it from this machine and the engine, and `--offline` skips the engine |
 | `oxa share serve --model ALIAS` | start the authenticated streaming OpenAI-compatible listener for explicitly selected native local models in a build with the `share` feature |
 | `oxa share key <add\|list\|revoke>` | owner-only guest key and daily limit management, in a build compiled with the `share` feature |
+
 | `oxa report-issue <draft\|submit>` | draft a scrubbed issue for the ox-llm repository, or post a draft after confirmation |
 | `oxa wipe --session <id> \| --all [--yes] [--engine]` | remove the stored session files and spill files of one session or of all sessions. See [sessions.md](sessions.md#what-oxa-stores-and-how-to-remove-it) |
+
+`oxa work board` keeps a snapshot usable when one pull request exceeds a 100-item GitHub
+evidence page: that pull request is shown as **Evidence incomplete**, with the connection and
+configured page limit in its reason, and is excluded from all board, review, landing, and refill
+actions. Other pull requests are still published. If the merge-queue connection exceeds its page,
+observed queue entries remain usable; unobserved pull requests have unknown queue state and take
+no queue action. Both cases are reported on standard error.
 
 `-l` (`--local`) writes to the project's `.oxa/settings.json` instead of the user settings. Package sources must be git URLs or local paths. npm sources are refused.
 
@@ -181,6 +189,8 @@ $ oxa memory rm <name>
 ```
 
 - The store is one Markdown file per entry under the agent directory's `memory/` folder, with a generated `MEMORY.md` index.
+- The store is owner-only: the `memory/` folder is `0700` (an existing looser folder is tightened on the next save); entries and `MEMORY.md` are `0600`, written through a synced private temporary and renamed into place, and the lock file is created `0600`.
+- An entry body is at most 8 KiB and its frontmatter (kind and description) at most 4 KiB; a longer save is refused and nothing is written. The index reads each entry only that far, so a larger hand-written file is never read whole.
 - `list` prints the index. `show` prints an entry's kind, description and body. `rm` deletes the entry file and its index line.
 - A name with no entry exits with 1. A usage error exits with 2.
 
@@ -325,6 +335,7 @@ Every boolean variable takes the same eight words, in any case: `1`, `true`, `ye
 | `OXA_SESSION_ID`, `OXA_SESSION_FILE` | *set*: the current session id, and the session file (unset when the session is ephemeral) |
 | `OXA_PROVIDER`, `OXA_MODEL`, `OXA_REASONING_LEVEL` | *set*: the provider (always `oxe`), the model id and the effective thinking level |
 | `OXA_CODING_AGENT`, `AI_AGENT` | *set*: process markers; `OXA_CODING_AGENT` is `true` and `AI_AGENT` is `oxa` in child processes |
+| `OXA_CONFIRM_SOCK` | *set*: the path of the session's private owner confirm socket (directory 0700, socket 0600), through which oxa commands ask you for a yes |
 | `OXA_TOOL_CALL_ID` | *set*: the id of the running tool call, in the environment of an extension tool |
 | `OXA_WORK_OUTPUT_DIR` | *set*: `oxa work` sets it for done-check commands to the task's private output directory, when it has one |
 | `OXA_RUNNING_BIN` | *set*: inside the bash sandbox, the absolute path of the running `oxa` binary, when that file is readable there |
@@ -337,7 +348,7 @@ These are set by oxa for its own child processes, or are test hooks. They are no
 - `OXA_SESSION_HINT`: a parent sets `<parent session id>.s<n>` in a subagent child, and every chat request of the child names it.
 - `OXA_CHILD_SOFT_TOKENS`: a parent may set the soft compaction limit of a subagent child; it overrides `oxa.compaction.softTokens`.
 - `OXA_WORKER_DEPTH`: oxa sets `1` in the environment of a lead worker session.
-- `OXA_WORK_MODEL_DELEGATED`: `oxa work` sets `1` in a worker, so a model argument does not count as chosen by the owner.
+- `OXA_WORK_MODEL_DELEGATED`: `oxa work` sets `1` in a worker; a restored or project-selected model then never counts as chosen by the owner, while an actual model argument is still admitted by a protected Go key.
 - `OXA_WORKTREE_TRUST_SOURCE`: `oxa work` names the trusted source checkout of a managed worktree; it counts only in `--mode json`, and only when the checkout, the trust record and the approved resources verify.
 - `OXA_RUNNER_OWNS_GITHUB`: `oxa work` sets `1` in a worker: the runner owns GitHub access, so the worker runs no `gh`.
 - `OXA_NATIVE_STEERING_FD`: `oxa work` passes the inherited descriptor of the steering lease to a native worker.

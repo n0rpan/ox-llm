@@ -79,6 +79,7 @@ fn default_tune(read_page_lines: u32, read_page_bytes: u32) -> ToolTune {
         read_page_lines,
         read_page_bytes,
         bash_timeout_s: 120,
+        bash_wait_cap_s: 300,
         // L4: the output cap these windows give (a page under 8 KiB is the cap itself).
         output_cap_bytes: if read_page_bytes < 8192 {
             read_page_bytes

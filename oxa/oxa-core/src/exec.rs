@@ -185,7 +185,7 @@ pub fn request(
         progress.notify(
             &session,
             crate::Progress::RequestEnd {
-                usage: turn.as_ref().ok().map(|turn| turn.usage),
+                usage: turn.as_ref().ok().and_then(|turn| turn.usage.reported()),
                 remote: st.info.caps.remote,
             },
         );
@@ -193,7 +193,7 @@ pub fn request(
     let turn = match turn {
         Ok(turn) => turn,
         Err(error) => {
-            if crate::goal::uncertain(&error, generated, pre_cancelled) {
+            if crate::goal::uncertain_on(st.info.caps.remote, &error, generated, pre_cancelled) {
                 if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
                     goal.uncertain_request()?;
                     crate::goal::checkpoint(st, false, sink)?;
@@ -208,9 +208,14 @@ pub fn request(
     crate::Handle {
         shared: st.shared.clone(),
     }
-    .account_tokens(
-        u64::from(turn.usage.prompt.saturating_sub(turn.usage.cached)) + u64::from(turn.usage.completion),
-    );
+    .account_usage(turn.usage);
+    if turn.usage.unreported {
+        // The reply carried no usage: its spend is unknown, not zero. The goal records an
+        // uncertain request so its token cap still applies (the answer itself is kept).
+        if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
+            goal.uncertain_request()?;
+        }
+    }
     if opts.events {
         // The closing `*_end` records go through the same sink, so `message_update` sees them.
         stream.finish(&turn, &mut hooks.sink(st, sink, ui));
@@ -894,16 +899,13 @@ fn start_tool_prefill(
                     progress.notify(
                         &session,
                         crate::Progress::RequestEnd {
-                            usage: res.as_ref().ok().map(|turn| turn.usage),
+                            usage: res.as_ref().ok().and_then(|turn| turn.usage.reported()),
                             remote: false,
                         },
                     );
                 }
                 if let Ok(turn) = &res {
-                    budget.account_tokens(
-                        u64::from(turn.usage.prompt.saturating_sub(turn.usage.cached))
-                            + u64::from(turn.usage.completion),
-                    );
+                    budget.account_usage(turn.usage);
                 }
                 if let Err(error) = &res {
                     if crate::goal::uncertain(error, false, pre_cancelled) {
@@ -911,6 +913,15 @@ fn start_tool_prefill(
                             if let Err(error) = goal.uncertain_request() {
                                 res = Err(error);
                             }
+                        }
+                    }
+                }
+                // A reply without usage has no measured spend: the prefill is charged to the
+                // goal as an uncertain request, exactly like a failed one.
+                if res.as_ref().is_ok_and(|turn| turn.usage.unreported) {
+                    if let Some(goal) = &goal {
+                        if let Err(error) = goal.uncertain_request() {
+                            res = Err(error);
                         }
                     }
                 }
@@ -1702,7 +1713,7 @@ pub(crate) fn reply_event(turn: &AssistantTurn, ts_ms: u64) -> EventMessage {
         msg: turn.msg.clone(),
         ts_ms,
         stop: Some(StopReason::from(turn.finish)),
-        usage: Some(turn.usage),
+        usage: turn.usage.reported(),
         model: Some(turn.model.clone()),
         tool_name: None,
         is_error: false,

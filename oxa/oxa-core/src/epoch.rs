@@ -84,6 +84,7 @@ pub(crate) fn prefix_opts(st: &SessionState) -> PrefixOpts {
     PrefixOpts {
         diet_output: st.settings.diet_output(),
         child: crate::subagent::is_child_process(),
+        headless: crate::prefix::is_headless(),
     }
 }
 

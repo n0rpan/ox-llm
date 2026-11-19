@@ -89,6 +89,7 @@ pub(crate) fn tune_for(settings: &Settings, n_ctx: u32, soft: u32, images: bool)
         read_page_lines,
         read_page_bytes,
         bash_timeout_s: settings.bash_default_timeout(),
+        bash_wait_cap_s: settings.bash_wait_cap(),
         output_cap_bytes: cap,
         image_input: images && !settings.bool("images.blockImages", false),
         max_image_bytes: settings.read_max_image_bytes(),

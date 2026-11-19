@@ -37,6 +37,8 @@ impl ThinkingPolicy {
 pub const SUMMARY_TARGET_DEFAULT: u32 = 700;
 /// `bash` timeout in seconds when the call sets none.
 pub const BASH_TIMEOUT_DEFAULT: u32 = 120;
+/// `oxa.bash.waitCap` default: the longest a job read blocks, in seconds.
+pub const BASH_WAIT_CAP_DEFAULT: u32 = 300;
 /// The default of `oxa.bash.maxJobs`: background jobs that may run at once.
 pub const BASH_MAX_JOBS_DEFAULT: u32 = 16;
 /// The default of `oxa.read.maxImageBytes`: 20 MiB per image.
@@ -103,6 +105,11 @@ impl Settings {
     /// `oxa.bash.defaultTimeout` in seconds (F5); 0 = none. Unset = [`BASH_TIMEOUT_DEFAULT`].
     pub fn bash_default_timeout(&self) -> u32 {
         self.u32("oxa.bash.defaultTimeout", BASH_TIMEOUT_DEFAULT)
+    }
+
+    /// `oxa.bash.waitCap` in seconds: the longest a bash job read blocks. Unset = 300; at least 1.
+    pub fn bash_wait_cap(&self) -> u32 {
+        self.user_u32("oxa.bash.waitCap", BASH_WAIT_CAP_DEFAULT).max(1)
     }
 
     /// `oxa.bash.maxJobs`: how many background jobs may run at once. Unset = 16; at least 1.
@@ -374,6 +381,12 @@ mod tests {
     /// The background-job cap comes from the owner. Zero is treated as one job.
     #[test]
     fn jobs_limit_from_setting() {
+        let wait = Settings::from_values(json!({"oxa": {"bash": {"waitCap": 90}}}), json!({}));
+        assert_eq!(wait.bash_wait_cap(), 90);
+        assert_eq!(
+            Settings::from_values(json!({}), json!({})).bash_wait_cap(),
+            BASH_WAIT_CAP_DEFAULT
+        );
         let project = json!({"oxa": {"bash": {"maxJobs": 32}}});
         let set = Settings::from_values(json!({"oxa": {"bash": {"maxJobs": 3}}}), project.clone());
         assert_eq!(set.bash_max_jobs(), 3);
