@@ -616,6 +616,76 @@ pub(crate) const WRAP_UP: &str = "Wrap up now: this run is ending. Use this one 
 pub(crate) const LENGTH_CONTINUE_LOCAL: &str = "The reply reached its output limit. Continue from the cutoff and finish the original task. Do not repeat completed work.";
 pub(crate) const LENGTH_RETRY_REMOTE: &str = "The previous reply reached its output limit and was discarded. Complete the original task with a shorter, complete answer.";
 
+static HEADLESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// FH-N2: mark this process as a print or JSON run (nobody watches or answers). Set by the CLI
+/// before the session opens, because the prefix is built then.
+pub fn set_headless(on: bool) {
+    HEADLESS.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Whether this process is a headless (print or JSON) run.
+pub fn is_headless() -> bool {
+    HEADLESS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// FH-N2: the `<autonomy>` block of the preamble in a headless run. Frozen text: a change moves
+/// the prefix hash of headless sessions only.
+pub const HEADLESS_AUTONOMY: &str = "Nobody is watching this run and nobody can answer: do not ask questions, ask for confirmation or offer options. Pick the most reasonable choice, state it in one line and continue.
+Keep working until the task is done or something only the owner can fix blocks you. Never end a reply on a plan, a promise or a next step (\"I will\", \"next I would\", \"let me\"): do that step now with a tool call. Reply without a tool call only when the work is finished or you are blocked.
+Before you stop, check the result with the project's own tests or commands and read what they print. If a check fails, fix it or report that it fails.
+Report honestly: what you changed, what you ran, what still fails or is unchecked. Never claim a success you did not see.";
+
+/// FH-N2: the one nudge of a headless run whose final reply ended on a plan, a promise or a
+/// question (see [`ends_unfinished`]).
+pub const HEADLESS_NUDGE: &str = "Nobody can answer you and the task is not finished. Do not stop on a plan, a promise or a question: do the next step now with a tool call. If something blocks you, say what blocks you and what you tried; if you are done, say what you ran to check it.";
+
+/// FH-N2: whether a final reply ends on a plan or a promise ("I will ...", "let me ...", "next
+/// step ...", a line ending in a colon), or on a question when `edited` is false (no file
+/// changed in the run: after edits a closing "anything else?" is politeness, not an open
+/// task). Looks at the last sentence only.
+pub fn ends_unfinished(text: &str, edited: bool) -> bool {
+    let t = text.trim();
+    if t.is_empty() {
+        return false;
+    }
+    if t.ends_with('?') {
+        return !edited;
+    }
+    if t.ends_with(':') {
+        return true;
+    }
+    let last_line = t.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or(t);
+    let last = last_line
+        .trim()
+        .trim_end_matches(['.', '!'])
+        .rsplit(['.', '!'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_start_matches(['-', '*', ' '])
+        .to_ascii_lowercase();
+    [
+        "i will ",
+        "i'll ",
+        "let me ",
+        "now i ",
+        "now let me ",
+        "next, i ",
+        "next i ",
+        "next step",
+        "next, let me ",
+        "i am going to ",
+        "i'm going to ",
+        "i plan to ",
+        "my plan",
+        "here's my plan",
+        "here is my plan",
+    ]
+    .iter()
+    .any(|p| last.starts_with(p))
+}
+
 /// Goal controls are declared only for an explicitly active stored goal.
 pub const GOAL_CONTINUE: &str = "Continue pursuing the stored goal. Use wait when no work is available. Call goal_done with evidence only when complete or blocked.";
 pub fn goal_start(objective: &str) -> String {
@@ -626,6 +696,41 @@ pub const GOAL_DONE_DESCRIPTION: &str =
 pub const GOAL_DONE_SCHEMA: &str = r#"{"type":"object","properties":{"status":{"type":"string","enum":["complete","blocked"]},"evidence":{"type":"string","minLength":1,"maxLength":8192}},"required":["status","evidence"],"additionalProperties":false}"#;
 pub const GOAL_WAIT_DESCRIPTION: &str = "Wait without polling for 1 to 86400 seconds, capped by oxa.wait.maxSeconds and bounded by the remaining goal time budget. Cancellation interrupts the wait. With `until`, the wait checks that condition every oxa.wait.pollSeconds and returns its evidence once it is met; it ends early at the deadline or when input arrives. Kinds from the GitHub probes: `{kind:\"ci\", sha:<40 hex>, workflow:<name>}` (the run of that workflow for exactly that commit completed) and `{kind:\"pr_merged\", pr:<number>}`. Read probes answer at once from the host, which holds the GitHub login a sandboxed bash lacks: `{kind:\"pr_view\", pr:<number>}`, `{kind:\"pr_checks\", pr:<number>}`, `{kind:\"run_log_failed\", run:<id>}` (the tail of the failed-step log, secrets removed) and `{kind:\"issue_view\", issue:<number>}`. The repository is always the origin remote.";
 pub const GOAL_WAIT_SCHEMA: &str = r#"{"type":"object","properties":{"seconds":{"type":"integer","minimum":1,"maximum":86400},"reason":{"type":"string","minLength":1,"maxLength":1024},"until":{"type":"object","properties":{"kind":{"type":"string","minLength":1,"maxLength":64}},"required":["kind"]}},"required":["seconds","reason"],"additionalProperties":false}"#;
+
+#[cfg(test)]
+mod headless_tests {
+    use super::*;
+
+    #[test]
+    fn plans_promises_and_open_questions_are_unfinished() {
+        assert!(ends_unfinished(
+            "I found the bug.\nNext, I will fix the parser.",
+            true
+        ));
+        assert!(ends_unfinished("Let me run the tests", false));
+        assert!(ends_unfinished("Here is my plan:", true));
+        assert!(ends_unfinished("Which file should I change?", false));
+        assert!(ends_unfinished("- I'll start with the config loader.", false));
+    }
+
+    #[test]
+    fn finished_reports_and_polite_questions_after_edits_are_not() {
+        assert!(!ends_unfinished("", false));
+        assert!(!ends_unfinished("Fixed the parser. All 12 tests pass.", false));
+        assert!(!ends_unfinished("Done. Do you want anything else?", true));
+        assert!(!ends_unfinished(
+            "I will not be able to run the tests: no network. They are unchecked.",
+            false
+        ));
+    }
+
+    #[test]
+    fn autonomy_text_is_stable_and_avoids_the_banned_words() {
+        assert!(!HEADLESS_AUTONOMY.contains("date"));
+        assert!(!HEADLESS_NUDGE.contains("date"));
+        assert!(HEADLESS_AUTONOMY.len() < 1100);
+    }
+}
 
 #[cfg(test)]
 mod tests {

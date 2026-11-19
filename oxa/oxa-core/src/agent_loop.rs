@@ -144,6 +144,8 @@ fn run_inner(
     let mut wrapping_up = false;
     let mut wrap_up_failure = None;
     let mut length_recoveries = 0;
+    // FH-N2: a headless run gets one nudge when its final reply ends on a plan or a promise.
+    let mut headless_nudged = false;
     // The repeat guard warns the user once per run (`repeat.rs`, #1448).
     let mut repeat_warned = false;
     // `oxa.maxTurns` (default unset: no limit): model replies of this run (#507).
@@ -862,6 +864,26 @@ fn run_inner(
                 push_user(st, crate::prompt::GOAL_CONTINUE.into(), sink, ui, run_msgs)?;
                 continue;
             }
+        }
+        if crate::prompt::is_headless()
+            && !headless_nudged
+            && turn.finish != Finish::Length
+            && !st.shared.cancel.is_cancelled()
+            && !st.shared.has_input()
+            && turn
+                .msg
+                .content
+                .as_deref()
+                .is_some_and(|c| crate::prompt::ends_unfinished(c, done.proof.edited()))
+        {
+            headless_nudged = true;
+            push_user(st, crate::prompt::HEADLESS_NUDGE.to_string(), sink, ui, run_msgs)?;
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Info,
+                text: "The reply ended on a plan or a question in a headless run; asking it to continue."
+                    .to_string(),
+            });
+            continue;
         }
         return Ok(RunEnd::Stopped);
     }

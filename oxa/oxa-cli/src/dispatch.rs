@@ -1612,6 +1612,9 @@ fn run_headless(
         continue_goal,
         ..
     } = prep;
+    // FH-N2: nobody watches a print or JSON run; the prefix of this session carries the
+    // autonomy block and the loop nudges once when a final reply ends on a plan.
+    oxa_core::prompt::set_headless(true);
     let mut session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
         Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),

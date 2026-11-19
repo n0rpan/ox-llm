@@ -33,6 +33,10 @@ fn subagent_spec() -> ToolSpec {
 /// The system text of a session with the diet on or off, as a parent (`child` false) or a
 /// subagent child, with or without a declared `subagent` tool.
 fn system(env: &TestEnv, diet_output: bool, child: bool, subagent: bool) -> String {
+    system_with(env, diet_output, child, subagent, false)
+}
+
+fn system_with(env: &TestEnv, diet_output: bool, child: bool, subagent: bool, headless: bool) -> String {
     let dirs = Dirs::under(env.root());
     let settings = Settings::load(&dirs, &env.work(), true);
     let opts = DiscoverOpts {
@@ -45,7 +49,11 @@ fn system(env: &TestEnv, diet_output: bool, child: bool, subagent: bool) -> Stri
     if subagent {
         specs.push(subagent_spec());
     }
-    let prefix_opts = PrefixOpts { diet_output, child };
+    let prefix_opts = PrefixOpts {
+        diet_output,
+        child,
+        headless,
+    };
     build_prefix_with(&env.work(), &resources, &specs, &[], &prefix_opts).system_text()
 }
 
@@ -136,4 +144,20 @@ fn the_new_rules_cost_exactly_their_lines() {
         (RULE_SUBAGENT.len() + 3) + (RULE_SUBAGENT_CHECK.len() + 3),
         "a declared subagent tool adds its rule and the check"
     );
+}
+
+/// FH-N2: a headless run adds the `<autonomy>` block after `<rules>`; the same options without
+/// `headless` give the bytes they gave before, so the pinned default hashes do not move.
+#[test]
+fn headless_adds_the_autonomy_block_after_the_rules_and_only_then() {
+    use oxa_core::prompt::HEADLESS_AUTONOMY;
+    let env = TestEnv::new();
+    for diet in [false, true] {
+        let plain = system_with(&env, diet, false, false, false);
+        let headless = system_with(&env, diet, false, false, true);
+        assert!(!plain.contains("<autonomy>"));
+        assert!(headless.contains(&format!("<autonomy>\n{HEADLESS_AUTONOMY}\n</autonomy>")));
+        assert!(headless.find("</rules>").unwrap() < headless.find("<autonomy>").unwrap());
+        assert_eq!(plain, system(&env, diet, false, false));
+    }
 }

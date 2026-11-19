@@ -85,6 +85,11 @@ usage, so reported reasoning tokens can be one greater than the text cap.
   the pattern, path or glob, or raise limit, to see the lines.
 - **Conciseness rule.** The system prompt asks for short tool use and a final answer of at most
   6 lines, in place of its "be concise" rule (`oxa.diet.output`, on by default).
+- **Headless autonomy.** In a print or JSON run (`oxa -p`, `--mode json`) the system prompt ends
+  with an `<autonomy>` block: nobody can answer, so do not ask, do not end a reply on a plan or a
+  promise, keep going until done or blocked, check the result, report failures honestly. If the
+  final reply still ends on a plan, a promise or an open question, the run sends one nudge to
+  continue (once per run). Interactive and RPC sessions are unchanged.
 - **No `<tools>` section.** The chat template renders the tool list from the tool JSON, so the
   system prompt leaves the `<tools>` section out.
 - **Summary length.** A compaction summary is asked for about 550 words (a target of 700
