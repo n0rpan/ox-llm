@@ -140,6 +140,8 @@ fn run_inner(
     let mut wrapping_up = false;
     let mut wrap_up_failure = None;
     let mut length_recoveries = 0;
+    // The repeat guard warns the user once per run (`repeat.rs`, #1448).
+    let mut repeat_warned = false;
     // `oxa.maxTurns` (default unset: no limit): model replies of this run (#507).
     let max_turns = st.settings.u32(crate::repeat::MAX_TURNS, 0);
     'turns: loop {
@@ -671,45 +673,69 @@ fn run_inner(
             if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
                 continue;
             }
-            // The repeat guard gave up: the same call after its notices ends the run.
-            if let Some(r) = results.iter().find(|r| r.stop) {
-                let mut text = crate::repeat::stop_text(&r.tool_name);
-                let mut code = crate::repeat::ERROR_CODE;
+            // The repeat guard's give-up point: the same call again after its notices (#1448).
+            // The run no longer ends here. The advisor keeps its authority: a delivered
+            // suggestion continues the run, an escalation still ends it. Either way the user
+            // is warned once — shown and persisted with the remedy — and the next model reply
+            // proceeds (steering and compaction run as on any turn).
+            if let Some(r) = results.iter().find(|r| r.warn) {
+                let mut text = crate::repeat::warning_text(&r.tool_name);
+                let mut escalate = false;
                 if let Some(call) = calls
                     .iter()
                     .find(|call| Some(&call.id) == r.msg.tool_call_id.as_ref())
                 {
                     match crate::advice::on_repeat(st, call, &text, sink)? {
-                        crate::advice::AdviceResult::Continue => continue,
+                        // The advisor delivered: the run continues through the warning below.
+                        crate::advice::AdviceResult::Continue => {}
+                        // No advisor, or none delivered: same warning path.
                         crate::advice::AdviceResult::Refused => {}
                         crate::advice::AdviceResult::Escalate => {
-                            code = "advisor_escalation_required";
                             text = "Advice did not resolve the failure. The worker needs a stronger tier."
                                 .into();
+                            escalate = true;
                         }
                     }
                 }
                 if st.shared.cancel.is_cancelled() {
                     return Ok(RunEnd::Aborted);
                 }
-                persist(
-                    st,
-                    EntryBody::Shown {
+                if escalate {
+                    persist(
+                        st,
+                        EntryBody::Shown {
+                            text: text.clone(),
+                            why: shown_why::NOTICE,
+                        },
+                        sink,
+                    )?;
+                    sink.emit(&AgentEvent::Notice {
+                        level: Level::Error,
                         text: text.clone(),
-                        why: shown_why::NOTICE,
-                    },
-                    sink,
-                )?;
-                sink.emit(&AgentEvent::Notice {
-                    level: Level::Error,
-                    text: text.clone(),
-                });
-                // The files edited so far are still checked and the result shown; the run is
-                // over, so a failure is not sent back to the model.
-                let _ = crate::done::check(st, &mut done, sink, ui);
-                crate::advice::observe_done(st, done.observation.take(), false, sink)?;
-                // Giving up is not a finished task: a caller must not read it as success.
-                return Ok(RunEnd::Failed(OxaError::new(code, text)));
+                    });
+                    // The files edited so far are still checked and the result shown; the run
+                    // is over, so a failure is not sent back to the model.
+                    let _ = crate::done::check(st, &mut done, sink, ui);
+                    crate::advice::observe_done(st, done.observation.take(), false, sink)?;
+                    // Not a finished task: a caller must not read it as success.
+                    return Ok(RunEnd::Failed(OxaError::new("advisor_escalation_required", text)));
+                }
+                // One warning per run; later repeats keep their model-facing notice.
+                if !repeat_warned {
+                    repeat_warned = true;
+                    persist(
+                        st,
+                        EntryBody::Shown {
+                            text: text.clone(),
+                            why: shown_why::NOTICE,
+                        },
+                        sink,
+                    )?;
+                    sink.emit(&AgentEvent::Notice {
+                        level: Level::Warning,
+                        text,
+                    });
+                }
             }
             // Steering drains after the tool batch, each message as a user message.
             deliver_steering(st, sink, ui, run_msgs)?;

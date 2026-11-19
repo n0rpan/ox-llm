@@ -29,6 +29,7 @@ impl Sandbox for NoSandbox {
             output: Vec::new(),
             exit: None,
             timed_out: false,
+            unsandboxed: false,
         }
     }
 }
