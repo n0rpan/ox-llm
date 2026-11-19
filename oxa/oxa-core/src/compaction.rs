@@ -735,6 +735,16 @@ pub(crate) fn draft_prefill(
 /// O-152: the setting that turns the boot preload off (`oxa.bootPreload: false`).
 pub const SETTING_BOOT_PRELOAD: &str = "oxa.bootPreload";
 
+/// Whether [`boot_preload`] would send a request: an empty wire, a prefill-only engine and the
+/// preload not switched off. A caller checks this before it claims the session, so a preload
+/// that has nothing to do never shows the session as busy.
+pub(crate) fn boot_preload_applies(st: &SessionState) -> bool {
+    st.transcript.wire().is_empty()
+        && st.info.prefill_only
+        && st.settings.string("cacheWarming").as_deref() != Some("off")
+        && st.settings.bool(SETTING_BOOT_PRELOAD, true)
+}
+
 /// O-152: the boot preload. While a new session waits for its first prompt, prefill its frozen
 /// prefix (tools, preamble, identity, skills index, then the project's context and `cwd`) with
 /// one zero-token request (H6), `X-Oxe-Priority: background` (H3), `X-Oxe-Snapshot: keep` when
@@ -748,11 +758,7 @@ pub const SETTING_BOOT_PRELOAD: &str = "oxa.bootPreload";
 /// lost preload is never reported as a cache miss. Errors are one warning notice. Returns
 /// whether a request completed.
 pub fn boot_preload(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) -> bool {
-    if !st.transcript.wire().is_empty()
-        || !st.info.prefill_only
-        || st.settings.string("cacheWarming").as_deref() == Some("off")
-        || !st.settings.bool(SETTING_BOOT_PRELOAD, true)
-    {
+    if !boot_preload_applies(st) {
         return false;
     }
     if !st.shared.begin_background() {
