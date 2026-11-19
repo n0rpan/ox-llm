@@ -434,7 +434,8 @@ pub(crate) fn run_calls(
             i = j;
         } else {
             let warming = !(prefilled
-                || st.goal.is_some() && matches!(prepared[i].name.as_str(), "goal_done" | "wait"))
+                || prepared[i].name == "wait"
+                || st.goal.is_some() && prepared[i].name == "goal_done")
                 && start_tool_prefill(st, &prepared, &outputs, i, &mut early);
             // Held while the call runs: an unwind ends the prefill too.
             let guard = warming.then(|| PrefillGuard(st.shared.clone()));
