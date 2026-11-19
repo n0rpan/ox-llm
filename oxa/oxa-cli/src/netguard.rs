@@ -52,28 +52,32 @@ fn with_policy(sandbox: Arc<dyn Sandbox>, settings: &Settings, github_auth: bool
 }
 
 /// Every GitHub CLI credential of this machine: the plain tokens in `hosts.yml` and the token
-/// `gh auth token` returns for each host and account it lists (keyring logins included). Runs
-/// `gh` outside the sandbox with a short deadline; any failure yields what was found so far.
-/// Reads local state only. Tokens are never logged.
+/// `gh auth token` returns for each host and account it lists (keyring logins included), in
+/// every config store `gh` may read ([`gh_config_dirs`]). Host bash runs with a cleared
+/// environment, so its `gh` can read another store than this process: every store is scrubbed.
+/// Runs `gh` outside the sandbox with a short deadline; any failure yields what was found so
+/// far. Reads local state only. Tokens are never logged.
 fn gh_host_secrets() -> Vec<String> {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    let config = std::env::var_os("GH_CONFIG_DIR")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(|x| std::path::PathBuf::from(x).join("gh")))
-        .or_else(|| home.as_ref().map(|h| h.join(".config").join("gh")));
-    let text = config
-        .and_then(|c| std::fs::read_to_string(c.join("hosts.yml")).ok())
-        .unwrap_or_default();
-    let (mut found, accounts) = parse_gh_hosts(&text);
+    let configs = gh_config_dirs(
+        std::env::var_os("GH_CONFIG_DIR").as_deref(),
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        home.as_deref(),
+    );
     let exe = trusted_gh_for(
         std::env::var_os("PATH").as_deref(),
         std::env::current_dir().ok().as_deref(),
         home.as_deref(),
     );
-    if let Some(exe) = exe {
+    let mut found = Vec::new();
+    for config in &configs {
+        let text = std::fs::read_to_string(config.join("hosts.yml")).unwrap_or_default();
+        let (tokens, accounts) = parse_gh_hosts(&text);
+        found.extend(tokens);
+        let Some(exe) = &exe else { continue };
         let mut ask = |args: &[&str]| {
-            let mut command = std::process::Command::new(&exe);
-            command.args(args);
+            let mut command = std::process::Command::new(exe);
+            command.args(args).env("GH_CONFIG_DIR", config);
             if let Some((0, out)) = oxa_work::command_runner(command, Some(4096), GH_DEADLINE) {
                 let t = out.trim();
                 if !t.is_empty() && !t.chars().any(char::is_whitespace) {
@@ -96,6 +100,28 @@ fn gh_host_secrets() -> Vec<String> {
     found.sort();
     found.dedup();
     found
+}
+
+/// The `gh` config stores a command on this machine may read: `GH_CONFIG_DIR` of this
+/// process, `$XDG_CONFIG_HOME/gh` and `$HOME/.config/gh` (the defaults a cleared environment
+/// falls back to). Duplicates removed, order kept.
+fn gh_config_dirs(
+    gh_config_dir: Option<&std::ffi::OsStr>,
+    xdg_config_home: Option<&std::ffi::OsStr>,
+    home: Option<&Path>,
+) -> Vec<std::path::PathBuf> {
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    let candidates = [
+        gh_config_dir.map(std::path::PathBuf::from),
+        xdg_config_home.map(|x| std::path::PathBuf::from(x).join("gh")),
+        home.map(|h| h.join(".config").join("gh")),
+    ];
+    for dir in candidates.into_iter().flatten() {
+        if !dir.as_os_str().is_empty() && !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
 }
 
 /// The plain `oauth_token` values and the (host, user) pairs of a `gh` `hosts.yml`. A line
@@ -341,6 +367,42 @@ pub(crate) fn endpoint_notice(base_url: &str) -> Option<(Level, String)> {
 
 #[cfg(test)]
 mod tests {
+    /// An owner `GH_CONFIG_DIR` does not hide the default stores: host bash runs with a cleared
+    /// environment, so its `gh` reads `$XDG_CONFIG_HOME/gh` or `$HOME/.config/gh`, and their
+    /// tokens must be scrubbed too.
+    #[test]
+    fn every_gh_config_store_is_scrubbed() {
+        use std::ffi::OsStr;
+        use std::path::{Path, PathBuf};
+        let dirs = super::gh_config_dirs(
+            Some(OsStr::new("/owner/gh")),
+            Some(OsStr::new("/home/u/.config")),
+            Some(Path::new("/home/u")),
+        );
+        assert_eq!(
+            dirs,
+            [PathBuf::from("/owner/gh"), PathBuf::from("/home/u/.config/gh")]
+        );
+        let dirs = super::gh_config_dirs(
+            Some(OsStr::new("/owner/gh")),
+            Some(OsStr::new("/xdg")),
+            Some(Path::new("/home/u")),
+        );
+        assert_eq!(
+            dirs,
+            [
+                PathBuf::from("/owner/gh"),
+                PathBuf::from("/xdg/gh"),
+                PathBuf::from("/home/u/.config/gh")
+            ]
+        );
+        assert_eq!(
+            super::gh_config_dirs(None, None, Some(Path::new("/home/u"))),
+            [PathBuf::from("/home/u/.config/gh")]
+        );
+        assert!(super::gh_config_dirs(Some(OsStr::new("")), None, None).is_empty());
+    }
+
     #[test]
     fn hosts_yml_yields_every_account_and_plain_token() {
         let yml = "github.com:\n    users:\n        alice:\n            oauth_token: SYNTH_ONE\n        bob:\n    oauth_token: SYNTH_TWO\n    git_protocol: https\n    user: alice\nghe.example:\n    users:\n        carol:\n";

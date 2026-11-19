@@ -495,3 +495,45 @@ fn yolo_bash_sees_the_docker_socket() {
     assert_eq!(String::from_utf8_lossy(&r.output), "reachable\n");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The network-disabled host path finds and probes bwrap once, when the run is built: a
+/// `bwrap` a command later places in a writable `PATH` entry is never run, not even as a probe.
+#[test]
+fn net_off_bwrap_is_pinned_before_model_commands() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work()).unwrap();
+    let writable = env.root().join("writable-bin");
+    std::fs::create_dir_all(&writable).unwrap();
+    let path = format!(
+        "{}:{}",
+        writable.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let switch = YoloSwitch::new(Autonomy::Standard);
+    let sb =
+        FullAccess::new(Arc::new(NoSandbox), switch, &path, env.home(), false, true).with_os_sandbox(false);
+    let pinned = sb.launch_argv(&spec(&env, "true".into(), true));
+
+    let marker = env.root().join("shim-ran");
+    let shim = writable.join("bwrap");
+    std::fs::write(
+        &shim,
+        format!("#!/bin/sh\ntouch '{}'\nexit 0\n", marker.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let s = spec(&env, "true".into(), true);
+    let again = sb.launch_argv(&s);
+    match (&pinned, &again) {
+        (Ok(first), Ok(second)) => {
+            assert_eq!(first[0], second[0], "the bwrap stays the one found at start");
+            assert_ne!(second[0], shim.to_string_lossy(), "{second:?}");
+        }
+        (Err(_), Err(_)) => {}
+        other => panic!("the bwrap decision changed after start: {other:?}"),
+    }
+    let _ = sb.run(&s, &CancelToken::new(), &mut |_| {});
+    assert!(!marker.exists(), "a bwrap placed on PATH after start was run");
+}
