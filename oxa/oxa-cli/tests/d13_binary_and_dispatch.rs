@@ -8,6 +8,7 @@ use oxa_session::{FsStore, SessionStore};
 use std::io::{Cursor, Write};
 use std::net::TcpListener;
 use std::path::Path;
+use std::process::{Command, Stdio as ProcessStdio};
 use std::sync::{Arc, Mutex};
 
 /// A byte sink the test can read back after `run` consumed the boxed writer.
@@ -683,4 +684,41 @@ fn send_spills_large_messages_where_the_receiving_session_can_read_them() {
     assert_eq!(messages.len(), 1);
     let pointer = std::fs::read_to_string(&messages[0]).unwrap();
     assert!(pointer.contains(&spills[0].display().to_string()), "{pointer}");
+}
+
+#[test]
+fn send_reads_an_oversized_message_from_stdin_through_the_binary() {
+    let env = TestEnv::new();
+    let full = "owner text ".repeat(24_000);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["send", "session-638", "-"])
+        .current_dir(env.work())
+        .env_clear()
+        .envs(env.envs(&closed_url()))
+        .stdin(ProcessStdio::piped())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::piped())
+        .spawn()
+        .expect("spawn actual oxa binary");
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(full.as_bytes())
+        .expect("write oversized message");
+    let output = child.wait_with_output().expect("wait for oxa");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+
+    let dirs = oxa_config::Dirs::under(env.root());
+    let spills: Vec<_> = std::fs::read_dir(dirs.agent_dir.join("tmp/session-638"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(spills.len(), 1);
+    assert_eq!(std::fs::read_to_string(&spills[0]).unwrap(), full);
 }
