@@ -246,6 +246,13 @@ impl LeadOwnerBinding {
         Ok(store)
     }
 
+    /// The entries of the selected Session, read without its writer lock: no append, no sync and
+    /// no checkpoint. `FsStore::load` drops a torn last line in memory and never repairs the file.
+    pub(crate) fn read_entries(&self) -> Result<Vec<Entry>, OxaError> {
+        self.recheck()?;
+        FsStore::new(self.dirs.sessions_dir.clone()).load(&self.session)
+    }
+
     pub(crate) fn recheck(&self) -> Result<(), OxaError> {
         canonical(&self.project)?;
         private_directory(&self.dirs.sessions_dir, self.uid)?;
