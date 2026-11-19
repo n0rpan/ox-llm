@@ -156,6 +156,14 @@ pub(crate) fn with_keyed_defaults<'a>(user: &'a Settings, dirs: &Dirs) -> Cow<'a
             // A mistyped catalog keeps its usual refusal.
             Some(_) => return Cow::Borrowed(user),
         };
+        // An owner route with its own endpoint (a proxy, a local mock) points the provider
+        // elsewhere: built-ins at the default endpoint would split discovery, so skip them.
+        let elsewhere = |provider: &str| {
+            models
+                .values()
+                .any(|route| route["provider"] == provider && route.get("base_url").is_some())
+        };
+        routes.retain(|(_, route)| !route["provider"].as_str().is_some_and(elsewhere));
         for (alias, route) in routes {
             models.entry(alias).or_insert(route);
         }
@@ -247,6 +255,22 @@ mod tests {
             .unwrap();
         assert_eq!(models["openai/gpt-5"], own);
         assert!(models.contains_key("anthropic/claude-sonnet-5-5"));
+    }
+
+    #[test]
+    fn an_owner_endpoint_for_a_provider_keeps_the_built_ins_out() {
+        let (dirs, root) = home("endpoint");
+        write_keys(&root, r#"{"openai":"synthetic-key"}"#);
+        let own = json!({"provider":"openai","upstream_model":"m","base_url":"https://proxy.example.com/v1",
+            "context_window":1000,"max_output":10});
+        let settings =
+            user(json!({"oxa":{"engine":{"inProcessCloud":true},"cloud":{"models":{"mine":own}}}}));
+        let applied = with_keyed_defaults(&settings, &dirs);
+        let models = applied
+            .get("oxa.cloud.models")
+            .and_then(Value::as_object)
+            .unwrap();
+        assert_eq!(models.len(), 1);
     }
 
     #[test]

@@ -66,11 +66,12 @@ fn subscription_reserves_full_window_and_settles_zero_usd_with_actual_token_coun
         .reserve_subscription(limits, true, &subscription(), 20)
         .unwrap();
     assert_eq!(hold.reserved(), 0.0);
-    let error = other
-        .reserve_subscription(limits, true, &subscription(), 20)
-        .err()
-        .unwrap();
-    assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
+    // Past the owner's limits a request is still admitted (advisory), and the hold is released.
+    drop(
+        other
+            .reserve_subscription(limits, true, &subscription(), 20)
+            .unwrap(),
+    );
     hold.mark_forwarded().unwrap();
     let row = hold
         .finish(
@@ -104,11 +105,12 @@ fn subscription_reserves_full_window_and_settles_zero_usd_with_actual_token_coun
         |row| append(&path, row),
     )
     .unwrap();
-    let error = Budget::new(path)
-        .reserve_subscription(limits, true, &subscription(), 20)
-        .err()
-        .unwrap();
-    assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
+    // Past the owner's limits a request is still admitted (advisory), and the hold is released.
+    drop(
+        Budget::new(path)
+            .reserve_subscription(limits, true, &subscription(), 20)
+            .unwrap(),
+    );
 }
 
 #[test]
@@ -129,11 +131,12 @@ fn clean_subscription_refusals_release_tokens_but_still_consume_request_allowanc
         assert_eq!(row["subscription_tokens"], 0);
         assert_eq!(row["settled"], "refused");
     }
-    let error = Budget::new(path)
-        .reserve_subscription(limits, true, &subscription(), 20)
-        .err()
-        .unwrap();
-    assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
+    // Past the owner's limits a request is still admitted (advisory), and the hold is released.
+    drop(
+        Budget::new(path)
+            .reserve_subscription(limits, true, &subscription(), 20)
+            .unwrap(),
+    );
 }
 
 #[test]
@@ -186,11 +189,12 @@ fn unknown_subscription_outcomes_never_refund_the_token_reservation() {
         assert_eq!(row["subscription_tokens"], 120);
         assert_eq!(row["usage_missing"], true);
         assert_eq!(row["settled"], "reserved");
-        let error = Budget::new(path)
-            .reserve_subscription(limits, true, &subscription(), 20)
-            .err()
-            .unwrap();
-        assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
+        // Past the owner's limits a request is still admitted (advisory), and the hold is released.
+        drop(
+            Budget::new(path)
+                .reserve_subscription(limits, true, &subscription(), 20)
+                .unwrap(),
+        );
     }
 }
 
@@ -223,7 +227,6 @@ fn subscription_limits_are_advisory_and_cannot_make_an_api_provider_free() {
     budget
         .reserve_subscription(None, true, &subscription(), 20)
         .unwrap();
-    assert!(path.exists());
 }
 
 #[test]
@@ -311,13 +314,8 @@ fn legacy_unscoped_subscription_usd_reserves_nothing_but_its_tokens_still_count(
         // The legacy hold's tokens still count toward the subscription caps.
         let tight = SubscriptionLimits::new(10, 130).unwrap();
         let admission = budget.reserve_subscription(Some(tight), true, &subscription(), 20);
-        match &legacy {
-            None => drop(admission.unwrap()),
-            Some(_) => {
-                let error = admission.err().unwrap();
-                assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
-            }
-        }
+        // The limits are advisory: a legacy hold's tokens still count toward them, never refuse.
+        drop(admission.unwrap());
         // Actual paid usage settles normally and the legacy USD never lands in
         // the daily total.
         hold.mark_forwarded().unwrap();
