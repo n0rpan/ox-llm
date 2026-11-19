@@ -3,6 +3,8 @@
 #[allow(dead_code, unexpected_cfgs)] // Shared gateway mock; CLI exercises JSON, not feature-gated form auth.
 #[path = "../../oxc-gateway/tests/common/openai.rs"]
 mod upstream;
+#[path = "common/work_repo.rs"]
+mod work_repo;
 use oxa_fake::TestEnv;
 use serde_json::{json, Value};
 use std::{
@@ -53,10 +55,16 @@ fn setup(env: &TestEnv, base: &str) {
     write!(file, "{}", json!({"opencode":CREDENTIAL})).unwrap();
 }
 fn run(env: &TestEnv, args: &[&str]) -> Output {
+    run_with(env, args, &[])
+}
+fn run_with(env: &TestEnv, args: &[&str], extra: &[(&str, &str)]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
     cmd.current_dir(env.work())
         .env_clear()
         .envs(env.envs("http://127.0.0.1:9"));
+    for (name, value) in extra {
+        cmd.env(name, value);
+    }
     cmd.args(args).stdin(Stdio::null()).output().unwrap()
 }
 fn terminal(output: &Output) -> Value {
@@ -82,6 +90,720 @@ fn rows(env: &TestEnv) -> Vec<Value> {
         })
         .collect()
 }
+#[test]
+fn a_key_enables_go_catalog_and_plan_chat_without_legacy_enable_or_limits() {
+    let env = TestEnv::new();
+    let patterns = [
+        ("--model", MODEL),
+        ("--model", "synthetic-flash"),
+        ("--model", "oxe/opencode/synthetic-flash"),
+        ("--models", MODEL),
+        ("--models", "*-flash"),
+    ];
+    let mock = MockOpenAi::start_with(|base| {
+        let mut replies = vec![Reply::json(discovery(base))];
+        for _ in patterns {
+            replies.extend([
+                Reply::json(discovery(base)),
+                stream(json!({"content":"synthetic plan reply"}), "stop"),
+            ]);
+        }
+        replies
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.home().join(".oxa/agent/settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    let cloud = settings["oxa"]["cloud"].as_object_mut().unwrap();
+    cloud.remove("subscription_limits");
+    cloud["opencode"].as_object_mut().unwrap().remove("enabled");
+    fs::write(&path, settings.to_string()).unwrap();
+
+    let list = run(&env, &["--list-models"]);
+    let status = String::from_utf8_lossy(&list.stderr);
+    assert!(list.status.success(), "{status}");
+    assert!(String::from_utf8_lossy(&list.stdout).contains(MODEL));
+    assert!(status.contains("OpenCode Go: on"), "{status}");
+    assert!(status.contains("oxa.cloud.opencode.enabled"), "{status}");
+    assert!(!status.contains(CREDENTIAL));
+
+    for (flag, pattern) in patterns {
+        let output = run(&env, &[flag, pattern, "--no-tools", "-p", "Synthetic task"]);
+        assert!(
+            output.status.success(),
+            "{pattern}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("synthetic plan reply"));
+    }
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), patterns.len());
+    for row in ledger {
+        assert_eq!(row["billing"], "subscription");
+        assert_eq!(row["cost_usd"].as_f64(), Some(0.0));
+        assert_eq!(row["settled"], "usage");
+    }
+    assert_eq!(mock.requests().len(), 1 + 2 * patterns.len());
+    mock.assert_healthy();
+}
+
+fn served_mock() -> MockOpenAi {
+    MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"Synthetic work answer"}), "stop"),
+        ]
+    })
+}
+
+#[test]
+fn key_only_go_is_available_to_a_delegated_worker() {
+    let env = TestEnv::new();
+    let mock = served_mock();
+    let (_, record) = run_go_work_taskfile(&env, &mock, None);
+    assert!(record["worker"].is_object(), "{record}");
+    assert!(
+        matches!(record["worker"]["exit_code"].as_i64(), Some(0 | 4)),
+        "{record}"
+    );
+    assert_eq!(mock.requests().iter().filter(|r| r.method == "POST").count(), 1);
+    assert_eq!(rows(&env)[0]["remote_provider"], "opencode");
+    mock.assert_healthy();
+}
+
+#[test]
+fn an_enabled_owner_lets_a_delegated_worker_use_go() {
+    let env = TestEnv::new();
+    let mock = served_mock();
+    let (_, record) = run_go_work_taskfile(&env, &mock, Some(true));
+    assert!(
+        matches!(record["worker"]["exit_code"].as_i64(), Some(0 | 4)),
+        "{record}"
+    );
+    assert_eq!(mock.requests().iter().filter(|r| r.method == "POST").count(), 1);
+    assert_eq!(rows(&env)[0]["remote_provider"], "opencode");
+    mock.assert_healthy();
+}
+
+#[test]
+fn user_false_opts_go_out_for_everyone() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start(vec![]);
+    let (output, record) = run_go_work_taskfile(&env, &mock, Some(false));
+    assert!(record["worker"].is_object(), "{record}");
+    assert!(!output.status.success());
+    let owner = run(
+        &env,
+        &["--model", MODEL, "--no-tools", "-p", "Synthetic owner task"],
+    );
+    assert!(!owner.status.success());
+    assert!(mock.requests().is_empty());
+    assert!(!env.agent_dir().join("cloud-ledger").exists());
+    mock.assert_healthy();
+}
+
+#[test]
+fn project_settings_cannot_enable_go() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start(vec![]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings["oxa"]["cloud"]["opencode"]["enabled"] = json!(false);
+    fs::write(path, settings.to_string()).unwrap();
+    env.write(
+        "work/.oxa/settings.json",
+        &json!({"oxa":{"cloud":{"opencode":{"enabled":true}},"engine":{"inProcessCloud":true}}}).to_string(),
+    );
+    let output = run(&env, &["--model", MODEL, "--no-tools", "-p", "Synthetic task"]);
+    assert!(!output.status.success());
+    assert!(mock.requests().is_empty());
+    assert!(!env.agent_dir().join("cloud-ledger").exists());
+    mock.assert_healthy();
+}
+
+#[test]
+fn no_key_means_no_go() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start(vec![]);
+    setup(&env, &format!("http://{}", mock.address()));
+    fs::remove_file(env.home().join(".config/oxc/llm/cloud-secrets.json")).unwrap();
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    fs::write(path, settings.to_string()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .current_dir(env.work())
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:9"))
+        .env("OXA_SUBAGENT_DEPTH", "1")
+        .args(["--model", MODEL, "--no-tools", "-p", "Synthetic child task"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(mock.requests().is_empty());
+    assert!(!env.agent_dir().join("cloud-ledger").exists());
+    mock.assert_healthy();
+}
+
+#[test]
+fn taskfile_can_use_go_explicitly_enabled_by_the_owner() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"Synthetic work answer"}), "stop"),
+        ]
+    });
+    let (_, record) = run_go_work_taskfile(&env, &mock, Some(true));
+    assert!(
+        matches!(record["worker"]["exit_code"].as_i64(), Some(0 | 4)),
+        "{record}"
+    );
+    assert_eq!(
+        mock.requests()
+            .iter()
+            .filter(|request| request.method == "POST")
+            .count(),
+        1
+    );
+    assert_eq!(rows(&env)[0]["remote_provider"], "opencode");
+    mock.assert_healthy();
+}
+
+fn run_go_work_taskfile(env: &TestEnv, mock: &MockOpenAi, explicit: Option<bool>) -> (Output, Value) {
+    setup(env, &format!("http://{}", mock.address()));
+    work_repo::setup(env, "[]");
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    match explicit {
+        Some(value) => settings["oxa"]["cloud"]["opencode"]["enabled"] = json!(value),
+        None => {
+            settings["oxa"]["cloud"]["opencode"]
+                .as_object_mut()
+                .unwrap()
+                .remove("enabled");
+        }
+    }
+    fs::write(path, settings.to_string()).unwrap();
+    env.write(
+        "work/tasks.json",
+        &json!([{"id":"test","branch":"agent/test","model":MODEL,"prompt":"Synthetic work task"}])
+            .to_string(),
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:9"))
+        .args(["work", "../tasks.json"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let record: Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|_| panic!("missing work record: {}", String::from_utf8_lossy(&output.stderr)));
+    (output, record)
+}
+
+#[test]
+fn supervised_child_model_argument_uses_keyed_go() {
+    let env = TestEnv::new();
+    let mock = served_mock();
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    fs::write(path, settings.to_string()).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .current_dir(env.work())
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:9"))
+        .env("OXA_SUBAGENT_DEPTH", "1")
+        .args(["--model", MODEL, "--no-tools", "-p", "Synthetic child task"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(mock.requests().iter().filter(|r| r.method == "POST").count(), 1);
+    assert_eq!(rows(&env)[0]["remote_provider"], "opencode");
+    mock.assert_healthy();
+}
+
+#[test]
+fn native_go_continue_of_a_keyed_session_needs_the_owner_switch() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"Synthetic first reply"}), "stop"),
+            Reply::json(discovery(base)),
+            stream(json!({"content":"Synthetic resumed reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    fs::write(&path, settings.to_string()).unwrap();
+
+    let first = run(
+        &env,
+        &["--model", MODEL, "--no-tools", "-p", "Synthetic first task"],
+    );
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(String::from_utf8_lossy(&first.stdout).contains("Synthetic first reply"));
+    let posts = || {
+        mock.requests()
+            .iter()
+            .filter(|request| request.method == "POST")
+            .count()
+    };
+    assert_eq!(posts(), 1);
+
+    // The restored model is provenance-less: the session records the ID, not the owner's
+    // transport choice, so continuing it alone does not open the Go transport.
+    let resumed = run(
+        &env,
+        &["--continue", "--no-tools", "-p", "Synthetic resumed task"],
+    );
+    assert!(!resumed.status.success());
+    assert_eq!(posts(), 1, "no upstream request without the owner switch");
+    assert_eq!(rows(&env).len(), 1);
+
+    // The owner's own switch does continue it.
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings["oxa"]["cloud"]["opencode"]["enabled"] = json!(true);
+    fs::write(&path, settings.to_string()).unwrap();
+    let resumed = run(
+        &env,
+        &["--continue", "--no-tools", "-p", "Synthetic resumed task"],
+    );
+    assert!(
+        resumed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    assert!(String::from_utf8_lossy(&resumed.stdout).contains("Synthetic resumed reply"));
+    assert_eq!(terminal(&resumed)["session_id"], terminal(&first)["session_id"]);
+    assert_eq!(posts(), 2);
+    assert_eq!(rows(&env).len(), 2);
+    mock.assert_healthy();
+}
+
+#[test]
+fn explicit_go_opt_in_still_selects_its_catalog_without_a_default_model() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"synthetic plan reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    fs::write(path, settings.to_string()).unwrap();
+
+    let output = run(&env, &["--no-tools", "-p", "Synthetic task"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("synthetic plan reply"));
+    assert_eq!(mock.requests().len(), 2);
+    mock.assert_healthy();
+}
+
+#[test]
+fn configured_go_subscription_limits_warn_at_thresholds_and_keep_accounting() {
+    for (limit, threshold) in [(41_600, "80%"), (33_279, "100%")] {
+        let env = TestEnv::new();
+        let mock = MockOpenAi::start_with(|base| {
+            vec![
+                Reply::json(discovery(base)),
+                stream(json!({"content":"Synthetic plan reply"}), "stop"),
+            ]
+        });
+        setup(&env, &format!("http://{}", mock.address()));
+        let path = env.agent_dir().join("settings.json");
+        let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        settings["oxa"]["cloud"]["subscription_limits"]["daily_tokens"] = json!(limit);
+        fs::write(path, settings.to_string()).unwrap();
+
+        let output = run(
+            &env,
+            &["--no-tools", "-p", "Synthetic request with advisory limits"],
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        assert!(
+            stderr.contains(&format!("projected usage reached {threshold}")),
+            "{stderr}"
+        );
+        assert!(!stderr.contains(CREDENTIAL));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("Synthetic plan reply"));
+        assert!(!stdout.contains("projected usage"));
+        let ledger = rows(&env);
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0]["subscription_requests"], 1);
+        assert_eq!(ledger[0]["subscription_tokens"], 105);
+        mock.assert_healthy();
+    }
+}
+
+#[test]
+fn unavailable_go_reports_the_owner_fix_before_any_discovery() {
+    for (disabled, reason) in [(true, "disabled"), (false, "no key")] {
+        let env = TestEnv::new();
+        let mock = MockOpenAi::start(vec![]);
+        setup(&env, &format!("http://{}", mock.address()));
+        let path = env.home().join(".oxa/agent/settings.json");
+        let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        settings["oxa"]["cloud"]["opencode"]
+            .as_object_mut()
+            .unwrap()
+            .remove("enabled");
+        if disabled {
+            settings["oxa"]["cloud"]["opencode"]["enabled"] = json!(false);
+        } else {
+            fs::remove_file(env.home().join(".config/oxc/llm/cloud-secrets.json")).unwrap();
+        }
+        fs::write(&path, settings.to_string()).unwrap();
+
+        let output = run(&env, &["--model", MODEL, "--no-tools", "-p", "Synthetic task"]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success());
+        assert_ne!(terminal(&output)["error_class"], "not_found", "{stderr}");
+        assert!(stderr.contains("OpenCode Go"), "{stderr}");
+        assert!(stderr.contains(reason), "{stderr}");
+        assert!(stderr.contains("oxa.cloud.opencode.enabled"), "{stderr}");
+        assert!(!stderr.contains(CREDENTIAL));
+        assert!(mock.requests().is_empty());
+        mock.assert_healthy();
+    }
+}
+
+#[test]
+fn project_default_cannot_select_a_credential_enabled_go_route() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start(vec![]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    fs::write(path, settings.to_string()).unwrap();
+    env.write(
+        "work/.oxa/settings.json",
+        &json!({"defaultModel":MODEL}).to_string(),
+    );
+
+    let output = run(&env, &["--no-tools", "-p", "Synthetic task"]);
+    assert!(!output.status.success());
+    assert!(mock.requests().is_empty());
+    assert!(!env.agent_dir().join("cloud-ledger").exists());
+    mock.assert_healthy();
+}
+
+#[test]
+fn an_agent_marker_does_not_make_a_model_argument_the_owners_choice() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"synthetic plan reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    fs::write(path, settings.to_string()).unwrap();
+
+    // Tool subprocesses carry these markers; their `--model` is not the owner's selection.
+    for marker in ["AI_AGENT", "OXA_CODING_AGENT"] {
+        let output = run_with(
+            &env,
+            &["--model", MODEL, "--no-tools", "-p", "Synthetic task"],
+            &[(marker, "1")],
+        );
+        assert!(!output.status.success(), "{marker}");
+        assert!(mock.requests().is_empty(), "{marker}");
+    }
+    assert!(!env.agent_dir().join("cloud-ledger").exists());
+
+    // The same run from the owner's own shell does select the key-only Go model.
+    let owner = run(&env, &["--model", MODEL, "--no-tools", "-p", "Synthetic task"]);
+    assert!(
+        owner.status.success(),
+        "{}",
+        String::from_utf8_lossy(&owner.stderr)
+    );
+    assert_eq!(mock.requests().len(), 2);
+    mock.assert_healthy();
+}
+
+#[test]
+fn a_fuzzy_local_alias_does_not_hide_the_exact_go_model_in_a_scope() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"synthetic plan reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    // Native local with a neighbouring alias, and no explicit Go switch: the key plus the
+    // exact scope is the admission.
+    settings["oxa"]["engine"] = json!({"inProcessLocal": true});
+    settings["oxa"]["local"] = json!({"binary":"/synthetic/not-launched-oxe",
+        "models":{"opencode/synthetic-flash-local":{"model":"/synthetic/model.gguf"}},
+        "limits":{"opencode/synthetic-flash-local":{"context_window":4096,"max_output":64,
+            "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,"mtp_state_bytes":0,"margin_bytes":1044480}}}});
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    fs::write(path, settings.to_string()).unwrap();
+
+    let output = run(&env, &["--models", MODEL, "--no-tools", "-p", "Synthetic task"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("synthetic plan reply"));
+    assert_eq!(mock.requests().len(), 2);
+    assert_eq!(rows(&env).len(), 1);
+    mock.assert_healthy();
+}
+
+#[test]
+fn the_go_switch_does_not_open_another_providers_alias() {
+    let env = TestEnv::new();
+    let other = MockOpenAi::start(vec![]);
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"synthetic plan reply"}), "stop"),
+            Reply::json(discovery(base)),
+            Reply::json(discovery(base)),
+            Reply::json(discovery(base)),
+            stream(json!({"content":"project-safe reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    // The Go switch (`oxa.cloud.opencode.enabled`, written by `setup`) is the only admission:
+    // `inProcessCloud` would open the whole gateway and hide the Go-only rule.
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    // Another provider's metered alias is configured beside it, under a name that spells Go.
+    for alias in ["synthetic-other", "opencode/synthetic-metered"] {
+        settings["oxa"]["cloud"]["models"][alias] = json!({
+            "provider":"openai", "upstream_model":"synthetic-other",
+            "context_window":32768, "max_output":64,
+            "pricing":{"input_per_million":1,"output_per_million":2},
+            "base_url":format!("http://{}", other.address())
+        });
+    }
+    fs::write(path, settings.to_string()).unwrap();
+    fs::write(
+        env.home().join(".config/oxc/llm/cloud-secrets.json"),
+        json!({"opencode":CREDENTIAL,"openai":"synthetic-openai-credential"}).to_string(),
+    )
+    .unwrap();
+
+    // The Go model answers.
+    let go = run(&env, &["--model", MODEL, "--no-tools", "-p", "Synthetic task"]);
+    assert!(go.status.success(), "{}", String::from_utf8_lossy(&go.stderr));
+    // The switch does not authorize the other provider's aliases, not even a Go-spelled name:
+    // admission comes from the catalog provider, not from the spelling.
+    for alias in ["synthetic-other", "opencode/synthetic-metered"] {
+        let refused = run(&env, &["--model", alias, "--no-tools", "-p", "Synthetic task"]);
+        assert!(!refused.status.success(), "{alias}");
+    }
+    // A project default with Go spelling still carries the configured OpenAI provider. It may
+    // not use the owner's Go opt-in to leave the Go catalog when the owner names no model.
+    env.write(
+        "work/.oxa/settings.json",
+        &json!({"defaultModel":"opencode/synthetic-metered"}).to_string(),
+    );
+    let project = run(&env, &["--no-tools", "-p", "Synthetic task"]);
+    assert!(
+        project.status.success(),
+        "{}",
+        String::from_utf8_lossy(&project.stderr)
+    );
+    assert!(String::from_utf8_lossy(&project.stdout).contains("project-safe reply"));
+    assert!(
+        other.requests().is_empty(),
+        "the Go switch must not spend another provider: {:?}",
+        other.requests()
+    );
+    assert_eq!(mock.requests().len(), 6);
+    mock.assert_healthy();
+    other.assert_healthy();
+}
+
+#[test]
+fn a_go_scope_admission_serves_only_that_scope() {
+    let env = TestEnv::new();
+    let other = MockOpenAi::start(vec![]);
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"synthetic plan reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    // The owner's Go scope is the admission, and another provider's alias is configured.
+    settings["enabledModels"] = json!([MODEL]);
+    settings["oxa"]["cloud"]["models"]["synthetic-other"] = json!({
+        "provider":"openai", "upstream_model":"synthetic-other",
+        "context_window":32768, "max_output":64,
+        "base_url":format!("http://{}", other.address())
+    });
+    fs::write(path, settings.to_string()).unwrap();
+    // The project may not move the run onto the other provider: neither through its default
+    // nor through the effective scope it replaces the owner's with.
+    env.write(
+        "work/.oxa/settings.json",
+        &json!({"defaultModel":"synthetic-other","enabledModels":["synthetic-other"]}).to_string(),
+    );
+
+    // The run stays on the model the owner's scope named, not on the project's choice.
+    let output = run(&env, &["--no-tools", "-p", "Synthetic task"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("synthetic plan reply"));
+    assert!(
+        other.requests().is_empty(),
+        "a Go admission must not spend another provider: {:?}",
+        other.requests()
+    );
+    assert_eq!(rows(&env).len(), 1);
+    mock.assert_healthy();
+    other.assert_healthy();
+}
+
+#[test]
+fn a_local_model_pattern_can_use_a_go_prefixed_alias_when_cloud_is_off() {
+    let env = TestEnv::new();
+    let alias = "opencode/synthetic-local";
+    setup(&env, "http://127.0.0.1:9");
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings["oxa"]["engine"] = json!({"inProcessLocal":true, "inProcessCloud":false});
+    settings["oxa"]["local"] = json!({
+        "binary":"/synthetic/not-launched-oxe",
+        "models":{(alias):{"model":"/synthetic/missing.gguf"}},
+        "limits":{(alias):{"context_window":4096,"max_output":64,"thinking":true,
+            "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,
+                                "mtp_state_bytes":0,"margin_bytes":1044480}}}
+    });
+    fs::write(path, settings.to_string()).unwrap();
+
+    for pattern in ["opencode/SYNTHETIC-LOCAL", "opencode/synthetic-local:high"] {
+        let output = run(&env, &["--model", pattern, "--no-tools", "-p", "Synthetic task"]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success());
+        assert!(
+            stderr.contains("Local weights are missing"),
+            "{pattern}: {stderr}"
+        );
+        assert!(!stderr.contains("OpenCode Go"), "{pattern}: {stderr}");
+    }
+}
+
+#[test]
+fn go_inventory_shows_disabled_or_broken_alongside_other_models() {
+    for disabled in [false, true] {
+        let env = TestEnv::new();
+        let replies = if disabled {
+            vec![]
+        } else {
+            vec![Reply::error(401, "invalid_request_error", CREDENTIAL)]
+        };
+        let mock = MockOpenAi::start(replies);
+        setup(&env, &format!("http://{}", mock.address()));
+        let path = env.home().join(".oxa/agent/settings.json");
+        let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        settings["oxa"]["cloud"]["opencode"]["enabled"] = json!(!disabled);
+        settings["oxa"]["cloud"]["models"]["synthetic-other"] = json!({
+            "provider":"openai", "upstream_model":"synthetic-other",
+            "context_window":32768, "max_output":64
+        });
+        fs::write(&path, settings.to_string()).unwrap();
+
+        let list = run(&env, &["--list-models"]);
+        let status = String::from_utf8_lossy(&list.stderr);
+        assert!(list.status.success(), "{status}");
+        let models = String::from_utf8_lossy(&list.stdout);
+        assert!(models.contains("synthetic-other"), "{models}");
+        assert!(!models.contains(MODEL), "{models}");
+        let state = if disabled { "off" } else { "broken" };
+        assert!(status.contains(&format!("OpenCode Go: {state}")), "{status}");
+        assert!(status.contains("oxa.cloud.opencode.enabled"), "{status}");
+        assert!(!status.contains(CREDENTIAL));
+        assert_eq!(mock.requests().len(), usize::from(!disabled));
+        mock.assert_healthy();
+    }
+}
+
 #[test]
 fn native_go_review_skill_schema_and_tool_loop_settle_subscription_rows() {
     let env = TestEnv::new();
@@ -217,11 +939,11 @@ fn native_go_records_bounded_plan_labels_in_usage_and_status() {
     }
 }
 #[test]
-fn native_go_paid_balance_settles_cost_and_caps_new_process() {
+fn native_go_paid_balance_settles_cost_and_admission_continues() {
     check_go_billing(json!("balance"), "balance", 0.01, true);
 }
 #[test]
-fn native_go_subcent_paid_cost_reaches_exact_cap_after_restart() {
+fn native_go_subcent_paid_cost_is_recorded_and_admission_continues() {
     check_go_billing(json!("balance"), "balance", 4e-9, true);
 }
 #[test]
@@ -238,7 +960,7 @@ fn capped_go(env: &TestEnv, base: &str) {
 }
 
 #[test]
-fn native_go_unknown_price_reserves_usd_before_another_process_forwards() {
+fn native_go_processes_forward_concurrently_without_local_usd_holds() {
     let env = TestEnv::new();
     let (held, release) = stream(json!({"content":"Synthetic held reply"}), "stop").gated();
     let mock = MockOpenAi::start_with(|base| {
@@ -246,7 +968,7 @@ fn native_go_unknown_price_reserves_usd_before_another_process_forwards() {
             Reply::json(discovery(base)),
             held,
             Reply::json(discovery(base)),
-            stream(json!({"content":"Unexpected concurrent forwarding"}), "stop"),
+            stream(json!({"content":"Synthetic concurrent reply"}), "stop"),
         ]
     });
     capped_go(&env, &format!("http://{}", mock.address()));
@@ -261,9 +983,16 @@ fn native_go_unknown_price_reserves_usd_before_another_process_forwards() {
         .spawn()
         .unwrap();
     mock.wait_for_requests(2);
+    // The second process forwards and settles while the first still holds its
+    // reply open. A tiny or fully held cap must never refuse either process.
     let second = run(
         &env,
         &["--no-session", "--no-tools", "-p", "Synthetic second request"],
+    );
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
     );
     release.send(()).unwrap();
     let first = first.wait_with_output().unwrap();
@@ -272,20 +1001,32 @@ fn native_go_unknown_price_reserves_usd_before_another_process_forwards() {
         "{}",
         String::from_utf8_lossy(&first.stderr)
     );
-    assert_eq!(terminal(&second)["error_class"], "budget_exhausted");
-    assert_eq!(
-        mock.requests().len(),
-        3,
-        "only discovery may follow the held request"
-    );
-    assert!(rows(&env).iter().any(|row| row["settled"] == "usage"));
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 2);
+    for row in &ledger {
+        assert_eq!(row["settled"], "usage");
+        assert_eq!(row["billing"], "subscription");
+        assert_eq!(row["cost_usd"], 0.0);
+        assert!(row.get("go_reserved_usd").is_none());
+    }
+    assert_eq!(mock.requests().len(), 4);
+    for output in [&first, &second] {
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(CREDENTIAL));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
+    }
     mock.assert_healthy();
 }
 
 #[test]
-fn native_go_unknown_cost_keeps_usd_reserved_after_process_restart() {
+fn native_go_unknown_cost_stays_unknown_and_admission_continues() {
     let env = TestEnv::new();
     let mock = MockOpenAi::start_with(|base| {
+        let finish = json!({"choices":[{"index":0,"delta":{"content":"Synthetic next process reply"},"finish_reason":"stop"}]});
+        let mut paid = usage();
+        paid["opencode"]["billing_source"] = json!("balance");
+        paid["cost"] = json!(0.02);
+        let mut estimated = paid.clone();
+        estimated["opencode"]["estimated"] = json!(true);
         vec![
             Reply::json(discovery(base)),
             terminal_frames(
@@ -293,10 +1034,9 @@ fn native_go_unknown_cost_keeps_usd_reserved_after_process_restart() {
                 true,
             ),
             Reply::json(discovery(base)),
-            stream(
-                json!({"content":"Unexpected forwarding after unknown usage"}),
-                "stop",
-            ),
+            terminal_frames(&[finish.clone(), json!({"choices":[],"usage":estimated})], true),
+            Reply::json(discovery(base)),
+            terminal_frames(&[finish, json!({"choices":[],"usage":paid})], true),
         ]
     });
     capped_go(&env, &format!("http://{}", mock.address()));
@@ -304,18 +1044,35 @@ fn native_go_unknown_cost_keeps_usd_reserved_after_process_restart() {
         &env,
         &["--no-session", "--no-tools", "-p", "Synthetic unknown usage"],
     );
-    assert!(!first.status.success());
-    let second = run(
-        &env,
-        &["--no-session", "--no-tools", "-p", "Synthetic next process"],
+    assert!(
+        first.status.success(),
+        "a finished reply without usage is complete: {}",
+        String::from_utf8_lossy(&first.stderr)
     );
-    assert_eq!(terminal(&second)["error_class"], "budget_exhausted");
-    assert_eq!(mock.requests().len(), 3);
+    // Each new process must read earlier unknown rows and still forward.
+    for prompt in ["Synthetic estimated usage", "Synthetic paid usage"] {
+        let output = run(&env, &["--no-session", "--no-tools", "-p", prompt]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert_eq!(mock.requests().len(), 6);
     let ledger = rows(&env);
-    let unknown = ledger.iter().find(|row| row["settled"] == "reserved").unwrap();
-    assert_eq!(unknown["cost_usd"], 0.01);
-    assert_eq!(unknown["billing"], "metered");
-    assert_eq!(unknown["usage_missing"], true);
+    assert_eq!(ledger.len(), 3);
+    for row in &ledger[..2] {
+        assert_eq!(row["settled"], "reserved");
+        assert_eq!(row["usage_missing"], true);
+        assert_eq!(row["billing"], "subscription");
+        assert!(row.get("cost_usd").is_none(), "{row}");
+        assert!(row.get("reported_cost_usd").is_none(), "{row}");
+        assert!(row.get("estimated_cost_usd").is_none(), "{row}");
+        assert!(row.get("go_reserved_usd").is_none(), "{row}");
+    }
+    assert_eq!(ledger[2]["settled"], "usage");
+    assert_eq!(ledger[2]["cost_usd"], 0.02);
+    assert_eq!(ledger[2]["reported_cost_usd"], 0.02);
     mock.assert_healthy();
 }
 
@@ -424,25 +1181,15 @@ fn check_go_billing(source: Value, expected: &str, cost: f64, cap: bool) {
         ledger[0]["billing"],
         if cost > 0.0 { "metered" } else { "subscription" }
     );
-    if cost > 0.0 && cap {
+    if cost > 0.0 {
+        // The recorded charge consumes or exceeds the configured day cap, yet
+        // a new process keeps admitting Go: the charge is recorded, never a
+        // local stop. The `cap` flag only makes the day cap exact.
         let next = run(
             &env,
             &["--no-session", "--no-tools", "-p", "Synthetic next request"],
         );
-        assert_eq!(terminal(&next)["error_class"], "budget_exhausted");
-        assert_eq!(mock.requests().len(), 3);
-        assert_eq!(rows(&env)[0]["cost_usd"], cost);
-    } else if cost > 0.0 {
-        let next = run(
-            &env,
-            &["--no-session", "--no-tools", "-p", "Synthetic next request"],
-        );
-        assert_eq!(
-            next.status.code(),
-            Some(0),
-            "{}",
-            String::from_utf8_lossy(&next.stderr)
-        );
+        assert!(next.status.success(), "{}", String::from_utf8_lossy(&next.stderr));
         assert_eq!(mock.requests().len(), 4);
         let ledger = rows(&env);
         assert_eq!(ledger.len(), 2);
@@ -736,13 +1483,14 @@ fn native_go_rejected_requests_release_tokens_before_the_next_valid_request() {
 }
 
 #[test]
-fn native_go_5xx_usage_stays_reserved_and_the_token_cap_still_refuses() {
+fn native_go_5xx_usage_stays_reserved_and_the_token_limit_warns() {
     let env = TestEnv::new();
     let mock = MockOpenAi::start_with(|base| {
         vec![
             Reply::json(discovery(base)),
             Reply::error(500, "inference_failed", CREDENTIAL),
             Reply::json(discovery(base)),
+            stream(json!({"content":"Synthetic next reply"}), "stop"),
         ]
     });
     setup(&env, &format!("http://{}", mock.address()));
@@ -757,12 +1505,19 @@ fn native_go_5xx_usage_stays_reserved_and_the_token_cap_still_refuses() {
     assert_eq!(ledger[0]["settled"], "reserved");
     assert_eq!(ledger[0]["subscription_tokens"], 32768 + 512);
     assert_eq!(ledger[0]["usage_missing"], true);
-    let blocked = run(
+    let next = run(
         &env,
         &["--no-session", "--no-tools", "-p", "Synthetic next request"],
     );
-    assert_eq!(terminal(&blocked)["error_class"], "budget_exhausted");
-    assert_eq!(mock.requests().len(), 3, "cap must refuse before another chat");
+    let stderr = String::from_utf8_lossy(&next.stderr);
+    assert!(next.status.success(), "{stderr}");
+    assert!(stderr.contains("projected usage reached 100%"), "{stderr}");
+    assert!(String::from_utf8_lossy(&next.stdout).contains("Synthetic next reply"));
+    assert_eq!(mock.requests().len(), 4);
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 2);
+    assert_eq!(ledger[0]["subscription_tokens"], 32768 + 512);
+    assert_eq!(ledger[1]["subscription_tokens"], 105);
     mock.assert_healthy();
 }
 
@@ -1310,6 +2065,46 @@ fn local_go_namespace_alias_with_thinking_suffix_keeps_local_ownership_offline()
     mock.assert_healthy();
 }
 
+#[test]
+fn scoped_local_alias_is_not_treated_as_an_unavailable_go_model() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start(vec![]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.home().join(".oxa/agent/settings.json");
+    let mut settings: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    // Native local on, native cloud explicitly off, and a Go-shaped local alias.
+    settings["oxa"]["engine"] = json!({"inProcessLocal": true, "inProcessCloud": false});
+    settings["oxa"]["local"] = json!({"binary":"/synthetic/not-launched-oxe",
+        "models":{"opencode/custom-local":{"model":"/synthetic/model.gguf"}},
+        "limits":{"opencode/custom-local":{"context_window":4096,"max_output":64,
+            "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,"mtp_state_bytes":0,"margin_bytes":1044480}}}});
+    fs::write(path, settings.to_string()).unwrap();
+    // The singular and the scoped spelling both stay on the configured local alias.
+    for args in [
+        vec!["--offline", "--model", "opencode/custom-local"],
+        vec!["--offline", "--models", "opencode/custom-local"],
+    ] {
+        let mut words = args.clone();
+        words.extend(["--no-session", "--no-tools", "-p", "Synthetic local scope"]);
+        let output = run(&env, &words);
+        assert_eq!(
+            terminal(&output)["error_class"],
+            "not_found",
+            "args={args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("Local weights are missing"),
+            "args={args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
+        assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
+        assert!(mock.requests().is_empty());
+    }
+    mock.assert_healthy();
+}
+
 // #798 composition controls: the ordinary reader is the only credential reader.
 // Fixtures stay outside source repositories and use only loopback HTTP.
 fn go_diagnostic_env() -> TestEnv {
@@ -1627,6 +2422,7 @@ fn check_private_stream_details(cause: &str, check: Option<&str>, reply: Reply) 
         let mut replies = vec![Reply::json(discovery(base)), reply];
         if check.is_some() {
             replies.push(Reply::json(discovery(base)));
+            replies.push(stream(json!({"content":"Synthetic continuation"}), "stop"));
         }
         replies
     });
@@ -1665,6 +2461,7 @@ fn check_private_stream_details(cause: &str, check: Option<&str>, reply: Reply) 
     assert_eq!(ledger[0]["settled"], "reserved");
     assert_eq!(ledger[0]["usage_missing"], true);
     assert_eq!(ledger[0]["subscription_tokens"], 33280);
+    assert!(ledger[0].get("reported_cost_usd").is_none());
     for path in session_files(&env.home().join(".oxa/agent/sessions")) {
         let history = fs::read_to_string(path).unwrap();
         assert!(!history.contains("cause="));
@@ -1677,11 +2474,14 @@ fn check_private_stream_details(cause: &str, check: Option<&str>, reply: Reply) 
             &env,
             &["--no-session", "--no-tools", "-p", "Synthetic continuation"],
         );
-        assert!(!continued.status.success());
-        assert!(String::from_utf8_lossy(&continued.stderr).contains("subscription_limit_exceeded"));
-        assert_eq!(mock.requests().len(), 3, "discovery only; no second chat");
-        assert_eq!(mock.requests().iter().filter(|r| r.method == "POST").count(), 1);
-        assert_eq!(rows(&env)[0]["subscription_tokens"], 33280);
+        let stderr = String::from_utf8_lossy(&continued.stderr);
+        assert!(continued.status.success(), "{stderr}");
+        assert!(stderr.contains("projected usage reached 100%"), "{stderr}");
+        assert_eq!(mock.requests().iter().filter(|r| r.method == "POST").count(), 2);
+        let ledger = rows(&env);
+        assert_eq!(ledger.len(), 2);
+        assert_eq!(ledger[0]["subscription_tokens"], 33280);
+        assert_eq!(ledger[1]["subscription_tokens"], 105);
     }
     mock.assert_healthy();
 }
@@ -1731,7 +2531,11 @@ fn go_private_stream_cause_tool_arguments() {
 }
 #[test]
 fn go_private_stream_cause_terminal_usage() {
-    check_private_stream_details("terminal_usage",Some("done_without_usage"),cause_reply(b"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"));
+    check_private_stream_details(
+        "terminal_usage",
+        Some("done_without_finish"),
+        cause_reply(b"data: [DONE]\n\n"),
+    );
 }
 
 fn terminal_frames(frames: &[Value], done: bool) -> Reply {
@@ -1753,14 +2557,6 @@ fn go_private_terminal_done_without_finish() {
         "terminal_usage",
         Some("done_without_finish"),
         terminal_frames(&[], true),
-    );
-}
-#[test]
-fn go_private_terminal_done_without_usage() {
-    check_private_stream_details(
-        "terminal_usage",
-        Some("done_without_usage"),
-        terminal_frames(&[terminal_finish()], true),
     );
 }
 #[test]
@@ -1792,12 +2588,229 @@ fn go_private_terminal_choices_after_finish() {
         ),
     );
 }
+fn terminal_content() -> Value {
+    json!({"choices":[{"index":0,"delta":{"content":"Synthetic success"},"finish_reason":null}]})
+}
+fn settled_success(frames: &[Value]) -> (Output, Vec<Value>) {
+    let env = go_diagnostic_env();
+    let mock =
+        MockOpenAi::start_with(|base| vec![Reply::json(discovery(base)), terminal_frames(frames, true)]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let output = run(
+        &env,
+        &[
+            "--no-session",
+            "--no-tools",
+            "--mode",
+            "json",
+            "-p",
+            "Synthetic request",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("native diagnostic"));
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["status"], 200);
+    assert_eq!(mock.requests().len(), 2);
+    mock.assert_healthy();
+    (output, ledger)
+}
 #[test]
-fn go_private_terminal_usage_before_finish() {
+fn glm_usage_before_finish_is_a_complete_stream() {
+    for frames in [
+        vec![
+            terminal_content(),
+            json!({"choices":[],"usage":usage()}),
+            terminal_finish(),
+        ],
+        // Same-frame usage and finish.
+        vec![terminal_content(), {
+            let mut frame = terminal_finish();
+            frame["usage"] = usage();
+            frame
+        }],
+    ] {
+        let (output, ledger) = settled_success(&frames);
+        assert_eq!(terminal(&output)["tokens"]["prompt"], 100);
+        assert_eq!(terminal(&output)["tokens"]["completion"], 5);
+        assert_eq!(ledger[0]["subscription_tokens"], 105);
+        assert_eq!(ledger[0]["settled"], "usage");
+        assert!(ledger[0].get("usage_missing").is_none());
+    }
+}
+#[test]
+fn done_without_usage_settles_as_usage_missing() {
+    let (output, ledger) = settled_success(&[terminal_content(), terminal_finish()]);
+    assert_eq!(terminal(&output)["tokens"]["complete"], false);
+    assert_eq!(terminal(&output)["tokens"]["unreported_requests"], 1);
+    assert_eq!(ledger[0]["settled"], "reserved");
+    assert_eq!(ledger[0]["usage_missing"], true);
+}
+
+#[test]
+fn a_clean_finish_with_more_output_discards_stale_early_usage() {
+    for on_finish in [false, true] {
+        let tail = json!({"choices":[{"index":0,"delta":{"content":"Synthetic tail"},
+            "finish_reason":on_finish.then_some("stop")}]});
+        let mut frames = vec![terminal_content(), json!({"choices":[],"usage":usage()}), tail];
+        if !on_finish {
+            frames.push(terminal_finish());
+        }
+        let (output, ledger) = settled_success(&frames);
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Synthetic tail"));
+        assert_eq!(terminal(&output)["tokens"]["complete"], false);
+        assert_eq!(terminal(&output)["tokens"]["unreported_requests"], 1);
+        assert_eq!(ledger[0]["settled"], "reserved");
+        assert_eq!(ledger[0]["usage_missing"], true);
+        assert!(ledger[0].get("reported_cost_usd").is_none());
+    }
+}
+
+#[test]
+fn an_unreported_go_reply_is_saved_as_unknown_usage() {
+    let env = go_diagnostic_env();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            terminal_frames(&[terminal_content(), terminal_finish()], true),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let output = run(&env, &["--no-tools", "--mode", "json", "-p", "Synthetic request"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Synthetic success"));
+    let files = session_files(&env.agent_dir().join("sessions"));
+    assert_eq!(files.len(), 1);
+    let status: Value =
+        serde_json::from_slice(&fs::read(files[0].with_extension("status.json")).unwrap()).unwrap();
+    assert_eq!(status["tokens"]["complete"], false);
+    assert_eq!(status["tokens"]["unreported_requests"], 1);
+    let saved = fs::read_to_string(&files[0]).unwrap();
+    assert!(
+        saved.lines().any(|line| {
+            serde_json::from_str::<Value>(line).is_ok_and(|row| row["usage"] == json!({"unreported":true}))
+        }),
+        "{saved}"
+    );
+    mock.assert_healthy();
+}
+#[test]
+fn a_fresh_terminal_report_replaces_stale_early_usage() {
+    let mut early = usage();
+    early["prompt_tokens"] = json!(99);
+    let tail = json!({"choices":[{"index":0,"delta":{"content":"Synthetic tail"},"finish_reason":"stop"}],
+        "usage":usage()});
+    let (output, ledger) = settled_success(&[terminal_content(), json!({"choices":[],"usage":early}), tail]);
+    assert_eq!(terminal(&output)["tokens"]["prompt"], 100);
+    assert_eq!(terminal(&output)["tokens"]["complete"], true);
+    assert_eq!(ledger[0]["subscription_tokens"], 105);
+}
+
+#[test]
+fn an_explicit_invocation_cap_wraps_up_unknown_usage_but_accepts_measured_zero() {
+    for measured_zero in [false, true] {
+        let env = go_diagnostic_env();
+        let mock = MockOpenAi::start_with(|base| {
+            let mut frames = vec![terminal_content(), terminal_finish()];
+            if measured_zero {
+                let mut zero = usage();
+                for name in ["prompt_tokens", "completion_tokens", "total_tokens"] {
+                    zero[name] = json!(0);
+                }
+                zero.as_object_mut().unwrap().remove("prompt_tokens_details");
+                for count in zero["opencode"]["tokens"].as_object_mut().unwrap().values_mut() {
+                    *count = json!(0);
+                }
+                frames.push(json!({"choices":[],"usage":zero}));
+            }
+            let mut replies = vec![Reply::json(discovery(base)), terminal_frames(&frames, true)];
+            if !measured_zero {
+                replies.push(stream(json!({"content":"Synthetic wrap-up"}), "stop"));
+            }
+            replies
+        });
+        setup(&env, &format!("http://{}", mock.address()));
+        let output = run(
+            &env,
+            &[
+                "--no-tools",
+                "--mode",
+                "json",
+                "--max-tokens",
+                "1000",
+                "-p",
+                "Synthetic request",
+            ],
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("Synthetic success"), "{stdout}");
+        assert_eq!(stdout.contains("Synthetic wrap-up"), !measured_zero, "{stdout}");
+        assert_eq!(
+            mock.requests().iter().filter(|r| r.method == "POST").count(),
+            if measured_zero { 1 } else { 2 }
+        );
+        let facts = terminal(&output);
+        // Cache usage was absent in the measured-zero report, but the token counts were real.
+        assert_eq!(facts["tokens"]["complete"], false);
+        assert_eq!(facts["tokens"]["unreported_requests"], u32::from(!measured_zero));
+        assert_eq!(facts["tokens"]["prompt"], if measured_zero { 0 } else { 100 });
+        assert_eq!(facts["tokens"]["completion"], if measured_zero { 0 } else { 5 });
+        mock.assert_healthy();
+    }
+}
+
+#[test]
+fn usage_after_finish_still_counts() {
+    let (_output, ledger) = settled_success(&[
+        terminal_content(),
+        terminal_finish(),
+        json!({"choices":[],"usage":usage()}),
+    ]);
+    assert_eq!(ledger[0]["subscription_tokens"], 105);
+    assert_eq!(ledger[0]["settled"], "usage");
+    assert!(ledger[0].get("usage_missing").is_none());
+}
+#[test]
+fn truly_truncated_stream_is_still_stream_broken() {
+    // Early usage must stay provisional: no finish and no [DONE] is a cut stream.
+    check_private_stream_cause(
+        "eof",
+        terminal_frames(
+            &[terminal_content(), json!({"choices":[],"usage":usage()})],
+            false,
+        ),
+    );
+    // Finish but no [DONE] is also truncation.
+    check_private_stream_cause(
+        "eof",
+        terminal_frames(&[terminal_content(), terminal_finish()], false),
+    );
+    // Even a valid finish cannot commit early usage before [DONE].
+    check_private_stream_cause(
+        "eof",
+        terminal_frames(
+            &[
+                terminal_content(),
+                json!({"choices":[],"usage":usage()}),
+                terminal_finish(),
+            ],
+            false,
+        ),
+    );
+    // [DONE] without any finish.
     check_private_stream_details(
         "terminal_usage",
-        Some("usage_before_finish"),
-        terminal_frames(&[json!({"choices":[],"usage":usage()})], true),
+        Some("done_without_finish"),
+        terminal_frames(&[terminal_content(), json!({"choices":[],"usage":usage()})], true),
     );
 }
 #[test]
@@ -1889,5 +2902,173 @@ fn a_fresh_go_catalog_cache_serves_the_next_start_without_discovery() {
         "a fresh entry is consumed without a network call"
     );
     assert!(!String::from_utf8_lossy(&second.stderr).contains("Using a stale OpenCode model catalog."));
+    mock.assert_healthy();
+}
+
+/// #1435: a user-configured scope is the owner's too. `enabledModels` in the user settings
+/// selects the Go transport without `--models` on the command line.
+#[test]
+fn a_user_model_scope_selects_go_without_a_cli_scope() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"synthetic plan reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    // The stored key and the user's own scope are the only authorization inputs.
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    settings["enabledModels"] = json!([MODEL]);
+    fs::write(&path, settings.to_string()).unwrap();
+    let output = run(&env, &["--no-tools", "-p", "Synthetic task"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("synthetic plan reply"));
+    assert_eq!(rows(&env)[0]["remote_provider"], "opencode");
+    mock.assert_healthy();
+}
+
+/// #1435: a fuzzy local alias does not own the exact Go name, so it cannot hide that model: the
+/// exact `opencode/…` request still goes to Go, and only an exact local alias stays local.
+#[test]
+fn a_fuzzy_local_alias_does_not_shadow_the_exact_go_model() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"synthetic plan reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    // Native local on, cloud enablement omitted and no Go setting: the stored key is the only
+    // Go fact in play, and the fuzzy alias is a real local candidate.
+    settings["oxa"]["engine"] = json!({"inProcessLocal":true});
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    let alias = format!("{MODEL}-local");
+    settings["oxa"]["local"] = json!({
+        "binary":"/synthetic/not-launched-oxe",
+        "models":{(alias.clone()):{"model":"/synthetic/missing.gguf"}},
+        "limits":{(alias.clone()):{"context_window":4096,"max_output":64,"thinking":true,
+            "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,
+                                "mtp_state_bytes":0,"margin_bytes":1044480}}}
+    });
+    fs::write(&path, settings.to_string()).unwrap();
+    // The fuzzy alias does not own the exact Go name: the request goes to Go and completes.
+    let output = run(&env, &["--model", MODEL, "--no-tools", "-p", "Synthetic task"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("Local weights are missing"),
+        "the Go model must not be shadowed by {alias}: {stderr}"
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("synthetic plan reply"));
+    assert_eq!(rows(&env)[0]["remote_provider"], "opencode");
+    mock.assert_healthy();
+}
+
+/// #1435: an endpoint-qualified spelling (`oxe/opencode/x`) names the same local alias, so it
+/// stays local instead of being refused as an unavailable Go model.
+#[test]
+fn an_endpoint_qualified_local_alias_stays_local() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"synthetic plan reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    settings["oxa"]["engine"] = json!({"inProcessLocal":true, "inProcessCloud":false});
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    let alias = "opencode/custom-local".to_string();
+    settings["oxa"]["local"] = json!({
+        "binary":"/synthetic/not-launched-oxe",
+        "models":{(alias.clone()):{"model":"/synthetic/missing.gguf"}},
+        "limits":{(alias.clone()):{"context_window":4096,"max_output":64,"thinking":true,
+            "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,
+                                "mtp_state_bytes":0,"margin_bytes":1044480}}}
+    });
+    fs::write(&path, settings.to_string()).unwrap();
+    let output = run(
+        &env,
+        &[
+            "--model",
+            "oxe/opencode/custom-local",
+            "--no-tools",
+            "-p",
+            "Synthetic task",
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Local weights are missing"), "{stderr}");
+    assert!(!stderr.contains("OpenCode Go"), "{stderr}");
+    mock.assert_healthy();
+}
+
+#[test]
+fn a_local_wildcard_match_does_not_hide_go_models_in_the_same_scope() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"synthetic plan reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings["oxa"]["engine"] = json!({"inProcessLocal": true});
+    settings["oxa"]["local"] = json!({
+        "binary":"/synthetic/not-launched-oxe",
+        "models":{"opencode/custom-local":{"model":"/synthetic/model.gguf"}},
+        "limits":{"opencode/custom-local":{"context_window":4096,"max_output":64,
+            "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,
+                "mtp_state_bytes":0,"margin_bytes":1044480}}}
+    });
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    fs::write(path, settings.to_string()).unwrap();
+
+    let output = run(
+        &env,
+        &["--models", "opencode/*", "--no-tools", "-p", "Synthetic task"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("synthetic plan reply"));
+    assert_eq!(mock.requests().len(), 2);
+    assert_eq!(rows(&env).len(), 1);
     mock.assert_healthy();
 }

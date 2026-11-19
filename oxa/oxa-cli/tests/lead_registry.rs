@@ -15,7 +15,7 @@ fn command(test: &TestEnv) -> Command {
 #[test]
 fn menu_and_help_precede_runtime_and_reserved_children_refuse() {
     let test = TestEnv::new();
-    for args in [vec!["lead"], vec!["lead", "--help"], vec!["help", "lead"]] {
+    for args in [vec!["lead", "--help"], vec!["help", "lead"]] {
         let output = command(&test).args(&args).output().unwrap();
         assert!(
             output.status.success(),
@@ -24,7 +24,7 @@ fn menu_and_help_precede_runtime_and_reserved_children_refuse() {
         );
         let text = String::from_utf8_lossy(&output.stdout);
         assert!(text.contains("lead"));
-        assert_eq!(text.contains("lead serve"), args.as_slice() == ["lead"]);
+        assert!(text.contains("dedicated Lead session"));
     }
     for child in ["board", "status", "chat"] {
         let output = command(&test).args(["lead", child]).output().unwrap();
@@ -34,16 +34,19 @@ fn menu_and_help_precede_runtime_and_reserved_children_refuse() {
 }
 
 #[test]
-fn offline_menu_precedes_home_and_runtime() {
+fn offline_help_precedes_home_and_runtime() {
     let test = TestEnv::new();
-    for args in [vec!["--offline", "lead"], vec!["--offline", "--offline", "lead"]] {
+    for args in [
+        vec!["--offline", "lead", "--help"],
+        vec!["--offline", "--offline", "lead", "--help"],
+    ] {
         let output = command(&test).args(args).output().unwrap();
         assert!(
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(String::from_utf8_lossy(&output.stdout).contains("Open the lead command menu"));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("dedicated Lead session"));
     }
 }
 
@@ -127,8 +130,8 @@ fn chat_status_reads_the_protected_board_without_calling_the_provider() {
             lease: None,
             attempts_today: 0,
             eligible: true,
+            evidence_incomplete: None,
         }],
-        ..Default::default()
     };
     fs::write(
         &sample,

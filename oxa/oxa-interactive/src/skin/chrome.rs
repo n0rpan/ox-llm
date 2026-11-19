@@ -1,6 +1,6 @@
 //! U2: the chrome of the OXA skin: splash, HUD line, hint bar, activity line, window title.
 //! Spec: OXA-UI-DESIGN.md sec. 4.
-use crate::{Activity, HeaderInfo, Skin, StatusModel, ViewModel};
+use crate::{Activity, BudgetMeter, BudgetScope, BudgetUnit, HeaderInfo, Skin, StatusModel, ViewModel};
 use oxa_config::Keymap;
 use oxa_tui::{truncate_to_width, visible_width, Theme};
 
@@ -133,8 +133,8 @@ pub fn oxa_splash(
     out
 }
 
-/// The HUD line (sec. 4.2): `OXA | model | CTX meter | CACHE meter | tok/s | state | mode`,
-/// exactly one line that fits `width`; segments are dropped by priority when narrow.
+/// The HUD line (sec. 4.2): `OXA | model | CTX meter | CACHE meter | BUDGET | tok/s | state |
+/// mode`, exactly one line that fits `width`; segments are dropped by priority when narrow.
 pub fn oxa_hud(st: &StatusModel, width: u16, theme: &Theme, skin: Skin) -> String {
     let g = glyphs(skin);
     let w = width as usize;
@@ -173,7 +173,7 @@ pub fn oxa_hud(st: &StatusModel, width: u16, theme: &Theme, skin: Skin) -> Strin
     truncate_to_width(&hud_build(&parts, drops, &short, g, theme), w, "")
 }
 
-/// Number of HUD segments that can be dropped (sec. 4.2 drop order, 1st .. 10th).
+/// Number of HUD segments that can be dropped (sec. 4.2 drop order, 1st .. 12th).
 const HUD_DROPS: usize = 12;
 
 /// The HUD's data, cleaned and ready to lay out. Built once per call.
@@ -199,6 +199,8 @@ struct HudParts {
     /// D4b: where the model runs: `local`, or `cloud · <provider>`.
     remote: Option<&'static str>,
     is_remote: bool,
+    /// #873: the authoritative budget, when a front end projected one.
+    budget: Option<BudgetMeter>,
 }
 
 impl HudParts {
@@ -246,6 +248,7 @@ impl HudParts {
             yolo: st.yolo.then_some(st.yolo_approved),
             remote: st.model_provider,
             is_remote: st.model_remote,
+            budget: st.budget,
         }
     }
 }
@@ -321,6 +324,14 @@ fn hud_build(p: &HudParts, drops: usize, model: &str, g: &Glyphs, theme: &Theme)
             }
             s.push_str(&format!(" {}", theme.fg(token, &format!("{pct}%"))));
             segs.push(s);
+        }
+    }
+
+    // 4b: the budget (#873), beside CTX and CACHE. Dropped with the jobs count and before the
+    // location, so a narrow terminal keeps the model, the state and where it runs.
+    if shown(11) {
+        if let Some(budget) = &p.budget {
+            segs.push(budget_segment(budget, theme));
         }
     }
 
@@ -832,6 +843,89 @@ fn cache_token(pct: u64) -> &'static str {
         "warning"
     } else {
         "error"
+    }
+}
+
+/// #873: the budget part: `BUDGET day $ 8.10/10.00 81% near cap`. The unit and the scope are
+/// always spelled out, so a number is never read as another kind of budget. An unavailable
+/// settlement shows `?` instead of a zero, and an incomplete one marks the used value as a
+/// lower bound (`8.10+`). The warning is a steady word and colour at 80 %, never a flash, a
+/// forecast or a number the HUD computed itself.
+fn budget_segment(b: &BudgetMeter, theme: &Theme) -> String {
+    let scope = match b.scope {
+        BudgetScope::Day => "day",
+        BudgetScope::Run => "run",
+        BudgetScope::Goal => "goal",
+    };
+    let unit = match b.unit {
+        BudgetUnit::Usd => "$",
+        BudgetUnit::Tokens => "tok",
+    };
+    let used = match b.used {
+        Some(used) => format!(
+            "{}{}",
+            budget_number(used, b.unit),
+            if b.incomplete { "+" } else { "" }
+        ),
+        None => "?".to_string(),
+    };
+    let body = match b.cap {
+        Some(cap) => format!("{used}/{}", budget_number(cap, b.unit)),
+        None => used,
+    };
+    let pct = budget_percent(b.used, b.cap);
+    let token = budget_token(pct);
+    let mut s = format!(
+        "{} {} {} {}",
+        theme.fg("muted", "BUDGET"),
+        theme.fg("muted", scope),
+        theme.fg("muted", unit),
+        theme.fg(token, &body)
+    );
+    if let Some(pct) = pct {
+        // Rounding is presentation-only; warning text and colour use the actual percentage.
+        let displayed_pct = pct.round().max(0.0) as u64;
+        s.push_str(&format!(" {}", theme.fg(token, &format!("{displayed_pct}%"))));
+    }
+    if let Some(word) = budget_warning(pct) {
+        s.push_str(&format!(" {}", theme.fg(token, word)));
+    }
+    s
+}
+
+/// The unrounded used percentage of a budget, so warnings never trigger early. `None`
+/// without a positive cap or a settled used value (a zero cap has no percentage).
+fn budget_percent(used: Option<f64>, cap: Option<f64>) -> Option<f64> {
+    let (used, cap) = (used?, cap?);
+    if !used.is_finite() || !cap.is_finite() || cap <= 0.0 {
+        return None;
+    }
+    Some(used / cap * 100.0)
+}
+
+/// The steady warning word of a budget: `near cap` from 80 %, `over cap` at or above the cap.
+fn budget_warning(pct: Option<f64>) -> Option<&'static str> {
+    match pct? {
+        pct if pct >= 100.0 => Some("over cap"),
+        pct if pct >= 80.0 => Some("near cap"),
+        _ => None,
+    }
+}
+
+/// The colour of a budget: `error` at or above the cap, `warning` from 80 %, else plain text.
+fn budget_token(pct: Option<f64>) -> &'static str {
+    match pct {
+        Some(pct) if pct >= 100.0 => "error",
+        Some(pct) if pct >= 80.0 => "warning",
+        _ => "text",
+    }
+}
+
+/// One budget number in its unit: USD with two decimals, tokens compact (`12k`, `1.5M`).
+fn budget_number(value: f64, unit: BudgetUnit) -> String {
+    match unit {
+        BudgetUnit::Usd => format!("{value:.2}"),
+        BudgetUnit::Tokens => format_tokens(value.max(0.0).round() as u64),
     }
 }
 

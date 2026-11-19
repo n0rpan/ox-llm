@@ -65,7 +65,14 @@ pub struct ExecResult {
     /// `None` when killed by a signal, a timeout or a cancel.
     pub exit: Option<i32>,
     pub timed_out: bool,
+    /// The command ran with the user's own rights because this platform has no OS sandbox.
+    pub unsandboxed: bool,
 }
+
+/// What the model and the user are told when the bash network is set off (`oxa.sandbox.net`,
+/// offline mode) but the platform has no OS sandbox to enforce it ([`Sandbox::network_enforced`]).
+/// oxa's own provider and network calls still obey offline; only bash cannot be held.
+pub const NET_NOT_RESTRICTED_NOTICE: &str = "bash network is NOT restricted on this platform (no OS sandbox)";
 
 /// The process sandbox (bwrap). Implemented by `oxa-sandbox`; tools reach it through
 /// [`ToolCtx`](crate::ToolCtx).
@@ -81,6 +88,12 @@ pub trait Sandbox: Send + Sync {
     /// `oxa_sandbox::NetSandbox` answers from `oxa.sandbox.net` and the offline switch.
     fn network(&self) -> bool {
         false
+    }
+    /// Whether a refused network ([`Sandbox::network`] = false) is enforced on the commands
+    /// themselves. A platform without an OS sandbox cannot: there it is `false`, and the
+    /// model and the user are told the bash network is not restricted. Default `true`.
+    fn network_enforced(&self) -> bool {
+        true
     }
     /// Persistence limits to include in human/model-facing tool results, not process bytes.
     fn persistence_notice(&self) -> Option<&str> {
@@ -140,6 +153,7 @@ pub trait Sandbox: Send + Sync {
             output: b"this sandbox cannot pass standard input to a command".to_vec(),
             exit: None,
             timed_out: false,
+            unsandboxed: false,
         }
     }
 }
@@ -249,19 +263,53 @@ impl PermissionMode {
     }
     /// One line on what the mode does (start notices, stderr in print/rpc runs, the picker).
     pub fn describe(self) -> &'static str {
-        match self {
-            PermissionMode::Standard => {
+        self.describe_with(OS_SANDBOX)
+    }
+    /// [`describe`](Self::describe) for a platform with or without an OS sandbox. Without one the
+    /// text never says the bash sandbox is on: commands run with the user's rights (and are
+    /// disabled while the bash network is off, which that platform cannot enforce).
+    pub fn describe_with(self, os_sandbox: bool) -> &'static str {
+        match (self, os_sandbox) {
+            (PermissionMode::Standard, true) => {
                 "prompts before actions outside the workspace; sandbox and deny-list on"
             }
-            PermissionMode::Auto => {
+            // No OS sandbox: bash runs as the user, and it is disabled while the bash network is
+            // off (that setting cannot be enforced there).
+            (PermissionMode::Standard, false) => {
+                "prompts before actions outside the workspace; no OS sandbox on this platform: \
+                 bash runs with your user rights, and is disabled while the bash network is off; \
+                 the deny-list stays on"
+            }
+            (PermissionMode::Auto, true) => {
                 "no prompts; the bash sandbox, the deny-list and the protected paths stay on"
             }
-            PermissionMode::Yolo => {
+            (PermissionMode::Auto, false) => {
+                "no prompts; no OS sandbox on this platform: bash runs with your user rights, and \
+                 is disabled while the bash network is off; the deny-list and the protected paths \
+                 stay on"
+            }
+            (PermissionMode::Yolo, _) => {
                 "full access: no prompts, bash runs without the sandbox in your own environment, \
                  no deny-list and no protected paths for the file tools"
             }
-            PermissionMode::Plan => "read-only: plans, writes nothing",
+            (PermissionMode::Plan, _) => "read-only: plans, writes nothing",
         }
+    }
+}
+
+/// Whether this build has an OS sandbox for bash (bubblewrap, Linux only). Off Linux nothing
+/// sandboxes commands: they run as the user, a refused bash network disables them, and no text
+/// may claim an OS sandbox.
+pub const OS_SANDBOX: bool = cfg!(target_os = "linux");
+
+/// The start notice for a platform without an OS sandbox; `None` where there is one.
+pub fn no_os_sandbox_notice() -> Option<&'static str> {
+    if OS_SANDBOX {
+        None
+    } else if cfg!(target_os = "macos") {
+        Some("macOS: no OS sandbox; commands run with your user rights, and bash is disabled while the bash network is off")
+    } else {
+        Some("no OS sandbox on this platform; commands run with your user rights, and bash is disabled while the bash network is off")
     }
 }
 

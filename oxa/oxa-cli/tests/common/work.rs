@@ -1,10 +1,13 @@
+// One shared menu of runner fixtures: each test binary uses a subset, so the rest of the
+// menu is dead code in that binary by design.
+#![allow(dead_code, unused_imports)]
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 #[path = "work_confirm.rs"]
 mod confirm;
 #[path = "work_repo.rs"]
 mod work_repo;
 use std::process::Command;
-pub use work_repo::{git, setup};
+pub use work_repo::{git, setup, setup_with_files};
 pub fn run(env: &TestEnv, turns: Vec<ScriptTurn>) -> serde_json::Value {
     run_args(env, turns, &["work", "../tasks.json"], None)
 }
@@ -37,6 +40,16 @@ pub fn run_observed_with(
     (records.remove(0), requests)
 }
 
+/// The task records, the engine's requests, and the runner process's exit code.
+pub fn run_with_exit(
+    env: &TestEnv,
+    turns: Vec<ScriptTurn>,
+    args: &[&str],
+    path: Option<String>,
+) -> (Vec<serde_json::Value>, Vec<oxa_fake::Recorded>, i32) {
+    run_full(env, turns, args, path, |_| {})
+}
+
 pub fn run_batch(
     env: &TestEnv,
     turns: Vec<ScriptTurn>,
@@ -53,6 +66,17 @@ fn run_batch_with(
     path: Option<String>,
     configure: impl FnOnce(&mut Command),
 ) -> (Vec<serde_json::Value>, Vec<oxa_fake::Recorded>) {
+    let (records, requests, _) = run_full(env, turns, args, path, configure);
+    (records, requests)
+}
+
+fn run_full(
+    env: &TestEnv,
+    turns: Vec<ScriptTurn>,
+    args: &[&str],
+    path: Option<String>,
+    configure: impl FnOnce(&mut Command),
+) -> (Vec<serde_json::Value>, Vec<oxa_fake::Recorded>, i32) {
     let server = FakeServer::start(turns, FakeOpts::default()).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
     command
@@ -83,5 +107,5 @@ fn run_batch_with(
             })
         })
         .collect();
-    (records, server.requests())
+    (records, server.requests(), out.status.code().unwrap_or(-1))
 }

@@ -5,6 +5,8 @@ use crate::{Diagnostic, Dirs};
 use oxa_proto::{codes, OxaError, PermissionMode, ThinkingLevel, Value};
 use serde_json::Map;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::SystemTime;
 
 /// pi's `steeringMode` / `followUpMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +57,62 @@ pub struct Settings {
     user: Value,
     project: Value,
     diagnostics: Vec<Diagnostic>,
+    /// A settings file existed but could not be read or parsed (its layer is empty).
+    layer_failed: bool,
+    /// In-memory overrides ([`Settings::with_override`]) in the order applied, so a live
+    /// refresh of the files can put them back ([`Settings::with_overrides_of`]).
+    overrides: Vec<(String, Value)>,
+    files: Option<Arc<SettingsFiles>>,
+}
+
+/// The settings that were actually loaded for this session, captured before reading
+/// so an edit during the load is visible on the next turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsFiles {
+    user: PathBuf,
+    project: Option<PathBuf>,
+    user_stamp: Option<FileStamp>,
+    project_stamp: Option<FileStamp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileStamp {
+    mtime: Option<SystemTime>,
+    len: u64,
+    ino: u64,
+}
+
+fn stamp(path: &Path) -> Option<FileStamp> {
+    let metadata = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    let ino = std::os::unix::fs::MetadataExt::ino(&metadata);
+    #[cfg(not(unix))]
+    let ino = 0;
+    Some(FileStamp {
+        mtime: metadata.modified().ok(),
+        len: metadata.len(),
+        ino,
+    })
+}
+
+impl SettingsFiles {
+    fn new(user: PathBuf, project: Option<PathBuf>) -> Self {
+        Self {
+            user_stamp: stamp(&user),
+            project_stamp: project.as_deref().and_then(stamp),
+            user,
+            project,
+        }
+    }
+
+    /// Stat only the paths that were eligible at the original load.
+    pub fn observe(&self) -> Self {
+        Self::new(self.user.clone(), self.project.clone())
+    }
+
+    pub fn project_changed_since(&self, previous: &Self) -> bool {
+        self.project_stamp != previous.project_stamp
+    }
 }
 
 impl Settings {
@@ -62,23 +120,52 @@ impl Settings {
     /// merge per pi's rules ([`crate::merge_settings`]); validate ([`crate::validate`]). Missing
     /// files are empty objects. Never fails: problems become diagnostics.
     pub fn load(dirs: &Dirs, cwd: &Path, project_trusted: bool) -> Settings {
+        let files = SettingsFiles::new(
+            dirs.settings_file(),
+            project_trusted.then(|| dirs.project_settings_file(cwd)),
+        );
+        Self::read_files(files, None)
+    }
+
+    /// A session with caller-supplied settings has no files to watch.
+    pub fn files(&self) -> Option<&SettingsFiles> {
+        self.files.as_deref()
+    }
+
+    /// If the project layer did not change or lacks fresh approval, preserve the
+    /// layer admitted at launch. In either case its file does not get read again.
+    pub fn refresh_files(&self, mut files: SettingsFiles, read_project: bool) -> Settings {
+        if !read_project {
+            files.project_stamp = self.files().and_then(|loaded| loaded.project_stamp.clone());
+        }
+        Self::read_files(files, (!read_project).then_some(&self.project)).with_overrides_of(self)
+    }
+
+    fn read_files(files: SettingsFiles, keep_project: Option<&Value>) -> Settings {
         let mut diagnostics = Vec::new();
-        let user_path = dirs.settings_file();
-        let user = read_layer(&user_path, &mut diagnostics);
-        let (project, project_src) = if project_trusted {
-            let path = dirs.project_settings_file(cwd);
-            let value = read_layer(&path, &mut diagnostics);
-            (value, path.display().to_string())
-        } else {
-            (Value::Null, String::from("project settings"))
+        let user = read_layer(&files.user, &mut diagnostics);
+        let (project, project_src) = match (files.project.as_deref(), keep_project) {
+            (Some(path), Some(layer)) => (layer.clone(), path.display().to_string()),
+            (Some(path), None) => (read_layer(path, &mut diagnostics), path.display().to_string()),
+            (None, _) => (Value::Null, String::from("project settings")),
         };
-        build(
+        // `read_layer` is the only source of diagnostics so far.
+        let layer_failed = !diagnostics.is_empty();
+        let mut settings = build(
             user,
             project,
             diagnostics,
-            &user_path.display().to_string(),
+            &files.user.display().to_string(),
             &project_src,
-        )
+        );
+        settings.layer_failed = layer_failed;
+        settings.files = Some(Arc::new(files));
+        settings
+    }
+    /// Whether [`Settings::load`] met a file it could not read or parse. A caller that applies
+    /// a changed file live keeps its previous settings then.
+    pub fn layer_failed(&self) -> bool {
+        self.layer_failed
     }
     /// Whether the project's own settings file declares a non-empty `done` list. Reads the file
     /// whatever the trust (it only looks at that key and never merges it), so the caller can
@@ -112,6 +199,10 @@ impl Settings {
     }
     pub fn bool(&self, key: &str, default: bool) -> bool {
         self.get(key).and_then(Value::as_bool).unwrap_or(default)
+    }
+    /// A boolean read from the user settings file only: a project file cannot change it.
+    pub fn user_bool(&self, key: &str, default: bool) -> bool {
+        self.user_value(key).and_then(Value::as_bool).unwrap_or(default)
     }
     pub fn u32(&self, key: &str, default: u32) -> u32 {
         self.get(key)
@@ -308,12 +399,50 @@ impl Settings {
     /// [`Settings::set`] recomposes the layers and drops the override.
     pub fn with_override(mut self, key: &str, value: Value) -> Settings {
         if let Value::Object(root) = &mut self.merged {
-            set_nested(root, key, value);
+            set_nested(root, key, value.clone());
+        }
+        self.overrides.retain(|(k, _)| k != key);
+        self.overrides.push((key.to_string(), value));
+        self
+    }
+    /// The in-memory overrides of `old` applied over these (freshly loaded) settings: a live
+    /// refresh of the files must not undo what the session set for itself (a child's soft
+    /// limit, an inherited-trust worker's empty `done`, `--verbose`, `--models`).
+    pub fn with_overrides_of(mut self, old: &Settings) -> Settings {
+        for (key, value) in &old.overrides {
+            self = self.with_override(key, value.clone());
         }
         self
     }
+    /// Where the value of `key` comes from: the project file, else the user file, else the
+    /// built-in default.
+    pub fn source(&self, key: &str) -> Source {
+        if lookup(&self.project, key).is_some() {
+            Source::Project
+        } else if lookup(&self.user, key).is_some() {
+            Source::User
+        } else {
+            Source::Default
+        }
+    }
+    /// True when a layer or an in-memory override sets `key`. A built-in default does not count.
+    pub(crate) fn is_explicit(&self, key: &str) -> bool {
+        self.source(key) != Source::Default || self.overrides.iter().any(|(k, _)| k == key)
+    }
+    /// The value `key` has in the user file, if any (not the merged value).
+    pub fn user_value(&self, key: &str) -> Option<&Value> {
+        lookup(&self.user, key)
+    }
+    /// Read a numeric setting from the user file with no project override.
+    pub fn user_u32(&self, key: &str, default: u32) -> u32 {
+        self.user_value(key)
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(default)
+    }
     /// Set a key in memory and persist it to the user file (`project = false`) or the project
-    /// file, keeping unrelated content and key order of that file.
+    /// file, keeping unrelated content and key order of that file. A field of a descriptor with
+    /// a hard range is refused outside the range. The read-modify-write holds the file's lock.
     pub fn set(
         &mut self,
         dirs: &Dirs,
@@ -322,12 +451,7 @@ impl Settings {
         value: Value,
         project: bool,
     ) -> Result<(), OxaError> {
-        if key.is_empty() || key.split('.').any(str::is_empty) {
-            return Err(OxaError::new(
-                codes::INVALID,
-                format!("invalid setting key: {key:?}"),
-            ));
-        }
+        check_key_shape(key)?;
         if let Some(def) = find_key(key) {
             if !kind_matches(def.kind, &value) {
                 return Err(OxaError::new(
@@ -336,28 +460,230 @@ impl Settings {
                 ));
             }
         }
+        if let Some(range) = crate::descriptor(key).and_then(|d| d.range).filter(|r| r.hard) {
+            check_hard_range(key, &value, &range)?;
+        }
         let path = if project {
             dirs.project_settings_file(cwd)
         } else {
             dirs.settings_file()
         };
+        let _lock = lock_for_write(&path)?;
         let mut root = read_object_for_write(&path)?;
         set_nested(&mut root, key, value);
-        let mut text = serde_json::to_string_pretty(&Value::Object(root.clone()))
+        self.persist(&path, root, project)
+    }
+    /// Remove `key` from the user file (`project = false`) or the project file, pruning parent
+    /// objects it leaves empty; every other key stays as it is. Nothing is written when the
+    /// file does not hold the key. A symbolic link at the settings path is refused, not followed.
+    pub fn unset(&mut self, dirs: &Dirs, cwd: &Path, key: &str, project: bool) -> Result<(), OxaError> {
+        check_key_shape(key)?;
+        let path = if project {
+            dirs.project_settings_file(cwd)
+        } else {
+            dirs.settings_file()
+        };
+        let _lock = lock_for_write(&path)?;
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(OxaError::new(
+                codes::INVALID,
+                format!("{} is a symbolic link; it is not changed", path.display()),
+            )
+            .with_hint("Edit the file the link points to."));
+        }
+        let mut root = read_object_for_write(&path)?;
+        if !remove_nested(&mut root, key) {
+            // Nothing on disk to remove, so nothing is written. The file just read is still the
+            // truth for this layer: adopt it, so an instance that still holds a value another
+            // instance (or an editor) already removed stops reporting it.
+            self.adopt(&path, root, project);
+            return Ok(());
+        }
+        self.persist(&path, root, project)
+    }
+    /// Write `root` to `path` (the user file is private, 0600) and make it the layer in memory.
+    fn persist(&mut self, path: &Path, root: Map<String, Value>, project: bool) -> Result<(), OxaError> {
+        let mut text = serde_json::to_string_pretty(&root)
             .map_err(|e| OxaError::new(codes::INVALID, format!("cannot serialise settings: {e}")))?;
         text.push('\n');
         // The user file is private to the user; a project file keeps the umask default.
-        write_atomic(&path, &text, if project { 0o666 } else { 0o600 })?;
-
-        let source = path.display().to_string();
-        let (checked, _) = check_root(&Value::Object(root), &source);
+        write_atomic(path, &text, if project { 0o666 } else { 0o600 })?;
+        self.adopt(path, root, project);
+        Ok(())
+    }
+    /// Make `root` the layer for `project` in memory and recompose the merged settings.
+    fn adopt(&mut self, path: &Path, root: Map<String, Value>, project: bool) {
+        let (checked, _) = check_root(&Value::Object(root), &path.display().to_string());
         if project {
             self.project = checked;
         } else {
             self.user = checked;
         }
         self.merged = compose(&self.user, &self.project);
-        Ok(())
+        self.overrides.clear();
+    }
+}
+
+/// Where a setting's value comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Default,
+    User,
+    Project,
+}
+
+fn check_key_shape(key: &str) -> Result<(), OxaError> {
+    if key.is_empty() || key.split('.').any(str::is_empty) {
+        return Err(OxaError::new(
+            codes::INVALID,
+            format!("invalid setting key: {key:?}"),
+        ));
+    }
+    Ok(())
+}
+
+/// A hard range refuses a value outside it; only whole numbers can be inside one.
+fn check_hard_range(key: &str, value: &Value, range: &crate::Range) -> Result<(), OxaError> {
+    let inside = value
+        .as_u64()
+        .is_some_and(|n| n >= range.min && range.max.is_none_or(|max| n <= max));
+    if inside {
+        return Ok(());
+    }
+    let upper = range.max.map_or_else(|| "any".to_string(), |max| max.to_string());
+    Err(OxaError::new(
+        codes::INVALID,
+        format!(
+            "setting `{key}` must be a whole number from {} to {upper}",
+            range.min
+        ),
+    ))
+}
+
+/// The exclusive write lock of a settings file, `<file>.lock` (`settings.json.lock`), held by the
+/// returned handle until it is dropped. Two read-modify-writes under it cannot lose each other's
+/// change. The lock file is private (0600) and is never the settings file itself.
+fn lock_for_write(path: &Path) -> Result<std::fs::File, OxaError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| OxaError::io(&format!("create {}", parent.display()), &e))?;
+    }
+    let lock_path = path.with_extension("json.lock");
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&lock_path)
+        .map_err(|e| OxaError::io(&format!("open {}", lock_path.display()), &e))?;
+    file.lock()
+        .map_err(|e| OxaError::io(&format!("lock {}", lock_path.display()), &e))?;
+    Ok(file)
+}
+
+/// The value at a dotted key of one layer, if the layer has it.
+fn lookup<'a>(layer: &'a Value, key: &str) -> Option<&'a Value> {
+    let mut cur = layer;
+    for part in key.split('.') {
+        cur = cur.as_object()?.get(part)?;
+    }
+    Some(cur)
+}
+
+/// Remove `key` (dotted) from `root`, pruning the parent objects it leaves empty. False when the
+/// key is absent, in which case nothing changed.
+fn remove_nested(root: &mut Map<String, Value>, key: &str) -> bool {
+    let parts: Vec<&str> = key.split('.').collect();
+    remove_path(root, &parts)
+}
+
+fn remove_path(obj: &mut Map<String, Value>, parts: &[&str]) -> bool {
+    match parts {
+        [] => false,
+        [last] => obj.shift_remove(*last).is_some(),
+        [first, rest @ ..] => {
+            let Some(Value::Object(child)) = obj.get_mut(*first) else {
+                return false;
+            };
+            let removed = remove_path(child, rest);
+            if removed && child.is_empty() {
+                obj.shift_remove(*first);
+            }
+            removed
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn headless_inbox_setting_is_user_only() {
+        let user_off = Settings::from_values(json!({"oxa": {"inbox": {"headless": false}}}), json!({}));
+        assert!(!user_off.user_bool("oxa.inbox.headless", true));
+        let project_on = Settings::from_values(
+            json!({"oxa": {"inbox": {"headless": false}}}),
+            json!({"oxa": {"inbox": {"headless": true}}}),
+        );
+        assert!(
+            !project_on.user_bool("oxa.inbox.headless", true),
+            "a project file cannot re-enable the headless inbox the user turned off"
+        );
+        let project_off = Settings::from_values(json!({}), json!({"oxa": {"inbox": {"headless": false}}}));
+        assert!(project_off.user_bool("oxa.inbox.headless", true));
+    }
+
+    #[test]
+    fn set_rejects_field_outside_hard_range() {
+        let range = crate::Range {
+            min: 1,
+            max: Some(65535),
+            hard: true,
+            step: 1,
+            note: "",
+        };
+        assert!(check_hard_range("oxa.lead.serve.port", &json!(1), &range).is_ok());
+        assert!(check_hard_range("oxa.lead.serve.port", &json!(65535), &range).is_ok());
+        assert!(check_hard_range("oxa.lead.serve.port", &json!(0), &range).is_err());
+        assert!(check_hard_range("oxa.lead.serve.port", &json!(65536), &range).is_err());
+        assert!(check_hard_range("oxa.lead.serve.port", &json!("8080"), &range).is_err());
+    }
+
+    #[test]
+    fn remove_prunes_only_emptied_parents() {
+        let mut root = json!({"a": {"b": {"c": 1}, "d": 2}, "e": {"f": 3}});
+        let map = root.as_object_mut().expect("object");
+        assert!(remove_nested(map, "a.b.c"));
+        assert_eq!(root, json!({"a": {"d": 2}, "e": {"f": 3}}));
+        let map = root.as_object_mut().expect("object");
+        assert!(!remove_nested(map, "a.b.c"), "absent key changes nothing");
+        assert!(remove_nested(map, "e.f"));
+        assert_eq!(root, json!({"a": {"d": 2}}));
+    }
+
+    #[test]
+    fn remove_keeps_sibling_key_order() {
+        let mut root = json!({"theme": 1, "retry": 2, "compaction": 3, "p": {"x": {"y": 1}, "z": 2}});
+        let map = root.as_object_mut().expect("object");
+        assert!(remove_nested(map, "theme"));
+        assert!(remove_nested(map, "p.x.y"));
+        let keys: Vec<&str> = map.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["retry", "compaction", "p"]);
+        let inner: Vec<&str> = map["p"]
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(inner, ["z"]);
+        let mut root = json!({"p": {"a": {"y": 1}}, "q": 1, "r": 2});
+        let map = root.as_object_mut().expect("object");
+        assert!(remove_nested(map, "p.a.y"));
+        let keys: Vec<&str> = map.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["q", "r"], "pruned empty parent keeps order");
     }
 }
 
@@ -380,6 +706,9 @@ fn build(
         user,
         project,
         diagnostics,
+        layer_failed: false,
+        overrides: Vec::new(),
+        files: None,
     }
 }
 
@@ -413,7 +742,11 @@ fn read_layer(path: &Path, diagnostics: &mut Vec<Diagnostic>) -> Value {
     let source = path.display().to_string();
     match std::fs::read_to_string(path) {
         Ok(text) => match serde_json::from_str::<Value>(&text) {
-            Ok(v) => v,
+            Ok(v @ Value::Object(_)) => v,
+            Ok(_) => {
+                diagnostics.push(warn(&source, "settings file must contain a JSON object"));
+                Value::Null
+            }
             Err(e) => {
                 diagnostics.push(warn(
                     &source,

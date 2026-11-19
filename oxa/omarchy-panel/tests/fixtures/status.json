@@ -1,0 +1,34 @@
+{
+  "type": "oxa_suite_status", "version": 1, "generated_ms": 1795100000000,
+  "oxa": { "version": "0.2.1", "panel_build": "3f2a1b9c04de" },
+  "capabilities": ["models", "usage", "storage", "panel_install"],
+  "default_model": "openai/gpt-6.2-sol",
+  "local": {
+    "state": "not_wired",
+    "enabled": false, "engine_binary": "found", "wired": 0, "on_disk_unwired": 3,
+    "running": [],
+    "fix": "local_add"
+  },
+  "cloud": {
+    "state": "ready",
+    "enabled": true, "routes": 1, "providers": ["openai"],
+    "key_file": "present", "chatgpt_login": "missing",
+    "fix": null
+  },
+  "lead": {
+    "state": "awaiting_owner",
+    "configured": true, "goal_status": "pursuing", "open_asks": 2,
+    "model": "opencode/deepseek-v4", "last_activity_ms": 1795099760000,
+    "serve": { "enabled": true, "listening": true, "url": "http://127.0.0.1:8743/", "settings": false }
+  },
+  "sessions": { "live": 4, "working": 3, "stalled": 0, "last_activity_ms": 1795099988000 },
+  "workers": {
+    "working": 2, "idle": 1, "starting": 0, "finished": 0, "dead": 0, "stopped": 0, "stalled": 0,
+    "rows": [
+      { "name": "lander-1", "state": "working", "mode": "goal", "model": "chatgpt/gpt-6.2-codex",
+        "branch": "agent/1545-local-add", "started_ms": 1795090000000, "last_progress_ms": 1795099988000,
+        "stalled": false }
+    ]
+  },
+  "usage_state": "low"
+}

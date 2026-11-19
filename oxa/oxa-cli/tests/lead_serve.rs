@@ -102,7 +102,7 @@ fn form_nonce(page: &str) -> &str {
 
 fn with_fixed_chat(run: impl FnOnce(u16, &str, &std::path::Path)) {
     let test = TestEnv::new();
-    std::fs::set_permissions(&test.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(test.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = reservation.local_addr().unwrap().port();
     test.write(
@@ -231,13 +231,9 @@ fn same_uid_client_cannot_read_protected_situation() {
 }
 
 #[test]
-fn registered_help_and_menu_work_without_home_or_runtime_inputs() {
+fn registered_help_works_without_home_or_runtime_inputs() {
     let test = TestEnv::new();
-    for args in [
-        vec!["lead"],
-        vec!["lead", "serve", "--help"],
-        vec!["help", "lead", "serve"],
-    ] {
+    for args in [vec!["lead", "serve", "--help"], vec!["help", "lead", "serve"]] {
         let output = command(&test).args(args).env_remove("HOME").output().unwrap();
         assert!(
             output.status.success(),

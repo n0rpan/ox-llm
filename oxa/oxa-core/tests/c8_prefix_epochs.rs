@@ -72,6 +72,7 @@ fn fixture(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Vec<Arc<dyn Hooks>>) -
         queue: Mutex::new(Queue::default()),
         cancel: CancelToken::new(),
         cancel_retry: CancelToken::new(),
+        wait_wake: CancelToken::new(),
         busy: std::sync::atomic::AtomicBool::new(false),
         modes: Mutex::new((QueueMode::All, QueueMode::OneAtATime)),
         dirty: std::sync::atomic::AtomicBool::new(false),
@@ -199,6 +200,7 @@ fn change_is_one_prefix_entry_and_notice() {
         completion: 20,
         cached: 0,
         cached_missing: false,
+        unreported: false,
     });
     env.write("work/AGENTS.md", "project rules v2\n");
     let mut sink = VecSink(Vec::new());

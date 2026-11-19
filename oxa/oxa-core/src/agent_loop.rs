@@ -4,10 +4,11 @@ use crate::exec::{fail_truncated_calls, reply_event, run_calls, RequestOpts};
 use crate::host::observe_hooks;
 use crate::SessionState;
 use oxa_proto::{
-    miss_cause, rebase_why, shown_why, AgentEvent, Entry, EntryBody, EventMessage, EventSink, Finish,
+    codes, miss_cause, rebase_why, shown_why, AgentEvent, Entry, EntryBody, EventMessage, EventSink, Finish,
     HookPoint, Level, OxaError, Part, Role, StopReason, TurnKind, Ui, Usage, Value, WireMsg,
 };
 use oxa_session::new_entry_id;
+use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// How a run ended.
@@ -20,6 +21,9 @@ pub enum RunEnd {
     /// A request failed after retries; stored as `Shown { why: failed | cut }`.
     Failed(OxaError),
 }
+
+/// The start of the stop message of a repetition loop (`stream_broken`, never a transient failure).
+pub(crate) const REPEAT_STOP: &str = "Response stopped: the model fell into a repetition loop";
 
 /// Persist `body` as a new entry under the current leaf, add it to the tree and fold it into
 /// the transcript. The only way an entry is created. Emits nothing; callers emit events.
@@ -101,6 +105,10 @@ pub fn run_loop(
     crate::goal::deliver_saved(st, sink)?;
     crate::goal::ensure_begin(st);
     crate::goal::checkpoint(st, false, sink)?;
+    st.shared
+        .gate
+        .running
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let steering = st
         .goal
         .as_ref()
@@ -140,6 +148,11 @@ fn run_inner(
     let mut wrapping_up = false;
     let mut wrap_up_failure = None;
     let mut length_recoveries = 0;
+    // The repeat guard warns the user once per run (`repeat.rs`, #1448).
+    let mut repeat_warned = false;
+    // Consecutive transient failures of one logical request. This state lives inside the run so
+    // recovery preserves done checks, the turn limit and the request idempotency key.
+    let mut goal_failures: u32 = 0;
     // `oxa.maxTurns` (default unset: no limit): model replies of this run (#507).
     let max_turns = st.settings.u32(crate::repeat::MAX_TURNS, 0);
     'turns: loop {
@@ -229,6 +242,13 @@ fn run_inner(
         let mut retried = false;
         let mut replays: u32 = 0;
         let turn = loop {
+            // A run that continues after a persisted cut, failure or wrap-up is still foreground
+            // work: re-arm the signal that `persist` cleared, so input during the replay or the
+            // next turn is steering, not a new run. The run's guard clears it at the end.
+            st.shared
+                .gate
+                .running
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             if !wrapping_up && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
                 let text = "Request skipped for wrap-up.".to_string();
                 let progress = persist(
@@ -281,15 +301,20 @@ fn run_inner(
                     st.shared.cancel.reset();
                     Err(OxaError::new(
                         oxa_proto::codes::STREAM_BROKEN,
-                        "Response stopped: the model fell into a repetition loop (the same block of text repeated).",
+                        format!("{REPEAT_STOP} (the same block of text repeated)."),
                     )
-                    .with_hint("Rephrase the request or try again; the partial reply is shown but not sent back."))
+                    .with_hint(
+                        "Rephrase the request or try again; the partial reply is shown but not sent back.",
+                    ))
                 }
                 other => other,
             };
 
             let turn = match res {
-                Ok(t) => t,
+                Ok(t) => {
+                    goal_failures = 0;
+                    t
+                }
                 Err(e) if replayable(st, &e, got_data, looped, replays) => {
                     // #456: a transport cut mid-output. The partial reply stays visible as
                     // `Shown { cut }` (never sent, W2) and the request is resent from the same
@@ -302,7 +327,7 @@ fn run_inner(
                     } else {
                         partial
                     };
-                    persist(
+                    persist_continuing(
                         st,
                         EntryBody::Shown {
                             text,
@@ -331,6 +356,38 @@ fn run_inner(
                         partial
                     };
                     let progress = persist(st, EntryBody::Shown { text, why }, sink)?;
+                    let retry_stopped = st.shared.gate.retry_stopped.swap(false, Ordering::SeqCst);
+                    if !retry_stopped {
+                        if let Some(delay) = crate::goal::failure_backoff(st, &e, goal_failures) {
+                            goal_failures += 1;
+                            let text = format!(
+                                "Goal waiting {} s after a transient request failure ({}); no request is sent meanwhile, then the goal continues.",
+                                delay.as_secs(), e.code
+                            );
+                            persist(
+                                st,
+                                EntryBody::Shown {
+                                    text: text.clone(),
+                                    why: shown_why::NOTICE,
+                                },
+                                sink,
+                            )?;
+                            sink.emit(&AgentEvent::Notice {
+                                level: Level::Info,
+                                text,
+                            });
+                            match crate::goal::wait_failure_backoff(st, delay) {
+                                crate::goal::BackoffEnd::Elapsed => {
+                                    sink.emit(&AgentEvent::MessageStart {
+                                        message: pending_message(),
+                                    });
+                                    continue;
+                                }
+                                crate::goal::BackoffEnd::Aborted => return Ok(RunEnd::Aborted),
+                                crate::goal::BackoffEnd::RetryStopped => return Ok(RunEnd::Failed(e)),
+                            }
+                        }
+                    }
                     let soft_stop = st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0;
                     if soft_stop {
                         let mut message = pending.clone();
@@ -368,7 +425,7 @@ fn run_inner(
                 if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
                     // The normal fallback is a new request. A pending stop instead
                     // gets the bounded final instruction from the outer turn loop.
-                    let progress = persist(
+                    let progress = persist_continuing(
                         st,
                         EntryBody::Shown {
                             text: "Thinking reached its output limit; wrapping up.".to_string(),
@@ -436,6 +493,44 @@ fn run_inner(
             && st.info.caps.remote
             && !wrapping_up
             && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) == 0
+            && st.shared.literal_output_remaining() == Some(0)
+        {
+            // The bounded literal turn has spent its shared output budget: the
+            // recovery request could never reserve a token, so it is neither
+            // scheduled nor described with its internal instruction, and the
+            // partial answer is never presented as a valid reply. The cut stays
+            // as the audit entry; the typed local bound reaches the caller.
+            account_discarded(st, &turn);
+            let text = turn
+                .msg
+                .content
+                .clone()
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| "The reply reached its output limit before answering.".to_string());
+            persist(
+                st,
+                EntryBody::Shown {
+                    text,
+                    why: shown_why::CUT,
+                },
+                sink,
+            )?;
+            let e = OxaError::new(
+                codes::LITERAL_OUTPUT_EXHAUSTED,
+                "The literal turn's output limit is exhausted.",
+            )
+            .with_hint("Ask for a shorter answer.");
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Error,
+                text: e.to_string(),
+            });
+            return Ok(RunEnd::Failed(e));
+        }
+        if turn.finish == Finish::Length
+            && turn.msg.tool_calls.is_empty()
+            && st.info.caps.remote
+            && !wrapping_up
+            && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) == 0
             && length_recoverable(st, length_recoveries)
         {
             account_discarded(st, &turn);
@@ -445,7 +540,7 @@ fn run_inner(
                 .clone()
                 .filter(|t| !t.is_empty())
                 .unwrap_or_else(|| "The reply reached its output limit before answering.".to_string());
-            let progress = persist(
+            let progress = persist_continuing(
                 st,
                 EntryBody::Shown {
                     text,
@@ -523,7 +618,7 @@ fn run_inner(
         }
         run_msgs.push(reply.clone());
         account_reply(st, turn.timings, usage);
-        st.last_usage = Some(usage);
+        st.last_usage = usage.reported();
         crate::goal::checkpoint(st, true, sink)?;
         // F4: capabilities that only a loaded engine reports (`/props` `oxe_hints`): re-read
         // once after the first reply while `prefill_only` is still false, and after a request
@@ -581,6 +676,7 @@ fn run_inner(
                 tool_msgs.push(msg);
             }
             done.note_edits(&results);
+            done.note_proof(&calls, &results);
             done.note_bash(st, &results);
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
             crate::think::observe(st, &calls, &results, sink, ui);
@@ -633,48 +729,81 @@ fn run_inner(
             if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
                 continue;
             }
-            // The repeat guard gave up: the same call after its notices ends the run.
-            if let Some(r) = results.iter().find(|r| r.stop) {
-                let mut text = crate::repeat::stop_text(&r.tool_name);
-                let mut code = crate::repeat::ERROR_CODE;
+            // The repeat guard's give-up point: the same call again after its notices (#1448).
+            // The run no longer ends here. The advisor keeps its authority: a delivered
+            // suggestion continues the run, an escalation still ends it. Either way the user
+            // is warned once — shown and persisted with the remedy — and the next model reply
+            // proceeds (steering and compaction run as on any turn).
+            if let Some(r) = results.iter().find(|r| r.warn) {
+                let mut text = crate::repeat::warning_text(&r.tool_name);
+                let mut escalate = false;
                 if let Some(call) = calls
                     .iter()
                     .find(|call| Some(&call.id) == r.msg.tool_call_id.as_ref())
                 {
                     match crate::advice::on_repeat(st, call, &text, sink)? {
-                        crate::advice::AdviceResult::Continue => continue,
+                        // The advisor delivered: the run continues through the warning below.
+                        crate::advice::AdviceResult::Continue => {}
+                        // No advisor, or none delivered: same warning path.
                         crate::advice::AdviceResult::Refused => {}
                         crate::advice::AdviceResult::Escalate => {
-                            code = "advisor_escalation_required";
                             text = "Advice did not resolve the failure. The worker needs a stronger tier."
                                 .into();
+                            escalate = true;
                         }
                     }
                 }
                 if st.shared.cancel.is_cancelled() {
                     return Ok(RunEnd::Aborted);
                 }
-                persist(
-                    st,
-                    EntryBody::Shown {
+                if escalate {
+                    persist(
+                        st,
+                        EntryBody::Shown {
+                            text: text.clone(),
+                            why: shown_why::NOTICE,
+                        },
+                        sink,
+                    )?;
+                    sink.emit(&AgentEvent::Notice {
+                        level: Level::Error,
                         text: text.clone(),
-                        why: shown_why::NOTICE,
-                    },
-                    sink,
-                )?;
-                sink.emit(&AgentEvent::Notice {
-                    level: Level::Error,
-                    text: text.clone(),
-                });
-                // The files edited so far are still checked and the result shown; the run is
-                // over, so a failure is not sent back to the model.
-                let _ = crate::done::check(st, &mut done, sink, ui);
-                crate::advice::observe_done(st, done.observation.take(), false, sink)?;
-                // Giving up is not a finished task: a caller must not read it as success.
-                return Ok(RunEnd::Failed(OxaError::new(code, text)));
+                    });
+                    // The files edited so far are still checked and the result shown; the run
+                    // is over, so a failure is not sent back to the model.
+                    let _ = crate::done::check(st, &mut done, sink, ui);
+                    crate::advice::observe_done(st, done.observation.take(), false, sink)?;
+                    // Not a finished task: a caller must not read it as success.
+                    return Ok(RunEnd::Failed(OxaError::new("advisor_escalation_required", text)));
+                }
+                // One warning per run; later repeats keep their model-facing notice.
+                if !repeat_warned {
+                    repeat_warned = true;
+                    persist(
+                        st,
+                        EntryBody::Shown {
+                            text: text.clone(),
+                            why: shown_why::NOTICE,
+                        },
+                        sink,
+                    )?;
+                    sink.emit(&AgentEvent::Notice {
+                        level: Level::Warning,
+                        text,
+                    });
+                }
             }
             // Steering drains after the tool batch, each message as a user message.
             deliver_steering(st, sink, ui, run_msgs)?;
+            // A wait that input woke hands that input to the model now: a follow-up is
+            // otherwise only drained when the run stops, after the model has answered
+            // the wait result without it.
+            if calls.iter().any(|call| call.name == "wait") && st.shared.wait_wake.is_cancelled() {
+                st.shared.wait_wake.reset();
+                for text in drain_follow_ups(st, sink) {
+                    push_user(st, text, sink, ui, run_msgs)?;
+                }
+            }
             // L5 mid-run (`oxa.compaction.midRun`): past the soft limit, compact before the next
             // request, keeping this unanswered batch verbatim. A failed or cancelled attempt
             // leaves the wire unchanged and the run goes on (the hard-limit check below still
@@ -760,9 +889,20 @@ fn run_inner(
                 crate::goal::checkpoint(st, false, sink)?;
                 return Ok(RunEnd::Stopped);
             }
+            let was_pursuing = goal.pursuing();
             let snapshot = goal.stopped();
             crate::goal::save_checkpoint(st, &snapshot, sink)?;
+            if was_pursuing && snapshot.status == oxa_session::GoalStatus::Paused {
+                if let Some(reason) = snapshot.pause_reason.as_deref() {
+                    crate::goal::announce_pause(reason, sink);
+                }
+            }
             if goal.pursuing() {
+                // Queued input (a follow-up that woke a wait) is the next user message:
+                // stop so `settle_runs` delivers it instead of the continuation prompt.
+                if st.shared.has_input() {
+                    return Ok(RunEnd::Stopped);
+                }
                 push_user(st, crate::prompt::GOAL_CONTINUE.into(), sink, ui, run_msgs)?;
                 continue;
             }
@@ -896,13 +1036,58 @@ fn drain_steering(st: &SessionState, sink: &mut dyn EventSink) -> Vec<String> {
     taken
 }
 
-/// Persist a body and announce the entry.
+/// Take follow-ups from the shared queue (same announcements as [`drain_steering`]).
+fn drain_follow_ups(st: &SessionState, sink: &mut dyn EventSink) -> Vec<String> {
+    if st.shared.dirty.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        let (steering, follow_up) = st.shared.snapshot();
+        sink.emit(&AgentEvent::QueueUpdate { steering, follow_up });
+    }
+    let taken = st.shared.take_follow_up();
+    if !taken.is_empty() {
+        let (steering, follow_up) = st.shared.snapshot();
+        sink.emit(&AgentEvent::QueueUpdate { steering, follow_up });
+    }
+    taken
+}
+
+/// Persist a body and announce the entry. A dropped reply (aborted, failed, cut) ends the
+/// foreground signal (`Gate::running`) before the entry is announced, so settlement's remaining
+/// busy claim does not turn input typed after it into steering for a finished turn. A dropped
+/// reply the same run replaces with another request uses [`persist_continuing`].
 pub(crate) fn persist(
     st: &mut SessionState,
     body: EntryBody,
     sink: &mut dyn EventSink,
 ) -> Result<Entry, OxaError> {
+    persist_with(st, body, false, sink)
+}
+
+/// [`persist`] for a cut reply the run goes on from (a replay after a cut stream, a length
+/// recovery, a wrap-up turn): the run still takes input, so the foreground signal stays set
+/// through the events emitted before the next request (the request loop also re-arms it).
+fn persist_continuing(
+    st: &mut SessionState,
+    body: EntryBody,
+    sink: &mut dyn EventSink,
+) -> Result<Entry, OxaError> {
+    persist_with(st, body, true, sink)
+}
+
+fn persist_with(
+    st: &mut SessionState,
+    body: EntryBody,
+    continues: bool,
+    sink: &mut dyn EventSink,
+) -> Result<Entry, OxaError> {
     let entry = append_entry(st, body)?;
+    if !continues
+        && matches!(&entry.body, EntryBody::Shown { why, .. } if [shown_why::ABORTED, shown_why::FAILED, shown_why::CUT].contains(why))
+    {
+        st.shared
+            .gate
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
     sink.emit(&AgentEvent::EntryAppended { entry: entry.clone() });
     Ok(entry)
 }

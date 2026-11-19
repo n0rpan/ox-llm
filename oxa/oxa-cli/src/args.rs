@@ -50,6 +50,8 @@ pub enum Subcommand {
     Work(Vec<String>),
     /// `oxa mcp add|remove|list|login|logout ..`: the words after `mcp`.
     Mcp(Vec<String>),
+    /// M3: `oxa memory list|show <name>|rm <name>`: the words after `memory`.
+    Memory(Vec<String>),
     /// `oxa install|remove|update|list ..`: the verb and the words after it.
     Pkg(String, Vec<String>),
     /// `oxa config ..`.
@@ -74,7 +76,20 @@ impl std::fmt::Debug for RegistryArgs {
 
 pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -> bool {
     use oxa_interactive::command_registry::CommandId;
-    !matches!(id, CommandId::Help | CommandId::WorkStatus | CommandId::WorkBoard)
+    // Admission belongs exclusively to the oxe binary.
+    // Declared in the registry for discovery, help and surfaces, but parsed and handled by the
+    // legacy path below; the registry route must not take them over.
+    !matches!(
+        id,
+        CommandId::Admission
+            | CommandId::Help
+            | CommandId::WorkStatus
+            | CommandId::WorkBoard
+            | CommandId::Memory
+            | CommandId::MemoryList
+            | CommandId::MemoryShow
+            | CommandId::MemoryRm
+    )
 }
 
 /// Login words can contain a mistakenly pasted callback. Never expose them
@@ -120,6 +135,8 @@ pub struct Args {
     pub stall_timeout: Option<std::time::Duration>,
     /// Soft run budget: uncached prompt plus output tokens (`--max-tokens`).
     pub max_tokens: Option<u64>,
+    /// `--usage-log FILE`: one JSONL record per model call (owner-only file, no message text).
+    pub usage_log: Option<PathBuf>,
     /// `--mode text|json|rpc`.
     pub mode: Option<ModeArg>,
     /// `--export <input> [output]`.
@@ -271,12 +288,16 @@ const COMMANDS: &[(&str, &str)] = &[
     ("oxa logout chatgpt", "Remove the owner ChatGPT token record"),
     (
         "oxa send <session-id> \"text\"",
-        "Queue a session follow-up, waking its TUI or RPC owner",
+        "Queue a session follow-up for its TUI, RPC owner or headless goal run",
     ),
     ("oxa config [-l]", "Print every setting with its value and source"),
     (
         "oxa mcp <command>",
         "Manage MCP servers: add, remove, list, login, logout",
+    ),
+    (
+        "oxa memory <list|show|rm>",
+        "Show the memory index, or show or remove one memory entry",
     ),
     (
         "oxa identity [--refresh]",
@@ -348,6 +369,10 @@ const OPTIONS: &[(&str, &str)] = &[
     (
         "--max-tokens <N>",
         "Gracefully wrap up a headless run after N new prompt + output tokens (cached tokens are free)",
+    ),
+    (
+        "--usage-log <file>",
+        "Write one JSONL record per model call (tokens, duration, model, turn) to FILE; owner-only, no message text",
     ),
     ("--resume, -r", "Pick a session to resume"),
     (
@@ -506,6 +531,7 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         "login" => Subcommand::Login(false, LoginArgs(rest.to_vec())),
         "logout" => Subcommand::Login(true, LoginArgs(rest.to_vec())),
         "mcp" => Subcommand::Mcp(rest.to_vec()),
+        "memory" => Subcommand::Memory(rest.to_vec()),
         "install" | "remove" | "uninstall" | "update" | "list" => {
             Subcommand::Pkg(word.to_string(), rest.to_vec())
         }
@@ -776,6 +802,9 @@ fn parse_flag(
                     .filter(|n| *n > 0)
                     .ok_or_else(|| usage("--max-tokens requires a positive integer"))?,
             );
+        }
+        "--usage-log" => {
+            a.usage_log = Some(PathBuf::from(value(argv, i, inline, flag, "a file path")?));
         }
         "--provider" => a.provider = Some(value(argv, i, inline, flag, "a provider name")?),
         "--model" => a.model = Some(value(argv, i, inline, flag, "a model pattern")?),

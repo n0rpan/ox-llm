@@ -9,7 +9,7 @@ See [tools and context handling](tools-context.md) for the defaults and formats.
 | Tool | Access | What it does |
 |---|---|---|
 | `read` | read | reads a file. Parameters `path`, `offset` (first line, 1-based), `limit` (lines). A call returns at most 2000 lines or 16 KB; continue with `offset` for the rest. A call with neither `offset` nor `limit` returns a shorter first page; see [tools-context.md](tools-context.md) |
-| `bash` | exec | runs a shell command in the project in the sandbox. Parameters `command`, `timeout` (seconds). With no `timeout` it stops after 120 seconds; `oxa.bash.defaultTimeout` sets it. Output over 16 KB is cut to its first and last parts, and the full output is saved to a file the model can read |
+| `bash` | exec | runs a shell command in the project in the sandbox. Parameters `command`, `timeout` (seconds). With no `timeout` it waits 120 seconds, then moves to a background job instead of being killed; `oxa.bash.defaultTimeout` sets it, `oxa.bash.waitCap` (default 300 s) caps a job read's `wait_s`. Output over 16 KB is cut to its first and last parts, and the full output is saved to a file the model can read |
 | `edit` | write | replaces exact text in one file. Takes one `oldText` / `newText` pair per call; the array form is still accepted. See [tools-context.md](tools-context.md) |
 | `write` | write | writes a file, creating it and its parent directories, and overwrites an existing file |
 | `grep` | read | searches file contents for `pattern`. Optional `path`, `glob`, `ignoreCase`, `literal`, `context` and `limit` (default 100 matches). Respects `.gitignore`; lines are cut at 500 characters. When matches exceed `limit`, the answer is the total and one count per file instead of the lines; see [tools-context.md](tools-context.md) |
@@ -28,6 +28,8 @@ Tool names, descriptions and schemas are part of the system prompt. They stay th
 
 ## Choosing tools
 
+In a headless run (`-p`, `--mode json`) with the output diet on, the prompt adds one integrity rule: solve the task yourself, do not look up its ready-made solution online and do not read verifier, grader or hidden-test files. The `oxa_result` record reports `web_lookups`, the number of `web_search` calls. It is a prompt rule and a count, not a block: a tool call is never refused because of it.
+
 | Option or setting | Effect |
 |---|---|
 | `--tools a,b` (`-t`) | allowlist of names or patterns; `*` matches any characters. Only these tools are on |
@@ -37,6 +39,8 @@ Tool names, descriptions and schemas are part of the system prompt. They stay th
 | `--no-tools` (`-nt`) | disables all tools |
 | `--no-mcp` | no MCP servers connect and no MCP tools are offered |
 | `defaultTools` setting | the list of tools on by default. Names may include `subagent`, `web_search`, `codemode` and `tool_search`, and a list can be patched with `+name` and `-name` |
+
+With the output diet on (the default) the rules also tell the model to run the project's own checks before it calls a task done (when `bash` is on), and to use `wait` instead of polling (when a goal is pursued).
 
 Examples:
 
@@ -65,11 +69,11 @@ At most two repairs can follow each other. A valid tool call resets the count. T
 
 ## Repeated calls
 
-A model can get stuck making the same tool call again and again. When a call (any tool: `read`, `bash`, `grep`, `find`, `ls`, `web_search`, MCP and extension tools) has returned the same result three times in a row, with the same arguments and nothing else in between, oxa still runs it but sends a short note instead of the result: the result is unchanged and already in the conversation, change approach. Failing results count too. The second note is the last: the next identical call ends the run with a stop message. An `edit` or `write` that failed changed nothing, so it does not end the run: `read`, failing `edit`, `read`, failing `edit` is caught like the plain repeat. A re-run after a successful edit or any other call, a command whose output changed (a test after a fix, a polling command), or the same call after a new prompt is never affected.
+A model can get stuck making the same tool call again and again. When a call (any tool: `read`, `bash`, `grep`, `find`, `ls`, `web_search`, MCP and extension tools) has returned the same result three times in a row, with the same arguments and nothing else in between, oxa still runs it but sends a short note instead of the result: the result is unchanged and already in the conversation, change approach. Failing results count too. If the repeats go on, the second note is the last before a warning: the next identical call adds one warning to the transcript, shown and kept in the session, with the remedy (send a more specific instruction, or switch model with `/model`) — and the run continues, so a later reply can still finish the task. An `edit` or `write` that failed changed nothing, so it does not end the run: `read`, failing `edit`, `read`, failing `edit` is caught like the plain repeat. A re-run after a successful edit or any other call, a command whose output changed (a test after a fix, a polling command), or the same call after a new prompt is never affected.
 
 `oxa.toolRepeatGuard: false` turns this off.
 
-Loops that vary too much for this guard (calls that alternate, output with a timestamp) are not detected. To bound them, set `oxa.maxTurns` to a number of model replies: a run that reaches it ends with a `turn_limit` error. It is off by default.
+Loops that vary too much for this guard (calls that alternate, output with a timestamp), or one that keeps repeating after the warning, are not ended by it. To bound any of them, set `oxa.maxTurns` to a number of model replies: a run that reaches it ends with a `turn_limit` error. It is off by default.
 
 ## Thinking on tool follow-ups
 
@@ -118,7 +122,7 @@ normal permission checks remain in force.
 - Shapes: `{agent, task}` for one child; `{tasks: [...]}` for several, run one after another in order; `{chain: [...]}` for steps where each step can use `{previous}`, the output of the step before.
 - Agents are Markdown files in `~/.oxa/agent/agents/` and, in a trusted project, `.oxa/agents/`. The file has a `name` and a `description` in its front matter, and its body is the child's system prompt. A project agent with the same name replaces the user agent. A `model:` in an agent file is used when that model or the session's model runs in the cloud; with a local session and a local `model:` it is ignored with a warning (one local model is loaded) and the child uses the session's model.
 - The child is a new oxa process in JSON print mode, with the same model, permission mode and tools, and no session file. It runs on its own compaction limit ([compaction.md](compaction.md)).
-- Local children run one at a time. When children of a `tasks` call run on a cloud model, up to `oxa.subagent.remoteConcurrency` (4) run at once; results still come back in call order. A call with more than 8 tasks is refused.
+- Local children run one at a time. When children of a `tasks` call run on a cloud model, up to `oxa.subagent.remoteConcurrency` (4) run at once; results still come back in call order. A call with more tasks than `oxa.subagent.maxChildren` (8) is refused.
 - The result is the child's final text, capped at `oxa.subagent.resultCap` (6144 bytes). A longer result is cut and the full text is saved to a file under the agent directory's `tmp/`.
 - Interrupting the parent stops the child: SIGTERM to its process group, then SIGKILL after 2 seconds.
 - Plan mode refuses the tool, because it runs a process.

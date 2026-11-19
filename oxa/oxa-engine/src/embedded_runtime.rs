@@ -33,6 +33,15 @@ fn normalize(error: Error) -> OxaError {
     if refusal.code == "cloud_rate_limited" {
         return OxaError::new("cloud_rate_limited", format!("HTTP 429: {error}"));
     }
+    // Owner/share admission refusals carry their own stable gateway code and a
+    // fixed message: keep both so the journal and the CLI can name the refusal
+    // instead of folding it into a generic HTTP error. Admission is unchanged.
+    if matches!(refusal.code, "cloud_provider_forbidden" | "cloud_not_shared") {
+        return OxaError::new(
+            refusal.code,
+            format!("HTTP {} {}: {}", refusal.status, refusal.code, refusal.message),
+        );
+    }
     if refusal.code == "cloud_signed_out" {
         return OxaError::new("cloud_signed_out", "HTTP 401: ChatGPT is signed out.")
             .with_hint("Sign in to ChatGPT, then retry.");
@@ -72,6 +81,7 @@ fn normalize(error: Error) -> OxaError {
     if matches!(
         refusal.code,
         "region_blocked"
+            | "cost_unknown_history"
             | "subscription_limit_reached"
             | "subscription_limit_exceeded"
             | "subscription_limits_not_configured"
@@ -82,11 +92,11 @@ fn normalize(error: Error) -> OxaError {
     if refusal.code == "budget_not_configured" {
         // The refusal keeps its own stable code so the owner-facing diagnostic and
         // the lead service journal can name the absent cap instead of a generic
-        // HTTP error. The budget rule itself is unchanged: metered without a
-        // positive cap stays refused.
+        // HTTP error. An unset cap is no budget check and never reaches here; only
+        // a configured but unusable cap (zero, negative, non-numeric) does.
         return OxaError::new(
             "budget_not_configured",
-            "Cloud models need a positive oxa.cloud.daily_budget_usd in oxa user settings.",
+            "oxa.cloud.daily_budget_usd must be a positive number in oxa user settings, or unset for no USD limit.",
         );
     }
     let normalized =
@@ -150,6 +160,7 @@ impl EmbeddedGateway for Backend {
         let mut deliver = |event| {
             let event = match event {
                 Event::Chunk(chunk) => GatewayEvent::Chunk(chunk),
+                Event::Warning(text) => GatewayEvent::Warning(text),
                 // Publish the committed completion with its private binder only
                 // after Gateway::chat returns its settled completion record.
                 Event::Done => return Control::Continue,
