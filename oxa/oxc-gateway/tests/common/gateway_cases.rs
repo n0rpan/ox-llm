@@ -432,6 +432,14 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
             false,
         ),
         (
+            "cancel a combined terminal frame",
+            vec![json!({
+                "choices":[{"index":0,"delta":{"content":"synthetic visible reply"},"finish_reason":"stop"}],
+                "usage":usage(100,5)
+            })],
+            true,
+        ),
+        (
             "ordered terminal usage then broken stream",
             vec![finish, final_usage],
             true,
@@ -493,6 +501,7 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
         let mut length = false;
         let mut arguments_delivered = false;
         let mut usage_delivered = 0;
+        let cancel_on_chunk = name.starts_with("cancel ");
         let driver = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -505,6 +514,9 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
                 done |= matches!(event, Event::Done);
                 if let Event::Chunk(chunk) = event {
                     usage_delivered += usize::from(chunk.get("usage").is_some());
+                    if cancel_on_chunk {
+                        return Control::Stop;
+                    }
                     length |= chunk.pointer("/choices/0/finish_reason") == Some(&json!("length"));
                     if let Some(calls) = chunk
                         .pointer("/choices/0/delta/tool_calls")
@@ -523,6 +535,12 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
             assert_eq!(complete.finish_reason, "length");
             assert_eq!(complete.assistant["tool_calls"], json!([]));
             assert!(done);
+        } else if cancel_on_chunk {
+            assert!(matches!(
+                result,
+                Err(Error::Upstream(anthropic_client::Error::Cancelled))
+            ));
+            assert!(!done, "{name}");
         } else {
             let error = result.err().expect("broken stream must not complete");
             assert_eq!(error.refusal().code, "cloud_upstream_stream_broken", "{name}");
