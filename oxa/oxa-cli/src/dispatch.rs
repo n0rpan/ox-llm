@@ -199,9 +199,18 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 let binding = crate::lead_chat::local_binding(&cwd, env)?;
                 let dirs = dirs_from_env(env, None)?;
                 let mode = RunMode::Interactive;
-                let workspace = crate::home_cwd::check(mode, &cwd, env, &dirs, &mut *stdin, &mut *stdout)?;
+                let home = crate::home_cwd::check(
+                    mode,
+                    &cwd,
+                    env,
+                    &dirs,
+                    crate::home_cwd::explicit_opt_in(a.level),
+                    &mut *stdin,
+                    &mut *stdout,
+                )?;
                 let mut args = Args::default();
-                let prep = binding.prepare(&mut args, env, mode, workspace)?;
+                let mut prep = binding.prepare(&mut args, env, mode, home.workspace)?;
+                prep.notices.extend(home.warning.map(|w| (Level::Warning, w)));
                 let session = binding.open(&prep)?;
                 Ok((args, prep, session, binding))
             })();
@@ -388,27 +397,25 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     }
 
     let mode = choose_mode(&a, stdin_is_tty, stdout_is_tty);
-    if (a.max_time.is_some() || a.max_tokens.is_some()) && mode == RunMode::Interactive {
-        let flag = if a.max_tokens.is_some() {
-            "--max-tokens"
-        } else {
-            "--max-time"
-        };
-        return report(
-            &mut *stderr,
-            &OxaError::new(codes::USAGE, format!("{flag} requires print, JSON or RPC mode")),
-        );
-    }
     if mode == RunMode::Rpc && !a.files.is_empty() {
         let e = OxaError::new(codes::USAGE, "@file arguments are not supported in RPC mode")
             .with_hint(USAGE_HINT);
         return report(&mut *stderr, &e);
     }
     // Item 3 (sec-prod): a session in the home directory or above it needs the user's say-so.
-    let home_workspace = match crate::home_cwd::check(mode, &cwd, env, &dirs, &mut *stdin, &mut *stdout) {
-        Ok(w) => w,
+    let home = match crate::home_cwd::check(
+        mode,
+        &cwd,
+        env,
+        &dirs,
+        crate::home_cwd::explicit_opt_in(a.level),
+        &mut *stdin,
+        &mut *stdout,
+    ) {
+        Ok(h) => h,
         Err(e) => return report(&mut *stderr, &e),
     };
+    let home_workspace = home.workspace;
 
     // CLI-019: pi's question when `--session <id>` names a session of another directory
     // (main.ts `promptConfirm`): the notice and the question on stdout, one answer line from
@@ -457,7 +464,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             None,
         )
     };
-    let prep = match prepared {
+    let mut prep = match prepared {
         Ok(p) => p,
         Err(e) if e.code == FORK_DECLINED => {
             let _ = writeln!(stdout, "Aborted.");
@@ -472,6 +479,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             return report(&mut *stderr, &e);
         }
     };
+    prep.notices.extend(home.warning.map(|w| (Level::Warning, w)));
     // Second pass (pi): the long flags the first pass did not know are parsed again with the
     // flags the loaded extensions registered; one that nobody registered is a usage error.
     let a = if a.unknown.is_empty() {
@@ -1078,6 +1086,13 @@ fn prepare(
     };
     if let Some(text) = oxa_proto::no_os_sandbox_notice() {
         notices.push((Level::Warning, text.to_string()));
+    }
+    if let Some(text) = crate::netguard::yolo_net_notice(
+        level,
+        settings.string(oxa_sandbox::SETTING_SANDBOX_NET).as_deref(),
+        oxa_proto::offline(),
+    ) {
+        notices.push((Level::Warning, text));
     }
     if !matches!(mode, RunMode::Interactive) {
         notices.push((
@@ -1859,6 +1874,22 @@ fn run_tui(
         session.set_output_schema(base.output_schema.clone());
         Ok(session)
     });
+    // S11: `--max-time` and `--max-tokens` also bound an interactive session, with the same soft
+    // wrap-up as a headless run. The watcher lives until the TUI returns.
+    let _limit = if a.max_time.is_some() || a.max_tokens.is_some() {
+        match crate::limits::LimitWatcher::start(
+            session.handle(),
+            a.max_time,
+            a.max_tokens,
+            built.supervised_child,
+            built.hook_sets.subagent.as_deref(),
+        ) {
+            Ok(limit) => limit,
+            Err(error) => return report(stderr, &error),
+        }
+    } else {
+        None
+    };
     let opts = InteractiveOpts {
         // `--tui-mode` over the `tuiMode` setting (default fullscreen).
         fullscreen: a
