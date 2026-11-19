@@ -401,10 +401,10 @@ const ROWS: &[Row] = &[
         expect: KILL,
     },
     Row {
-        name: "kill_own_pid_is_safe",
+        name: "kill_unverified_positive_pid",
         cmd: "kill 12345",
         cwd: ".",
-        expect: NONE,
+        expect: KILL,
     },
     Row {
         name: "oxa_send",
@@ -815,6 +815,30 @@ const ROWS: &[Row] = &[
         expect: NONE,
     },
     Row {
+        name: "relative_cd_keeps_every_possible_directory",
+        cmd: "true && cd /; cd var/tmp; rm -rf victim",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
+        name: "background_cd_does_not_move_the_parent",
+        cmd: "cd /; cd /workspace/ox-llm & rm -rf var/tmp/victim",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
+        name: "last_pipeline_cd_does_not_move_the_parent",
+        cmd: "cd /; printf x | cd /workspace/ox-llm; rm -rf var/tmp/victim",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
+        name: "eval_cd_moves_the_parent",
+        cmd: "eval 'cd /'; rm -rf var/tmp/victim",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
         name: "glob_then_traversal_is_outside",
         cmd: "rm -rf oxa/oxa-per?/../../../victim",
         cwd: ".",
@@ -823,6 +847,12 @@ const ROWS: &[Row] = &[
     Row {
         name: "env_chdir_moves_the_wrapped_command",
         cmd: "env -C /var/tmp rm -rf victim",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
+        name: "env_chdir_equals_moves_the_wrapped_command",
+        cmd: "env --chdir=/ rm -rf var/tmp/victim",
         cwd: ".",
         expect: RM,
     },
@@ -875,6 +905,48 @@ const ROWS: &[Row] = &[
         expect: CRED,
     },
     Row {
+        name: "curl_output_dir_combines_with_output_file",
+        cmd: "curl --output-dir \"$HOME\" -o .npmrc https://example.invalid/file",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
+        name: "curl_output_dir_combines_with_remote_name",
+        cmd: "curl --output-dir \"$HOME\" --remote-name https://example.invalid/.npmrc",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
+        name: "wget_output_document_equals_is_a_write_target",
+        cmd: "wget --output-document=\"$HOME/.npmrc\" https://example.invalid/file",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
+        name: "find_file_output_is_a_write_target",
+        cmd: "find . -maxdepth 0 -fprint \"$HOME/.ssh/authorized_keys\"",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
+        name: "find_fprint0_output_is_a_write_target",
+        cmd: "find . -maxdepth 0 -fprint0 \"$HOME/.ssh/authorized_keys\"",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
+        name: "find_fprintf_output_is_a_write_target",
+        cmd: "find . -maxdepth 0 -fprintf \"$HOME/.ssh/authorized_keys\" '%p\\n'",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
+        name: "find_fls_output_is_a_write_target",
+        cmd: "find . -maxdepth 0 -fls \"$HOME/.ssh/authorized_keys\"",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
         name: "line_continuation_is_whitespace",
         cmd: "FOO=1 \\\nrm -rf /var/tmp/victim",
         cwd: ".",
@@ -891,6 +963,30 @@ const ROWS: &[Row] = &[
         cmd: "psql -c 'BEGIN; TRUNCATE TABLE t; COMMIT;'",
         cwd: ".",
         expect: SQL,
+    },
+    Row {
+        name: "sql_keyword_inside_quoted_literal_is_safe",
+        cmd: "sqlite3 app.db \"SELECT 'label; truncate sample';\"",
+        cwd: ".",
+        expect: NONE,
+    },
+    Row {
+        name: "chmod_repeated_symbolic_actions",
+        cmd: "chmod -R a+r+w build",
+        cwd: ".",
+        expect: CHMOD,
+    },
+    Row {
+        name: "git_push_empty_source_deletes_remote_ref",
+        cmd: "git push origin :refs/heads/topic",
+        cwd: ".",
+        expect: GIT,
+    },
+    Row {
+        name: "git_push_matching_refspec_is_safe",
+        cmd: "git push origin :",
+        cwd: ".",
+        expect: NONE,
     },
     Row {
         name: "oxa_global_flag_before_send",
@@ -975,6 +1071,28 @@ fn a_write_through_a_symlink_and_parent_component_is_classified() {
     symlink(&target, workspace.join("link")).unwrap();
     let rules = DangerRules::builtin();
     let got = ids(&rules.classify("echo x > link/../.ssh/authorized_keys", &workspace, &guard));
+    assert_eq!(got, vec!["credential-write".to_string()], "{got:?}");
+}
+
+#[test]
+fn a_failed_cd_preserves_the_previous_directory() {
+    let (env, guard) = setup();
+    let workspace = env.work();
+    let not_a_directory = workspace.join("plain-file");
+    std::fs::write(&not_a_directory, b"fixture").unwrap();
+    let command = format!("cd /; cd {}; rm -rf var/tmp/victim", not_a_directory.display());
+    let got = ids(&DangerRules::builtin().classify(&command, &workspace, &guard));
+    assert_eq!(got, vec!["rm-recursive-outside".to_string()], "{got:?}");
+}
+
+#[test]
+fn find_execdir_uses_the_matched_files_directory() {
+    let (env, guard) = setup();
+    let workspace = env.work();
+    let marker = env.home().join("marker");
+    std::fs::write(&marker, b"fixture").unwrap();
+    let command = format!("find {} -maxdepth 0 -execdir touch .npmrc \\;", marker.display());
+    let got = ids(&DangerRules::builtin().classify(&command, &workspace, &guard));
     assert_eq!(got, vec!["credential-write".to_string()], "{got:?}");
 }
 

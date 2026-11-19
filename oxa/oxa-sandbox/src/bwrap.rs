@@ -1147,6 +1147,7 @@ fn push(a: &mut Vec<String>, xs: &[&str]) {
 
 /// The body of `Bwrap::detect` (lib.rs, architect-owned, must delegate here): find `bwrap` on
 /// `path_var` and probe it. Failure = `no_sandbox` with a hint.
+#[cfg(target_os = "linux")]
 pub(crate) fn detect_bwrap(path_var: &str, home: &Path) -> Result<Bwrap, OxaError> {
     let bwrap = find_on_path(path_var, "bwrap").ok_or_else(|| {
         OxaError::new(codes::NO_SANDBOX, "bwrap is not available; bash is disabled").with_hint(MISSING_HINT)
@@ -1164,8 +1165,21 @@ pub(crate) fn detect_bwrap(path_var: &str, home: &Path) -> Result<Bwrap, OxaErro
 
 /// The body of `Sandbox::check` for [`Bwrap`] (lib.rs, architect-owned, must delegate here):
 /// re-run the probe for `b.bwrap`.
+#[cfg(target_os = "linux")]
 pub(crate) fn check_bwrap(b: &Bwrap) -> Result<(), OxaError> {
     probe(&b.bwrap)
+}
+
+/// Off Linux there is no bubblewrap: `Bwrap` cannot be detected. The front end uses
+/// [`crate::Unsandboxed`] there instead.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn detect_bwrap(_path_var: &str, _home: &Path) -> Result<Bwrap, OxaError> {
+    Err(OxaError::new(codes::NO_SANDBOX, crate::NO_OS_SANDBOX_NOTICE))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn check_bwrap(_b: &Bwrap) -> Result<(), OxaError> {
+    Err(OxaError::new(codes::NO_SANDBOX, crate::NO_OS_SANDBOX_NOTICE))
 }
 
 /// The first absolute PATH entry holding an executable `name`. Relative entries are ignored.

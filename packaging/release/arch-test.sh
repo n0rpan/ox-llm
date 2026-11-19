@@ -37,10 +37,7 @@ for variant in ox-llm-bin ox-llm; do
   pacman -Ql "$variant" | awk '{print $2}' | while read -r path; do
     if [[ ! -d $path ]]; then echo "$path"; fi
   done > /tmp/installed-files
-  if grep -E '\.(py|pyc|pyo)$' /tmp/installed-files; then
-    echo "Unexpected Python files in $variant" >&2
-    exit 1
-  fi
+  sh /no-python.sh --list /tmp/installed-files
   python -B /smoke.py
   pacman -Qkk "$variant"
   pacman -Rns --noconfirm "$variant"

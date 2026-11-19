@@ -74,6 +74,11 @@ const SCHEMA: &[KeyDef] = &[
     key("compaction.enabled", Kind::Bool, "true"),
     key("compaction.keepRecentTokens", Kind::Number, "4000"),
     key("compaction.modelOverrides", Kind::Object, "null"),
+    key(
+        "compaction.profile",
+        Kind::Enum(&["auto", "local", "cloud"]),
+        "\"auto\"",
+    ),
     key("compaction.reserveTokens", Kind::Number, "16384"),
     key("defaultModel", Kind::String, "null"),
     key(
@@ -144,6 +149,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.approval.dangerous", Kind::StringList, "[]"),
     // F5: seconds; unset = 120; 0 = none.
     key("oxa.bash.defaultTimeout", Kind::Number, "null"),
+    // Background jobs that may run at once (`bash {background: true}`); at least 1.
+    key("oxa.bash.maxJobs", Kind::Number, "16"),
     key("oxa.bootPreload", Kind::Bool, "true"),
     key("oxa.builtinSkills", Kind::Bool, "true"),
     key("oxa.cloud", Kind::Object, "{}"),
@@ -164,6 +171,9 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
+    // K3: a headless print or JSON run of a persisted session with a pursuing goal takes
+    // `oxa send` follow-ups from the session inbox for the run; false = off.
+    key("oxa.inbox.headless", Kind::Bool, "true"),
     // The owner's explicit route for the Lead conversation: an exact model id for
     // the normal `--model` selector and the normal gateway. User settings only;
     // unset keeps the ordinary startup model.
@@ -189,6 +199,7 @@ const SCHEMA: &[KeyDef] = &[
     // V020-OPTIMIZE #13 / OXA-LOCAL-FIRST F1: timing only (bytes unchanged); unset = on.
     key("oxa.prefill.paste", Kind::Bool, "null"),
     key("oxa.prefill.tools", Kind::Bool, "null"),
+    key("oxa.reportIssue.dailyNew", Kind::Number, "null"),
     key("oxa.reportIssue.repo", Kind::String, "null"),
     key("oxa.reportIssue.semanticDedupe", Kind::Bool, "false"),
     // B3 (lane harden): user settings only (read from the user file whatever the project says).
@@ -214,6 +225,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.skills.includeSynced", Kind::Bool, "false"),
     // O-146: unset = on except on Flash and below 32K (`SubagentHooks::declared_for`).
     key("oxa.subagent.enabled", Kind::Bool, "null"),
+    // Children per parent session (running or queued) and tasks or steps per call; at least 1.
+    key("oxa.subagent.maxChildren", Kind::Number, "8"),
     key("oxa.subagent.remoteConcurrency", Kind::Number, "4"),
     key("oxa.subagent.resultCap", Kind::Number, "6144"),
     key("oxa.subagent.smallContext", Kind::Bool, "false"),
@@ -246,6 +259,10 @@ const SCHEMA: &[KeyDef] = &[
         Kind::Enum(&["brave", "none"]),
         "\"brave\"",
     ),
+    // The worker runner reads this list from owner settings only.
+    key("oxa.work.localChecks", Kind::StringList, "[\"cargo check\"]"),
+    // K4: seconds a worker gets after SIGINT before its process group gets SIGTERM.
+    key("oxa.workers.stopGraceSeconds", Kind::Number, "10"),
     key("packages", Kind::Any, "[]"),
     // #202: the permission mode at start; a project's value may only lower it
     // (`Settings::default_permission_mode`).

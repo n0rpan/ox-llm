@@ -290,6 +290,7 @@ impl Sandbox for Wrapped {
             output: b"wrapped".to_vec(),
             exit: Some(42),
             timed_out: false,
+            unsandboxed: false,
         }
     }
 }

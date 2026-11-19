@@ -204,6 +204,7 @@ impl FullAccess {
                     output: if capture { message } else { Vec::new() },
                     exit: None,
                     timed_out: false,
+                    unsandboxed: false,
                 }
             }
         }
@@ -222,6 +223,9 @@ impl Sandbox for FullAccess {
             return !self.no_net();
         }
         self.inner.network()
+    }
+    fn network_enforced(&self) -> bool {
+        self.inner.network_enforced()
     }
     fn persistence_notice(&self) -> Option<&str> {
         if self.unsandboxed() {
@@ -285,6 +289,9 @@ impl Sandbox for FileView {
     }
     fn network(&self) -> bool {
         self.inner.network()
+    }
+    fn network_enforced(&self) -> bool {
+        self.inner.network_enforced()
     }
     fn persistence_notice(&self) -> Option<&str> {
         self.inner.persistence_notice()

@@ -1,7 +1,7 @@
 //! Explicitly opted-in, read-only GitHub sampling. Never invokes a worker or mutation.
 use crate::lead_quota::{GitHubIdentity, GitHubQuotas, GitHubResource};
 pub mod refill_input;
-use oxa_work::board::{Board, GitHub, Mergeability, Policy, PullRequest, RequiredCi};
+use oxa_work::board::{Board, GitHub, Incomplete, Mergeability, Policy, PullRequest, RequiredCi, Snapshot};
 use serde_json::Value;
 mod claims_readback;
 mod refill;
@@ -126,7 +126,7 @@ fn listing_page(connection: &Value) -> Result<(&Vec<Value>, u64, bool), String> 
 }
 impl QueryError {
     fn retryable(&self) -> bool {
-        matches!(self, Self::Http(502 | 503 | 504))
+        matches!(self, Self::Http(502..=504))
     }
     fn message(self) -> String {
         match self {
@@ -341,6 +341,121 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// Complete one pull request's changed-file connection with bounded
+/// continuations. Every page is the same bounded slice and is held to the same
+/// rules: it must belong to the pinned head and total, carry at most the 100
+/// nodes it asks for, list distinct paths, and progress only while evidence
+/// remains. The pages must cover the whole connection; anything else fails the
+/// snapshot before it is published, exactly as an incomplete first page did.
+fn complete_changed_files(
+    reader: &Reader,
+    number: u64,
+    head: &str,
+    row: &mut Value,
+) -> Result<(), SnapshotError> {
+    let files = &row["files"];
+    let total = files["totalCount"].as_u64().ok_or("missing changed-file count")?;
+    let mut page = files.clone();
+    let mut rows: Vec<Value> = Vec::new();
+    let mut paths = BTreeSet::new();
+    let mut cursors = BTreeSet::new();
+    loop {
+        let more = page["pageInfo"]["hasNextPage"]
+            .as_bool()
+            .ok_or("missing changed-file pagination")?;
+        let batch = page["nodes"].as_array().ok_or("missing changed-file page")?;
+        if batch.len() > 100 {
+            return Err(SnapshotError::from("invalid changed-file page"));
+        }
+        for file in batch {
+            if !paths.insert(changed_path(file)?.to_owned()) {
+                return Err(SnapshotError::from("duplicate changed file"));
+            }
+        }
+        rows.extend(batch.iter().cloned());
+        if rows.len() as u64 > total {
+            return Err(SnapshotError::from("invalid changed-file page"));
+        }
+        if !more {
+            break;
+        }
+        let cursor = page["pageInfo"]["endCursor"]
+            .as_str()
+            .filter(|cursor| !cursor.is_empty())
+            .ok_or("missing changed-file cursor")?
+            .to_owned();
+        if batch.is_empty() || rows.len() as u64 >= total || !cursors.insert(cursor.clone()) {
+            return Err(SnapshotError::from("invalid changed-file pagination progress"));
+        }
+        let (next, _) = reader
+            .query(&format!(
+                "p{number}:pullRequest(number:{number}){{number headRefOid \
+                 files(first:100,after:{cursor:?}){{totalCount pageInfo{{hasNextPage endCursor}} \
+                 nodes{{path deletions}}}}}}"
+            ))
+            .map_err(|error| SnapshotError::from(error.message()))?;
+        let continuation = &next[format!("p{number}")];
+        let (seen, seen_head) = identity(continuation)?;
+        if seen != number {
+            return Err(SnapshotError::Changed("mismatched PR details; retry later"));
+        }
+        if seen_head != head || continuation["files"]["totalCount"].as_u64() != Some(total) {
+            return Err(SnapshotError::Changed("mismatched PR details; retry later"));
+        }
+        page = continuation["files"].clone();
+    }
+    if rows.len() as u64 != total {
+        return Err(SnapshotError::from("incomplete changed-file listing"));
+    }
+    row["files"] = serde_json::json!({
+        "totalCount": total,
+        "pageInfo": {"hasNextPage": false, "endCursor": Value::Null},
+        "nodes": rows,
+    });
+    Ok(())
+}
+
+/// One changed-file node's path, which must be usable evidence on its own.
+fn changed_path(file: &Value) -> Result<&str, String> {
+    file["path"]
+        .as_str()
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| "missing changed-file path".to_string())
+}
+
+/// Page size of every per-PR connection read in the snapshot query.
+const PAGE_ITEMS: u64 = 100;
+
+/// The first per-PR connection whose total exceeds the page it was read with. Only that PR degrades.
+fn over_page_limit(row: &Value, reviews: bool) -> Option<&'static str> {
+    let mut connections: Vec<(&'static str, &Value)> = vec![
+        ("labels", &row["labels"]),
+        ("changed files", &row["files"]),
+        ("review threads", &row["reviewThreads"]),
+        ("latest reviews", &row["latestOpinionatedReviews"]),
+        ("base rules", &row["baseRef"]["rules"]),
+        (
+            "check contexts",
+            &row["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"],
+        ),
+    ];
+    if reviews {
+        connections.push(("comments", &row["comments"]));
+        connections.push(("reviews", &row["reviews"]));
+    }
+    connections.into_iter().find_map(|(name, connection)| {
+        let total = connection["totalCount"].as_u64()?;
+        let shown = connection["nodes"].as_array()?.len() as u64;
+        (total > shown).then(|| {
+            eprintln!(
+                "oxa work: PR #{} {name} exceed the {PAGE_ITEMS}-item GitHub page ({total} items); the item is not evaluated",
+                row["number"].as_u64().unwrap_or_default()
+            );
+            name
+        })
+    })
+}
+
 fn nodes(value: &Value) -> Result<&Vec<Value>, String> {
     let rows = value["nodes"].as_array().ok_or("missing GitHub connection")?;
     if value["totalCount"].as_u64() != Some(rows.len() as u64) {
@@ -386,7 +501,7 @@ fn required_contexts(base: &Value) -> Result<BTreeSet<&str>, String> {
 }
 
 impl Reader<'_> {
-    fn acquire(&mut self) -> Result<Vec<PullRequest>, SnapshotError> {
+    fn acquire(&mut self) -> Result<(Vec<PullRequest>, Vec<Incomplete>), SnapshotError> {
         // Verify the complete paginated identity set before publishing any details.
         let (list, first) = self.listing()?;
         let has_queue = list["mergeQueue"].is_object();
@@ -413,7 +528,7 @@ impl Reader<'_> {
                 r#"p{n}:pullRequest(number:{n}){{number headRefOid baseRefName state body isDraft reviewDecision mergeable mergeStateStatus {review_fields}
                 baseRef{{refUpdateRule{{requiredStatusCheckContexts}} rules(first:100){{totalCount nodes{{type parameters{{... on RequiredStatusChecksParameters{{requiredStatusChecks{{context}}}}}}}}}}}}
                 labels(first:100){{totalCount nodes{{name}}}}
-                files(first:100){{totalCount nodes{{path deletions}}}}
+                files(first:100){{totalCount pageInfo{{hasNextPage endCursor}} nodes{{path deletions}}}}
                 reviewThreads(first:100){{totalCount nodes{{isResolved}}}}
                 latestOpinionatedReviews(first:100,writersOnly:true){{totalCount nodes{{state commit{{oid}} author{{login}}}}}}
                 commits(last:1){{nodes{{commit{{statusCheckRollup{{contexts(first:100){{totalCount nodes{{
@@ -422,7 +537,7 @@ impl Reader<'_> {
                 }}}}}}}}}}}}}}"#
                 ));
             }
-            let (page, _) = match self.query(&fields) {
+            let (mut page, _) = match self.query(&fields) {
                 Ok(page) => page,
                 Err(error) if error.retryable() && end - offset > 1 => {
                     size = (end - offset) / 2;
@@ -437,13 +552,25 @@ impl Reader<'_> {
                 ));
             }
             for n in &numbers[offset..end] {
-                let row = &page[format!("p{n}")];
-                let (number, _) = identity(row)?;
-                if number != *n {
-                    return Err(SnapshotError::from("mismatched PR number"));
-                }
-                if row["headRefOid"] != expected[n]["headRefOid"] {
-                    return Err(SnapshotError::Changed("mismatched PR details; retry later"));
+                let head = {
+                    let row = &page[format!("p{n}")];
+                    let (number, head) = identity(row)?;
+                    if number != *n {
+                        return Err(SnapshotError::from("mismatched PR number"));
+                    }
+                    if row["headRefOid"] != expected[n]["headRefOid"] {
+                        return Err(SnapshotError::Changed("mismatched PR details; retry later"));
+                    }
+                    head.to_owned()
+                };
+                let row = &mut page[format!("p{n}")];
+                if let Err(error) = complete_changed_files(self, *n, &head, row) {
+                    match error {
+                        SnapshotError::Changed(_) => return Err(error),
+                        SnapshotError::Terminal(message) => {
+                            eprintln!("oxa work: PR #{n} changed-file evidence is incomplete: {message}")
+                        }
+                    }
                 }
                 details[format!("p{n}")] = row.clone();
             }
@@ -458,7 +585,8 @@ impl Reader<'_> {
                 "PR identities changed during snapshot; retry later",
             ));
         }
-        let rows = nodes(&list["pullRequests"])?
+        let reviews = self.review_rows.is_some();
+        let rows: Vec<Result<PullRequest, Incomplete>> = nodes(&list["pullRequests"])?
             .iter()
             .map(|pr| {
                 let row = &details[format!("p{}", pr["number"])];
@@ -468,6 +596,19 @@ impl Reader<'_> {
                         return Err(SnapshotError::Changed("PR changed during snapshot; retry later"));
                     }
                     _ => return Err(SnapshotError::from("invalid PR state")),
+                }
+                if let Some(connection) = over_page_limit(row, reviews) {
+                    let (number, head) = identity(row)?;
+                    return Ok(Err(Incomplete {
+                        number,
+                        head: head.into(),
+                        release_pinned: row["labels"]["nodes"]
+                            .as_array()
+                            .is_some_and(|labels| labels.iter().any(|l| l["name"] == "release-pinned")),
+                        reason: format!(
+                            "{connection} exceed the {PAGE_ITEMS}-item GitHub page; the item is not evaluated"
+                        ),
+                    }));
                 }
                 let required = required_contexts(&row["baseRef"])?;
                 let contexts = &row["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"];
@@ -508,7 +649,7 @@ impl Reader<'_> {
                 } else {
                     RequiredCi::Passed
                 };
-                Ok(PullRequest {
+                Ok(Ok(PullRequest {
                     number: row["number"].as_u64().ok_or("missing PR number")?,
                     head: row["headRefOid"].as_str().ok_or("missing PR head")?.into(),
                     release_pinned: nodes(&row["labels"])?
@@ -551,30 +692,48 @@ impl Reader<'_> {
                         !approvals.is_empty()
                             && approvals.iter().all(|r| r["commit"]["oid"] == row["headRefOid"])
                     },
-                })
+                }))
             })
-            .collect::<Result<Vec<_>, SnapshotError>>()?;
+            .collect::<Result<_, SnapshotError>>()?;
+        let mut pulls = Vec::new();
+        let mut incomplete = Vec::new();
+        for row in rows {
+            match row {
+                Ok(pull) => pulls.push(pull),
+                Err(item) => incomplete.push(item),
+            }
+        }
         self.time_left().map_err(QueryError::message)?;
         if self.review_rows.is_some() {
             self.review_rows = Some(details);
         }
-        Ok(rows)
+        Ok((pulls, incomplete))
     }
 }
 
 impl GitHub for Reader<'_> {
-    fn open_pull_requests(&mut self) -> Result<Vec<PullRequest>, String> {
+    fn snapshot(&mut self) -> Result<Snapshot, String> {
         self.deadline.set(Instant::now() + Duration::from_secs(120));
         self.bytes.set(0);
         if let Some(quota) = &mut self.app_quota {
             *quota.get_mut() = GitHubQuotas::default();
         }
         // A consistency refusal gets exactly one fresh acquisition, sharing its byte budget.
-        match self.acquire() {
+        let (pull_requests, incomplete) = match self.acquire() {
             Err(SnapshotError::Changed(_)) => self.acquire(),
             result => result,
         }
-        .map_err(SnapshotError::message)
+        .map_err(SnapshotError::message)?;
+        Ok(Snapshot {
+            pull_requests,
+            issues: vec![],
+            incomplete,
+        })
+    }
+
+    /// Open PRs whose evidence is complete. Incomplete PRs are reported only through `snapshot`.
+    fn open_pull_requests(&mut self) -> Result<Vec<PullRequest>, String> {
+        self.snapshot().map(|snapshot| snapshot.pull_requests)
     }
 }
 

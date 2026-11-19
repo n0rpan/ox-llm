@@ -235,6 +235,9 @@ impl Sandbox for NetSandbox {
     fn network(&self) -> bool {
         self.net
     }
+    fn network_enforced(&self) -> bool {
+        self.inner.network_enforced()
+    }
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String> {
         self.inner.bwrap_args(&self.clamp(s))
     }
@@ -369,6 +372,7 @@ mod tests {
                     output: b"ghp_SECRET123".to_vec(),
                     exit: Some(0),
                     timed_out: false,
+                    unsandboxed: false,
                 }
             }
         }
@@ -397,6 +401,7 @@ mod tests {
                     output: b"ghp_LAZY123".to_vec(),
                     exit: Some(0),
                     timed_out: false,
+                    unsandboxed: false,
                 }
             }
         }
@@ -433,6 +438,7 @@ mod tests {
                 output: out.into_bytes(),
                 exit: Some(0),
                 timed_out: false,
+                unsandboxed: false,
             }
         }
     }
@@ -458,6 +464,7 @@ mod tests {
                 output: Vec::new(),
                 exit: Some(0),
                 timed_out: false,
+                unsandboxed: false,
             }
         }
     }
@@ -593,6 +600,7 @@ mod tests {
                 output: out,
                 exit: Some(0),
                 timed_out: false,
+                unsandboxed: false,
             }
         }
     }
