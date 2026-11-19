@@ -644,26 +644,46 @@ struct WorkerTool {
     core: Arc<WorkerCore>,
 }
 
+fn worker_access(args: &Value, cwd: &Path) -> Result<Vec<Access>, String> {
+    match str_arg(args, "action") {
+        // Listing only reads the worker registry and status through this trusted built-in. It
+        // neither launches a command nor asks the network permission gate, including in plan mode.
+        Some("list") => Ok(Vec::new()),
+        Some("start") => {
+            let name = str_arg(args, "name").unwrap_or("");
+            let Some(path) = worktree_path(cwd, name) else {
+                return Err(format!("worker: invalid name {name:?}"));
+            };
+            Ok(vec![
+                Access::Exec {
+                    command: COMMAND.to_string(),
+                    net: true,
+                },
+                Access::Write(path),
+            ])
+        }
+        // Stopping owns a host process operation, but needs no network access.
+        _ => Ok(vec![Access::Exec {
+            command: COMMAND.to_string(),
+            net: false,
+        }]),
+    }
+}
+
+fn approved_worktree_is_unchanged(path: &Path, approved: &Path) -> bool {
+    oxa_perm::resolve_real(path).as_deref() == Some(approved)
+}
+
 impl Tool for WorkerTool {
     fn spec(&self) -> &ToolSpec {
         &self.spec
     }
 
     /// `start` runs `git worktree add` and a child session, so it asks for the command with the
-    /// network on and for the worktree it writes. `list` and `stop` only name the command.
+    /// network on and for the worktree it writes. `stop` names a network-free command; `list` is
+    /// an internal read-only query and requires no external access.
     fn access(&self, args: &Value, cx: &ToolCtx) -> Result<Vec<Access>, String> {
-        let mut out = vec![Access::Exec {
-            command: COMMAND.to_string(),
-            net: true,
-        }];
-        if str_arg(args, "action") == Some("start") {
-            let name = str_arg(args, "name").unwrap_or("");
-            let Some(path) = worktree_path(cx.cwd, name) else {
-                return Err(format!("worker: invalid name {name:?}"));
-            };
-            out.push(Access::Write(path));
-        }
-        Ok(out)
+        worker_access(args, cx.cwd)
     }
 
     fn run(&self, args: &Value, cx: &ToolCtx, _live: &mut dyn FnMut(&str)) -> ToolOutput {
@@ -674,14 +694,7 @@ impl Tool for WorkerTool {
                     return ToolOutput::error(format!("worker: invalid name {name:?}"));
                 };
                 if let Some(approved) = cx.checked_real(&path) {
-                    let Some(parent) = path.parent() else {
-                        return ToolOutput::error("worker: invalid worktree destination");
-                    };
-                    let current = parent
-                        .canonicalize()
-                        .ok()
-                        .and_then(|parent| path.file_name().map(|leaf| parent.join(leaf)));
-                    if current.as_deref() != Some(approved) {
+                    if !approved_worktree_is_unchanged(&path, approved) {
                         return ToolOutput::error(
                             "worker: worktree destination changed after permission approval",
                         );
@@ -1064,6 +1077,39 @@ mod tests {
         assert!(!built(Some("1"), true));
         assert!(!built(Some(""), true));
         assert!(!built(None, false));
+    }
+
+    #[test]
+    fn worker_list_declares_no_command_or_network_access() {
+        let cwd = Path::new("/example/project");
+        assert_eq!(
+            worker_access(&json!({"action": "list"}), cwd).unwrap(),
+            Vec::new()
+        );
+
+        let stop = worker_access(&json!({"action": "stop", "name": "alpha"}), cwd).unwrap();
+        assert_eq!(
+            stop,
+            vec![Access::Exec {
+                command: COMMAND.to_string(),
+                net: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn approved_new_worktree_keeps_its_nonexistent_tail() {
+        let root = scratch("pin-new");
+        let path = root.join("missing-parent").join("repo").join("alpha");
+        let approved = oxa_perm::resolve_real(&path).expect("permission pin");
+
+        assert!(approved_worktree_is_unchanged(&path, &approved));
+
+        let elsewhere = root.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("missing-parent")).unwrap();
+        assert!(!approved_worktree_is_unchanged(&path, &approved));
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
