@@ -322,6 +322,9 @@ fn select_for(
     // A scope enables Go only when the local catalog does not own it: an owner (or project)
     // scope of local aliases must not open the gateway beside a native local engine, while a
     // Go pattern (or a wildcard no local alias owns) may.
+    // A project may not choose the model of a Go-only admission: the run then has no scope of
+    // its own and the effective settings do have one.
+    let project_scope = scope.is_empty() && !effective.list("enabledModels").is_empty();
     let scope_go = !scope.is_empty()
         && !(native_local
             && routing::scope_resolves_in_catalog(scope, endpoint, local_models.iter().cloned()));
@@ -333,7 +336,11 @@ fn select_for(
                 || owner_selected && (requested.is_some() && (!requested_local || explicit_go) || scope_go)
                 // The owner's explicit opt-in opens the gateway only for a model this run
                 // actually asks for; a project scope alone never opens it.
-                || explicit_go && (go_requested || (requested.is_some() && !requested_local) || scope_go)));
+                || explicit_go
+                    && (go_requested
+                        || (requested.is_some() && !requested_local)
+                        || scope_go
+                        || !project_scope)));
     let availability_notice = || {
         if show_status {
             vec![go.notice("OpenCode Go", GO_SETTING)]
