@@ -694,6 +694,20 @@ fn fork_before_needs_a_user_message_and_at_keeps_the_entry() {
     assert_eq!(st.tree.leaf(), a1);
 }
 
+/// W4: the fork an extension asks for (`fork_at`, the path `HostAction::Fork` takes) names the new
+/// session as the owner of the jobs started from there, so their wake lands in it.
+#[test]
+fn extension_fork_rebinds_the_job_owner() {
+    let env = TestEnv::new();
+    let (mut st, _eng, _store) = state_with(&env, Vec::new(), Vec::new());
+    say(&mut st, "one");
+    let u2 = say(&mut st, "two");
+    reply(&mut st, "three");
+    let mut ui = HeadlessUi::default();
+    let sref = fork_at(&mut st, &u2, &mut ui).expect("fork before `two`");
+    assert_eq!(st.jobs.owner(), sref.id);
+}
+
 /// pi: `clone` is `fork(leaf, {position: "at"})`, so `session_before_fork` fires (with the
 /// position) and may cancel it; `fork` sends `position: "before"`.
 #[test]

@@ -22,6 +22,21 @@ pub struct Queue {
 }
 
 impl Queue {
+    /// Whether one more inbox message of `len` bytes fits: at most 64 messages and 1 MiB over all
+    /// destinations, and no message longer than `INBOX_MESSAGE_BYTES`.
+    fn has_inbox_capacity(&self, len: usize) -> bool {
+        let (count, bytes) = self
+            .session_follow_up
+            .values()
+            .flatten()
+            .fold((0usize, 0usize), |(count, bytes), text| {
+                (count + 1, bytes + text.len())
+            });
+        len <= oxa_session::INBOX_MESSAGE_BYTES
+            && count < 64
+            && len <= (1024 * 1024usize).saturating_sub(bytes)
+    }
+
     fn follow_ups(&self) -> impl Iterator<Item = &String> {
         self.follow_up
             .iter()
@@ -130,6 +145,9 @@ pub struct Gate {
     /// Coalesce finished-background-job wakes, independently of inbox wakes: the two kinds
     /// have different run conditions, so one must not swallow the other.
     pub job_wake_pending: std::sync::atomic::AtomicBool,
+    /// Set when `oxa.jobs.wakeOnFinish` is off (applied by `session::sync_job_wake` at open and
+    /// on every settings refresh). Left unset, finished jobs wake the session (the default).
+    pub job_wake_off: std::sync::atomic::AtomicBool,
     /// Coalesce worker wakes for ordinary editor queues, independently of bound inbox wakes.
     pub queued_wake_pending: std::sync::atomic::AtomicBool,
     pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
@@ -240,6 +258,15 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Shared {
+    /// W4: whether a finished background job may wake its session (`oxa.jobs.wakeOnFinish`).
+    pub(crate) fn set_job_wake_enabled(&self, on: bool) {
+        self.gate.job_wake_off.store(!on, Ordering::SeqCst);
+    }
+
+    pub(crate) fn job_wake_enabled(&self) -> bool {
+        !self.gate.job_wake_off.load(Ordering::SeqCst)
+    }
+
     pub(crate) fn publish_live_settings(&self, settings: &oxa_config::Settings) {
         let mut live = lock(&self.gate.live_settings);
         if live.subscribed {
@@ -504,13 +531,19 @@ impl Handle {
     /// as a normal follow-up does. The wake carries the destination so the frontend runs it
     /// only when that session is current.
     pub fn wake_job(&self, job: &oxa_tools::JobDone) -> bool {
+        if !self.shared.job_wake_enabled() {
+            return false;
+        }
         let session_id = if job.session.is_empty() {
             lock(&self.shared.queue).session_id.clone()
         } else {
             job.session.clone()
         };
-        if !self.follow_up_for(&session_id, job.wake_text()) {
-            return false;
+        // Admitted past the inbox cap: that cap makes the inbox watcher keep its file and retry,
+        // and a finished job has nothing to retry from. The text is bounded by the wake tail.
+        {
+            let mut q = lock(&self.shared.queue);
+            self.admit(&mut q, &session_id, job.wake_text());
         }
         let notify = lock(&self.shared.wake).as_ref().map(|w| w.0.clone());
         if let Some(notify) = notify {
@@ -576,14 +609,16 @@ impl Handle {
     /// Returns false under backpressure; the watcher must retain the file and retry.
     pub fn follow_up_for(&self, session_id: &str, text: String) -> bool {
         let mut q = lock(&self.shared.queue);
-        let messages = q.session_follow_up.values().flatten();
-        let (count, bytes) = messages.fold((0, 0), |(count, bytes), text| (count + 1, bytes + text.len()));
-        if text.len() > oxa_session::INBOX_MESSAGE_BYTES
-            || count >= 64
-            || text.len() > (1024 * 1024usize).saturating_sub(bytes)
-        {
+        if !q.has_inbox_capacity(text.len()) {
             return false;
         }
+        self.admit(&mut q, session_id, text);
+        true
+    }
+
+    /// Append `text` to `session_id`'s destination-bound queue and wake a run of the active
+    /// session. The caller decides on capacity.
+    fn admit(&self, q: &mut Queue, session_id: &str, text: String) {
         q.session_follow_up
             .entry(session_id.to_string())
             .or_default()
@@ -593,7 +628,6 @@ impl Handle {
             self.shared.gate.bg_cancel.cancel();
             self.shared.wait_wake.cancel();
         }
-        true
     }
 
     /// Move all destination-bound inbox messages to a replacement session's handle.
@@ -1135,6 +1169,62 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(!h.has_inbox_input());
         assert!(h.shared.take_follow_up().is_empty());
+    }
+
+    #[test]
+    fn job_completion_is_kept_when_the_inbox_is_full() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.shared.bind_session("s");
+        for _ in 0..64 {
+            assert!(h.follow_up_for("s", "inbox".into()));
+        }
+        assert!(
+            !h.follow_up_for("s", "refused".into()),
+            "the inbox cap still refuses inbox input"
+        );
+        let woken = Arc::new(Mutex::new(0usize));
+        let seen = woken.clone();
+        h.set_wake_notifier(Arc::new(move |_| *lock(&seen) += 1));
+        let job = oxa_tools::JobDone {
+            id: "job-1".into(),
+            status: oxa_tools::JobStatus::Exited(0),
+            command: "make".into(),
+            session: "s".into(),
+            tail: "done".into(),
+        };
+        assert!(h.wake_job(&job), "a finished job is not refused for capacity");
+        assert_eq!(*lock(&woken), 1);
+        let taken = h.shared.take_follow_up();
+        assert_eq!(
+            taken.len(),
+            65,
+            "the completion waits behind the 64 inbox messages"
+        );
+        assert!(
+            taken[64].starts_with("[background job job-1 finished: exit 0;"),
+            "{}",
+            taken[64]
+        );
+    }
+
+    #[test]
+    fn job_wake_follows_the_live_setting() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.shared.bind_session("s");
+        let job = oxa_tools::JobDone {
+            id: "job-1".into(),
+            status: oxa_tools::JobStatus::Exited(0),
+            command: "make".into(),
+            session: "s".into(),
+            tail: "done".into(),
+        };
+        // A reload that turns `oxa.jobs.wakeOnFinish` off stops the wake without a restart.
+        h.shared.set_job_wake_enabled(false);
+        assert!(!h.wake_job(&job));
+        assert!(!h.has_inbox_input());
+        h.shared.set_job_wake_enabled(true);
+        assert!(h.wake_job(&job));
+        assert!(h.has_inbox_input());
     }
 
     #[test]

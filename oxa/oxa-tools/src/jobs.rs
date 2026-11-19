@@ -219,6 +219,11 @@ impl JobRegistry {
         *self.owner.lock().unwrap() = session_id.to_string();
     }
 
+    /// The session the next jobs belong to (see [`JobRegistry::set_owner`]).
+    pub fn owner(&self) -> String {
+        self.owner.lock().unwrap().clone()
+    }
+
     /// How many jobs are currently running.
     pub fn running(&self) -> usize {
         self.state
