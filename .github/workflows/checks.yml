@@ -509,6 +509,9 @@ jobs:
         # which only matches the English word "runner" in receipts. The other rules still run.
         run: git ls-files -z benchmarks experiments | xargs -0 -r timeout 300 python3 -I tools/scrub_receipts.py --check --user ''
 
+      - name: Receipt exporter privacy tests
+        run: python3 -I oxc/tools/tests/test_export_receipt.py
+
   gateway:
     # Moved from cloud-gateway.yml (fmt + conformance, same steps and matrix) so the gate covers it.
     needs: changes
