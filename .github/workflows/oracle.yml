@@ -120,6 +120,15 @@ jobs:
           mkdir -p oracle-report
           cp "$RUNNER_TEMP/oracle/report.json" "$RUNNER_TEMP/oracle/ref/manifest.json" oracle-report/ 2>/dev/null || true
       - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches; an exact restore of main's entry skips the save (as in e2e.yml).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.erestore.outputs.cache-matched-key != format('{0}main', steps.ekey.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: ${{ steps.ekey.outputs.prefix }}main
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         # Only main seeds caches (PR refs would only evict main's entries).
         if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.mrestore.outputs.cache-hit != 'true'
         with:
