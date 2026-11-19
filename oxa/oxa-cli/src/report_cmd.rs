@@ -503,11 +503,16 @@ pub(crate) fn submit_record(
     }
 }
 
-/// The real confirmation: the question and the answer go through `/dev/tty` (never stdin, so
-/// piped input cannot confirm). `None` without a controlling terminal, or when oxa's own tools
-/// run this (`OXA_CODING_AGENT` is set: the model must not confirm for the user).
+/// The real confirmation. Under oxa's own tools the session exports `OXA_CONFIRM_SOCK`: the
+/// question goes to the session's owner confirm broker, which answers from the owner (yolo, the
+/// owner's dialog answer or the owner's typed message), never from text the model read. Without a
+/// broker, a tool child (`OXA_CODING_AGENT` set) gets `None`. A manual terminal asks through
+/// `/dev/tty` (never stdin, so piped input cannot confirm) and gets `None` without one.
 pub(crate) fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
     move |question: &str| {
+        if let Some(sock) = env.get(oxa_core::owner_confirm::SOCK_ENV) {
+            return oxa_core::owner_confirm::ask(Path::new(sock), question);
+        }
         if env.get("OXA_CODING_AGENT").is_some() {
             return None;
         }
@@ -524,6 +529,56 @@ pub(crate) fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
         let mut line = String::new();
         std::io::BufReader::new(tty).read_line(&mut line).ok()?;
         Some(line.trim().eq_ignore_ascii_case("yes"))
+    }
+}
+
+#[cfg(test)]
+mod confirm_tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+
+    /// A one-shot fake broker that answers `answer` and reports the question it saw.
+    fn broker(name: &str, answer: &'static str) -> (std::path::PathBuf, std::thread::JoinHandle<String>) {
+        let sock = std::env::temp_dir().join(format!("oxa-s2-{name}-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&sock);
+        let listener = UnixListener::bind(&sock).expect("bind");
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut line = String::new();
+            std::io::BufReader::new(&stream)
+                .read_line(&mut line)
+                .expect("read");
+            writeln!(&stream, "{{\"answer\": \"{answer}\", \"source\": \"typed\"}}").expect("write");
+            line
+        });
+        (sock, handle)
+    }
+
+    #[test]
+    fn confirm_uses_broker_under_agent_marker() {
+        let (sock, seen) = broker("yes", "yes");
+        let path = sock.to_string_lossy().into_owned();
+        let env = Env::from_pairs(&[("OXA_CODING_AGENT", "true"), ("OXA_CONFIRM_SOCK", &path)]);
+        assert_eq!(tty_confirm(&env)("Post this issue? "), Some(true));
+        let request = seen.join().expect("broker thread");
+        assert!(request.contains("Post this issue?") && request.contains("preview_sha256"));
+        let (sock, _seen) = broker("no", "no");
+        let path = sock.to_string_lossy().into_owned();
+        let env = Env::from_pairs(&[("OXA_CODING_AGENT", "true"), ("OXA_CONFIRM_SOCK", &path)]);
+        assert_eq!(tty_confirm(&env)("q"), Some(false));
+        let (sock, _seen) = broker("none", "none");
+        let path = sock.to_string_lossy().into_owned();
+        let env = Env::from_pairs(&[("OXA_CODING_AGENT", "true"), ("OXA_CONFIRM_SOCK", &path)]);
+        assert_eq!(tty_confirm(&env)("q"), None);
+    }
+
+    #[test]
+    fn confirm_none_without_broker_or_tty() {
+        // The marker without a broker never reaches /dev/tty; a dead socket path is no answer.
+        let env = Env::from_pairs(&[("OXA_CODING_AGENT", "true")]);
+        assert_eq!(tty_confirm(&env)("q"), None);
+        let env = Env::from_pairs(&[("OXA_CONFIRM_SOCK", "/nonexistent/oxa-confirm.sock")]);
+        assert_eq!(tty_confirm(&env)("q"), None);
     }
 }
 
