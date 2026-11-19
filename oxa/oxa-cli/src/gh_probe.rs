@@ -180,11 +180,15 @@ impl ProbeHooks {
             .filter(|c| !matches!(c["bucket"].as_str(), Some("pass" | "skipping")))
             .collect();
         for c in open.iter().take(MAX_CHECKS_LISTED) {
+            // A workflow or check name is repository-controlled text: scrub it like a body.
             text.push_str(&format!(
                 "\n{}: {} / {}",
                 c["bucket"].as_str().unwrap_or("unknown"),
-                c["workflow"].as_str().filter(|w| !w.is_empty()).unwrap_or("-"),
-                cut_chars(c["name"].as_str().unwrap_or("?"), 100),
+                self.scrubbed(
+                    c["workflow"].as_str().filter(|w| !w.is_empty()).unwrap_or("-"),
+                    100
+                ),
+                self.scrubbed(c["name"].as_str().unwrap_or("?"), 100),
             ));
         }
         if open.len() > MAX_CHECKS_LISTED {
@@ -437,6 +441,20 @@ mod tests {
             "{checks}"
         );
         assert!(!checks.contains("build"), "{checks}");
+    }
+
+    /// A check name and a workflow name are repository-controlled text: neither may carry a
+    /// credential through to the model.
+    #[test]
+    fn check_names_and_workflows_are_scrubbed() {
+        let f = Fake::new("checks-scrub");
+        let token = format!("ghp_{}", "Q3w4E5r6T7".repeat(4));
+        f.answer(
+            "pr_checks.json",
+            &format!(r#"[{{"name":"fail {token}","bucket":"fail","workflow":"lane {token}"}}]"#),
+        );
+        let checks = f.poll(json!({"kind": "pr_checks", "pr": 7})).unwrap().unwrap();
+        assert!(!checks.contains(&token), "check evidence leaked: {checks}");
     }
 
     /// A credential pasted into a PR or an issue must not reach the model as probe evidence.
