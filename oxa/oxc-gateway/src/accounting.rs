@@ -207,7 +207,7 @@ impl Budget {
         let spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
         // Earlier unbudgeted rows with unknown cost make a later cap unverifiable.
         if !unbudgeted && (shared.has_unknown_metered_hold() || state.reader.cost_unknown()) {
-            return Err(exhausted());
+            return Err(Refusal::cost_unknown_history());
         }
         policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), required)?;
         let id = if cost_unknown {

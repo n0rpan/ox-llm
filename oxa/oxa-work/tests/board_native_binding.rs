@@ -49,6 +49,7 @@ fn entry() -> Entry {
         lease: None,
         attempts_today: 0,
         eligible: true,
+        evidence_incomplete: None,
     }
 }
 fn binding(lease: &Lease) -> NativeBinding {

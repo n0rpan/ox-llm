@@ -29,7 +29,7 @@ pub use notes::{ProblemNote, ReportRecord};
 pub use publish::{inherit_report_lease, publish, report_notes};
 pub use queue::{
     native_task, run_queue, NativeQueueOwner, NativeQueueTarget, QueueEvent, QueueOptions, QueueRun,
-    QueueStatus,
+    QueueStatus, DEFAULT_MAX_INPUT_TASKS, MAX_RETAINED_TASKS,
 };
 pub mod mirrors;
 pub mod shadow;
@@ -818,6 +818,11 @@ pub struct RunPolicy {
     pub offline: bool,
     /// Set by the runner from the immutable packet before launching its children.
     pub runner_owns_github: bool,
+    /// The owner's level for the workers this runner starts. Only `Yolo` changes the worker argv.
+    pub autonomy: oxa_proto::Autonomy,
+    /// Re-read of that level at each launch. A queue started while the owner was in yolo must not
+    /// keep passing `--yolo` after the owner lowered `permissions.defaultMode`.
+    pub autonomy_now: Option<std::sync::Arc<dyn Fn() -> oxa_proto::Autonomy + Send + Sync>>,
     pub storage: PathBuf,
 }
 
@@ -1638,6 +1643,21 @@ mod tests {
         assert_eq!(
             run().unwrap_err(),
             "GitHub issue read failed, exceeded its byte limit or timed out"
+        );
+    }
+
+    #[test]
+    fn issue_packet_carries_the_issue_text() {
+        // A worker without GitHub access cannot read the issue, so its title and the whole
+        // body, lines included, arrive in the packet the runner built.
+        let prompt = issue_prompt(
+            42,
+            &json!({"title": "Worker packets", "body": "Carry the facts.\nSecond line.", "state": "OPEN"}),
+        )
+        .unwrap();
+        assert!(
+            prompt.starts_with("Implement issue #42: Worker packets\n\nCarry the facts.\nSecond line.\n\n"),
+            "{prompt}"
         );
     }
 

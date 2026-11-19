@@ -88,11 +88,19 @@ impl Price {
         }
         (raw["free"] == true).then(|| Self(json!({"input_per_million":0.0,"output_per_million":0.0}), false))
     }
+    /// A price with no rates, for a model the catalog does not price. It bounds nothing, so only an
+    /// uncapped request can use it, and its settled usage is recorded with unknown cost.
+    pub fn unpriced() -> Self {
+        Self(json!({}), false)
+    }
     #[cfg(feature = "anthropic-gateway")]
     pub(crate) fn conservative(raw: &Value) -> Option<Self> {
         let price = rates(raw)?;
         (price["input_per_million"].as_f64()? > 0.0 && price["output_per_million"].as_f64()? > 0.0)
             .then_some(Self(price, true))
+    }
+    fn is_unpriced(&self) -> bool {
+        self.0.as_object().is_some_and(serde_json::Map::is_empty)
     }
     pub fn is_estimated(&self) -> bool {
         self.1
@@ -145,7 +153,7 @@ impl Price {
         output: u64,
         cache: Cache,
     ) -> Option<f64> {
-        if prompt > 100_000_000 || output > 10_000_000 {
+        if prompt > 100_000_000 || output > 10_000_000 || self.is_unpriced() {
             return None;
         }
         let price = if let Some(tiers) = self.0["tiers"].as_array() {
@@ -172,7 +180,7 @@ impl Price {
     /// Bound input by the entire catalog window, across every pricing tier and
     /// cache-write rate. OpenRouter adds 25% routing headroom.
     pub fn reservation(&self, provider: &str, upstream: &str, context: u64, output: u64) -> Option<f64> {
-        if context > 100_000_000 || output > 10_000_000 {
+        if context > 100_000_000 || output > 10_000_000 || self.is_unpriced() {
             return None;
         }
         let prices = self.0["tiers"]

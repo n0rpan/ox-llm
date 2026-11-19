@@ -24,7 +24,7 @@ use oxa_perm::{
 };
 use oxa_proto::{codes, Engine, EntryBody, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
 use oxa_resources::{discover, DiscoverOpts, Resources};
-use oxa_rpc::{run_json_outcome, run_print_outcome, serve_outcome, Out};
+use oxa_rpc::{run_json_outcome_with_inbox, run_print_outcome_with_inbox, serve_outcome, Out};
 use oxa_sandbox::Bwrap;
 #[cfg(target_os = "linux")]
 use oxa_sandbox::NoSandbox;
@@ -950,6 +950,45 @@ fn prepare(
             pattern: requested_model.as_deref(),
             scope: &owner_scope,
             endpoint: &endpoint.name,
+            // An actual `--model` argument is the owner's choice of that model, also when a
+            // launcher (`oxa work`, a supervised child) passed it: the protected user key is
+            // what authorizes the Go transport. A coding-agent tool process is not the owner
+            // (it carries `AI_AGENT`/`OXA_CODING_AGENT`), a restored session model is
+            // provenance-less (it counts only when the owner enabled Go), and a project
+            // `defaultModel` or `enabledModels` never counts.
+            owner_selected: (a.model.is_some()
+                && env.get("AI_AGENT").is_none()
+                && env.get("OXA_CODING_AGENT").is_none())
+                || (!child.nested()
+                    && !is_agent(env)
+                    && env.get(oxa_work::PlannedTask::DELEGATED_MODEL_ENV).is_none()
+                    && (a.model.is_some()
+                        || (continued_go.is_some()
+                            && user_settings.bool(crate::in_process::GO_SETTING, false))
+                        || !owner_scope.is_empty()
+                        || requested_model
+                            .as_ref()
+                            .is_some_and(|model| user_settings.string("defaultModel").as_ref() == Some(model)))),
+        },
+        (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
+            )
+        })
+        .transpose()?;
+    #[cfg(feature = "share")]
+    let shared = sharing
+        .as_ref()
+        .map(|prepared| prepared.engines.clone())
+        .unwrap_or_default();
+    #[cfg(not(feature = "share"))]
+    let shared = crate::in_process::SharedEngines::default();
+    let (engine, catalog_notices) = crate::in_process::select_observed(
+        &user_settings,
+        &settings,
+        dirs,
+        crate::in_process::ModelSelection {
+            pattern: requested_model.as_deref(),
+            scope: &owner_scope,
+            endpoint: &endpoint.name,
             // Model arguments delegated by a launcher cannot opt into a
             // provider without explicit user settings, and a restored session model
             // is provenance-less: it counts only when the owner enabled Go. A project
@@ -992,7 +1031,11 @@ fn prepare(
     if !owner_chat && env.get(oxa_proto::names::ENV_TEST_ISOLATION) != Some("1") && !child.nested() {
         let probe = (!oxa_proto::offline()).then_some(engine.as_ref());
         let facts = crate::identity_cmd::identity_facts(Path::new("/"), probe);
-        let keep_known_models = facts.models.is_empty() && oxa_resources::read_identity(dirs).is_some();
+        // An old file is kept only when it is in the current format; one written by an older
+        // oxa (old head, cloud model lines) is rewritten with `Models: not known`.
+        let keep_known_models = facts.models.is_empty()
+            && oxa_resources::read_identity(dirs)
+                .is_some_and(|t| t.starts_with(oxa_core::prompt::IDENTITY_HEAD));
         if !keep_known_models {
             if let Err(e) = crate::identity_cmd::write_identity(dirs, &facts) {
                 notices.push((Level::Warning, e.message));
@@ -1194,8 +1237,15 @@ fn prepare(
                 .with_engine(&engine),
         )
     });
+    let usage_log = a
+        .usage_log
+        .as_deref()
+        .map(crate::usage_log::UsageLog::create)
+        .transpose()?;
     let result_facts = Arc::new(
-        crate::result_facts::ResultFacts::new(status.clone()).with_billing(cloud_diagnostics.clone()),
+        crate::result_facts::ResultFacts::new(status.clone())
+            .with_billing(cloud_diagnostics.clone())
+            .with_usage_log(usage_log),
     );
     let built = Built {
         lead: a.lead,
@@ -1605,6 +1655,7 @@ fn run_headless(
         continue_goal,
         ..
     } = prep;
+    oxa_core::set_headless(true);
     let mut session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
         Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),
@@ -1750,8 +1801,22 @@ fn run_headless(
                 authority,
             )
         }
-        RunMode::Json => run_json_outcome(&mut session, prompts, stdout.as_deref_mut().unwrap(), stderr),
-        _ => run_print_outcome(&mut session, prompts, stdout.as_deref_mut().unwrap(), stderr),
+        RunMode::Json => run_json_outcome_with_inbox(
+            &mut session,
+            prompts,
+            stdout.as_deref_mut().unwrap(),
+            stderr,
+            &built.dirs.agent_dir,
+            built.settings.user_bool("oxa.inbox.headless", true),
+        ),
+        _ => run_print_outcome_with_inbox(
+            &mut session,
+            prompts,
+            stdout.as_deref_mut().unwrap(),
+            stderr,
+            &built.dirs.agent_dir,
+            built.settings.user_bool("oxa.inbox.headless", true),
+        ),
     };
     built.result_facts.goal(session.goal());
     // `session_shutdown` for the hook sets, then their script contexts and MCP servers stop.

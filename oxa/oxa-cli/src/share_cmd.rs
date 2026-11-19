@@ -456,7 +456,6 @@ mod tests {
                 scope: &[],
                 endpoint: "",
                 owner_selected: true,
-                model_argument: true,
             },
             None,
             prepared.engines.clone(),
