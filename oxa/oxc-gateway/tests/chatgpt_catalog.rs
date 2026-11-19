@@ -1,6 +1,7 @@
 #![cfg(all(feature = "upstream-openai", feature = "anthropic-client", feature = "ledger"))]
 //! The ChatGPT plan's model list against a local fake of the backend; no real token or API.
 #[path = "common/openai.rs"]
+#[allow(dead_code)]
 mod mock;
 use mock::{MockOpenAi, Reply};
 use oxc_gateway::openai::client::{self, Client, Refresh};
