@@ -29,7 +29,7 @@ pub use notes::{ProblemNote, ReportRecord};
 pub use publish::{inherit_report_lease, publish, report_notes};
 pub use queue::{
     native_task, run_queue, NativeQueueOwner, NativeQueueTarget, QueueEvent, QueueOptions, QueueRun,
-    QueueStatus,
+    QueueStatus, DEFAULT_MAX_INPUT_TASKS, MAX_RETAINED_TASKS,
 };
 pub mod mirrors;
 pub mod shadow;
@@ -1732,6 +1732,21 @@ mod tests {
         assert_eq!(
             run().unwrap_err(),
             "GitHub issue read failed, exceeded its byte limit or timed out"
+        );
+    }
+
+    #[test]
+    fn issue_packet_carries_the_issue_text() {
+        // A worker without GitHub access cannot read the issue, so its title and the whole
+        // body, lines included, arrive in the packet the runner built.
+        let prompt = issue_prompt(
+            42,
+            &json!({"title": "Worker packets", "body": "Carry the facts.\nSecond line.", "state": "OPEN"}),
+        )
+        .unwrap();
+        assert!(
+            prompt.starts_with("Implement issue #42: Worker packets\n\nCarry the facts.\nSecond line.\n\n"),
+            "{prompt}"
         );
     }
 

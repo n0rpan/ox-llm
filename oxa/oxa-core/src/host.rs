@@ -183,6 +183,10 @@ impl CoreHost {
         let (reply, answer) = mpsc::channel();
         let tx = self.tx.lock().unwrap_or_else(|p| p.into_inner());
         tx.send(HostRequest { action, reply }).map_err(|_| gone())?;
+        drop(tx);
+        // The request is in the channel before the wake: a front end that waits instead of
+        // polling (see `Handle::set_attention_waker`) finds it when it serves the host.
+        self.shared.gate.attention.notify();
         Ok(answer)
     }
 
@@ -429,6 +433,9 @@ impl Ui for LockedUi<'_, '_> {
     fn confirm(&mut self, title: &str, body: &str, timeout_ms: Option<u32>) -> Option<bool> {
         self.with(|u| u.confirm(title, body, timeout_ms))
     }
+    fn dialog_canceller(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        self.with(|u| u.dialog_canceller())
+    }
     fn input(&mut self, title: &str, placeholder: &str) -> Option<String> {
         self.with(|u| u.input(title, placeholder))
     }
@@ -483,7 +490,8 @@ const POLL_MAX: Duration = Duration::from_millis(10);
 /// gets the caller's UI; the permission prompts of served requests use the same one, one call
 /// at a time. Returns when `f` returns; a panic in `f` is resumed here.
 ///
-/// Without a host (`st.host_rx == None`) `f` runs inline: nothing could answer a host call.
+/// Without a host (`st.host_rx == None`) `f` runs inline unless an owner-confirm broker also
+/// needs the session thread as its dialog pump.
 pub(crate) fn pumped<R: Send>(
     st: &mut SessionState,
     level: Serve,
@@ -498,7 +506,7 @@ pub(crate) fn pumped<R: Send>(
     let tapped = !crate::fire::PromptTap::quiet();
     let mut tap = crate::fire::PromptTap::new(ui, prompts.clone());
     let ui: &mut dyn Ui = if tapped { &mut tap } else { tap.inner_mut() };
-    if st.host_rx.is_none() {
+    if st.host_rx.is_none() && st.shared.owner_confirm().is_none() {
         let out = f(&mut *ui);
         tick(sink);
         crate::fire::drain(st, sink, ui);
@@ -507,6 +515,10 @@ pub(crate) fn pumped<R: Send>(
     }
     let cell: Mutex<&mut dyn Ui> = Mutex::new(ui);
     let (done_tx, done_rx) = mpsc::channel::<()>();
+    let previous_broker_state = st.shared.owner_confirm().map(|broker| {
+        let previous = broker.set_servable(true);
+        (broker, previous)
+    });
     std::thread::scope(|scope| {
         let shared_ui = &cell;
         let dependent = level == Serve::Run;
@@ -521,6 +533,7 @@ pub(crate) fn pumped<R: Send>(
         while let Err(mpsc::RecvTimeoutError::Timeout) = done_rx.recv_timeout(pause) {
             let mut ui = LockedUi(&cell);
             let served = serve_level(st, level, sink, &mut ui);
+            serve_owner_confirm(st, sink, &mut ui, true);
             tick(sink);
             crate::fire::drain(st, sink, &mut ui);
             crate::fire::fire_prompts(st, &prompts, sink, &mut ui);
@@ -532,6 +545,10 @@ pub(crate) fn pumped<R: Send>(
         }
         tick(sink);
         let mut ui = LockedUi(&cell);
+        if let Some((broker, previous)) = previous_broker_state {
+            broker.set_servable(previous);
+        }
+        serve_owner_confirm(st, sink, &mut ui, false);
         crate::fire::drain(st, sink, &mut ui);
         crate::fire::fire_prompts(st, &prompts, sink, &mut ui);
         match helper.join() {
@@ -539,6 +556,41 @@ pub(crate) fn pumped<R: Send>(
             Err(panic) => std::panic::resume_unwind(panic),
         }
     })
+}
+
+/// Serve the owner confirm broker from the session thread while a tool runs: show the dialog
+/// of a waiting request, then report what was answered (a notice and a session record, so a
+/// yolo answer is never silent).
+fn serve_owner_confirm(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui, serve: bool) {
+    let Some(broker) = st.shared.owner_confirm() else {
+        return;
+    };
+    if serve {
+        broker.serve(ui);
+    }
+    for r in broker.take_records() {
+        let text = format!(
+            "owner confirm {} ({}), preview sha256 {}",
+            r.verdict.as_str(),
+            r.origin.as_str(),
+            r.preview_sha256
+        );
+        sink.emit(&AgentEvent::Notice {
+            level: Level::Info,
+            text,
+        });
+        let data = json!({
+            "question": r.question,
+            "preview_sha256": r.preview_sha256,
+            "answer": r.verdict.as_str(),
+            "source": r.origin.as_str(),
+        });
+        let body = EntryBody::Custom {
+            custom_type: "owner_confirm".to_string(),
+            data,
+        };
+        let _ = persist(st, body, sink);
+    }
 }
 
 /// Fire one hook point on one hook set through [`pumped`].
@@ -1294,6 +1346,7 @@ fn notice(sink: &mut dyn EventSink, level: Level, text: impl Into<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Handle;
     use oxa_config::{Dirs, Settings};
     use oxa_proto::{Engine, FrozenPrefix, HeadlessUi, Mode, ThinkingLevel, VecSink};
     use oxa_sandbox::NoSandbox;
@@ -1402,6 +1455,41 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         handle.join().expect("caller thread")
+    }
+
+    /// O-386: a host request posted while the front end waits (instead of polling) wakes it, so
+    /// the request is served at once and not at the front end's next idle tick. The request is
+    /// in the channel before the wake, so a woken front end finds it.
+    #[test]
+    fn a_posted_host_request_wakes_the_front_end() {
+        let f = fixture();
+        let fired = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = fired.clone();
+        let handle = Handle {
+            shared: f.st.shared.clone(),
+        };
+        handle.set_attention_waker(Arc::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        }));
+        f.host
+            .call(HostAction::SendMessage {
+                custom_type: "test".into(),
+                content: "wake".into(),
+                display: true,
+                details: Value::Null,
+                deliver: Delivery::FollowUp,
+                trigger_turn: true,
+            })
+            .expect("accepted");
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            1,
+            "the posted request wakes the front end"
+        );
+        assert!(
+            f.rx.try_recv().is_ok(),
+            "the request is in the channel the front end serves"
+        );
     }
 
     /// #554 / #557: host writes use the same truthful unattended refusal as built-in tools,
