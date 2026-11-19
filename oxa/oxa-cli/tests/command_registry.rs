@@ -21,6 +21,20 @@ fn supported_registry_cli_paths_have_real_public_help() {
 }
 
 #[test]
+fn suite_status_json_resolves_to_the_native_status_command() {
+    let words = vec!["status".to_owned(), "--json".to_owned()];
+    let resolved = parse_cli(&words).expect("status is declared");
+    assert_eq!(resolved.command.id, CommandId::Status);
+    assert!(resolved.command.arguments.iter().any(|arg| arg.name == "json"));
+    assert_eq!(resolved.args, &words[1..]);
+    let parsed = oxa_cli::parse_args(&words, &[]).expect("status parses");
+    assert!(
+        matches!(parsed.subcommand, Some(oxa_cli::Subcommand::Status(args))
+        if args == ["--json"])
+    );
+}
+
+#[test]
 fn work_status_declaration_matches_the_existing_cli_route() {
     let words = vec!["work".into(), "status".into(), "--json".into()];
     let resolved = parse_cli(&words).unwrap();
