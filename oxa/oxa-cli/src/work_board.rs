@@ -341,6 +341,104 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// GitHub's own changed-file ceiling for one pull request: a larger set is not
+/// a board observation this reader completes.
+const MAX_FILES_PER_PR: u64 = 3000;
+
+/// Complete one pull request's changed-file connection with bounded
+/// continuations. The start and every continuation page must belong to the
+/// pinned head and total, every path must be distinct, and the pages must cover
+/// the whole connection; anything else fails the snapshot before it is
+/// published, exactly as an incomplete first page did.
+fn complete_changed_files(
+    reader: &Reader,
+    number: u64,
+    head: &str,
+    row: &mut Value,
+) -> Result<(), SnapshotError> {
+    let files = &row["files"];
+    let total = files["totalCount"].as_u64().ok_or("missing changed-file count")?;
+    if total > MAX_FILES_PER_PR {
+        return Err(SnapshotError::from(
+            "changed-file set exceeds the bounded snapshot",
+        ));
+    }
+    let mut rows: Vec<Value> = files["nodes"]
+        .as_array()
+        .cloned()
+        .ok_or("missing changed-file page")?;
+    if rows.len() as u64 > total {
+        return Err(SnapshotError::from("invalid changed-file page"));
+    }
+    let mut paths = BTreeSet::new();
+    for file in &rows {
+        paths.insert(changed_path(file)?.to_owned());
+    }
+    let mut page = files.clone();
+    let mut cursors = BTreeSet::new();
+    loop {
+        if !page["pageInfo"]["hasNextPage"]
+            .as_bool()
+            .ok_or("missing changed-file pagination")?
+        {
+            break;
+        }
+        let cursor = page["pageInfo"]["endCursor"]
+            .as_str()
+            .filter(|cursor| !cursor.is_empty())
+            .ok_or("missing changed-file cursor")?
+            .to_owned();
+        if rows.is_empty() || rows.len() as u64 >= total || !cursors.insert(cursor.clone()) {
+            return Err(SnapshotError::from("invalid changed-file pagination progress"));
+        }
+        let (next, _) = reader
+            .query(&format!(
+                "p{number}:pullRequest(number:{number}){{number headRefOid \
+                 files(first:100,after:{cursor:?}){{totalCount pageInfo{{hasNextPage endCursor}} \
+                 nodes{{path deletions}}}}}}"
+            ))
+            .map_err(|error| SnapshotError::from(error.message()))?;
+        let continuation = &next[format!("p{number}")];
+        let (seen, seen_head) = identity(continuation)?;
+        if seen != number {
+            return Err(SnapshotError::from("mismatched PR number"));
+        }
+        if seen_head != head || continuation["files"]["totalCount"].as_u64() != Some(total) {
+            return Err(SnapshotError::Changed("mismatched PR details; retry later"));
+        }
+        for file in continuation["files"]["nodes"]
+            .as_array()
+            .ok_or("missing changed-file page")?
+        {
+            if !paths.insert(changed_path(file)?.to_owned()) {
+                return Err(SnapshotError::from("duplicate changed file"));
+            }
+            rows.push(file.clone());
+        }
+        if rows.len() as u64 > total {
+            return Err(SnapshotError::from("invalid changed-file page"));
+        }
+        page = continuation["files"].clone();
+    }
+    if rows.len() as u64 != total {
+        return Err(SnapshotError::from("incomplete changed-file listing"));
+    }
+    row["files"] = serde_json::json!({
+        "totalCount": total,
+        "pageInfo": {"hasNextPage": false, "endCursor": Value::Null},
+        "nodes": rows,
+    });
+    Ok(())
+}
+
+/// One changed-file node's path, which must be usable evidence on its own.
+fn changed_path(file: &Value) -> Result<&str, String> {
+    file["path"]
+        .as_str()
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| "missing changed-file path".to_string())
+}
+
 fn nodes(value: &Value) -> Result<&Vec<Value>, String> {
     let rows = value["nodes"].as_array().ok_or("missing GitHub connection")?;
     if value["totalCount"].as_u64() != Some(rows.len() as u64) {
@@ -413,7 +511,7 @@ impl Reader<'_> {
                 r#"p{n}:pullRequest(number:{n}){{number headRefOid baseRefName state body isDraft reviewDecision mergeable mergeStateStatus {review_fields}
                 baseRef{{refUpdateRule{{requiredStatusCheckContexts}} rules(first:100){{totalCount nodes{{type parameters{{... on RequiredStatusChecksParameters{{requiredStatusChecks{{context}}}}}}}}}}}}
                 labels(first:100){{totalCount nodes{{name}}}}
-                files(first:100){{totalCount nodes{{path deletions}}}}
+                files(first:100){{totalCount pageInfo{{hasNextPage endCursor}} nodes{{path deletions}}}}
                 reviewThreads(first:100){{totalCount nodes{{isResolved}}}}
                 latestOpinionatedReviews(first:100,writersOnly:true){{totalCount nodes{{state commit{{oid}} author{{login}}}}}}
                 commits(last:1){{nodes{{commit{{statusCheckRollup{{contexts(first:100){{totalCount nodes{{
@@ -437,14 +535,19 @@ impl Reader<'_> {
                 ));
             }
             for n in &numbers[offset..end] {
-                let row = &page[format!("p{n}")];
-                let (number, _) = identity(row)?;
-                if number != *n {
-                    return Err(SnapshotError::from("mismatched PR number"));
-                }
-                if row["headRefOid"] != expected[n]["headRefOid"] {
-                    return Err(SnapshotError::Changed("mismatched PR details; retry later"));
-                }
+                let head = {
+                    let row = &page[format!("p{n}")];
+                    let (number, head) = identity(row)?;
+                    if number != *n {
+                        return Err(SnapshotError::from("mismatched PR number"));
+                    }
+                    if row["headRefOid"] != expected[n]["headRefOid"] {
+                        return Err(SnapshotError::Changed("mismatched PR details; retry later"));
+                    }
+                    head.to_owned()
+                };
+                let row = &mut page[format!("p{n}")];
+                complete_changed_files(self, *n, &head, row)?;
                 details[format!("p{n}")] = row.clone();
             }
             offset = end;
