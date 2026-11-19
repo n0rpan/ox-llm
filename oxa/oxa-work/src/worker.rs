@@ -86,17 +86,30 @@ impl Worker {
 
 #[cfg(test)]
 mod autonomy_tests {
-    use super::mode_args;
-    use std::sync::{Arc, Mutex};
+    use super::{mode_args, worker_authority};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
 
     /// A queue that started in yolo passes `--yolo` only while the owner's level still is yolo:
     /// the level is read at each launch.
     #[test]
     fn a_lowered_owner_level_stops_passing_yolo() {
         let level = Arc::new(Mutex::new(oxa_proto::Autonomy::Yolo));
+        let reads = Arc::new(AtomicUsize::new(0));
         let now = {
             let level = level.clone();
-            Arc::new(move || *level.lock().unwrap()) as Arc<dyn Fn() -> oxa_proto::Autonomy + Send + Sync>
+            let reads = reads.clone();
+            Arc::new(move || {
+                reads.fetch_add(1, Ordering::Relaxed);
+                let autonomy = *level.lock().unwrap();
+                let github = match autonomy {
+                    oxa_proto::Autonomy::Yolo => crate::WorkerGithub::Worker,
+                    _ => crate::WorkerGithub::Runner,
+                };
+                (autonomy, github)
+            }) as Arc<dyn Fn() -> (oxa_proto::Autonomy, crate::WorkerGithub) + Send + Sync>
         };
         let mut policy = crate::RunPolicy {
             git_binary: std::path::PathBuf::from("/bin/true"),
@@ -105,24 +118,34 @@ mod autonomy_tests {
             offline: false,
             runner_owns_github: false,
             worker_github: crate::WorkerGithub::default(),
-            worker_github_now: None,
             autonomy: oxa_proto::Autonomy::Yolo,
-            autonomy_now: Some(now),
+            authority_now: Some(now),
             storage: std::path::PathBuf::from("/tmp/storage"),
         };
-        let autonomy = policy.autonomy_now.as_ref().map_or(policy.autonomy, |now| now());
+        let (autonomy, github) = worker_authority(&policy);
         assert_eq!(mode_args(autonomy), &["--yolo"]);
+        assert_eq!(github, crate::WorkerGithub::Worker);
         *level.lock().unwrap() = oxa_proto::Autonomy::Standard;
-        let autonomy = policy.autonomy_now.as_ref().map_or(policy.autonomy, |now| now());
+        let (autonomy, github) = worker_authority(&policy);
         assert!(
             mode_args(autonomy).is_empty(),
             "a lowered level must not pass --yolo"
         );
+        assert_eq!(github, crate::WorkerGithub::Runner);
+        assert_eq!(reads.load(Ordering::Relaxed), 2, "one settings read per launch");
         // Without a resolver the snapshot stands (single-shot callers and tests).
-        policy.autonomy_now = None;
-        let autonomy = policy.autonomy_now.as_ref().map_or(policy.autonomy, |now| now());
+        policy.authority_now = None;
+        let (autonomy, github) = worker_authority(&policy);
         assert_eq!(mode_args(autonomy), &["--yolo"]);
+        assert_eq!(github, crate::WorkerGithub::default());
     }
+}
+
+fn worker_authority(policy: &RunPolicy) -> (oxa_proto::Autonomy, crate::WorkerGithub) {
+    policy
+        .authority_now
+        .as_ref()
+        .map_or((policy.autonomy, policy.worker_github), |now| now())
 }
 
 /// The mode flags of a worker child. Only an owner in yolo passes yolo on: the worker then
@@ -165,10 +188,7 @@ pub(crate) fn run(
     // The owner's GitHub authority is read at launch, like the autonomy level: lowering
     // `permissions.defaultMode` (or pinning `runner`) revokes worker GitHub for the tasks
     // a running queue has not started yet.
-    let worker_github = policy
-        .worker_github_now
-        .as_ref()
-        .map_or(policy.worker_github, |now| now());
+    let (autonomy, worker_github) = worker_authority(policy);
     let prompt = &*crate::worker_prompt(prompt, worker_github);
     let terminate = policy
         .terminate_binary
@@ -205,7 +225,6 @@ pub(crate) fn run(
     }
     // The owner's level is read at launch: a queue that started in yolo stops passing `--yolo`
     // as soon as the owner lowers `permissions.defaultMode`.
-    let autonomy = policy.autonomy_now.as_ref().map_or(policy.autonomy, |now| now());
     command.args(mode_args(autonomy));
     if policy.offline {
         command.arg("--offline");

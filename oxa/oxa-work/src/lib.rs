@@ -879,13 +879,10 @@ pub struct RunPolicy {
     pub autonomy: oxa_proto::Autonomy,
     /// How much GitHub access a worker keeps when the runner owns GitHub for its task.
     pub worker_github: WorkerGithub,
-    /// Re-read of that authority at each launch, alongside `autonomy_now`: a queue that
-    /// started while the owner was in yolo must not keep handing out GitHub credentials
-    /// after the owner lowered `permissions.defaultMode` (or pinned `runner`).
-    pub worker_github_now: Option<std::sync::Arc<dyn Fn() -> WorkerGithub + Send + Sync>>,
-    /// Re-read of that level at each launch. A queue started while the owner was in yolo must not
-    /// keep passing `--yolo` after the owner lowered `permissions.defaultMode`.
-    pub autonomy_now: Option<std::sync::Arc<dyn Fn() -> oxa_proto::Autonomy + Send + Sync>>,
+    /// Re-read both parts of the owner's authority from one settings snapshot at each launch.
+    /// A queue started while the owner was in yolo must not retain either `--yolo` or worker-owned
+    /// GitHub access after the owner lowers the permission level (or pins `runner`).
+    pub authority_now: Option<std::sync::Arc<dyn Fn() -> (oxa_proto::Autonomy, WorkerGithub) + Send + Sync>>,
     pub storage: PathBuf,
 }
 

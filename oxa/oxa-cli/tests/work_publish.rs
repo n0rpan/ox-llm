@@ -119,8 +119,7 @@ fn exercise_save_recovery(test_name: &str, case: SaveRecovery) {
             runner_owns_github: false,
             autonomy: Default::default(),
             worker_github: Default::default(),
-            worker_github_now: None,
-            autonomy_now: None,
+            authority_now: None,
             offline: false,
             storage: root.join("home/.oxa/agent/work/save-recovery"),
         };

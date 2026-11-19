@@ -512,8 +512,7 @@ mod tests {
                 runner_owns_github: false,
                 autonomy: Default::default(),
                 worker_github: Default::default(),
-                worker_github_now: None,
-                autonomy_now: None,
+                authority_now: None,
                 storage,
             };
             checked(private_git(
