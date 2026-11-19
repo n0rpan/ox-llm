@@ -209,6 +209,17 @@ commands! {
         arguments: &[Argument { name: "name", kind: ArgumentKind::Word, required: true }],
         surfaces: MEMORY_CLI_ONLY, requirements: NO_REQUIREMENTS,
     },
+    Models {
+        path: &["models"], aliases: &[], summary: "List the models the engine serves, as a table or as JSON",
+        arguments: &[Argument { name: "json", kind: ArgumentKind::Flag, required: false }],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("No models slash handler is shipped"),
+            menu: Availability::Exception("No models menu handler is shipped"),
+            web: Availability::Exception("No web frontend is shipped"),
+        },
+        requirements: NO_REQUIREMENTS,
+    },
     Goal {
         path: &["goal"],
         aliases: &[],

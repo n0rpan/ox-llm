@@ -89,6 +89,7 @@ pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -
             | CommandId::MemoryList
             | CommandId::MemoryShow
             | CommandId::MemoryRm
+            | CommandId::Models
     )
 }
 
