@@ -200,6 +200,10 @@ impl Settings {
     pub fn bool(&self, key: &str, default: bool) -> bool {
         self.get(key).and_then(Value::as_bool).unwrap_or(default)
     }
+    /// A boolean read from the user settings file only: a project file cannot change it.
+    pub fn user_bool(&self, key: &str, default: bool) -> bool {
+        self.user_value(key).and_then(Value::as_bool).unwrap_or(default)
+    }
     pub fn u32(&self, key: &str, default: u32) -> u32 {
         self.get(key)
             .and_then(Value::as_u64)
@@ -635,6 +639,22 @@ mod tests {
             json!({"oxa": {"a2a": {"enabled": false}}}),
         );
         assert!(user_on_project_off.a2a_enabled());
+    }
+
+    #[test]
+    fn headless_inbox_setting_is_user_only() {
+        let user_off = Settings::from_values(json!({"oxa": {"inbox": {"headless": false}}}), json!({}));
+        assert!(!user_off.user_bool("oxa.inbox.headless", true));
+        let project_on = Settings::from_values(
+            json!({"oxa": {"inbox": {"headless": false}}}),
+            json!({"oxa": {"inbox": {"headless": true}}}),
+        );
+        assert!(
+            !project_on.user_bool("oxa.inbox.headless", true),
+            "a project file cannot re-enable the headless inbox the user turned off"
+        );
+        let project_off = Settings::from_values(json!({}), json!({"oxa": {"inbox": {"headless": false}}}));
+        assert!(project_off.user_bool("oxa.inbox.headless", true));
     }
 
     #[test]

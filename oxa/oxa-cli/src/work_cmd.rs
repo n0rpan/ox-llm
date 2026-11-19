@@ -591,6 +591,14 @@ fn queue_options(args: &[String], cwd: &Path) -> Result<(PathBuf, oxa_work::Queu
                     .checked_mul(1024 * 1024)
                     .ok_or("free-space minimum is too large")?;
             }
+            "--max-input-tasks" => {
+                i += 1;
+                options.max_input_tasks = args
+                    .get(i)
+                    .ok_or("--max-input-tasks needs a value")?
+                    .parse()
+                    .map_err(|_| "invalid --max-input-tasks")?;
+            }
             "--once" => options.once = true,
             word => return Err(format!("unknown queue option: {word}")),
         }
@@ -598,6 +606,12 @@ fn queue_options(args: &[String], cwd: &Path) -> Result<(PathBuf, oxa_work::Queu
     }
     if options.max == 0 {
         return Err("--max must be positive".into());
+    }
+    if options.max_input_tasks == 0 || options.max_input_tasks > oxa_work::MAX_RETAINED_TASKS {
+        return Err(format!(
+            "--max-input-tasks must be between 1 and {}",
+            oxa_work::MAX_RETAINED_TASKS
+        ));
     }
     Ok((directory, options))
 }
@@ -609,6 +623,43 @@ fn runner_autonomy(settings: &oxa_config::Settings) -> oxa_proto::Autonomy {
         oxa_proto::Autonomy::Yolo
     } else {
         oxa_proto::Autonomy::default()
+    }
+}
+
+#[cfg(test)]
+mod queue_option_tests {
+    use super::queue_options;
+    use std::path::Path;
+
+    fn args(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| word.to_string()).collect()
+    }
+
+    #[test]
+    fn the_per_file_task_count_defaults_to_the_documented_advisory_limit() {
+        let cwd = Path::new("/work");
+        let (directory, options) = queue_options(&args(&["--queue", "tasks"]), cwd).unwrap();
+        assert_eq!(directory, cwd.join("tasks"));
+        assert_eq!(oxa_work::DEFAULT_MAX_INPUT_TASKS, 256);
+        assert_eq!(options.max_input_tasks, oxa_work::DEFAULT_MAX_INPUT_TASKS);
+    }
+
+    #[test]
+    fn the_per_file_task_count_takes_a_lower_threshold_and_refuses_the_rest() {
+        let cwd = Path::new("/work");
+        let (_, options) =
+            queue_options(&args(&["--queue", "tasks", "--max-input-tasks", "2"]), cwd).unwrap();
+        assert_eq!(options.max_input_tasks, 2);
+        let upper = oxa_work::MAX_RETAINED_TASKS.to_string();
+        let (_, options) =
+            queue_options(&args(&["--queue", "tasks", "--max-input-tasks", &upper]), cwd).unwrap();
+        assert_eq!(options.max_input_tasks, oxa_work::MAX_RETAINED_TASKS);
+        for bad in ["0", "-1", "many", "4097"] {
+            let result = queue_options(&args(&["--queue", "tasks", "--max-input-tasks", bad]), cwd);
+            assert!(result.is_err(), "{bad} must be refused");
+        }
+        let missing = queue_options(&args(&["--queue", "tasks", "--max-input-tasks"]), cwd);
+        assert!(missing.is_err());
     }
 }
 
