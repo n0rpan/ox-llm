@@ -445,7 +445,7 @@ fn select_for(
     // A gateway opened by the owner's Go scope answers for that scope here too: without a
     // local backend there is no `Routed`, so the same bound is applied around the catalog the
     // effective settings are resolved against.
-    if !explicit_go && !explicit_cloud && !scope.is_empty() {
+    if !explicit_cloud && (explicit_go || !scope.is_empty()) {
         return Ok((
             routing::Routed {
                 local: Err(OxaError::new(codes::INVALID, "Native local is not enabled.")),

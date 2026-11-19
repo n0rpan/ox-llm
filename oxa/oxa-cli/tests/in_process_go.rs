@@ -529,6 +529,8 @@ fn the_go_switch_does_not_open_another_providers_alias() {
         vec![
             Reply::json(discovery(base)),
             stream(json!({"content":"synthetic plan reply"}), "stop"),
+            Reply::json(discovery(base)),
+            Reply::json(discovery(base)),
         ]
     });
     setup(&env, &format!("http://{}", mock.address()));
@@ -543,10 +545,16 @@ fn the_go_switch_does_not_open_another_providers_alias() {
         settings["oxa"]["cloud"]["models"][alias] = json!({
             "provider":"openai", "upstream_model":"synthetic-other",
             "context_window":32768, "max_output":64,
+            "pricing":{"input_per_million":1,"output_per_million":2},
             "base_url":format!("http://{}", other.address())
         });
     }
     fs::write(path, settings.to_string()).unwrap();
+    fs::write(
+        env.home().join(".config/oxc/llm/cloud-secrets.json"),
+        json!({"opencode":CREDENTIAL,"openai":"synthetic-openai-credential"}).to_string(),
+    )
+    .unwrap();
 
     // The Go model answers.
     let go = run(&env, &["--model", MODEL, "--no-tools", "-p", "Synthetic task"]);
@@ -562,6 +570,7 @@ fn the_go_switch_does_not_open_another_providers_alias() {
         "the Go switch must not spend another provider: {:?}",
         other.requests()
     );
+    assert_eq!(mock.requests().len(), 4);
     mock.assert_healthy();
     other.assert_healthy();
 }
