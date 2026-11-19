@@ -22,7 +22,7 @@ maintainer, who says in the PR when a hardware check is needed.
   credential masking, user-only settings, offline. Yolo means no sandbox anywhere: it drops the
   approval prompts and the OS sandbox for the session and for every worker, subagent and headless
   run it starts; only the in-process guards above stay.
-  Exec hooks retain their dedicated sandbox in every mode. Headless runs pursuing a goal and
+  Exec hooks retain their dedicated sandbox in every mode except yolo. Headless runs pursuing a goal and
   ownerless RPC count as unattended. Host bash uses a cleared toolchain environment and keeps
   GitHub output redaction. Off Linux there is no OS sandbox (owner policy, #1512): in-process
   guards stay, bash gets the same cleared base environment, and the bash network is not

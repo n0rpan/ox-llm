@@ -250,7 +250,7 @@ The harness connects to one place by default: the engine, on loopback (`127.0.0.
 | `web_search` (only with a key) | Brave Search only; refused in `plan` | asked for `api.search.brave.com` |
 | remote MCP servers (HTTP) | the server's host | asked |
 | extension `fetch` and exec with network | the host asked for | asked |
-| exec hooks | no inside the OS sandbox; without it, your network | not applicable |
+| exec hooks | no (their own sandbox); under yolo, your network unless offline or `oxa.sandbox.net` is `off` | not applicable |
 
 ### Bash network
 
@@ -274,7 +274,7 @@ This matters because the model can be steered by text it reads. A steered model 
 - subagent children inherit the switch;
 - the local engine keeps working.
 
-Offline mode is about the network only. It does not limit what those programs read or write. A `!cmd` command or a stdio MCP server, when started offline, sees your files as you do: it is not under the deny-list masks, and it can write anywhere your account can write. Exec hooks have no network inside the OS sandbox or when oxa is offline; without the OS sandbox and online, a hook has your network, as bash does. Programs you start yourself, outside oxa, are not affected by oxa at all.
+Offline mode is about the network only. It does not limit what those programs read or write. A `!cmd` command or a stdio MCP server, when started offline, sees your files as you do: it is not under the deny-list masks, and it can write anywhere your account can write. Exec hooks have no network in their sandbox or when oxa is offline; under yolo and online, a hook has your network, as bash does. Programs you start yourself, outside oxa, are not affected by oxa at all.
 
 ### Remote engine
 
@@ -283,7 +283,7 @@ oxa refuses to send prompts to an engine on another host. The check is on the en
 ## Extensions, hooks and MCP
 
 - Extensions run in an embedded JavaScript runtime with no file, network or process access of their own. Each host function they call (`exec`, `fs`, `fetch`, session actions) goes through the same policy as the model's tools.
-- Exec hooks (`hooks` setting) follow the OS-sandbox choice. With the OS sandbox on they run in it, with no network. Without it they run as `bash -c` with your rights. A hook that exits with status 2 blocks the `tool_call` or `user_bash` event it belongs to. A hook that times out or fails does not block anything. They run on every event, without the model asking, so only put commands you have read in a hook.
+- Exec hooks (`hooks` setting) keep their own sandbox, with no network, whatever the OS-sandbox choice for bash, in attended and unattended runs. Under yolo there is no sandbox anywhere: they run as `bash -c` with your rights, also in an unattended worker started with yolo, and `--offline` or `oxa.sandbox.net: "off"` still keeps their network off. A hook that exits with status 2 blocks the `tool_call` or `user_bash` event it belongs to. A hook that times out or fails does not block anything. They run on every event, without the model asking, so only put commands you have read in a hook.
 - MCP stdio servers and `!cmd` commands run with your rights. Outside offline mode they are not in the bash sandbox, and an MCP stdio server starts after an approval. MCP HTTP servers and their OAuth tokens (`mcp-auth.json`, mode `0600`) are subject to the network rules above.
 - An MCP tool's read-only mark (`readOnlyHint`) is the server's own claim. oxa does not check it. For a remote server oxa does not believe the mark unless the server entry says `"trustAnnotations": true` (see [mcp.md](mcp.md#permissions)).
 
