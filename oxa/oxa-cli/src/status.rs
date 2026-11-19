@@ -352,14 +352,17 @@ fn write_error(e: &std::io::Error) -> OxaError {
     OxaError::new(WRITE_FAILED, format!("cannot update worker status: {e}"))
 }
 
-fn atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Replaces `path` with `bytes` through a fresh, exclusively created 0600 sibling, synced, then
+/// renamed over `path`. Shared by status snapshots and the worker registry, so both keep the same
+/// persistence guarantees.
+pub(crate) fn atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let parent = path
         .parent()
-        .ok_or_else(|| std::io::Error::other("status file has no directory"))?;
+        .ok_or_else(|| std::io::Error::other("file has no directory"))?;
     for _ in 0..8 {
         let tmp = parent.join(format!(
-            ".oxa-status-{}-{}.tmp",
+            ".oxa-atomic-{}-{}.tmp",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -382,7 +385,7 @@ fn atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         }
         return result;
     }
-    Err(std::io::Error::other("cannot reserve a status temporary file"))
+    Err(std::io::Error::other("cannot reserve a temporary file"))
 }
 
 pub(crate) fn run(
