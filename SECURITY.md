@@ -12,7 +12,7 @@ Treat as **high** severity:
 - metered API requests that bypass required reservation or settlement, are missing from the ledger, or bypass a **configured** daily cap. With no configured cap there is no cap check for the owner or authenticated allowlisted share guests. Guest authority, tokens and request quotas still apply;
 - OpenCode Go requests that bypass subscription token accounting, or provider-reported paid charges that are missing from the ledger or shared daily spend. Go admission reserves subscription tokens only. The owner's local metered API cap does not apply to Go admission, including provider-side fallback to a paid balance;
 - fork-PR or guest access to secrets, cloud providers or owner credentials;
-- an unattended run (worker, subagent, `oxa work`, headless goal) that runs without the OS sandbox while `oxa.sandbox.unattended` is not `false`;
+- an unattended run (worker, subagent, `oxa work`, headless goal) that runs without the OS sandbox while `oxa.sandbox.unattended` is not `false` and yolo was not selected (yolo means no OS sandbox in every run kind);
 - a dangerous command that runs without approval outside yolo;
 - a classifier bypass: a command that matches a dangerous-command rule but is not caught after parsing;
 - a project file or model output able to change `oxa.approval.*` or `oxa.sandbox.*`, or to answer its own approval request;

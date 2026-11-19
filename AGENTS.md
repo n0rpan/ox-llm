@@ -19,8 +19,9 @@ maintainer, who says in the PR when a hardware check is needed.
   but unusable. Interactive runs have no OS sandbox unless the owner turns it on (`--sandbox`,
   `oxa.sandbox.interactive`). Preserve dangerous-command approval (`oxa.approval.*`, parsed-command
   classifier, its bypass tests) and the in-process guards: file-tool denials for private paths,
-  credential masking, user-only settings, offline. Yolo drops approval prompts only; it never lifts
-  the in-process guards.
+  credential masking, user-only settings, offline. Yolo means no sandbox anywhere: it drops the
+  approval prompts and the OS sandbox for the session and for every worker, subagent and headless
+  run it starts; only the in-process guards above stay.
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
   in the ledger (an unknown cost is recorded as unknown). Limits are owner configuration: with no cap
@@ -187,7 +188,7 @@ Run these in GitHub CI before saying a task is done. Automatic local helpers mus
    `checks.yml`, the receipt scrubber, allow-lists, the oxa sandbox, permissions and secret handling. Don't
    split or obfuscate strings to get past a scanner. A test fixture that must look like a secret gets a
    narrow, exact-path exclusion with a written reason, reviewed as T3.
-   User-selected yolo only removes approval prompts and the interactive OS sandbox; the in-process guards stay.
+   User-selected yolo removes the approval prompts and the OS sandbox in every run kind (session, workers, subagents, headless runs); only the in-process guards stay.
 2. **No secrets, keys, tokens, transcripts, personal data, real home paths, host names or e-mail
    addresses** in code, tests, fixtures, docs or commit messages. Use placeholder paths (`~/project`), `example.invalid` and
    synthetic data. Commit with a GitHub no-reply e-mail address.

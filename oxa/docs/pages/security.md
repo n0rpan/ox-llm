@@ -17,9 +17,9 @@ oxa runs in two kinds of run, and the OS sandbox follows who is at the keyboard:
 | interactive, `--sandbox` or `oxa.sandbox.interactive: true` | yes | ask |
 | unattended, default | yes; bash is disabled if bubblewrap is missing or unusable | refused with the reason, or filed for the owner (see [Dangerous commands](#dangerous-commands)) |
 | unattended, `oxa.sandbox.unattended: false` | no | filed for the owner (`auto` or `request`), or refused (`refuse`) |
-| yolo, any run | no | no prompts |
+| yolo, any run (the session, and every worker, subagent and headless run it starts) | no | no prompts |
 
-Credential masking in tool output, user-only settings and offline mode hold in every run and mode, yolo included. The file tools verify the deny-list (private paths such as `~/.ssh`, `~/.gnupg`, cloud and git credentials, the agent directory) and the protected Git files in `standard` and `auto`; full-access yolo answers those questions too, so there they no longer stop the file tools, and the bash rules do not stand in for them.
+Credential masking in tool output, user-only settings and offline mode hold in every run and mode, yolo included. The file tools refuse the deny-list (private paths such as `~/.ssh`, `~/.gnupg`, cloud and git credentials, the agent directory) in every mode, yolo included. The other file-tool guards (the protected Git files and the protected `.oxa` configuration) belong to `standard` and `auto`; yolo drops them with the prompts. Yolo means no sandbox anywhere: it removes the OS sandbox for the session and for every worker, subagent and headless run it starts, and only these in-process guards stay.
 
 The owner settings are `oxa.sandbox.interactive`, `oxa.sandbox.unattended`, `oxa.approval.dangerous`, `oxa.approval.always` and `oxa.approval.unattended`. All of them are user settings only (see [settings](settings.md)). The `--sandbox` flag turns the OS sandbox on for one interactive run.
 
@@ -61,11 +61,11 @@ On top of the table, the permission mode decides who answers the questions:
 |---|---|---|---|
 | `standard` | the table above asks you | no OS sandbox (interactive) / sandbox (unattended or `--sandbox`) | deny-list and protected paths enforced |
 | `auto` (default) | table questions allowed and counted; protected configuration still asks | no OS sandbox (interactive) / sandbox (unattended or `--sandbox`) | deny-list and protected paths enforced |
-| `yolo` | none, dangerous commands included | **without the OS sandbox**, in your own environment, in every run | the other modes' guard is lifted with the prompts (see below) |
+| `yolo` | none, dangerous commands included | **without the OS sandbox**, in your own environment, in every run | the in-process guard stays (private-path denials); the protected-path guard is lifted with the prompts (see below) |
 | `plan` | as in the table | read-only commands | no writes |
 
 - `auto` is the default of a fresh install. It removes the prompts for table questions and nothing else: dangerous commands still ask, the deny-list stays masked, the file tools still refuse `~/.ssh`, `~/.gnupg`, cloud and git credentials, `~/.config/oxc`, browser profiles and the agent directory, `.git/hooks` and `.git/config` are never written, and a write to the project's `.oxa` configuration still asks. Bash has the OS sandbox only where it is on (unattended runs, or `--sandbox`).
-- `yolo` is full access to bash and no prompts. Bash runs as you, without the OS sandbox, so it can read and write your files and reach your network, and it is not limited to the sandbox's masks. Yolo answers every question the other modes ask, so the deny-list and the protected Git files do not stop the file tools (`standard` and `auto` keep them), and dangerous commands run without asking. The rules that live inside oxa itself still hold: the credential values are masked in tool output, `oxa.sandbox.net: off` and `--offline` still disable a bash command whose network cannot be withheld, and the file tools cannot reach a session they do not own. Use it only in a session you watch, on a machine and project you can restore. To keep the OS sandbox too, use `auto` with `--sandbox`. With `--offline` bash still has no network.
+- `yolo` is full access to bash and no prompts. Bash runs as you, without the OS sandbox, so it can read and write your files and reach your network, and it is not limited to the sandbox's masks. Yolo answers every question the other modes ask, so the protected Git files and the protected `.oxa` configuration do not stop the file tools (`standard` and `auto` keep them), and dangerous commands run without asking. The same holds for every worker, subagent and headless run a yolo session starts: none of them gets the OS sandbox, whatever `oxa.sandbox.unattended` says. The guards that live inside oxa itself still hold: the file tools refuse the deny-list's private paths, the credential values are masked in tool output, user settings stay user-only, `oxa.sandbox.net: off` and `--offline` still disable a bash command whose network cannot be withheld, and the file tools cannot reach a session they do not own. Use it only in a session you watch, on a machine and project you can restore. To keep the OS sandbox too, use `auto` with `--sandbox`. With `--offline` bash still has no network.
 - Set the mode at start with `--standard`, `--auto`, `--yolo` or `--permission-mode <mode>` (one run), or with the `permissions.defaultMode` setting (`standard`, `auto`, `yolo` or `plan`). `/mode <mode> --save` and "make default" in the `/mode` picker write that setting. A project's settings can lower the mode (for example to `standard`) but never raise it.
 - In a session: `/mode` opens the picker, `/mode <mode>` switches, `/auto` switches to auto, `/yolo [on|off]` or Ctrl+Alt+O toggles yolo (off returns to the mode before it), and Alt+M cycles standard, auto and yolo. `/mode workspace` and `/mode ask` still set the table mode.
 - The status bar always shows the mode. In yolo it shows a flame, `YOLO full access` and the count of auto-approved actions, the frames turn to the theme's hot colours, and the first switch in a session prints a one-line notice. In print, JSON and RPC mode the mode is written to stderr at start.
@@ -126,7 +126,7 @@ Unknown entries are ignored, with a warning.
 
 ### Unattended runs
 
-An unattended run has no one to ask. `oxa.approval.unattended` (user settings only) decides what it does with a dangerous command:
+An unattended run has no one to ask (under yolo it has no OS sandbox and no approval, see [Interactive and unattended runs](#interactive-and-unattended-runs)). `oxa.approval.unattended` (user settings only) decides what it does with a dangerous command:
 
 - `auto` (the default): with the OS sandbox on, the command is refused and the refusal gives the reason. Without the OS sandbox (macOS, or `oxa.sandbox.unattended: false`), the command is filed as an approval request and not run.
 - `refuse`: always refused.
@@ -228,7 +228,7 @@ Trust covers the content, not just the directory. Once you trust a project, oxa 
 
 `--approve` trusts the project and records the current content for one run. `--no-approve` ignores the project's configuration and resources for one run. `oxa install -l` and `oxa mcp ... -l` check the same record.
 
-In `standard` and `auto`, the model cannot write `.oxa/**` or `.agents/skills/**` without asking, and the file tools refuse writes to `.git/hooks` or `.git/config`. Plan mode denies these writes too. Yolo outside plan mode drops the question about `.oxa/**` and `.agents/skills/**`, so those writes run without asking, but the refusal for `.git/hooks` and `.git/config` stays.
+In `standard` and `auto`, the model cannot write `.oxa/**` or `.agents/skills/**` without asking, and the file tools refuse writes to `.git/hooks` or `.git/config`. Plan mode denies these writes too. Yolo outside plan mode drops these questions and refusals with the prompts, so those writes run without asking; the deny-list's private paths stay refused.
 
 ## Network
 

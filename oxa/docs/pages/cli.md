@@ -252,7 +252,7 @@ See [tools.md](tools.md) for the tool names.
 | `--permission-mode <mode>` | `standard`, `auto`, `yolo`, `plan`, or the table modes `workspace` and `ask`; default: the `permissions.defaultMode` setting, else `auto` |
 | `--standard` | permission mode standard: the permission table asks you |
 | `--auto` | permission mode auto: no prompts for table questions; the deny-list and protected paths stay on, dangerous commands still ask, and bash has the OS sandbox only where it is on ([security.md](security.md#standard-auto-and-yolo)) |
-| `--yolo` | permission mode yolo: no prompts, dangerous commands included; bash runs without the OS sandbox, and the file tools' deny-list and protected-path questions are answered too ([security.md](security.md#standard-auto-and-yolo)) |
+| `--yolo` | permission mode yolo: no prompts, dangerous commands included; no OS sandbox for the session or for any worker, subagent or headless run it starts; only the in-process guards stay: file-tool private-path denials, credential masking, user-only settings, offline ([security.md](security.md#standard-auto-and-yolo)) |
 | `--approve`, `-a` | trust the project's configuration and resources for this run |
 | `--no-approve`, `-na` | ignore the project's configuration and resources for this run |
 | `--share-model <alias>` | share one native local model during the interactive owner session in a build with the `share` feature, repeat to select more aliases |
