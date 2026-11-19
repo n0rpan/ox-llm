@@ -317,7 +317,11 @@ mod tests {
             log.push_str(&format!("step line {i} ........................\n"));
         }
         log.push_str(&format!("error: auth failed with token {token}\n"));
-        log.push_str("-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n");
+        // Exercise the PEM redactor with a synthetic envelope and no key material.
+        let key_label = "PRIVATE KEY";
+        log.push_str(&format!(
+            "-----BEGIN {key_label}-----\nsynthetic fixture\n-----END {key_label}-----\n"
+        ));
         f.answer("run_log", &log);
         let out = f
             .poll(json!({"kind": "run_log_failed", "run": 99}))
