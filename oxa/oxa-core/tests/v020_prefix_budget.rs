@@ -160,8 +160,8 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// rule; hashes copied from the `stable sha256` lines of this test in CI.
 /// 2026-11-19: #1552 updates the built-in report-issue skill description.
 /// 2026-11-19: N1 changed the bash tool text (wait cap 300, timeout moves to a background job).
-const DEFAULT_STABLE_SHA: &str = "1cd45063add45a653c65bbcf8cd197e7e8dd3d00bab34f5c6ce4758a577afa9c";
-const DEFAULT_STABLE_SHA_SUBAGENT: &str = "039c756ef6ffab30c82adea27ef1330e295f140c44bf91a54209442bfa978663";
+const DEFAULT_STABLE_SHA: &str = "6e8b2b42f28555b2fad0217a64efad92c350dd193de4e34821a98e3d9d83e1b7";
+const DEFAULT_STABLE_SHA_SUBAGENT: &str = "faf3003090abc984e2435f74f87b2a767f0eb5e8aa91e6335e9ece2d9d3729ae";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
 fn has_date(s: &str) -> bool {
