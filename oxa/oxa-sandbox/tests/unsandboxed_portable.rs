@@ -21,7 +21,6 @@ fn unsandboxed_flag_is_false_on_linux_and_true_elsewhere() {
 }
 
 #[test]
-#[cfg(not(target_os = "linux"))]
 fn unsandboxed_run_sets_the_flag_and_runs_the_command() {
     let env = oxa_fake::TestEnv::new();
     let marker = env.root().join("ran");
