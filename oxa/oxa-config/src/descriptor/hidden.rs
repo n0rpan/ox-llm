@@ -107,3 +107,4 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     )
     .key(Kind::Number, "10")
     .hidden(),
+];
