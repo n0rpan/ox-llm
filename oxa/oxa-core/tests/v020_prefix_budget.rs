@@ -158,8 +158,8 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// new identity text (Rust-only suite, cloud models as one provider line) and the done-check
 /// rule; hashes copied from the `stable sha256` lines of this test in CI.
 /// 2026-11-19: N1 changed the bash tool text (wait cap 300, timeout moves to a background job).
-const DEFAULT_STABLE_SHA: &str = "c29a9113fc63936b442d9b5272d6b77f029d055b88c24c3352dcfb3fa65789f4";
-const DEFAULT_STABLE_SHA_SUBAGENT: &str = "039c756ef6ffab30c82adea27ef1330e295f140c44bf91a54209442bfa978663";
+const DEFAULT_STABLE_SHA: &str = "2b02f073c1dea28736135ccbff2228998636408805b0c0c61c0e752ca47221f2";
+const DEFAULT_STABLE_SHA_SUBAGENT: &str = "e6b89588f9badfb48f01327e9f0fa462cfca6862abff38577d1c25debe79d32d";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
 fn has_date(s: &str) -> bool {
