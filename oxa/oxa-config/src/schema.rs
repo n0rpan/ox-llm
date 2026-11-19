@@ -238,6 +238,7 @@ const SCHEMA: &[KeyDef] = &[
         "\"brave\"",
     ),
     // The worker runner reads this list from owner settings only.
+    key("oxa.work.localChecks", Kind::StringList, "[\"cargo check\"]"),
     // Read from the user layer only. Unset follows the mode: yolo `worker`, auto `broker`,
     // standard `runner`.
     key(
@@ -245,7 +246,6 @@ const SCHEMA: &[KeyDef] = &[
         Kind::Enum(&["runner", "broker", "worker"]),
         "null",
     ),
-    key("oxa.work.localChecks", Kind::StringList, "[\"cargo check\"]"),
     key("packages", Kind::Any, "[]"),
     // #202: the permission mode at start; a project's value may only lower it
     // (`Settings::default_permission_mode`).

@@ -484,8 +484,7 @@ mod tests {
         assert!(yolo.ends_with("ISSUE BODY"));
         assert!(yolo.contains("`gh`") && !yolo.contains("Do not invoke gh"));
         assert!(!yolo.starts_with(crate::GITHUB_RUNNER_LEAD));
-        let broker = crate::worker_prompt(&packet, crate::WorkerGithub::Broker);
-        assert!(broker.contains("brokered") && broker.ends_with("ISSUE BODY"));
+        assert_eq!(crate::worker_prompt(&packet, crate::WorkerGithub::Broker), packet);
         assert_eq!(crate::worker_prompt(&packet, crate::WorkerGithub::Runner), packet);
         // A prompt without the runner lead is never rewritten.
         assert_eq!(

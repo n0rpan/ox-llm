@@ -15,7 +15,7 @@ says what the worker keeps. Unset follows the owner's mode:
 | Mode | Value | The worker gets |
 |---|---|---|
 | yolo | `worker` | its own GitHub environment and `gh`, MCP, web search and subagents; the packet guidance allows `git` and `gh` |
-| auto | `broker` | no token and no `gh`; GitHub reads go through host-side tools when the tool list has them |
+| auto | `broker` | no token and no `gh`; the runner's packet guidance stays until the host-side GitHub tools land |
 | standard | `runner` | today's behaviour: no GitHub access, the runner's packet only |
 
 An explicit owner value wins in every mode. A project setting is ignored.
