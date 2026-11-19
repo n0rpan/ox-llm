@@ -409,6 +409,7 @@ impl ModePolicy {
         rules
             .classify(command, cwd, &self.guard)
             .into_iter()
+            .chain(rules.publish_classify(command, cwd))
             .filter(|h| {
                 if h.segment.contains('$') || h.segment.contains('`') {
                     return true;

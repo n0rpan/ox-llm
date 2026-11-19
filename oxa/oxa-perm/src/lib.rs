@@ -34,6 +34,7 @@
 
 mod danger;
 mod paths;
+mod publish;
 mod policy;
 mod trust;
 
