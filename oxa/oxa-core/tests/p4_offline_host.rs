@@ -9,8 +9,8 @@ use oxa_core::{CoreHost, Queue, SessionState, Shared, Stats, Toolset};
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
-    codes, Access, Answer, Autonomy, Ui, YoloSwitch, set_net_policy, CancelToken, Engine, ExecSpec, FrozenPrefix, HeadlessUi, Host, HostAction, Mode,
-    OxaError, Policy, ThinkingLevel, Tool, Value, VecSink,
+    codes, set_net_policy, Access, Answer, Autonomy, CancelToken, Engine, ExecSpec, FrozenPrefix, HeadlessUi,
+    Host, HostAction, Mode, OxaError, Policy, ThinkingLevel, Tool, Ui, Value, VecSink, YoloSwitch,
 };
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
@@ -262,21 +262,34 @@ fn extension_exec_cwd_outside_the_session_asks_like_an_outside_write() {
     // Standard mode: outside asks (once), inside does not.
     let (mut st, _eng) = state(&env, vec![ScriptTurn::text("x")], Settings::default());
     st.policy = Box::new(ModePolicy::new().with_guard(guard()));
-    let mut ui = AskUi { answer: Answer::Once, asked: Vec::new() };
+    let mut ui = AskUi {
+        answer: Answer::Once,
+        asked: Vec::new(),
+    };
     through_host_ui(&mut st, exec(env.work()), &mut ui).unwrap();
-    assert!(ui.asked.is_empty(), "inside the session directory: {:?}", ui.asked);
+    assert!(
+        ui.asked.is_empty(),
+        "inside the session directory: {:?}",
+        ui.asked
+    );
     through_host_ui(&mut st, exec(other.clone()), &mut ui).unwrap();
     assert_eq!(ui.asked, vec![Access::Write(other.clone())]);
 
     // No approver (denied): refused, the command never runs.
-    let mut ui = AskUi { answer: Answer::Deny, asked: Vec::new() };
+    let mut ui = AskUi {
+        answer: Answer::Deny,
+        asked: Vec::new(),
+    };
     let e = through_host_ui(&mut st, exec(other.clone()), &mut ui).unwrap_err();
     assert_eq!(e.code, codes::DENIED, "{e}");
 
     // Yolo: no question.
     let switch = YoloSwitch::new(Autonomy::Yolo);
     st.policy = Box::new(ModePolicy::new().with_guard(guard()).with_yolo(switch));
-    let mut ui = AskUi { answer: Answer::Deny, asked: Vec::new() };
+    let mut ui = AskUi {
+        answer: Answer::Deny,
+        asked: Vec::new(),
+    };
     through_host_ui(&mut st, exec(other), &mut ui).unwrap();
     assert!(ui.asked.is_empty(), "yolo never asks: {:?}", ui.asked);
 }
