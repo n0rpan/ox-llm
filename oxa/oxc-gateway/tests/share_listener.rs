@@ -525,14 +525,14 @@ async fn malformed_head_table_is_refused_with_stable_status_before_key_stage() {
             false,
         ),
         // Leading zero: the old parser accepted it and spent the key budget before the body
-        // read timed out; the shared parser refuses it before the key stage.
+        // read timed out; the shared parser refuses it before the key stage (listed in the PR).
         (
             "leading-zero content-length",
             Box::new(|b| {
                 format!("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {b}\r\nContent-Type: application/json\r\nContent-Length: 010\r\n\r\n{{}}")
             }),
             400,
-            true,
+            false,
         ),
     ];
     for (name, build, status, reaches_key_stage) in rows {
