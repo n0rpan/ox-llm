@@ -49,7 +49,7 @@ fn record(html: &mut String, csrf: &str, rec: &ApprovalRecord, now: u64, scrub_c
         escape(&one_line(&rec.session)),
         escape(&one_line(&folder)),
         age(now, rec.created_ms),
-        escape(&one_line(&scrub(&rec.command, scrub_ctx))),
+        escape(&one_line(&scrub_shell(&rec.command, scrub_ctx))),
     );
     html.push_str("<ul class=reasons>");
     for reason in &rec.reasons {
@@ -67,6 +67,28 @@ fn record(html: &mut String, csrf: &str, rec: &ApprovalRecord, now: u64, scrub_c
     }
     html.push_str("</form>");
     html.push_str("</li>");
+}
+
+/// Credential masking that keeps the command's shell syntax: each run of text between shell
+/// operators (`&`, `|`, `;`, `<`, `>`, parentheses, line breaks) is scrubbed on its own, so a
+/// masked value never swallows the operator after it. `echo token=demo&&rm -rf /srv/data` shows
+/// as `echo token=<secret>&&rm -rf /srv/data`, not with the second command hidden.
+fn scrub_shell(command: &str, ctx: &ScrubCtx) -> String {
+    let is_op = |c: char| matches!(c, '&' | '|' | ';' | '<' | '>' | '(' | ')' | '\n' | '\r');
+    let mut out = String::with_capacity(command.len());
+    let mut rest = command;
+    while !rest.is_empty() {
+        let end = rest.find(is_op).unwrap_or(rest.len());
+        if end > 0 {
+            out.push_str(&scrub(&rest[..end], ctx));
+        }
+        let ops = rest[end..]
+            .find(|c: char| !is_op(c))
+            .map_or(rest.len(), |n| end + n);
+        out.push_str(&rest[end..ops]);
+        rest = &rest[ops..];
+    }
+    out
 }
 
 /// Whole seconds, minutes or hours since the request was filed. A timestamp ahead of this clock reads as new.
@@ -162,5 +184,34 @@ mod tests {
             assert!(!html.contains(hidden), "{html}");
         }
         assert!(!html.contains("explanation rm"), "{html}");
+    }
+
+    /// Masking a secret-looking assignment keeps the shell operator after it, so the owner sees
+    /// every command the line runs.
+    #[test]
+    fn approval_panel_masking_keeps_shell_operators() {
+        let waiting = vec![ApprovalRecord {
+            id: "0123456789abcdef".into(),
+            session: "s1".into(),
+            cwd: "/work/proj".into(),
+            command: "echo token=demo&&rm -rf /srv/data;echo password=opaque-example|sh".into(),
+            keys: vec!["rm".into()],
+            reasons: vec![],
+            status: "pending".into(),
+            used: false,
+            created_ms: 0,
+            answered_ms: None,
+        }];
+        let owner = View {
+            approvals: Some(&waiting),
+            approval_csrf: Some("tok"),
+            ..Default::default()
+        };
+        let html = content_for(Page::Board, &owner, 120);
+        assert!(
+            html.contains("&amp;&amp;rm -rf /srv/data;echo password=&lt;secret&gt;|sh</pre>"),
+            "{html}"
+        );
+        assert!(!html.contains("token=demo"), "{html}");
     }
 }

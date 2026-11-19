@@ -31,7 +31,10 @@ pub struct FullAccess {
     /// The bwrap of the network-disabled host path, found and probed once. It is resolved when
     /// the run is built offline or with `oxa.sandbox.net = off`, before any model command: a
     /// later `PATH` lookup could pick up a `bwrap` a command placed in a writable `PATH` entry
-    /// and run it (the probe included) with the network. `None` when bwrap was not usable.
+    /// and run it (the probe included) with the network. Host bash can write what the user
+    /// can, so the pinned file and every directory above it must be root-owned and not group-
+    /// or world-writable ([`root_owned_path`]); otherwise it could be swapped after the pin.
+    /// `None` when no such bwrap was usable.
     offline_bwrap: Arc<OnceLock<Option<PathBuf>>>,
 }
 
@@ -72,9 +75,9 @@ impl FullAccess {
     fn offline_bwrap(&self) -> Option<&Path> {
         self.offline_bwrap
             .get_or_init(|| {
-                crate::Bwrap::detect(&self.path_var, &self.home)
-                    .ok()
-                    .map(|b| b.bwrap)
+                let found = crate::Bwrap::detect(&self.path_var, &self.home).ok()?.bwrap;
+                let real = std::fs::canonicalize(found).ok()?;
+                root_owned_path(&real).then_some(real)
             })
             .as_deref()
     }
@@ -379,4 +382,12 @@ impl Sandbox for FileView {
     ) -> ExecResult {
         self.inner.run_with_stdin(s, stdin, c, live)
     }
+}
+
+/// `true` when `path` (canonical) and every directory above it are owned by root and not
+/// writable by group or others, so a command running with the user's rights cannot replace it.
+fn root_owned_path(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    path.ancestors()
+        .all(|p| std::fs::metadata(p).is_ok_and(|m| m.uid() == 0 && m.mode() & 0o022 == 0))
 }

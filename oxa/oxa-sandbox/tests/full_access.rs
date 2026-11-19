@@ -537,3 +537,22 @@ fn net_off_bwrap_is_pinned_before_model_commands() {
     let _ = sb.run(&s, &CancelToken::new(), &mut |_| {});
     assert!(!marker.exists(), "a bwrap placed on PATH after start was run");
 }
+
+/// A bwrap the user could replace (in a directory the user owns) is never pinned for the
+/// network-disabled host path: such a command is refused instead.
+#[test]
+fn net_off_refuses_a_user_writable_bwrap() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work()).unwrap();
+    let writable = env.root().join("user-bin");
+    std::fs::create_dir_all(&writable).unwrap();
+    let shim = writable.join("bwrap");
+    std::fs::write(&shim, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = writable.display().to_string();
+    let switch = YoloSwitch::new(Autonomy::Standard);
+    let sb =
+        FullAccess::new(Arc::new(NoSandbox), switch, &path, env.home(), false, true).with_os_sandbox(false);
+    assert!(sb.launch_argv(&spec(&env, "true".into(), true)).is_err());
+}
