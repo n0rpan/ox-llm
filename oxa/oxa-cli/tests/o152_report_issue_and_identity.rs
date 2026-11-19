@@ -182,6 +182,10 @@ fn draft_names_only_the_session_model_and_runs_no_controller_cli() {
         "Controller",
         "did not answer",
         "Health digest",
+        // No controller or other program runs during a draft (#1553): the facts are read
+        // in-process, so the controller CLIs never appear in the body either.
+        "oxc",
+        "local-ai",
         // The catalog is no longer dumped: only the session's model is named.
         "one is loaded at a time",
         "cloud-model-1:",

@@ -583,6 +583,7 @@ fn record_keeps_raw_tools_and_args() {
         sha256: [0u8; 32],
     };
     let asst = WireMsg {
+        images: Vec::new(),
         role: oxa_proto::Role::Assistant,
         content: Some("  padded  ".to_string()),
         reasoning: Some(String::new()),

@@ -153,6 +153,7 @@ fn push(st: &mut SessionState, wire: WireMsg) {
 
 fn read_call(id: &str, path: &str) -> WireMsg {
     WireMsg {
+        images: Vec::new(),
         role: Role::Assistant,
         content: Some(String::new()),
         reasoning: None,
@@ -325,6 +326,7 @@ fn mid_run_failure_is_mechanical() {
         completion: 0,
         cached: 0,
         cached_missing: false,
+        unreported: false,
     });
     let mut sink = VecSink::default();
     assert!(maybe_compact(&mut st, false, &mut sink, &mut HeadlessUi::default()).expect("not blocked"));

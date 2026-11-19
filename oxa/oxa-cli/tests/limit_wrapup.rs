@@ -313,8 +313,7 @@ fn wrap_up_diagnostics(env: &TestEnv, server: &FakeServer, output: &Output) -> S
         .lines()
         .filter(|line| line.len() <= 16 * 1024)
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter(|value| value["type"] == "oxa_result")
-        .next_back()
+        .rfind(|value| value["type"] == "oxa_result")
         .unwrap_or_default();
     let requests = server.requests();
     let mut facts = format!(

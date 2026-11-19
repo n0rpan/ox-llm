@@ -8,7 +8,9 @@
 //! the engine selection (#1553). Every fact is read in-process: a draft never runs a
 //! controller CLI (`oxc`, `local-ai`) and never makes a request. Never prompts, transcripts,
 //! file contents, emails, home paths, user or host names, IP addresses or secrets.
+mod pushed;
 mod semantic;
+pub(crate) use pushed::PushScan;
 
 use oxa_config::{Dirs, Env, ModelsConfig, Settings};
 use oxa_proto::{codes, OxaError};
@@ -77,6 +79,7 @@ pub fn advisor_scrubber(ctx: ScrubCtx) -> oxa_core::advice::AdviceScrubber {
 
 struct Patterns {
     pem: Regex,
+    pem_begin: Regex,
     url_cred: Regex,
     known: Regex,
     bearer: Regex,
@@ -94,6 +97,7 @@ fn patterns() -> &'static Patterns {
         let re = |s: &str| Regex::new(s).expect("scrub pattern");
         Patterns {
             pem: re(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"),
+            pem_begin: re(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----"),
             url_cred: re(r"://[^/\s:@]+:[^/\s@]+@"),
             known: re(concat!(
                 r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}",
@@ -481,7 +485,8 @@ pub(crate) fn submit_record(
     };
     let mut publication = if semantic_reporting(settings) {
         writeln!(out, "Repository: {repo}\nTitle: {title}\n\n{body}\n").map_err(w)?;
-        match semantic::plan(storage, &repo, (&title, &body), ctx, confirm, runner) {
+        let daily_limit = semantic::daily_new(settings);
+        match semantic::plan(storage, &repo, (&title, &body), ctx, daily_limit, confirm, runner) {
             Ok(publication) => Some(publication),
             Err(reason) => {
                 writeln!(out, "Kept locally at {} ({reason}).", draft.display()).map_err(w)?;

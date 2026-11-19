@@ -1,6 +1,6 @@
 ---
 name: report-issue
-description: Draft a bug report for the public ox-llm repository from scrubbed system and session facts (no email, no home paths, no prompts or transcripts, no secrets). Shows the user the exact title and body and posts only after the user confirms in their own terminal. Use when the user wants to report a problem with ox-llm, oxa, oxc or the engine.
+description: Draft a bug report for the public ox-llm repository from scrubbed system and session facts (no email, no home paths, no prompts or transcripts, no secrets). Shows the user the exact title and body and posts only after the user confirms in their own terminal. Use when the user wants to report a problem with ox-llm, oxa or the engine.
 ---
 
 # Report an ox-llm issue

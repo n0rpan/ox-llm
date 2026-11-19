@@ -187,6 +187,7 @@ mod tests {
             lease: None,
             attempts_today: 0,
             eligible: true,
+            evidence_incomplete: None,
         };
         let lease = claims
             .claim_idle_for(
@@ -218,6 +219,8 @@ mod tests {
             terminate_binary: None,
             offline: true,
             runner_owns_github: false,
+            autonomy: Default::default(),
+            autonomy_now: None,
             storage: directory.path().join("runner"),
         };
         (directory, claims, binding, prepared, policy)
