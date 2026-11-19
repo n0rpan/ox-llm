@@ -85,8 +85,8 @@ fn quoted_secret_literal(text: &str) -> bool {
     static REFERENCE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let quoted = QUOTED.get_or_init(|| {
         regex::Regex::new(concat!(
-            r#"(?i)(?:^|[^a-z])(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|token"#,
-            r#"|secret|password|passwd|passphrase|authorization|key)["']?\s*[:=]\s*"#,
+            r#"(?i)(?:(?:^|[^a-z])(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|token|key)"#,
+            r#"|secret|password|passwd|passphrase|authorization|(?-i:[a-z](?:Key|Token)))["']?\s*[:=]\s*"#,
             r#"(?:"([^"]*)"|'([^']*)')"#
         ))
         .expect("quoted secret pattern")
@@ -125,13 +125,45 @@ fn embedded_known_token(text: &str) -> bool {
     EMBEDDED
         .get_or_init(|| {
             regex::Regex::new(concat!(
-                r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-(?:ant|proj)-[A-Za-z0-9_-]{16,}",
+                r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-(?:ant|proj)-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9]{32,}",
                 r"|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}",
                 r"|glpat-[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9]{30,}"
             ))
             .expect("embedded token pattern")
         })
         .is_match(text)
+}
+
+/// Whether a registry configuration line (`.npmrc`, `.pypirc`, ..) assigns a credential:
+/// a comment, an empty value and an environment reference (`${NPM_TOKEN}`, which npm
+/// expands at run time) hold none.
+fn registry_credential_line(line: &str) -> bool {
+    let line = line.trim();
+    if line.starts_with(['#', ';']) {
+        return false;
+    }
+    let named = |text: &str| {
+        ["_auth", "token", "password"]
+            .iter()
+            .any(|word| text.contains(word))
+    };
+    // `key=value` (`.npmrc`, `.pypirc`); a line without `=` (YAML-like `password: x`)
+    // splits at its first colon.
+    let split = line.split_once('=').or_else(|| line.split_once(':'));
+    let Some((key, value)) = split else {
+        return named(line);
+    };
+    if !named(key) {
+        return false;
+    }
+    let value = value.trim().trim_matches(['"', '\'']);
+    let reference = value
+        .strip_prefix("${")
+        .and_then(|rest| rest.strip_suffix('}'))
+        .is_some_and(|name| {
+            !name.is_empty() && name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        });
+    !(value.is_empty() || reference)
 }
 
 /// An unquoted environment assignment whose (possibly prefixed) name denotes a
@@ -282,11 +314,7 @@ impl PushScan {
         }
         let registry = REGISTRY_FILES.contains(&basename(item.path).as_str());
         let line = item.text.to_ascii_lowercase();
-        if registry
-            && ["_auth", "token", "password"]
-                .iter()
-                .any(|word| line.contains(word))
-        {
+        if registry && registry_credential_line(&line) {
             return Some(found("a package registry credential"));
         }
         None
@@ -599,6 +627,23 @@ mod tests {
     }
 
     #[test]
+    fn suffix_named_quoted_keys_and_prefixed_generic_tokens_are_refused() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        let generic = format!("xsk-{}", "a1".repeat(24));
+        for text in [
+            "{\"databasePassword\":\"opaque-pass-value-17\"}".to_string(),
+            "{\"serviceToken\": \"opaque-pass-value-17\"}".to_string(),
+            "dbSecret: 'opaque-pass-value-17'".to_string(),
+            format!("let t = \"{generic}\";"),
+        ] {
+            assert!(scan.check(&added("config.json", &text)).is_some(), "{text}");
+        }
+        assert!(scan
+            .check(&added("config.json", "{\"monkey\":\"opaque-value-17\"}"))
+            .is_none());
+    }
+
+    #[test]
     fn yaml_block_scalar_context_is_refused() {
         let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
         assert!(scan
@@ -686,6 +731,13 @@ mod tests {
             text: &npmrc,
         };
         assert!(scan.check(&item).is_some());
+        for text in [
+            "//registry.example.invalid/:_authToken=${NPM_TOKEN}",
+            "; the token is read from the environment",
+            "# password goes here",
+        ] {
+            assert!(scan.check(&line(".npmrc", text)).is_none(), "{text}");
+        }
         for text in ["let token = next_token();", "password: String,", "vi"] {
             assert!(scan.check(&line("src/main.rs", text)).is_none(), "{text}");
         }
