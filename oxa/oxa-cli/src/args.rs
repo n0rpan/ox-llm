@@ -234,6 +234,8 @@ pub struct Args {
     pub version: bool,
     /// The hard offline switch (see the help text).
     pub offline: bool,
+    /// #1512 S3: the OS sandbox (bwrap) for this attended run, as `oxa.sandbox.interactive`.
+    pub sandbox: bool,
     /// Explicitly expose only these native local aliases for the current owner session.
     #[cfg(feature = "share")]
     pub share_models: Vec<String>,
@@ -493,6 +495,10 @@ const OPTIONS: &[(&str, &str)] = &[
     (
         "--offline",
         "Hard offline switch: non-local connections refused, bash has no network, web_search off",
+    ),
+    (
+        "--sandbox",
+        "Run bash in the OS sandbox (bwrap) for this interactive run; hooks are always sandboxed; default: no OS sandbox, dangerous commands ask",
     ),
     (
         "--                ",
@@ -981,6 +987,10 @@ fn parse_flag(
         "--offline" => {
             no_value(inline, flag)?;
             a.offline = true;
+        }
+        "--sandbox" => {
+            no_value(inline, flag)?;
+            a.sandbox = true;
         }
         "--yolo" => {
             no_value(inline, flag)?;

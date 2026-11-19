@@ -720,6 +720,35 @@ fn parse_limits(v: &Value) -> Limits {
     }
 }
 
+/// #1512 S3: the environment of a subagent child. Every child is unattended (`OXA_UNATTENDED=1`):
+/// no person watches it, so the OS sandbox stays on by default.
+fn child_env(hint: &str, soft: u32) -> Vec<(String, String)> {
+    vec![
+        (ENV_SESSION_HINT.to_string(), hint.to_string()),
+        (ENV_SUBAGENT_DEPTH.to_string(), "1".to_string()),
+        (ENV_CHILD_SOFT_TOKENS.to_string(), soft.to_string()),
+        (oxa_proto::names::ENV_UNATTENDED.to_string(), "1".to_string()),
+    ]
+}
+
+#[cfg(test)]
+mod child_env_tests {
+    use super::child_env;
+
+    #[test]
+    fn subagent_child_env_sets_oxa_unattended() {
+        let env = child_env("sess.s1", 24000);
+        assert!(
+            env.contains(&("OXA_UNATTENDED".to_string(), "1".to_string())),
+            "{env:?}"
+        );
+        assert!(
+            env.contains(&("OXA_SUBAGENT_DEPTH".to_string(), "1".to_string())),
+            "{env:?}"
+        );
+    }
+}
+
 /// The child's soft compaction limit: the setting, never above the parent's `compactAt` and
 /// always below the context window.
 fn child_soft_tokens(setting: u32, l: &Limits) -> u32 {
@@ -1372,11 +1401,7 @@ impl Run<'_, '_> {
             argv.push(agent.system_prompt.clone());
         }
         argv.push(T::TASK.replace("{task}", task));
-        let env = vec![
-            (ENV_SESSION_HINT.to_string(), hint.clone()),
-            (ENV_SUBAGENT_DEPTH.to_string(), "1".to_string()),
-            (ENV_CHILD_SOFT_TOKENS.to_string(), soft.to_string()),
-        ];
+        let env = child_env(&hint, soft);
         let expected = &self.cwds[k];
         let current = child_cwd(self.cx.cwd, item.cwd.as_deref().unwrap_or("."));
         if &current != expected {

@@ -1047,15 +1047,34 @@ fn gate(st: &mut SessionState, a: &Access, ui: &mut dyn Ui) -> Result<(), OxaErr
 }
 
 /// [`gate`] for a command that runs in `cwd` rather than in the session's directory: an
-/// extension may pass its own `cwd` to `oxa.exec`, and a relative operand is classified against
-/// the directory the sandbox actually runs it in.
+/// extension may pass its own `cwd` to `oxa.exec`. The session's directory stays the workspace
+/// boundary, and relative operands resolve where the command really runs: the command is gated
+/// in the session's directory as `cd <cwd> && <command>`, which the classifier follows (a `cd`
+/// moves the current directory, never the workspace root). So `rm -rf /work/other/victim` and
+/// `rm -rf victim` with `cwd` `/work/other` are both outside the workspace, and the prompt or
+/// filed request shows the directory the command runs in. One gate, so one answer covers it.
 fn gate_at(
     st: &mut SessionState,
     a: &Access,
     cwd: &std::path::Path,
     ui: &mut dyn Ui,
 ) -> Result<(), OxaError> {
-    gate_pinned_in(st, a, cwd, ui).map(|_| ())
+    let session_cwd = st.cwd.clone();
+    match a {
+        Access::Exec { command, net } if cwd != session_cwd => {
+            let located = Access::Exec {
+                command: format!("cd {} && {command}", shell_quote(&cwd.to_string_lossy())),
+                net: *net,
+            };
+            gate_pinned_in(st, &located, &session_cwd, ui).map(|_| ())
+        }
+        _ => gate_pinned_in(st, a, cwd, ui).map(|_| ()),
+    }
+}
+
+/// `text` as one single-quoted shell word.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
 }
 
 /// [`gate`], returning the real location the verdict covers (#518, `Policy::decide_pinned`).
@@ -1635,6 +1654,46 @@ mod tests {
             net: false,
         };
         assert!(gate_pinned(&mut f.st, &plain, &mut headless).is_ok());
+    }
+
+    /// An extension's own `cwd` never moves the workspace boundary: `rm -rf` of an absolute
+    /// path outside the session's directory is dangerous even when `cwd` is that path's parent.
+    #[test]
+    fn extension_exec_cwd_keeps_the_session_workspace_boundary() {
+        let mut f = fixture();
+        f.st.policy = Box::new(
+            oxa_perm::ModePolicy::new().with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new()),
+        );
+        let other = f.env.root().join("other");
+        std::fs::create_dir_all(other.join("victim")).unwrap();
+        let outside = Access::Exec {
+            command: format!("rm -rf {}", other.join("victim").display()),
+            net: false,
+        };
+        let mut ui = DangerUi {
+            answer: DangerAnswer::Deny,
+            asked: 0,
+        };
+        assert!(gate_at(&mut f.st, &outside, &other, &mut ui).is_err());
+        assert_eq!(ui.asked, 1, "the session workspace boundary asked");
+        let mut headless = HeadlessUi::default();
+        let err = gate_at(&mut f.st, &outside, &other, &mut headless).expect_err("no one to ask");
+        assert_eq!(err.code, codes::DENIED);
+        // A relative operand resolves in the directory the command runs in.
+        let relative = Access::Exec {
+            command: "rm -rf victim".into(),
+            net: false,
+        };
+        let err = gate_at(&mut f.st, &relative, &other, &mut headless).expect_err("outside");
+        assert_eq!(err.code, codes::DENIED);
+        // Inside the workspace a relative delete stays an ordinary command.
+        let inside = f.env.work().join("sub");
+        std::fs::create_dir_all(inside.join("build")).unwrap();
+        let build = Access::Exec {
+            command: "rm -rf build".into(),
+            net: false,
+        };
+        assert!(gate_at(&mut f.st, &build, &inside, &mut headless).is_ok());
     }
 
     /// O-386: a host request posted while the front end waits (instead of polling) wakes it, so
