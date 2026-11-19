@@ -391,3 +391,58 @@ fn root_owned_path(path: &Path) -> bool {
     path.ancestors()
         .all(|p| std::fs::metadata(p).is_ok_and(|m| m.uid() == 0 && m.mode() & 0o022 == 0))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::NoSandbox;
+    use oxa_fake::TestEnv;
+    use oxa_proto::Autonomy;
+
+    /// The network-disabled host path runs the pinned bwrap with the cleared environment: no
+    /// secret variables, the session variables kept. A fake bwrap stands in for the pinned one
+    /// (a user-owned file is never pinned by `offline_bwrap` itself).
+    #[test]
+    fn network_disabled_host_bash_uses_the_cleared_environment() {
+        use std::os::unix::fs::PermissionsExt;
+        let env = TestEnv::new();
+        let fake = env.write(
+            "bin/bwrap",
+            "#!/bin/sh\n[ \"$1\" = --unshare-net ] || exit 1\n[ -z \"${GH_TOKEN+x}\" ] || exit 2\nprintf '%s|%s' \"$HOME\" \"$OXA_SESSION_ID\"\n",
+        );
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut sb = FullAccess::new(
+            Arc::new(NoSandbox),
+            YoloSwitch::new(Autonomy::Standard),
+            "",
+            env.home(),
+            false,
+            false,
+        )
+        .with_os_sandbox(false);
+        sb.net_off = true;
+        assert!(sb.offline_bwrap.set(Some(fake)).is_ok());
+        let spec = ExecSpec {
+            command: "true".into(),
+            cwd: env.work(),
+            writable: true,
+            net: false,
+            timeout_s: Some(30),
+            env: vec![
+                ("GH_TOKEN".into(), "fixture-value".into()),
+                ("OXA_SESSION_ID".into(), "fixture-session".into()),
+            ],
+        };
+        let result = sb.run(&spec, &CancelToken::new(), &mut |_| {});
+        assert_eq!(
+            result.exit,
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&result.output)
+        );
+        assert_eq!(
+            result.output,
+            format!("{}|fixture-session", env.home().display()).as_bytes()
+        );
+    }
+}
