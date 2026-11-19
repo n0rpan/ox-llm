@@ -28,6 +28,7 @@ mod home_cwd;
 mod hooks;
 mod identity_cmd;
 mod in_process;
+mod key_hints;
 pub mod lead;
 pub mod lead_access;
 pub(crate) mod lead_chat;
@@ -49,6 +50,7 @@ mod netguard;
 mod pkg_cmd;
 mod report_cmd;
 mod result_facts;
+mod run_kind;
 mod sandbox_layout;
 #[cfg(feature = "share")]
 mod share_cmd;
@@ -81,6 +83,7 @@ pub use memory_cmd::run_memory;
 pub use pkg_cmd::run_pkg;
 pub use report_cmd::{
     advisor_scrubber, clean_notes, parse_draft, process_runner, report_repo, run_report_issue, save_draft,
-    scrub, submit, Confirm, Runner, ScrubCtx, MAX_NOTES_CHARS, REPORT_DISABLED, SETTING_REPORT_REPO,
+    scrub, submit, Confirm, PublishTool, Runner, ScrubCtx, DEFAULT_REPORT_REPO, MAX_NOTES_CHARS,
+    REPORT_DISABLED, SETTING_REPORT_REPO,
 };
 pub use wipe_cmd::{run_wipe, WipeIo};

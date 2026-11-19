@@ -130,6 +130,14 @@ def records(path):
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+def run_oxa_with_usage(oxa, prompt, cwd, env, usage_log, timeout, max_time, max_tokens, name, out):
+    """Run one invocation and return the records from its freshly replaced usage log."""
+    code, wall, result = run_oxa(
+        oxa, prompt, cwd, env, usage_log, timeout, max_time, max_tokens, name, out
+    )
+    return code, wall, result, records(usage_log)
+
+
 def check_ratio(name, ratio, cfg, report):
     """Reuse ratio = cached tokens / previous prompt tokens. Floor and per-model baseline from the config."""
     c = cfg['cache']

@@ -36,7 +36,7 @@ pub(crate) enum Refresh {
     Kept(Vec<String>),
     /// The new settings (diagnostics are those of the load).
     Applied {
-        settings: Settings,
+        settings: Box<Settings>,
         changed: Vec<String>,
         prompt: bool,
     },
@@ -77,7 +77,7 @@ pub(crate) fn check(
     }
     let prompt = prompt_inputs(current) != prompt_inputs(&fresh);
     Refresh::Applied {
-        settings: fresh,
+        settings: Box::new(fresh),
         changed,
         prompt,
     }
@@ -175,7 +175,7 @@ pub(crate) fn refresh_at_run_start(st: &mut SessionState, sink: &mut dyn EventSi
             prompt,
         } => {
             if changed.is_empty() {
-                st.settings = settings;
+                st.settings = *settings;
                 crate::session::sync_job_wake(st);
                 return;
             }
@@ -199,7 +199,7 @@ pub(crate) fn refresh_at_run_start(st: &mut SessionState, sink: &mut dyn EventSi
                 level = Level::Warning;
                 let _ = write!(message, "\n{}: {}", diagnostic.source, diagnostic.message);
             }
-            st.settings = settings;
+            st.settings = *settings;
             crate::session::sync_job_wake(st);
             st.shared.publish_live_settings(&st.settings);
             notice(sink, level, message);

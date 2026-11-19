@@ -433,6 +433,10 @@ impl Ui for LockedUi<'_, '_> {
     fn confirm(&mut self, title: &str, body: &str, timeout_ms: Option<u32>) -> Option<bool> {
         self.with(|u| u.confirm(title, body, timeout_ms))
     }
+    fn approve_publication(&mut self, title: &str, body: &str) -> Option<bool> {
+        self.with(|u| u.approve_publication(title, body))
+    }
+
     fn dialog_canceller(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
         self.with(|u| u.dialog_canceller())
     }
@@ -536,7 +540,7 @@ pub(crate) fn pumped<R: Send>(
         while let Err(mpsc::RecvTimeoutError::Timeout) = done_rx.recv_timeout(pause) {
             let mut ui = LockedUi(&cell);
             let served = serve_level(st, level, sink, &mut ui);
-            serve_owner_confirm(st, sink, &mut ui, true);
+            serve_owner_confirm(st, sink, &mut ui);
             tick(sink);
             crate::fire::drain(st, sink, &mut ui);
             crate::fire::fire_prompts(st, &prompts, sink, &mut ui);
@@ -551,7 +555,7 @@ pub(crate) fn pumped<R: Send>(
         if let Some((broker, previous)) = previous_broker_state {
             broker.set_servable(previous);
         }
-        serve_owner_confirm(st, sink, &mut ui, false);
+        drain_owner_confirm_records(st, sink);
         crate::fire::drain(st, sink, &mut ui);
         crate::fire::fire_prompts(st, &prompts, sink, &mut ui);
         match helper.join() {
@@ -564,13 +568,19 @@ pub(crate) fn pumped<R: Send>(
 /// Serve the owner confirm broker from the session thread while a tool runs: show the dialog
 /// of a waiting request, then report what was answered (a notice and a session record, so a
 /// yolo answer is never silent).
-fn serve_owner_confirm(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui, serve: bool) {
+fn serve_owner_confirm(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) {
     let Some(broker) = st.shared.owner_confirm() else {
         return;
     };
-    if serve {
-        broker.serve(ui);
-    }
+    broker.serve(ui);
+    drain_owner_confirm_records(st, sink);
+}
+
+/// Record answers without making the broker servable again after the pumped operation ends.
+fn drain_owner_confirm_records(st: &mut SessionState, sink: &mut dyn EventSink) {
+    let Some(broker) = st.shared.owner_confirm() else {
+        return;
+    };
     for r in broker.take_records() {
         let text = format!(
             "owner confirm {} ({}), preview sha256 {}",
@@ -1035,15 +1045,34 @@ fn gate(st: &mut SessionState, a: &Access, ui: &mut dyn Ui) -> Result<(), OxaErr
 }
 
 /// [`gate`] for a command that runs in `cwd` rather than in the session's directory: an
-/// extension may pass its own `cwd` to `oxa.exec`, and a relative operand is classified against
-/// the directory the sandbox actually runs it in.
+/// extension may pass its own `cwd` to `oxa.exec`. The session's directory stays the workspace
+/// boundary, and relative operands resolve where the command really runs: the command is gated
+/// in the session's directory as `cd <cwd> && <command>`, which the classifier follows (a `cd`
+/// moves the current directory, never the workspace root). So `rm -rf /work/other/victim` and
+/// `rm -rf victim` with `cwd` `/work/other` are both outside the workspace, and the prompt or
+/// filed request shows the directory the command runs in. One gate, so one answer covers it.
 fn gate_at(
     st: &mut SessionState,
     a: &Access,
     cwd: &std::path::Path,
     ui: &mut dyn Ui,
 ) -> Result<(), OxaError> {
-    gate_pinned_in(st, a, cwd, ui).map(|_| ())
+    let session_cwd = st.cwd.clone();
+    match a {
+        Access::Exec { command, net } if cwd != session_cwd => {
+            let located = Access::Exec {
+                command: format!("cd {} && {command}", shell_quote(&cwd.to_string_lossy())),
+                net: *net,
+            };
+            gate_pinned_in(st, &located, &session_cwd, ui).map(|_| ())
+        }
+        _ => gate_pinned_in(st, a, cwd, ui).map(|_| ()),
+    }
+}
+
+/// `text` as one single-quoted shell word.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
 }
 
 /// [`gate`], returning the real location the verdict covers (#518, `Policy::decide_pinned`).
@@ -1105,6 +1134,17 @@ fn gate_pinned_in(
 fn exec_gated(st: &mut SessionState, spec: ExecSpec, ui: &mut dyn Ui) -> Result<Value, OxaError> {
     if spec.net {
         oxa_proto::check_online("a command with network access")?; // P4: no network grant offline
+    }
+    // A directory outside the session directory is mounted into the sandbox (writable when the
+    // spec says so): it asks like the same file access outside the project (yolo allows, headless
+    // without an approver refuses). A directory inside the session directory is unchanged.
+    if !oxa_perm::is_inside(&spec.cwd, &st.cwd) {
+        let mount = if spec.writable {
+            Access::Write(spec.cwd.clone())
+        } else {
+            Access::Read(spec.cwd.clone())
+        };
+        gate(st, &mount, ui)?;
     }
     gate_at(
         st,
@@ -1394,7 +1434,7 @@ mod tests {
     use super::*;
     use crate::Handle;
     use oxa_config::{Dirs, Settings};
-    use oxa_proto::{Engine, FrozenPrefix, HeadlessUi, Mode, ThinkingLevel, VecSink};
+    use oxa_proto::{Autonomy, Engine, FrozenPrefix, HeadlessUi, Mode, ThinkingLevel, VecSink, YoloSwitch};
     use oxa_sandbox::NoSandbox;
     use oxa_session::{MemStore, SessionStore, Transcript, Tree};
 
@@ -1503,6 +1543,47 @@ mod tests {
         handle.join().expect("caller thread")
     }
 
+    /// A child that asks after its foreground tool has returned has nobody to service a dialog,
+    /// so it receives `none` instead of waiting behind a broker left servable by the final drain.
+    #[test]
+    fn pumped_tool_leaves_owner_confirm_unservable() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::UnixStream;
+
+        let mut f = fixture();
+        let broker = crate::owner_confirm::OwnerConfirm::start(
+            &f.env.root().join("confirm-after-tool"),
+            YoloSwitch::new(Autonomy::Standard),
+        )
+        .expect("start owner confirm broker");
+        *f.st
+            .shared
+            .gate
+            .owner_confirm
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(broker.clone());
+
+        let mut sink = VecSink::default();
+        let mut ui = HeadlessUi::default();
+        pumped(&mut f.st, Serve::Run, &mut sink, &mut ui, &mut |_| {}, |_| ());
+
+        let mut stream = UnixStream::connect(broker.sock_path()).expect("connect after tool");
+        writeln!(
+            stream,
+            "{}",
+            json!({"question": "publish?", "preview_sha256": "abc"})
+        )
+        .expect("send request");
+        let mut answer = String::new();
+        std::io::BufReader::new(stream)
+            .read_line(&mut answer)
+            .expect("read answer");
+        assert_eq!(
+            serde_json::from_str::<Value>(&answer).expect("json")["answer"],
+            "none"
+        );
+    }
+
     /// #1512 S2: answers the dangerous-command prompt with `answer` and counts the questions.
     struct DangerUi {
         answer: DangerAnswer,
@@ -1571,6 +1652,46 @@ mod tests {
             net: false,
         };
         assert!(gate_pinned(&mut f.st, &plain, &mut headless).is_ok());
+    }
+
+    /// An extension's own `cwd` never moves the workspace boundary: `rm -rf` of an absolute
+    /// path outside the session's directory is dangerous even when `cwd` is that path's parent.
+    #[test]
+    fn extension_exec_cwd_keeps_the_session_workspace_boundary() {
+        let mut f = fixture();
+        f.st.policy = Box::new(
+            oxa_perm::ModePolicy::new().with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new()),
+        );
+        let other = f.env.root().join("other");
+        std::fs::create_dir_all(other.join("victim")).unwrap();
+        let outside = Access::Exec {
+            command: format!("rm -rf {}", other.join("victim").display()),
+            net: false,
+        };
+        let mut ui = DangerUi {
+            answer: DangerAnswer::Deny,
+            asked: 0,
+        };
+        assert!(gate_at(&mut f.st, &outside, &other, &mut ui).is_err());
+        assert_eq!(ui.asked, 1, "the session workspace boundary asked");
+        let mut headless = HeadlessUi::default();
+        let err = gate_at(&mut f.st, &outside, &other, &mut headless).expect_err("no one to ask");
+        assert_eq!(err.code, codes::DENIED);
+        // A relative operand resolves in the directory the command runs in.
+        let relative = Access::Exec {
+            command: "rm -rf victim".into(),
+            net: false,
+        };
+        let err = gate_at(&mut f.st, &relative, &other, &mut headless).expect_err("outside");
+        assert_eq!(err.code, codes::DENIED);
+        // Inside the workspace a relative delete stays an ordinary command.
+        let inside = f.env.work().join("sub");
+        std::fs::create_dir_all(inside.join("build")).unwrap();
+        let build = Access::Exec {
+            command: "rm -rf build".into(),
+            net: false,
+        };
+        assert!(gate_at(&mut f.st, &build, &inside, &mut headless).is_ok());
     }
 
     /// O-386: a host request posted while the front end waits (instead of polling) wakes it, so
