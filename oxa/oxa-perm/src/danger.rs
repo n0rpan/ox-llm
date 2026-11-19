@@ -1846,8 +1846,11 @@ pub(crate) fn has_mutable_input(text: &str) -> bool {
     text.contains('<')
         || text
             .split(|c: char| c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')' | '{' | '}'))
-            .map(|w| w.trim_matches(|c| c == '\'' || c == '"' || c == '\\'))
+            // Shell quoting and escapes inside a word do not change the command it names:
+            // `x'a'rgs`, `"xargs"` and `xa\rgs` are all `xargs`.
+            .map(|w| w.replace(['\'', '"', '\\'], ""))
             .any(|w| {
+                let w = w.as_str();
                 matches!(w, "xargs" | "parallel" | "read" | "mapfile" | "readarray")
                     || w.ends_with("/xargs")
                     || w.ends_with("/parallel")
