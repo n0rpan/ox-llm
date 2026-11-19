@@ -173,7 +173,7 @@ impl<'a> LandingPublisher<'a> {
     }
 
     fn call(&self, args: &[&str]) -> Result<Value> {
-        let token = crate::policy_token(self.policy)?;
+        let token = crate::policy_token(self.policy, self.repo)?;
         json(&gh(
             self.gh_binary,
             self.policy,

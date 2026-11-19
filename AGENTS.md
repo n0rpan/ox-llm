@@ -11,6 +11,9 @@ maintainer, who says in the PR when a hardware check is needed.
 
 - Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests;
   use synthetic fixtures. Do not open real credential files during review.
+- Resolve owner token commands through vetted tool paths before execution. Relative paths,
+  project-local targets and unsafe directory permissions are refused. Every active output
+  redactor must observe newly registered tokens before forwarding output.
 - Keep engine transport selection, native binary/launch configuration, `allowRemote`, share
   authority and login/token paths user-only. A project file must never override these decisions.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.

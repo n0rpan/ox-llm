@@ -179,7 +179,7 @@ fn publish_locked(
             return Err("publishing is unavailable in offline mode".into());
         }
         // The owner's token source, read once for this publication.
-        let token = super::policy_token(policy)?;
+        let token = super::policy_token(policy, repo)?;
         let gh = |repo: &Path, lock: &File, args: &[&str]| {
             gh(gh_binary, policy, token.as_deref(), repo, lock, args)
         };
@@ -535,23 +535,46 @@ mod tests {
     #[test]
     fn runner_publish_uses_the_token_source() {
         let dir = crate::test_dir::PrivateDir::new("publish-token-source");
+        let repo = dir.path().join("project");
+        std::fs::create_dir(&repo).unwrap();
         let fake_gh = script(dir.path(), "gh", "printf '%s' \"$GH_TOKEN\"");
         let source = script(dir.path(), "token", "echo ghs_RUNNER_TOKEN");
         let lock = File::create(dir.path().join("lock")).unwrap();
         // Without the setting the runner keeps the stored login: no token is passed on.
         let plain = policy(dir.path(), Vec::new());
-        assert_eq!(super::super::policy_token(&plain), Ok(None));
+        assert_eq!(super::super::policy_token(&plain, &repo), Ok(None));
         let seen = gh(&fake_gh, &plain, None, dir.path(), &lock, &[]);
         assert_eq!(seen, Ok(String::new()));
         // With it, gh gets exactly the command's token.
         let owned = policy(dir.path(), vec![source.display().to_string()]);
-        let token = super::super::policy_token(&owned).unwrap();
+        let token = super::super::policy_token(&owned, &repo).unwrap();
         assert_eq!(token.as_deref(), Some("ghs_RUNNER_TOKEN"));
         let seen = gh(&fake_gh, &owned, token.as_deref(), dir.path(), &lock, &[]);
         assert_eq!(seen, Ok("ghs_RUNNER_TOKEN".into()));
         // A command that fails stops the publication instead of falling back.
         let failing = script(dir.path(), "bad", "exit 1");
         let broken = policy(dir.path(), vec![failing.display().to_string()]);
-        assert!(super::super::policy_token(&broken).is_err());
+        assert!(super::super::policy_token(&broken, &repo).is_err());
+    }
+
+    #[test]
+    fn token_program_requires_a_vetted_location() {
+        let dir = crate::test_dir::PrivateDir::new("trusted-token-source");
+        let repo = dir.path().join("project");
+        let tools = dir.path().join("tools");
+        std::fs::create_dir(&repo).unwrap();
+        std::fs::create_dir(&tools).unwrap();
+        let safe = script(&tools, "mint-token", "exit 0");
+        let untrusted = script(&repo, "mint-token", "exit 0");
+        let link = tools.join("shortcut");
+        std::os::unix::fs::symlink(&untrusted, &link).unwrap();
+        let resolve = |name| crate::trusted_token_program(name, Some(tools.as_os_str()), Some(&repo));
+        assert_eq!(resolve("mint-token"), Some(safe.canonicalize().unwrap()));
+        assert!(resolve("missing-tool").is_none());
+        assert!(resolve("./mint-token").is_none());
+        assert!(resolve(untrusted.to_str().unwrap()).is_none());
+        assert!(resolve("shortcut").is_none());
+        std::fs::set_permissions(&tools, std::fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(resolve(safe.to_str().unwrap()).is_none());
     }
 }

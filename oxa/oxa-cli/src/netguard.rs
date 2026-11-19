@@ -85,13 +85,20 @@ fn gh_token(command: &[String]) -> Option<String> {
     let path = std::env::var_os("PATH");
     let cwd = std::env::current_dir().ok();
     if let Some((program, args)) = command.split_first() {
-        // The owner's command: an absolute program as written, a bare name only from the
-        // trusted tool directories (never the project).
-        let exe = if program.contains('/') {
-            std::path::PathBuf::from(program)
+        let cwd = cwd.as_deref()?;
+        let project = cwd
+            .ancestors()
+            .filter(|dir| dir.join(".git").exists())
+            .last()
+            .or_else(|| (Some(cwd) != home.as_deref()).then_some(cwd));
+        let candidate = if program.contains('/') {
+            program.to_owned()
         } else {
-            trusted_executable_for(program, path.as_deref(), cwd.as_deref(), home.as_deref())?
+            trusted_executable_for(program, path.as_deref(), Some(cwd), home.as_deref())?
+                .to_str()?
+                .to_owned()
         };
+        let exe = oxa_work::trusted_token_program(&candidate, None, project)?;
         return oxa_work::token_from_command(&exe, args, oxa_work::COMMAND_DEADLINE);
     }
     let exe = trusted_gh_for(path.as_deref(), cwd.as_deref(), home.as_deref())?;

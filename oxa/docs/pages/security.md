@@ -128,6 +128,11 @@ The token is read again after `oxa.github.tokenTtlSeconds` (300 when unset) and 
 
 Other secrets are not on the list. A project's `.env` file, a token in a project configuration file, and files outside your home directory are readable by bash, and by the file tools in the modes that allow reads. Keep such files out of the project when the model should not see them, or use `plan` or `--offline` for the session.
 
+Use a vetted tool name or an absolute executable path outside the project for a configured
+GitHub token command. Relative paths, project or worktree executables, and unsafe tool
+directories are refused. Refreshed tokens enter the redaction history before use, including
+for commands that were already running when the token changed.
+
 ### Git worktrees and shared clones
 
 A git worktree keeps its history in the main repository, and a clone made with `git clone --shared` reads its objects from the repository it came from. For such a project, oxa also binds the git data that lies outside the project folder, so `git status`, `git log` and `git commit` work in bash:

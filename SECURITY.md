@@ -29,4 +29,9 @@ in a tree with Cargo manifests. A worker declaration can add requirements to tha
 
 The repeat guard warns and continues by owner decision (#1448): the third identical tool result gets a notice, a call that still repeats gets one persisted warning, and the run is not stopped. A finding that asks for the old stopping behaviour is not a finding; `oxa.maxTurns` is the configured cap.
 
+An owner-configured GitHub token command runs outside the sandbox. Its executable must resolve
+outside the project and worktrees through a trusted absolute path or the vetted tool search path.
+Invalid configured commands cannot fall back to ambient executable lookup. Tokens registered
+during refresh are masked in active command output as well as the command that receives them.
+
 Intentional removals must be stated in the PR body with a `Removes:` line; flag silent deletion of security checks as high.

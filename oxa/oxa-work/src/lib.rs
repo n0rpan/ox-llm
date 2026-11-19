@@ -465,6 +465,9 @@ pub fn command_runner(command: Command, limit: Option<usize>, deadline: Duration
 /// Run `exe args` outside the sandbox and take its stdout as a GitHub token: one word of at most
 /// 4096 bytes. Any failure is `None`; the output is never logged.
 pub fn token_from_command(exe: &Path, args: &[String], deadline: Duration) -> Option<String> {
+    if !exe.is_absolute() {
+        return None;
+    }
     let mut command = Command::new(exe);
     command.args(args);
     let (code, out) = command_runner(command, Some(4096), deadline)?;
@@ -472,20 +475,74 @@ pub fn token_from_command(exe: &Path, args: &[String], deadline: Duration) -> Op
     (code == 0 && !token.is_empty() && !token.chars().any(char::is_whitespace)).then(|| token.to_string())
 }
 
+/// Resolve a configured token helper without consulting the ambient PATH. The
+/// canonical target, including any symlink, must stay outside the active project.
+pub fn trusted_token_program(
+    program: &str,
+    path: Option<&std::ffi::OsStr>,
+    project: Option<&Path>,
+) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let project = match project {
+        Some(root) => Some((root, root.canonicalize().ok()?)),
+        None => None,
+    };
+    let is_project = |path: &Path| {
+        path.components().any(|part| part.as_os_str() == ".oxa-worktrees")
+            || project
+                .as_ref()
+                .is_some_and(|(root, real)| path.starts_with(root) || path.starts_with(real))
+    };
+    let validate = |candidate: &Path| {
+        if !candidate.is_absolute() || is_project(candidate) {
+            return None;
+        }
+        let original_parent = candidate.parent()?.canonicalize().ok()?;
+        if is_project(&original_parent) {
+            return None;
+        }
+        let target = candidate.canonicalize().ok()?;
+        let file = target.metadata().ok()?;
+        let parent = target.parent()?;
+        let safe_dirs = parent.ancestors().all(|dir| {
+            dir.metadata().is_ok_and(|metadata| {
+                let mode = metadata.permissions().mode();
+                mode & 0o022 == 0 || (dir != parent && mode & 0o1000 != 0)
+            })
+        });
+        (file.is_file()
+            && file.permissions().mode() & 0o111 != 0
+            && file.permissions().mode() & 0o022 == 0
+            && safe_dirs
+            && !is_project(&target))
+        .then_some(target)
+    };
+    if program.contains('/') {
+        return validate(Path::new(program));
+    }
+    if program.is_empty() || matches!(program, "." | "..") {
+        return None;
+    }
+    std::env::split_paths(path?)
+        .filter(|dir| {
+            dir.is_absolute()
+                && !is_project(dir)
+                && dir
+                    .metadata()
+                    .is_ok_and(|meta| meta.is_dir() && meta.permissions().mode() & 0o022 == 0)
+        })
+        .find_map(|dir| validate(&dir.join(program)))
+}
+
 /// The owner's token command (`oxa.github.tokenCommand`) for the runner's own GitHub calls:
-/// an absolute program as written, a bare name only from the vetted tool directories.
-fn policy_token(policy: &RunPolicy) -> Result<Option<String>> {
+/// a trusted absolute program, or a bare name only from the vetted tool directories.
+fn policy_token(policy: &RunPolicy, repo: &Path) -> Result<Option<String>> {
     let Some((program, args)) = policy.github_token_command.split_first() else {
         return Ok(None);
     };
-    let exe = if program.contains('/') {
-        PathBuf::from(program)
-    } else {
-        std::env::split_paths(&policy.host_path)
-            .map(|dir| dir.join(program))
-            .find(|p| p.is_file())
-            .unwrap_or_else(|| PathBuf::from(program))
-    };
+    let exe = trusted_token_program(program, Some(&policy.host_path), Some(repo))
+        .ok_or("GitHub token command is outside trusted tool locations")?;
     token_from_command(&exe, args, COMMAND_DEADLINE)
         .map(Some)
         .ok_or_else(|| "GitHub token command failed".into())

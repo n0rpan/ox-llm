@@ -59,32 +59,29 @@ fn redact(bytes: &[u8], tokens: &[String]) -> Vec<u8> {
 
 /// A streaming redactor: holds back at most `token.len() - 1` bytes (a suffix that could be the
 /// start of the token) between chunks; [`StreamRedactor::finish`] flushes them at EOF.
-struct StreamRedactor<'a> {
-    tokens: &'a [String],
+#[derive(Default)]
+struct StreamRedactor {
     pending: Vec<u8>,
 }
 
-impl<'a> StreamRedactor<'a> {
-    fn new(tokens: &'a [String]) -> Self {
-        StreamRedactor {
-            tokens,
-            pending: Vec::new(),
-        }
-    }
-
+impl StreamRedactor {
     /// Feed a chunk; returns the bytes now safe to show.
-    fn push(&mut self, chunk: &[u8]) -> Vec<u8> {
+    fn push(&mut self, chunk: &[u8], tokens: &[String]) -> Vec<u8> {
         self.pending.extend_from_slice(chunk);
         let mut out = Vec::new();
         let mut i = 0;
         let buf = &self.pending;
         while i < buf.len() {
             let rest = &buf[i..];
-            if let Some(t) = self.tokens.iter().find(|t| rest.starts_with(t.as_bytes())) {
+            if tokens
+                .iter()
+                .any(|t| t.len() > rest.len() && t.as_bytes().starts_with(rest))
+            {
+                break; // a longer token may complete in the next chunk
+            }
+            if let Some(t) = tokens.iter().find(|t| rest.starts_with(t.as_bytes())) {
                 out.extend_from_slice(REDACTED.as_bytes());
                 i += t.len();
-            } else if self.tokens.iter().any(|t| t.as_bytes().starts_with(rest)) {
-                break; // maybe the start of the token: wait for more
             } else {
                 out.push(buf[i]);
                 i += 1;
@@ -94,9 +91,9 @@ impl<'a> StreamRedactor<'a> {
         out
     }
 
-    /// EOF: whatever is held back is not a token.
-    fn finish(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.pending)
+    /// EOF: check held bytes against any tokens registered since the last chunk.
+    fn finish(&mut self, tokens: &[String]) -> Vec<u8> {
+        redact(&std::mem::take(&mut self.pending), tokens)
     }
 }
 
@@ -250,22 +247,26 @@ impl NetSandbox {
         if s.net && !consulted {
             self.token();
         }
-        let tokens = self.redaction_tokens();
-        if !s.net || tokens.is_empty() {
+        if self.gh_source.is_none() && self.redaction_tokens().is_empty() {
             return run(&s, live);
         }
-        let mut sr = StreamRedactor::new(&tokens);
+        // The source registers a refreshed token before returning it for
+        // injection. Commands already running must check that same history.
+        let mut sr = StreamRedactor::default();
         let mut r = run(&s, &mut |b: &[u8]| {
-            let o = sr.push(b);
+            let o = sr.push(b, &self.redaction_tokens());
             if !o.is_empty() {
                 live(&o);
             }
         });
-        let tail = sr.finish();
+        let tokens = self.redaction_tokens();
+        let tail = sr.finish(&tokens);
         if !tail.is_empty() {
             live(&tail);
         }
-        self.note_rejected(&r.output);
+        if s.net {
+            self.note_rejected(&r.output);
+        }
         r.output = redact(&r.output, &tokens);
         r
     }
@@ -800,5 +801,42 @@ mod tests {
             String::from_utf8(r.output).unwrap(),
             "a [redacted] b [redacted] c"
         );
+    }
+
+    #[test]
+    fn active_output_redacts_tokens_registered_after_start() {
+        let (src, _) = rotating();
+        let inner = Arc::new(Say(Mutex::new(Vec::new()), "ok"));
+        let sandbox =
+            NetSandbox::new(inner, true, false).with_gh_token_refreshing(src, std::time::Duration::ZERO);
+        let mut live = Vec::new();
+        let result = sandbox.redacted_run(
+            &spec(false),
+            &mut |chunk| live.extend_from_slice(chunk),
+            |_, output| {
+                let next =
+                    std::thread::scope(|scope| scope.spawn(|| sandbox.token()).join().unwrap()).unwrap();
+                let (first, last) = next.as_bytes().split_at(4);
+                output(first);
+                output(last);
+                ExecResult {
+                    output: next.into_bytes(),
+                    exit: Some(0),
+                    timed_out: false,
+                    unsandboxed: false,
+                }
+            },
+        );
+        assert_eq!(live, REDACTED.as_bytes());
+        assert_eq!(result.output, REDACTED.as_bytes());
+    }
+
+    #[test]
+    fn stream_waits_for_a_longer_token_that_shares_a_prefix() {
+        let tokens = vec!["synthetic-long".into(), "synthetic".into()];
+        let mut redactor = StreamRedactor::default();
+        assert!(redactor.push(b"synthetic", &tokens).is_empty());
+        assert_eq!(redactor.push(b"-long", &tokens), REDACTED.as_bytes());
+        assert!(redactor.finish(&tokens).is_empty());
     }
 }
