@@ -12,7 +12,7 @@
 //! nobody could answer (no way to ask the owner); callers treat it as "not confirmed".
 use oxa_proto::{Ui, YoloSwitch};
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -21,6 +21,9 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
 /// The environment variable a tool child finds the broker socket in.
 pub const SOCK_ENV: &str = "OXA_CONFIRM_SOCK";
+
+/// Maximum complete request frame, including its terminating newline.
+const MAX_REQUEST_BYTES: usize = 64 * 1024;
 
 /// A typed reply that counts as yes (after trimming, lowercasing and dropping `.`/`!`).
 const AFFIRMATIVE: [&str; 5] = ["yes", "y", "ja", "ok", "post it"];
@@ -111,6 +114,13 @@ fn is_affirmative(text: &str) -> bool {
 impl OwnerConfirm {
     /// Bind the socket `<dir>/confirm.sock` (dir 0700, socket 0600) and serve connections.
     pub fn start(dir: &Path, yolo: YoloSwitch) -> std::io::Result<Arc<OwnerConfirm>> {
+        let (broker, listener) = Self::bind(dir, yolo)?;
+        let weak = Arc::downgrade(&broker);
+        std::thread::spawn(move || accept_loop(listener, weak));
+        Ok(broker)
+    }
+
+    fn bind(dir: &Path, yolo: YoloSwitch) -> std::io::Result<(Arc<Self>, UnixListener)> {
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -128,20 +138,20 @@ impl OwnerConfirm {
             servable: AtomicBool::new(false),
             closed: AtomicBool::new(false),
         });
-        let weak = Arc::downgrade(&broker);
-        std::thread::spawn(move || accept_loop(listener, weak));
-        Ok(broker)
+        Ok((broker, listener))
     }
 
     pub fn sock_path(&self) -> &Path {
         &self.sock
     }
 
-    pub fn set_servable(&self, on: bool) {
-        self.servable.store(on, Ordering::SeqCst);
+    /// Return the previous state so an inner host pump can restore its caller's state.
+    pub fn set_servable(&self, on: bool) -> bool {
+        let previous = self.servable.swap(on, Ordering::SeqCst);
         if !on {
             self.cv.notify_all();
         }
+        previous
     }
 
     /// Ask the owner for the request that waits, with the session's `Ui`. Session thread only.
@@ -274,10 +284,15 @@ impl OwnerConfirm {
 
     fn connection(&self, stream: UnixStream) {
         let mut line = String::new();
-        if BufReader::new(&stream).read_line(&mut line).is_err() {
+        let mut frame = BufReader::new(&stream).take(MAX_REQUEST_BYTES as u64 + 1);
+        let Ok(count) = frame.read_line(&mut line) else {
             return;
-        }
-        let req: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+        };
+        let req: Value = if count <= MAX_REQUEST_BYTES && line.ends_with('\n') {
+            serde_json::from_str(&line).unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
         let sha = req.get("preview_sha256").and_then(Value::as_str).unwrap_or("");
         let (verdict, origin) = match req.get("question").and_then(Value::as_str) {
             Some(q) => self.request(q.to_string(), sha.to_string()),
@@ -298,7 +313,7 @@ impl std::fmt::Debug for OwnerConfirm {
 
 impl Drop for OwnerConfirm {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.sock);
+        self.close();
     }
 }
 
@@ -399,6 +414,54 @@ mod tests {
             broker.serve(ui);
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    #[test]
+    fn owner_confirm_rejects_requests_beyond_the_frame_limit() {
+        let d = dir("frame-limit");
+        let broker = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Yolo)).expect("start");
+        let overhead = json!({"question": "", "preview_sha256": "abc"}).to_string().len() + 1;
+        let at_limit = MAX_REQUEST_BYTES - overhead;
+        assert_eq!(ask(&broker, &"q".repeat(at_limit + 1))["answer"], "none");
+        assert!(broker.take_records().is_empty());
+        assert_eq!(ask(&broker, &"q".repeat(at_limit))["answer"], "yes");
+        assert_eq!(broker.take_records().len(), 1);
+        broker.close();
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn owner_confirm_restores_the_parent_pump_state() {
+        let d = dir("pump-state");
+        let broker = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Standard)).expect("start");
+        let outer = broker.set_servable(true);
+        let inner = broker.set_servable(true);
+        assert!(!outer);
+        assert!(inner);
+        broker.set_servable(inner);
+        assert!(broker.servable.load(Ordering::SeqCst));
+        broker.set_servable(outer);
+        assert!(!broker.servable.load(Ordering::SeqCst));
+        broker.close();
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn owner_confirm_drop_wakes_the_listener() {
+        let d = dir("drop-listener");
+        let (broker, listener) = OwnerConfirm::bind(&d, YoloSwitch::new(Autonomy::Standard)).expect("bind");
+        let weak = Arc::downgrade(&broker);
+        let (done, observed) = std::sync::mpsc::channel();
+        let listener_thread = std::thread::spawn(move || {
+            accept_loop(listener, weak);
+            done.send(()).unwrap();
+        });
+        drop(broker);
+        observed
+            .recv_timeout(Duration::from_secs(2))
+            .expect("listener exited");
+        listener_thread.join().unwrap();
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]

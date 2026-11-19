@@ -36,3 +36,4 @@ confirmation only from the owner: yolo chosen for the session (answer yes, shown
 owner's answer to the session's own dialog, or the owner's typed message while a confirmation waits.
 A confirmation that a model-run command can satisfy without the broker is high. A broker answer
 derived from tool, file, web or agent-inbox text is high. A socket readable by another user is high.
+The broker bounds each newline-terminated request to 64 KiB before accepting it for confirmation.

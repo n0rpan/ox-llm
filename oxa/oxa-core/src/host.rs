@@ -511,9 +511,10 @@ pub(crate) fn pumped<R: Send>(
     }
     let cell: Mutex<&mut dyn Ui> = Mutex::new(ui);
     let (done_tx, done_rx) = mpsc::channel::<()>();
-    if let Some(broker) = st.shared.owner_confirm() {
-        broker.set_servable(true);
-    }
+    let previous_broker_state = st.shared.owner_confirm().map(|broker| {
+        let previous = broker.set_servable(true);
+        (broker, previous)
+    });
     std::thread::scope(|scope| {
         let shared_ui = &cell;
         let dependent = level == Serve::Run;
@@ -540,8 +541,8 @@ pub(crate) fn pumped<R: Send>(
         }
         tick(sink);
         let mut ui = LockedUi(&cell);
-        if let Some(broker) = st.shared.owner_confirm() {
-            broker.set_servable(false);
+        if let Some((broker, previous)) = previous_broker_state {
+            broker.set_servable(previous);
         }
         serve_owner_confirm(st, sink, &mut ui, false);
         crate::fire::drain(st, sink, &mut ui);
