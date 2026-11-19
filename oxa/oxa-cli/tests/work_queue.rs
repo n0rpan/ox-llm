@@ -127,6 +127,7 @@ fn managed_native_worker(case: ManagedCase) {
         lease: None,
         attempts_today: 0,
         eligible: true,
+        evidence_incomplete: None,
     };
     let policy = Policy {
         enabled: true,

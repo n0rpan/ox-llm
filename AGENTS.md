@@ -90,6 +90,11 @@ maintainer, who says in the PR when a hardware check is needed.
   The repeat guard follows this: the third identical tool result gets a short note, a call that
   still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
   is the cap against loops the guard cannot see.
+  The board degrades per item, not per snapshot: a PR whose GitHub evidence exceeds a read page
+  is one row marked evidence incomplete that is never eligible for any action; every other item is
+  kept and published, and the limit is logged. A merge-queue connection beyond its
+  page keeps the observed entries; PRs outside them stay queue-unknown and take no action.
+
   Report dedupe follows it as well: `oxa.reportIssue.semanticDedupe` is the owner's consent for the
   search and the model check, the post asks one question, and `oxa.reportIssue.dailyNew` (unset = no
   check) only warns and records over the cap. A finding that asks for a second consent question or

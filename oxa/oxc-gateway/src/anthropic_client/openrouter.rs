@@ -85,7 +85,7 @@ impl Client {
                 if received > MAX_BODY {
                     return Err(Error::TooLarge);
                 }
-                let Some(data) = decoder.push(byte) else {
+                let Some(Frame::Data(data)) = decoder.push(byte) else {
                     continue;
                 };
                 if data == b"[DONE]" {

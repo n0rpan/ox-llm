@@ -279,78 +279,106 @@ fn changed_file_continuation_with_a_changed_total_fails_atomically() {
 }
 
 #[test]
-fn changed_file_continuation_without_full_coverage_fails_atomically() {
+fn changed_file_continuation_without_full_coverage_degrades_only_that_pr() {
     let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
     let mut next = continuation_of(&env, 100);
     next["data"]["repository"]["p100"]["files"]["nodes"] =
         json!([{"path":"docs/release-note.md","deletions":0}]);
     write(&env, "gh.files100", &next);
-    let error = snapshot_of(&env, &packets).unwrap_err();
-    assert!(error.contains("incomplete changed-file listing"), "{error}");
+    let snapshot = snapshot_of(&env, &packets).unwrap();
+    assert_eq!(
+        snapshot
+            .pull_requests
+            .iter()
+            .map(|pr| pr.number)
+            .collect::<Vec<_>>(),
+        vec![101]
+    );
+    assert_eq!(snapshot.incomplete[0].number, 100);
+    assert!(snapshot.incomplete[0].reason.contains("changed files"));
 }
 
 #[test]
-fn changed_file_continuation_repeating_a_path_fails_atomically() {
+fn changed_file_continuation_repeating_a_path_degrades_only_that_pr() {
     let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
     let mut next = continuation_of(&env, 100);
     next["data"]["repository"]["p100"]["files"]["nodes"][0] = json!({"path":"src/f0.rs","deletions":4});
     write(&env, "gh.files100", &next);
-    let error = snapshot_of(&env, &packets).unwrap_err();
-    assert!(error.contains("duplicate changed file"), "{error}");
+    let snapshot = snapshot_of(&env, &packets).unwrap();
+    assert_eq!(
+        snapshot
+            .pull_requests
+            .iter()
+            .map(|pr| pr.number)
+            .collect::<Vec<_>>(),
+        vec![101]
+    );
+    assert_eq!(snapshot.incomplete[0].number, 100);
 }
 
 #[test]
-fn interrupted_changed_file_continuation_fails_atomically() {
+fn interrupted_changed_file_continuation_degrades_only_that_pr() {
     let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
     fs::write(env.tmp().join("gh.files100.status"), "502").unwrap();
-    let error = snapshot_of(&env, &packets).unwrap_err();
-    assert!(error.contains("GitHub read failed (HTTP 502)"), "{error}");
+    let snapshot = snapshot_of(&env, &packets).unwrap();
+    assert_eq!(
+        snapshot
+            .pull_requests
+            .iter()
+            .map(|pr| pr.number)
+            .collect::<Vec<_>>(),
+        vec![101]
+    );
+    assert_eq!(snapshot.incomplete[0].number, 100);
 }
 
 fn details_of(env: &TestEnv) -> Value {
     serde_json::from_slice(&fs::read(env.tmp().join("gh.details")).unwrap()).unwrap()
 }
 
+fn assert_pr_100_degraded(snapshot: oxa_work::board::Snapshot) {
+    assert_eq!(
+        snapshot
+            .pull_requests
+            .iter()
+            .map(|pr| pr.number)
+            .collect::<Vec<_>>(),
+        vec![101]
+    );
+    assert_eq!(snapshot.incomplete[0].number, 100);
+}
+
 #[test]
-fn changed_file_continuation_rejects_a_duplicate_on_the_first_page() {
+fn changed_file_continuation_degrades_a_duplicate_on_the_first_page() {
     let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
     let mut details = details_of(&env);
     details["data"]["repository"]["p100"]["files"]["nodes"][1] = json!({"path":"src/f0.rs","deletions":0});
     write(&env, "gh.details", &details);
-    let error = snapshot_of(&env, &packets).unwrap_err();
-    assert!(error.contains("duplicate changed file"), "{error}");
+    assert_pr_100_degraded(snapshot_of(&env, &packets).unwrap());
 }
 
 #[test]
-fn changed_file_continuation_rejects_a_first_page_that_claims_progress() {
+fn changed_file_continuation_degrades_a_first_page_that_claims_progress() {
     let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
     let mut details = details_of(&env);
     details["data"]["repository"]["p100"]["files"]["nodes"] = json!([]);
     write(&env, "gh.details", &details);
-    let error = snapshot_of(&env, &packets).unwrap_err();
-    assert!(
-        error.contains("invalid changed-file pagination progress"),
-        "{error}"
-    );
+    assert_pr_100_degraded(snapshot_of(&env, &packets).unwrap());
 }
 
 #[test]
-fn changed_file_continuation_rejects_an_empty_page_that_claims_more() {
+fn changed_file_continuation_degrades_an_empty_page_that_claims_more() {
     let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
     let mut next = continuation_of(&env, 100);
     next["data"]["repository"]["p100"]["files"]["nodes"] = json!([]);
     next["data"]["repository"]["p100"]["files"]["pageInfo"] =
         json!({"hasNextPage":true,"endCursor":"next-200"});
     write(&env, "gh.files100", &next);
-    let error = snapshot_of(&env, &packets).unwrap_err();
-    assert!(
-        error.contains("invalid changed-file pagination progress"),
-        "{error}"
-    );
+    assert_pr_100_degraded(snapshot_of(&env, &packets).unwrap());
 }
 
 #[test]
-fn changed_file_continuation_rejects_an_oversized_page() {
+fn changed_file_continuation_degrades_an_oversized_page() {
     let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
     let mut next = continuation_of(&env, 100);
     let oversized: Vec<Value> = (0..101)
@@ -358,6 +386,5 @@ fn changed_file_continuation_rejects_an_oversized_page() {
         .collect();
     next["data"]["repository"]["p100"]["files"]["nodes"] = json!(oversized);
     write(&env, "gh.files100", &next);
-    let error = snapshot_of(&env, &packets).unwrap_err();
-    assert!(error.contains("invalid changed-file page"), "{error}");
+    assert_pr_100_degraded(snapshot_of(&env, &packets).unwrap());
 }
