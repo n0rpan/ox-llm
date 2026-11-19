@@ -269,11 +269,13 @@ impl Bwrap {
         // the remounted runtime-IPC directories, keep the mask stable).
         if !public.net {
             for socket in &self.layout.sockets {
-                if socket.starts_with(&public.cwd)
-                    || socket.starts_with(&self.home)
-                    || socket.starts_with(std::path::Path::new("/tmp"))
-                    || self.layout.write.iter().any(|w| socket.starts_with(w))
-                {
+                if offline_socket_mask_can_drift(
+                    socket,
+                    &public.cwd,
+                    public.writable,
+                    &self.home,
+                    &self.layout,
+                ) {
                     let mut result = refused(format!(
                         "the configured sandbox socket {} lies under a writable mount; its \
                          offline mask could be moved, so the sandbox refuses. Relocate the \
@@ -336,6 +338,32 @@ impl Bwrap {
         }
         res
     }
+}
+
+fn offline_socket_mask_can_drift(
+    socket: &Path,
+    cwd: &Path,
+    writable: bool,
+    home: &Path,
+    layout: &Layout,
+) -> bool {
+    socket.starts_with(cwd)
+        || socket.starts_with(home)
+        || socket.starts_with(Path::new("/tmp"))
+        || layout
+            .write
+            .iter()
+            .any(|root| canonical_root_contains(root, socket))
+        || (writable
+            && layout
+                .git
+                .rw
+                .iter()
+                .any(|root| canonical_root_contains(root, socket)))
+}
+
+fn canonical_root_contains(root: &Path, path: &Path) -> bool {
+    path.starts_with(root.canonicalize().unwrap_or_else(|_| root.to_path_buf()))
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -412,6 +440,32 @@ mod secret_tests {
             "the driftable mask must be refused, not launched: {out}"
         );
         assert!(!out.contains("ran"), "no bwrap may run for a driftable mask");
+    }
+
+    #[test]
+    fn symlinked_write_mount_is_canonicalized_for_offline_socket_check() {
+        use std::os::unix::fs::symlink;
+        let env = oxa_fake::TestEnv::new();
+        let writable = env.home().join("writable");
+        std::fs::create_dir_all(&writable).unwrap();
+        let socket = writable.join("socket");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let alias = env.home().join("write-alias");
+        symlink(&writable, &alias).unwrap();
+        assert!(canonical_root_contains(&alias, &socket));
+    }
+
+    #[test]
+    fn writable_external_git_dir_is_in_offline_socket_check() {
+        let mut git_layout = Layout::default();
+        git_layout.git.rw.push(PathBuf::from("/external.git"));
+        assert!(offline_socket_mask_can_drift(
+            Path::new("/external.git/socket"),
+            Path::new("/workspace"),
+            true,
+            Path::new("/home/example"),
+            &git_layout,
+        ));
     }
 
     #[test]
