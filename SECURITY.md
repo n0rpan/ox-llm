@@ -17,6 +17,11 @@ Treat as **high** severity:
 The sandbox can forward the owner's `CARGO_TARGET_DIR` to worker shells. External cache
 paths are writable only through an explicit owner `oxa.sandbox.writePaths` mount.
 
+Automated Go review reads at most 200 GitHub comment pages (20,000 comments) when it checks the
+configured daily quota and prior same-diff receipts. If either listing is incomplete, review is
+deferred before quota reservation, provider authentication, or provider I/O. An incomplete history
+cannot authorize another token-spending review.
+
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 
 Do not report: style, pre-existing issues outside the diff, test-only code that never runs in production, or hypothetical risks without a concrete path.

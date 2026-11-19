@@ -432,6 +432,16 @@ class GoReview(unittest.TestCase):
         with self.assertRaisesRegex(review.Skipped, 'quota'):
             self.run_review(daily_comments=busy, max_per_day='0')
 
+    def test_comment_history_bound_and_deferral_are_documented(self):
+        root = SOURCE.parents[2]
+        self.assertEqual(review.MAX_COMMENT_PAGES, 200)
+        self.assertEqual(review.comment_pages.__defaults__, (review.MAX_COMMENT_PAGES,))
+        for path in ('AGENTS.md', 'SECURITY.md', 'oxa/docs/pages/settings.md'):
+            text = (root / path).read_text()
+            with self.subTest(path=path):
+                self.assertIn('20,000', text)
+                self.assertIn('defer', text.lower())
+
     def test_instruction_and_author_boundaries(self):
         self.assertTrue(review.eligible(PR, SHA))
         self.assertFalse(review.eligible({**PR, 'draft': True}, SHA))

@@ -24,6 +24,7 @@ MAX_LINES = 6000
 MAX_RESPONSE = 128_000
 MAX_PROMPT = 20_000
 MAX_INPUT_BYTES = MAX_DIFF + MAX_PROMPT
+MAX_COMMENT_PAGES = 200  # 20,000 comments at GitHub's 100-comment page size.
 
 
 def max_output(model):
@@ -45,7 +46,7 @@ class Refused(Exception):
 
 
 class Incomplete(Exception):
-    """A bounded listing that could not be completed: warn and continue, never block."""
+    """A bounded listing that could not be completed; callers must defer review."""
 
 
 class Skipped(Refused):
@@ -167,7 +168,7 @@ def reviewed(comments, sha, diff_hash):
     return False
 
 
-def comment_pages(url, headers, max_pages=200, **filters):
+def comment_pages(url, headers, max_pages=MAX_COMMENT_PAGES, **filters):
     for page in range(1, max_pages + 1):
         query = urllib.parse.urlencode({**filters, 'per_page': 100, 'page': page})
         comments = request(f'{url}?{query}', headers, limit=2_000_000)
