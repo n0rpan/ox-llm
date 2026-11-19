@@ -47,8 +47,15 @@ fn redact(bytes: &[u8], token: &str) -> Vec<u8> {
     out
 }
 
-/// A streaming redactor: holds back at most `token.len() - 1` bytes (a suffix that could be the
-/// start of the token) between chunks; [`StreamRedactor::finish`] flushes them at EOF.
+/// A streaming redactor. It always holds back the last `token.len() - 1` bytes it has seen,
+/// whatever they are, and shows the rest with every full token replaced;
+/// [`StreamRedactor::finish`] flushes the held-back tail at EOF.
+///
+/// The hold-back is content-independent on purpose: holding back only a suffix that *is* a
+/// prefix of the token would be a prefix oracle (a command prints a guess and sleeps; the
+/// live byte count before EOF says whether the guess is a true prefix). Here how many bytes
+/// are shown after each chunk depends only on how many bytes arrived, never on how much of
+/// them matches the token — only a complete token changes the output, to `[redacted]`.
 struct StreamRedactor<'a> {
     token: &'a [u8],
     pending: Vec<u8>,
@@ -66,16 +73,19 @@ impl<'a> StreamRedactor<'a> {
     fn push(&mut self, chunk: &[u8]) -> Vec<u8> {
         self.pending.extend_from_slice(chunk);
         let t = self.token;
-        let mut out = Vec::new();
-        let mut i = 0;
+        let hold = t.len().saturating_sub(1);
+        let Some(emit) = self.pending.len().checked_sub(hold).filter(|e| *e > 0) else {
+            return Vec::new();
+        };
+        // Any token that starts before `emit` ends inside `pending` (start + len <= emit - 1 +
+        // hold + 1 = pending.len()), so every position decided here is decided on full data.
         let buf = &self.pending;
-        while i < buf.len() {
-            let rest = &buf[i..];
-            if rest.starts_with(t) {
+        let mut out = Vec::with_capacity(emit);
+        let mut i = 0;
+        while i < emit {
+            if !t.is_empty() && buf[i..].starts_with(t) {
                 out.extend_from_slice(REDACTED.as_bytes());
                 i += t.len();
-            } else if t.starts_with(rest) {
-                break; // maybe the start of the token: wait for more
             } else {
                 out.push(buf[i]);
                 i += 1;
@@ -85,7 +95,7 @@ impl<'a> StreamRedactor<'a> {
         out
     }
 
-    /// EOF: whatever is held back is not a token.
+    /// EOF: the held-back tail is shorter than the token, so it holds no full token.
     fn finish(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.pending)
     }
@@ -555,6 +565,88 @@ mod tests {
         // `gh auth token` reads its config locally: the output mask stays on with the
         // network off; only the `GH_TOKEN` injection is refused.
         assert_eq!(live, "x [redacted] y");
+    }
+
+    /// Codex security review on #1563: the live output must not be a prefix oracle. Two
+    /// streams that differ only in whether they share a prefix with the token show exactly
+    /// the same number of bytes after every chunk (so a job read before EOF tells nothing),
+    /// and the token itself never appears.
+    #[test]
+    fn stream_hold_back_is_independent_of_token_prefixes() {
+        const T: &str = "SYNTH_BG_TOKEN_9";
+        // Direct per-push view of the redactor.
+        fn per_push(chunks: &[&str]) -> (Vec<usize>, String) {
+            let mut sr = StreamRedactor::new(T);
+            let mut lens = Vec::new();
+            let mut all = Vec::new();
+            for c in chunks {
+                let o = sr.push(c.as_bytes());
+                lens.push(o.len());
+                all.extend_from_slice(&o);
+            }
+            let tail = sr.finish();
+            lens.push(tail.len());
+            all.extend_from_slice(&tail);
+            (lens, String::from_utf8(all).unwrap())
+        }
+        let probes: &[(&[&str], &[&str])] = &[
+            // A true prefix vs a wrong guess of the same length, then the job "sleeps".
+            (&["x ", "SYNTH_BG"], &["x ", "QYNTH_BG"]),
+            (&["SYNTH_BG_TOKEN_"], &["QYNTH_BG_TOKEN_"]),
+            (&["S"], &["Q"]),
+            (
+                &["abc", "SYNTH", "_BG_T", "OKEN_", "X done"],
+                &["abc", "SYNTZ", "_BG_T", "OKEN_", "X done"],
+            ),
+            (
+                &["0123456789abcdefSYNTH_BG_TOKEN_"],
+                &["0123456789abcdefQQQQQQQQQQQQQQQ"],
+            ),
+        ];
+        for (a, b) in probes {
+            let (la, oa) = per_push(a);
+            let (lb, ob) = per_push(b);
+            assert_eq!(
+                la, lb,
+                "shown bytes per chunk depend on the token: {a:?} vs {b:?}"
+            );
+            assert!(!oa.contains(T) && !ob.contains(T));
+            assert_eq!(oa.len(), a.concat().len(), "no full token, nothing replaced");
+        }
+        // The same through `redact_run` (the path both NetSandbox and yolo take): identical
+        // live call lengths, and a full token is masked wherever the chunks split it.
+        fn live_lens(chunks: &[&str]) -> (Vec<usize>, String) {
+            let mut lens = Vec::new();
+            let mut all = Vec::new();
+            let r = redact_run(
+                Some(T),
+                &mut |b: &[u8]| {
+                    lens.push(b.len());
+                    all.extend_from_slice(b);
+                },
+                |live| {
+                    for c in chunks {
+                        live(c.as_bytes());
+                    }
+                    ExecResult {
+                        output: chunks.concat().into_bytes(),
+                        exit: Some(0),
+                        timed_out: false,
+                        unsandboxed: false,
+                    }
+                },
+            );
+            assert!(!String::from_utf8_lossy(&r.output).contains(T));
+            (lens, String::from_utf8(all).unwrap())
+        }
+        let (la, _) = live_lens(&["log line 1\n", "SYNTH_BG_TO", "more output here\n"]);
+        let (lb, _) = live_lens(&["log line 1\n", "QYNTH_BG_TO", "more output here\n"]);
+        assert_eq!(la, lb);
+        let full = "pre SYNTH_BG_TOKEN_9 mid SYNTH_BG_TOKEN_9 post";
+        for at in 0..=full.len() {
+            let (_, out) = live_lens(&[&full[..at], &full[at..]]);
+            assert_eq!(out, "pre [redacted] mid [redacted] post", "split at {at}");
+        }
     }
 
     fn spec(net: bool) -> ExecSpec {

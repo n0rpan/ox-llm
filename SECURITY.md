@@ -24,7 +24,9 @@ at start, not blocked).
 Owner-selected `yolo` deliberately removes the bash sandbox and permission floor. Its bash
 output still masks an exact copy of the GitHub token oxa discovered, including when `--offline`
 or `oxa.sandbox.net: "off"` prevents that token from being injected into commands. This is an
-output-only guard: it does not block or alter the command.
+output-only guard: it does not block or alter the command. In every mode, streamed output
+always holds back the last token-length-minus-one bytes whatever they are, so how much a running
+command has shown never reveals whether its output began to match the token.
 
 Persisted headless print and JSON runs with a pursuing goal consume plain `oxa send` inbox
 messages with `oxa.inbox.headless` set to `true` by default. This user-only setting can opt out;
@@ -40,6 +42,11 @@ Automated Go review reads at most 200 GitHub comment pages (20,000 comments) whe
 configured daily quota and prior same-diff receipts. If either listing is incomplete, review is
 deferred before quota reservation, provider authentication, or provider I/O. An incomplete history
 cannot authorize another token-spending review.
+
+The memory store (`memory/` under the agent directory) is owner-only: folder `0700`, tightened by a
+save when an existing one is looser; entries and `MEMORY.md` `0600` via a private synced temporary;
+lock created `0600`. A save is bounded (8 KiB body, 4 KiB frontmatter) and the index scan reads each
+file only that far.
 
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 
