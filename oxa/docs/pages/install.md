@@ -7,7 +7,7 @@ The ox suite ships as one release: `oxa` (the agent), and `oxe` with `oxe-server
 - Linux on ARM64 or x86_64, with glibc.
 - `bubblewrap` (`bwrap`) and unprivileged user namespaces, for the bash sandbox.
 - For local models: a Snapdragon X laptop under Linux. The x86_64 build carries the agent and an engine that runs no model, so use cloud models there.
-- On macOS (Apple silicon), `oxa` runs with cloud models and without an OS sandbox. See [macOS](#macos) below.
+- macOS (Apple silicon) support is in progress: cloud models only, no OS sandbox, and no published build yet. See [macOS](#macos) below.
 
 ## Stable release
 
@@ -65,7 +65,7 @@ Use the dev build to try what is on `main`. Use the stable release for everythin
 
 ### macOS
 
-`tools/lab/dev-update-macos.sh` is the same installer for macOS on Apple silicon. It needs `gh` (`brew install gh`) and installs to the same place under your home directory. The macOS dev asset is not published yet, so the script has nothing to install until it is.
+`tools/lab/dev-update-macos.sh` is the same installer for macOS on Apple silicon. It needs `gh` (`brew install gh`) and installs to the same place under your home directory. No macOS build is published yet, and `main` does not build on macOS yet, so the script has nothing to install until the dev asset exists.
 
 On macOS there is no local engine and no OS sandbox. Read [modes.md](modes.md#macos) before the first run.
 

@@ -31,7 +31,7 @@ v0.2.0 are in [install.md](oxa/docs/pages/install.md).
 it, checks the sums and the provenance, and installs it under
 `~/.local/state/oxc/dev-builds/default/` without touching a stable install or your `PATH`. See
 [docs/DEV.md](docs/DEV.md). On macOS (Apple silicon) the twin script is
-`tools/lab/dev-update-macos.sh`; the macOS dev asset is not published yet.
+`tools/lab/dev-update-macos.sh`; macOS support is in progress and no macOS build is published yet.
 
 **From source.** `cd oxa && cargo build --release --locked -p oxa-cli` builds `oxa`;
 `cd engine && cargo build --release --locked -p server --bin oxe-server` builds the engine.
