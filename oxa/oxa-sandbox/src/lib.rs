@@ -48,8 +48,11 @@ pub const NO_OS_SANDBOX_NOTICE: &str =
 /// The pinned location of the session-owned confirmation socket inside bwrap.
 ///
 /// Tool commands may change their environment, so confirmation clients must trust this mount
-/// point rather than an arbitrary path supplied through `OXA_CONFIRM_SOCK`.
-pub const OWNER_CONFIRM_SOCK: &str = "/run/oxa-owner-confirm.sock";
+/// point rather than an arbitrary path supplied through `OXA_CONFIRM_SOCK`. It sits under the
+/// sandbox's `/tmp` (a private tmpfs, or the session scratch) because that is the only writable
+/// place bwrap can create a read-only bind mount over: `/run` belongs to root, and `/` is bound
+/// read-only, so a mount point there cannot be created by a user (`Read-only file system`).
+pub const OWNER_CONFIRM_SOCK: &str = "/tmp/oxa-owner-confirm.sock";
 /// Environment variable carrying the host confirmation socket into the sandbox builder.
 pub const OWNER_CONFIRM_SOCK_ENV: &str = "OXA_CONFIRM_SOCK";
 

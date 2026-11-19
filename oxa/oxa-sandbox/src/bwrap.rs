@@ -99,21 +99,25 @@ pub(crate) fn bwrap_args_homes(
         &["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"],
     );
     // The broker lives below the private agent directory, which the home tmpfs below hides.
-    // Pin that exact socket first at a fixed, read-only mount point. A command can replace its
-    // environment, but it cannot replace this mount or make the client trust another listener.
+    // Pin that exact socket at a fixed, read-only mount point (below, inside the sandbox's
+    // `/tmp`). A command can replace its environment, but it cannot replace this mount or make
+    // the client trust another listener.
     let owner_confirm = s
         .env
         .iter()
         .rev()
         .find(|(key, _)| key == crate::OWNER_CONFIRM_SOCK_ENV)
         .map(|(_, value)| value);
-    if let Some(sock) = owner_confirm {
-        push(&mut a, &["--ro-bind", sock, crate::OWNER_CONFIRM_SOCK]);
-    }
     // #457: the session directory, or a fresh tmpfs. Before the home and every mask (N28).
     match &layout.scratch {
         Some(sc) => push(&mut a, &["--bind", &sc.path().to_string_lossy(), "/tmp"]),
         None => push(&mut a, &["--tmpfs", "/tmp"]),
+    }
+    // The pinned socket above the sandbox's `/tmp`, which is writable, so bwrap can create the
+    // mount point: `/` is bound read-only and `/run` belongs to root, so a mount point there
+    // cannot be created by a user. The mount itself is read-only, so no command can replace it.
+    if let Some(sock) = owner_confirm {
+        push(&mut a, &["--ro-bind", sock, crate::OWNER_CONFIRM_SOCK]);
     }
     // #53: a `$HOME` that is not the account's real home leaves the real one visible. Hide it
     // like `$HOME` (an empty tmpfs; the cwd and the binds below are mounted on top), so its
