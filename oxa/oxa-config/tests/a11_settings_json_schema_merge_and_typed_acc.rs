@@ -193,6 +193,22 @@ fn user_project_merge() {
     assert_eq!(merged, json!({"a": {"x": 1, "y": 3}}));
 }
 
+/// `user_bool` ignores the project layer, so a trusted project cannot enable a user-only switch
+#[test]
+fn user_bool_ignores_the_project_layer() {
+    let key = "oxa.jobs.wakeOnFinish";
+    let off = Settings::from_values(json!({}), json!({"oxa": {"jobs": {"wakeOnFinish": true}}}));
+    assert!(off.bool(key, false), "the merged read sees the project value");
+    assert!(!off.user_bool(key, false), "the user-only read does not");
+    let denied = Settings::from_values(
+        json!({"oxa": {"jobs": {"wakeOnFinish": false}}}),
+        json!({"oxa": {"jobs": {"wakeOnFinish": true}}}),
+    );
+    assert!(!denied.user_bool(key, true));
+    let on = Settings::from_values(json!({"oxa": {"jobs": {"wakeOnFinish": true}}}), json!({}));
+    assert!(on.user_bool(key, false));
+}
+
 /// +x / -x patches
 #[test]
 fn plus_minus_lists() {

@@ -950,13 +950,24 @@ impl<'a> Loop<'a> {
         if self.session.id != info.id || self.inbox.is_none() {
             // A Reopen may have recovered an already-admitted message without a file
             // left to trigger the new watcher. Wake only the recovered destination.
-            if self.handle.has_inbox_input() && self.handle.request_inbox_wake() {
+            if self.handle.has_external_inbox_input() && self.handle.request_inbox_wake() {
                 let _ = self.cmds.send(SessionCmd::Inbox {
                     session_id: info.id.clone(),
                 });
             }
+            // A completion retained behind a stop boundary (a failed or interrupted turn) is not
+            // delivered on a reopen: the replacement session starts with no outcome, so waking
+            // it would start a model turn nobody asked for. It stays queued for the next prompt.
             // Stop the old callback before installing one bound to the current handle.
             self.inbox = None;
+            // W4: a finished background job of this session wakes it the way an inbox message does.
+            let job_cmds = self.cmds.clone();
+            self.handle
+                .set_wake_notifier(std::sync::Arc::new(move |session_id: &str| {
+                    let _ = job_cmds.send(SessionCmd::JobWake {
+                        session_id: session_id.to_string(),
+                    });
+                }));
             let handle = self.handle.clone();
             let cmds = self.cmds.clone();
             let session_id = info.id.clone();
