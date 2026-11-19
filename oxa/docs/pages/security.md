@@ -110,7 +110,7 @@ If oxa starts in your home directory, in `/`, or in a parent of your home direct
 - your home directory is visible to bash, read-only, with the deny-list below still masked. A command can read your shell history, your dot files and your other files there;
 - bash has network access by default, so a command can send what it reads to a host (see [Network](#network)).
 
-oxa refuses such a start in print, JSON and RPC modes. In interactive mode it warns and asks "Start oxa here anyway?", and the default answer is No. The user setting `oxa.allowHomeCwd: true`, or the environment variable `OXA_ALLOW_HOME_CWD=1`, allows the start without the question. Start oxa in a project directory instead.
+oxa refuses such a start in print, JSON and RPC modes. In interactive mode it warns and asks "Start oxa here anyway?", and the default answer is No. The user setting `oxa.allowHomeCwd: true`, or the environment variable `OXA_ALLOW_HOME_CWD=1`, allows the start without the question. An explicit `--yolo` or `--auto` on the command line is the owner's opt-in: the start warns once and goes on in every mode, with no question. Start oxa in a project directory instead.
 
 Writable package caches are shared with your own builds. A crate or Go module that the model unpacks there is what your next build reads. Clear a cache after a session you do not trust.
 
