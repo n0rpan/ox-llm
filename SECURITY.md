@@ -10,7 +10,7 @@ Treat as **high** severity:
 - a secret (API key, ChatGPT token, OpenCode/GitHub token, share key) printed, logged, stored outside its 0600 store, sent to the wrong host, or reachable by model tools;
 - a project file or model output able to change user-only settings, enable a feature flag, or bypass the sandbox or network guard (off Linux there is no OS sandbox by owner policy: in-process guards stay, bash gets the same cleared base environment, a refused bash network disables it, and a run that keeps the network says so at start and to the model);
 - metered API requests that bypass required reservation or settlement, are missing from the ledger, or bypass a **configured** daily cap. With no configured cap there is no cap check for the owner or authenticated allowlisted share guests. Guest authority, tokens and request quotas still apply;
-- OpenCode Go requests that bypass subscription token accounting, or provider-reported paid charges that are missing from the ledger or shared daily spend. Go admission reserves subscription tokens only. The owner's local metered API cap does not apply to Go admission, including provider-side fallback to a paid balance. A configured `oxa.cloud.subscription_limits` is advisory (warn at 80%/100%, recorded, never a local refusal), and a stored owner Go key enabling the Go transport is owner policy: transport selection stays user-only, so a project setting, a delegated model or a restored session model that flips it *is* a finding;
+- OpenCode Go requests that bypass subscription token accounting, or provider-reported paid charges that are missing from the ledger or shared daily spend. Go admission reserves subscription tokens only. The owner's local metered API cap does not apply to Go admission, including provider-side fallback to a paid balance. A configured `oxa.cloud.subscription_limits` is advisory (warn at 80%/100%, recorded, never a local refusal), and a stored owner Go key enabling the Go transport is owner policy: the protected user key authorizes an actual Go model argument, including one passed to a delegated worker or nested child. A project setting or restored session model that flips it *is* a finding (the owner's explicit `oxa.cloud.opencode.enabled: true` is the supported way to allow those);
 - fork-PR or guest access to secrets, cloud providers or owner credentials;
 - new `unsafe`/FFI/process/network code in the engine without bounds checks.
 
@@ -38,6 +38,11 @@ Automated Go review reads at most 200 GitHub comment pages (20,000 comments) whe
 configured daily quota and prior same-diff receipts. If either listing is incomplete, review is
 deferred before quota reservation, provider authentication, or provider I/O. An incomplete history
 cannot authorize another token-spending review.
+
+The memory store (`memory/` under the agent directory) is owner-only: folder `0700`, tightened by a
+save when an existing one is looser; entries and `MEMORY.md` `0600` via a private synced temporary;
+lock created `0600`. A save is bounded (8 KiB body, 4 KiB frontmatter) and the index scan reads each
+file only that far.
 
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 

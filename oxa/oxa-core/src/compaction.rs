@@ -310,7 +310,8 @@ fn last_batch_start(wire: &[WireMsg]) -> Option<usize> {
 /// L5: the context size to decide a turn-start compaction with: [`Transcript::context`] (the
 /// last reply's prompt + completion) plus the messages appended after that reply (an aborted
 /// turn's tool result, a user message), estimated as their serialised bytes / 3 rounded up.
-/// Without any usage (a fresh or just-rebased transcript) it is `context()`, i.e. 0.
+/// The first unreported reply starts an estimate over the whole wire. A fresh or just-rebased
+/// transcript without a reply has no baseline yet.
 pub(crate) fn context_estimate(st: &SessionState) -> u32 {
     estimate_of(&st.transcript)
 }
@@ -343,6 +344,7 @@ mod estimate_tests {
             completion,
             cached: 0,
             cached_missing: false,
+            unreported: false,
         }
     }
 
@@ -375,6 +377,34 @@ mod estimate_tests {
         let bytes = t.wire().last().expect("tool result").to_json().len();
         assert_eq!(estimate_of(&t), 120 + u32::try_from(bytes.div_ceil(3)).unwrap());
         assert!(estimate_of(&t) > 120 + 1000);
+    }
+
+    #[test]
+    fn a_reopened_first_unreported_reply_estimates_the_whole_wire_until_a_measurement() {
+        let mut t = Transcript::default();
+        t.push(WireMsg::user("hi"));
+        t.push(WireMsg::assistant("an unreported reply"));
+        let entry = oxa_proto::Entry {
+            id: "synthetic-use".into(),
+            parent: None,
+            ts_ms: 1,
+            body: oxa_proto::EntryBody::Usage {
+                kind: oxa_proto::TurnKind::Chat.as_str().to_string(),
+                usage: Usage::unreported(),
+            },
+        };
+        let mut bytes = Vec::new();
+        oxa_session::encode_entry(&entry, &mut bytes);
+        let restored = oxa_session::decode_entry(&bytes).unwrap();
+        t.apply(&restored);
+        let estimate = estimate_of(&t);
+        assert!(estimate > 0);
+        t.push(WireMsg::assistant("another unreported reply"));
+        t.apply(&restored);
+        assert!(estimate_of(&t) > estimate);
+        t.set_usage(&usage(0, 0));
+        assert_eq!(estimate_of(&t), 0);
+        assert_eq!(t.usage_wire_len(), Some(t.wire().len()));
     }
 
     #[test]
