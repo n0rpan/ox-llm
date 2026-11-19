@@ -337,7 +337,7 @@ impl DangerRules {
             return None;
         }
         let peeled = peel(words, unknown_in);
-        let unknown = peeled.unknown;
+        let mut unknown = peeled.unknown;
         // A redirection belongs to the simple command, whatever wraps it, and the shell opens
         // it in the current directory before `env` moves: `env -C / true > .npmrc` writes here.
         for (op, target) in redirects {
@@ -348,19 +348,26 @@ impl DangerRules {
         // Each nested `env -C <dir>` changes the directory for the next wrapper, so resolve
         // relative targets in order rather than against the original command directory.
         let mut moved = None;
+        let mut move_unknown = false;
         for dir in &peeled.dirs {
+            let expanded = expand_home(dir, &ctx.guard.home);
+            // An absolute directory does not depend on an earlier directory that could not be
+            // resolved. A relative one does, so keep the final command conservative instead of
+            // silently falling back to the original cwd.
+            if move_unknown && !Path::new(&expanded).is_absolute() {
+                moved = None;
+                continue;
+            }
             let base = moved.as_deref().unwrap_or(ctx.cwd);
             let nested = Ctx {
                 cwd: base,
                 root: ctx.root,
                 guard: ctx.guard,
             };
-            let Some(resolved) = nested.resolve(dir) else {
-                moved = None;
-                break;
-            };
-            moved = Some(resolved);
+            moved = nested.resolve(dir).and_then(|path| resolve_real(&path));
+            move_unknown = moved.is_none();
         }
+        unknown |= move_unknown;
         let scoped = moved.as_ref().map(|dir| Ctx {
             cwd: dir,
             root: ctx.root,
@@ -1570,21 +1577,25 @@ fn skip_positional(words: &[String], from: usize, with_arg: &[&str]) -> usize {
 /// Skips `env`'s options and `NAME=value` words. `env -S 'cmd ...'` runs that string.
 fn skip_env(words: &[String], from: usize, inline: &mut Vec<String>, dirs: &mut Vec<String>) -> usize {
     let mut i = from;
+    let mut dir = None;
     while i < words.len() {
         let w = words[i].as_str();
         if let Some(value) = w.strip_prefix("--chdir=") {
-            dirs.push(value.to_string());
+            dir = Some(value.to_string());
             i += 1;
             continue;
         }
         if matches!(w, "-C" | "--chdir") && i + 1 < words.len() {
             // The wrapped command runs in this directory, not in the current one.
-            dirs.push(words[i + 1].clone());
+            dir = Some(words[i + 1].clone());
             i += 2;
             continue;
         }
         if w == "-S" || w == "--split-string" {
             let Some(split) = words.get(i + 1) else {
+                if let Some(dir) = dir {
+                    dirs.push(dir);
+                }
                 return words.len();
             };
             // The words after the split string are that command's own arguments.
@@ -1594,6 +1605,9 @@ fn skip_env(words: &[String], from: usize, inline: &mut Vec<String>, dirs: &mut 
             } else {
                 format!("{split} {}", rest.join(" "))
             });
+            if let Some(dir) = dir {
+                dirs.push(dir);
+            }
             return words.len();
         }
         if matches!(w, "-u" | "--unset") {
@@ -1603,6 +1617,9 @@ fn skip_env(words: &[String], from: usize, inline: &mut Vec<String>, dirs: &mut 
         } else {
             break;
         }
+    }
+    if let Some(dir) = dir {
+        dirs.push(dir);
     }
     i.min(words.len())
 }
