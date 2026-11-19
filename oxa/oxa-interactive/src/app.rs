@@ -418,6 +418,12 @@ impl StoppedJobWakes {
     fn recover(&mut self, session_id: &str) {
         self.0.remove(session_id);
     }
+
+    fn recover_for_prompt(&mut self, session_id: &str, targets_current_session: bool) {
+        if targets_current_session {
+            self.recover(session_id);
+        }
+    }
 }
 
 /// Install the worker's idle wake on `handle`: the session calls it when something the worker
@@ -826,12 +832,12 @@ fn worker_loop_inner(
             }
             other => {
                 let Some(s) = session.as_mut() else { break };
-                if matches!(
-                    other,
-                    SessionCmd::Prompt { .. } | SessionCmd::RecoveryPrompt { .. }
-                ) {
-                    stopped_job_wakes.recover(&s.inner().sref.id);
-                }
+                let recovers_job_wakes = match &other {
+                    SessionCmd::Prompt { .. } => true,
+                    SessionCmd::RecoveryPrompt { handle, .. } => handle.same_instance(&s.handle()),
+                    _ => false,
+                };
+                stopped_job_wakes.recover_for_prompt(&s.inner().sref.id, recovers_job_wakes);
                 let reload = matches!(other, SessionCmd::Reload);
                 let status = match &other {
                     SessionCmd::Navigate { .. } => Some("Navigated to selected point"),
@@ -2812,7 +2818,19 @@ mod job_wake_gate_tests {
             "a replacement outcome alone would incorrectly permit the wake"
         );
 
-        stopped.recover("session");
+        stopped.recover_for_prompt("session", true);
         assert!(stopped.permits("session"));
+    }
+
+    /// A recovery prompt still bound to the replaced session is not owner input for the
+    /// current session, so it must not release that session's stopped-job boundary.
+    #[test]
+    fn a_stale_recovery_prompt_does_not_release_the_boundary() {
+        let mut stopped = StoppedJobWakes::default();
+        stopped.0.insert("session".into());
+
+        stopped.recover_for_prompt("session", false);
+
+        assert!(!stopped.permits("session"));
     }
 }

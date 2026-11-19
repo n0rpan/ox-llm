@@ -13,7 +13,9 @@ use oxc_gateway::{
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 
+mod catalog;
 mod routing;
+pub(crate) use catalog::cloud_enabled;
 
 pub(crate) const SETTING: &str = "oxa.engine.inProcessCloud";
 pub(crate) const GO_SETTING: &str = "oxa.cloud.opencode.enabled";
@@ -271,6 +273,9 @@ fn select_for(
     shared: SharedEngines,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Selected, OxaError> {
+    // A provider key or the ChatGPT sign-in is the owner's switch: see `catalog`.
+    let keyed_user = catalog::with_keyed_defaults(user, dirs);
+    let user = &*keyed_user;
     let (requested, scope, endpoint, owner_selected, show_status) = match purpose {
         SelectPurpose::Model(selection) => (
             selection.pattern,
@@ -485,6 +490,8 @@ fn open_gateway_with_go(
     configure: impl FnOnce(Gateway) -> Result<Gateway, OxaError>,
     go_enabled: Option<bool>,
 ) -> Result<OpenedGateway, OxaError> {
+    let keyed_user = catalog::with_keyed_defaults(user, dirs);
+    let user = &*keyed_user;
     // Shared callers defer key checks until the guest catalog is validated.
     let go_configured = go_enabled == Some(true);
     let empty_cloud = Value::Object(serde_json::Map::new());

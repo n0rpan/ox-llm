@@ -129,7 +129,7 @@ const SCHEMA: &[KeyDef] = &[
     key("fullscreenWheelScrollLines", Kind::Any, "\"auto\""),
     key("hideThinkingBlock", Kind::Bool, "false"),
     key("hooks", Kind::Object, "{}"),
-    key("httpIdleTimeoutMs", Kind::Any, "300000"),
+    key("httpIdleTimeoutMs", Kind::Any, "900000"),
     key("httpProxy", Kind::String, "null"),
     verdict_o("images.autoResize", Kind::Bool, "true"),
     key("images.blockImages", Kind::Bool, "false"),
@@ -169,8 +169,11 @@ const SCHEMA: &[KeyDef] = &[
     // V020-OPTIMIZE #1 / #2: unset = on.
     key("oxa.diet.output", Kind::Bool, "null"),
     key("oxa.diet.tools", Kind::Bool, "null"),
+    // Cloud resilience: a reply with no text and no tool call is retried; user settings only
+    // (`settings.rs` reads it via `user_u32`, the descriptor row carries `.user_only()`).
+    key("oxa.emptyReplyRetries", Kind::Number, "1"),
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
-    key("oxa.engine.inProcessCloud", Kind::Bool, "false"),
+    key("oxa.engine.inProcessCloud", Kind::Bool, "null"),
     key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
@@ -198,8 +201,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.lead.serve", Kind::Object, "{}"),
     // Exact protected owner Session ID for free-text Lead chat; user settings only.
     key("oxa.lead.sessionId", Kind::String, "null"),
-    // Read-only lead shadow preset; user settings only, default off.
-    key("oxa.lead.shadow", Kind::Bool, "false"),
+    // Read-only lead shadow preset; user settings only, on by default (`false` opts out).
+    key("oxa.lead.shadow", Kind::Bool, "true"),
     // L1: apply a changed settings file at the next run; on by default, `false` opts out.
     key("oxa.liveSettings", Kind::Bool, "true"),
     // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
@@ -214,6 +217,8 @@ const SCHEMA: &[KeyDef] = &[
     // V020-OPTIMIZE #13 / OXA-LOCAL-FIRST F1: timing only (bytes unchanged); unset = on.
     key("oxa.prefill.paste", Kind::Bool, "null"),
     key("oxa.prefill.tools", Kind::Bool, "null"),
+    // B2b: user-only largest image and per-batch image budget; 0 = no limit.
+    key("oxa.read.maxImageBytes", Kind::Number, "20971520"),
     key("oxa.reportIssue.dailyNew", Kind::Number, "null"),
     key("oxa.reportIssue.repo", Kind::String, "null"),
     key("oxa.reportIssue.semanticDedupe", Kind::Bool, "false"),
@@ -240,7 +245,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.subagent.enabled", Kind::Bool, "null"),
     // Children per parent session (running or queued) and tasks or steps per call; at least 1.
     key("oxa.subagent.maxChildren", Kind::Number, "8"),
-    key("oxa.subagent.remoteConcurrency", Kind::Number, "4"),
+    key("oxa.subagent.remoteConcurrency", Kind::Number, "8"),
     key("oxa.subagent.resultCap", Kind::Number, "6144"),
     key("oxa.subagent.smallContext", Kind::Bool, "false"),
     key("oxa.subagent.softTokens", Kind::Number, "24000"),
@@ -261,8 +266,10 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.toolRepair", Kind::Bool, "true"),
     // The repeat guard for identical tool calls (oxa-core `repeat.rs`).
     key("oxa.toolRepeatGuard", Kind::Bool, "true"),
+    // The `wait` tool is declared in every session; `false` opts out (read at session start).
+    key("oxa.tools.wait", Kind::Bool, "true"),
     // W2: the `wait` tool's `until` conditions, answered by hook sets (`Hooks::poll_event`).
-    key("oxa.wait.maxSeconds", Kind::Number, "3600"),
+    key("oxa.wait.maxSeconds", Kind::Number, "86400"),
     key("oxa.wait.pollSeconds", Kind::Number, "30"),
     // O-169: `web_search` (oxa-web); declared only with a Brave key and never offline.
     key("oxa.webSearch.enabled", Kind::Bool, "true"),
@@ -292,7 +299,7 @@ const SCHEMA: &[KeyDef] = &[
     key("retry.baseDelayMs", Kind::Number, "2000"),
     key("retry.enabled", Kind::Bool, "true"),
     key("retry.maxAgentDelayMs", Kind::Number, "60000"),
-    key("retry.maxRetries", Kind::Number, "3"),
+    key("retry.maxRetries", Kind::Number, "10"),
     key("retry.provider.maxRetries", Kind::Number, "0"),
     key("retry.provider.maxRetryDelayMs", Kind::Number, "60000"),
     key("retry.provider.timeoutMs", Kind::Number, "null"),
