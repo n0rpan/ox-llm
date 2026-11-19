@@ -184,6 +184,7 @@ const SCHEMA: &[KeyDef] = &[
     // V020-OPTIMIZE #13 / OXA-LOCAL-FIRST F1: timing only (bytes unchanged); unset = on.
     key("oxa.prefill.paste", Kind::Bool, "null"),
     key("oxa.prefill.tools", Kind::Bool, "null"),
+    key("oxa.reportIssue.dailyNew", Kind::Number, "null"),
     key("oxa.reportIssue.repo", Kind::String, "null"),
     key("oxa.reportIssue.semanticDedupe", Kind::Bool, "false"),
     // B3 (lane harden): user settings only (read from the user file whatever the project says).

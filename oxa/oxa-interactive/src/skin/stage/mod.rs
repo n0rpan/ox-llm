@@ -5,3 +5,4 @@
 //! * Randomness comes only from a seed the caller passes in, so a session replays the same picks.
 
 pub mod pick;
+pub mod render;
