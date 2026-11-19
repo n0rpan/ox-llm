@@ -7,9 +7,9 @@
 //! * `start` checks, in order: the name, the goal, the parent session id, a worker of that name in
 //!   this session, `oxa.workers.max` live workers, an existing branch `agent/<name>`. Then it makes
 //!   the worktree (`git worktree add`), writes the goal file (mode 0600), and spawns the child.
-//! * The child runs under `env -C <worktree>`: its cwd is the worktree and its environment is
-//!   `launch::child_env`. Only the removed names and the changed or new values reach argv (the
-//!   worker marker, never a value the parent already has), so no secret is listed in `ps`.
+//! * The child runs under `env -C <worktree>`: its cwd is the worktree. Its environment is exactly
+//!   `launch::child_env` with the trusted `PATH`, passed to the supervisor (which clears the
+//!   environment first), so no value reaches argv and no secret is listed in `ps`.
 //! * `Hooks::shutdown` stops every worker through the supervisor.
 use super::launch::{child_argv, child_env, valid_name, worktree_argv, WorkerMode, WorkerSpec};
 use super::proc::Supervisor;
@@ -223,32 +223,23 @@ fn write_private(dir: &Path, path: &Path, text: &str) -> io::Result<()> {
     })
 }
 
-/// The argv prefix that runs the child in `cwd` with environment `child`, given the process
-/// environment `parent`: `-u NAME` for each name the child lacks, `NAME=value` for each new or
-/// changed one. Everything else is inherited.
-fn env_wrapper(
-    program: &Path,
-    cwd: &Path,
-    parent: &[(String, String)],
-    child: &[(String, String)],
-) -> Vec<String> {
-    let mut argv = vec![
+/// The argv prefix that runs the child in `cwd`. The environment is not set here: the supervisor
+/// clears it and applies exactly [`worker_env`], so the policy lives in one place.
+fn cwd_wrapper(program: &Path, cwd: &Path) -> Vec<String> {
+    vec![
         program.to_string_lossy().into_owned(),
         "-C".to_string(),
         cwd.to_string_lossy().into_owned(),
-    ];
-    for (name, _) in parent {
-        if !child.iter().any(|(c, _)| c == name) {
-            argv.push("-u".to_string());
-            argv.push(name.clone());
-        }
-    }
-    for (name, value) in child {
-        if !parent.iter().any(|(p, v)| p == name && v == value) {
-            argv.push(format!("{name}={value}"));
-        }
-    }
-    argv
+    ]
+}
+
+/// The exact environment of a worker: `launch::child_env` (no trust or session hint,
+/// `OXA_WORKER_DEPTH=1`, the parent's offline policy) with `PATH` set to the trusted one.
+fn worker_env(parent: &[(String, String)], offline: bool, path: &std::ffi::OsStr) -> Vec<(String, String)> {
+    let mut env = child_env(parent, offline);
+    env.retain(|(k, _)| k != "PATH");
+    env.push(("PATH".into(), path.to_string_lossy().into_owned()));
+    env
 }
 
 /// A single safe path component for a parent session id (`workers/<slug>/`): session ids are
@@ -502,18 +493,18 @@ impl WorkerCore {
             Ok(v) => v,
             Err(e) => return ToolOutput::error(format!("worker: {e}")),
         };
-        let env = child_env(&self.parent_env, oxa_proto::offline());
+        let env = worker_env(&self.parent_env, oxa_proto::offline(), &tools.path);
         // `env` runs outside the sandbox: resolved from the session's project like every other
         // host tool, never from a project-controlled PATH entry.
         let Some(env_bin) = tools.program("env") else {
             return ToolOutput::error("worker: env was not found in a trusted PATH directory");
         };
-        let mut command = env_wrapper(&env_bin, &worktree, &self.parent_env, &env);
+        let mut command = cwd_wrapper(&env_bin, &worktree);
         command.push(self.oxa_bin.to_string_lossy().into_owned());
         command.extend(argv.iter().cloned());
         let refs: Vec<&str> = command.iter().map(String::as_str).collect();
         let log = dir.join(format!("{name}.log"));
-        let pgid = match self.supervisor.spawn(&refs, &log) {
+        let pgid = match self.supervisor.spawn(&refs, &env, &log) {
             Ok(pgid) => pgid,
             Err(e) => return ToolOutput::error(format!("worker: cannot start the process: {e}")),
         };
@@ -873,6 +864,56 @@ mod tests {
         assert!(!out.is_error, "{}", out.text);
         assert!(!root.join("ran-git").exists(), "the project git shim ran");
         assert!(worktree_path(&repo, "alpha").unwrap().is_dir());
+        let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn worker_spawn_gets_exact_child_env() {
+        let (root, repo, agent, _) = fixture("exactenv");
+        let out_file = root.join("env.out");
+        let fake = root.join("env-oxa");
+        fs::write(
+            &fake,
+            format!("#!/bin/sh\n/usr/bin/env > '{}'\n", out_file.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let env = vec![
+            ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+            ("HOME".to_string(), root.display().to_string()),
+            ("OXA_TRUST_PROJECT".to_string(), "1".to_string()),
+            ("OXA_SESSION_HINT".to_string(), "abc.s1".to_string()),
+            ("KEEP_ME".to_string(), "yes".to_string()),
+        ];
+        let hooks = hooks_with(&fake, &agent, env, ParentScope::default());
+        set_session(&hooks, "parent-1");
+        let out = hooks.core.start(
+            &json!({"action": "start", "name": "alpha", "goal": "one"}),
+            &repo,
+            Mode::Workspace,
+            Autonomy::Standard,
+        );
+        assert!(!out.is_error, "{}", out.text);
+        for _ in 0..100 {
+            if out_file.exists() && fs::metadata(&out_file).map(|m| m.len() > 0).unwrap_or(false) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let text = fs::read_to_string(&out_file).expect("env output");
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(
+            !lines.iter().any(|l| l.starts_with("OXA_TRUST_PROJECT=")),
+            "{text}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.starts_with("OXA_SESSION_HINT=")),
+            "{text}"
+        );
+        assert!(lines.contains(&"OXA_WORKER_DEPTH=1"), "{text}");
+        assert!(lines.contains(&"KEEP_ME=yes"), "{text}");
+        assert!(lines.iter().any(|l| l.starts_with("PATH=")), "{text}");
         let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
         let _ = fs::remove_dir_all(&root);
     }
