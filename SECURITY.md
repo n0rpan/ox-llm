@@ -17,6 +17,11 @@ Treat as **high** severity:
 The sandbox can forward the owner's `CARGO_TARGET_DIR` to worker shells. External cache
 paths are writable only through an explicit owner `oxa.sandbox.writePaths` mount.
 
+`oxa send` keeps owner messages over the 256 KiB inline inbox limit in the receiving session's
+private spill directory and queues a short pointer. The sandbox exposes that spill directory only
+to the receiving session and sessions inheriting its history; the private agent directory remains
+denied to model tools.
+
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 
 Do not report: style, pre-existing issues outside the diff, test-only code that never runs in production, or hypothetical risks without a concrete path.

@@ -116,19 +116,16 @@ pub fn remove_inbox(agent_dir: &Path, id: Option<&str>) -> Result<usize, oxa_pro
     remove()
 }
 
-/// Extension of a full message too large to queue inline. The watcher never reads it.
-const SPILL_EXTENSION: &str = "spill";
-
 /// Publish exactly one message without contacting an engine or requiring a running owner.
-/// The owner's text is never refused for size: a message over the inline limit is kept in full
-/// in a private spill file in the session's inbox directory, and a short follow-up points at it.
-/// `oxa wipe` removes the spill with the rest of the session's inbox.
 pub fn send_inbox(agent_dir: &Path, id: &str, text: &str) -> io::Result<()> {
     if text.len() <= INBOX_MESSAGE_BYTES {
         return publish(agent_dir, id, "msg", text).map(|_| ());
     }
-    let spill = publish(agent_dir, id, SPILL_EXTENSION, text)?;
-    let path = agent_dir.join("inbox").join(id).join(spill);
+    // `Dirs::tmp_dir` is `<agent_dir>/tmp`; the active session installs its own child as the
+    // narrowly scoped readable spill exception without exposing the rest of the agent directory.
+    let spill_root = agent_dir.join("tmp");
+    let spill = publish_in(directory_at(&spill_root, id)?, "txt", text)?;
+    let path = spill_root.join(id).join(spill);
     let pointer = format!(
         "The message is {} bytes, too large to queue inline. Its full text is in the private file {}; read that file.",
         text.len(),
@@ -160,6 +157,18 @@ fn control_extension(session: &SessionRef) -> String {
 /// Publish atomically and return the published file name inside the session's inbox directory.
 fn publish(agent_dir: &Path, id: &str, extension: &str, text: &str) -> io::Result<String> {
     let dir = directory(agent_dir, id)?;
+    publish_in(dir, extension, text)
+}
+
+fn directory_at(root: &Path, id: &str) -> io::Result<Directory> {
+    if !valid_inbox_id(id) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid session id"));
+    }
+    DirBuilder::new().recursive(true).mode(0o700).create(root)?;
+    Directory::open(root)?.child(id)
+}
+
+fn publish_in(dir: Directory, extension: &str, text: &str) -> io::Result<String> {
     let name = format!(
         "{:032}-{}",
         std::time::SystemTime::now()

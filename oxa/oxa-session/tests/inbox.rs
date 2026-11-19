@@ -233,6 +233,7 @@ fn inbox_wipe_covers_orphans_temporary_files_and_rejects_symlink_parents() {
 fn inbox_large_message_spills() {
     let env = TestEnv::new();
     let agent = env.root().join("agent");
+    let spill_root = agent.join("tmp");
     let full = "y".repeat(256 * 1024 + 1);
     send_inbox(&agent, "spilled", &full).unwrap();
     let (tx, rx) = mpsc::channel();
@@ -241,10 +242,10 @@ fn inbox_large_message_spills() {
     drop(watch);
     assert!(pointer.starts_with("The message is 262145 bytes"), "{pointer}");
     assert!(rx.try_recv().is_err(), "exactly one pointer is queued");
-    let spill: Vec<_> = fs::read_dir(agent.join("inbox/spilled"))
+    let spill: Vec<_> = fs::read_dir(spill_root.join("spilled"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "spill"))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "txt"))
         .collect();
     assert_eq!(spill.len(), 1, "one private spill file holds the full text");
     assert_eq!(fs::read_to_string(&spill[0]).unwrap(), full);
