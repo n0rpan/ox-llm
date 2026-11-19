@@ -1003,7 +1003,9 @@ fn prepare(
     // way: plan mode and offline/net-off commands need it.
     let kind = crate::run_kind::run_kind(a, env, &child, mode);
     let yolo_level = matches!(level, oxa_proto::PermissionMode::Yolo);
-    let os_sandbox = crate::run_kind::os_sandbox_wanted(kind, a, &user_settings, yolo_level);
+    // Keep the configured policy separate from the live yolo override. If the user leaves
+    // startup yolo, FullAccess immediately restores this policy.
+    let os_sandbox = crate::run_kind::os_sandbox_wanted(kind, a, &user_settings);
     if let Some(text) = crate::run_kind::no_sandbox_notice(kind, os_sandbox, yolo_level) {
         notices.push((Level::Info, text.to_string()));
     }

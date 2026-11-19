@@ -48,21 +48,16 @@ impl FullAccess {
         }
     }
 
-    /// #1512 S3: `false` runs bash and the exec hooks with the user's rights (no OS sandbox).
+    /// #1512 S3: `false` runs model bash with the user's rights (no OS sandbox).
     pub fn with_os_sandbox(mut self, on: bool) -> FullAccess {
         self.os_sandbox = on;
         self
     }
 
-    /// #1512 S3: the sandbox of the exec hooks. With the OS sandbox on they stay in the wrapped
-    /// sandbox at every level, also for the inline `run` path (a full-access switch never lets
-    /// them out); without it they go through `full` and run with the user's rights.
+    /// Exec hooks are trusted project configuration, but retain their dedicated no-network,
+    /// private-path sandbox independently of the interactive bash policy.
     pub fn hook_sandbox(full: &Arc<FullAccess>) -> Arc<dyn Sandbox> {
-        if full.os_sandbox {
-            full.inner.clone()
-        } else {
-            full.clone() as Arc<dyn Sandbox>
-        }
+        full.inner.clone()
     }
 
     /// Reuse the process's switch and launch settings with the session's own sandbox.
@@ -100,14 +95,13 @@ impl FullAccess {
         self.offline || (self.net_off && self.unsandboxed())
     }
 
-    /// `s` bypasses the sandbox: the run is unsandboxed and the spec may write (not plan mode).
-    /// Without the OS sandbox a read-only spec (plan) also runs unsandboxed when bwrap is
-    /// missing; its policy already allows only read-only commands.
+    /// `s` bypasses the sandbox when the run is unsandboxed and the spec may write. Read-only
+    /// plan specs always delegate to the wrapped sandbox and fail closed if it is unavailable.
     fn bypass(&self, s: &ExecSpec) -> bool {
         if self.unsandboxed() && s.writable {
             return true;
         }
-        !self.os_sandbox && !s.writable && self.inner.check().is_err()
+        false
     }
 
     /// The argv `s` is started with: `bash -c <command>` when unsandboxed (bwrap without

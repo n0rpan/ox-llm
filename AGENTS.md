@@ -14,8 +14,10 @@ maintainer, who says in the PR when a hardware check is needed.
 - Keep engine transport selection, native binary/launch configuration, `allowRemote`, share
   authority and login/token paths user-only. A project file must never override these decisions.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
-- Preserve sandbox/bwrap enforcement and file-tool denials for private paths. Only explicit
-  owner-selected yolo deliberately disables the permission floor.
+- Preserve file-tool denials for private paths. Attended runs execute model bash with the user's
+  rights by default and dangerous commands ask; `--sandbox` opts them into bwrap. Unattended runs
+  keep bwrap by default. Explicit owner-selected yolo disables the permission floor. Exec hooks
+  retain their dedicated sandbox in every mode.
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
   in the ledger (an unknown cost is recorded as unknown). Limits are owner configuration: with no cap

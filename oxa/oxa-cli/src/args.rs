@@ -489,7 +489,7 @@ const OPTIONS: &[(&str, &str)] = &[
     ),
     (
         "--sandbox",
-        "Run bash and hooks in the OS sandbox (bwrap) for this interactive run; default: no OS sandbox, dangerous commands ask",
+        "Run bash in the OS sandbox (bwrap) for this interactive run; hooks are always sandboxed; default: no OS sandbox, dangerous commands ask",
     ),
     (
         "--                ",

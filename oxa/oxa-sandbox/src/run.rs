@@ -117,12 +117,13 @@ pub fn run_unsandboxed_capture(
     cmd.arg("-c")
         .arg(&s.command)
         .current_dir(&s.cwd)
+        .env_clear()
         .envs(s.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     execute(cmd, "bash", None, s.timeout_s, cancel, live, capture)
 }
 
 /// [`run_unsandboxed`] with `stdin` written to the command's standard input and then closed
-/// (#1512: exec hooks without the OS sandbox run with the user's rights, as bash does).
+/// Used by explicitly host-side callers that must provide standard input.
 pub fn run_unsandboxed_stdin(
     s: &ExecSpec,
     stdin: &[u8],
@@ -133,6 +134,7 @@ pub fn run_unsandboxed_stdin(
     cmd.arg("-c")
         .arg(&s.command)
         .current_dir(&s.cwd)
+        .env_clear()
         .envs(s.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     execute(cmd, "bash", Some(stdin), s.timeout_s, cancel, live, true)
 }

@@ -211,8 +211,8 @@ fn no_os_sandbox_bypasses_bwrap_for_writable_spec() {
     let _ = std::fs::remove_file(&target);
 }
 
-/// #1512 S3: a read-only (plan) spec keeps bwrap when bwrap is present, with or without the
-/// OS sandbox: only a missing bwrap lets the read-only spec run with the user's rights.
+/// #1512 S3: a read-only (plan) spec always keeps bwrap. Missing bwrap fails closed rather
+/// than treating the command classifier as filesystem confinement.
 #[test]
 fn no_os_sandbox_plan_spec_uses_bwrap_when_present() {
     let env = TestEnv::new();
@@ -223,9 +223,22 @@ fn no_os_sandbox_plan_spec_uses_bwrap_when_present() {
     assert_eq!(sb.launch_argv(&s).unwrap()[0], "bwrap");
     let r = sb.run(&s, &CancelToken::new(), &mut |_| {});
     assert_eq!(r.exit, Some(42), "plan keeps the wrapped sandbox");
+
+    let missing = FullAccess::new(
+        Arc::new(NoSandbox),
+        YoloSwitch::new(Autonomy::Standard),
+        "",
+        env.home(),
+        false,
+        false,
+    )
+    .with_os_sandbox(false);
+    let r = missing.run(&s, &CancelToken::new(), &mut |_| {});
+    assert_eq!(r.exit, None, "plan must fail closed without bwrap");
 }
 
-/// #1512 S3: exec hooks without the OS sandbox run with the user's rights, with their stdin.
+/// The raw FullAccess stdin path remains host-side when selected directly. Dispatch does not
+/// give this view to exec hooks; `hook_sandbox` is tested below.
 #[test]
 fn no_os_sandbox_hooks_run_unsandboxed() {
     let env = TestEnv::new();
@@ -321,7 +334,7 @@ fn no_os_sandbox_persistence_notice_is_none() {
 }
 
 /// #1512 S3: with the OS sandbox on, the exec hooks' sandbox keeps the inline (`run`) path
-/// wrapped too when yolo is switched on live; without it the hooks run with the user's rights.
+/// wrapped too when yolo is switched on live, including when interactive bash opted out.
 #[test]
 fn os_sandbox_on_inline_hooks_stay_sandboxed_under_yolo() {
     let env = TestEnv::new();
@@ -351,10 +364,10 @@ fn os_sandbox_on_inline_hooks_stay_sandboxed_under_yolo() {
     );
     let hooks = FullAccess::hook_sandbox(&off);
     let r = hooks.run(&s, &CancelToken::new(), &mut |_| {});
-    assert_eq!(r.exit, Some(0), "{}", String::from_utf8_lossy(&r.output));
+    assert_eq!(r.exit, None, "{}", String::from_utf8_lossy(&r.output));
     assert!(
-        target.exists(),
-        "without the OS sandbox the hook runs with the user's rights"
+        !target.exists(),
+        "interactive bash policy must not release exec hooks from their sandbox"
     );
     let _ = std::fs::remove_file(&target);
 }
