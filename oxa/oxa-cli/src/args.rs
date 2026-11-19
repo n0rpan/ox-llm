@@ -83,6 +83,7 @@ pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -
         id,
         CommandId::Admission
             | CommandId::Help
+            | CommandId::Status
             | CommandId::WorkStatus
             | CommandId::WorkBoard
             | CommandId::Memory

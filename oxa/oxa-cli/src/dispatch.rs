@@ -245,6 +245,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::Goal
                     | CommandId::Admission
                     | CommandId::Help
+                    | CommandId::Status
                     | CommandId::WorkStatus
                     | CommandId::WorkBoard
                     | CommandId::Memory
