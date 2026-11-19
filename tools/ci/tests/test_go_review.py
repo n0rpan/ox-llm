@@ -419,23 +419,18 @@ class GoReview(unittest.TestCase):
         comments[0]['user']['login'] = 'outside-author'
         self.assertFalse(review.reviewed(comments, SHA, marker['diff_hash']))
 
-    def test_busy_repo_comment_history_does_not_fail_the_review(self):
+    def test_incomplete_history_defers_instead_of_failing_open(self):
+        # Busy repositories exceed the comment-listing bound. An uncountable quota or an
+        # unreadable same-diff history must defer the review: no reservation, no provider call.
         busy = [{'id': i, 'user': {'login': 'someone'}, 'body': 'chat'} for i in range(1, 101)]
-        with contextlib.redirect_stdout(io.StringIO()) as output:
-            calls, posted, auth = self.run_review(daily_comments=busy)
-        self.assertEqual((len(posted), auth), (1, 1))
-        self.assertIn('Warning', output.getvalue())
-
-    def test_incomplete_count_warns_and_continues(self):
-        busy = [{'id': i, 'user': {'login': 'someone'}, 'body': 'chat'} for i in range(1, 101)]
-        with contextlib.redirect_stdout(io.StringIO()) as output:
-            _, posted, auth = self.run_review(comments=busy)
-        self.assertEqual((len(posted), auth), (1, 1))
-        self.assertIn('per-PR', output.getvalue())
-        with contextlib.redirect_stdout(io.StringIO()) as output:
-            _, posted, auth = self.run_review(daily_comments=busy)
-        self.assertEqual((len(posted), auth), (1, 1))
-        self.assertIn('daily Go review count', output.getvalue())
+        with self.assertRaisesRegex(review.Skipped, 'per-PR'):
+            self.run_review(comments=busy)
+        with self.assertRaisesRegex(review.Skipped, 'daily'):
+            self.run_review(daily_comments=busy)
+        # The same bound with a configured quota set to zero still refuses: nothing counted,
+        # nothing spent.
+        with self.assertRaisesRegex(review.Skipped, 'quota'):
+            self.run_review(daily_comments=busy, max_per_day='0')
 
     def test_instruction_and_author_boundaries(self):
         self.assertTrue(review.eligible(PR, SHA))

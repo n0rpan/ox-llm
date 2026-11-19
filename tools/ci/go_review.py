@@ -219,8 +219,9 @@ def check_daily_quota(headers, day):
                     if len(seen) >= limit:
                         raise Skipped('Daily Go review quota is exhausted')
     except Incomplete:
-        # Busy repositories can exceed the listing bound; record the gap and continue.
-        print('Warning: daily Go review count could not be completed; quota not verified, review continues')
+        # A quota that cannot be counted is not a licence to exceed it: defer the review
+        # instead of failing open (owner policy: a configured budget is a check).
+        raise Skipped('Daily Go review quota could not be verified; review deferred') from None
 
 
 def marker(sha, diff_hash, models, verdict, count):
@@ -422,7 +423,8 @@ def main():
         if any(reviewed(comments, sha, diff_hash) for comments in comment_pages(comments_url, headers)):
             return
     except Incomplete:
-        print('Warning: per-PR Go review history could not be completed; review continues')
+        # An unreadable history cannot prove this diff was already reviewed: defer.
+        raise Skipped('Per-PR Go review history could not be verified; review deferred') from None
     day = utc_day()
     check_daily_quota(headers, day)
     if not eligible(request(pull, headers), sha):
