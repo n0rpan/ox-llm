@@ -16,7 +16,7 @@ use std::{sync::Arc, time::Duration};
 mod routing;
 
 pub(crate) const SETTING: &str = "oxa.engine.inProcessCloud";
-const GO_SETTING: &str = "oxa.cloud.opencode.enabled";
+pub(crate) const GO_SETTING: &str = "oxa.cloud.opencode.enabled";
 type Selected = (Arc<dyn Engine>, Vec<String>);
 
 pub(crate) struct ModelSelection<'a> {
@@ -259,9 +259,7 @@ pub(crate) fn restores_go_model(user: &Settings, model: &str) -> bool {
             && user
                 .get("oxa.local.models")
                 .and_then(Value::as_object)
-                .is_some_and(|models| {
-                    routing::resolve_in_catalog(model, "", models.keys().cloned()).is_some()
-                }))
+                .is_some_and(|models| routing::catalog_owns(model, "", models.keys().cloned())))
 }
 
 fn select_for(
@@ -306,9 +304,10 @@ fn select_for(
     let cloud_models = aliases("oxa.cloud.models");
     // A configured local alias stays local whatever shape its name has, in a single `--model`
     // and in every `--models` pattern of the scope.
-    let local_alias = |model: &str| {
-        native_local && routing::resolve_in_catalog(model, endpoint, local_models.iter().cloned()).is_some()
-    };
+    // Only an exact local owner excludes the Go model of the same name: a fuzzy match on
+    // another name (`opencode/x-local` for `opencode/x`) must not shadow it.
+    let local_alias =
+        |model: &str| native_local && routing::catalog_owns(model, endpoint, local_models.iter().cloned());
     let requested_local = requested.is_some_and(local_alias);
     let requests_go = |pattern: &str| {
         routing::is_go_model(pattern, endpoint)

@@ -242,7 +242,7 @@ fn supervised_child_arguments_do_not_authorize_keyed_go() {
 }
 
 #[test]
-fn native_go_continue_restores_a_keyed_session_without_explicit_cloud_enablement() {
+fn native_go_continue_of_a_keyed_session_needs_the_owner_switch() {
     let env = TestEnv::new();
     let mock = MockOpenAi::start_with(|base| {
         vec![
@@ -273,7 +273,28 @@ fn native_go_continue_restores_a_keyed_session_without_explicit_cloud_enablement
         String::from_utf8_lossy(&first.stderr)
     );
     assert!(String::from_utf8_lossy(&first.stdout).contains("Synthetic first reply"));
+    let posts = || {
+        mock.requests()
+            .iter()
+            .filter(|request| request.method == "POST")
+            .count()
+    };
+    assert_eq!(posts(), 1);
 
+    // The restored model is provenance-less: the session records the ID, not the owner's
+    // transport choice, so continuing it alone does not open the Go transport.
+    let resumed = run(
+        &env,
+        &["--continue", "--no-tools", "-p", "Synthetic resumed task"],
+    );
+    assert!(!resumed.status.success());
+    assert_eq!(posts(), 1, "no upstream request without the owner switch");
+    assert_eq!(rows(&env).len(), 1);
+
+    // The owner's own switch does continue it.
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings["oxa"]["cloud"]["opencode"]["enabled"] = json!(true);
+    fs::write(&path, settings.to_string()).unwrap();
     let resumed = run(
         &env,
         &["--continue", "--no-tools", "-p", "Synthetic resumed task"],
@@ -285,39 +306,7 @@ fn native_go_continue_restores_a_keyed_session_without_explicit_cloud_enablement
     );
     assert!(String::from_utf8_lossy(&resumed.stdout).contains("Synthetic resumed reply"));
     assert_eq!(terminal(&resumed)["session_id"], terminal(&first)["session_id"]);
-    assert_eq!(
-        mock.requests()
-            .iter()
-            .filter(|request| request.method == "POST")
-            .count(),
-        2
-    );
-    assert_eq!(rows(&env).len(), 2);
-
-    // A project may choose where it keeps sessions, but a session from there
-    // cannot turn on an owner-only cloud route.
-    let protected = env.agent_dir().join("sessions");
-    let files = session_files(&protected);
-    assert_eq!(files.len(), 1);
-    let project_session = env
-        .work()
-        .join("project-sessions")
-        .join(files[0].strip_prefix(&protected).unwrap());
-    fs::create_dir_all(project_session.parent().unwrap()).unwrap();
-    fs::copy(&files[0], project_session).unwrap();
-    env.write("work/.oxa/settings.json", r#"{"sessionDir":"project-sessions"}"#);
-    let project = run(
-        &env,
-        &["--continue", "--no-tools", "-p", "Synthetic project task"],
-    );
-    assert!(!project.status.success());
-    assert_eq!(
-        mock.requests()
-            .iter()
-            .filter(|request| request.method == "POST")
-            .count(),
-        2
-    );
+    assert_eq!(posts(), 2);
     assert_eq!(rows(&env).len(), 2);
     mock.assert_healthy();
 }
@@ -2389,5 +2378,70 @@ fn a_fresh_go_catalog_cache_serves_the_next_start_without_discovery() {
         "a fresh entry is consumed without a network call"
     );
     assert!(!String::from_utf8_lossy(&second.stderr).contains("Using a stale OpenCode model catalog."));
+    mock.assert_healthy();
+}
+
+/// #1435: a user-configured scope is the owner's too. `enabledModels` in the user settings
+/// selects the Go transport without `--models` on the command line.
+#[test]
+fn a_user_model_scope_selects_go_without_a_cli_scope() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"synthetic plan reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    settings["enabledModels"] = json!([MODEL]);
+    fs::write(&path, settings.to_string()).unwrap();
+    let output = run(&env, &["--no-tools", "-p", "Synthetic task"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("synthetic plan reply"));
+    assert_eq!(rows(&env)[0]["remote_provider"], "opencode");
+    mock.assert_healthy();
+}
+
+/// #1435: a fuzzy local alias does not own the exact Go name, so it cannot hide that model: the
+/// exact `opencode/…` request still goes to Go, and only an exact local alias stays local.
+#[test]
+fn a_fuzzy_local_alias_does_not_shadow_the_exact_go_model() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"synthetic plan reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    settings["oxa"]["engine"] = json!({"inProcessLocal":true, "inProcessCloud":false});
+    let alias = format!("{MODEL}-local");
+    settings["oxa"]["local"] = json!({
+        "binary":"/synthetic/not-launched-oxe",
+        "models":{(alias.clone()):{"model":"/synthetic/missing.gguf"}},
+        "limits":{(alias):{"context_window":4096,"max_output":64,"thinking":true,
+            "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,
+                                "mtp_state_bytes":0,"margin_bytes":1044480}}}
+    });
+    fs::write(&path, settings.to_string()).unwrap();
+    let output = run(&env, &["--model", MODEL, "--no-tools", "-p", "Synthetic task"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("synthetic plan reply"));
+    assert_eq!(rows(&env).len(), 1);
     mock.assert_healthy();
 }
