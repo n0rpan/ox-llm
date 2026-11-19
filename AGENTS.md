@@ -17,7 +17,9 @@ maintainer, who says in the PR when a hardware check is needed.
 - Preserve sandbox/bwrap enforcement and file-tool denials for private paths. Only explicit
   owner-selected yolo deliberately disables the permission floor. Off Linux there is no OS sandbox
   (owner policy, #1512): in-process guards stay, bash gets the same cleared base environment, and
-  the bash network is not restricted there; the start notice and the model env note say so.
+  the bash network is not restricted there; the start notice and the model env note say so. An
+  interactive Linux session without a usable bwrap runs bash unsandboxed with a start warning;
+  unattended runs (print, JSON, RPC) keep "bash is disabled".
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
   in the ledger (an unknown cost is recorded as unknown). Limits are owner configuration: with no cap

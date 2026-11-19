@@ -718,11 +718,20 @@ impl Built {
 }
 
 /// The sandbox bash and the exec hooks use, plus a start notice when it had to be replaced. A
-/// refused bash network (`oxa.sandbox.net: off`, offline) that this platform cannot enforce must
-/// not run: without an OS sandbox the command would keep the network the owner turned off, so
-/// bash is disabled instead of running.
-fn bash_sandbox(sandbox: Arc<dyn Sandbox>) -> (Arc<dyn Sandbox>, Option<String>) {
+/// refused bash network (`oxa.sandbox.net: off`, offline) that this platform cannot enforce
+/// cannot be honoured. Unattended runs and offline mode keep bash disabled, because the command
+/// would keep the network the owner turned off. An interactive session with only the
+/// `oxa.sandbox.net` setting keeps bash and warns that the network is not restricted: the owner
+/// is there to see it (yolo plan, S10).
+fn bash_sandbox(
+    sandbox: Arc<dyn Sandbox>,
+    interactive: bool,
+    offline: bool,
+) -> (Arc<dyn Sandbox>, Option<String>) {
     if !sandbox.network() && !sandbox.network_enforced() {
+        if interactive && !offline {
+            return (sandbox, Some(oxa_proto::NET_NOT_RESTRICTED_NOTICE.to_string()));
+        }
         let notice = format!(
             "{}; bash is disabled while the bash network is off",
             oxa_proto::NET_NOT_RESTRICTED_NOTICE
@@ -730,6 +739,51 @@ fn bash_sandbox(sandbox: Arc<dyn Sandbox>) -> (Arc<dyn Sandbox>, Option<String>)
         return (Arc::new(NoSandbox), Some(notice));
     }
     (sandbox, None)
+}
+
+/// The bash sandbox when bwrap is missing or unusable, with its start warning. Interactive
+/// sessions run unsandboxed and say so (the owner sees it and chose to run here); unattended runs
+/// keep "bash is disabled" (#1512). Platforms without bubblewrap always run unsandboxed.
+fn no_bwrap_sandbox(
+    interactive: bool,
+    reason: &str,
+    env: &Env,
+    dirs: &Dirs,
+) -> (Arc<dyn Sandbox>, (Level, String)) {
+    if !interactive && cfg!(target_os = "linux") {
+        return (
+            Arc::new(NoSandbox),
+            (
+                Level::Warning,
+                format!("bwrap is missing or unusable ({reason}); bash is disabled"),
+            ),
+        );
+    }
+    // The same cleared base environment bwrap gives: credential variables stay out.
+    let mut layout = oxa_sandbox::Layout::build(&oxa_sandbox::LayoutInputs {
+        home: dirs.home.clone(),
+        agent_dir: Some(dirs.agent_dir.clone()),
+        path_var: env.get("PATH").unwrap_or("").to_string(),
+        env: env.pairs().to_vec(),
+        ..Default::default()
+    });
+    // Toolchain locations only: the sandbox's /tmp redirections do not apply here.
+    layout.env = oxa_sandbox::toolchain_env(env.pairs());
+    let why = if cfg!(target_os = "linux") {
+        format!("bwrap is missing or unusable ({reason})")
+    } else {
+        oxa_sandbox::NO_OS_SANDBOX_NOTICE.to_string()
+    };
+    (
+        Arc::new(oxa_sandbox::Unsandboxed {
+            layout,
+            home: dirs.home.clone(),
+        }),
+        (
+            Level::Warning,
+            format!("{why}; bash and hooks run with no isolation"),
+        ),
+    )
 }
 
 /// Settings, trust, resources, engine, sandbox and the open mode. Notices are printed by the
@@ -988,42 +1042,17 @@ fn prepare(
             notices.extend(b.layout.git.notes.iter().map(|n| (Level::Warning, n.clone())));
             Arc::new(b)
         }
-        // No bubblewrap on this platform: run unsandboxed and say so, never claim isolation.
-        #[cfg(not(target_os = "linux"))]
-        Err(_) => {
-            notices.push((
-                Level::Warning,
-                format!(
-                    "{}; bash and hooks run with no isolation",
-                    oxa_sandbox::NO_OS_SANDBOX_NOTICE
-                ),
-            ));
-            // The same cleared base environment bwrap gives: credential variables stay out.
-            let mut layout = oxa_sandbox::Layout::build(&oxa_sandbox::LayoutInputs {
-                home: dirs.home.clone(),
-                agent_dir: Some(dirs.agent_dir.clone()),
-                path_var: env.get("PATH").unwrap_or("").to_string(),
-                env: env.pairs().to_vec(),
-                ..Default::default()
-            });
-            // Toolchain locations only: the sandbox's /tmp redirections do not apply here.
-            layout.env = oxa_sandbox::toolchain_env(env.pairs());
-            Arc::new(oxa_sandbox::Unsandboxed {
-                layout,
-                home: dirs.home.clone(),
-            })
-        }
-        #[cfg(target_os = "linux")]
+        // No usable bubblewrap: interactive sessions run unsandboxed and say so, never claim
+        // isolation; unattended runs on Linux disable bash.
         Err(e) => {
-            notices.push((
-                Level::Warning,
-                format!("bwrap is missing or unusable ({}); bash is disabled", e.message),
-            ));
-            Arc::new(NoSandbox)
+            let interactive = mode == RunMode::Interactive;
+            let (sb, notice) = no_bwrap_sandbox(interactive, &e.message, env, dirs);
+            notices.push(notice);
+            sb
         }
     };
     let sandbox = crate::netguard::with_net(sandbox, &settings);
-    let (sandbox, net_notice) = bash_sandbox(sandbox);
+    let (sandbox, net_notice) = bash_sandbox(sandbox, mode == RunMode::Interactive, oxa_proto::offline());
     if let Some(notice) = net_notice {
         notices.push((Level::Warning, notice));
     }
@@ -2949,7 +2978,7 @@ mod bash_sandbox_tests {
     /// a command with the network the owner turned off.
     #[test]
     fn a_refused_network_that_cannot_be_enforced_disables_bash() {
-        let (sandbox, notice) = bash_sandbox(Arc::new(NoNetworkIsolation));
+        let (sandbox, notice) = bash_sandbox(Arc::new(NoNetworkIsolation), false, false);
         assert!(notice.unwrap_or_default().contains("bash is disabled"));
         assert_eq!(
             sandbox.check().unwrap_err().code,
@@ -2984,8 +3013,48 @@ mod bash_sandbox_tests {
                 oxa_proto::ExecResult::default()
             }
         }
-        let (sandbox, notice) = bash_sandbox(Arc::new(NetOn));
+        let (sandbox, notice) = bash_sandbox(Arc::new(NetOn), false, false);
         assert!(notice.is_none());
         assert!(sandbox.check().is_ok());
+    }
+
+    /// Interactive: the unenforceable network setting keeps bash and warns.
+    #[test]
+    fn interactive_unenforced_network_keeps_bash_with_warning() {
+        let (sandbox, notice) = bash_sandbox(Arc::new(NoNetworkIsolation), true, false);
+        assert!(notice.unwrap_or_default().contains("NOT restricted"));
+        assert!(sandbox.check().is_ok());
+    }
+
+    /// Offline is the owner's promise of no network: it still disables bash interactively.
+    #[test]
+    fn interactive_offline_still_disables_bash() {
+        let (sandbox, notice) = bash_sandbox(Arc::new(NoNetworkIsolation), true, true);
+        assert!(notice.unwrap_or_default().contains("bash is disabled"));
+        assert!(sandbox.check().is_err());
+    }
+
+    /// S10: an interactive session without bwrap runs bash unsandboxed, with a warning.
+    #[test]
+    fn interactive_without_bwrap_runs_with_warning() {
+        let test = oxa_fake::TestEnv::new();
+        let env = Env::from_pairs(&[("PATH", "/usr/bin")]);
+        let dirs = Dirs::under(test.root());
+        let (sandbox, (level, msg)) = no_bwrap_sandbox(true, "no userns", &env, &dirs);
+        assert_eq!(level, Level::Warning);
+        assert!(msg.contains("no isolation"), "{msg}");
+        assert!(sandbox.check().is_ok());
+    }
+
+    /// Unattended runs keep "bash is disabled" on Linux (#1512).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn print_without_bwrap_disables_bash() {
+        let test = oxa_fake::TestEnv::new();
+        let env = Env::from_pairs(&[("PATH", "/usr/bin")]);
+        let dirs = Dirs::under(test.root());
+        let (sandbox, (_, msg)) = no_bwrap_sandbox(false, "no userns", &env, &dirs);
+        assert!(msg.contains("bash is disabled"), "{msg}");
+        assert_eq!(sandbox.check().unwrap_err().code, oxa_proto::codes::NO_SANDBOX);
     }
 }
