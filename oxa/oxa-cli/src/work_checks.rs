@@ -85,10 +85,9 @@ pub(crate) fn run(
     b.check().map_err(|e| e.to_string())?;
     let settings = Settings::load(dirs, &source, true);
     let (commands, deadline_at_ms) = match request.operation {
-        SupervisorOperation::ChangedPaths {
-            base,
-            deadline_at_ms: _,
-        } => return changed_paths(&b, &root, &base, out),
+        SupervisorOperation::ChangedPaths { base, deadline_at_ms } => {
+            return changed_paths(&b, &root, &base, deadline_at_ms, out)
+        }
         SupervisorOperation::Inspect => return inspect(&b, &root),
         SupervisorOperation::InspectCommitted { index } => return inspect_committed(&b, &root, &index),
         SupervisorOperation::Checkout {
@@ -318,9 +317,19 @@ git --no-replace-objects commit -m {message}
 
 // Exit codes remain the gate: repository callbacks cannot forge a clean verdict by printing
 // JSON or diagnostics. The supervisor reports each exit and scrubbed command in request order.
-fn changed_paths(sandbox: &Bwrap, root: &Path, base: &str, out: &mut dyn Write) -> Result<i32, String> {
+fn changed_paths(
+    sandbox: &Bwrap,
+    root: &Path,
+    base: &str,
+    deadline_at_ms: u64,
+    out: &mut dyn Write,
+) -> Result<i32, String> {
     if !oxa_work::board::queue::is_object_id(base) {
         return Err("invalid base for worktree change inventory".into());
+    }
+    let seconds = deadline_at_ms.saturating_sub(oxa_proto::time::now_ms()) / 1000;
+    if seconds == 0 {
+        return Err("worktree change inventory deadline elapsed".into());
     }
     let git = "git --no-replace-objects --no-optional-locks -c core.fsmonitor=false";
     let spec = ExecSpec {
@@ -331,7 +340,7 @@ fn changed_paths(sandbox: &Bwrap, root: &Path, base: &str, out: &mut dyn Write) 
         cwd: root.into(),
         writable: false,
         net: false,
-        timeout_s: Some(600),
+        timeout_s: Some(seconds.min(600) as u32),
         env: git_environment(),
     };
     const MAX_BYTES: usize = 512 * 1024;
@@ -344,6 +353,9 @@ fn changed_paths(sandbox: &Bwrap, root: &Path, base: &str, out: &mut dyn Write) 
             overflow = true;
         }
     });
+    if oxa_proto::time::now_ms() >= deadline_at_ms {
+        return Err("worktree change inventory deadline elapsed".into());
+    }
     if result.timed_out || overflow {
         return Err("sandboxed Git change inventory exceeded its limits".into());
     }
