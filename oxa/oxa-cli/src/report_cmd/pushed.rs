@@ -85,8 +85,8 @@ fn quoted_secret_literal(text: &str) -> bool {
     static REFERENCE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let quoted = QUOTED.get_or_init(|| {
         regex::Regex::new(concat!(
-            r#"(?i)(?:^|[^a-z])(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|token"#,
-            r#"|secret|password|passwd|passphrase|authorization|key)["']?\s*[:=]\s*"#,
+            r#"(?i)(?:(?:^|[^a-z])(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|token|key)"#,
+            r#"|secret|password|passwd|passphrase|authorization|(?-i:[a-z](?:Key|Token)))["']?\s*[:=]\s*"#,
             r#"(?:"([^"]*)"|'([^']*)')"#
         ))
         .expect("quoted secret pattern")
@@ -105,14 +105,99 @@ fn quoted_secret_literal(text: &str) -> bool {
                         .chars()
                         .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
             });
+        // Spaces inside a quoted passphrase do not make it prose: only a digit or a symbol
+        // other than a space marks it, so `"enter your password here"` is still not a literal.
         value.chars().count() >= MIN_SECRET_VALUE_CHARS
-            && !value.contains(char::is_whitespace)
             && !reference.is_match(value)
             && !upper_name
-            && value
-                .chars()
-                .any(|ch| ch.is_ascii_digit() || !(ch.is_alphabetic() || matches!(ch, '_' | '.' | ':')))
+            && value.chars().any(|ch| {
+                ch.is_ascii_digit()
+                    || !(ch.is_alphabetic() || ch.is_whitespace() || matches!(ch, '_' | '.' | ':'))
+            })
     })
+}
+
+/// Distinctive token prefixes that are matched even when a word character precedes them
+/// (`xghp_..`): the scrubber's `known` pattern needs a word boundary, which a token copied
+/// from a project file and prefixed with a letter or digit evades.
+fn embedded_known_token(text: &str) -> bool {
+    static EMBEDDED: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    EMBEDDED
+        .get_or_init(|| {
+            regex::Regex::new(concat!(
+                r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-(?:ant|proj)-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9]{32,}",
+                r"|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}",
+                r"|glpat-[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9]{30,}"
+            ))
+            .expect("embedded token pattern")
+        })
+        .is_match(text)
+}
+
+/// Whether a registry configuration line (`.npmrc`, `.pypirc`, ..) assigns a credential:
+/// a comment, an empty value and an environment reference (`${NPM_TOKEN}`, which npm
+/// expands at run time) hold none.
+fn registry_credential_line(line: &str) -> bool {
+    let line = line.trim();
+    if line.starts_with(['#', ';']) {
+        return false;
+    }
+    let named = |text: &str| {
+        ["_auth", "token", "password"]
+            .iter()
+            .any(|word| text.contains(word))
+    };
+    // `key=value` (`.npmrc`, `.pypirc`); a line without `=` (YAML-like `password: x`)
+    // splits at its first colon.
+    let split = line.split_once('=').or_else(|| line.split_once(':'));
+    let Some((key, value)) = split else {
+        return named(line);
+    };
+    if !named(key) {
+        return false;
+    }
+    let value = value.trim().trim_matches(['"', '\'']);
+    let reference = value
+        .strip_prefix("${")
+        .and_then(|rest| rest.strip_suffix('}'))
+        .is_some_and(|name| {
+            !name.is_empty() && name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        });
+    !(value.is_empty() || reference)
+}
+
+/// An unquoted environment assignment whose (possibly prefixed) name denotes a
+/// credential. The shared scrubber pattern deliberately uses word boundaries,
+/// which do not split `DB_PASSWORD` or `API_TOKEN`.
+fn environment_secret_assignment(text: &str) -> bool {
+    static ASSIGNMENT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    ASSIGNMENT
+        .get_or_init(|| {
+            regex::Regex::new(concat!(
+                r"(?i)(?:^|[^A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*",
+                r"(?:password|passwd|passphrase|secret|token|api_?key|access_?key)",
+                r"[A-Za-z0-9_]*\s*=\s*([^\s#]+)"
+            ))
+            .expect("environment secret assignment pattern")
+        })
+        .captures_iter(text)
+        .any(|found| opaque_value(&found[1]))
+}
+
+/// A YAML secret key followed by a block-scalar marker and one of its added
+/// value lines. `scan_patch` supplies this bounded two-line context.
+fn block_scalar_secret(text: &str) -> bool {
+    static BLOCK: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    BLOCK
+        .get_or_init(|| {
+            regex::Regex::new(concat!(
+                r"(?i)(?:^|[^a-z])(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|token",
+                r"|secret|password|passwd|passphrase|authorization|key)\s*:\s*[|>]\d?[+-]?\s*\n[^\n]*?([^\s].*)$"
+            ))
+            .expect("YAML secret block pattern")
+        })
+        .captures_iter(text)
+        .any(|found| opaque_value(found[1].trim()))
 }
 
 fn basename(path: &str) -> String {
@@ -143,6 +228,13 @@ fn registry_auth(text: &str) -> bool {
     })
     .captures_iter(text)
     .any(|found| opaque_value(&found[1]))
+}
+
+fn env_template(path: &str) -> bool {
+    let name = basename(path);
+    [".example", ".sample", ".template", ".dist"]
+        .iter()
+        .any(|end| name.starts_with(".env.") && name.ends_with(end))
 }
 
 fn secret_store(path: &str) -> bool {
@@ -204,14 +296,17 @@ impl PushScan {
             label,
             secret_path: false,
         };
+        // A file with no added line (an empty file) holds no secret, so its name alone is
+        // not a finding; every file with content reaches the line checks below.
         if item.line.is_none() {
-            return secret_store(item.path).then(|| found("a file name used for secrets"));
+            return None;
         }
         if let Some(label) = self.secret_text(item.text) {
             return Some(found(label));
         }
         // An existing tracked secret store gains content as well as a new one.
-        if secret_store(item.path) {
+        // A template (`.env.example`) is only refused for a secret its content holds.
+        if secret_store(item.path) && !env_template(item.path) {
             return Some(found("content to a file name used for secrets"));
         }
         if registry_auth(item.text) {
@@ -219,11 +314,7 @@ impl PushScan {
         }
         let registry = REGISTRY_FILES.contains(&basename(item.path).as_str());
         let line = item.text.to_ascii_lowercase();
-        if registry
-            && ["_auth", "token", "password"]
-                .iter()
-                .any(|word| line.contains(word))
-        {
+        if registry && registry_credential_line(&line) {
             return Some(found("a package registry credential"));
         }
         None
@@ -234,7 +325,7 @@ impl PushScan {
         if p.pem_begin.is_match(text) {
             return Some("a private key");
         }
-        if p.known.is_match(text) {
+        if p.known.is_match(text) || embedded_known_token(text) {
             return Some("a known access token format");
         }
         // The scrubber's keyed, `Bearer ..` and URL-credential patterns, which catch
@@ -242,6 +333,8 @@ impl PushScan {
         let value_of = |text: &str| text.split_whitespace().last().unwrap_or_default().to_string();
         if p.keyed.captures_iter(text).any(|found| opaque_value(&found[2]))
             || quoted_secret_literal(text)
+            || environment_secret_assignment(text)
+            || block_scalar_secret(text)
             || p.bearer
                 .find_iter(text)
                 .any(|found| opaque_value(&value_of(found.as_str())))
@@ -302,15 +395,89 @@ mod tests {
             "aws/credentials",
             ".netrc",
         ] {
-            assert!(scan.check(&file(name)).is_some(), "{name}");
+            // An empty file holds no secret; a non-empty one is refused by its lines.
+            assert!(scan.check(&file(name)).is_none(), "{name}");
+            assert!(scan.check(&line(name, "PLAIN=value")).is_some(), "{name}");
         }
-        assert!(scan.check(&file(".env.example")).is_some());
         let token_name = format!("notes/ghp_{}.txt", "x".repeat(36));
         let finding = scan.check(&file(&token_name)).unwrap();
         assert!(finding.secret_path);
-        assert!(!scan.check(&file(".env")).unwrap().secret_path);
         for name in ["src/env.rs", "id_ed25519.pub", "keyboard.rs", "README.md"] {
             assert!(scan.check(&file(name)).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn empty_secret_store_file_publishes() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        for name in [".env", "deploy/server.pem", ".netrc", "aws/credentials"] {
+            assert!(scan.check(&file(name)).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn env_example_without_secrets_publishes() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        for name in [".env.example", "app/.env.sample", ".env.template"] {
+            for text in [
+                "PORT=8080",
+                "API_TOKEN=",
+                "DB_PASSWORD=<your-password>",
+                "# copy to .env",
+            ] {
+                assert!(scan.check(&line(name, text)).is_none(), "{name} {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn env_example_with_a_token_is_refused() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        let token = format!("API_TOKEN=ghp_{}", "x".repeat(36));
+        let password = "PASSWORD=opaque-pass-value-17".to_string();
+        for text in [token, password] {
+            assert!(scan.check(&added(".env.example", &text)).is_some());
+        }
+        // A real `.env` still refuses plain lines.
+        assert!(scan.check(&line(".env", "PORT=8080")).is_some());
+    }
+
+    #[test]
+    fn quoted_literal_with_spaces_is_refused() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        for text in [
+            "\"password\": \"synthetic passphrase 17\"",
+            "PASSWORD='correct horse battery #7'",
+            "token: \"two words 42\"",
+        ] {
+            assert!(scan.check(&added("notes.json", text)).is_some(), "{text}");
+        }
+        for text in [
+            "\"password\": \"enter your password here\"",
+            "password: \"<your password 1>\"",
+        ] {
+            assert!(scan.check(&added("notes.json", text)).is_none(), "{text}");
+        }
+    }
+
+    #[test]
+    fn known_token_prefix_is_matched_after_word_characters() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        let github = format!("x{}{}", "ghp_", "a1".repeat(18));
+        let pat = format!("v{}{}", "github_pat_", "A".repeat(30));
+        let aws = format!("Z{}{}", "AKIA", "X".repeat(16));
+        let slack = format!("q{}{}", "xoxb-", "1".repeat(12));
+        let hugging_face = format!("x{}{}", "hf_", "a1".repeat(15));
+        for text in [github, pat, aws, slack, hugging_face] {
+            assert!(scan.check(&added("notes.txt", &text)).is_some());
+        }
+        // Ordinary words that contain a prefix are not tokens.
+        for text in [
+            "disk-encryption-configuration-guide",
+            "ghp_short",
+            "taskforce-AKIA-list",
+        ] {
+            assert!(scan.check(&line("notes.txt", text)).is_none(), "{text}");
         }
     }
 
@@ -320,9 +487,15 @@ mod tests {
         // base64 of a synthetic `user:password`, built at run time.
         let auth = format!("{}{}", "dXNlcjpwYXNz", "d29yZA==");
         let entry = format!("{{\"auths\":{{\"registry.example.invalid\":{{\"auth\":\"{auth}\"}}}}}}");
-        assert!(scan.check(&file(".docker/config.json")).is_some());
-        assert!(scan.check(&file("deploy/.docker/config.json")).is_some());
-        assert!(scan.check(&file(".kube/config")).is_some());
+        // An empty copy holds nothing; any content in them is refused.
+        assert!(scan.check(&file(".docker/config.json")).is_none());
+        for path in [
+            ".docker/config.json",
+            "deploy/.docker/config.json",
+            ".kube/config",
+        ] {
+            assert!(scan.check(&line(path, "{}")).is_some(), "{path}");
+        }
         assert!(scan.check(&added(".docker/config.json", &entry)).is_some());
         // The field is recognised in any file, but a plain word or a package file is not.
         assert!(scan
@@ -435,6 +608,53 @@ mod tests {
     }
 
     #[test]
+    fn prefixed_environment_assignments_are_refused() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        for text in [
+            "DB_PASSWORD=opaque-pass-value-17",
+            "API_TOKEN=opaque-pass-value-17",
+            "SERVICE_API_KEY=opaque-pass-value-17",
+        ] {
+            assert!(scan.check(&line(".env.example", text)).is_some());
+        }
+        for text in [
+            "API_TOKEN=${TOKEN}",
+            "DB_PASSWORD=<password>",
+            "TOKEN=placeholder",
+        ] {
+            assert!(scan.check(&line(".env.example", text)).is_none());
+        }
+    }
+
+    #[test]
+    fn suffix_named_quoted_keys_and_prefixed_generic_tokens_are_refused() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        let generic = format!("xsk-{}", "a1".repeat(24));
+        for text in [
+            "{\"databasePassword\":\"opaque-pass-value-17\"}".to_string(),
+            "{\"serviceToken\": \"opaque-pass-value-17\"}".to_string(),
+            "dbSecret: 'opaque-pass-value-17'".to_string(),
+            format!("let t = \"{generic}\";"),
+        ] {
+            assert!(scan.check(&added("config.json", &text)).is_some(), "{text}");
+        }
+        assert!(scan
+            .check(&added("config.json", "{\"monkey\":\"opaque-value-17\"}"))
+            .is_none());
+    }
+
+    #[test]
+    fn yaml_block_scalar_context_is_refused() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        assert!(scan
+            .check(&line("settings.yml", "password: |-\n  opaque-pass-value-17"))
+            .is_some());
+        assert!(scan
+            .check(&line("settings.yml", "description: |-\n  opaque-pass-value-17"))
+            .is_none());
+    }
+
+    #[test]
     fn quoted_literals_with_a_dollar_are_refused_but_variable_expressions_are_not() {
         let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
         let d = "$";
@@ -511,6 +731,13 @@ mod tests {
             text: &npmrc,
         };
         assert!(scan.check(&item).is_some());
+        for text in [
+            "//registry.example.invalid/:_authToken=${NPM_TOKEN}",
+            "; the token is read from the environment",
+            "# password goes here",
+        ] {
+            assert!(scan.check(&line(".npmrc", text)).is_none(), "{text}");
+        }
         for text in ["let token = next_token();", "password: String,", "vi"] {
             assert!(scan.check(&line("src/main.rs", text)).is_none(), "{text}");
         }

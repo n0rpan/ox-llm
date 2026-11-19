@@ -222,7 +222,16 @@ fn scan_pushed(policy: &RunPolicy, tree: &Path, revisions: &[&str], scan: Conten
         "--src-prefix=a/",
         "--dst-prefix=b/",
     ])?;
-    scan_patch(&text, scan)?;
+    // `--unified=0` shows no unchanged line, so the key that owns an edited block scalar
+    // is read from the commit's own copy of the file.
+    let file_at = |commit: &str, path: &str| {
+        if !valid_object_id(commit) {
+            return None;
+        }
+        let spec = format!("{commit}:{path}");
+        checked(super::git(policy, tree, &["show", "--no-textconv", &spec])).ok()
+    };
+    scan_patch(&text, scan, &file_at)?;
     // An empty added file has no content header in the patch, so the names of all
     // added files are listed separately and checked as well.
     let names = log(&[
@@ -269,10 +278,46 @@ fn scan_commit_object(commit: &str, raw: &str, scan: ContentScan<'_>) -> Result<
     Ok(())
 }
 
+/// Whether a YAML line ends in a block scalar indicator (`|`, `>`, with `-`/`+`).
+fn opens_block_scalar(row: &str) -> bool {
+    let trimmed = row.trim_end();
+    ["|", "|-", "|+", ">", ">-", ">+"]
+        .iter()
+        .any(|indicator| trimmed.ends_with(indicator))
+}
+
+/// The line that opens the block scalar `current` (the added line at 1-based `line`)
+/// belongs to: the nearest earlier line that is indented less and ends in a block
+/// scalar indicator. A less-indented line without one means `current` is not in a block.
+fn enclosing_block_header(content: &str, line: usize, current: &str) -> Option<String> {
+    let indent = |text: &str| text.len() - text.trim_start().len();
+    let wanted = indent(current);
+    let lines: Vec<&str> = content.lines().collect();
+    for candidate in lines.get(..line.saturating_sub(1))?.iter().rev() {
+        if candidate.trim().is_empty() {
+            continue;
+        }
+        if indent(candidate) < wanted {
+            return opens_block_scalar(candidate).then(|| candidate.to_string());
+        }
+    }
+    None
+}
+
 /// Pass every added file name and added line of `git log --patch --cc -U0` output to `scan`.
-fn scan_patch(text: &str, scan: ContentScan<'_>) -> Result<()> {
+fn scan_patch(
+    text: &str,
+    scan: ContentScan<'_>,
+    file_at: &dyn Fn(&str, &str) -> Option<String>,
+) -> Result<()> {
+    let mut commit = String::new();
+    let mut recovered = false;
     let (mut path, mut added, mut hunk, mut parents, mut line) = (None::<String>, false, false, 1, 0);
+    let mut block_scalar_header: Option<String> = None;
     for row in text.lines() {
+        if let Some(id) = row.strip_prefix('\0') {
+            commit = id.trim().to_string();
+        }
         if row.starts_with('\0') || row.starts_with("diff --") {
             parents = if row.starts_with("diff --cc ") || row.starts_with("diff --combined ") {
                 2
@@ -280,6 +325,7 @@ fn scan_patch(text: &str, scan: ContentScan<'_>) -> Result<()> {
                 1
             };
             (path, added, hunk) = (None, false, false);
+            block_scalar_header = None;
             continue;
         }
         if row.starts_with("@@") {
@@ -292,6 +338,8 @@ fn scan_patch(text: &str, scan: ContentScan<'_>) -> Result<()> {
                 .and_then(|start| start.parse().ok())
                 .ok_or("publishing refused: cannot scan the commits to publish")?;
             hunk = true;
+            recovered = false;
+            block_scalar_header = None;
             continue;
         }
         if !hunk {
@@ -319,12 +367,20 @@ fn scan_patch(text: &str, scan: ContentScan<'_>) -> Result<()> {
             continue;
         };
         if marks.contains('-') || row.starts_with('\\') {
+            block_scalar_header = None;
             continue;
         }
         if marks.contains('+') {
             // `--text` passes UTF-16/UTF-32 files through as NUL-interleaved bytes, in
             // which no pattern matches; the line is also checked with its NULs removed,
             // which is the ASCII text those encodings carry.
+            if !recovered {
+                recovered = true;
+                if !added && block_scalar_header.is_none() && rest.starts_with([' ', '\t']) {
+                    block_scalar_header = file_at(&commit, name)
+                        .and_then(|content| enclosing_block_header(&content, line, rest));
+                }
+            }
             let stripped = rest.replace('\0', "");
             let decoded = (stripped.len() != rest.len()).then_some(stripped.as_str());
             for text in std::iter::once(rest).chain(decoded) {
@@ -336,7 +392,23 @@ fn scan_patch(text: &str, scan: ContentScan<'_>) -> Result<()> {
                 if let Some(finding) = scan(&item) {
                     return Err(refusal(name, Some(line), finding));
                 }
+                if let Some(header) = block_scalar_header.as_deref() {
+                    let context = format!("{header}\n{text}");
+                    let item = PushedContent {
+                        path: name,
+                        line: Some(line),
+                        text: &context,
+                    };
+                    if let Some(finding) = scan(&item) {
+                        return Err(refusal(name, Some(line), finding));
+                    }
+                }
             }
+            if opens_block_scalar(rest) {
+                block_scalar_header = Some(rest.to_string());
+            }
+        } else {
+            block_scalar_header = None;
         }
         line += 1;
     }
@@ -1172,6 +1244,42 @@ mod scan_tests {
         )
         .unwrap_err();
         assert!(error.contains("commit "), "{error}");
+    }
+
+    #[test]
+    fn an_edited_block_scalar_recovers_its_unchanged_key() {
+        let (dir, policy) = repo();
+        std::fs::write(
+            dir.path().join("settings.yml"),
+            "name: x\ndb:\n  password: |-\n    placeholder-value\n",
+        )
+        .unwrap();
+        git_ok(dir.path(), &["add", "."]);
+        git_ok(dir.path(), &["commit", "-q", "-m", "base"]);
+        let base = git_ok(dir.path(), &["rev-parse", "HEAD"]);
+        std::fs::write(
+            dir.path().join("settings.yml"),
+            "name: x\ndb:\n  password: |-\n    opaque-pass-value-17\n",
+        )
+        .unwrap();
+        git_ok(dir.path(), &["commit", "-q", "-a", "-m", "edit"]);
+        let head = git_ok(dir.path(), &["rev-parse", "HEAD"]);
+        let scan = |item: &PushedContent<'_>| {
+            (item.text.contains("password: |-") && item.text.contains("opaque-pass-value-17")).then_some(
+                ContentFinding {
+                    label: "a test secret",
+                    secret_path: false,
+                },
+            )
+        };
+        let error = scan_pushed(
+            &policy,
+            dir.path(),
+            &[head.as_str(), "--not", base.as_str()],
+            &scan,
+        )
+        .unwrap_err();
+        assert!(error.contains("settings.yml"), "{error}");
     }
 
     #[test]

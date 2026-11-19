@@ -1055,6 +1055,20 @@ fn publication_refuses_the_value_of_a_secret_environment_variable() {
 }
 
 #[test]
+fn publication_refuses_a_yaml_block_scalar_credential() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    let value = format!("opaque-pass-value-{}", 17);
+    let record = run_args(
+        &env,
+        write_turns("settings.yml", &format!("password: |-\n  {value}\n")),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused(&env, &record, "settings.yml:2", &value);
+}
+
+#[test]
 fn publication_refuses_a_secret_that_a_later_commit_removed() {
     let env = TestEnv::new();
     setup(&env, r#"["true"]"#);

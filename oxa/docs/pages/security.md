@@ -226,6 +226,10 @@ Session files are `0600`. The Brave key is never written to a session, an export
 
 `oxa report-issue draft` scrubs its digest and the text you give it, but scrubbing is pattern-based. Read the draft before you post it; `oxa report-issue submit` posts only after you type `yes` at the terminal. `/bug` writes a redacted local bundle and uploads nothing.
 
+### Publishing
+
+`oxa work --publish` and lane pushes scan the commits they would push and refuse a private key, a known token format, an opaque credential assignment or quoted literal, a `Bearer` header, a URL password, lines added to a secret-store file such as `.env`, or the value of a secret-named variable or setting. An empty secret-store file and `.env.example` are checked by content, not refused by name. A credential deleted in a later commit still blocks publication: rewrite the unpublished commits. The details are in [../work.md](../work.md#what-the-publication-scan-refuses).
+
 ## Checklist
 
 - Keep the mode at `workspace` for daily work and use `plan` for review. Use `ask` on an unfamiliar project.
