@@ -317,8 +317,12 @@ mod tests {
         assert_eq!(perm(&args), "yolo");
         assert!(notice.is_none());
         // An explicit narrower mode under yolo still wins.
-        let (args, notice) =
-            child_argv(&spec(Some(WorkerMode::Workspace)), Mode::Workspace, Autonomy::Yolo).unwrap();
+        let (args, notice) = child_argv(
+            &spec(Some(WorkerMode::Workspace)),
+            Mode::Workspace,
+            Autonomy::Yolo,
+        )
+        .unwrap();
         assert_eq!(perm(&args), "workspace");
         assert!(notice.is_none());
         // No requested mode inherits the other ceilings too.
