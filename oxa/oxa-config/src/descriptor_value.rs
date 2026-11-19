@@ -30,7 +30,15 @@ pub fn display_value(d: &Descriptor, v: &Value) -> String {
         let masked = if v.is_null() { "unset" } else { "****" };
         return masked.to_string();
     }
-    let v = if v.is_null() { eff(d) } else { v.clone() };
+    // An unset value shows the schema default when there is one, else the effective default.
+    let v = if v.is_null() {
+        find_key(d.key)
+            .and_then(|def| serde_json::from_str::<Value>(def.default).ok())
+            .filter(|default| !default.is_null())
+            .unwrap_or_else(|| eff(d))
+    } else {
+        v.clone()
+    };
     if v.is_null() {
         return "unset".to_string();
     }
@@ -200,13 +208,17 @@ pub fn check(d: &Descriptor, v: &Value) -> Result<Option<&'static str>, String> 
             Some(x) => range(d, x),
             None => ok(false, "a number"),
         },
+        // A listed choice is checked against its options; the schema kind only decides the
+        // JSON type when the descriptor lists nothing.
+        Control::Choice if !d.choices.is_empty() => ok(
+            v.as_str().is_some_and(|s| d.choices.iter().any(|(o, _)| *o == s))
+                || (matches!(v, Value::Bool(_))
+                    && d.choices.iter().any(|(o, _)| *o == "true" || *o == "false")),
+            "one of the listed options",
+        ),
         Control::Choice => match find_key(d.key) {
             Some(def) => ok(kind_matches(def.kind, v), &kind_name(def.kind)),
-            None => ok(
-                v.as_str()
-                    .is_some_and(|s| d.choices.is_empty() || d.choices.iter().any(|(o, _)| *o == s)),
-                "one of the listed options",
-            ),
+            None => ok(v.is_string(), "one of the listed options"),
         },
         Control::Text | Control::Path | Control::Model | Control::Theme => ok(v.is_string(), "text"),
         Control::List(_) | Control::MultiSelect(_) => ok(
@@ -296,7 +308,7 @@ fn search_in<'a>(table: &'a [Descriptor], query: &str) -> Vec<&'a Descriptor> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::descriptor::{d, Group};
+    use crate::descriptor::{d, descriptor, Group};
     use serde_json::json;
 
     fn timeout() -> Descriptor {
@@ -342,6 +354,22 @@ mod tests {
         let s = d("k", Group::Lead, "", "L", "h").text().secret();
         assert_eq!(display_value(&s, &json!("sk-abc123")), "****");
         assert_eq!(display_value(&s, &Value::Null), "unset");
+    }
+
+    /// An unset value shows the schema default, and a listed choice refuses anything else.
+    #[test]
+    fn an_unset_value_shows_its_schema_default_and_choices_are_checked() {
+        let copy = descriptor("fullscreenCopyOnSelect").expect("the descriptor exists");
+        let shown = display_value(&copy, &Value::Null);
+        assert_ne!(shown, "unset", "the schema default is shown");
+        let quiet = descriptor("quietStartup").expect("the descriptor exists");
+        assert!(
+            check(&quiet, &json!("banana")).is_err(),
+            "an unlisted word is refused"
+        );
+        assert!(check(&quiet, &json!({})).is_err(), "an object is not an option");
+        assert_eq!(parse_input(&quiet, "true"), Ok(json!(true)));
+        assert!(check(&quiet, &json!(true)).is_ok());
     }
 
     /// A boolean choice stores a JSON boolean, and a text setting keeps its whitespace.
