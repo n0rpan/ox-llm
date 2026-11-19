@@ -306,3 +306,58 @@ fn interrupted_changed_file_continuation_fails_atomically() {
     let error = snapshot_of(&env, &packets).unwrap_err();
     assert!(error.contains("GitHub read failed (HTTP 502)"), "{error}");
 }
+
+fn details_of(env: &TestEnv) -> Value {
+    serde_json::from_slice(&fs::read(env.tmp().join("gh.details")).unwrap()).unwrap()
+}
+
+#[test]
+fn changed_file_continuation_rejects_a_duplicate_on_the_first_page() {
+    let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
+    let mut details = details_of(&env);
+    details["data"]["repository"]["p100"]["files"]["nodes"][1] = json!({"path":"src/f0.rs","deletions":0});
+    write(&env, "gh.details", &details);
+    let error = snapshot_of(&env, &packets).unwrap_err();
+    assert!(error.contains("duplicate changed file"), "{error}");
+}
+
+#[test]
+fn changed_file_continuation_rejects_a_first_page_that_claims_progress() {
+    let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
+    let mut details = details_of(&env);
+    details["data"]["repository"]["p100"]["files"]["nodes"] = json!([]);
+    write(&env, "gh.details", &details);
+    let error = snapshot_of(&env, &packets).unwrap_err();
+    assert!(
+        error.contains("invalid changed-file pagination progress"),
+        "{error}"
+    );
+}
+
+#[test]
+fn changed_file_continuation_rejects_an_empty_page_that_claims_more() {
+    let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
+    let mut next = continuation_of(&env, 100);
+    next["data"]["repository"]["p100"]["files"]["nodes"] = json!([]);
+    next["data"]["repository"]["p100"]["files"]["pageInfo"] =
+        json!({"hasNextPage":true,"endCursor":"next-200"});
+    write(&env, "gh.files100", &next);
+    let error = snapshot_of(&env, &packets).unwrap_err();
+    assert!(
+        error.contains("invalid changed-file pagination progress"),
+        "{error}"
+    );
+}
+
+#[test]
+fn changed_file_continuation_rejects_an_oversized_page() {
+    let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
+    let mut next = continuation_of(&env, 100);
+    let oversized: Vec<Value> = (0..101)
+        .map(|i| json!({"path":format!("docs/extra-{i}.md"),"deletions":0}))
+        .collect();
+    next["data"]["repository"]["p100"]["files"]["nodes"] = json!(oversized);
+    write(&env, "gh.files100", &next);
+    let error = snapshot_of(&env, &packets).unwrap_err();
+    assert!(error.contains("invalid changed-file page"), "{error}");
+}

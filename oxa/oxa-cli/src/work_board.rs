@@ -341,15 +341,12 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// GitHub's own changed-file ceiling for one pull request: a larger set is not
-/// a board observation this reader completes.
-const MAX_FILES_PER_PR: u64 = 3000;
-
 /// Complete one pull request's changed-file connection with bounded
-/// continuations. The start and every continuation page must belong to the
-/// pinned head and total, every path must be distinct, and the pages must cover
-/// the whole connection; anything else fails the snapshot before it is
-/// published, exactly as an incomplete first page did.
+/// continuations. Every page is the same bounded slice and is held to the same
+/// rules: it must belong to the pinned head and total, carry at most the 100
+/// nodes it asks for, list distinct paths, and progress only while evidence
+/// remains. The pages must cover the whole connection; anything else fails the
+/// snapshot before it is published, exactly as an incomplete first page did.
 fn complete_changed_files(
     reader: &Reader,
     number: u64,
@@ -358,29 +355,28 @@ fn complete_changed_files(
 ) -> Result<(), SnapshotError> {
     let files = &row["files"];
     let total = files["totalCount"].as_u64().ok_or("missing changed-file count")?;
-    if total > MAX_FILES_PER_PR {
-        return Err(SnapshotError::from(
-            "changed-file set exceeds the bounded snapshot",
-        ));
-    }
-    let mut rows: Vec<Value> = files["nodes"]
-        .as_array()
-        .cloned()
-        .ok_or("missing changed-file page")?;
-    if rows.len() as u64 > total {
-        return Err(SnapshotError::from("invalid changed-file page"));
-    }
-    let mut paths = BTreeSet::new();
-    for file in &rows {
-        paths.insert(changed_path(file)?.to_owned());
-    }
     let mut page = files.clone();
+    let mut rows: Vec<Value> = Vec::new();
+    let mut paths = BTreeSet::new();
     let mut cursors = BTreeSet::new();
     loop {
-        if !page["pageInfo"]["hasNextPage"]
+        let more = page["pageInfo"]["hasNextPage"]
             .as_bool()
-            .ok_or("missing changed-file pagination")?
-        {
+            .ok_or("missing changed-file pagination")?;
+        let batch = page["nodes"].as_array().ok_or("missing changed-file page")?;
+        if batch.len() > 100 {
+            return Err(SnapshotError::from("invalid changed-file page"));
+        }
+        for file in batch {
+            if !paths.insert(changed_path(file)?.to_owned()) {
+                return Err(SnapshotError::from("duplicate changed file"));
+            }
+        }
+        rows.extend(batch.iter().cloned());
+        if rows.len() as u64 > total {
+            return Err(SnapshotError::from("invalid changed-file page"));
+        }
+        if !more {
             break;
         }
         let cursor = page["pageInfo"]["endCursor"]
@@ -388,7 +384,7 @@ fn complete_changed_files(
             .filter(|cursor| !cursor.is_empty())
             .ok_or("missing changed-file cursor")?
             .to_owned();
-        if rows.is_empty() || rows.len() as u64 >= total || !cursors.insert(cursor.clone()) {
+        if batch.is_empty() || rows.len() as u64 >= total || !cursors.insert(cursor.clone()) {
             return Err(SnapshotError::from("invalid changed-file pagination progress"));
         }
         let (next, _) = reader
@@ -405,18 +401,6 @@ fn complete_changed_files(
         }
         if seen_head != head || continuation["files"]["totalCount"].as_u64() != Some(total) {
             return Err(SnapshotError::Changed("mismatched PR details; retry later"));
-        }
-        for file in continuation["files"]["nodes"]
-            .as_array()
-            .ok_or("missing changed-file page")?
-        {
-            if !paths.insert(changed_path(file)?.to_owned()) {
-                return Err(SnapshotError::from("duplicate changed file"));
-            }
-            rows.push(file.clone());
-        }
-        if rows.len() as u64 > total {
-            return Err(SnapshotError::from("invalid changed-file page"));
         }
         page = continuation["files"].clone();
     }
@@ -520,7 +504,7 @@ impl Reader<'_> {
                 }}}}}}}}}}}}}}"#
                 ));
             }
-            let (page, _) = match self.query(&fields) {
+            let (mut page, _) = match self.query(&fields) {
                 Ok(page) => page,
                 Err(error) if error.retryable() && end - offset > 1 => {
                     size = (end - offset) / 2;
