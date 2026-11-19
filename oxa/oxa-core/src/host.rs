@@ -1116,6 +1116,17 @@ fn exec_gated(st: &mut SessionState, spec: ExecSpec, ui: &mut dyn Ui) -> Result<
     if spec.net {
         oxa_proto::check_online("a command with network access")?; // P4: no network grant offline
     }
+    // A directory outside the session directory is mounted into the sandbox (writable when the
+    // spec says so): it asks like the same file access outside the project (yolo allows, headless
+    // without an approver refuses). A directory inside the session directory is unchanged.
+    if !oxa_perm::is_inside(&spec.cwd, &st.cwd) {
+        let mount = if spec.writable {
+            Access::Write(spec.cwd.clone())
+        } else {
+            Access::Read(spec.cwd.clone())
+        };
+        gate(st, &mount, ui)?;
+    }
     gate_at(
         st,
         &Access::Exec {
