@@ -1142,7 +1142,7 @@ mod approval_answer_tests {
             let results = [rx.recv().unwrap(), rx.recv().unwrap()];
             assert_eq!(results.iter().filter(|(_, ok)| *ok).count(), 1);
             assert_eq!(
-                desk.granted("s1", &keys),
+                desk.granted("s1", &cwd, &keys),
                 results.contains(&("session", true)),
                 "the stored decision is the winning answer"
             );
