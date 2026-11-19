@@ -404,6 +404,8 @@ fn select_for(
             } else {
                 scope.to_vec()
             },
+            // The owner's Go switch opens the Go catalog, not another provider's models.
+            go_only: explicit_go && !explicit_cloud,
         }
         .into_engine(requested)
         .map(|engine| (engine, catalog_notices));
@@ -453,6 +455,7 @@ fn select_for(
                 endpoint: endpoint.to_owned(),
                 default: effective.string("defaultModel"),
                 admitted: scope.to_vec(),
+                go_only: false,
             }
             .into_engine(requested)?,
             notices,

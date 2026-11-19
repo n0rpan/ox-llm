@@ -522,6 +522,46 @@ fn a_fuzzy_local_alias_does_not_hide_the_exact_go_model_in_a_scope() {
 }
 
 #[test]
+fn the_go_switch_does_not_open_another_providers_alias() {
+    let env = TestEnv::new();
+    let other = MockOpenAi::start(vec![]);
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"synthetic plan reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    // The owner's Go switch is on; another provider's metered alias is configured beside it.
+    settings["oxa"]["cloud"]["models"]["synthetic-other"] = json!({
+        "provider":"openai", "upstream_model":"synthetic-other",
+        "context_window":32768, "max_output":64,
+        "base_url":format!("http://{}", other.address())
+    });
+    fs::write(path, settings.to_string()).unwrap();
+
+    // The Go model answers.
+    let go = run(&env, &["--model", MODEL, "--no-tools", "-p", "Synthetic task"]);
+    assert!(go.status.success(), "{}", String::from_utf8_lossy(&go.stderr));
+    // The switch does not authorize the other provider's alias.
+    let refused = run(
+        &env,
+        &["--model", "synthetic-other", "--no-tools", "-p", "Synthetic task"],
+    );
+    assert!(!refused.status.success());
+    assert!(
+        other.requests().is_empty(),
+        "the Go switch must not spend another provider: {:?}",
+        other.requests()
+    );
+    mock.assert_healthy();
+    other.assert_healthy();
+}
+
+#[test]
 fn a_go_scope_admission_serves_only_that_scope() {
     let env = TestEnv::new();
     let other = MockOpenAi::start(vec![]);

@@ -53,9 +53,12 @@ pub(super) struct Routed {
     pub go_error: Option<OxaError>,
     pub endpoint: String,
     pub default: Option<String>,
-    /// The models the owner's scope admitted. Empty means the whole catalog was admitted by an
-    /// owner switch; otherwise a model outside it is not this run's to spend.
+    /// The models the owner's scope admitted. Empty means no scope restricted the catalog;
+    /// otherwise a model outside it is not this run's to spend.
     pub admitted: Vec<String>,
+    /// The gateway was admitted by the owner's Go switch alone: only its Go models may be
+    /// reached, not another configured provider's metered alias.
+    pub go_only: bool,
 }
 impl Routed {
     pub fn into_engine(mut self, requested: Option<&str>) -> Result<Arc<dyn Engine>, OxaError> {
@@ -100,6 +103,9 @@ impl Routed {
     /// settings may replace the scope with the project's, so selection must stay inside the
     /// admitted one: another provider's alias is not reached on a Go admission's authority.
     fn admitted(&self, model: &str) -> bool {
+        if self.go_only && !is_go_model(model, &self.endpoint) {
+            return false;
+        }
         self.admitted.is_empty()
             || oxa_config::resolve_scoped(
                 &self.admitted,
