@@ -116,6 +116,12 @@ const BASE: &[Entry] = &[
         example: "oxa memory rm build-notes",
     },
     Entry {
+        path: &["models"],
+        summary: "List the local and cloud models this install can serve, and which one is the default",
+        usage: &["oxa models [--json] [search]"],
+        example: "oxa models --json",
+    },
+    Entry {
         path: &["config"],
         summary: "Print every setting with its value and source",
         usage: &["oxa config [-l]"],

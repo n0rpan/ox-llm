@@ -54,3 +54,32 @@ fn memory_verbs_are_declared_with_their_surfaces() {
     let words: Vec<String> = ["memory", "list"].iter().map(|w| w.to_string()).collect();
     assert_eq!(parse_cli(&words).unwrap().command.id, CommandId::MemoryList);
 }
+
+/// #1542: `oxa models` is a declared CLI route with a real handler, so it is never sent to the
+/// model as a prompt, and a stray word after it stays a usage error.
+#[test]
+fn models_is_declared_as_a_cli_route() {
+    let words: Vec<String> = vec!["models".into()];
+    let resolved = parse_cli(&words).expect("declared CLI route");
+    assert_eq!(resolved.command.id, CommandId::Models);
+    assert_eq!(resolved.command.surfaces.cli, Availability::Supported);
+    for surface in [Surface::Slash, Surface::Menu, Surface::Web] {
+        assert!(
+            matches!(resolved.command.surfaces.at(surface), Availability::Exception(_)),
+            "models declares {surface:?} without a handler"
+        );
+    }
+    assert_eq!(
+        oxa_cli::parse_args(&words, &[]).unwrap().subcommand,
+        Some(oxa_cli::Subcommand::Models(Vec::new()))
+    );
+    let json: Vec<String> = vec!["models".into(), "--json".into()];
+    assert_eq!(
+        oxa_cli::parse_args(&json, &[]).unwrap().subcommand,
+        Some(oxa_cli::Subcommand::Models(vec!["--json".into()]))
+    );
+    assert!(
+        oxa_cli::text(&["models"]).is_some(),
+        "the route has public CLI help"
+    );
+}

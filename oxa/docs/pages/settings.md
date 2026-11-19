@@ -218,7 +218,7 @@ Known provider or configured prices take precedence over this setting.
 When the same provider has several configured base URLs, select the discovery
 endpoint with `oxa.cloud.discovery.<provider>.base_url`.
 
-The merged catalog is available through the model picker and `--list-models`.
+The merged catalog is available through the model picker, `oxa models` and `--list-models`.
 The LAN guest catalog lists only guest-allowlisted models.
 
 Configure `anthropic`, `openai` (Responses API) or `chatgpt` (subscription) routes

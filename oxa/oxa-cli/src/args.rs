@@ -52,6 +52,8 @@ pub enum Subcommand {
     Mcp(Vec<String>),
     /// M3: `oxa memory list|show <name>|rm <name>`: the words after `memory`.
     Memory(Vec<String>),
+    /// #1542: `oxa models [--json] [search]`: list the in-process model catalog.
+    Models(Vec<String>),
     /// `oxa install|remove|update|list ..`: the verb and the words after it.
     Pkg(String, Vec<String>),
     /// `oxa config ..`.
@@ -87,6 +89,7 @@ pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -
             | CommandId::MemoryList
             | CommandId::MemoryShow
             | CommandId::MemoryRm
+            | CommandId::Models
     )
 }
 
@@ -294,6 +297,10 @@ const COMMANDS: &[(&str, &str)] = &[
     (
         "oxa memory <list|show|rm>",
         "Show the memory index, or show or remove one memory entry",
+    ),
+    (
+        "oxa models [--json] [search]",
+        "List the local and cloud models this install can serve",
     ),
     (
         "oxa identity [--refresh]",
@@ -524,6 +531,7 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         "logout" => Subcommand::Login(true, LoginArgs(rest.to_vec())),
         "mcp" => Subcommand::Mcp(rest.to_vec()),
         "memory" => Subcommand::Memory(rest.to_vec()),
+        "models" => Subcommand::Models(rest.to_vec()),
         "install" | "remove" | "uninstall" | "update" | "list" => {
             Subcommand::Pkg(word.to_string(), rest.to_vec())
         }
@@ -665,11 +673,12 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
                 continue;
             }
         }
-        // These commands accept leading offline switches so their own guards
-        // can report the refusal. A prompt, another option or `--` ends that prefix.
+        // These commands accept leading offline switches so their own guards can report the
+        // refusal, and `models` so the catalog can report an offline cloud route. A prompt,
+        // another option or `--` ends that prefix.
         if !stop
             && (i == 1
-                || ((matches!(arg, "send" | "work" | "share")
+                || ((matches!(arg, "send" | "work" | "share" | "models")
                     || oxa_interactive::command_registry::parse_cli(&argv[i - 1..])
                         .is_some_and(|invocation| registry_owned(invocation.command.id)))
                     && argv[..i - 1].iter().all(|word| word == "--offline")))

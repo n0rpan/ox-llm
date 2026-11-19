@@ -247,7 +247,8 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::Memory
                     | CommandId::MemoryList
                     | CommandId::MemoryShow
-                    | CommandId::MemoryRm => Err(OxaError::new(
+                    | CommandId::MemoryRm
+                    | CommandId::Models => Err(OxaError::new(
                         codes::USAGE,
                         "registered command handler or arguments are unavailable",
                     )),
@@ -301,6 +302,9 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             }
             Subcommand::Mcp(words) => run_mcp(&words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Memory(words) => crate::run_memory(&words, &dirs, &mut *stdout, &mut *stderr),
+            Subcommand::Models(words) => {
+                crate::run_models(&words, &dirs, &cwd, env, &mut *stdout, &mut *stderr)
+            }
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
             Subcommand::Send(words) => match words.as_slice() {
@@ -349,37 +353,17 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     };
 
     if let Some(search) = &a.list_models {
-        let (models, diags) = ModelsConfig::load(&dirs, env);
-        write_diagnostics(
-            &mut *stderr,
-            diags
-                .iter()
-                .map(|d| (d.level, format!("{}: {}", d.source, d.message))),
-        );
-        let endpoint = match default_endpoint(&models) {
-            Ok(ep) => with_api_key(ep, &a),
-            Err(e) => return report(&mut *stderr, &e),
-        };
-        let user = Settings::load(&dirs, &cwd, false);
-        let (engine, catalog_notices) = match crate::in_process::select_observed(
-            &user,
-            &user,
-            &dirs,
-            None,
-            None,
-            crate::in_process::SharedEngines::default(),
-            || engine_for(&endpoint),
-        ) {
-            Ok(e) => e,
+        let catalog = match catalog_engine(&dirs, &cwd, env, a.api_key.as_ref(), &mut *stderr) {
+            Ok(catalog) => catalog,
             Err(e) => return report(&mut *stderr, &e),
         };
         write_diagnostics(
             &mut *stderr,
-            catalog_notices.into_iter().map(|text| (Level::Info, text)),
+            catalog.notices.into_iter().map(|text| (Level::Info, text)),
         );
         let result = list_models(
-            engine.as_ref(),
-            &endpoint.name,
+            catalog.engine.as_ref(),
+            &catalog.endpoint,
             search.as_deref(),
             &mut *stdout,
             &mut *stderr,
@@ -788,7 +772,7 @@ fn prepare(
             .into_iter()
             .map(|d| (d.level, format!("{}: {}", d.source, d.message))),
     );
-    let endpoint = with_api_key(default_endpoint(&models)?, a);
+    let endpoint = with_api_key(default_endpoint(&models)?, a.api_key.as_ref());
     // E11: a subagent child sends its requests under the parent's child hint (`child.rs`).
     let child = crate::child::ChildIdentity::from_env(env, &mut notices);
     if !user_settings.bool(crate::in_process::SETTING, false) {
@@ -1947,11 +1931,54 @@ pub(crate) fn engine_for(endpoint: &Endpoint) -> Result<Arc<dyn Engine>, OxaErro
 
 /// CLI-013: `--api-key` replaces the endpoint's key for this run (sent only as
 /// `Authorization: Bearer`; never stored in a session or put on the model wire).
-fn with_api_key(mut endpoint: Endpoint, a: &Args) -> Endpoint {
-    if let Some(key) = &a.api_key {
+fn with_api_key(mut endpoint: Endpoint, key: Option<&crate::ApiKey>) -> Endpoint {
+    if let Some(key) = key {
         endpoint.api_key = Some(key.0.clone());
     }
     endpoint
+}
+
+/// The model catalog `--list-models` and `oxa models` list. Configuration diagnostics go to
+/// `err`; the caller writes [`Catalog::notices`]. The in-process native selection (local,
+/// cloud, or both) needs no controller CLI, and no provider credential is read while catalog
+/// discovery is off.
+pub(crate) struct Catalog {
+    pub engine: Arc<dyn Engine>,
+    /// The default endpoint's name, the provider column of a local row.
+    pub endpoint: String,
+    pub notices: Vec<String>,
+}
+
+pub(crate) fn catalog_engine(
+    dirs: &Dirs,
+    cwd: &Path,
+    env: &Env,
+    api_key: Option<&crate::ApiKey>,
+    err: &mut dyn Write,
+) -> Result<Catalog, OxaError> {
+    let (models, diags) = ModelsConfig::load(dirs, env);
+    write_diagnostics(
+        err,
+        diags
+            .iter()
+            .map(|d| (d.level, format!("{}: {}", d.source, d.message))),
+    );
+    let endpoint = with_api_key(default_endpoint(&models)?, api_key);
+    let user = Settings::load(dirs, cwd, false);
+    let (engine, notices) = crate::in_process::select_observed(
+        &user,
+        &user,
+        dirs,
+        None,
+        None,
+        crate::in_process::SharedEngines::default(),
+        || engine_for(&endpoint),
+    )?;
+    Ok(Catalog {
+        engine,
+        endpoint: endpoint.name,
+        notices,
+    })
 }
 
 /// UX/DX item 5: `--animation <mode>` overrides `ui.animation` for this run, in memory only, so the
@@ -2001,7 +2028,7 @@ pub(crate) fn stream_silence_timeout(settings: &Settings) -> Option<u64> {
 
 /// The provider column: the controller's `remote_provider`, else the remote model id's
 /// provider prefix (or `cloud` for an unprefixed id); the endpoint name for a local one.
-fn row_provider(endpoint: &str, info: &oxa_proto::EngineInfo) -> String {
+pub(crate) fn row_provider(endpoint: &str, info: &oxa_proto::EngineInfo) -> String {
     match (info.caps.remote, info.caps.remote_provider) {
         (_, Some(p)) => p.to_string(),
         (true, None) => info
@@ -2015,7 +2042,7 @@ fn row_provider(endpoint: &str, info: &oxa_proto::EngineInfo) -> String {
 }
 
 /// `--list-models [search]`: a table of the engine's models (pi's columns), sorted by id.
-fn list_models(
+pub(crate) fn list_models(
     engine: &dyn Engine,
     provider: &str,
     search: Option<&str>,
@@ -2069,43 +2096,65 @@ fn list_models(
             None => true,
         })
         .collect();
-    let write_err = |e: std::io::Error| OxaError::io("cannot write the model list", &e);
     if rows.is_empty() {
-        match search {
-            Some(s) => writeln!(out, "No models matching \"{s}\"").map_err(write_err)?,
-            None => writeln!(out, "No models available").map_err(write_err)?,
-        }
-        return Ok(0);
+        return empty_list(search, out);
     }
-    let headers = ["provider", "model", "context", "max-out", "thinking", "images"];
-    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
-    for row in &rows {
-        for (i, cell) in row.iter().enumerate() {
-            widths[i] = widths[i].max(cell.len());
-        }
-    }
-    let line = |cells: &[&str]| -> String {
-        // Every column but the last is padded, so the lines carry no trailing spaces.
-        let mut s = String::new();
-        for (i, cell) in cells.iter().enumerate() {
-            if i + 1 == cells.len() {
-                s.push_str(cell);
-            } else {
-                s.push_str(&format!("{cell:<w$}  ", w = widths[i]));
-            }
-        }
-        s
-    };
-    writeln!(out, "{}", line(&headers)).map_err(write_err)?;
-    for row in &rows {
-        let cells: Vec<&str> = row.iter().map(String::as_str).collect();
-        writeln!(out, "{}", line(&cells)).map_err(write_err)?;
+    let rows: Vec<Vec<String>> = rows.into_iter().map(Vec::from).collect();
+    render_table(
+        &["provider", "model", "context", "max-out", "thinking", "images"],
+        &rows,
+        out,
+    )?;
+    Ok(0)
+}
+
+/// The message of an empty model list, shared by `--list-models` and `oxa models`.
+pub(crate) fn empty_list(search: Option<&str>, out: &mut dyn Write) -> Result<i32, OxaError> {
+    let write_err = |e: std::io::Error| OxaError::io("cannot write the model list", &e);
+    match search {
+        Some(s) => writeln!(out, "No models matching \"{s}\"").map_err(write_err)?,
+        None => writeln!(out, "No models available").map_err(write_err)?,
     }
     Ok(0)
 }
 
+/// A left-aligned table: every column but the last is padded, so no line carries trailing
+/// spaces. Shared by `--list-models` and `oxa models`.
+pub(crate) fn render_table(
+    headers: &[&str],
+    rows: &[Vec<String>],
+    out: &mut dyn Write,
+) -> Result<(), OxaError> {
+    let write_err = |e: std::io::Error| OxaError::io("cannot write the model list", &e);
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.chars().count()).collect();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            if let Some(width) = widths.get_mut(i) {
+                *width = (*width).max(cell.chars().count());
+            }
+        }
+    }
+    let line = |cells: &[&str]| -> String {
+        let mut text = String::new();
+        for (i, cell) in cells.iter().enumerate() {
+            if i + 1 == cells.len() {
+                text.push_str(cell);
+            } else {
+                text.push_str(&format!("{cell:<w$}  ", w = widths[i]));
+            }
+        }
+        text
+    };
+    writeln!(out, "{}", line(headers)).map_err(write_err)?;
+    for row in rows {
+        let cells: Vec<&str> = row.iter().map(String::as_str).collect();
+        writeln!(out, "{}", line(&cells)).map_err(write_err)?;
+    }
+    Ok(())
+}
+
 /// `true` -> `yes`, `false` -> `no` for the `thinking`/`images` columns of `--list-models`.
-fn bool_word(b: bool) -> String {
+pub(crate) fn bool_word(b: bool) -> String {
     if b {
         "yes".to_string()
     } else {
@@ -2114,7 +2163,7 @@ fn bool_word(b: bool) -> String {
 }
 
 /// pi's token counts: `200K`, `1M`, `1.5M`; below a thousand the plain number.
-fn format_tokens(count: u64) -> String {
+pub(crate) fn format_tokens(count: u64) -> String {
     let scaled = |div: f64, unit: &str| {
         let v = count as f64 / div;
         if v.fract() == 0.0 {
@@ -2373,7 +2422,7 @@ fn write_notices(err: &mut dyn Write, notices: Vec<(Level, String)>) {
     write_diagnostics(err, notices.into_iter());
 }
 
-fn write_diagnostics(err: &mut dyn Write, notices: impl Iterator<Item = (Level, String)>) {
+pub(crate) fn write_diagnostics(err: &mut dyn Write, notices: impl Iterator<Item = (Level, String)>) {
     for (level, text) in notices {
         let label = match level {
             Level::Info => "Info",
