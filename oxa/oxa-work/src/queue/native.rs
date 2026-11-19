@@ -223,6 +223,8 @@ mod tests {
             push_approved: false,
             content_scan: None,
             runner_owns_github: false,
+            autonomy: Default::default(),
+            autonomy_now: None,
             storage: directory.path().join("runner"),
         };
         (directory, claims, binding, prepared, policy)

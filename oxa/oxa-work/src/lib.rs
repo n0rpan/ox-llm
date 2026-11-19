@@ -31,7 +31,7 @@ pub use notes::{ProblemNote, ReportRecord};
 pub use publish::{inherit_report_lease, publish, report_notes, ContentFinding, ContentScan, PushedContent};
 pub use queue::{
     native_task, run_queue, NativeQueueOwner, NativeQueueTarget, QueueEvent, QueueOptions, QueueRun,
-    QueueStatus,
+    QueueStatus, DEFAULT_MAX_INPUT_TASKS, MAX_RETAINED_TASKS,
 };
 pub mod mirrors;
 pub mod shadow;
@@ -189,8 +189,18 @@ pub struct PlannedTask {
     base_alias: Option<tree::BaseAlias>,
     native: bool,
     native_binding: Option<board::NativeBinding>,
+    owner_selected_model: bool,
 }
 impl PlannedTask {
+    /// A launcher can deny argument-based provider opt-in, never grant it through this variable.
+    pub const DELEGATED_MODEL_ENV: &str = "OXA_WORK_MODEL_DELEGATED";
+
+    /// Only the trusted frontend can attach provenance for an explicit owner model argument.
+    pub fn with_owner_model_selection(mut self) -> Self {
+        self.owner_selected_model = true;
+        self
+    }
+
     pub fn task(&self) -> &Task {
         &self.task
     }
@@ -234,6 +244,7 @@ fn plan_new_task(repo: &Path, task: Task, policy: &RunPolicy, native: bool) -> R
         base_alias,
         native,
         native_binding: None,
+        owner_selected_model: false,
     })
 }
 
@@ -289,6 +300,7 @@ fn plan_task_mode(
             base_alias: None,
             native,
             native_binding: None,
+            owner_selected_model: false,
         });
     }
     plan_new_task(repo, task, policy, native)
@@ -838,6 +850,11 @@ pub struct RunPolicy {
     pub offline: bool,
     /// Set by the runner from the immutable packet before launching its children.
     pub runner_owns_github: bool,
+    /// The owner's level for the workers this runner starts. Only `Yolo` changes the worker argv.
+    pub autonomy: oxa_proto::Autonomy,
+    /// Re-read of that level at each launch. A queue started while the owner was in yolo must not
+    /// keep passing `--yolo` after the owner lowered `permissions.defaultMode`.
+    pub autonomy_now: Option<std::sync::Arc<dyn Fn() -> oxa_proto::Autonomy + Send + Sync>>,
     pub storage: PathBuf,
 }
 
@@ -1472,6 +1489,7 @@ fn run_locked(
                 scrub_note,
                 base_alias: planned.base_alias.as_ref(),
                 native: planned.native,
+                owner_selected_model: planned.owner_selected_model,
                 #[cfg(target_os = "linux")]
                 managed_steering: locked.managed_steering.as_ref(),
             })
@@ -1773,6 +1791,21 @@ mod tests {
         assert_eq!(
             run().unwrap_err(),
             "GitHub issue read failed, exceeded its byte limit or timed out"
+        );
+    }
+
+    #[test]
+    fn issue_packet_carries_the_issue_text() {
+        // A worker without GitHub access cannot read the issue, so its title and the whole
+        // body, lines included, arrive in the packet the runner built.
+        let prompt = issue_prompt(
+            42,
+            &json!({"title": "Worker packets", "body": "Carry the facts.\nSecond line.", "state": "OPEN"}),
+        )
+        .unwrap();
+        assert!(
+            prompt.starts_with("Implement issue #42: Worker packets\n\nCarry the facts.\nSecond line.\n\n"),
+            "{prompt}"
         );
     }
 

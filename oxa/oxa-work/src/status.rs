@@ -236,6 +236,8 @@ mod tests {
             push_approved: false,
             content_scan: None,
             runner_owns_github: true,
+            autonomy: Default::default(),
+            autonomy_now: None,
             storage: directory.path().into(),
         };
         let lease = Lease {

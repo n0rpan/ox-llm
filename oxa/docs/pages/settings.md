@@ -97,7 +97,8 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `defaultTools` | list | `["read","bash","edit","write","grep","find","ls"]` | tools on by default; names may include `subagent`, `web_search`, `codemode` and `tool_search` |
-| `oxa.bash.defaultTimeout` | number (seconds) | unset | timeout of a bash call that names none; unset is 120; `0` is no timeout |
+| `oxa.bash.defaultTimeout` | number (seconds) | unset | timeout of a bash call that names none; unset is 120; `0` is no timeout. A call's own `timeout: 0` is no timeout too, and beats this default |
+| `oxa.bash.maxJobs` | number | `16` | background jobs (`bash` with `background: true`) that may run at once; a further start is refused and names the oldest running job to stop with `kill`. User settings only. At least 1 |
 | `oxa.diet.output` | bool | unset | the system prompt's "be concise" rule is replaced by rules on tool use and a final answer of at most 6 lines. Unset is on |
 | `oxa.diet.tools` | bool | unset | shorter `grep` and `bash` output: `grep` prints each path once, and runs of three or more blank lines in bash output become two. Unset is on |
 | `oxa.liveSettings` | bool | `true` | on by default; `false` opts out. When on, a changed settings file is applied at the start of the next run without `/reload` (one `stat` per file; keys that feed the prompt rebuild it). Read from the settings the session holds, so turning it on takes effect at the next `/reload` or start. A file that no longer parses keeps the previous settings |
@@ -111,6 +112,7 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `oxa.subagent.enabled` | bool | unset | the `subagent` tool; unset is on unless the model is Flash or its window is below 32K |
 | `oxa.subagent.smallContext` | bool | `false` | declare `subagent` on a model with a window below 32K |
 | `oxa.subagent.softTokens` | number | `24000` | compaction point of a child agent |
+| `oxa.subagent.maxChildren` | number | `8` | children one parent session runs or queues over every call in flight, and the most `tasks` or `chain` steps one call takes. User settings only. At least 1 |
 | `oxa.subagent.remoteConcurrency` | number | `4` | children of one `tasks` call that run at once when some run on a cloud model (local children run one at a time) |
 | `oxa.subagent.resultCap` | number (bytes) | `6144` | cap on the text a child returns |
 | `oxa.webSearch.enabled` | bool | `true` | the `web_search` tool, when a key exists |
@@ -141,6 +143,7 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `compaction.reserveTokens` | number | `16384` | room kept free for the summary and the next reply |
 | `compaction.keepRecentTokens` | number | `4000` | recent context kept verbatim after a compaction |
 | `compaction.modelOverrides` | object | `null` | per-model `reserveTokens` and `keepRecentTokens` |
+| `compaction.profile` | `auto`, `local` or `cloud` | `auto` | `auto` takes `cloud` for a cloud model and `local` otherwise. `cloud` compacts at 90 % of the window, keeps 20000 tokens verbatim and writes a summary of about 2000 tokens. A `compaction.keepRecentTokens`, `oxa.compaction.summaryTarget` or `oxa.compaction.softTokens` set in any layer wins over the profile. `local` keeps the values above |
 | `oxa.compaction.idleSummary` | bool | unset | after a run that leaves the context between 80 % and 100 % of the soft limit, the summary of the next compaction is written in idle time, and that compaction reuses it with no model request if nothing it covers has changed. Unset is on |
 | `oxa.compaction.midRun` | bool | unset | compact between tool steps of a run when the context passes the compaction point; unset is on |
 | `oxa.compaction.summaryTarget` | number (tokens) | unset | soft length target of a compaction summary: the model is asked for about three quarters of it in words; `0` is no target. Unset is 700 |
@@ -173,6 +176,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.offline` | bool | `false` | same as `--offline`; user settings only |
 | `oxa.engine.allowRemote` | bool | `false` | allow an engine on another host; user settings only |
 | `oxa.engine.inProcessLocal` | bool | `false` | select the in-process owned local engine, including offline; user settings only |
+| `oxa.inbox.headless` | bool | `true` | a headless print or JSON run (`--mode json`) of a persisted session whose goal is pursuing takes `oxa send` follow-ups from that session's inbox for the length of the run. Each message is an ordinary follow-up user message, at most 256 KiB and 64 queued; a larger file stays on disk. Runs without a pursuing goal never watch the inbox, and `false` turns this off. Read from the user settings file only; a project file cannot change it |
 | `oxa.local` | object | `{}` | literal native binary/model/arguments/environment and model limits; user settings only; see [native local configuration](../../oxc-local/CONFIGURATION.md) |
 | `oxa.lead.shadow` | bool | `false` | enable the read-only `oxa lead --shadow` proposal preset; user settings only; no live runner actions |
 | `oxa.engine.inProcessCloud` | bool | `false` | select the in-process Rust cloud gateway for sessions and model discovery; user settings only |
@@ -195,6 +199,17 @@ Set `oxa.engine.inProcessCloud` in the user settings file to select the Rust
 gateway for sessions and `--list-models`. The default is `false`. Offline mode
 refuses before opening the gateway; configuration or gateway failures are returned
 directly. Project settings cannot enable this transport or change its cloud policy.
+
+The OpenCode Go subscription is the exception to that switch: a Go key in the
+owner's secrets file (`~/.config/oxc/llm/cloud-secrets.json`, the `opencode`
+entry) already enables the Go transport for the owner's own model choice, without
+`inProcessCloud`. `oxa.cloud.opencode.enabled: false` in the user settings opts
+out again, and `true` enables Go even for a delegated or restored model. Transport
+selection stays user-only: a project settings file, a model a launcher delegated
+through `oxa work`'s task file, and a model restored by `--continue` never turn
+the transport on by themselves. A configured local alias keeps a request local
+only when the alias owns the asked model exactly; a fuzzy local match does not
+hide the Go model of that name.
 
 Set `oxa.cloud.discover_models` to `true` to discover models at startup for the
 configured OpenRouter, OpenAI and Anthropic API keys. It also enables the
@@ -284,10 +299,13 @@ client's 30-second maximum. These settings contain no access or refresh token.
 Client transport tests inject loopback endpoints privately; production refresh
 configuration never supplies one.
 
-Subscription calls require their own positive request/token caps, retain actual
-token usage and settle zero USD. Unknown paid work retains its full token bound;
-the cap includes concurrent and crashed-process reservations. It never falls back
-to a paid API balance. Missing metered pricing still refuses metered requests.
+ChatGPT requires positive request and token caps. For OpenCode Go,
+`oxa.cloud.subscription_limits` is optional and has no default. If configured,
+oxa warns when projected usage reaches 80% or 100% of either limit, including
+concurrent reservations, and continues the request. Both providers keep
+recording requests and tokens, including conservative reservations for unknown
+outcomes. Provider limits and credential, offline, and LAN access checks still
+apply. Missing metered pricing still refuses metered requests.
 
 OpenCode Go and every other subscription request reserve tokens only. Their cost
 is unknown to oxa, so no daily USD headroom is held for them and no local USD
@@ -310,7 +328,8 @@ ledger records the full amount and admission continues.
 |---|---|---|---|
 | `externalEditor` | string | `null` | editor for Ctrl+G; wins over `VISUAL` and `EDITOR` |
 | `oxa.reportIssue.repo` | string | `null` | repository for `oxa report-issue submit`, as `OWNER/NAME` |
-| `oxa.reportIssue.semanticDedupe` | bool | `false` | verify dogfood reports against current main and search open and recently closed issues before posting. Matching reports become comments. New issues are limited to one per task and three per worker per UTC day |
+| `oxa.reportIssue.dailyNew` | number | `null` | owner cap on new issues per worker per UTC day for semantic dedupe. Unset means no check. Over the cap the post preview warns and records it; the owner's yes still posts |
+| `oxa.reportIssue.semanticDedupe` | bool | `false` | verify dogfood reports against current main and search open and recently closed issues before posting. Matching reports become comments, and the one preview question covers the post. New issues are limited to one per task; the per-worker daily count is `oxa.reportIssue.dailyNew` |
 | `oxa.builtinSkills` | bool | `true` | include the skills built into oxa |
 | `oxa.share.remoteModels` | string list | `[]` | user-only allowlist of metered cloud aliases eligible for explicit LAN sharing; personal subscriptions are excluded |
 | `oxa.skills.includeSynced` | bool | `false` | also list the skills another product synced into `~/.agents/skills` (a `synced/` folder, or a folder whose `manifest.json` lists `skillId`s); they are written for that product's tools, so oxa skips them by default |

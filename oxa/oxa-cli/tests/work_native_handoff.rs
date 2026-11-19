@@ -63,6 +63,8 @@ fn policy(root: &Path) -> oxa_work::RunPolicy {
         push_approved: false,
         content_scan: None,
         runner_owns_github: false,
+        autonomy: Default::default(),
+        autonomy_now: None,
         offline: false,
         storage: root.join("home/.oxa/agent/work/native-handoff"),
     }

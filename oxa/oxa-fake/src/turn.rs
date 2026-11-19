@@ -106,6 +106,7 @@ impl ScriptTurn {
     /// The assistant message this turn produces (W2: exactly these strings).
     pub fn message(&self) -> WireMsg {
         WireMsg {
+            images: Vec::new(),
             role: oxa_proto::Role::Assistant,
             content: self.text.clone(),
             reasoning: self.reasoning.clone(),
