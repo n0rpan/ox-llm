@@ -134,6 +134,7 @@ def build_argv(instruction, model=DEFAULT_MODEL, max_time=None):
         "--no-context-files", "--no-mcp", "--no-web-search", "--no-session",
         "--max-time", str(max_time),
         "--usage-log", REMOTE_USAGE_LOG,
+        "--",
         instruction,
     ]
 
