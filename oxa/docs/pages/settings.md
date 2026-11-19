@@ -330,6 +330,11 @@ while their recorded USD reserves nothing. OpenCode controls whether a call fall
 back to its paid balance; if it reports a higher charge than expected, the
 ledger records the full amount and admission continues.
 
+The repository's automated Go pull-request review checks at most 200 GitHub comment pages (20,000
+comments) for the configured daily quota and prior same-diff receipts. If GitHub history exceeds
+that bound, review is deferred before a quota reservation or provider access; incomplete history
+never permits an additional review.
+
 ### Other
 
 | Key | Type | Default | Meaning |
@@ -341,6 +346,7 @@ ledger records the full amount and admission continues.
 | `oxa.builtinSkills` | bool | `true` | include the skills built into oxa |
 | `oxa.share.remoteModels` | string list | `[]` | user-only allowlist of metered cloud aliases eligible for explicit LAN sharing; personal subscriptions are excluded |
 | `oxa.skills.includeSynced` | bool | `false` | also list the skills another product synced into `~/.agents/skills` (a `synced/` folder, or a folder whose `manifest.json` lists `skillId`s); they are written for that product's tools, so oxa skips them by default |
+| `oxa.workers.stopGraceSeconds` | number (seconds) | `10` | how long a stopped worker gets after SIGINT before its whole process group gets SIGTERM; SIGKILL follows 2 seconds later if the group is still alive |
 
 ## Example
 
