@@ -840,6 +840,13 @@ impl crate::Session {
                 Ok((vec!["Goal paused.".into()], None))
             }
             GoalCommand::Resume => {
+                // A pursuing goal (announced on open, not run) continues without a transition.
+                if self.goal().is_some_and(|g| g.status == GoalStatus::Pursuing) {
+                    return Ok((
+                        vec!["Goal resumed.".into()],
+                        Some(crate::prompt::GOAL_CONTINUE.into()),
+                    ));
+                }
                 let bound = self.inner().sref.clone();
                 let revision = self.goal_revision();
                 self.control_goal(&bound, revision, GoalControl::Resume, sink)?;
