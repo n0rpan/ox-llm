@@ -234,6 +234,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     CommandId::LeadAsks if words.0.is_empty() => {
                         crate::lead_loop::asks(&dirs, &cwd, env, &mut *stdout)
                     }
+                    CommandId::Usage => crate::usage_cmd::run(&words.0, &dirs, &cwd, &mut *stdout),
                     CommandId::Lead
                     | CommandId::LeadServe
                     | CommandId::LeadBoard
@@ -655,7 +656,10 @@ impl Built {
         let sandbox = self.sandbox.for_session().unwrap_or_else(|| self.sandbox.clone());
         // Issue #127 (b): one background-job registry per session, sharing the session's
         // sandbox. The session kills its jobs on close/shutdown.
-        let jobs = Arc::new(oxa_tools::JobRegistry::new());
+        // `oxa.bash.maxJobs` (16 unless the owner set it).
+        let jobs = Arc::new(oxa_tools::JobRegistry::with_max_jobs(
+            self.settings.bash_max_jobs(),
+        ));
         let bash_sandbox: Arc<dyn Sandbox> = Arc::new(self.bash_sandbox.with_inner(sandbox.clone()));
         jobs.set_sandbox(bash_sandbox.clone());
         // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).

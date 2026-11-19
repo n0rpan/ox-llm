@@ -1,11 +1,13 @@
-//! The stage: data-driven scenes for the activity line (design `handoff/animations/design.md`).
+//! The stage: the scene director of the activity row (animations design, sections 3.2 and 5).
 //!
-//! Slices 1 and 3 together: scenes as JSON, loaded and validated at start, with the built-in pack
-//! compiled in, and the renderer that draws them. Nothing here reads a clock or touches the
-//! terminal directly.
+//! Rules for everything in this module:
+//! * Pure functions of their arguments (no process environment, no clock, no I/O).
+//! * Randomness comes only from a seed the caller passes in, so a session replays the same picks.
+
+pub mod pick;
+pub mod render;
 
 pub mod data;
-pub mod render;
 
 pub use data::{
     ascii_text, glyph_allowed, load_pack, Frame, Intensity, Loaded, Looping, Scene, Skip, Tier, CAPTION_LONG,
