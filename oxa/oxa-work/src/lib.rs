@@ -806,6 +806,8 @@ pub struct RunPolicy {
     pub offline: bool,
     /// Set by the runner from the immutable packet before launching its children.
     pub runner_owns_github: bool,
+    /// The owner's level for the workers this runner starts. Only `Yolo` changes the worker argv.
+    pub autonomy: oxa_proto::Autonomy,
     pub storage: PathBuf,
 }
 

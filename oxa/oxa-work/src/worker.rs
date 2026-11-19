@@ -84,6 +84,16 @@ impl Worker {
     }
 }
 
+/// The mode flags of a worker child. Only an owner in yolo passes yolo on: the worker then
+/// runs without the tool sandbox and without prompts. Every other level keeps the default
+/// worker (auto mode inside the sandbox), exactly as before.
+pub(crate) fn mode_args(autonomy: oxa_proto::Autonomy) -> &'static [&'static str] {
+    match autonomy {
+        oxa_proto::Autonomy::Yolo => &["--yolo"],
+        _ => &[],
+    }
+}
+
 pub(crate) fn run(
     binary: &Path,
     source: &Path,
@@ -127,6 +137,7 @@ pub(crate) fn run(
     } else {
         command.arg("-na");
     }
+    command.args(mode_args(policy.autonomy));
     if policy.offline {
         command.arg("--offline");
     }
@@ -380,7 +391,26 @@ pub(crate) fn keep_tail(tail: &mut Vec<u8>, bytes: &[u8], cap: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxa_proto::Autonomy;
     use serde_json::json;
+
+    #[test]
+    fn yolo_runner_starts_yolo_worker() {
+        assert_eq!(mode_args(Autonomy::Yolo), ["--yolo"]);
+    }
+
+    #[test]
+    fn non_yolo_runner_worker_keeps_bwrap() {
+        // No yolo flag means the worker keeps its default sandboxed mode.
+        assert!(mode_args(Autonomy::Auto).is_empty());
+        assert!(mode_args(Autonomy::Standard).is_empty());
+    }
+
+    #[test]
+    fn worker_argv_has_no_yolo_by_default() {
+        assert_eq!(Autonomy::default(), Autonomy::Standard);
+        assert!(mode_args(Autonomy::default()).is_empty());
+    }
 
     #[test]
     fn a_discarded_assistant_event_leaves_declaration_evidence_unreadable() {

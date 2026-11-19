@@ -169,6 +169,7 @@ pub(crate) fn run(
             terminate_binary,
             offline: oxa_proto::offline(),
             runner_owns_github: false,
+            autonomy: runner_autonomy(&oxa_config::Settings::load(dirs, &root, false)),
             storage: dirs.agent_dir.join("work").join(key),
         };
         protected_storage(&policy.storage, &root, &common)?;
@@ -570,10 +571,35 @@ fn queue_options(args: &[String], cwd: &Path) -> Result<(PathBuf, oxa_work::Queu
     Ok((directory, options))
 }
 
+/// The level the runner's workers inherit: yolo only when the owner's own settings say so.
+/// The project layer is never read here, and it could only lower a mode anyway.
+fn runner_autonomy(settings: &oxa_config::Settings) -> oxa_proto::Autonomy {
+    if settings.default_permission_mode() == oxa_proto::PermissionMode::Yolo {
+        oxa_proto::Autonomy::Yolo
+    } else {
+        oxa_proto::Autonomy::default()
+    }
+}
+
 #[cfg(test)]
 mod registration_tests {
-    use super::registered_native_worker;
+    use super::{registered_native_worker, runner_autonomy};
     use serde_json::json;
+
+    #[test]
+    fn project_cannot_raise_worker_mode() {
+        let settings =
+            oxa_config::Settings::from_values(json!({}), json!({"permissions": {"defaultMode": "yolo"}}));
+        assert_eq!(runner_autonomy(&settings), oxa_proto::Autonomy::Standard);
+        let owner = oxa_config::Settings::from_values(
+            json!({"permissions": {"defaultMode": "yolo"}}),
+            json!({"permissions": {"defaultMode": "standard"}}),
+        );
+        assert_eq!(runner_autonomy(&owner), oxa_proto::Autonomy::Standard);
+        let owner =
+            oxa_config::Settings::from_values(json!({"permissions": {"defaultMode": "yolo"}}), json!({}));
+        assert_eq!(runner_autonomy(&owner), oxa_proto::Autonomy::Yolo);
+    }
 
     #[test]
     fn protected_registration_preserves_the_explicit_worker_and_adjacent_host() {

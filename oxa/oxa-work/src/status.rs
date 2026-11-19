@@ -233,6 +233,7 @@ mod tests {
             terminate_binary: None,
             offline: true,
             runner_owns_github: true,
+            autonomy: Default::default(),
             storage: directory.path().into(),
         };
         let lease = Lease {

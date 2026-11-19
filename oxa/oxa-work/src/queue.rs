@@ -934,6 +934,7 @@ mod tests {
             terminate_binary: None,
             offline: true,
             runner_owns_github: false,
+            autonomy: Default::default(),
             storage: directory.path().join("runner"),
         };
         assert!(Command::new(&policy.git_binary)
