@@ -271,7 +271,7 @@ impl Inbox {
         id: &str,
         control_extension: Option<String>,
         follow_ups: bool,
-        mut deliver: impl FnMut(InboxItem) -> bool + Send + 'static,
+        deliver: impl FnMut(InboxItem) -> bool + Send + 'static,
     ) -> io::Result<Self> {
         let dir = directory(agent_dir, id)?;
         dir.lock()?;
@@ -435,37 +435,38 @@ fn scan_batch(
     stopped: &AtomicBool,
     after: &mut Option<OsString>,
 ) -> bool {
-    let Ok(names) = entry_names(dir) else {
-        return false;
-    };
     // Keep only a bounded sorted batch, not one name per file in a stopped inbox.
     let mut paths = std::collections::BTreeMap::new();
     let mut retry = false;
-    for name in names {
+    let enumerated = for_each_entry_name(dir, |name| {
         if stopped.load(Ordering::Relaxed) {
             return false;
         }
         if after.as_ref().is_some_and(|last| &name <= last) {
-            continue;
+            return true;
         }
         let Some(extension) = Path::new(&name)
             .extension()
             .and_then(|extension| extension.to_str())
         else {
-            continue;
+            return true;
         };
         let (limit, item): (usize, fn(String) -> InboxItem) = if follow_ups && extension == "msg" {
             (INBOX_MESSAGE_BYTES, InboxItem::FollowUp)
         } else if Some(extension) == control_extension {
             (CONTROL_BYTES, InboxItem::Control)
         } else {
-            continue;
+            return true;
         };
         paths.insert(name, (limit, item));
         if paths.len() > 64 {
             paths.pop_last();
             retry = true;
         }
+        true
+    });
+    if enumerated.is_err() || stopped.load(Ordering::Relaxed) {
+        return false;
     }
     // Advance even past unreadable/invalid UTF-8 files, without deleting those files.
     *after = paths.last_key_value().map(|(path, _)| path.clone());
@@ -494,36 +495,42 @@ fn scan_batch(
     retry
 }
 
-/// The names in `dir`, read through the pinned descriptor so a renamed or replaced path
-/// cannot redirect the scan.
+/// Visit names in `dir` through the pinned descriptor without first allocating the entire
+/// directory listing.
 #[cfg(target_os = "linux")]
-fn entry_names(dir: &Directory) -> io::Result<Vec<OsString>> {
-    Ok(fs::read_dir(dir.path())?
-        .filter_map(Result::ok)
-        .map(|entry| entry.file_name())
-        .collect())
+fn for_each_entry_name(dir: &Directory, mut visit: impl FnMut(OsString) -> bool) -> io::Result<()> {
+    for entry in fs::read_dir(dir.path())?.flatten() {
+        if !visit(entry.file_name()) {
+            break;
+        }
+    }
+    Ok(())
 }
 
-/// The names in `dir`, read through the pinned descriptor so a renamed or replaced path
-/// cannot redirect the scan.
+/// Visit names in `dir` through a fresh descriptor for the pinned directory. Opening `.`
+/// rather than duplicating `dir.file` gives every poll an independent directory offset.
 #[cfg(not(target_os = "linux"))]
-fn entry_names(dir: &Directory) -> io::Result<Vec<OsString>> {
-    // fdopendir owns the duplicate and readdir is inode-relative, so the scan keeps the
-    // directory this watcher opened and locked even after the pathname is replaced.
-    // SAFETY: dup of a live descriptor; the failure branch closes it.
-    let dup = unsafe { libc::dup(dir.file.as_raw_fd()) };
-    if dup < 0 {
+fn for_each_entry_name(dir: &Directory, mut visit: impl FnMut(OsString) -> bool) -> io::Result<()> {
+    let dot = c".";
+    // SAFETY: `.` is one component relative to the live, pinned directory descriptor.
+    let fd = unsafe {
+        libc::openat(
+            dir.file.as_raw_fd(),
+            dot.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: `dup` is a live descriptor this call takes ownership of.
-    let stream = unsafe { libc::fdopendir(dup) };
+    // SAFETY: `fd` is a live descriptor this call takes ownership of.
+    let stream = unsafe { libc::fdopendir(fd) };
     if stream.is_null() {
         let error = io::Error::last_os_error();
-        // SAFETY: fdopendir failed, so `dup` is still ours to close.
-        unsafe { libc::close(dup) };
+        // SAFETY: fdopendir failed, so `fd` is still ours to close.
+        unsafe { libc::close(fd) };
         return Err(error);
     }
-    let mut names = Vec::new();
     loop {
         // SAFETY: `stream` is a live directory stream; the returned entry is borrowed from it.
         let entry = unsafe { libc::readdir(stream) };
@@ -535,11 +542,13 @@ fn entry_names(dir: &Directory) -> io::Result<Vec<OsString>> {
         if name == b"." || name == b".." {
             continue;
         }
-        names.push(OsStr::from_bytes(name).to_os_string());
+        if !visit(OsStr::from_bytes(name).to_os_string()) {
+            break;
+        }
     }
     // SAFETY: `stream` is live and not used after this point.
     unsafe { libc::closedir(stream) };
-    Ok(names)
+    Ok(())
 }
 
 /// Open one inbox entry with `O_NOFOLLOW` through `dir`'s descriptor: the file comes from the

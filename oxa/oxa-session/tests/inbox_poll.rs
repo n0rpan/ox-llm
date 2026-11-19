@@ -6,7 +6,9 @@ use oxa_fake::TestEnv;
 use oxa_session::{send_inbox, Inbox};
 use std::fs;
 use std::os::unix::fs::symlink;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[test]
@@ -29,6 +31,49 @@ fn inbox_poll_path_delivers_and_retains_unaccepted() {
         0,
         "accepted messages are removed"
     );
+}
+
+#[test]
+fn inbox_poll_path_revisits_rejected_message() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    send_inbox(&agent, "session-poll", "retry me").unwrap();
+    let accept = Arc::new(AtomicBool::new(false));
+    let callback_accept = accept.clone();
+    let (tx, rx) = mpsc::channel();
+    let watch = Inbox::watch(&agent, "session-poll", move |text| {
+        tx.send(text).unwrap();
+        callback_accept.load(Ordering::Relaxed)
+    })
+    .unwrap();
+
+    assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), "retry me");
+    accept.store(true, Ordering::Relaxed);
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+        "retry me",
+        "a later poll retries a message rejected for lack of capacity"
+    );
+    drop(watch);
+    assert_eq!(fs::read_dir(agent.join("inbox/session-poll")).unwrap().count(), 0);
+}
+
+#[test]
+fn inbox_poll_path_drains_more_than_one_bounded_batch() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    for index in 0..130 {
+        send_inbox(&agent, "session-poll", &format!("message {index}")).unwrap();
+    }
+    let (tx, rx) = mpsc::channel();
+    let watch = Inbox::watch(&agent, "session-poll", move |text| tx.send(text).is_ok()).unwrap();
+
+    for _ in 0..130 {
+        rx.recv_timeout(Duration::from_secs(3))
+            .expect("every bounded batch is enumerated");
+    }
+    drop(watch);
+    assert_eq!(fs::read_dir(agent.join("inbox/session-poll")).unwrap().count(), 0);
 }
 
 #[test]
