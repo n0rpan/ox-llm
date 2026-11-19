@@ -6,11 +6,13 @@
 //! are untouched: validation and merge do not read descriptors.
 
 mod advanced;
+mod budgets;
 mod compaction;
 mod display;
 mod lead;
 mod models;
 mod safety;
+mod tools;
 
 use std::sync::OnceLock;
 
@@ -329,6 +331,23 @@ impl Descriptor {
         });
         self
     }
+    pub const fn unit(mut self, unit: Unit) -> Self {
+        self.unit = Some(unit);
+        self
+    }
+
+    /// An advised minimum with no maximum: values below it save with a note.
+    pub const fn advise_from(mut self, min: u64, step: u64, note: &'static str) -> Self {
+        self.range = Some(Range {
+            min,
+            max: None,
+            hard: false,
+            step,
+            note,
+        });
+        self
+    }
+
     pub const fn advanced(mut self) -> Self {
         self.advanced = true;
         self
@@ -363,6 +382,8 @@ fn table() -> &'static [Descriptor] {
         .get_or_init(|| {
             [
                 display::ENTRIES,
+                budgets::ENTRIES,
+                tools::ENTRIES,
                 models::ENTRIES,
                 compaction::ENTRIES,
                 lead::ENTRIES,
@@ -515,14 +536,17 @@ mod tests {
 
     #[test]
     fn unwired_groups_stay_empty() {
-        // Display (A2a) and Models with the compaction/codemode entries (A2b) and Lead, Safety and
-        // Advanced (A2d) have data; Budgets and Tools arrive in A2c.
+        // Display (A2a), Models and compaction (A2b), Budgets and Tools (A2c), and Lead,
+        // Safety and Advanced (A2d) have data.
+        assert!(descriptor("oxa.bash.defaultTimeout").is_some());
+        assert!(descriptor("oxa.maxTurns").is_some());
+        assert!(in_group(Group::Budgets).next().is_some());
+        assert!(in_group(Group::Tools).next().is_some());
         assert!(in_group(Group::Models).next().is_some());
         assert!(descriptor("compaction.keepRecentTokens").is_some());
-        assert_eq!(in_group(Group::Tools).count(), 0);
         assert_eq!(fields_of("oxa.lead.serve").count(), 9);
         assert_eq!(in_group(Group::Display).count(), 30);
-        assert_eq!(descriptors().len(), 109);
+        assert_eq!(descriptors().len(), 146);
     }
 
     #[test]

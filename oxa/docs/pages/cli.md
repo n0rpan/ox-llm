@@ -291,7 +291,7 @@ Options added by extensions are listed after the options when you run `oxa --hel
 
 ## Environment variables
 
-Variables that oxa reads. Variables marked *set* are set by oxa for the bash tool and its children, and you do not need to set them.
+Variables that oxa reads. Variables marked *set* are set by oxa for the bash tool, extension tools and check commands it starts, and you do not need to set them. Names marked *accepted and ignored* are kept for pi compatibility; nothing reads them. The names oxa uses between its own processes are listed under [Internal](#internal-variables).
 
 Every boolean variable takes the same eight words, in any case: `1`, `true`, `yes` and `on` mean on; `0`, `false`, `no` and `off` mean off. Unset, empty and any other word leave the variable's own default in place (so a typo never turns a switch on or off by accident).
 
@@ -301,7 +301,7 @@ Every boolean variable takes the same eight words, in any case: `1`, `true`, `ye
 | `OXA_AGENT_DIR` | agent directory. Default `~/.oxa/agent`; `~` is expanded |
 | `OXA_LEAD_BOARD_LOG` | owner-selected absolute path to a private local board sample log; missing or refused data stays unavailable |
 | `OXA_SESSION_DIR` | session storage; `--session-dir` wins over it |
-| `OXA_PACKAGE_DIR` | package directory, for Nix or Guix store paths |
+| `OXA_PACKAGE_DIR` | accepted and ignored: oxa has no package store to relocate |
 | `OXA_SYSTEM_SKILLS_DIR` | system skills directory, read last. Default `/usr/share/omarchy/default/agents/skills`; empty disables it |
 | `OXA_OFFLINE` | `1`, `true`, `yes` or `on` turns offline mode on, as `--offline` does |
 | `OXA_ALLOW_HOME_CWD` | `1`, `true`, `yes` or `on` allows a start in the home directory, `/` or a parent of home, as the user setting `oxa.allowHomeCwd` does. See [security.md](security.md#starting-in-your-home-directory) |
@@ -312,14 +312,40 @@ Every boolean variable takes the same eight words, in any case: `1`, `true`, `ye
 | `OXA_SKIN` | `pi`, `oxa` or `ascii` (ASCII glyphs only): the look of the interactive UI for this run, over the `ui.skin` setting |
 | `OXA_REDUCED_MOTION` | `1`, `true`, `yes` or `on` switches the animations of the `oxa` skin off, as the `ui.reducedMotion` setting does; `0`, `false`, `no` or `off` says the opposite for one run |
 | `NO_COLOR` | with the `oxa` skin: no colour and no animation |
+| `OXA_ENV_NOTE` | `0`, `false`, `no` or `off` turns the environment note off for one run, `1`, `true`, `yes` or `on` turns it on. Wins over the `oxa.envNote` setting; unset leaves the setting in place |
+| `OXA_TRUST_PROJECT` | `1` or `true` acts as `--approve` for the project trust decision, for unattended runs; an explicit `--no-approve` wins. `oxa work` and lead workers do not pass it on to their children |
+| `OXA_RPC_OWNER_PRESENT` | `1` tells an RPC session that an owner can answer, so the `ask` tool is offered ([tools.md](tools.md#ask)) |
+| `OXA_LEAD_SITUATION` | owner-selected absolute path to the runner's situation document for `oxa lead`; a relative path is refused and an unreadable or unprotected file stays unavailable |
+| `OXA_SKIP_VERSION_CHECK`, `OXA_SELF_UPDATE_COMMAND`, `OXA_TELEMETRY` | accepted and ignored: oxa has no version check, self-update or telemetry |
+| `OXA_CACHE_RETENTION` | accepted and ignored: the engine owns its cache |
+| `OXA_SHARE_VIEWER_URL`, `OXA_RADIUS_GATEWAY` | accepted and ignored: oxa does no uploads |
 | `OXA_CLIPBOARD_OSC52` | `1`, `true`, `yes` or `on` also copies through OSC 52, the escape sequence that terminals relay to the clipboard |
 | `VISUAL`, `EDITOR` | external editor for Ctrl+G, when `externalEditor` is not set; `VISUAL` first |
 | `HTTP_PROXY`, `HTTPS_PROXY` | proxy for MCP HTTP requests only |
 | `OXA_SESSION_ID`, `OXA_SESSION_FILE` | *set*: the current session id, and the session file (unset when the session is ephemeral) |
 | `OXA_PROVIDER`, `OXA_MODEL`, `OXA_REASONING_LEVEL` | *set*: the provider (always `oxe`), the model id and the effective thinking level |
 | `OXA_CODING_AGENT`, `AI_AGENT` | *set*: process markers; `OXA_CODING_AGENT` is `true` and `AI_AGENT` is `oxa` in child processes |
+| `OXA_TOOL_CALL_ID` | *set*: the id of the running tool call, in the environment of an extension tool |
+| `OXA_WORK_OUTPUT_DIR` | *set*: `oxa work` sets it for done-check commands to the task's private output directory, when it has one |
+| `OXA_RUNNING_BIN` | *set*: inside the bash sandbox, the absolute path of the running `oxa` binary, when that file is readable there |
 
-Some settings name the same things (`httpProxy`, `externalEditor`, `sessionDir`). `OXA_SESSION_DIR` wins over `sessionDir`, and `BRAVE_SEARCH_API_KEY` wins over the key file. The rules for each setting are in [settings.md](settings.md).
+### Internal variables
+
+These are set by oxa for its own child processes, or are test hooks. They are not for users, and setting them yourself is not supported.
+
+- `OXA_SUBAGENT_DEPTH`: a parent sets `1` in a subagent child; a value above 0, or a non-number, marks the process as a child that cannot start subagents.
+- `OXA_SESSION_HINT`: a parent sets `<parent session id>.s<n>` in a subagent child, and every chat request of the child names it.
+- `OXA_CHILD_SOFT_TOKENS`: a parent may set the soft compaction limit of a subagent child; it overrides `oxa.compaction.softTokens`.
+- `OXA_WORKER_DEPTH`: oxa sets `1` in the environment of a lead worker session.
+- `OXA_WORK_MODEL_DELEGATED`: `oxa work` sets `1` in a worker, so a model argument does not count as chosen by the owner.
+- `OXA_WORKTREE_TRUST_SOURCE`: `oxa work` names the trusted source checkout of a managed worktree; it counts only in `--mode json`, and only when the checkout, the trust record and the approved resources verify.
+- `OXA_RUNNER_OWNS_GITHUB`: `oxa work` sets `1` in a worker: the runner owns GitHub access, so the worker runs no `gh`.
+- `OXA_NATIVE_STEERING_FD`: `oxa work` passes the inherited descriptor of the steering lease to a native worker.
+- `OXE_API_KEY_FILE`: oxa sets it for a local engine child it starts: the private file with the child's bearer token.
+- `OXE_API_KEY`: oxa does not read it; a local engine profile that sets this name or `OXE_API_KEY_FILE` is refused.
+- `OXA_TEST_ISOLATION`, `OXA_TEST_PANIC`, `OXA_BRAVE_BASE_URL`: test hooks, honoured only in test processes (`OXA_BRAVE_BASE_URL` only for a loopback URL).
+
+Some settings name the same things (`httpProxy`, `externalEditor`, `sessionDir`, `oxa.envNote`). `OXA_ENV_NOTE` wins over `oxa.envNote`. `OXA_SESSION_DIR` wins over `sessionDir`, and `BRAVE_SEARCH_API_KEY` wins over the key file. The rules for each setting are in [settings.md](settings.md).
 
 ## Examples
 

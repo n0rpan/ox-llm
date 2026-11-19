@@ -738,8 +738,12 @@ impl<'a> Loop<'a> {
     /// a failed, aborted or cut reply is persisted, so settlement's remaining busy claim does
     /// not turn later input into steering for a finished turn.
     fn running(&self) -> bool {
-        self.vm.status.activity != Activity::Idle
-            || (self.handle.is_running() && !self.worker.is_preloading() && !self.worker.is_drafting())
+        foreground_running(
+            &self.vm,
+            self.handle.is_running(),
+            self.worker.is_preloading(),
+            self.worker.is_drafting(),
+        )
     }
 
     /// Whether Enter / Alt+Enter queue the text (steering / follow-up) rather than start a run:
@@ -3245,6 +3249,17 @@ impl<'a> Loop<'a> {
     }
 }
 
+fn foreground_running(vm: &ViewModel, handle_running: bool, preloading: bool, drafting: bool) -> bool {
+    vm.status.activity != Activity::Idle
+        // A foreground `!cmd` / `!!cmd` remains active until its stored entry closes the live
+        // block. It claims the handle directly, without starting the agent run gate.
+        || vm
+            .blocks
+            .iter()
+            .any(|block| matches!(block, Block::Bash { running: true, .. }))
+        || (handle_running && !preloading && !drafting)
+}
+
 /// The search with its matches moved up by `first` lines (for highlighting a visible slice).
 fn shift_search(search: &TranscriptSearch, first: usize) -> TranscriptSearch {
     let current = search.current.and_then(|i| search.matches.get(i).copied());
@@ -3324,6 +3339,36 @@ fn write_private(path: &Path, text: &str) -> Result<(), OxaError> {
         .open(path)
         .map_err(io)?;
     file.write_all(text.as_bytes()).map_err(io)
+}
+
+#[cfg(test)]
+mod running_tests {
+    use super::*;
+
+    fn bash(running: bool) -> Block {
+        Block::Bash {
+            command: "sleep 10".into(),
+            output: String::new(),
+            exit: None,
+            excluded: false,
+            running,
+            expanded: false,
+        }
+    }
+
+    /// `user_bash` claims the shared handle without starting the agent run gate, so its live
+    /// block must keep Ctrl+C and Escape on the abort path until the stored entry closes it.
+    #[test]
+    fn live_user_bash_is_foreground_activity() {
+        let mut vm = ViewModel {
+            blocks: vec![bash(true)],
+            ..Default::default()
+        };
+        assert!(foreground_running(&vm, false, false, false));
+
+        vm.blocks[0] = bash(false);
+        assert!(!foreground_running(&vm, false, false, false));
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

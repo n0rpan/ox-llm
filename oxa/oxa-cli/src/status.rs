@@ -43,6 +43,9 @@ struct Snapshot {
     tools: u32,
     settled: RunOutcome,
     outcome: Option<RunOutcome>,
+    /// The saved goal's status, `None` without a goal; `reason` is set while paused.
+    goal_status: Option<&'static str>,
+    goal_reason: Option<String>,
     written: Instant,
 }
 
@@ -62,7 +65,8 @@ impl Snapshot {
             // The grace covers progress coalesced since this write: a reader must not flag
             // a healthy session early just because a delta has not reached disk yet.
             "stall_deadline_ms":timeout.filter(|_| active).map(|t| self.progress.saturating_add(t).saturating_add(coalesce_ms)),
-            "outcome":self.outcome.map(|outcome| outcome.record())
+            "outcome":self.outcome.map(|outcome| outcome.record()),
+            "goal":self.goal_status.map(|status| json!({"status":status, "reason":self.goal_reason}))
         })
     }
 
@@ -259,6 +263,8 @@ impl ProgressObserver for StatusWriter {
                 tools: 0,
                 settled: RunOutcome::NothingToDo,
                 outcome: None,
+                goal_status: None,
+                goal_reason: None,
                 written: Instant::now(),
             });
         }
@@ -319,6 +325,11 @@ impl ProgressObserver for StatusWriter {
             }
             Progress::Advanced => false,
             Progress::GoalControlCommitted { .. } => return,
+            Progress::GoalStatus { status, reason } => {
+                snapshot.goal_status = (status != "none").then_some(status);
+                snapshot.goal_reason = reason.map(|text| text.chars().take(256).collect());
+                true
+            }
             Progress::Closing => {
                 snapshot.running = true;
                 snapshot.phase = "closing";
@@ -833,5 +844,61 @@ mod tests {
         writer.notify(&session, Progress::Advanced);
         assert_eq!(fs::read(&path).unwrap(), final_bytes);
         assert_eq!(read_snapshot(&path).unwrap()["tokens"]["complete"], false);
+    }
+}
+
+#[cfg(test)]
+mod goal_status_tests {
+    use super::*;
+    use oxa_fake::TestEnv;
+
+    #[test]
+    fn status_json_carries_goal_status_and_reason() {
+        let env = TestEnv::new();
+        let session = SessionRef {
+            id: "goal".into(),
+            path: env.work().join("session.jsonl"),
+        };
+        let writer = StatusWriter::new(None);
+        writer.notify(
+            &session,
+            Progress::Session {
+                file: Some(&session.path),
+            },
+        );
+        let record = read_snapshot(&session.path.with_extension("status.json")).unwrap();
+        assert!(record["goal"].is_null());
+
+        writer.notify(
+            &session,
+            Progress::GoalStatus {
+                status: "paused",
+                reason: Some("two replies without an action"),
+            },
+        );
+        let record = read_snapshot(&session.path.with_extension("status.json")).unwrap();
+        assert_eq!(record["goal"]["status"], "paused");
+        assert_eq!(record["goal"]["reason"], "two replies without an action");
+
+        writer.notify(
+            &session,
+            Progress::GoalStatus {
+                status: "pursuing",
+                reason: None,
+            },
+        );
+        let record = read_snapshot(&session.path.with_extension("status.json")).unwrap();
+        assert_eq!(record["goal"]["status"], "pursuing");
+        assert!(record["goal"]["reason"].is_null());
+
+        writer.notify(
+            &session,
+            Progress::GoalStatus {
+                status: "none",
+                reason: None,
+            },
+        );
+        let record = read_snapshot(&session.path.with_extension("status.json")).unwrap();
+        assert!(record["goal"].is_null());
     }
 }

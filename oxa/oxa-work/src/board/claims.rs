@@ -292,7 +292,6 @@ impl Claims {
     ) -> Result<Option<Lease>> {
         let (now, ttl) = timing;
         if !policy.enabled
-            || policy.max_attempts_per_day == 0
             || !entry.eligible
             || matches!(
                 entry.action,
@@ -342,9 +341,8 @@ impl Claims {
             state.utc_day = day;
             state.attempts = 0;
         }
-        if state.attempts >= policy.max_attempts_per_day {
-            return Ok(None);
-        }
+        // The daily attempt threshold is advisory: a claim past it still
+        // reserves, and the caller warns from the returned lease generation.
         state.attempts = state
             .attempts
             .checked_add(1)

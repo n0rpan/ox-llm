@@ -176,6 +176,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.offline` | bool | `false` | same as `--offline`; user settings only |
 | `oxa.engine.allowRemote` | bool | `false` | allow an engine on another host; user settings only |
 | `oxa.engine.inProcessLocal` | bool | `false` | select the in-process owned local engine, including offline; user settings only |
+| `oxa.inbox.headless` | bool | `true` | a headless print or JSON run (`--mode json`) of a persisted session whose goal is pursuing takes `oxa send` follow-ups from that session's inbox for the length of the run. Each message is an ordinary follow-up user message, at most 256 KiB and 64 queued; a larger file stays on disk. Runs without a pursuing goal never watch the inbox, and `false` turns this off. Read from the user settings file only; a project file cannot change it |
 | `oxa.local` | object | `{}` | literal native binary/model/arguments/environment and model limits; user settings only; see [native local configuration](../../oxc-local/CONFIGURATION.md) |
 | `oxa.lead.shadow` | bool | `false` | enable the read-only `oxa lead --shadow` proposal preset; user settings only; no live runner actions |
 | `oxa.engine.inProcessCloud` | bool | `false` | select the in-process Rust cloud gateway for sessions and model discovery; user settings only |
@@ -269,12 +270,15 @@ The key is read for each request from the existing private
 `~/.config/oxc/llm/cloud-secrets.json` (owner-only, mode `0600`, outside a checkout).
 Keep keys out of settings. The file uses the existing provider-key JSON format.
 Private settlement rows live in `<agent directory>/cloud-ledger/`. Listing models
-reads neither the key nor the ledger and contacts no provider. A missing price
-refuses a request before credentials or provider I/O. `daily_budget_usd` is
-optional: without it there is no budget check, requests are admitted and their
-cost is still recorded in the ledger (a request whose cost cannot be bounded is
-recorded with `cost_unknown`). When set it must be a positive number, and a
-request that would exceed it is refused with `budget_exceeded` (HTTP 429). Requests
+reads neither the key nor the ledger and contacts no provider. `daily_budget_usd` is
+optional: without it there is no budget check, requests are admitted (including a
+model with no price) and their cost is still recorded in the ledger (a request whose
+cost cannot be bounded is recorded with `cost_unknown`). When set it must be a
+positive number, a missing price refuses a request before credentials or provider I/O
+(`cloud_pricing_unavailable`), and a request that would exceed it is refused with
+`budget_exceeded` (HTTP 429). A cap set after earlier uncapped requests of unknown
+cost the same day is refused with `cost_unknown_history`, which says so, instead of
+claiming the budget is exhausted. Requests
 retain their budget reservation until the private row is durable.
 
 An `openai` route uses the same model/price fields, reads the `openai` key from
@@ -298,6 +302,10 @@ client's 30-second maximum. These settings contain no access or refresh token.
 Client transport tests inject loopback endpoints privately; production refresh
 configuration never supplies one.
 
+Subscription calls require their own positive request/token caps, retain actual
+token usage and settle zero USD. Unknown paid work retains its full token bound;
+the cap includes concurrent and crashed-process reservations. It never falls back
+to a paid API balance. Missing metered pricing still refuses metered requests when a daily budget is set.
 ChatGPT requires positive request and token caps. For OpenCode Go,
 `oxa.cloud.subscription_limits` is optional and has no default. If configured,
 oxa warns when projected usage reaches 80% or 100% of either limit, including
