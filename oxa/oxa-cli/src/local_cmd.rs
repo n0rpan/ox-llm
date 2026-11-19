@@ -354,30 +354,32 @@ fn merge_alias(
     Ok(())
 }
 
-/// Resolve every `--mtp-head <path>` / `--mtp-head=<path>` in the launch arguments against `cwd`
-/// and canonicalize it, so the saved alias does not depend on the directory of a later session.
-fn absolute_heads(launch: &[String], cwd: &Path) -> Result<Vec<String>, OxaError> {
-    let resolve = |raw: &str| -> Result<String, OxaError> {
+/// Resolve file-valued MTP options in the launch arguments against `cwd` and canonicalize them,
+/// so the saved alias does not depend on the directory of a later session.
+fn absolute_mtp_paths(launch: &[String], cwd: &Path) -> Result<Vec<String>, OxaError> {
+    let resolve = |flag: &str, raw: &str| -> Result<String, OxaError> {
         std::fs::canonicalize(cwd.join(raw))
             .ok()
             .filter(|p| p.is_file())
             .map(|p| p.to_string_lossy().into_owned())
             .ok_or_else(|| {
                 invalid(format!(
-                    "--mtp-head {raw} is not a file (relative paths are taken from the current directory)."
+                    "{flag} {raw} is not a file (relative paths are taken from the current directory)."
                 ))
             })
     };
     let mut out = Vec::with_capacity(launch.len());
     let mut it = launch.iter();
     while let Some(word) = it.next() {
-        if word == "--mtp-head" {
+        if matches!(word.as_str(), "--mtp-head" | "--mtp-tune") {
             out.push(word.clone());
             if let Some(value) = it.next() {
-                out.push(resolve(value)?);
+                out.push(resolve(word, value)?);
             }
         } else if let Some(value) = word.strip_prefix("--mtp-head=") {
-            out.push(format!("--mtp-head={}", resolve(value)?));
+            out.push(format!("--mtp-head={}", resolve("--mtp-head", value)?));
+        } else if let Some(value) = word.strip_prefix("--mtp-tune=") {
+            out.push(format!("--mtp-tune={}", resolve("--mtp-tune", value)?));
         } else {
             out.push(word.clone());
         }
@@ -389,7 +391,13 @@ fn absolute_heads(launch: &[String], cwd: &Path) -> Result<Vec<String>, OxaError
 /// computes): they are still what the owner asked the server to run with, so they are kept.
 /// `--host`, `--port` and `--alias` are owned by the supervisor and never kept.
 const KEPT_FLAGS: &[&str] = &["--mlock", "--mtp-sampled"];
-const KEPT_WITH_VALUE: &[&str] = &["--mtp-max-ctx", "--ubatch-size", "-ub", "--oxe-weights"];
+const KEPT_WITH_VALUE: &[&str] = &[
+    "--mtp-max-ctx",
+    "--mtp-tune",
+    "--ubatch-size",
+    "-ub",
+    "--oxe-weights",
+];
 
 fn with_kept_controls(mut arguments: Vec<String>, launch: &[String]) -> Vec<String> {
     let mut kept = Vec::new();
@@ -424,7 +432,7 @@ fn add(args: &AddArgs, dirs: &Dirs, cwd: &Path, out: &mut dyn Write) -> Result<i
     let name = alias_for(args, &gguf)?;
     let dir = engine_dir(args.engine_dir.as_deref())?;
     let (oxe, server) = (sibling(&dir, "oxe")?, sibling(&dir, "oxe-server")?);
-    let launch = absolute_heads(&args.launch, cwd)?;
+    let launch = absolute_mtp_paths(&args.launch, cwd)?;
     let report = admission_report(&oxe, args, &launch, &gguf)?;
     let (limits, arguments) = from_report(&report, args.max_output)?;
     let arguments = with_kept_controls(arguments, &launch);
@@ -535,23 +543,49 @@ mod tests {
     }
 
     #[test]
-    fn relative_mtp_head_is_made_absolute_against_the_cwd() {
+    fn relative_mtp_paths_are_made_absolute_against_the_cwd() {
         let dir = std::env::temp_dir().join(format!("oxa-local-head-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("head.gguf"), b"x").unwrap();
+        std::fs::write(dir.join("tune.json"), b"{}").unwrap();
         let canon = std::fs::canonicalize(dir.join("head.gguf")).unwrap();
         let canon = canon.to_string_lossy().into_owned();
-        let got = absolute_heads(
-            &words(&["--mtp-head", "./head.gguf", "--spec-type", "draft-mtp"]),
+        let tune = std::fs::canonicalize(dir.join("tune.json"))
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let got = absolute_mtp_paths(
+            &words(&[
+                "--mtp-head",
+                "./head.gguf",
+                "--mtp-tune",
+                "tune.json",
+                "--spec-type",
+                "draft-mtp",
+            ]),
             &dir,
         )
         .unwrap();
-        assert_eq!(got, words(&["--mtp-head", &canon, "--spec-type", "draft-mtp"]));
-        let got = absolute_heads(&words(&["--mtp-head=head.gguf"]), &dir).unwrap();
-        assert_eq!(got, vec![format!("--mtp-head={canon}")]);
-        assert!(absolute_heads(&words(&["--mtp-head", "missing.gguf"]), &dir).is_err());
         assert_eq!(
-            absolute_heads(&words(&["--oxe-cpus", "0-3"]), &dir).unwrap(),
+            got,
+            words(&[
+                "--mtp-head",
+                &canon,
+                "--mtp-tune",
+                &tune,
+                "--spec-type",
+                "draft-mtp"
+            ])
+        );
+        let got =
+            absolute_mtp_paths(&words(&["--mtp-head=head.gguf", "--mtp-tune=tune.json"]), &dir).unwrap();
+        assert_eq!(
+            got,
+            vec![format!("--mtp-head={canon}"), format!("--mtp-tune={tune}")]
+        );
+        assert!(absolute_mtp_paths(&words(&["--mtp-head", "missing.gguf"]), &dir).is_err());
+        assert_eq!(
+            absolute_mtp_paths(&words(&["--oxe-cpus", "0-3"]), &dir).unwrap(),
             words(&["--oxe-cpus", "0-3"])
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -596,6 +630,8 @@ mod tests {
             "--mtp-sampled",
             "--mtp-max-ctx",
             "16384",
+            "--mtp-tune",
+            "/models/custom.json",
             "--host",
             "0.0.0.0",
             "--oxe-cpus",
@@ -610,7 +646,9 @@ mod tests {
                 "0-3",
                 "--mtp-sampled",
                 "--mtp-max-ctx",
-                "16384"
+                "16384",
+                "--mtp-tune",
+                "/models/custom.json"
             ])
         );
         // a control the report already carries is not repeated
