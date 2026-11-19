@@ -844,8 +844,14 @@ fn run_inner(
                 crate::goal::checkpoint(st, false, sink)?;
                 return Ok(RunEnd::Stopped);
             }
+            let was_pursuing = goal.pursuing();
             let snapshot = goal.stopped();
             crate::goal::save_checkpoint(st, &snapshot, sink)?;
+            if was_pursuing && snapshot.status == oxa_session::GoalStatus::Paused {
+                if let Some(reason) = snapshot.pause_reason.as_deref() {
+                    crate::goal::announce_pause(reason, sink);
+                }
+            }
             if goal.pursuing() {
                 // Queued input (a follow-up that woke a wait) is the next user message:
                 // stop so `settle_runs` delivers it instead of the continuation prompt.
