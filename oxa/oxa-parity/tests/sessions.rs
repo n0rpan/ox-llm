@@ -15,6 +15,7 @@
 
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use oxa_parity::oxa_bin;
+use oxa_session::{FsStore, Goal, GoalBudget, SessionStore};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::{symlink, PermissionsExt};
@@ -501,6 +502,40 @@ fn ses_002_picker() {
     rig.prompt("more cherries", "reply 1");
     let last = rig.generating().last().cloned().unwrap();
     assert_eq!(user_texts(&last), vec!["cherry question", "more cherries"]);
+}
+
+#[test]
+fn resume_picker_shows_saved_goal_without_running_it() {
+    let env = TestEnv::new();
+    three_sessions(&env);
+    let store = FsStore::new(sessions_root(&env));
+    let path = file_of(&env, "apple question").unwrap();
+    let session = store.resolve(path.to_str().unwrap()).unwrap();
+    let entries = store.load(&session).unwrap();
+    let parent = entries.last().unwrap();
+    let goal = Goal::new("Ship the parser".into(), GoalBudget::default(), parent.ts_ms).unwrap();
+    let id = oxa_session::new_entry_id(&|id| entries.iter().any(|entry| entry.id == id));
+    store
+        .append(
+            &session,
+            &oxa_proto::Entry {
+                id,
+                parent: Some(parent.id.clone()),
+                ts_ms: parent.ts_ms,
+                body: goal.body(),
+            },
+        )
+        .unwrap();
+
+    let mut rig = picker_rig(env, RigOpts::default());
+    select_listed(&rig, "apple question");
+    rig.pty.send_key("enter");
+    rig.pty.wait_for_text("Goal pursuing: Ship the parser").unwrap();
+    rig.quit();
+    assert!(
+        rig.generating().is_empty(),
+        "reopening must not run the stored goal"
+    );
 }
 
 /// pi docs: sessions.md "Deleting a session uses `trash` when available" (picker delete).

@@ -978,6 +978,7 @@ impl Tool for SubagentTool {
             "isError": is_error,
         });
         ToolOutput {
+            images: Vec::new(),
             text: cap_result(&text, config.result_cap, cx.spill_dir),
             is_error,
             ui: details,

@@ -698,6 +698,7 @@ mod tests {
     fn assistant(text: &str) -> EventMessage {
         EventMessage {
             msg: oxa_proto::WireMsg {
+                images: Vec::new(),
                 role: Role::Assistant,
                 content: Some(text.to_string()),
                 reasoning: None,
