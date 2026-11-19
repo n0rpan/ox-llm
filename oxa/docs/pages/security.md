@@ -212,6 +212,10 @@ Offline mode is about the network only. It does not limit what those programs re
 
 oxa refuses to send prompts to an engine on another host. The check is on the engine address (`OXA_ENGINE_URL` or `models.json`). Loopback addresses (`localhost`, `127.0.0.0/8`, `::1`) are always allowed. For any other host, set `oxa.engine.allowRemote: true` in the user settings. A project file cannot set it. oxa prints a warning at start-up while it is on.
 
+## Agent control channel
+
+A headless session (`--mode json` or `--mode rpc`) started by `oxa work` or a lead can accept control requests (steer, pause, resume, cancel) besides plain follow-ups. Control requests are accepted only from the same user. The session owner checks each one against the lease it was handed and the goal revision before acting; a stale or foreign request is refused with a receipt. `oxa.a2a.enabled: false` in the user settings turns the lane off: sessions then use the plain file inbox, and `nativeSteering` is refused.
+
 ## Extensions, hooks and MCP
 
 - Extensions run in an embedded JavaScript runtime with no file, network or process access of their own. Each host function they call (`exec`, `fs`, `fetch`, session actions) goes through the same policy as the model's tools.
@@ -228,6 +232,10 @@ A panic inside a tool, an extension, an MCP connection, a hook or a codemode scr
 Session files are `0600`. The Brave key is never written to a session, an export or a log. What the model read, however, is in the session: a file that contains a secret puts that secret into the session file and into the requests the engine receives. Exports contain the whole session, including all branches. [sessions.md](sessions.md#what-oxa-stores-and-how-to-remove-it) lists what oxa keeps and how to remove it.
 
 `oxa report-issue draft` scrubs its digest and the text you give it, but scrubbing is pattern-based. Read the draft before you post it; `oxa report-issue submit` posts only after you type `yes` at the terminal. `/bug` writes a redacted local bundle and uploads nothing.
+
+### Publishing
+
+`oxa work --publish` and lane pushes scan the commits they would push and refuse a private key, a known token format, an opaque credential assignment or quoted literal, a `Bearer` header, a URL password, lines added to a secret-store file such as `.env`, or the value of a secret-named variable or setting. An empty secret-store file and `.env.example` are checked by content, not refused by name. A credential deleted in a later commit still blocks publication: rewrite the unpublished commits. The details are in [../work.md](../work.md#what-the-publication-scan-refuses).
 
 ## Checklist
 

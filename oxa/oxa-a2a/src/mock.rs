@@ -93,7 +93,6 @@ enum Reply {
 
 fn serve(socket: TcpStream, address: SocketAddr, auth: &Capability, state: &mut State) -> io::Result<()> {
     let mut reader = BufReader::new(DeadlineStream {
-        #[cfg(feature = "agent-host")]
         budget: None,
         socket,
         deadline: Instant::now() + Duration::from_millis(500),
