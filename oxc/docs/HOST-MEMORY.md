@@ -21,7 +21,7 @@ Nice=15
 
 The controller owns one load-aware guard per native process and the canonical inference lease. Loading is exempt only from the PSI stop for a bounded startup period; the hard available-memory floor, OOM and own-swap checks remain active. After readiness, high PSI must persist for ten seconds and actual post-ready stall counters must corroborate it. This avoids treating the decaying load-phase PSI average as a new idle failure. Host swap/pageout activity alone never aborts a run. Idle-unload, switching and RAM release passed on all three retained classic profiles before promotion.
 
-The numeric-only [desktop sampler](../tools/desktop_memory_sampler.py) runs every 30 seconds through the normal-use window in `oxc-desktop-memory-sample.service`. It records host availability/PSI, service memory and application counts; no arguments, conversation text or images. Private output: `~/.local/state/oxc/desktop-memory-20261109.jsonl`. Revisit the cap if representative usage shows repeated pressure; no automatic cap increase is installed.
+The numeric-only desktop sampler runs every 30 seconds through the normal-use window in `oxc-desktop-memory-sample.service`. It records host availability/PSI, service memory and application counts; no arguments, conversation text or images. Private output: `~/.local/state/oxc/desktop-memory-20261109.jsonl`. Revisit the cap if representative usage shows repeated pressure; no automatic cap increase is installed.
 
 ## Disk swap with a bounded zswap cache
 
