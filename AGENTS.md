@@ -52,6 +52,12 @@ maintainer, who says in the PR when a hardware check is needed.
   The repeat guard follows this: the third identical tool result gets a short note, a call that
   still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
   is the cap against loops the guard cannot see.
+  Dangerous commands are a floor prompt interactively and never wait in an unattended run:
+  `oxa.approval.unattended` (`auto` by default, `refuse`, `request`; user settings only) refuses or
+  files an owner request, answered only through `oxa send --approve` or the lead web page. Grants are
+  owner-scoped (`once` is consumed by the retrying run; `session`/`always` persist) and a project file
+  or model output cannot grant one. A finding that asks for a default-off switch or for an unattended
+  run to wait is answered here.
 - Reserve P0/P1 for violations of these invariants or concrete data loss/crash. Report only
   introduced, actionable defects with a failure scenario; skip style and speculative risks.
 - A finding is a claim to verify, not an order. Whoever acts on a review finding first shows it is
