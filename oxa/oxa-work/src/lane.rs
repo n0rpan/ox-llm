@@ -223,7 +223,10 @@ fn protected_controls_unchanged(policy: &RunPolicy, repo: &Path, base: &str, hea
             PROTECTED_LANE_CONTROLS[1],
         ],
     ))?;
-    if changed.trim().is_empty() {
+    // The saved base can be ahead of what the destination has, so the controls of every
+    // commit the push would add are checked against the destination's own tips too.
+    let unpushed = crate::publish::pushed_path_changes(policy, repo, head, PROTECTED_LANE_CONTROLS)?;
+    if changed.trim().is_empty() && unpushed.trim().is_empty() {
         Ok(())
     } else {
         Err(

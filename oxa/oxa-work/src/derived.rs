@@ -198,6 +198,57 @@ pub(crate) fn committed_engine_inputs(
         .contains("engine"))
 }
 
+/// Changed paths no lane run tests: the lane covers only the `oxa` and portable `engine`
+/// workspaces, and engine suites ride the self-hosted route. So anything under `engine/`
+/// (shared fixtures and build inputs included) and any Rust, manifest or fuzz change
+/// outside `oxa/` (`fuzz/`, which only the checks workflow runs) has no lane evidence.
+pub(crate) fn committed_uncovered_paths(
+    policy: &RunPolicy,
+    root: &Path,
+    base: &str,
+    head: &str,
+) -> Result<Vec<String>, String> {
+    let diff = output(git(
+        policy,
+        root,
+        &[
+            "diff",
+            "--name-only",
+            "--no-relative",
+            "--no-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=none",
+            "-z",
+            base,
+            head,
+            "--",
+        ],
+    ))?;
+    if !diff.status.success() {
+        return Err("committed change inventory failed".into());
+    }
+    let text = String::from_utf8(diff.stdout).map_err(|_| "change inventory is not UTF-8")?;
+    Ok(text
+        .split('\0')
+        .filter(|path| !path.is_empty() && lane_cannot_test(path))
+        .map(str::to_owned)
+        .collect())
+}
+
+fn lane_cannot_test(path: &str) -> bool {
+    if path.starts_with("engine/") {
+        return true;
+    }
+    if path.starts_with("oxa/") {
+        return false;
+    }
+    path.starts_with("fuzz/")
+        || [".rs", ".toml", ".lock"]
+            .iter()
+            .any(|suffix| path.ends_with(suffix))
+}
+
 fn committed_selection(policy: &RunPolicy, root: &Path, base: &str, head: &str) -> Result<Selected, String> {
     let diff = output(git(
         policy,
@@ -973,6 +1024,27 @@ pub(crate) fn bounded_command(command: &str) -> String {
 mod tests {
     use super::*;
     use crate::test_dir::PrivateDir;
+
+    #[test]
+    fn lane_evidence_excludes_engine_fixtures_and_fuzz_but_not_oxa_work() {
+        for path in [
+            "engine/tests/fixtures/klein-4b-q8.tensors.txt",
+            "engine/crates/gguf/src/lib.rs",
+            "fuzz/oxa/src/lib.rs",
+            "fuzz/oxa/tests/smoke.rs",
+            "somewhere/src/lib.rs",
+        ] {
+            assert!(lane_cannot_test(path), "{path}");
+        }
+        for path in [
+            "oxa/oxa-work/src/lib.rs",
+            "oxa/Cargo.lock",
+            "README.md",
+            "oxa/docs/work.md",
+        ] {
+            assert!(!lane_cannot_test(path), "{path}");
+        }
+    }
 
     fn manifest(dir: &PrivateDir, path: &str, text: &str) {
         let full = dir.path().join(path);

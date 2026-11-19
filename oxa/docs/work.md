@@ -460,12 +460,17 @@ repair. In every non-green case the task is never `done`.
 Because the lane workflow is the authority, a head that changes
 `.github/workflows/lane.yml` or `tools/ci/` is refused before the push: those
 changes land in their own owner-reviewed change instead of qualifying themselves.
+The check covers every commit the push would add (against the destination's own
+tips), not only the diff from the saved base. A green lane run is evidence only for
+what the lane tests: a change under `engine/`, or Rust/manifest changes outside
+`oxa/` (such as `fuzz/`), stays on the hosted route.
 A branch whose open pull request is already in the merge queue is refused too;
 use a new task branch for follow-up work.
 
 The push is gated. The owner confirms it at the controlling terminal before the
 run starts, or a web/runner surface that already holds the owner's confirmation
-sets `OXA_WORK_OWNER_CONFIRMED=1`. Without that confirmation a lane task ends
+sets `OXA_WORK_OWNER_CONFIRMED=1` (ignored when a coding-agent marker such as
+`OXA_CODING_AGENT`, `AI_AGENT` or `OXA_SUBAGENT_DEPTH` is set, as for `--publish`). Without that confirmation a lane task ends
 `blocked` before any worker starts and pushes nothing. Offline mode, an untrusted
 project, a missing trusted `gh`, or a missing sandbox refuse it later.
 

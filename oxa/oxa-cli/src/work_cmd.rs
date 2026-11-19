@@ -257,14 +257,7 @@ pub(crate) fn run(
             }
             end -= 1;
         }
-        if (publish || reports)
-            && env.pairs().iter().any(|(name, _)| {
-                matches!(
-                    name.as_str(),
-                    "OXA_CODING_AGENT" | "AI_AGENT" | "OXA_SUBAGENT_DEPTH"
-                )
-            })
-        {
+        if (publish || reports) && agent_launched(env) {
             return Err("publishing and problem reporting require the owner outside an agent tool".into());
         }
         let task_args = &args[..end];
@@ -455,6 +448,17 @@ pub(crate) fn run(
     }
 }
 
+/// Whether the process runs under a coding agent or subagent, whose actions are never
+/// the owner's own confirmation.
+fn agent_launched(env: &Env) -> bool {
+    env.pairs().iter().any(|(name, _)| {
+        matches!(
+            name.as_str(),
+            "OXA_CODING_AGENT" | "AI_AGENT" | "OXA_SUBAGENT_DEPTH"
+        )
+    })
+}
+
 /// Resolve `gh` and the owner's lane push approval. Missing gh only blocks the
 /// lane task that needs it; other tasks run unchanged.
 fn configure_lane(policy: &mut oxa_work::RunPolicy, root: &Path, env: &Env, dirs: &Dirs, ask: bool) {
@@ -468,10 +472,24 @@ fn configure_lane(policy: &mut oxa_work::RunPolicy, root: &Path, env: &Env, dirs
     }
     if policy.content_scan.is_none() {
         // Lane pushes go through exactly the scan `--publish` runs.
-        let scan = crate::report_cmd::PushScan::new(env, &oxa_config::Settings::load(dirs, root, true));
-        policy.content_scan = Some(std::sync::Arc::new(move |item| scan.check(item)));
+        // The scan reads project settings, so it is built on first use, which only a
+        // trusted project's lane acceptance reaches, never while an unapproved
+        // checkout is being opened.
+        let (scan_env, scan_dirs, scan_root) = (env.clone(), dirs.clone(), root.to_path_buf());
+        let scan = std::sync::OnceLock::<crate::report_cmd::PushScan>::new();
+        policy.content_scan = Some(std::sync::Arc::new(move |item| {
+            scan.get_or_init(|| {
+                crate::report_cmd::PushScan::new(
+                    &scan_env,
+                    &oxa_config::Settings::load(&scan_dirs, &scan_root, true),
+                )
+            })
+            .check(item)
+        }));
     }
-    if env.get("OXA_WORK_OWNER_CONFIRMED") == Some("1") {
+    // A model-launched child inherits the environment but is never the owner: an
+    // agent marker voids the ambient confirmation, as it does for `--publish`.
+    if env.get("OXA_WORK_OWNER_CONFIRMED") == Some("1") && !agent_launched(env) {
         policy.push_approved = true;
     }
     if ask && !policy.push_approved {

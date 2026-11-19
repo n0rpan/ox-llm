@@ -185,7 +185,7 @@ This matters because the model can be steered by text it reads. A steered model 
 `oxa work --publish` and its opt-in lane acceptance scan the exact commits that a push would add
 to its destination and refuse credential-like content before sending anything. The runner, not
 the worker, owns GitHub credentials. A lane candidate also cannot change GitHub workflows or the
-lane runner; submit those CI-control changes separately for normal review.
+lane runner; submit those CI-control changes separately for normal review. Every commit the push would add is checked, not only the diff from the saved base. The push itself needs the owner's confirmation at the terminal; `OXA_WORK_OWNER_CONFIRMED=1` is ignored while a coding-agent marker (`OXA_CODING_AGENT`, `AI_AGENT`, `OXA_SUBAGENT_DEPTH`) is set. A green lane run counts as evidence only for what the lane tests: changes under `engine/` or `fuzz/` stay on the hosted route.
 
 ### web_search
 

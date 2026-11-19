@@ -319,6 +319,37 @@ fn publication_refuses_a_lane_task_without_green_evidence() {
 }
 
 #[test]
+fn an_agent_marker_voids_the_ambient_owner_confirmation() {
+    for marker in ["OXA_CODING_AGENT", "AI_AGENT", "OXA_SUBAGENT_DEPTH"] {
+        let env = TestEnv::new();
+        setup(&env, r#"["true"]"#);
+        lane_task(&env);
+        let path = configure(&env);
+        let server = oxa_fake::FakeServer::start(edits(), oxa_fake::FakeOpts::default()).unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+            .args(["work", "../tasks.json"])
+            .current_dir(env.work().join("project"))
+            .env_clear()
+            .envs(env.envs(&server.url()))
+            .env("PATH", path)
+            .env("OXA_WORK_OWNER_CONFIRMED", "1")
+            .env(marker, "1")
+            .output()
+            .unwrap();
+        let record: serde_json::Value = serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|error| panic!("{marker}: {error}: {}", String::from_utf8_lossy(&out.stdout)));
+        assert_eq!(record["outcome"], "blocked", "{marker}: {record}");
+        assert!(
+            record["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("push confirmation"),
+            "{marker}: {record}"
+        );
+    }
+}
+
+#[test]
 fn a_lane_task_without_owner_push_approval_runs_its_local_checks_but_is_never_done() {
     let env = TestEnv::new();
     setup(&env, r#"["true"]"#);

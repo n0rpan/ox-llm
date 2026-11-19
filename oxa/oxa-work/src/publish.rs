@@ -618,6 +618,28 @@ pub(crate) fn scan_push(policy: &RunPolicy, repo: &Path, head: &str) -> Result<(
     scan_pushed(policy, repo, &pushed_revisions(head, &known), scan)
 }
 
+/// Paths under `paths` that any commit the push would add changes (reachable from `head`
+/// and from no tip the destination advertises), empty when none does. A merge is listed
+/// against each parent, so a control file that only a branch side changed still shows.
+pub(crate) fn pushed_path_changes(
+    policy: &RunPolicy,
+    repo: &Path,
+    head: &str,
+    paths: &[&str],
+) -> Result<String> {
+    let remote = checked(super::git(
+        policy,
+        repo,
+        &["remote", "get-url", "--push", "--all", "origin"],
+    ))?;
+    let known = destination_tips(policy, repo, &remote)?;
+    let mut args = vec!["log", "--format=", "--name-only", "--no-renames", "-m"];
+    args.extend(pushed_revisions(head, &known));
+    args.push("--");
+    args.extend_from_slice(paths);
+    checked(super::git(policy, repo, &args))
+}
+
 /// Push one exact accepted commit. Metadata probes deny every transport;
 /// only this explicit, confirmed publication may use normal GitHub/file transports.
 pub(crate) fn push_head(
