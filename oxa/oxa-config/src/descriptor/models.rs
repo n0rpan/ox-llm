@@ -226,6 +226,17 @@ pub const ENTRIES: &[Descriptor] = &[
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
     d(
+        "oxa.emptyReplyRetries",
+        Group::Models,
+        "Requests and retries",
+        "Empty reply retries",
+        "Ask again when a cloud model returns no text and no tool call. 0 = off.",
+    )
+    .number(Unit::Count)
+    .zero("off")
+    .apply(Apply::Reload)
+    .web(WebEdit::Edit),
+    d(
         "retry.provider.maxRetries",
         Group::Models,
         "Requests and retries",

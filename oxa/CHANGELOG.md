@@ -9,6 +9,7 @@
 - `oxa work` starts a new task branch at its published head (`origin/<branch>`) when that tip descends from the captured base, instead of always at the base. A task for an already pushed pull-request branch now audits and continues that head rather than redoing work from a tree that predates it; several diverging tips or an unrelated one keep the base. See [work.md](docs/work.md).
 ### Added
 
+- Cloud resilience defaults: the stream silence limit (`httpIdleTimeoutMs`) is now 900 s (was 300 s) and `retry.maxRetries` is 10 (was 3), with the existing capped backoff (60 s) and `Retry-After` handling. A cloud reply with no text and no tool call is asked once more (`oxa.emptyReplyRetries`, default 1, `0` = off). All three are owner settings. See [settings.md](docs/pages/settings.md).
 - `--usage-log FILE` (#1592): one JSONL record per model call (prompt, cached and output tokens, duration, model, turn), owner-only file, no message text. Reasoning tokens are null until the engine reports them.
 - `oxa work --pr N --model MODEL` (#1019): the unattended packet for a pull request carries its title, body, reviews, issue comments and the names of failing checks at the current head, and the task branch is the pull request's own head branch. Review text and check names are labelled as data and bounded (reviews to 16 KiB, 40 check names); only failing checks travel, never passing ones. Malformed review or check lists are refused, never silently dropped.
 

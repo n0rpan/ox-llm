@@ -129,7 +129,7 @@ const SCHEMA: &[KeyDef] = &[
     key("fullscreenWheelScrollLines", Kind::Any, "\"auto\""),
     key("hideThinkingBlock", Kind::Bool, "false"),
     key("hooks", Kind::Object, "{}"),
-    key("httpIdleTimeoutMs", Kind::Any, "300000"),
+    key("httpIdleTimeoutMs", Kind::Any, "900000"),
     key("httpProxy", Kind::String, "null"),
     verdict_o("images.autoResize", Kind::Bool, "true"),
     key("images.blockImages", Kind::Bool, "false"),
@@ -183,6 +183,7 @@ const SCHEMA: &[KeyDef] = &[
     // L1: apply a changed settings file at the next run; on by default, `false` opts out.
     key("oxa.liveSettings", Kind::Bool, "true"),
     // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
+    key("oxa.emptyReplyRetries", Kind::Number, "1"),
     key("oxa.local", Kind::Object, "{}"),
     key("oxa.maxTurns", Kind::Number, "null"),
     key(
@@ -267,7 +268,7 @@ const SCHEMA: &[KeyDef] = &[
     key("retry.baseDelayMs", Kind::Number, "2000"),
     key("retry.enabled", Kind::Bool, "true"),
     key("retry.maxAgentDelayMs", Kind::Number, "60000"),
-    key("retry.maxRetries", Kind::Number, "3"),
+    key("retry.maxRetries", Kind::Number, "10"),
     key("retry.provider.maxRetries", Kind::Number, "0"),
     key("retry.provider.maxRetryDelayMs", Kind::Number, "60000"),
     key("retry.provider.timeoutMs", Kind::Number, "null"),

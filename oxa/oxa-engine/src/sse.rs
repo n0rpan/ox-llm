@@ -122,7 +122,7 @@ pub enum Flow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamOpts {
     pub connect_timeout_ms: u64,
-    /// Maximum time without receiving any byte (headers, data or comment). Default 300 000.
+    /// Maximum time without receiving any byte (headers, data or comment). Default 900 000.
     pub silence_limit_ms: u64,
 }
 
@@ -130,7 +130,7 @@ impl Default for StreamOpts {
     fn default() -> Self {
         StreamOpts {
             connect_timeout_ms: 5_000,
-            silence_limit_ms: 300_000,
+            silence_limit_ms: 900_000,
         }
     }
 }
