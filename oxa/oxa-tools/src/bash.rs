@@ -492,6 +492,7 @@ impl BashTool {
         if let Err(e) = self.sandbox(cx).check() {
             return ToolOutput::error(e.to_string());
         }
+        let label = command;
         let command = match self.shell.command(command) {
             Ok(c) => c,
             Err(e) => return ToolOutput::error(e),
@@ -507,7 +508,7 @@ impl BashTool {
             timeout_s: timeout_s.filter(|t| *t > 0),
             env: cx.env.to_vec(),
         };
-        match self.jobs.spawn(spec) {
+        match self.jobs.spawn_labeled(spec, label) {
             Ok(id) => ToolOutput {
                 images: Vec::new(),
                 text: format!(
@@ -642,9 +643,12 @@ impl BashTool {
             Some(own) => {
                 let mut job_spec = spec.clone();
                 job_spec.timeout_s = None;
-                match self.jobs.spawn_on(own, job_spec, true) {
+                match self.jobs.spawn_on_labeled(own, job_spec, true, raw_command) {
                     Ok(id) => match self.follow_job(&id, soft_limit, cx, &mut sink) {
-                        Followed::Detached(out) => return out,
+                        Followed::Detached(out) => {
+                            self.jobs.release_to_background(&id);
+                            return out;
+                        }
                         Followed::Done(res) => {
                             wall_note = started.elapsed() >= WALL_NOTE_AFTER;
                             res

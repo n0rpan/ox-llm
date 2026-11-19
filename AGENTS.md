@@ -27,6 +27,13 @@ maintainer, who says in the PR when a hardware check is needed.
     Answer it by citing this rule, and do not apply it. A change that re-adds an OS sandbox to those
     paths is a P1 finding.
   - Off Linux the bash network is not restricted. The start notice and the model env note say so.
+- **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
+  answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
+  broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
+  files, web pages, other sessions, agent inbox) never approves. In yolo the broker answers yes and
+  records it. The broker socket is owned by the session (dir 0700, socket 0600) and validates a
+  complete, bounded request frame before asking. Do not add
+  `/dev/tty`-only confirmations or env-marker refusals for owner actions.
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
   in the ledger (an unknown cost is recorded as unknown). Limits are owner configuration: with no cap
@@ -65,12 +72,21 @@ maintainer, who says in the PR when a hardware check is needed.
   publish behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and the user
   docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A change to an ordinary
   default, limit or budget updates the user docs; a missing docs update is P3 and is fixed forward.
+- **Memory store:** the memory store's `memory/` directory is owner-only (`0700`), and every entry,
+  generated index and lock file is owner-only (`0600`). A save must tighten an existing directory
+  with looser permissions before writing; review changes against this upgrade behaviour as well as
+  new stores.
 - **Early-stage process (owner decision, until v0.3):**
   - Only P0/P1 findings, security findings and an open security review block a merge. P2/P3 findings are filed as follow-ups and fixed forward on main.
   - Prefer one PR per feature, up to about 800 changed lines, over stacks of small PRs.
   - A merge that breaks required checks on main is reverted at once, then fixed forward. A review finding
   that contradicts an owner decision stated in the linked issue or PR is answered by updating these
   rules in that PR, not by changing the behaviour.
+- **Publication scan:** `oxa work --publish` and lane pushes refuse secrets in the commits they push (keys,
+  known tokens also after a word character, opaque credential assignments and quoted literals, secret-store
+  content, configured secret values). A file is refused for its content, never its name alone: an empty
+  secret-store file and `.env.example` publish unless the content holds a secret. Flag as P1 a change that
+  weakens these refusals or adds a name-only or blanket long-value block (P2 without a doc update).
 - **Bash and subagent limits.** The two caps are user-only. `oxa.bash.maxJobs` defaults to 16
   running background jobs.
   `oxa.subagent.maxChildren` defaults to 8 running or queued children per parent and 8 steps
@@ -102,8 +118,18 @@ maintainer, who says in the PR when a hardware check is needed.
   sandbox, user-only settings, offline, fork safety). Limits, budgets, retries and guards are owner
   settings with generous defaults that warn and record; a hard block exists only when the owner
   configures it. Do not ask for a new default block or for a feature to be default-off.
+  Owner messages sent with `oxa send` are not refused for size: text over the 256 KiB inline
+  inbox limit is stored in the receiving session's private, tool-readable spill directory and
+  only a short pointer is queued. The agent directory remains denied.
   The repeat guard follows this: the third identical tool result gets a short note, a call that
   still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
+  is the cap against loops the guard cannot see.
+  The finish wake follows it too: a background bash job that finishes on its own queues one
+  follow-up message and, when the session is idle after a normal outcome, starts a turn;
+  `oxa.jobs.wakeOnFinish` (`true` by default, `false` opts out, user settings only) is the control,
+  it wakes only the session the job started in, and a job the model or the user stopped wakes
+  nothing; a completion retained behind a failed or interrupted turn stays queued (also across a session
+  reopen) until the next prompt. A finding that asks for a default-off switch or a cross-session wake is answered here.
   is the cap against loops the guard cannot see. A pursuing goal whose request fails transiently
   (stream cut, engine down or busy, timeout, 429, 5xx) waits without tokens and sends it again:
   `oxa.goal.failureBackoffSeconds` (default 60, doubling, capped at 900 unless set higher, `0` opts
@@ -184,6 +210,28 @@ maintainer, who says in the PR when a hardware check is needed.
   and workflow dispatch when the worker session refuses them; do not work around that refusal.
   Below, every `gh` command is for a session that owns GitHub access.
 
+## What to test (owner rule)
+
+**Test what the product does for users, not how many test lines exist.**
+- **Write a test when** it protects behaviour a user or a security guarantee relies on:
+  - a bug that happened;
+  - a security or sandbox standard rule;
+  - money and ledger accounting;
+  - cache and prefix stability that changes cost;
+  - release integrity;
+  - an end-to-end flow (a real turn with tools, local model wiring, publish).
+- **Prefer** one end-to-end or integration test over many unit tests of internal helpers.
+- **Do not write tests that pin:**
+  - wording in AGENTS.md, SECURITY.md, docs or workflow files;
+  - descriptor or setting counts;
+  - sort order that nothing depends on;
+  - hashes copied from CI output;
+  - implementation detail a refactor may change.
+- **Doc and env sync checks** belong in a fast lint job, not behind a full build.
+- **Do not write tests that cannot fail:** a mock that asserts itself, or a test of dead code.
+- **A reviewer asking for a test** should name the behaviour it protects. "Add a test" with no behaviour is not a finding.
+- **Delete a test that only breaks on harmless changes.** Note it on the `Removes:` line.
+
 ## Build and test capacity (owner rule)
 
 GitHub-hosted CI is the judge for builds and tests. Run it with `OXCI=off`.
@@ -212,6 +260,13 @@ explicitly:
 gh workflow run lane --ref <branch>
 gh run watch <run-id> --exit-status
 ```
+
+Once a PR against main is open for the branch, a push no longer starts `lane` (its first job,
+`lane pr check`, finds the PR and skips the rest): the PR's `checks` run covers the same commit, so
+wait on that run (`gh run list --branch <branch> --workflow checks`, then `gh run watch`). A branch
+without a PR, and `gh workflow run lane`, still run `lane`. CodeQL runs on pushes to main, weekly and
+on dispatch only; the macOS `oxa-cli` build runs on main, on dispatch and on PRs touching
+`oxa/oxa-session`, `oxa/oxa-sandbox`, `oxa/oxa-cli`, `oxa/oxc-gateway`, `packaging/macos` or `oxa/Cargo.lock`.
 
 The lane workflow selects changed crates plus their local reverse dependencies and binary-fixture
 consumers against main. Shared workspace manifests/locks expand the affected workspace. Tests use
