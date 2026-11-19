@@ -19,7 +19,15 @@ scan_list() { # $1 = file with one path per line
       */usr/share/ox-llm/oxc|*/usr/share/ox-llm/oxc/*|*/usr/bin/oxc|*/usr/bin/oxc-diagnostics|*/usr/bin/local-ai)
         note "controller payload: $f" ;;
     esac
-    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    if [ -L "$f" ]; then
+      note "unsupported symlink: $f"
+      continue
+    fi
+    [ -d "$f" ] && continue
+    if [ ! -f "$f" ]; then
+      note "unsupported entry: $f"
+      continue
+    fi
     magic=$(head -c 4 "$f" | od -An -tx1 | tr -d ' \n')
     first=$(head -n 1 "$f" | tr -d '\000' | head -c 200)
     case $first in
@@ -36,7 +44,7 @@ scan_list() { # $1 = file with one path per line
     case $base in
       LICENSE*|COPYING*|NOTICE*|THIRD_PARTY*|README*|*MANIFEST*|*.json|*.txt|*.md) continue ;;
     esac
-    if grep -qaE 'python3|/usr/bin/python|/usr/bin/env python' "$f"; then
+    if grep -qaE '(^[[:space:]]*|[;&|()][[:space:]]*|[[:space:]]+)((exec|command|env)[[:space:]]+)?([^[:space:];&|()]*/)?python([0-9]+([.][0-9]+)?)?([[:space:];&|()]|$)' "$f"; then
       note "python invocation: $f"
     fi
   done < "$1"
@@ -61,7 +69,7 @@ else
       if grep -qE '(^|/)\.\.(/|$)|^/' "$work/names"; then note "unsafe path in $target"; continue; fi
       tar -xzf "$target" -C "$root"
     fi
-    find "$root" \( -type f -o -type l -o -type d \) > "$list"
+    find "$root" -print > "$list"
     scan_list "$list"
     echo "no-python: scanned $target"
   done

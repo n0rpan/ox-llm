@@ -52,6 +52,14 @@ class ReleaseAssets(unittest.TestCase):
         self.assertEqual(dev.count('--prerelease --latest=false'), 2)
         self.assertIn('actions/attest-build-provenance@', dev)
 
+    def test_dev_version_extraction_handles_spaces_around_assignment(self):
+        dev = (W / 'dev-build.yml').read_text()
+        self.assertIn('split($0,a,"=");gsub(/[" ]/,"",a[2]);print a[2]', dev)
+        command = r'''awk '/^\[workspace\.package\]/{p=1;next} /^\[/{p=0} p&&/^version[ ]*=/{split($0,a,"=");gsub(/[" ]/,"",a[2]);print a[2];exit}' oxa/Cargo.toml'''
+        result = subprocess.run(['/bin/sh', '-c', command], cwd=W.parents[1],
+                                text=True, capture_output=True, check=True)
+        self.assertRegex(result.stdout.strip(), r'^\d+\.\d+\.\d+[0-9A-Za-z.+-]*$')
+
     def test_release_environment_resolves_itself_when_sourced_by_a_workflow(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / 'source'
@@ -111,14 +119,23 @@ class ReleaseAssets(unittest.TestCase):
                 'usr/share/x/tool.py': 'print(1)\n',
                 'usr/bin/script': '#!/usr/bin/env python3\n',
                 'usr/share/ox-llm/memlat/hook.sh': '#!/bin/sh\nexec /usr/bin/python3 x\n',
+                'usr/share/ox-llm/hooks/plain.sh': '#!/bin/sh\nexec python "$@"\n',
                 'usr/share/ox-llm/oxc/a': 'x\n',
             }
-            for name, text in cases.items():
-                bad = root / ('bad-' + str(len(name)))
+            for index, (name, text) in enumerate(cases.items()):
+                bad = root / f'bad-{index}'
                 shutil.copytree(root / 'good', bad)
                 (bad / name).parent.mkdir(parents=True, exist_ok=True)
                 (bad / name).write_text(text)
                 self.assertEqual(run(str(bad)).returncode, 1, name)
+
+            linked = root / 'linked'
+            shutil.copytree(root / 'good', linked)
+            (linked / 'usr/bin/oxa').unlink()
+            (linked / 'usr/bin/oxa').symlink_to('/usr/bin/python3')
+            result = run(str(linked))
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('unsupported symlink', result.stderr)
 
 
 if __name__ == '__main__':
