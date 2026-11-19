@@ -907,8 +907,15 @@ impl<'a> Loop<'a> {
         if self.session.id != info.id || self.inbox.is_none() {
             // A Reopen may have recovered an already-admitted message without a file
             // left to trigger the new watcher. Wake only the recovered destination.
-            if self.handle.has_inbox_input() && self.handle.request_inbox_wake() {
+            if self.handle.has_external_inbox_input() && self.handle.request_inbox_wake() {
                 let _ = self.cmds.send(SessionCmd::Inbox {
+                    session_id: info.id.clone(),
+                });
+            }
+            // Retained completions keep their failed-run boundary across a reopen; treating one
+            // as an ordinary inbox wake would bypass `may_continue` in the worker.
+            if self.handle.has_job_wake_input() && self.handle.request_job_wake(&info.id) {
+                let _ = self.cmds.send(SessionCmd::JobWake {
                     session_id: info.id.clone(),
                 });
             }

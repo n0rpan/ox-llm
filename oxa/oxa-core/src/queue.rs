@@ -15,10 +15,16 @@ pub struct Queue {
     pub follow_up: Vec<String>,
     session_id: String,
     /// Inbox messages stay with their destination, including across switches and clones.
-    session_follow_up: BTreeMap<String, Vec<String>>,
+    session_follow_up: BTreeMap<String, Vec<BoundFollowUp>>,
     /// One private steering request per active native run.
     steering_session: Option<SessionRef>,
     goal_steering: Option<GoalSteering>,
+}
+
+#[derive(Debug)]
+struct BoundFollowUp {
+    text: String,
+    job_wake: bool,
 }
 
 impl Queue {
@@ -29,8 +35,8 @@ impl Queue {
             .session_follow_up
             .values()
             .flatten()
-            .fold((0usize, 0usize), |(count, bytes), text| {
-                (count + 1, bytes + text.len())
+            .fold((0usize, 0usize), |(count, bytes), message| {
+                (count + 1, bytes + message.text.len())
             });
         len <= oxa_session::INBOX_MESSAGE_BYTES
             && count < 64
@@ -38,16 +44,25 @@ impl Queue {
     }
 
     fn follow_ups(&self) -> impl Iterator<Item = &String> {
-        self.follow_up
-            .iter()
-            .chain(self.session_follow_up.get(&self.session_id).into_iter().flatten())
+        self.follow_up.iter().chain(
+            self.session_follow_up
+                .get(&self.session_id)
+                .into_iter()
+                .flatten()
+                .map(|message| &message.text),
+        )
     }
 
     fn take_follow_up(&mut self, mode: QueueMode) -> Vec<String> {
         let mut taken = take_by_mode(&mut self.follow_up, mode);
         if mode == QueueMode::All || taken.is_empty() {
             if let Some(messages) = self.session_follow_up.get_mut(&self.session_id) {
-                taken.extend(take_by_mode(messages, mode));
+                let bound = match mode {
+                    QueueMode::All => std::mem::take(messages),
+                    QueueMode::OneAtATime if messages.is_empty() => Vec::new(),
+                    QueueMode::OneAtATime => vec![messages.remove(0)],
+                };
+                taken.extend(bound.into_iter().map(|message| message.text));
             }
         }
         taken
@@ -546,7 +561,7 @@ impl Handle {
         // and a finished job has nothing to retry from. The text is bounded by the wake tail.
         {
             let mut q = lock(&self.shared.queue);
-            self.admit(&mut q, &session_id, job.wake_text());
+            self.admit(&mut q, &session_id, job.wake_text(), true);
         }
         let notify = lock(&self.shared.wake).as_ref().map(|w| w.0.clone());
         if let Some(notify) = notify {
@@ -608,6 +623,23 @@ impl Handle {
             .is_some_and(|messages| !messages.is_empty())
     }
 
+    /// Whether the active session has input admitted by the external inbox rather than a job.
+    pub fn has_external_inbox_input(&self) -> bool {
+        let q = lock(&self.shared.queue);
+        q.session_follow_up
+            .get(&q.session_id)
+            .is_some_and(|messages| messages.iter().any(|message| !message.job_wake))
+    }
+
+    /// Whether the active session has a retained background-job completion. This provenance
+    /// survives a UI rebind so reopening cannot reclassify a stopped run's wake as an inbox wake.
+    pub fn has_job_wake_input(&self) -> bool {
+        let q = lock(&self.shared.queue);
+        q.session_follow_up
+            .get(&q.session_id)
+            .is_some_and(|messages| messages.iter().any(|message| message.job_wake))
+    }
+
     /// Queue an inbox follow-up bound to its destination, not to whichever session is
     /// active when the watcher runs. Inactive messages remain available on switching back.
     /// Returns false under backpressure; the watcher must retain the file and retry.
@@ -616,17 +648,17 @@ impl Handle {
         if !q.has_inbox_capacity(text.len()) {
             return false;
         }
-        self.admit(&mut q, session_id, text);
+        self.admit(&mut q, session_id, text, false);
         true
     }
 
     /// Append `text` to `session_id`'s destination-bound queue and wake a run of the active
     /// session. The caller decides on capacity.
-    fn admit(&self, q: &mut Queue, session_id: &str, text: String) {
+    fn admit(&self, q: &mut Queue, session_id: &str, text: String, job_wake: bool) {
         q.session_follow_up
             .entry(session_id.to_string())
             .or_default()
-            .push(text);
+            .push(BoundFollowUp { text, job_wake });
         if q.session_id == session_id {
             self.shared.dirty.store(true, Ordering::SeqCst);
             self.shared.gate.bg_cancel.cancel();
@@ -1151,6 +1183,28 @@ mod tests {
         h.clear_job_wake("s");
         assert!(h.wake_job(&job));
         assert_eq!(*lock(&woken), 2);
+    }
+
+    #[test]
+    fn transferred_job_completion_keeps_its_wake_provenance() {
+        let old = handle(QueueMode::All, QueueMode::All);
+        old.shared.bind_session("session");
+        let job = oxa_tools::JobDone {
+            id: "job-1".into(),
+            status: oxa_tools::JobStatus::Exited(0),
+            command: "make".into(),
+            session: "session".into(),
+            tail: "done".into(),
+        };
+        assert!(old.wake_job(&job));
+
+        let reopened = handle(QueueMode::All, QueueMode::All);
+        reopened.shared.bind_session("session");
+        old.transfer_inbox_to(&reopened);
+
+        assert!(reopened.has_inbox_input());
+        assert!(reopened.has_job_wake_input());
+        assert!(!reopened.has_external_inbox_input());
     }
 
     /// An extension fork keeps the parent's running jobs: both can finish before the front end
