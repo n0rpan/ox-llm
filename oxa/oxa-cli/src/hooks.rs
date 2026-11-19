@@ -25,7 +25,7 @@
 //!   (through the same serial gate: one child at a time).
 //! * **builtin:worker** (K5a): the `worker` tool (start, list, stop background workers in their
 //!   own git worktrees). Not built in a worker child (`OXA_WORKER_DEPTH`); `oxa.workers.enabled`
-//!   false switches it off. Shut down with the process (`Hooks::shutdown` stops the workers).
+//!   false (user settings only) switches it off. Shut down with the process (`Hooks::shutdown` stops the workers).
 //! * **codemode**: off by default, because its tool is part of the frozen prefix (W3). It is
 //!   on with the setting `codemode.enabled`, or when an enabled MCP server has codemode tools
 //!   (`McpManager::wants_codemode`, pi's `autoEnableCodemode`); `tool_search` / `call_tool`
@@ -251,9 +251,7 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
         .rev()
         .find(|(k, _)| k == worker_tool::ENV_WORKER_DEPTH)
         .map(|(_, v)| v.as_str());
-    if !i.args.no_session
-        && worker_tool::built(worker_depth, i.settings.bool(worker_tool::SETTING_ENABLED, true))
-    {
+    if !i.args.no_session && worker_tool::built(worker_depth, worker_tool::enabled(i.settings)) {
         match std::env::current_exe() {
             Ok(bin) => {
                 // The supervisor needs a trusted `kill` from the host PATH (never a project shim),
@@ -304,7 +302,7 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
                         let workers = Arc::new(WorkerHooks::new(WorkerConfig {
                             oxa_bin: bin,
                             agent_dir,
-                            max: usize::try_from(i.settings.u32(worker_tool::SETTING_MAX, 4)).unwrap_or(4),
+                            max: worker_tool::max_workers(i.settings),
                             supervisor,
                             sessions_dir,
                             parent_env: i.env.pairs().to_vec(),

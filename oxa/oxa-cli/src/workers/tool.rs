@@ -46,6 +46,17 @@ const DESCRIPTION: &str = "Background workers: each is a separate oxa process th
 
 const SCHEMA: &str = r#"{"type":"object","properties":{"action":{"type":"string","enum":["start","list","stop"]},"name":{"type":"string"},"goal":{"type":"string"},"model":{"type":"string"},"mode":{"type":"string","enum":["plan","ask","workspace","auto","yolo"]}},"required":["action"]}"#;
 
+/// Whether the `worker` tool is switched on. User settings only: a project file cannot enable or
+/// disable a tool that starts processes, whatever repository the owner trusts.
+pub fn enabled(settings: &oxa_config::Settings) -> bool {
+    settings.user_bool(SETTING_ENABLED, true)
+}
+
+/// The most live workers one session runs. User settings only, so a project file cannot raise it.
+pub fn max_workers(settings: &oxa_config::Settings) -> usize {
+    usize::try_from(settings.user_u32(SETTING_MAX, 4)).unwrap_or(4)
+}
+
 /// Whether the worker hook set is built: not in a worker child (`worker_depth` is the value of
 /// `OXA_WORKER_DEPTH`, `None` when unset) and the setting is not false.
 pub fn built(worker_depth: Option<&str>, enabled: bool) -> bool {
@@ -1039,7 +1050,10 @@ mod tests {
         let fake = root.join("env-oxa");
         fs::write(
             &fake,
-            format!("#!/bin/sh\n/usr/bin/env > '{}'\n", out_file.display()),
+            format!(
+                "#!/bin/sh\n[ \"$1\" = work ] && exit 0\n/usr/bin/env > '{}'\n",
+                out_file.display()
+            ),
         )
         .unwrap();
         fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1265,6 +1279,25 @@ mod tests {
         assert!(!worktree_path(&repo, "alpha").unwrap().exists());
         assert!(registry::load(&agent, "parent-1").unwrap().is_empty());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn worker_controls_read_the_user_file_only() {
+        use oxa_config::Settings;
+        // The user turned workers off and capped them: a trusted project cannot undo that.
+        let user = Settings::from_values(
+            json!({"oxa": {"workers": {"enabled": false, "max": 1}}}),
+            json!({"oxa": {"workers": {"enabled": true, "max": 99}}}),
+        );
+        assert!(!enabled(&user));
+        assert_eq!(max_workers(&user), 1);
+        // A project alone cannot change the defaults either way.
+        let project = Settings::from_values(
+            json!({}),
+            json!({"oxa": {"workers": {"enabled": false, "max": 99}}}),
+        );
+        assert!(enabled(&project));
+        assert_eq!(max_workers(&project), 4);
     }
 
     #[test]
