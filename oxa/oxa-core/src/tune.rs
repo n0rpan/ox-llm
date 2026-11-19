@@ -90,7 +90,7 @@ pub(crate) fn tune_for(settings: &Settings, n_ctx: u32, soft: u32, images: bool)
         read_page_bytes,
         bash_timeout_s: settings.bash_default_timeout(),
         output_cap_bytes: cap,
-        image_input: images,
+        image_input: images && !settings.bool("images.blockImages", false),
         max_image_bytes: settings.read_max_image_bytes(),
     }
 }
@@ -172,6 +172,15 @@ mod tests {
         assert!(!t.diet);
         assert_eq!((t.read_page_lines, t.read_page_bytes), (400, 8192));
         assert_eq!(t.bash_timeout_s, 30);
+    }
+
+    #[test]
+    fn block_images_disables_image_tool_results() {
+        let allowed = tune_for(&none(), 0, 0, true);
+        assert!(allowed.image_input);
+
+        let blocked = Settings::from_values(json!({"images": {"blockImages": true}}), json!({}));
+        assert!(!tune_for(&blocked, 0, 0, true).image_input);
     }
 
     #[test]

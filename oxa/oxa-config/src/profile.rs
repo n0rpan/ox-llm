@@ -112,7 +112,7 @@ impl Settings {
 
     /// `oxa.read.maxImageBytes` (B2b): the largest image `read` sends. Unset = 20 MiB; 0 = no limit.
     pub fn read_max_image_bytes(&self) -> u32 {
-        self.u32("oxa.read.maxImageBytes", READ_MAX_IMAGE_BYTES_DEFAULT)
+        self.user_u32("oxa.read.maxImageBytes", READ_MAX_IMAGE_BYTES_DEFAULT)
     }
 }
 
@@ -121,6 +121,18 @@ mod tests {
     use super::*;
     use crate::schema;
     use serde_json::json;
+
+    #[test]
+    fn project_cannot_raise_or_disable_the_image_limit() {
+        let settings = Settings::from_values(
+            json!({"oxa": {"read": {"maxImageBytes": 1024}}}),
+            json!({"oxa": {"read": {"maxImageBytes": 0}}}),
+        );
+        assert_eq!(settings.read_max_image_bytes(), 1024);
+
+        let default = Settings::from_values(json!({}), json!({"oxa": {"read": {"maxImageBytes": 0}}}));
+        assert_eq!(default.read_max_image_bytes(), READ_MAX_IMAGE_BYTES_DEFAULT);
+    }
 
     #[test]
     fn thinking_policy_defaults_to_auto_and_the_setting_wins() {

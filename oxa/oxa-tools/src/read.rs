@@ -202,16 +202,43 @@ fn read_image(
             "[image {shown} {w}x{h}: not sent, {size} bytes is over the limit of {max} (oxa.read.maxImageBytes)]"
         )));
     }
-    let mut bytes = Vec::new();
-    crate::checked::open(cx, abs)
-        .and_then(|mut file| file.read_to_end(&mut bytes))
-        .map_err(|e| read_io_error(shown, &e))?;
+    let mut file = crate::checked::open(cx, abs).map_err(|e| read_io_error(shown, &e))?;
+    let bytes = read_image_bytes(&mut file, max).map_err(|e| read_io_error(shown, &e))?;
+    let bytes = match bytes {
+        ImageBytes::Within(bytes) => bytes,
+        ImageBytes::OverLimit(actual) => {
+            return Ok(ToolOutput::ok(format!(
+                "[image {shown} {w}x{h}: not sent, at least {actual} bytes is over the limit of {max} (oxa.read.maxImageBytes)]"
+            )))
+        }
+    };
     let mut out = ToolOutput::ok(format!("[image {shown} {w}x{h}: shown to the model]"));
     out.images = vec![WireImage {
         mime: mime.to_string(),
         base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
     }];
     Ok(out)
+}
+
+enum ImageBytes {
+    Within(Vec<u8>),
+    OverLimit(u64),
+}
+
+/// Read at most one byte beyond the configured cap, so a file that grows after its metadata was
+/// inspected cannot turn the image path into an unbounded allocation.
+fn read_image_bytes(reader: &mut impl Read, max: u64) -> io::Result<ImageBytes> {
+    let mut bytes = Vec::new();
+    if max == 0 {
+        reader.read_to_end(&mut bytes)?;
+        return Ok(ImageBytes::Within(bytes));
+    }
+    reader.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max {
+        Ok(ImageBytes::OverLimit(bytes.len() as u64))
+    } else {
+        Ok(ImageBytes::Within(bytes))
+    }
 }
 
 /// The media type of an image the model takes (PNG, JPEG, GIF or WebP), from its first bytes.
@@ -601,4 +628,29 @@ fn jpeg_frame(b: &[u8]) -> Option<(u32, u32)> {
         i += seg;
     }
     None
+}
+
+#[cfg(test)]
+mod image_read_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn actual_image_read_is_bounded_to_limit_plus_one() {
+        let mut input = Cursor::new(vec![7; 32]);
+        assert!(matches!(
+            read_image_bytes(&mut input, 8).unwrap(),
+            ImageBytes::OverLimit(9)
+        ));
+        assert_eq!(input.position(), 9);
+    }
+
+    #[test]
+    fn zero_image_limit_reads_the_whole_input() {
+        let mut input = Cursor::new(vec![7; 32]);
+        assert!(matches!(
+            read_image_bytes(&mut input, 0).unwrap(),
+            ImageBytes::Within(bytes) if bytes.len() == 32
+        ));
+    }
 }

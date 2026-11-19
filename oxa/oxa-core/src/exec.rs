@@ -77,7 +77,7 @@ pub fn request(
     let scoped = reservation.is_some();
     let (max_tokens, context) = reservation.unwrap_or((requested, None));
     let wire = st.transcript.wire_shared();
-    let msgs = if let Some(context) = context {
+    let mut msgs = if let Some(context) = context {
         let mut extra = Vec::with_capacity(1 + opts.extra.len());
         extra.push(context);
         extra.extend_from_slice(&opts.extra);
@@ -85,6 +85,11 @@ pub fn request(
     } else {
         request_messages(&wire, &opts.extra)
     };
+    // History can contain image parts produced before a switch to a text-only model. Keep the
+    // transcript intact, but never put unsupported parts in this model's request.
+    if st.info.images != Some(true) {
+        msgs = without_images(msgs);
+    }
     let idem = if opts.idem_key.is_empty() {
         new_idem_key(st)
     } else {
@@ -227,6 +232,17 @@ fn request_messages(wire: &Arc<Vec<WireMsg>>, extra: &[WireMsg]) -> Arc<Vec<Wire
     v.extend(wire.iter().cloned());
     v.extend(extra.iter().cloned());
     Arc::new(v)
+}
+
+fn without_images(messages: Arc<Vec<WireMsg>>) -> Arc<Vec<WireMsg>> {
+    if !messages.iter().any(|message| !message.images.is_empty()) {
+        return messages;
+    }
+    let mut text_only = messages.as_ref().clone();
+    for message in &mut text_only {
+        message.images.clear();
+    }
+    Arc::new(text_only)
 }
 
 /// F11: what the engine did with an H4 hint. A kept checkpoint is recorded
@@ -384,6 +400,7 @@ pub(crate) fn run_calls(
     // alone, so writes and exec calls are serial.
     let n = prepared.len();
     let mut outputs: Vec<Option<(ToolOutput, Duration)>> = (0..n).map(|_| None).collect();
+    let mut image_bytes = 0u64;
     // F1: results shaped ahead for the tool-result prefill (reused in phase 3 when unchanged).
     let mut early: Vec<Option<Early>> = (0..n).map(|_| None).collect();
     let mut prefilled = false;
@@ -399,7 +416,7 @@ pub(crate) fn run_calls(
             ));
         }
         let mut j = i;
-        while j < n && prepared[j].parallel_read() {
+        while j < n && prepared[j].parallel_read() && !st.tune.image_input {
             j += 1;
         }
         if j - i > 1 {
@@ -414,7 +431,9 @@ pub(crate) fn run_calls(
                 && start_tool_prefill(st, &prepared, &outputs, i, &mut early);
             // Held while the call runs: an unwind ends the prefill too.
             let guard = warming.then(|| PrefillGuard(st.shared.clone()));
-            outputs[i] = Some(run_one(st, &prepared[i], sink, ui));
+            let (mut output, duration) = run_one(st, &prepared[i], sink, ui);
+            admit_batch_images(&mut output, &mut image_bytes, st.tune.max_image_bytes);
+            outputs[i] = Some((output, duration));
             if let Some(guard) = guard {
                 prefilled = finish_tool_prefill(guard, sink);
             }
@@ -449,7 +468,8 @@ pub(crate) fn run_calls(
                 .iter()
                 .map(|(n, a, t, failed)| (n.as_str(), a.as_str(), t.as_str(), *failed))
                 .collect();
-            match crate::repeat::judge(st, &p.name, &call.args_raw, &output.text, &earlier) {
+            let result = crate::repeat::result_key(&output.text, &output.images);
+            match crate::repeat::judge(st, &p.name, &call.args_raw, &result, &earlier) {
                 crate::repeat::Verdict::Pass => {}
                 crate::repeat::Verdict::Notice(text) => {
                     sink.emit(&AgentEvent::Notice {
@@ -471,7 +491,7 @@ pub(crate) fn run_calls(
         batch.push((
             p.name.clone(),
             call.args_raw.clone(),
-            output.text.clone(),
+            crate::repeat::result_key(&output.text, &output.images),
             output.is_error,
         ));
         let ms = Some(dur.as_millis() as u64);
@@ -489,6 +509,28 @@ pub(crate) fn run_calls(
         });
     }
     out
+}
+
+/// Admit image data against one aggregate raw-byte budget for this reply's tool-call batch.
+/// Image-producing reads are serialized above, so a refused result is dropped before the next
+/// image is allocated. A zero owner limit deliberately remains unlimited.
+fn admit_batch_images(output: &mut ToolOutput, used: &mut u64, max: u32) {
+    if output.images.is_empty() || max == 0 {
+        return;
+    }
+    let bytes = output
+        .images
+        .iter()
+        .map(|image| (image.base64.len() as u64 / 4).saturating_mul(3))
+        .sum::<u64>();
+    let limit = u64::from(max);
+    if used.saturating_add(bytes) > limit {
+        *output = ToolOutput::error(format!(
+            "Images not sent: this tool-call batch is over the {limit}-byte image budget (oxa.read.maxImageBytes)."
+        ));
+    } else {
+        *used += bytes;
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -710,6 +752,11 @@ fn start_tool_prefill(
     }
     let cap = crate::tune::output_cap(st);
     let mut msgs: Vec<WireMsg> = wire.to_vec();
+    if st.info.images != Some(true) {
+        for msg in &mut msgs {
+            msg.images.clear();
+        }
+    }
     let mut bytes = 0usize;
     for k in 0..i {
         let Some((out, _)) = &outputs[k] else {
@@ -1680,6 +1727,41 @@ mod request_messages_tests {
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[1], WireMsg::user("draft"));
         assert_eq!(wire.len(), 1);
+    }
+
+    #[test]
+    fn text_only_request_drops_images_without_changing_history() {
+        let mut message = WireMsg::tool_result("call", "image placeholder");
+        message.images.push(oxa_proto::WireImage {
+            mime: "image/png".into(),
+            base64: "AAAA".into(),
+        });
+        let history = Arc::new(vec![message]);
+        let request = without_images(Arc::clone(&history));
+        assert!(request[0].images.is_empty());
+        assert_eq!(history[0].images.len(), 1);
+        assert_eq!(request[0].content, history[0].content);
+    }
+
+    #[test]
+    fn aggregate_image_budget_refuses_the_result_that_crosses_it() {
+        let image = || oxa_proto::WireImage {
+            mime: "image/png".into(),
+            base64: "AAAAAAAA".into(), // six decoded bytes
+        };
+        let mut used = 0;
+        let mut first = ToolOutput::ok("first");
+        first.images.push(image());
+        admit_batch_images(&mut first, &mut used, 10);
+        assert_eq!(used, 6);
+        assert_eq!(first.images.len(), 1);
+
+        let mut second = ToolOutput::ok("second");
+        second.images.push(image());
+        admit_batch_images(&mut second, &mut used, 10);
+        assert!(second.is_error);
+        assert!(second.images.is_empty());
+        assert_eq!(used, 6);
     }
 }
 

@@ -186,6 +186,8 @@ const SCHEMA: &[KeyDef] = &[
     // V020-OPTIMIZE #13 / OXA-LOCAL-FIRST F1: timing only (bytes unchanged); unset = on.
     key("oxa.prefill.paste", Kind::Bool, "null"),
     key("oxa.prefill.tools", Kind::Bool, "null"),
+    // B2b: user-only largest image and per-batch image budget; 0 = no limit.
+    key("oxa.read.maxImageBytes", Kind::Number, "20971520"),
     key("oxa.reportIssue.dailyNew", Kind::Number, "null"),
     key("oxa.reportIssue.repo", Kind::String, "null"),
     key("oxa.reportIssue.semanticDedupe", Kind::Bool, "false"),
@@ -219,8 +221,6 @@ const SCHEMA: &[KeyDef] = &[
     // Adaptive escalation of tool follow-ups (oxa-core `think.rs`): calls without progress
     // before thinking turns on; 0 = never on that ground.
     key("oxa.thinking.escalation.fruitlessCalls", Kind::Number, "6"),
-    // B2b: the largest image `read` sends to a model that takes images; 0 = no limit.
-    key("oxa.read.maxImageBytes", Kind::Number, "20971520"),
     // T5: unset = `auto`.
     key("oxa.thinking.policy", Kind::Enum(&["fixed", "auto"]), "null"),
     // Thinking on tool follow-ups under policy `auto` (oxa-core `think.rs`).
