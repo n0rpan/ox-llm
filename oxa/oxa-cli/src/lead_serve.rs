@@ -1036,6 +1036,54 @@ mod approval_answer_tests {
     }
 
     #[test]
+    fn cli_and_web_answers_share_the_desk_lock() {
+        use std::sync::{mpsc, Barrier};
+        use std::time::Duration;
+
+        let (test, dirs, desk) = fixture();
+        let id = file(&test, &desk);
+        let keys = desk.pending().unwrap()[0].keys.clone();
+        let cwd = test.work();
+        let (journal, _) = captured();
+        let web = owner_answers(&test, &dirs, &desk, journal);
+        let guard = std::fs::File::open(dirs.agent_dir.join("approvals")).unwrap();
+        guard.lock().unwrap();
+        let start = Barrier::new(3);
+
+        std::thread::scope(|scope| {
+            let (tx, rx) = mpsc::channel();
+            let web_tx = tx.clone();
+            let start_ref = &start;
+            let request = &id;
+            scope.spawn(move || {
+                start_ref.wait();
+                web_tx
+                    .send(("session", web.post(request, "session").is_ok()))
+                    .unwrap();
+            });
+            let cli_dirs = &dirs;
+            let cli_cwd = &cwd;
+            scope.spawn(move || {
+                start_ref.wait();
+                let result =
+                    crate::approve_cmd::approve(cli_dirs, cli_cwd, "s1", request, "deny", &mut Vec::new());
+                tx.send(("deny", result.is_ok())).unwrap();
+            });
+            start.wait();
+            let early = rx.recv_timeout(Duration::from_millis(400));
+            drop(guard);
+            assert!(matches!(early, Err(mpsc::RecvTimeoutError::Timeout)));
+            let results = [rx.recv().unwrap(), rx.recv().unwrap()];
+            assert_eq!(results.iter().filter(|(_, ok)| *ok).count(), 1);
+            assert_eq!(
+                desk.granted("s1", &keys),
+                results.contains(&("session", true)),
+                "the stored decision is the winning answer"
+            );
+        });
+    }
+
+    #[test]
     fn approval_post_refusal_is_journaled() {
         // Local mode has no owner chat, so the approval gate refuses the POST; the refusal is
         // journaled as an identity fact on the approval path, like a refused chat submission.
