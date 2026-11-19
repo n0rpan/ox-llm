@@ -975,6 +975,7 @@ fn as_tool_child(sock: &std::path::Path) -> impl FnOnce(&mut Command) + '_ {
 fn broker_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("oxa-wp-{name}-{}", std::process::id()))
 }
+#[cfg(target_os = "linux")]
 #[test]
 fn publish_on_broker_yes() {
     use oxa_core::owner_confirm::OwnerConfirm;
@@ -1002,6 +1003,7 @@ fn publish_on_broker_yes() {
     broker.close();
     let _ = fs::remove_dir_all(dir);
 }
+#[cfg(target_os = "linux")]
 #[test]
 fn publish_rechecks_head_after_yes() {
     use std::io::{BufRead, BufReader, Write};

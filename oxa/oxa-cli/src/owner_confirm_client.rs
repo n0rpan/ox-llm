@@ -11,9 +11,8 @@
 //! answer counts only when that peer is this child's session: the peer's effective user must
 //! be this user, and its pid must either be invisible in this child's pid namespace (`0`: the
 //! host side of the sandbox, which nothing a tool spawns can enter, because a tool's children
-//! share its namespace) or be a strict ancestor in `/proc`. A helper the tool spawned beside
-//! this child is a sibling; a listener this process bound itself names this process; another
-//! session's broker is no ancestor of this child: all are refused. Off Linux no kernel check
+//! share its namespace). Visible peers are never trusted: a model-controlled wrapper can be a
+//! same-uid strict ancestor with exactly the shape of an unsandboxed session. Off Linux no kernel check
 //! exists and a same-user parent can replace the socket file unseen, so a tool child never
 //! accepts a broker answer there: the agent-marker refusal stands and the owner publishes
 //! from their own terminal (`tty_confirm`). The host-side protocol (the session performing
@@ -103,44 +102,12 @@ fn peer_is_session_broker(stream: &UnixStream) -> bool {
         )
     } == 0;
     // SAFETY: geteuid has no preconditions and touches no memory.
-    ok && cred.uid == unsafe { libc::geteuid() } && peer_pid_is_the_session(cred.pid)
+    ok && cred.uid == unsafe { libc::geteuid() } && peer_pid_is_session(cred.pid)
 }
 
-/// A pid the kernel named for the peer socket names this child's session when it is invisible
-/// here (`0`: a process outside this pid namespace — the host, never a tool child, whose
-/// children share this namespace) or when it is a strict ancestor of this child. A sibling
-/// helper, this process itself, and another visible session all fail.
 #[cfg(target_os = "linux")]
-fn peer_pid_is_the_session(pid: libc::pid_t) -> bool {
-    if pid == 0 {
-        return true;
-    }
-    is_strict_ancestor(pid)
-}
-
-/// Walk `/proc` from this process: is `pid` a parent, grandparent, ... of it?
-#[cfg(target_os = "linux")]
-fn is_strict_ancestor(pid: libc::pid_t) -> bool {
-    let mut current = std::process::id() as libc::pid_t;
-    while let Some(parent) = ppid(current) {
-        if parent == pid {
-            return true;
-        }
-        if parent <= 1 {
-            return false;
-        }
-        current = parent;
-    }
-    false
-}
-
-/// The `PPid` line of `/proc/<pid>/status`, or `None` when the pid has no status to read.
-#[cfg(target_os = "linux")]
-fn ppid(pid: libc::pid_t) -> Option<libc::pid_t> {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("PPid:").and_then(|v| v.trim().parse().ok()))
+fn peer_pid_is_session(pid: libc::pid_t) -> bool {
+    pid == 0
 }
 
 /// The confirmation for the owner's publish and report actions: the session broker when the
@@ -186,6 +153,14 @@ mod tests {
         assert!(broker.take_records().is_empty(), "no question was asked");
         broker.close();
         let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// A model can put its listener in a parent wrapper and exec the CLI below it. Such a
+    /// same-uid ancestor is still visible in the child's namespace and must not approve.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_visible_ancestor_is_not_a_session_broker() {
+        assert!(!peer_pid_is_session(unsafe { libc::getppid() }));
     }
 
     #[test]

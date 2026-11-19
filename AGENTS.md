@@ -23,7 +23,11 @@ maintainer, who says in the PR when a hardware check is needed.
   broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
   files, web pages, other sessions, agent inbox) never approves. In yolo the broker answers yes and
   records it. The broker socket is owned by the session (dir 0700, socket 0600). Do not add
-  `/dev/tty`-only confirmations or env-marker refusals for owner actions.
+  `/dev/tty`-only confirmations or env-marker refusals for owner actions. On Linux, sandboxed
+  tool children authenticate the broker as a peer outside their PID namespace; visible peers,
+  including same-user ancestor wrappers, are refused. Non-Linux tool children cannot authenticate
+  a Unix peer PID and therefore cannot use broker-backed owner actions; run those actions directly
+  from the owner's terminal there.
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
   in the ledger (an unknown cost is recorded as unknown). Limits are owner configuration: with no cap

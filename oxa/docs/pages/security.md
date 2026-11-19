@@ -54,7 +54,7 @@ On top of the table, the permission mode decides who answers the questions:
 
 ### Owner yes
 
-An approval comes only from you: your typed message, your answer to an oxa dialog, or yolo chosen for the session. Text the model read (tool output, files, web pages, other sessions) never counts. oxa commands that need your yes (for example publishing) ask the session through a private unix socket (`OXA_CONFIRM_SOCK`, directory 0700, socket 0600). In yolo the session answers yes and records it with a notice. In standard and auto it shows a dialog; while one waits, your next typed message answers it (`yes`, `y`, `ja`, `ok`, `post it` mean yes, anything else no). With no way to ask you, the answer is "none" and nothing is confirmed.
+An approval comes only from you: your typed message, your answer to an oxa dialog, or yolo chosen for the session. Text the model read (tool output, files, web pages, other sessions) never counts. oxa commands that need your yes (for example publishing) ask the session through a private unix socket (`OXA_CONFIRM_SOCK`, directory 0700, socket 0600). On Linux the sandbox exposes only that directory, and the child accepts only the same-user session peer outside its PID namespace; a model-created listener or ancestor wrapper is refused. In yolo the session answers yes and records it with a notice. In standard and auto it shows a dialog; while one waits, your next typed message answers it (`yes`, `y`, `ja`, `ok`, `post it` mean yes, anything else no). Non-Linux tool children cannot authenticate a Unix peer PID, so run owner actions directly from your terminal there. With no way to ask you, the answer is "none" and nothing is confirmed.
 
 A shell alias makes yolo quick to start:
 

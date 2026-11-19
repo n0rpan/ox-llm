@@ -301,10 +301,10 @@ Before each push, the runner asks the owner to approve the accepted commit, bran
 PR destination. Inside a session the question goes to the session's owner confirm
 broker (`OXA_CONFIRM_SOCK`): yolo answers yes and records it, standard and auto show a
 dialog that the owner's typed `yes` also answers. The broker must prove itself: on
-Linux the kernel names the process that bound the socket (`SO_PEERCRED`) and it must
-be this child's session — a listener the tool spawned beside the child, the child
-itself, or another session is refused, so a model-run command cannot answer its own
-question by naming a socket in the environment. Off Linux a child cannot prove a unix
+Linux the sandbox exposes only the session's private broker directory and the kernel names
+the process that bound the socket (`SO_PEERCRED`); the peer must be the same-user session
+outside the child's PID namespace. Every visible listener, including a tool-created ancestor
+wrapper, is refused, so a model-run command cannot answer its own question. Off Linux a child cannot prove a unix
 listener at all, so the broker never authorizes there and the agent marker refuses.
 Run from a terminal, the answer is typed on `/dev/tty`. Piped input and text the model
 read never approve it, and the agent marker alone still refuses when no provable

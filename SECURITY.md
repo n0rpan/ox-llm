@@ -36,3 +36,7 @@ confirmation only from the owner: yolo chosen for the session (answer yes, shown
 owner's answer to the session's own dialog, or the owner's typed message while a confirmation waits.
 A confirmation that a model-run command can satisfy without the broker is high. A broker answer
 derived from tool, file, web or agent-inbox text is high. A socket readable by another user is high.
+On Linux the sandbox exposes only the session's private broker directory and the child accepts only
+a same-user peer outside its PID namespace; visible peers, including ancestor wrappers, are refused.
+Non-Linux tool children cannot authenticate the broker peer and owner actions must instead be run
+directly from the owner's terminal.

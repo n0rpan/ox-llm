@@ -17,6 +17,8 @@ const BASE_LANG: &str = "C.UTF-8";
 const BASE_TERM: &str = "dumb";
 /// Seconds the probe may take before it counts as a failure.
 const PROBE_TIMEOUT_S: u32 = 10;
+const CONFIRM_ENV: &str = "OXA_CONFIRM_SOCK";
+const CONFIRM_MOUNT: &str = "/run/oxa-owner-confirm";
 
 const MISSING_HINT: &str =
     "install bubblewrap (the `bubblewrap` package) and make sure unprivileged user namespaces are enabled";
@@ -98,6 +100,15 @@ pub(crate) fn bwrap_args_homes(
         &mut a,
         &["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"],
     );
+    // The broker lives below the otherwise-hidden agent directory. Expose only its private
+    // per-session directory at a fixed sandbox path. The session process remains outside the
+    // new pid namespace, which lets the client authenticate SO_PEERCRED pid 0; a listener a
+    // model starts inside the sandbox remains visible and cannot impersonate it.
+    let confirm = confirm_socket(s, layout);
+    if let Some((dir, _)) = &confirm {
+        push(&mut a, &["--dir", CONFIRM_MOUNT]);
+        push(&mut a, &["--ro-bind", &dir.to_string_lossy(), CONFIRM_MOUNT]);
+    }
     // #457: the session directory, or a fresh tmpfs. Before the home and every mask (N28).
     match &layout.scratch {
         Some(sc) => push(&mut a, &["--bind", &sc.path().to_string_lossy(), "/tmp"]),
@@ -426,11 +437,38 @@ pub(crate) fn bwrap_args_homes(
         }
     }
     push(&mut a, &["--chdir", &cwd, "--clearenv"]);
-    for (k, v) in base_env(s, &home_s, layout) {
+    for (k, mut v) in base_env(s, &home_s, layout) {
+        if k == CONFIRM_ENV && confirm.is_some() {
+            v = format!("{CONFIRM_MOUNT}/confirm.sock");
+        }
         push(&mut a, &["--setenv", &k, &v]);
     }
     push(&mut a, &["--", "bash", "-c", &s.command]);
     a
+}
+
+/// Return the broker directory only when the trusted session environment names the expected
+/// socket below this layout's private agent directory. Never turn an arbitrary environment
+/// path into a host bind.
+fn confirm_socket(s: &ExecSpec, layout: &Layout) -> Option<(PathBuf, PathBuf)> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+    let value = s.env.iter().rev().find(|(k, _)| k == CONFIRM_ENV)?.1.as_str();
+    let socket = PathBuf::from(value);
+    let agent = std::fs::canonicalize(layout.agent_dir.as_ref()?).ok()?;
+    let socket = std::fs::canonicalize(socket).ok()?;
+    let dir = socket.parent()?.to_path_buf();
+    let meta = std::fs::symlink_metadata(&socket).ok()?;
+    let dir_meta = std::fs::symlink_metadata(&dir).ok()?;
+    // SAFETY: geteuid has no preconditions and touches no memory.
+    let uid = unsafe { libc::geteuid() };
+    (socket.starts_with(agent.join("tmp"))
+        && socket.file_name().is_some_and(|n| n == "confirm.sock")
+        && meta.file_type().is_socket()
+        && meta.uid() == uid
+        && dir_meta.is_dir()
+        && dir_meta.uid() == uid
+        && dir_meta.permissions().mode() & 0o077 == 0)
+        .then_some((dir, socket))
 }
 
 pub use oxa_proto::account_home;
@@ -1287,6 +1325,37 @@ mod tests {
     fn pos(a: &[String], flag: &str, p: &Path) -> Option<usize> {
         let p = p.to_string_lossy();
         a.windows(2).position(|w| w[0] == flag && w[1] == p)
+    }
+
+    #[test]
+    fn session_confirm_socket_is_the_only_private_broker_bind() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::net::UnixListener;
+        let env = TestEnv::new();
+        let dir = env.agent_dir().join("tmp/confirm-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let sock = dir.join("confirm.sock");
+        let _listener = UnixListener::bind(&sock).unwrap();
+        let mut sp = spec(&env.work(), true);
+        sp.env
+            .push((CONFIRM_ENV.into(), sock.to_string_lossy().into_owned()));
+        let layout = Layout {
+            agent_dir: Some(env.agent_dir()),
+            ..Layout::default()
+        };
+        let a = bwrap_args_homes(&sp, &env.home(), &layout, None);
+        assert!(a
+            .windows(3)
+            .any(|w| w == ["--ro-bind", dir.to_string_lossy().as_ref(), CONFIRM_MOUNT]));
+        assert!(a
+            .windows(3)
+            .any(|w| w == ["--setenv", CONFIRM_ENV, &format!("{CONFIRM_MOUNT}/confirm.sock")]));
+
+        sp.env[0].1 = env.work().join("attacker.sock").to_string_lossy().into_owned();
+        let _attacker = UnixListener::bind(&sp.env[0].1).unwrap();
+        let refused = bwrap_args_homes(&sp, &env.home(), &layout, None);
+        assert!(!refused.iter().any(|v| v == CONFIRM_MOUNT));
     }
 
     /// #188: the home tmpfs mounts go parent first, whatever the relation of `$HOME` and the
