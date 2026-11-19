@@ -379,6 +379,31 @@ fn a_probe_does_not_spend_a_once_approval() {
     );
 }
 
+/// In a headless `Mode::Ask` run the table still says `Ask` for the retry, so the once grant has
+/// to survive the verdict and the `danger_ask` that follows it: otherwise each `--approve ... once`
+/// is spent by a probe and the same command is requested forever.
+#[test]
+fn a_once_approval_survives_a_headless_ask_retry() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
+    let cmd = exec(DANGEROUS);
+    let first = p.danger_unattended(&cmd, &cwd).expect("request");
+    desk.answer(&request_id(&first), "once")
+        .expect("owner answers once");
+    // The table stays `Ask` in `Mode::Ask`: the retry is not allowed, so nothing may be spent.
+    assert_eq!(p.decide(Mode::Ask, &cmd, &cwd), Decision::Ask);
+    assert!(
+        p.danger_ask(&cmd, &cwd).is_empty(),
+        "the approved command runs instead of asking again"
+    );
+    assert!(
+        !desk.covers("s1", &[KEY.to_string()]),
+        "and the final allow spent it"
+    );
+}
+
 /// The CLI accepts `--offline` before `send`, so the self-approve rule must look past leading
 /// switches: `oxa --offline send <s> --approve <id> once` is the same forged answer.
 #[test]
