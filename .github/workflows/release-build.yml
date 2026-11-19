@@ -13,6 +13,7 @@ on:
     paths:
       - '.github/workflows/release-build.yml'
       - 'packaging/**'
+      - 'oxa/docs/pages/install.md'
       - 'docs/RELEASE.md'
       - 'oxa/oxa-cli/tests/no_python_in_path.rs'
 
@@ -182,3 +183,54 @@ jobs:
           path: packages/
           if-no-files-found: error
           retention-days: 7
+
+  portable-binary:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    name: Portable Linux x86_64 oxa (glibc 2.31 floor)
+    runs-on: ubuntu-latest
+    container:
+      image: debian:bullseye-slim
+    timeout-minutes: 120
+    steps:
+      - name: Build tools and git before checkout
+        run: |
+          # Debian 11 is end of life: its packages live on archive.debian.org.
+          printf '%s\n' \
+            'deb http://archive.debian.org/debian bullseye main' \
+            'deb http://archive.debian.org/debian-security bullseye-security main' \
+            > /etc/apt/sources.list
+          rm -f /etc/apt/sources.list.d/*
+          apt-get -o Acquire::Check-Valid-Until=false update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            git ca-certificates curl gcc libc6-dev binutils make
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build against Debian 11 glibc and check the symbol floor
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          packaging/release/portable-build.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: oxa-portable-linux-x86_64
+          path: dist-portable/
+          if-no-files-found: error
+          retention-days: 7
+
+  portable_binary_starts_in_three_images:
+    name: portable_binary_starts_in_three_images
+    needs: portable-binary
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: oxa-portable-linux-x86_64
+          path: portable
+      - name: oxa --version and one -p prompt in debian:bullseye-slim, ubuntu:22.04, python:3.12-slim
+        run: |
+          (cd portable && sha256sum -c oxa.sha256)
+          packaging/release/portable-smoke.sh portable

@@ -30,6 +30,7 @@ User files live in `~/.oxa/agent/`. Project files live in `.oxa/` and load only 
 | Page | Read it for |
 |---|---|
 | [quickstart.md](pages/quickstart.md) | building, connecting to the engine, the first prompt, where files live |
+| [install.md](pages/install.md) | the portable Linux x86_64 binary, its checksum and what CI proves |
 | [usage.md](pages/usage.md) | the interface: editor, keys, slash commands, footer, selectors |
 | [cli.md](pages/cli.md) | every flag, subcommand and environment variable |
 | [lead-web.md](pages/lead-web.md) | default-off lead web access scaffold and future Tailscale setup |
