@@ -27,6 +27,23 @@ Provider keys live in one private file, outside any project: `~/.config/oxc/llm/
 
 List only the providers you use. oxa reads a key when a request needs it and never puts it in the environment or a log. Keep keys out of `settings.json`.
 
+Create the file private before a key goes in it, then paste the key in your editor:
+
+```console
+$ mkdir -p ~/.config/oxc/llm
+$ install -m 600 /dev/null ~/.config/oxc/llm/cloud-secrets.json
+```
+
+The Brave Search key for `web_search` is a file of its own that holds only the key. This stores it without showing it on screen or in the shell history:
+
+```console
+$ (umask 077; read -rs KEY && printf '%s\n' "$KEY" > ~/.oxa/agent/brave-search.key)
+```
+
+Without a Brave key the `web_search` tool is not offered to the model at all. The ChatGPT plan uses no key: sign in with `oxa login chatgpt --experimental`.
+
+The first interactive start of a fresh install lists, once, which of these are not set up yet: the Brave key, each cloud provider and the ChatGPT sign-in. It is a note, nothing is blocked, and `quietStartup` hides it. oxa checks only whether a key exists and never prints one.
+
 ### OpenCode Go
 
 A Go key is enough: the `opencode` entry in the key file turns Go on.

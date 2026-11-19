@@ -775,14 +775,13 @@ impl<'a> Loop<'a> {
     }
 
     pub(crate) fn animating(&self) -> bool {
-        // C4: with the director, the activity row animates while the director has a deadline.
-        let running = if self.stage_on() {
-            self.stage.next_deadline_ms(now_ms()).is_some()
-        } else {
-            self.running()
-        };
-        running
-            || self.dialogs.is_open()
+        // Active work always refreshes its elapsed time. With the director, a pending scene
+        // deadline can keep the activity row animating as well.
+        activity_refreshing(
+            self.running(),
+            self.stage_on(),
+            self.stage.next_deadline_ms(now_ms()).is_some(),
+        ) || self.dialogs.is_open()
             || self.mouse_sel.dragging
             || now_ms() < self.yolo_banner_until
             || self.arcade.finishing(now_ms())
@@ -3340,6 +3339,10 @@ fn foreground_running(vm: &ViewModel, handle_running: bool, preloading: bool, dr
         || (handle_running && !preloading && !drafting)
 }
 
+fn activity_refreshing(running: bool, stage_on: bool, stage_has_deadline: bool) -> bool {
+    running || (stage_on && stage_has_deadline)
+}
+
 fn settle_worker_done(vm: &mut ViewModel, failed: bool) {
     if vm.status.activity != Activity::Idle {
         apply_event(vm, &AgentEvent::AgentSettled { aborted: false });
@@ -3476,6 +3479,13 @@ mod running_tests {
 
         assert!(!foreground_running(&vm, false, false, false));
         assert!(matches!(vm.blocks[0], Block::Bash { running: false, .. }));
+    }
+
+    /// An active tool without a matching stage scene still needs periodic redraws so its elapsed
+    /// time advances instead of freezing until another event arrives.
+    #[test]
+    fn running_activity_refreshes_without_a_stage_deadline() {
+        assert!(activity_refreshing(true, true, false));
     }
 }
 

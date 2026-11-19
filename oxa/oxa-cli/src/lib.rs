@@ -28,6 +28,7 @@ mod home_cwd;
 mod hooks;
 mod identity_cmd;
 mod in_process;
+mod key_hints;
 pub mod lead;
 pub mod lead_access;
 pub(crate) mod lead_chat;

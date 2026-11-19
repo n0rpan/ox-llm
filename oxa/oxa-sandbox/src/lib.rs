@@ -45,6 +45,16 @@ pub use unsandboxed::Unsandboxed;
 pub const NO_OS_SANDBOX_NOTICE: &str =
     "no OS sandbox on this platform: commands run with your full user rights";
 
+/// The pinned location of the session-owned confirmation socket inside bwrap.
+///
+/// Tool commands may change their environment, so confirmation clients must trust this mount
+/// point rather than an arbitrary path supplied through `OXA_CONFIRM_SOCK`. The sandbox replaces
+/// `/run` with its own tmpfs before creating this mount point, so neither a workspace mounted at
+/// `/tmp` nor a pre-existing symlink can make the pathname replaceable by the tool child.
+pub const OWNER_CONFIRM_SOCK: &str = "/run/oxa-owner-confirm.sock";
+/// Environment variable carrying the host confirmation socket into the sandbox builder.
+pub const OWNER_CONFIRM_SOCK_ENV: &str = "OXA_CONFIRM_SOCK";
+
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -236,7 +246,10 @@ impl Bwrap {
         live: &mut dyn FnMut(&[u8]),
         capture: bool,
     ) -> ExecResult {
-        let (public, secret) = split_secrets(s);
+        let (mut public, secret) = split_secrets(s);
+        if public.env.iter().any(|(key, _)| key == OWNER_CONFIRM_SOCK_ENV) {
+            bwrap::keep_broker_only_if(&mut public, bwrap::denies_nested_userns(&self.bwrap));
+        }
         use std::os::fd::AsRawFd;
         let pinned: Vec<(&Path, std::fs::File)> = Vec::new();
         #[cfg(target_os = "linux")]
