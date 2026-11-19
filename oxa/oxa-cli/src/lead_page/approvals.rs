@@ -94,7 +94,7 @@ mod tests {
             cwd: "/work/<proj>".into(),
             command: "rm -rf \"<x>\" &".into(),
             keys: vec!["rm".into()],
-            reasons: vec!["rm: <recursive>".into()],
+            reasons: vec!["rm: <recursive>".into(), "password=opaque-example".into()],
             status: "pending".into(),
             used: false,
             created_ms: 0,
@@ -114,6 +114,8 @@ mod tests {
         assert!(html.contains("session <code>s&lt;1&gt;</code>"));
         assert!(html.contains("<code>&lt;proj&gt;</code>"));
         assert!(html.contains("<li>rm: &lt;recursive&gt;</li>"));
+        assert!(html.contains("<li>password=&lt;secret&gt;</li>"));
+        assert!(!html.contains("opaque-example"));
         assert!(html.contains("waiting 2 min"));
         assert!(html.contains("<button name=answer value=once>Once</button>"));
         assert!(html.contains("name=csrf value=\"tok\""));
@@ -125,8 +127,8 @@ mod tests {
             ..Default::default()
         };
         let html = content_for(Page::Board, &read_only, 120);
-        assert!(html.contains("Waiting for your approval"));
+        assert!(!html.contains("Waiting for your approval"));
+        assert!(!html.contains("s&lt;1&gt;"));
         assert!(!html.contains("action=/approvals"));
-        assert!(html.contains("oxa send &lt;session&gt; --approve"));
     }
 }

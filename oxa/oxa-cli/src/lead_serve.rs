@@ -967,6 +967,23 @@ mod approval_answer_tests {
     }
 
     #[test]
+    fn board_without_owner_binding_does_not_render_approval_details() {
+        let (test, _dirs, desk) = fixture();
+        file(&test, &desk);
+        let mut source = Source::new(&Env::from_pairs(&[]), 0).unwrap();
+        source.desk = Some(desk);
+        for (page, fragment) in [
+            (crate::lead_page::Page::Home, false),
+            (crate::lead_page::Page::Home, true),
+            (crate::lead_page::Page::Board, false),
+        ] {
+            let html = source.render(page, fragment);
+            assert!(!html.contains("Waiting for your approval"));
+            assert!(!html.contains("/srv/data"));
+        }
+    }
+
+    #[test]
     fn approval_post_once_answers_pending_request() {
         let (test, dirs, desk) = fixture();
         let id = file(&test, &desk);
