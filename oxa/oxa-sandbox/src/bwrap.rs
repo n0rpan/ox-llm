@@ -312,14 +312,25 @@ pub(crate) fn bwrap_args_homes(
     // (which starts processes outside the sandbox), the system bus and the Docker/Podman
     // sockets, and systemd-resolved (DNS with the network unshared). Mask them after every
     // bind, before the deny-list.
+    // RP6: a socket the owner listed (`oxa.sandbox.sockets`) is not masked: a masked directory
+    // gets the socket bound back before it turns read-only, the rest is bound after the loop.
+    let mut rebound: Vec<&PathBuf> = Vec::new();
     if layout.mask_runtime_ipc {
         for p in runtime_ipc_paths(&home_c) {
             let Ok(meta) = std::fs::symlink_metadata(&p) else {
                 continue;
             };
+            if layout.sockets.contains(&p) {
+                continue;
+            }
             let ps = p.to_string_lossy();
             if meta.is_dir() {
                 push(&mut a, &["--tmpfs", &ps]);
+                for sock in layout.sockets.iter().filter(|s| s.starts_with(&p)) {
+                    let sock_s = sock.to_string_lossy();
+                    push(&mut a, &["--bind", &sock_s, &sock_s]);
+                    rebound.push(sock);
+                }
                 if s.net && p == Path::new("/run/systemd/resolve") {
                     // Preserve only DNS configuration online; all resolver IPC stays hidden.
                     for name in ["resolv.conf", "stub-resolv.conf"] {
@@ -335,6 +346,10 @@ pub(crate) fn bwrap_args_homes(
                 push(&mut a, &["--ro-bind", "/dev/null", &ps]);
             }
         }
+    }
+    for sock in layout.sockets.iter().filter(|s| !rebound.contains(s)) {
+        let sock_s = sock.to_string_lossy();
+        push(&mut a, &["--bind", &sock_s, &sock_s]);
     }
     // #60: the gh token-store masks, after every bind that could cover them (the git data and the
     // cwd's `.git` above included), like the deny-list below.
@@ -1747,5 +1762,39 @@ mod detect_tests {
         assert_eq!(b.bwrap, script);
         assert_eq!(b.home, env.home());
         assert!(check_bwrap(&b).is_ok());
+    }
+
+    /// RP6: with no listed socket every runtime socket stays on the mask list.
+    #[test]
+    fn docker_socket_hidden_by_default() {
+        let env = TestEnv::new();
+        let masked = runtime_ipc_paths(&env.home());
+        assert!(masked.contains(&PathBuf::from("/run/docker.sock")));
+        assert!(masked.contains(&PathBuf::from("/run/podman/podman.sock")));
+        let argv = bwrap_args_with(&spec(&env.work(), false), &env.home(), &Layout::default());
+        assert!(!argv.iter().any(|x| x.ends_with(".sock")), "{argv:?}");
+    }
+
+    /// RP6: a socket the owner listed is bound into the argv.
+    #[test]
+    fn listed_socket_is_bound() {
+        let env = TestEnv::new();
+        std::fs::create_dir_all(env.work()).unwrap();
+        let sock = env.root().join("rt/docker.sock");
+        let _l = {
+            std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+            std::os::unix::net::UnixListener::bind(&sock).expect("bind socket")
+        };
+        let layout = Layout {
+            sockets: vec![canon(&sock)],
+            ..Layout::default()
+        };
+        let argv = bwrap_args_with(&spec(&env.work(), false), &env.home(), &layout);
+        let s = canon(&sock).to_string_lossy().to_string();
+        assert!(
+            argv.windows(3)
+                .any(|w| w[0] == "--bind" && w[1] == s && w[2] == s),
+            "{argv:?}"
+        );
     }
 }

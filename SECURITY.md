@@ -16,6 +16,9 @@ Treat as **high** severity:
 
 The sandbox can forward the owner's `CARGO_TARGET_DIR` to worker shells. External cache
 paths are writable only through an explicit owner `oxa.sandbox.writePaths` mount.
+Host runtime sockets (docker, podman) stay masked in sandboxed bash unless the owner lists them in
+`oxa.sandbox.sockets` (user settings only; the docker socket gives root on the host, so it is noted
+at start, not blocked).
 
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 

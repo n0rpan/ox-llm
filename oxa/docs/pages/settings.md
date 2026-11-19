@@ -185,6 +185,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.sandbox.allowHomeWrite` | bool | `false` | make the home directory the bash workspace when oxa starts in it, in every mode (its folders and files writable; dotfiles, dot-folders, `~/bin` and the home folder itself stay read-only; never `/` or a parent of home). In interactive mode confirming the start question does the same. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
 | `oxa.sandbox.readPaths` | list | `[]` | extra read-only paths for bash; `~/` is expanded; user settings only |
 | `oxa.sandbox.writePaths` | list | `[]` | extra writable paths for bash; `~/` is expanded; user settings only |
+| `oxa.sandbox.sockets` | list | `[]` | host runtime sockets (for example `/run/docker.sock`, `/run/podman/podman.sock`) that stay reachable in sandboxed bash; absolute paths of existing sockets; user settings only, a project file cannot list them. The start notice names each one. The docker socket gives root on the host: it is recorded, not blocked. Yolo bash has no sandbox and needs no entry |
 
 ### Native cloud gateway
 

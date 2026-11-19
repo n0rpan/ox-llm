@@ -48,6 +48,9 @@ maintainer, who says in the PR when a hardware check is needed.
 - **Cargo cache mounts.** The sandbox forwards an owner-set `CARGO_TARGET_DIR` as a
   toolchain location. An external cache needs a separate user-only
   `oxa.sandbox.writePaths` entry. Review environment forwarding and writable mounts independently.
+- **Runtime sockets.** Docker and podman sockets stay masked in sandboxed bash unless the owner
+  lists them in the user-only `oxa.sandbox.sockets` (default empty). The start notice names each and
+  says the docker socket gives root on the host; it is recorded, never blocked. Yolo needs no entry.
 - **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
   registry with its surfaces and help (P1 if added outside it or without an exception reason).
 - **Work acceptance.** In `oxa work`, zero or skipped checks leave the task `Unverified`. The
