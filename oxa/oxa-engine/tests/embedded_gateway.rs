@@ -202,10 +202,6 @@ fn incomplete_or_malformed_streams_never_return_an_assistant_turn() {
         vec![GatewayEvent::Done],
         vec![GatewayEvent::Chunk(json!("invalid object")), GatewayEvent::Done],
         vec![
-            data(json!({"choices":[{"finish_reason":"stop"}]})),
-            GatewayEvent::Done,
-        ],
-        vec![
             data(json!({"usage":{"prompt_tokens":1,"completion_tokens":1}})),
             GatewayEvent::Done,
         ],
@@ -217,6 +213,23 @@ fn incomplete_or_malformed_streams_never_return_an_assistant_turn() {
             .unwrap_err();
         assert_eq!(error.code, codes::STREAM_BROKEN);
     }
+}
+
+#[test]
+fn finish_and_done_without_usage_completes_with_unknown_usage() {
+    let _policy = POLICY.lock().unwrap();
+    let prefix = prefix();
+    let events = vec![
+        data(json!({"choices":[{"delta":{"content":"answer"}}]})),
+        data(json!({"choices":[{"finish_reason":"stop","delta":{}}]})),
+        GatewayEvent::Done,
+    ];
+    let (engine, _) = engine(events, None);
+    let turn = engine
+        .chat(&request(&prefix, &[]), &CancelToken::new(), &mut |_| {})
+        .unwrap();
+    assert_eq!((turn.usage.prompt, turn.usage.completion), (0, 0));
+    assert!(turn.usage.cached_missing);
 }
 
 #[test]

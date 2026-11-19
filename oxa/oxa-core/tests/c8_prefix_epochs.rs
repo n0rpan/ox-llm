@@ -1,6 +1,4 @@
 //! C8 acceptance tests: Prefix epochs.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_compact::CompactPolicy;
@@ -200,6 +198,7 @@ fn change_is_one_prefix_entry_and_notice() {
         completion: 20,
         cached: 0,
         cached_missing: false,
+        unreported: false,
     });
     env.write("work/AGENTS.md", "project rules v2\n");
     let mut sink = VecSink(Vec::new());

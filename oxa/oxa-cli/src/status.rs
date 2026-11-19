@@ -301,7 +301,7 @@ impl ProgressObserver for StatusWriter {
             Progress::RequestEnd { usage, remote } => {
                 snapshot.requests = snapshot.requests.saturating_sub(1);
                 snapshot.remote |= remote;
-                if let Some(usage) = usage {
+                if let Some(usage) = usage.filter(|usage| !usage.unreported) {
                     snapshot.prompt = snapshot.prompt.saturating_add(usage.prompt as u64);
                     snapshot.completion = snapshot.completion.saturating_add(usage.completion as u64);
                     snapshot.cached = snapshot.cached.saturating_add(usage.cached as u64);
@@ -568,6 +568,41 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_without_usage_keeps_the_snapshot_incomplete() {
+        let env = TestEnv::new();
+        let session = SessionRef {
+            id: "one".into(),
+            path: env.work().join("session.jsonl"),
+        };
+        let path = session.path.with_extension("status.json");
+        let writer = StatusWriter::new(None);
+        writer.notify(
+            &session,
+            Progress::Session {
+                file: Some(&session.path),
+            },
+        );
+        writer.notify(
+            &session,
+            Progress::RequestStart {
+                kind: TurnKind::Chat,
+                remote: true,
+            },
+        );
+        writer.notify(
+            &session,
+            Progress::RequestEnd {
+                usage: Some(Usage::unreported()),
+                remote: true,
+            },
+        );
+        writer.finish(Ok(RunOutcome::Done), &mut Vec::new()).unwrap();
+        let status = read_snapshot(&path).unwrap();
+        assert_eq!(status["tokens"]["complete"], false);
+        assert_eq!(status["tokens"]["unreported_requests"], 1);
+    }
+
+    #[test]
     fn stream_updates_coalesce_and_the_final_snapshot_includes_all_usage() {
         let env = TestEnv::new();
         let session = SessionRef {
@@ -605,6 +640,7 @@ mod tests {
                     completion: 8,
                     cached: 60,
                     cached_missing: false,
+                    unreported: false,
                 }),
                 remote: true,
             },
