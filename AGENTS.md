@@ -65,6 +65,8 @@ maintainer, who says in the PR when a hardware check is needed.
   `oxa.subagent.maxChildren` defaults to 8 running or queued children per parent and 8 steps
   per call. Both settings have a minimum of 1. An explicit bash `timeout: 0` disables the
   timeout for that call, including a background job, and overrides the foreground default.
+  A foreground command that passes its timeout is not killed: it moves to a background job
+  (counted in `oxa.bash.maxJobs`). `oxa.bash.waitCap` (user-only, default 300 s) caps `wait_s`.
 - **Cargo cache mounts.** The sandbox forwards an owner-set `CARGO_TARGET_DIR` as a
   toolchain location. An external cache needs a separate user-only
   `oxa.sandbox.writePaths` entry. Review environment forwarding and writable mounts independently.

@@ -146,6 +146,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.bash.defaultTimeout", Kind::Number, "null"),
     // Background jobs that may run at once (`bash {background: true}`); at least 1.
     key("oxa.bash.maxJobs", Kind::Number, "16"),
+    // Longest a bash job read blocks, in seconds (default 300; at least 1).
+    key("oxa.bash.waitCap", Kind::Number, "300"),
     key("oxa.bootPreload", Kind::Bool, "true"),
     key("oxa.builtinSkills", Kind::Bool, "true"),
     key("oxa.cloud", Kind::Object, "{}"),
