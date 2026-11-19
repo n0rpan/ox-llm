@@ -131,7 +131,6 @@ fn chat_status_reads_the_protected_board_without_calling_the_provider() {
             attempts_today: 0,
             eligible: true,
         }],
-        ..Default::default()
     };
     fs::write(
         &sample,

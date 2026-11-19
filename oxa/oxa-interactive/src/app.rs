@@ -1170,10 +1170,10 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
         // steering or follow-up message), of a finished `!cmd` and of an extension's custom
         // message: the core sends no `message_start` for those.
         AgentEvent::EntryAppended { entry } => match &entry.body {
-            EntryBody::Shown { text, why } => {
-                if [shown_why::ABORTED, shown_why::FAILED, shown_why::CUT].contains(why) {
-                    shown_reply(vm, text, why);
-                }
+            EntryBody::Shown { text, why }
+                if [shown_why::ABORTED, shown_why::FAILED, shown_why::CUT].contains(why) =>
+            {
+                shown_reply(vm, text, why);
             }
             EntryBody::Msg { wire, parts, .. } if wire.role == Role::User => {
                 vm.blocks

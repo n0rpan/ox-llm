@@ -330,9 +330,8 @@ fn select_for(
     // A project may not choose the model of a Go-only admission: the run then has no scope of
     // its own and the effective settings do have one.
     let project_scope = scope.is_empty() && !effective.list("enabledModels").is_empty();
-    let scope_go = !scope.is_empty()
-        && !(native_local
-            && routing::scope_resolves_in_catalog(scope, endpoint, local_models.iter().cloned()));
+    let scope_go = !(scope.is_empty()
+        || native_local && routing::scope_resolves_in_catalog(scope, endpoint, local_models.iter().cloned()));
     // A keyed catalog is available for inventory and owner model selection.
     // A project default alone cannot choose a new cloud transport, and a delegated
     // model (`oxa work`'s task file) is not the owner's selection: a key (with no
