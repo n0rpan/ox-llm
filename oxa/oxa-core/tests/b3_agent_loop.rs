@@ -572,6 +572,54 @@ fn stream_cut_mid_output_is_replayed_and_completes() {
         .any(|e| matches!(&e.body, EntryBody::Shown { why, .. } if *why == shown_why::CUT)));
 }
 
+/// #877: a replayed request is still the same foreground run. The cut reply is persisted as
+/// `Shown { cut }`, which ends the foreground signal; the run must re-arm it before it resends,
+/// or input typed during the replay is taken for a new prompt.
+#[test]
+fn a_replayed_request_is_still_foreground_work() {
+    let env = TestEnv::new();
+    let mut cut = ScriptTurn::text("a longer reply that is cut");
+    cut.chunk = 1;
+    cut.fault = Some(oxa_fake::Fault::DropAt { bytes: 5 });
+    let eng = Arc::new(ScriptedEngine::new(vec![cut, ScriptTurn::text("full reply")]));
+    let mut st = build(
+        &env,
+        eng.clone(),
+        Arc::new(MemStore::new()),
+        Vec::new(),
+        Mode::Workspace,
+        Vec::new(),
+    );
+    say(&mut st, "hello");
+    /// Records the foreground signal as each request's message opens.
+    struct RunningAtStart(Box<dyn Fn() -> bool>, Arc<Mutex<Vec<bool>>>);
+    impl oxa_proto::EventSink for RunningAtStart {
+        fn emit(&mut self, event: &AgentEvent) {
+            if matches!(event, AgentEvent::MessageStart { .. }) {
+                self.1.lock().unwrap().push((self.0)());
+            }
+        }
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let running = {
+        let shared = st.shared.clone();
+        Box::new(move || shared.gate.running.load(Ordering::SeqCst)) as Box<dyn Fn() -> bool>
+    };
+    let mut sink = RunningAtStart(running, seen.clone());
+    let mut ui = HeadlessUi::default();
+    let end = run_loop(&mut st, &mut sink, &mut ui).expect("run_loop");
+    assert_eq!(end, RunEnd::Stopped);
+    let seen = seen.lock().unwrap().clone();
+    assert!(
+        seen.len() >= 2,
+        "the cut request and its replay each open a message: {seen:?}"
+    );
+    assert!(
+        seen.iter().all(|running| *running),
+        "no request of the run opens while the session reads as idle: {seen:?}"
+    );
+}
+
 /// results pushed in call order
 #[test]
 fn parallel_reads_in_call_order() {
