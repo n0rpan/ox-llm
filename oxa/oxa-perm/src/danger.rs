@@ -597,7 +597,10 @@ impl DangerRules {
                     if let Some(target) = a.strip_prefix("--output-dir=") {
                         output_dir = Some(target);
                         k += 1;
-                    } else if let Some(target) = a.strip_prefix("--output=") {
+                    } else if let Some(target) = a
+                        .strip_prefix("--output=")
+                        .or_else(|| a.strip_prefix("--output-document="))
+                    {
                         outputs.push(target);
                         k += 1;
                     } else if matches!(a, "--output-dir" | "-P") {

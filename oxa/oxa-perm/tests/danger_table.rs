@@ -893,8 +893,38 @@ const ROWS: &[Row] = &[
         expect: CRED,
     },
     Row {
+        name: "curl_output_dir_combines_with_remote_name",
+        cmd: "curl --output-dir \"$HOME\" --remote-name https://example.invalid/.npmrc",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
+        name: "wget_output_document_equals_is_a_write_target",
+        cmd: "wget --output-document=\"$HOME/.npmrc\" https://example.invalid/file",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
         name: "find_file_output_is_a_write_target",
         cmd: "find . -maxdepth 0 -fprint \"$HOME/.ssh/authorized_keys\"",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
+        name: "find_fprint0_output_is_a_write_target",
+        cmd: "find . -maxdepth 0 -fprint0 \"$HOME/.ssh/authorized_keys\"",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
+        name: "find_fprintf_output_is_a_write_target",
+        cmd: "find . -maxdepth 0 -fprintf \"$HOME/.ssh/authorized_keys\" '%p\\n'",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
+        name: "find_fls_output_is_a_write_target",
+        cmd: "find . -maxdepth 0 -fls \"$HOME/.ssh/authorized_keys\"",
         cwd: ".",
         expect: CRED,
     },
