@@ -211,7 +211,7 @@ pub(crate) fn layout(
 
 /// RP6: the owner's listed sockets that exist and are Unix sockets, canonical and sorted. Each
 /// one is named in a start notice that states the risk; a path that is not a socket is
-/// reported and ignored. Never blocked: the owner chose them.
+/// reported and ignored. Runtime binds require network access and a validated descriptor.
 fn listed_sockets(
     listed: &[std::path::PathBuf],
     notices: &mut Vec<(Level, String)>,
@@ -254,7 +254,7 @@ pub(crate) fn socket_notice(socks: &[std::path::PathBuf]) -> String {
         "whatever the service behind a socket allows, bash can do"
     };
     format!(
-        "bash can reach host sockets: {} ({SETTING_SOCKETS}); {risk}",
+        "host sockets configured for network-enabled bash: {} ({SETTING_SOCKETS}); {risk}",
         list.join(", ")
     )
 }

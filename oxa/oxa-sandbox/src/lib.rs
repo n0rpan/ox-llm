@@ -237,8 +237,39 @@ impl Bwrap {
         capture: bool,
     ) -> ExecResult {
         let (public, secret) = split_secrets(s);
+        use std::os::fd::AsRawFd;
+        let pinned: Vec<(&Path, std::fs::File)> = Vec::new();
+        #[cfg(target_os = "linux")]
+        let mut pinned = pinned;
+        #[cfg(target_os = "linux")]
+        if public.net {
+            for socket in &self.layout.sockets {
+                match PinnedCwd::open_socket(socket) {
+                    Ok(fd) => pinned.push((socket, fd)),
+                    Err(error) => {
+                        let mut result =
+                            refused(format!("cannot validate a configured sandbox socket: {error}"));
+                        if !capture {
+                            live(&result.output);
+                            result.output.clear();
+                        }
+                        return result;
+                    }
+                }
+            }
+        }
+        let sockets: Vec<_> = pinned
+            .iter()
+            .map(|(path, file)| (*path, file.as_raw_fd()))
+            .collect();
         let mut argv = vec![self.bwrap.to_string_lossy().into_owned()];
-        argv.extend(bwrap_args_with(&public, &self.home, &self.layout));
+        argv.extend(bwrap::bwrap_args_pinned(
+            &public,
+            &self.home,
+            &self.layout,
+            bwrap::account_home().as_deref(),
+            &sockets,
+        ));
         let mut args_fd = None;
         if !secret.is_empty() {
             let mut data = Vec::new();
@@ -263,10 +294,11 @@ impl Bwrap {
                 }
             }
         }
-        let res = run::run_argv_fd(
+        let fds = sockets.iter().map(|(_, fd)| *fd).chain(args_fd).collect();
+        let res = run::run_argv_fds(
             &argv,
             stdin,
-            args_fd,
+            fds,
             s.timeout_s,
             c,
             live,
@@ -283,6 +315,43 @@ impl Bwrap {
 #[cfg(all(test, target_os = "linux"))]
 mod secret_tests {
     use super::*;
+
+    #[test]
+    fn bwrap_child_receives_a_socket_descriptor() {
+        use std::os::unix::fs::PermissionsExt;
+        let env = oxa_fake::TestEnv::new();
+        let socket = env.work().join("socket");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let socket = socket.canonicalize().unwrap();
+        let fake = env.write(
+            "bin/mock-bwrap",
+            "#!/bin/bash\nwhile [ \"$1\" != --bind-fd ] && [ \"$#\" -gt 0 ]; do shift; done\n[ \"$1\" = --bind-fd ] && test -S \"/proc/self/fd/$2\"\n",
+        );
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sandbox = Bwrap {
+            bwrap: fake,
+            home: env.home(),
+            layout: Layout {
+                sockets: vec![socket],
+                ..Layout::default()
+            },
+        };
+        let spec = ExecSpec {
+            command: "true".into(),
+            cwd: env.work(),
+            writable: true,
+            net: true,
+            timeout_s: Some(10),
+            env: Vec::new(),
+        };
+        let result = sandbox.run(&spec, &CancelToken::new(), &mut |_| {});
+        assert_eq!(
+            result.exit,
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&result.output)
+        );
+    }
 
     #[test]
     fn args_pipe_is_cloexec_and_readable() {

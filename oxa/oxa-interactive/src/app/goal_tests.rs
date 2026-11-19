@@ -9,7 +9,7 @@ use oxa_proto::{
     VecSink,
 };
 use oxa_resources::Resources;
-use oxa_session::{FsStore, SessionStore};
+use oxa_session::{FsStore, Goal, GoalBudget, SessionStore};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -56,6 +56,57 @@ fn deps(env: &TestEnv, engine: Arc<dyn Engine>, store: Arc<dyn SessionStore>) ->
         session_id: None,
         jobs: oxa_core::fresh_jobs(),
     }
+}
+
+/// G3: a stored goal still pursuing when the session opens is announced, and nothing is sent.
+#[test]
+fn resumed_pursuing_goal_shows_notice_and_spends_no_request() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("must not run")]));
+    let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(env.root().join("sessions")));
+    let mut session = Session::open(deps(&env, engine.clone(), store), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    let goal = Goal::new("Ship the parser\nwith tests".into(), GoalBudget::default(), 0).unwrap();
+    session.set_goal(Some(goal), &mut sink).unwrap();
+
+    let notice = resumed_goal_notice(&session, false).expect("a pursuing goal is announced");
+    assert_eq!(
+        notice,
+        "Goal pursuing: Ship the parser; /goal resume continues, /goal clear drops it"
+    );
+    assert!(
+        resumed_goal_notice(&session, true).is_none(),
+        "a queued run carries the goal"
+    );
+    assert!(
+        engine.requests().is_empty(),
+        "opening a pursuing goal spent a request"
+    );
+}
+
+/// G3 fix: a terminal control in the objective (repository-supplied) never reaches the notice.
+#[test]
+fn resumed_notice_strips_terminal_controls() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("must not run")]));
+    let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(env.root().join("sessions")));
+    let mut session = Session::open(deps(&env, engine, store), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    let goal = Goal::new(
+        "Ship\x1b]52;c;SGVsbG8=\x07 the\x1b[2J parser\u{9b}31m\nsecond line".into(),
+        GoalBudget::default(),
+        0,
+    )
+    .unwrap();
+    session.set_goal(Some(goal), &mut sink).unwrap();
+
+    let notice = resumed_goal_notice(&session, false).expect("a pursuing goal is announced");
+    assert!(!notice.chars().any(char::is_control), "{notice:?}");
+    assert!(
+        notice.starts_with("Goal pursuing: Ship]52;c;SGVsbG8= the[2J parser"),
+        "{notice}"
+    );
+    assert!(!notice.contains("second line"), "{notice}");
 }
 
 #[test]
