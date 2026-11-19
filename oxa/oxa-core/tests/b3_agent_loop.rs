@@ -1,6 +1,4 @@
 //! B3 acceptance tests: Agent loop.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_compact::CompactPolicy;
@@ -1616,4 +1614,49 @@ fn optional_thinking_budget_flows_through_the_policy_only_for_supported_local_re
             "cap={cap}, remote={remote}, thinking={thinking}"
         );
     }
+}
+
+/// #1512 S2: a dangerous command with no one to ask is refused with the matched rule; nobody
+/// declined it, and the tool never runs.
+#[test]
+fn prepare_dangerous_unattended_error_names_rule() {
+    let env = TestEnv::new();
+    let runs = Arc::new(AtomicUsize::new(0));
+    let r1 = Arc::clone(&runs);
+    let bash = tool_with(
+        "bash",
+        ToolClass::Exec,
+        Box::new(|_a: &Value, _cx: &ToolCtx| {
+            Ok(vec![Access::Exec {
+                command: "git push --force origin main".to_string(),
+                net: false,
+            }])
+        }),
+        Box::new(move |_a: &Value, _c: &ToolCtx| {
+            r1.fetch_add(1, Ordering::SeqCst);
+            ToolOutput::ok("pushed")
+        }),
+    )
+    .0;
+    let turns = vec![
+        turn_calls(vec![("b1", "bash", "{}")]),
+        ScriptTurn::text("understood"),
+    ];
+    let (mut st, _eng) = scripted_state(&env, turns, vec![bash], Mode::Workspace);
+    st.policy =
+        Box::new(ModePolicy::new().with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new()));
+    say(&mut st, "push");
+    let (end, _) = run(&mut st);
+    assert_eq!(end, RunEnd::Stopped);
+    let refused = tool_text(&st.transcript.wire()[2]);
+    assert_ne!(refused, tool_errors::DENIED_BY_USER);
+    assert!(
+        refused.starts_with("Refused: dangerous command (git-push-force: "),
+        "{refused}"
+    );
+    assert!(
+        refused.ends_with("This run has no one to approve it; nobody declined it."),
+        "{refused}"
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 0, "a refused command never runs");
 }

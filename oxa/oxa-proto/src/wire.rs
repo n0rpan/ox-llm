@@ -313,6 +313,22 @@ pub struct Usage {
     /// B6: the server did not report `cached_tokens` (`cached` is then 0 and means nothing):
     /// no cache miss is derived from this reply. `false` for every oxe engine.
     pub cached_missing: bool,
+    /// The provider finished the reply without reporting token usage.
+    pub unreported: bool,
+}
+
+impl Usage {
+    pub fn unreported() -> Self {
+        Self {
+            cached_missing: true,
+            unreported: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn reported(self) -> Option<Self> {
+        (!self.unreported).then_some(self)
+    }
 }
 
 /// Why the engine stopped. An aborted or failed stream has no `Finish`: it is an `Err`.

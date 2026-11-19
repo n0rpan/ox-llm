@@ -146,6 +146,7 @@ impl ResultFacts {
                 state.log_failed = true;
             }
         }
+        let usage = usage.and_then(Usage::reported);
         if let Some(usage) = usage {
             add(&mut state.prompt, usage.prompt.into());
             add(&mut state.completion, usage.completion.into());
@@ -225,7 +226,7 @@ impl ProgressObserver for ResultFacts {
             Progress::Session { file } => self.session(file.map(|_| session.id.as_str())),
             Progress::RequestStart { kind, .. } => self.request_start(kind),
             Progress::RequestEnd { usage, .. } => self.request_end(usage),
-            Progress::ToolStart(name) if name == "web_search" => {
+            Progress::ToolStart("web_search") => {
                 let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
                 if !state.finished {
                     state.lookups = state.lookups.saturating_add(1);
@@ -249,6 +250,7 @@ mod tests {
             completion,
             cached,
             cached_missing: false,
+            unreported: false,
         }
     }
 

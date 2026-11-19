@@ -1,6 +1,4 @@
 //! F11 acceptance tests: Docs.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_fake::{parse_script, FakeOpts, FakeServer, TestEnv};
@@ -268,6 +266,30 @@ fn security_documents_headless_inbox_policy() {
             security.contains(required),
             "SECURITY.md must document the headless inbox policy: missing {required:?}"
         );
+    }
+}
+
+/// The user guide must match the owner sandbox policy: watched CLI sessions rely on approvals and
+/// in-process guards, while unattended non-yolo runs retain Bubblewrap.
+#[test]
+fn user_docs_distinguish_interactive_and_unattended_sandboxing() {
+    let root = repo_root();
+
+    for page in ["docs/pages/security.md", "docs/pages/modes.md"] {
+        let text = fs::read_to_string(root.join(page)).expect("read sandbox documentation");
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        for required in [
+            "Interactive CLI sessions do not use an OS sandbox by default",
+            "dangerous commands ask for your approval",
+            "Unattended runs without yolo keep the Bubblewrap sandbox by default",
+            "secret masking, private-path denials, user-only settings, and offline mode",
+        ] {
+            assert!(
+                text.contains(required),
+                "{page} must distinguish interactive and unattended sandboxing: missing {required:?}"
+            );
+        }
     }
 }
 

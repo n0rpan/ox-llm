@@ -11,7 +11,125 @@ code, tests, CI and docs; the owner validates on hardware.
 
 ## Build and test
 
-GitHub-hosted CI is the judge for builds and tests.
+- Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests;
+  use synthetic fixtures. Do not open real credential files during review.
+- Keep engine transport selection, native binary/launch configuration, `allowRemote`, share
+  authority, login/token paths and `oxa.inbox.headless` user-only. A project file must never override these decisions.
+- Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
+- **Sandbox standard (owner decision, #1512 and 2026-11-19). Do not add an OS sandbox outside these rules:**
+  - **Interactive CLI the owner talks to:** no OS sandbox by default, on Linux and macOS alike. A
+    dangerous command gets an owner approval (once, this session, always, deny), never bwrap.
+  - **Yolo:** no OS sandbox anywhere. That covers the owner's session and every worker, subagent,
+    lead-started, headless and unattended run it starts. Yolo never asks. It hard-refuses only
+    publishing secrets and an OS-breaking wipe, and the owner's typed yes passes everything else.
+  - **Unattended runs without yolo** (workers, subagents, headless, `oxa work`) keep bwrap by default.
+  - **In-process guards stay in every mode:** secret masking, file-tool denials for private paths,
+    user-only settings, offline mode.
+  - **Reviews:** a finding that asks to sandbox an interactive or yolo path contradicts this standard.
+    Answer it by citing this rule, and do not apply it. A change that re-adds an OS sandbox to those
+    paths is a P1 finding.
+  - Off Linux the bash network is not restricted. The start notice and the model env note say so.
+- **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
+  answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
+  broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
+  files, web pages, other sessions, agent inbox) never approves. In yolo the broker answers yes and
+  records it. The broker socket is owned by the session (dir 0700, socket 0600) and validates a
+  complete, bounded request frame before asking. Do not add
+  `/dev/tty`-only confirmations or env-marker refusals for owner actions.
+- Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
+  across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
+  in the ledger (an unknown cost is recorded as unknown). Limits are owner configuration: with no cap
+  configured there is no cap check, and a missing price or usage field is logged and recorded, not
+  refused. Do not flag the absence of a block the owner has not configured. This applies to
+  authenticated, allowlisted share guests too: their authority, tokens and request quotas stay, an
+  uncapped metered spend by guests is shown as a clear warning in the owner UI, not refused.
+- OpenCode Go reserves subscription tokens only, including when the provider falls back to its
+  paid balance. `oxa.cloud.daily_budget_usd` applies to metered API admission. Record actual Go
+  charges reported by the provider in the ledger and include them in the shared daily spend.
+  Preserve subscription token accounting and provider-side limits. A configured
+  `oxa.cloud.subscription_limits` is advisory: it warns at 80% and 100% and is recorded, it is
+  not a local refusal (#1443/#1444).
+- Keyed Go: a Go key in the owner's own secrets file enables the Go subscription transport for
+  the owner's own model choice, with `oxa.cloud.opencode.enabled: false` as the opt-out. Engine
+  transport selection stays user-only: a protected user key authorizes an actual Go model argument,
+  including one passed to a delegated `oxa work` worker or nested child. No project setting or model
+  restored by `--continue` enables it; a local alias owns a request only on an exact match, and a model
+  scope enables Go only when it names a Go model. An explicit `oxa.cloud.opencode.enabled: true`
+  is the way a project-selected or restored model may use Go.
+- Go/OpenRouter parsing should tolerate compatible optional fields and stream variations,
+  while validating numeric type, sign, range and finiteness before accounting or execution.
+- v0.2.1 has no Python in the product/runtime path; build/test tooling is separate.
+- Never expose secrets to fork PRs or execute PR code with review credentials. Never use
+  `pull_request_target`; unknown authors need `ok-to-review` before token-spending review.
+- Go review quota and same-diff checks read at most 200 GitHub comment pages (20,000 comments).
+  If either history exceeds that bound, the review defers before reserving quota or requesting a
+  provider token; an incomplete history must never authorize another review.
+- **Intent:** the change must do what its linked issue and PR description say, and nothing else.
+  Flag as P1: missing or contradicted acceptance criteria from the linked issue; unrelated changes
+  mixed in; a default that contradicts the owner decision stated in the linked issue or PR body
+  (on-by-default with an opt-out setting is normal and is not itself a finding); deleted or
+  disabled existing behaviour, tests or checks without a `Removes: <what> — <why>` line in the PR
+  body; a test weakened, skipped or rewritten to pass instead of fixing the code.
+- **Security policy changes carry their rules:** a change to approval, sandbox, credential, secret or
+  publish behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and the user
+  docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A change to an ordinary
+  default, limit or budget updates the user docs; a missing docs update is P3 and is fixed forward.
+- **Early-stage process (owner decision, until v0.3):**
+  - Only P0/P1 findings, security findings and an open security review block a merge. P2/P3 findings are filed as follow-ups and fixed forward on main.
+  - Prefer one PR per feature, up to about 800 changed lines, over stacks of small PRs.
+  - A merge that breaks required checks on main is reverted at once, then fixed forward. A review finding
+  that contradicts an owner decision stated in the linked issue or PR is answered by updating these
+  rules in that PR, not by changing the behaviour.
+- **Publication scan:** `oxa work --publish` and lane pushes refuse secrets in the commits they push (keys,
+  known tokens also after a word character, opaque credential assignments and quoted literals, secret-store
+  content, configured secret values). A file is refused for its content, never its name alone: an empty
+  secret-store file and `.env.example` publish unless the content holds a secret. Flag as P1 a change that
+  weakens these refusals or adds a name-only or blanket long-value block (P2 without a doc update).
+- **Bash and subagent limits.** The two caps are user-only. `oxa.bash.maxJobs` defaults to 16
+  running background jobs.
+  `oxa.subagent.maxChildren` defaults to 8 running or queued children per parent and 8 steps
+  per call. Both settings have a minimum of 1. An explicit bash `timeout: 0` disables the
+  timeout for that call, including a background job, and overrides the foreground default.
+  A foreground command that passes its timeout is not killed: it moves to a background job
+  (counted in `oxa.bash.maxJobs`). `oxa.bash.waitCap` (user-only, default 300 s) caps `wait_s`.
+- **Cargo cache mounts.** The sandbox forwards an owner-set `CARGO_TARGET_DIR` as a
+  toolchain location. An external cache needs a separate user-only
+  `oxa.sandbox.writePaths` entry. Review environment forwarding and writable mounts independently.
+- **Runtime sockets.** Docker and podman sockets stay masked in sandboxed bash unless the owner
+  lists them in the user-only `oxa.sandbox.sockets` (default empty) and permits network access.
+  An online bind uses a validated socket descriptor. The start notice names each and warns of
+  the access it grants. Yolo needs no entry.
+- **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
+  registry with its surfaces and help (P1 if added outside it or without an exception reason).
+  `oxe admission` is an engine CLI exception. It reports allocation bounds directly from a GGUF
+  header and accepts `oxe-server` launch arguments without opening an oxa session. Its command and
+  flag help live in `oxe admission --help`. It has no oxa slash, menu, or web surface.
+- **Worker mode.** An `oxa work` worker is started with `--yolo` only when the owner's user-layer
+  `permissions.defaultMode` is `yolo`; otherwise it keeps the sandboxed default. Project settings
+  cannot raise it. See `oxa/docs/work.md`.
+- **Work acceptance.** In `oxa work`, zero or skipped checks leave the task `Unverified`. The
+  owner-only `oxa.work.localChecks` defaults to a per-package `cargo check`. A verified Rust
+  acceptance receipt requires hosted test evidence at the exact head, including for changed
+  inputs outside packages in a tree with Cargo manifests. Worker declarations
+  can add hosted requirements. Review their coverage against the task's acceptance criteria.
+- Owner policy: nothing blocks by default except the security invariants above (secrets,
+  sandbox, user-only settings, offline, fork safety). Limits, budgets, retries and guards are owner
+  settings with generous defaults that warn and record; a hard block exists only when the owner
+  configures it. Do not ask for a new default block or for a feature to be default-off.
+  Owner messages sent with `oxa send` are not refused for size: text over the 256 KiB inline
+  inbox limit is stored in the receiving session's private, tool-readable spill directory and
+  only a short pointer is queued. The agent directory remains denied.
+  The repeat guard follows this: the third identical tool result gets a short note, a call that
+  still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
+  is the cap against loops the guard cannot see. A pursuing goal whose request fails transiently
+  (stream cut, engine down or busy, timeout, 429, 5xx) waits without tokens and sends it again:
+  `oxa.goal.failureBackoffSeconds` (default 60, doubling, capped at 900 unless set higher, `0` opts
+  out) is the owner setting. Auth errors, refusals, the repetition stop, aborts and an owner budget
+  still stop the goal with the reason shown.
+  The board degrades per item, not per snapshot: a PR whose GitHub evidence exceeds a read page
+  is one row marked evidence incomplete that is never eligible for any action; every other item is
+  kept and published, and the limit is logged. A merge-queue connection beyond its
+  page keeps the observed entries; PRs outside them stay queue-unknown and take no action.
 
 - **Owner machines** (every machine the owner works on or lends to an agent): the only compiler work is
   `cargo check -p <edited-crate>`, niced, with `CARGO_BUILD_JOBS=3`. Formatting and reading source are fine. No
@@ -39,9 +157,29 @@ GitHub-hosted CI is the judge for builds and tests.
 
 ### GitHub access
 
-**GitHub access has one owner per session.** An owner-driven interactive `oxa` session and Lead own GitHub access, as
-a Codex lane does. They may use authenticated `gh` and Git to read issues, reviews and remote refs, push `agent/**`
-branches, open PRs, and read CI results.
+## What to test (owner rule)
+
+**Test what the product does for users, not how many test lines exist.**
+- **Write a test when** it protects behaviour a user or a security guarantee relies on:
+  - a bug that happened;
+  - a security or sandbox standard rule;
+  - money and ledger accounting;
+  - cache and prefix stability that changes cost;
+  - release integrity;
+  - an end-to-end flow (a real turn with tools, local model wiring, publish).
+- **Prefer** one end-to-end or integration test over many unit tests of internal helpers.
+- **Do not write tests that pin:**
+  - wording in AGENTS.md, SECURITY.md, docs or workflow files;
+  - descriptor or setting counts;
+  - sort order that nothing depends on;
+  - hashes copied from CI output;
+  - implementation detail a refactor may change.
+- **Doc and env sync checks** belong in a fast lint job, not behind a full build.
+- **Do not write tests that cannot fail:** a mock that asserts itself, or a test of dead code.
+- **A reviewer asking for a test** should name the behaviour it protects. "Add a test" with no behaviour is not a finding.
+- **Delete a test that only breaks on harmless changes.** Note it on the `Removes:` line.
+
+## Build and test capacity (owner rule)
 
 **Sandboxed `oxa work` workers have no GitHub access.** Their runner owns GitHub access. From the worker, make no `gh`
 call at all and make no other GitHub request, including through Git. The issue text, review findings and CI result
@@ -62,7 +200,32 @@ them. It can also be dispatched:
 
 ```sh
 gh workflow run lane --ref <branch>
-gh run watch <run-id> --exit-status --interval 60
+gh run watch <run-id> --exit-status
+```
+
+Once a PR against main is open for the branch, a push no longer starts `lane` (its first job,
+`lane pr check`, finds the PR and skips the rest): the PR's `checks` run covers the same commit, so
+wait on that run (`gh run list --branch <branch> --workflow checks`, then `gh run watch`). A branch
+without a PR, and `gh workflow run lane`, still run `lane`. CodeQL runs on pushes to main, weekly and
+on dispatch only; the macOS `oxa-cli` build runs on main, on dispatch and on PRs touching
+`oxa/oxa-session`, `oxa/oxa-sandbox`, `oxa/oxa-cli`, `oxa/oxc-gateway`, `packaging/macos` or `oxa/Cargo.lock`.
+
+The lane workflow selects changed crates plus their local reverse dependencies and binary-fixture
+consumers against main. Shared workspace manifests/locks expand the affected workspace. Tests use
+release-relevant features, Cargo registry/target caches via GitHub-owned actions, and standard free
+Ubuntu x64/ARM runners. Cache keys include the lockfile, toolchain and architecture; lane caches
+use their own namespace and branch scope, preserving the required workflows' main-cache policy.
+Native engine tests requiring Oryon CPU features remain on the existing self-hosted route. The lane
+workflow does not replace or change the merge queue's required checks. Start full-workspace and
+release CI only when the change is close to done. Each started job records its queue delay in its
+GitHub job summary so capacity decisions use measurements.
+
+When you may call `gh`, wait with **one blocking `gh run watch --exit-status`**, or continue an
+independent piece and read the result once later; when the runner owns GitHub, it reads the result.
+Never spend repeated model turns or API/status polls waiting for CI, and never
+post “still waiting” updates. On failure, read only the failed job's tail:
+
+```sh
 gh run view <run-id> --log-failed | tail -100
 ```
 
@@ -107,24 +270,27 @@ read its result; they never launch builds or tests.
 1. **Never weaken a security check or scanner:** the secret / SDK-material / product-isolation scans in
    `checks.yml`, the receipt scrubber, allow-lists, the oxa sandbox, permissions and secret handling. Don't
    split or obfuscate strings to get past a scanner. A test fixture that must look like a secret gets a
-   narrow, exact-path exclusion with a written reason, reviewed as security core.
-   The user-selected yolo mode and the interactive no-OS-sandbox default (see the sandbox standard below) are deliberate exceptions, not weakenings.
-2. **No secrets, keys, tokens, transcripts, personal data, real home paths, host names or e-mail addresses** in code,
-   tests, fixtures, docs or commit messages. Use placeholder paths (`~/project`), `example.invalid` and synthetic
-   data. Commit with a GitHub no-reply e-mail address.
-3. **No Qualcomm SDK material** (Hexagon SDK / QAIRT headers, IDL, stubs, skeletons, DSP binaries, copied text or
-   constants) and no binaries at all. NPU device code is not developed in this repository.
-4. **Workflows:** a job runs on a GitHub-hosted image or through the runner expression that is already in `checks.yml`
-   (a fork PR always runs hosted; `tools/ci/tests/test_workflow_runners.py` checks this). Never add another runner
-   label, never use `pull_request_target` or `workflow_run` with PR code, keep `permissions: contents: read` as the
-   default, pin every action by full commit SHA, and add no secrets.
-5. **Don't change engine numerics, default flags, thresholds or gate limits** without the owner's decision in the
-   linked issue, and don't edit benchmark *results* (`oxc/benchmarks/results/`): they are receipts of what was
-   measured.
-6. **No tags, releases or publishing.** The owner starts a release.
-7. **Tests must test real behaviour** (no test theatre). A deleted feature's tests are deleted with it.
-8. **Cloud models in tests:** mock servers only. Tests and CI never read a real API key and never call a real cloud
-   API (isolated `HOME`, environment cleared).
+   narrow, exact-path exclusion with a written reason, reviewed as T3.
+   The user-selected yolo mode and the interactive no-OS-sandbox default (see the sandbox standard above) are deliberate exceptions, not weakenings.
+2. **No secrets, keys, tokens, transcripts, personal data, real home paths, host names or e-mail
+   addresses** in code, tests, fixtures, docs or commit messages. Use placeholder paths (`~/project`), `example.invalid` and
+   synthetic data. Commit with a GitHub no-reply e-mail address.
+3. **No Qualcomm SDK material** (Hexagon SDK / QAIRT headers, IDL, stubs, skeletons, DSP binaries, copied
+   text or constants) and no binaries at all. NPU device code is not developed in this repository; only
+   `engine/npu/oxn/common/` (shared CPU-side quantisation headers) lives here.
+4. **Workflows run on GitHub-hosted runners only.** Never add `self-hosted` or custom runner labels, never
+   use `pull_request_target` or `workflow_run` with PR code, keep `permissions: contents: read` as the
+   default, pin every action by full commit SHA, and add no secrets (the release workflow uses only the
+   job token and the protected `release` environment).
+5. **Don't change engine numerics, default flags, thresholds or gate limits,** and don't edit benchmark
+   *results* (`oxc/benchmarks/results/`): they are receipts of what was measured.
+6. **Don't hand-rename** `oxc/` → `oxc/` or the `oxc` / `oxc` / `OXC_*` names. The
+   rename lands as one dedicated, script-driven PR by the maintainer; write names as they are on `main`.
+7. **No tags, releases or publishing.** Releases are cut by the maintainer.
+8. **Tests must test real behaviour** (no test theatre). A deleted feature's tests are deleted with it. A
+   changed behaviour gets a test that fails before your change and passes after.
+9. **Cloud models in tests:** mock servers only. Tests and CI never read a real API key and never call a
+   real cloud API (isolated `HOME`, environment cleared).
 
 ## Style
 
