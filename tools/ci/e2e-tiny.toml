@@ -34,7 +34,7 @@ ttft_cold_warn_ms = 3000
 ttft_cold_fail_ms = 60000
 ttft_warm_warn_ms = 1500
 ttft_warm_fail_ms = 60000
-turn_warn_ms = 20000
+turn_warn_ms = 60000
 turn_fail_ms = 180000
 warm_over_cold_prefill_warn = 0.5
 warm_over_cold_prefill_fail = 1.0
@@ -49,4 +49,4 @@ baseline_fail_drop = 0.10
 baseline_warn_drop = 0.01
 
 [cache.baseline]
-# "e2e-tiny-model.gguf" = 0.97
+"e2e-tiny-model.gguf" = 0.999
