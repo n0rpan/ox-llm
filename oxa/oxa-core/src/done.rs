@@ -60,6 +60,11 @@ impl Proof {
         self.checked = true;
     }
 
+    /// A file changed in this run (FH-N2: a closing question after edits is not an open task).
+    pub(crate) fn edited(&self) -> bool {
+        self.edited
+    }
+
     /// The run changed files and no check has passed since the last change. Read by the
     /// "prove it" turn (B4b); until then only the tests read it.
     #[allow(dead_code)]
