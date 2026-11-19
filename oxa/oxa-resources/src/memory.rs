@@ -21,9 +21,12 @@ pub const MAX_MEMORY_BODY: usize = 8 * 1024;
 /// The generated index file, inside the memory directory.
 pub const MEMORY_INDEX_FILE: &str = "MEMORY.md";
 const LOCK_FILE: &str = ".lock";
-/// How much of an entry file the index scan reads: the body cap plus room for the frontmatter.
-/// Bodies are never kept by the scan, and an oversized file on disk is read only this far.
-const SCAN_READ_MAX: u64 = (MAX_MEMORY_BODY as u64) + 4096;
+/// Largest frontmatter (kind and quoted description, with both fences) a saved entry may hold.
+pub const MAX_MEMORY_HEADER: usize = 4096;
+/// How much of an entry file the index scan reads: the body cap plus the frontmatter cap, so every
+/// entry `save` accepts is read whole. Bodies are never kept by the scan, and an oversized file on
+/// disk is read only this far.
+const SCAN_READ_MAX: u64 = (MAX_MEMORY_BODY + MAX_MEMORY_HEADER) as u64;
 
 /// What an entry records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,7 +72,8 @@ pub struct MemoryEntry {
 /// rewritten by the next save or delete (also a delete of an absent name).
 ///
 /// The description is stored on one line (whitespace runs collapse to one space). Refused when
-/// the name is invalid or the body is longer than [`MAX_MEMORY_BODY`]; nothing is written then.
+/// the name is invalid, the body is longer than [`MAX_MEMORY_BODY`] or the frontmatter is longer
+/// than [`MAX_MEMORY_HEADER`] (a description of about 4 KiB); nothing is written then.
 pub fn save(dir: &Path, name: &str, kind: MemoryKind, description: &str, text: &str) -> Result<(), OxaError> {
     check_name(name)?;
     if text.len() > MAX_MEMORY_BODY {
@@ -82,13 +86,23 @@ pub fn save(dir: &Path, name: &str, kind: MemoryKind, description: &str, text: &
         ));
     }
     let description = one_line(description);
-    ensure_private_dir(dir)?;
-    let _lock = lock(dir)?;
-    let doc = format!(
-        "---\nkind: {}\ndescription: {}\n---\n{text}",
+    let header = format!(
+        "---\nkind: {}\ndescription: {}\n---\n",
         kind.as_str(),
         quote(&description)
     );
+    if header.len() > MAX_MEMORY_HEADER {
+        return Err(OxaError::new(
+            codes::INVALID,
+            format!(
+                "memory {name}: description is too long ({} bytes of frontmatter, the limit is {MAX_MEMORY_HEADER})",
+                header.len()
+            ),
+        ));
+    }
+    ensure_private_dir(dir)?;
+    let _lock = lock(dir)?;
+    let doc = format!("{header}{text}");
     write_replace(&entry_path(dir, name), doc.as_bytes())?;
     let _ = rebuild_index(dir);
     Ok(())

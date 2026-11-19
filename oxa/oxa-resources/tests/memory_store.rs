@@ -3,7 +3,7 @@
 
 use oxa_config::Dirs;
 use oxa_fake::TestEnv;
-use oxa_resources::memory::{self, MemoryKind, MAX_MEMORY_BODY};
+use oxa_resources::memory::{self, MemoryKind, MAX_MEMORY_BODY, MAX_MEMORY_HEADER};
 use std::path::PathBuf;
 
 fn memory_dir(env: &TestEnv) -> PathBuf {
@@ -180,6 +180,41 @@ fn index_scan_survives_an_oversized_entry_next_to_a_valid_one() {
     memory::save(&dir, "other-note", MemoryKind::Lesson, "Next", "Body.\n").unwrap();
     let file = std::fs::read_to_string(dir.join("MEMORY.md")).unwrap();
     assert_eq!(file.lines().count(), 3, "{file}");
+}
+
+#[test]
+fn every_saved_description_stays_indexed_and_a_longer_one_is_refused() {
+    let env = TestEnv::new();
+    let dir = memory_dir(&env);
+    // The longest description save accepts, next to the longest body: the bounded scan reads it whole.
+    let long = "d".repeat(MAX_MEMORY_HEADER - 64);
+    memory::save(
+        &dir,
+        "long-note",
+        MemoryKind::Fact,
+        &long,
+        &"b".repeat(MAX_MEMORY_BODY),
+    )
+    .unwrap();
+    let index = memory::index(&dir, usize::MAX);
+    assert!(
+        index.contains(&format!("[long-note](long-note.md) (fact): {long}")),
+        "{index}"
+    );
+    let file = std::fs::read_to_string(dir.join("MEMORY.md")).unwrap();
+    assert!(file.contains("long-note"), "{file}");
+
+    // A description the scan could not read past is refused before anything is written.
+    let err = memory::save(
+        &dir,
+        "too-long",
+        MemoryKind::Fact,
+        &"x".repeat(13 * 1024),
+        "Short.\n",
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("description is too long"), "{err}");
+    assert!(memory::read(&dir, "too-long").unwrap().is_none());
 }
 
 #[test]
