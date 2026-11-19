@@ -186,20 +186,21 @@ fn extension_exec_is_classified_in_its_own_directory() {
         })
     };
     let absolute = format!("rm -rf {}/victim", other.display());
-    for (command, cwd) in [(absolute.clone(), env.work()), (absolute, other.clone())] {
-        let e = through_host(&mut st, spec(command.clone(), cwd)).unwrap_err();
+    // In the session's own directory the dangerous rule decides.
+    let e = through_host(&mut st, spec(absolute.clone(), env.work())).unwrap_err();
+    assert!(
+        e.message
+            .starts_with("Refused: dangerous command (rm-recursive-outside: "),
+        "{absolute}: {e}"
+    );
+    // An extension cwd outside the workspace needs approval for that directory before any
+    // command runs there, so both the absolute and the relative operand are refused for the
+    // directory itself, with it named; the command never runs in either case.
+    for command in [absolute, "rm -rf victim".to_string()] {
+        let e = through_host(&mut st, spec(command.clone(), other.clone())).unwrap_err();
         assert!(
-            e.message
-                .starts_with("Refused: dangerous command (rm-recursive-outside: "),
+            e.message.contains("needs approval") && e.message.contains(&other.display().to_string()),
             "{command}: {e}"
         );
     }
-    // A relative operand with an extension cwd outside the workspace: the directory itself
-    // needs approval before the command runs, so an attended run is asked for it and this
-    // unattended one is refused with the directory named. The command never runs either way.
-    let e = through_host(&mut st, spec("rm -rf victim".to_string(), other.clone())).unwrap_err();
-    assert!(
-        e.message.contains("needs approval") && e.message.contains(&other.display().to_string()),
-        "{e}"
-    );
 }
