@@ -432,7 +432,7 @@ impl ModePolicy {
     /// prompt, so a `once` grant is consumed by [`ModePolicy::consume_danger`] instead.
     fn danger_hits(&self, a: &Access, cwd: &Path) -> Vec<DangerHit> {
         let open = self.danger_open(a, cwd);
-        if self.desk_covers(a, &open) {
+        if self.desk_covers(a, cwd, &open) {
             Vec::new()
         } else {
             open
@@ -464,7 +464,7 @@ impl ModePolicy {
     /// key is the complete command line, exactly like the policy grants: an approval for
     /// `true || git push --force origin main` never covers a standalone push. A segment the
     /// shell computes at run time is never covered by a reusable grant at all.
-    fn desk_covers(&self, a: &Access, open: &[DangerHit]) -> bool {
+    fn desk_covers(&self, a: &Access, cwd: &Path, open: &[DangerHit]) -> bool {
         let (Access::Exec { command, .. }, Some(desk)) = (a, &self.desk) else {
             return false;
         };
@@ -476,7 +476,7 @@ impl ModePolicy {
             return false;
         }
         let keys: Vec<String> = open.iter().map(|h| danger_key(h, command)).collect();
-        desk.covers(&self.session_id, &keys)
+        desk.covers(&self.session_id, cwd, &keys)
     }
 
     /// Spend the `once` grant that let this exec through, once the decision is final and the
@@ -487,11 +487,11 @@ impl ModePolicy {
             return;
         };
         let open = self.danger_open(a, cwd);
-        if !self.desk_covers(a, &open) {
+        if !self.desk_covers(a, cwd, &open) {
             return;
         }
         let keys: Vec<String> = open.iter().map(|h| danger_key(h, command)).collect();
-        desk.consume(&self.session_id, &keys);
+        desk.consume(&self.session_id, cwd, &keys);
     }
 
     /// `true` when a remembered grant covers `a`.

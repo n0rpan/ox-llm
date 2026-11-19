@@ -82,9 +82,10 @@ pub(crate) fn list(dirs: &Dirs, out: &mut dyn Write) -> Result<i32, OxaError> {
     for rec in pending {
         writeln!(
             out,
-            "{}  session {}  {}  [{}]",
+            "{}  session {}  in {}  {}  [{}]",
             rec.id,
             one_line(&rec.session),
+            one_line(&rec.cwd),
             one_line(&rec.command),
             one_line(&rec.reasons.join("; "))
         )
@@ -209,6 +210,8 @@ mod tests {
         let text = String::from_utf8(out).expect("utf8");
         assert!(text.contains(&id), "{text}");
         assert!(text.contains("session s1"), "{text}");
+        // The directory the command runs in is part of what the owner approves.
+        assert!(text.contains(&format!("in {}", cwd.display())), "{text}");
         assert!(text.contains("git push --force origin main"), "{text}");
         assert!(text.contains("git-push-force: force"), "{text}");
     }

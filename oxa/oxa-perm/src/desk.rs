@@ -180,10 +180,12 @@ impl ApprovalDesk {
         // approval is bound to the command the owner reviewed and never to a bare segment.
         let keys: Vec<String> = hits.iter().map(|h| danger_key(h, command)).collect();
         if status == "pending" {
-            let open = self
-                .all()?
-                .into_iter()
-                .find(|r| r.status == "pending" && r.session == session && r.keys == keys);
+            let open = self.all()?.into_iter().find(|r| {
+                r.status == "pending"
+                    && r.session == session
+                    && r.cwd == cwd.display().to_string()
+                    && r.keys == keys
+            });
             if let Some(open) = open {
                 return Ok(open.id);
             }
@@ -231,15 +233,17 @@ impl ApprovalDesk {
     /// while it is still deciding (a verdict, a `danger_ask` the caller may yet turn into a
     /// prompt), so a `once` grant stays available until [`ApprovalDesk::consume`] confirms that
     /// the command it approved is the one about to run.
-    pub fn covers(&self, session: &str, keys: &[String]) -> bool {
+    pub fn covers(&self, session: &str, cwd: &Path, keys: &[String]) -> bool {
         if keys.is_empty() {
             return false;
         }
         let Ok(records) = self.all() else {
             return false;
         };
+        let dir = cwd.display().to_string();
         records.iter().any(|rec| {
             rec.session == session
+                && rec.cwd == dir
                 && keys.iter().all(|k| rec.keys.contains(k))
                 && match rec.status.as_str() {
                     "session" | "always" => true,
@@ -251,15 +255,16 @@ impl ApprovalDesk {
 
     /// Spend the `once` grant that covers every key: the command it approved is going to run.
     /// `session` and `always` grants stay. Returns whether a `once` grant was spent.
-    pub fn consume(&self, session: &str, keys: &[String]) -> bool {
+    pub fn consume(&self, session: &str, cwd: &Path, keys: &[String]) -> bool {
         if keys.is_empty() {
             return false;
         }
         let Ok(records) = self.all() else {
             return false;
         };
+        let dir = cwd.display().to_string();
         for mut rec in records {
-            if rec.session != session || rec.status != "once" || rec.used {
+            if rec.session != session || rec.cwd != dir || rec.status != "once" || rec.used {
                 continue;
             }
             if keys.iter().all(|k| rec.keys.contains(k)) {
@@ -271,11 +276,11 @@ impl ApprovalDesk {
     }
 
     /// `covers` and spend the `once` grant, in one step. `false` on no cover.
-    pub fn granted(&self, session: &str, keys: &[String]) -> bool {
-        if !self.covers(session, keys) {
+    pub fn granted(&self, session: &str, cwd: &Path, keys: &[String]) -> bool {
+        if !self.covers(session, cwd, keys) {
             return false;
         }
-        self.consume(session, keys);
+        self.consume(session, cwd, keys);
         true
     }
 

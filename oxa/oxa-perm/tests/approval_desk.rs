@@ -143,8 +143,8 @@ fn desk_once_grant_is_consumed() {
         .record("s1", &cwd, DANGEROUS, &[hit()], "pending")
         .expect("pending");
     desk.answer(&id, "once").expect("answer");
-    assert!(desk.granted("s1", &keys), "the once grant covers the retry");
-    assert!(!desk.granted("s1", &keys), "and is spent by it");
+    assert!(desk.granted("s1", &cwd, &keys), "the once grant covers the retry");
+    assert!(!desk.granted("s1", &cwd, &keys), "and is spent by it");
 }
 
 /// A probe must not spend the owner's single approval: `covers` only looks, `consume` spends it
@@ -159,11 +159,11 @@ fn desk_covers_does_not_spend_a_once_grant() {
         .record("s1", &cwd, DANGEROUS, &[hit()], "pending")
         .expect("pending");
     desk.answer(&id, "once").expect("answer");
-    assert!(desk.covers("s1", &keys));
-    assert!(desk.covers("s1", &keys), "a probe leaves it available");
-    assert!(desk.consume("s1", &keys), "the final decision spends it");
-    assert!(!desk.covers("s1", &keys));
-    assert!(!desk.consume("s1", &keys), "and never twice");
+    assert!(desk.covers("s1", &cwd, &keys));
+    assert!(desk.covers("s1", &cwd, &keys), "a probe leaves it available");
+    assert!(desk.consume("s1", &cwd, &keys), "the final decision spends it");
+    assert!(!desk.covers("s1", &cwd, &keys));
+    assert!(!desk.consume("s1", &cwd, &keys), "and never twice");
 }
 
 #[test]
@@ -176,9 +176,9 @@ fn desk_session_grant_is_scoped_to_session() {
         .record("s1", &cwd, DANGEROUS, &[hit()], "pending")
         .expect("pending");
     desk.answer(&id, "session").expect("answer");
-    assert!(!desk.granted("s2", &keys), "another session is not covered");
-    assert!(desk.granted("s1", &keys));
-    assert!(desk.granted("s1", &keys), "a session grant stays");
+    assert!(!desk.granted("s2", &cwd, &keys), "another session is not covered");
+    assert!(desk.granted("s1", &cwd, &keys));
+    assert!(desk.granted("s1", &cwd, &keys), "a session grant stays");
 }
 
 /// A reusable grant is bound to the command line the owner reviewed. Approving a compound
@@ -375,6 +375,39 @@ fn retry_after_once_approval_runs_then_asks_again() {
     assert_ne!(request_id(&second), id);
 }
 
+/// A grant is bound to the directory the owner reviewed: the same text in another directory is
+/// a different command (`rm -rf ..` from two places deletes two different parents).
+#[test]
+fn desk_grants_are_bound_to_the_reviewed_directory() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let here = env.work();
+    let there = env.work().join("sub");
+    std::fs::create_dir_all(&there).expect("sub dir");
+    let keys = vec![KEY.to_string()];
+    let id = desk
+        .record("s1", &here, DANGEROUS, &[hit()], "pending")
+        .expect("record");
+    desk.answer(&id, "session").expect("answer");
+    assert!(
+        desk.covers("s1", &here, &keys),
+        "the reviewed directory is covered"
+    );
+    assert!(!desk.covers("s1", &there, &keys), "another directory is not");
+    // A second directory files (and dedups) its own request.
+    let first = desk
+        .record("s1", &there, DANGEROUS, &[hit()], "pending")
+        .expect("record");
+    let again = desk
+        .record("s1", &there, DANGEROUS, &[hit()], "pending")
+        .expect("record");
+    assert_eq!(first, again, "the same directory reuses its open request");
+    let other = desk
+        .record("s1", &here, DANGEROUS, &[hit()], "pending")
+        .expect("record");
+    assert_ne!(first, other, "another directory files its own request");
+}
+
 /// A probe that only inspects a covered request must not spend the owner's `once` approval: the
 /// retry still runs, and the final decision is what spends it.
 #[test]
@@ -423,7 +456,7 @@ fn a_once_approval_survives_a_headless_ask_retry() {
         "the approved command runs instead of asking again"
     );
     assert!(
-        !desk.covers("s1", &[KEY.to_string()]),
+        !desk.covers("s1", &cwd, &[KEY.to_string()]),
         "and the final allow spent it"
     );
 }
@@ -466,6 +499,7 @@ fn oxa_self_approve_rule_blocks_model_running_oxa_send_approve() {
     // Nothing was granted by the attempt.
     assert!(!desk.granted(
         "s1",
+        &cwd,
         &["oxa-self-approve oxa send s1 --approve 0123456789abcdef once".to_string()]
     ));
 }
