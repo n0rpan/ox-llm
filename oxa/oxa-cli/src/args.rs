@@ -478,7 +478,7 @@ const OPTIONS: &[(&str, &str)] = &[
     ),
     (
         "--yolo",
-        "Permission mode yolo: no approval prompts; the launch sandbox setting stays in force",
+        "Permission mode yolo, full access: no prompts, bash runs without the sandbox",
     ),
     (
         "--permission-mode <mode>",

@@ -657,9 +657,8 @@ impl<'a> Loop<'a> {
                 self.yolo_noticed = true;
                 self.push_notice(
                     Level::Warning,
-                    "YOLO: no prompts, dangerous commands run without asking. Protected configuration \
-                     changes need no confirmation. Private-path denials still apply to file tools. \
-                     /mode auto or Ctrl+Alt+O turns it off."
+                    "YOLO: no prompts, dangerous commands run without asking. The deny-list and \
+                     protected paths stay on. /mode auto or Ctrl+Alt+O turns it off."
                         .to_string(),
                 );
             }

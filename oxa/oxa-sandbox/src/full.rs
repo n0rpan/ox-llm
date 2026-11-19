@@ -1,5 +1,6 @@
-//! Bash runs through the configured OS sandbox when the launch policy requires it. The older
-//! constructor without launch policy also supports the caller's full-access switch.
+//! #202: full access (`yolo`). The bash tool's commands run without bwrap, as `bash -c` with
+//! the user's own rights and environment, while the process's [`YoloSwitch`] is at `yolo`.
+//! A read-only spec (plan mode) and every other level go to the wrapped sandbox unchanged.
 //! Offline stays a hard switch: the command then runs through bwrap with the network unshared
 //! and the user's file system (as `!cmd` does offline), and is refused without bwrap.
 //!
@@ -13,7 +14,7 @@ use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox, YoloSwitch
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// The bash tool's sandbox and its configured host-execution path.
+/// The bash tool's sandbox with the full-access bypass of `yolo`.
 pub struct FullAccess {
     inner: Arc<dyn Sandbox>,
     switch: YoloSwitch,
@@ -22,8 +23,8 @@ pub struct FullAccess {
     offline: bool,
     /// `oxa.sandbox.net` is `off`: unsandboxed commands get no network either.
     net_off: bool,
-    /// Once supplied, the launch policy controls containment at every permission level.
-    os_sandbox: Option<bool>,
+    /// #1512 S3: the OS sandbox is part of this run's policy (default on).
+    os_sandbox: bool,
 }
 
 impl FullAccess {
@@ -44,13 +45,13 @@ impl FullAccess {
             home,
             offline,
             net_off,
-            os_sandbox: None,
+            os_sandbox: true,
         }
     }
 
     /// #1512 S3: `false` runs bash and the exec hooks with the user's rights (no OS sandbox).
     pub fn with_os_sandbox(mut self, on: bool) -> FullAccess {
-        self.os_sandbox = Some(on);
+        self.os_sandbox = on;
         self
     }
 
@@ -58,7 +59,7 @@ impl FullAccess {
     /// sandbox at every level, also for the inline `run` path (a full-access switch never lets
     /// them out); without it they go through `full` and run with the user's rights.
     pub fn hook_sandbox(full: &Arc<FullAccess>) -> Arc<dyn Sandbox> {
-        if full.os_sandbox != Some(false) {
+        if full.os_sandbox {
             full.inner.clone()
         } else {
             full.clone() as Arc<dyn Sandbox>
@@ -89,9 +90,9 @@ impl FullAccess {
         })
     }
 
-    /// Whether the launch policy lets commands run with the user's rights.
+    /// Commands run with the user's rights: full access is on, or there is no OS sandbox.
     fn unsandboxed(&self) -> bool {
-        unsandboxed(self.os_sandbox, &self.switch)
+        self.switch.full() || !self.os_sandbox
     }
 
     /// An unsandboxed command gets no network when the process is offline or the owner set
@@ -107,7 +108,7 @@ impl FullAccess {
         if self.unsandboxed() && s.writable {
             return true;
         }
-        self.os_sandbox == Some(false) && !s.writable && self.inner.check().is_err()
+        !self.os_sandbox && !s.writable && self.inner.check().is_err()
     }
 
     /// The argv `s` is started with: `bash -c <command>` when unsandboxed (bwrap without
@@ -203,7 +204,7 @@ impl Sandbox for FullAccess {
         c: &CancelToken,
         live: &mut dyn FnMut(&[u8]),
     ) -> ExecResult {
-        if self.os_sandbox != Some(false) {
+        if self.os_sandbox {
             return self.inner.run_with_stdin(s, stdin, c, live);
         }
         if !self.no_net() {
@@ -226,7 +227,7 @@ impl Sandbox for FullAccess {
 struct FileView {
     inner: Arc<dyn Sandbox>,
     switch: YoloSwitch,
-    os_sandbox: Option<bool>,
+    os_sandbox: bool,
 }
 
 impl Sandbox for FileView {
@@ -249,7 +250,7 @@ impl Sandbox for FileView {
         self.inner.scratch_dir()
     }
     fn file_scratch_dir(&self, mode: oxa_proto::Mode) -> Option<&std::path::Path> {
-        if unsandboxed(self.os_sandbox, &self.switch) && mode != oxa_proto::Mode::Plan {
+        if (self.switch.full() || !self.os_sandbox) && mode != oxa_proto::Mode::Plan {
             None
         } else {
             self.inner.file_scratch_dir(mode)
@@ -284,12 +285,5 @@ impl Sandbox for FileView {
         live: &mut dyn FnMut(&[u8]),
     ) -> ExecResult {
         self.inner.run_with_stdin(s, stdin, c, live)
-    }
-}
-
-fn unsandboxed(os_sandbox: Option<bool>, switch: &YoloSwitch) -> bool {
-    match os_sandbox {
-        Some(on) => !on,
-        None => switch.full(),
     }
 }

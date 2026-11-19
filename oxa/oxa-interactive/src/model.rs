@@ -379,11 +379,7 @@ impl StatusModel {
             return None;
         }
         if self.autonomy == oxa_proto::Autonomy::Yolo {
-            return Some(if self.os_sandbox {
-                "sandbox · no prompts"
-            } else {
-                "no sandbox · no prompts"
-            });
+            return Some("no sandbox · no prompts");
         }
         if self.os_sandbox {
             Some("sandbox")
