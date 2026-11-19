@@ -3,7 +3,7 @@
 //! call these, so the surfaces cannot disagree.
 
 use crate::descriptor::{descriptors, Control, Descriptor, MapKind, Options, Unit};
-use crate::schema::{find_key, kind_matches, kind_name};
+use crate::schema::{find_key, kind_matches, kind_name, Kind};
 use crate::{Settings, Source, FALSE_WORDS, TRUE_WORDS};
 use serde_json::Value;
 
@@ -116,6 +116,14 @@ fn human_ms(ms: u64) -> String {
 /// Parses text typed in the TUI or sent by a form. Empty text is `null` (unset). Kind and range
 /// are checked by [`check`].
 pub fn parse_input(d: &Descriptor, text: &str) -> Result<Value, String> {
+    // A text setting may start with spaces (an indent) or end with one: keep them as typed.
+    if matches!(d.control, Control::Text) {
+        return Ok(if text.is_empty() {
+            Value::Null
+        } else {
+            Value::String(text.to_string())
+        });
+    }
     let t = text.trim();
     if t.is_empty() {
         return Ok(Value::Null);
@@ -136,7 +144,14 @@ pub fn parse_input(d: &Descriptor, text: &str) -> Result<Value, String> {
             .and_then(serde_json::Number::from_f64)
             .map(Value::Number)
             .ok_or_else(|| "enter a number".to_string()),
-        Control::Choice | Control::Model | Control::Theme | Control::Text | Control::Path => {
+        Control::Text => Ok(Value::String(text.to_string())),
+        Control::Choice | Control::Model | Control::Theme | Control::Path => {
+            // A boolean choice (`quietStartup`) stores a JSON boolean, not the word.
+            let boolean = matches!(find_key(d.key).map(|def| def.kind), Some(Kind::Bool | Kind::Any))
+                && matches!(lower.as_str(), "true" | "false");
+            if boolean {
+                return Ok(Value::Bool(lower == "true"));
+            }
             Ok(Value::String(t.to_string()))
         }
         Control::List(_) | Control::MultiSelect(_) => Ok(Value::Array(
@@ -327,6 +342,19 @@ mod tests {
         let s = d("k", Group::Lead, "", "L", "h").text().secret();
         assert_eq!(display_value(&s, &json!("sk-abc123")), "****");
         assert_eq!(display_value(&s, &Value::Null), "unset");
+    }
+
+    /// A boolean choice stores a JSON boolean, and a text setting keeps its whitespace.
+    #[test]
+    fn parse_input_keeps_booleans_and_text_whitespace() {
+        let quiet =
+            d("quietStartup", Group::Display, "", "Quiet", "h").choice(&[("true", "yes"), ("false", "no")]);
+        assert_eq!(parse_input(&quiet, "true"), Ok(json!(true)));
+        assert_eq!(parse_input(&quiet, "False"), Ok(json!(false)));
+        let indent = d("markdown.codeBlockIndent", Group::Display, "", "Indent", "h").text();
+        assert_eq!(parse_input(&indent, "  "), Ok(json!("  ")));
+        assert_eq!(parse_input(&indent, "x "), Ok(json!("x ")));
+        assert_eq!(parse_input(&indent, ""), Ok(Value::Null));
     }
 
     #[test]
