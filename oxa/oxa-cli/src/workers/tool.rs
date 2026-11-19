@@ -319,30 +319,6 @@ fn live_state(rec: &WorkerRecord, sessions_dir: &Path) -> WorkerState {
     registry::state(rec, status.as_ref(), alive)
 }
 
-/// How many log lines a finished worker's probe text carries.
-const LOG_LINES: usize = 20;
-/// The most bytes read from the end of a log for its tail.
-const LOG_TAIL_BYTES: u64 = 64 * 1024;
-
-/// The last [`LOG_LINES`] lines of the log at `path` (empty text when it cannot be read).
-fn log_tail(path: &Path) -> String {
-    use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut file) = fs::File::open(path) else {
-        return String::new();
-    };
-    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let start = len.saturating_sub(LOG_TAIL_BYTES);
-    let mut bytes = Vec::new();
-    if file.seek(SeekFrom::Start(start)).is_err()
-        || file.take(LOG_TAIL_BYTES).read_to_end(&mut bytes).is_err()
-    {
-        return String::new();
-    }
-    let text = String::from_utf8_lossy(&bytes);
-    let lines: Vec<&str> = text.lines().collect();
-    lines[lines.len().saturating_sub(LOG_LINES)..].join("\n")
-}
-
 fn is_live(rec: &WorkerRecord, sessions_dir: &Path) -> bool {
     matches!(
         live_state(rec, sessions_dir),
@@ -693,7 +669,8 @@ impl WorkerCore {
     }
 
     /// The wait probe for `worker {name}`: `Ok(None)` while the worker runs, `Ok(Some(text))` when
-    /// it finished or its process is gone, with the outcome and the last 20 log lines.
+    /// it finished or its process is gone. Only the typed outcome is returned: child logs can
+    /// contain credentials or other private diagnostics and must not become parent-model input.
     pub fn probe(&self, args: &Value) -> Result<Option<String>, String> {
         let name = str_arg(args, "name").unwrap_or("");
         let (parent, _) = self.session();
@@ -712,10 +689,7 @@ impl WorkerCore {
             WorkerState::Stopped => "stopped".to_string(),
             _ => return Ok(None),
         };
-        Ok(Some(format!(
-            "worker {name}: {outcome}\nlast {LOG_LINES} log lines:\n{}",
-            log_tail(&rec.log_file)
-        )))
+        Ok(Some(format!("worker {name}: {outcome}")))
     }
 
     /// Relaunch each dead, unfinished worker of the parent session (once per session id in this
@@ -746,7 +720,7 @@ impl WorkerCore {
         let table_mode = (*lock(&self.table_mode)).unwrap_or(Mode::Plan);
         let mut live = records.iter().filter(|r| is_live(r, &self.sessions_dir)).count();
         let mut notices = Vec::new();
-        let mut launched: Vec<u32> = Vec::new();
+        let mut launched: Vec<(u32, String)> = Vec::new();
         for rec in records.iter_mut() {
             let alive = PathBuf::from(format!("/proc/{}", rec.pid)).exists();
             if !resume::due(rec, &live_state(rec, &self.sessions_dir), alive) {
@@ -797,12 +771,14 @@ impl WorkerCore {
                 Ok(pgid) => {
                     rec.pid = pgid;
                     rec.pgid = pgid;
-                    launched.push(pgid);
-                    live += 1;
-                    notices.push(format!(
-                        "worker {}: relaunched with --continue={}",
-                        rec.name, rec.session_id
+                    launched.push((
+                        pgid,
+                        format!(
+                            "worker {}: relaunched with --continue={}",
+                            rec.name, rec.session_id
+                        ),
                     ));
+                    live += 1;
                     notices.extend(notice);
                 }
                 Err(e) => notices.push(format!("worker {}: cannot relaunch: {e}", rec.name)),
@@ -811,12 +787,24 @@ impl WorkerCore {
         if !launched.is_empty() {
             if let Err(e) = registry::save(&self.agent_dir, &parent, &records) {
                 // Not recorded, so nothing would ever stop them: stop them now, as `start` does.
-                for pgid in &launched {
-                    let _ = self.supervisor.stop(*pgid);
+                let mut retained = Vec::new();
+                for (pgid, _) in &launched {
+                    if let Err(error) = self.supervisor.stop(*pgid) {
+                        retained.push(format!("{pgid} ({error})"));
+                    }
                 }
-                notices.push(format!(
-                    "worker: relaunched workers were not recorded and were stopped: {e}"
-                ));
+                if retained.is_empty() {
+                    notices.push(format!(
+                        "worker: relaunched workers were not recorded and were stopped: {e}"
+                    ));
+                } else {
+                    notices.push(format!(
+                        "worker: registry update failed ({e}); cleanup failed for process groups {}; they remain tracked by this session and require another stop attempt",
+                        retained.join(", ")
+                    ));
+                }
+            } else {
+                notices.extend(launched.into_iter().map(|(_, notice)| notice));
             }
         }
         notices
@@ -1313,7 +1301,7 @@ mod tests {
             hooks.poll_event("pr", &args, std::time::Duration::from_secs(5)),
             None
         );
-        // The worker reports its outcome; the log has more than 20 lines.
+        // The worker reports its typed outcome without forwarding its potentially secret log.
         let status = json!({"session_id": rec.session_id, "pid": rec.pid, "phase": "finished",
             "outcome": {"type": "oxa_result", "outcome": "done", "error_class": null, "exit_code": 0}});
         fs::create_dir_all(rec.status_file.parent().unwrap()).unwrap();
@@ -1326,8 +1314,7 @@ mod tests {
             .unwrap()
             .expect("done");
         assert!(text.contains("outcome done"), "{text}");
-        assert!(text.contains("line 25") && text.contains("line 6"), "{text}");
-        assert!(!text.contains("line 5\n") && !text.ends_with("line 5"), "{text}");
+        assert!(!text.contains("line 25") && !text.contains("log lines"), "{text}");
         // An unknown worker is a probe failure.
         assert!(hooks
             .poll_event(
