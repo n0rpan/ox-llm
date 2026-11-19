@@ -319,10 +319,14 @@ fn select_for(
         || !scope.is_empty() && scope.iter().all(|pattern| requests_go(pattern)),
         requests_go,
     );
-    // A scope enables Go only when it names a Go model: an owner (or project) scope of local
-    // models must not open the gateway beside a native local engine.
+    // A scope enables Go only when the local catalog does not own it: an owner (or project)
+    // scope of local aliases must not open the gateway beside a native local engine, while a
+    // Go pattern (or a wildcard no local alias owns) may.
     let scope_go = !scope.is_empty()
-        && routing::scope_includes_go(scope, endpoint, cloud_models.iter().cloned().collect());
+        && !(native_local
+            && scope
+                .iter()
+                .all(|pattern| routing::catalog_owns(pattern, endpoint, local_models.iter().cloned())));
     // A keyed catalog is available for inventory and owner model selection.
     // A project default alone cannot choose a new cloud transport.
     let native_cloud = explicit_cloud
