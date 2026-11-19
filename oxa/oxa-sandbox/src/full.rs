@@ -95,10 +95,13 @@ impl FullAccess {
         spec
     }
 
-    /// Exec hooks are trusted project configuration, but retain their dedicated no-network,
-    /// private-path sandbox independently of the interactive bash policy.
+    /// Exec hooks are trusted project configuration. They keep their dedicated no-network,
+    /// private-path sandbox independently of the interactive bash policy, except under yolo:
+    /// the owner standard is "yolo = no sandbox anywhere", so while the switch is at yolo
+    /// (startup or live, attended or a yolo-started unattended worker) they run with the
+    /// user's rights like bash, keeping the offline / `oxa.sandbox.net = off` rules.
     pub fn hook_sandbox(full: &Arc<FullAccess>) -> Arc<dyn Sandbox> {
-        full.inner.clone()
+        Arc::new(HookView { full: full.clone() })
     }
 
     /// Reuse the process's switch and launch settings with the session's own sandbox.
@@ -270,6 +273,19 @@ impl Sandbox for FullAccess {
         if self.os_sandbox.load(Ordering::Relaxed) {
             return self.inner.run_with_stdin(s, stdin, c, live);
         }
+        self.run_host_stdin(s, stdin, c, live)
+    }
+}
+
+impl FullAccess {
+    /// `run_with_stdin` with the user's rights, under the owner's network rules.
+    fn run_host_stdin(
+        &self,
+        s: &ExecSpec,
+        stdin: &[u8],
+        c: &CancelToken,
+        live: &mut dyn FnMut(&[u8]),
+    ) -> ExecResult {
         if !self.no_net() {
             let spec = self.host_spec(s);
             if let Some(net) = &self.host_net {
@@ -343,5 +359,80 @@ impl Sandbox for FileView {
         live: &mut dyn FnMut(&[u8]),
     ) -> ExecResult {
         self.inner.run_with_stdin(s, stdin, c, live)
+    }
+}
+
+/// The exec hooks' sandbox (`FullAccess::hook_sandbox`): the wrapped sandbox, except while
+/// the switch is at yolo, when hooks run unsandboxed like bash.
+struct HookView {
+    full: Arc<FullAccess>,
+}
+
+impl HookView {
+    fn yolo(&self) -> bool {
+        self.full.switch.full()
+    }
+}
+
+impl Sandbox for HookView {
+    fn check(&self) -> Result<(), OxaError> {
+        if self.yolo() {
+            return Ok(());
+        }
+        self.full.inner.check()
+    }
+    fn network(&self) -> bool {
+        if self.yolo() {
+            return !self.full.no_net();
+        }
+        self.full.inner.network()
+    }
+    fn network_enforced(&self) -> bool {
+        self.full.inner.network_enforced()
+    }
+    fn persistence_notice(&self) -> Option<&str> {
+        if self.yolo() {
+            return None;
+        }
+        self.full.inner.persistence_notice()
+    }
+    fn home(&self) -> Option<&std::path::Path> {
+        self.full.inner.home()
+    }
+    fn scratch_dir(&self) -> Option<&std::path::Path> {
+        self.full.inner.scratch_dir()
+    }
+    fn preserves_host_path(&self, path: &std::path::Path) -> bool {
+        self.full.inner.preserves_host_path(path)
+    }
+    fn bwrap_args(&self, s: &ExecSpec) -> Vec<String> {
+        if self.yolo() && s.writable {
+            return Vec::new();
+        }
+        self.full.inner.bwrap_args(s)
+    }
+    fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+        if self.yolo() && s.writable {
+            return self.full.run_full(s, c, live, true);
+        }
+        self.full.inner.run(s, c, live)
+    }
+    fn run_streaming(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+        if self.yolo() && s.writable {
+            return self.full.run_full(s, c, live, false);
+        }
+        self.full.inner.run_streaming(s, c, live)
+    }
+    fn run_with_stdin(
+        &self,
+        s: &ExecSpec,
+        stdin: &[u8],
+        c: &CancelToken,
+        live: &mut dyn FnMut(&[u8]),
+    ) -> ExecResult {
+        if self.yolo() && s.writable {
+            return self.full.run_host_stdin(s, stdin, c, live);
+        }
+        self.full.inner.run_with_stdin(s, stdin, c, live)
     }
 }

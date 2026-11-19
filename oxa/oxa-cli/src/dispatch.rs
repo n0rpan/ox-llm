@@ -1203,7 +1203,8 @@ fn prepare(
         .with_os_sandbox(os_sandbox)
         .with_host_controls(layout, host_net),
     );
-    // Exec hooks keep their dedicated sandbox independently of interactive bash.
+    // Exec hooks keep their dedicated sandbox independently of interactive bash, except under
+    // yolo (owner standard: no sandbox anywhere), see `FullAccess::hook_sandbox`.
     let hook_sandbox = oxa_sandbox::FullAccess::hook_sandbox(&bash_sandbox);
     let hook_inputs = HookInputs {
         args: a,

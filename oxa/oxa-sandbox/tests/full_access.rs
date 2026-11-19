@@ -340,8 +340,8 @@ fn no_os_sandbox_plan_spec_uses_bwrap_when_present() {
     assert_eq!(r.exit, None, "plan must fail closed without bwrap");
 }
 
-/// The raw FullAccess stdin path remains host-side when selected directly. Dispatch does not
-/// give this view to exec hooks; `hook_sandbox` is tested below.
+/// The raw FullAccess stdin path remains host-side when selected directly. Dispatch gives
+/// exec hooks `hook_sandbox` instead, tested below.
 #[test]
 fn no_os_sandbox_hooks_run_unsandboxed() {
     let env = TestEnv::new();
@@ -458,41 +458,77 @@ fn no_os_sandbox_persistence_notice_is_none() {
     assert_eq!(on.persistence_notice(), Some("scratch"));
 }
 
-/// #1512 S3: with the OS sandbox on, the exec hooks' sandbox keeps the inline (`run`) path
-/// wrapped too when yolo is switched on live, including when interactive bash opted out.
+/// #1512 S3: outside yolo, the exec hooks' sandbox keeps both hook paths (inline `run` and
+/// `run_with_stdin`) wrapped, whether or not interactive bash opted out of the OS sandbox.
 #[test]
-fn os_sandbox_on_inline_hooks_stay_sandboxed_under_yolo() {
+fn non_yolo_hooks_stay_sandboxed() {
     let env = TestEnv::new();
     std::fs::create_dir_all(env.work()).unwrap();
-    let target = env.root().join("inline-hook-wrote-os-on.txt");
+    let target = env.root().join("inline-hook-wrote-standard.txt");
     let switch = YoloSwitch::new(Autonomy::Standard);
-    let full = Arc::new(FullAccess::new(
-        Arc::new(NoSandbox),
-        switch.clone(),
-        "",
-        env.home(),
-        false,
-        false,
-    ));
-    let hooks = FullAccess::hook_sandbox(&full);
-    switch.set_level(Autonomy::Yolo);
-    let s = spec(&env, format!("echo x > '{}'", target.display()), true);
-    let r = hooks.run(&s, &CancelToken::new(), &mut |_| {});
-    assert_eq!(r.exit, None, "{}", String::from_utf8_lossy(&r.output));
+    for os_sandbox in [true, false] {
+        let full = Arc::new(
+            FullAccess::new(Arc::new(NoSandbox), switch.clone(), "", env.home(), false, false)
+                .with_os_sandbox(os_sandbox),
+        );
+        let hooks = FullAccess::hook_sandbox(&full);
+        let s = spec(&env, format!("echo x > '{}'", target.display()), true);
+        let r = hooks.run(&s, &CancelToken::new(), &mut |_| {});
+        assert_eq!(r.exit, None, "{}", String::from_utf8_lossy(&r.output));
+        let s = spec(&env, format!("cat > '{}'", target.display()), true);
+        let r = hooks.run_with_stdin(&s, b"payload", &CancelToken::new(), &mut |_| {});
+        assert_eq!(r.exit, None, "{}", String::from_utf8_lossy(&r.output));
+        assert!(
+            !target.exists(),
+            "a non-yolo hook ran outside its sandbox (os_sandbox = {os_sandbox})"
+        );
+    }
+}
+
+/// Owner standard: yolo = no sandbox anywhere. A yolo-started unattended worker keeps the OS
+/// sandbox for bash's policy (`require_os_sandbox`), but its exec hooks run with the user's
+/// rights on both hook paths; a non-yolo unattended run keeps them sandboxed.
+#[test]
+fn yolo_started_worker_hooks_run_unsandboxed() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work()).unwrap();
+    let inline = env.root().join("yolo-worker-inline-hook.txt");
+    let piped = env.root().join("yolo-worker-stdin-hook.txt");
+    let run_hooks = |level: Autonomy| {
+        let full = Arc::new(FullAccess::new(
+            Arc::new(NoSandbox),
+            YoloSwitch::new(level),
+            "",
+            env.home(),
+            false,
+            false,
+        ));
+        // The unattended goal path (`dispatch.rs`) requires the OS sandbox.
+        full.require_os_sandbox();
+        let hooks = FullAccess::hook_sandbox(&full);
+        if level == Autonomy::Yolo {
+            assert!(hooks.check().is_ok(), "yolo hooks need no bwrap");
+        }
+        let s = spec(&env, format!("echo x > '{}'", inline.display()), true);
+        let a = hooks.run(&s, &CancelToken::new(), &mut |_| {});
+        let s = spec(&env, format!("cat > '{}'", piped.display()), true);
+        let b = hooks.run_with_stdin(&s, b"payload", &CancelToken::new(), &mut |_| {});
+        (a, b)
+    };
+
+    let (a, b) = run_hooks(Autonomy::Standard);
+    assert_eq!(a.exit, None, "{}", String::from_utf8_lossy(&a.output));
+    assert_eq!(b.exit, None, "{}", String::from_utf8_lossy(&b.output));
     assert!(
-        !target.exists(),
-        "an inline hook ran outside the wrapped sandbox under yolo"
+        !inline.exists() && !piped.exists(),
+        "non-yolo unattended hooks left the sandbox"
     );
 
-    let off = Arc::new(
-        FullAccess::new(Arc::new(NoSandbox), switch, "", env.home(), false, false).with_os_sandbox(false),
-    );
-    let hooks = FullAccess::hook_sandbox(&off);
-    let r = hooks.run(&s, &CancelToken::new(), &mut |_| {});
-    assert_eq!(r.exit, None, "{}", String::from_utf8_lossy(&r.output));
-    assert!(
-        !target.exists(),
-        "interactive bash policy must not release exec hooks from their sandbox"
-    );
-    let _ = std::fs::remove_file(&target);
+    let (a, b) = run_hooks(Autonomy::Yolo);
+    assert_eq!(a.exit, Some(0), "{}", String::from_utf8_lossy(&a.output));
+    assert_eq!(b.exit, Some(0), "{}", String::from_utf8_lossy(&b.output));
+    assert_eq!(std::fs::read_to_string(&inline).unwrap(), "x\n");
+    assert_eq!(std::fs::read_to_string(&piped).unwrap(), "payload");
+    let _ = std::fs::remove_file(&inline);
+    let _ = std::fs::remove_file(&piped);
 }

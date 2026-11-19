@@ -17,7 +17,8 @@ maintainer, who says in the PR when a hardware check is needed.
 - Preserve file-tool denials for private paths. Attended runs execute model bash with the user's
   rights by default and dangerous commands ask; `--sandbox` opts them into bwrap. Unattended runs
   keep bwrap by default. Explicit owner-selected yolo disables the permission floor. Exec hooks
-  retain their dedicated sandbox in every mode.
+  retain their dedicated sandbox in every mode except yolo (no sandbox anywhere, also for
+  yolo-started unattended workers).
   Headless runs pursuing a goal and ownerless RPC count as unattended. Host bash uses
   a cleared toolchain environment and keeps GitHub output redaction.
   Off Linux there is no OS sandbox (owner policy, #1512): in-process guards stay, bash gets the
