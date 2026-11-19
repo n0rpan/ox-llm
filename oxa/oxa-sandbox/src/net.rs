@@ -335,7 +335,7 @@ mod tests {
         let r = sb.run(&sp, &CancelToken::new(), &mut |_| {});
         assert_eq!(
             String::from_utf8_lossy(&r.output),
-            "token [redacted] as gh auth token\n"
+            "token [redacted] as gh auth token"
         );
         let env = inner.0.lock().unwrap().pop().unwrap();
         assert!(
@@ -546,13 +546,15 @@ mod tests {
     }
 
     #[test]
-    fn streaming_offline_refuses_token_and_network() {
+    fn streaming_offline_refuses_injection_but_still_masks() {
         let (env, live, _) = stream(true, true, 5);
         assert!(
             !env.iter().any(|(k, _)| k == "GH_TOKEN" || k == "GH_HOST"),
             "{env:?}"
         );
-        assert_eq!(live, "x SYNTH_BG_TOKEN_9 y");
+        // `gh auth token` reads its config locally: the output mask stays on with the
+        // network off; only the `GH_TOKEN` injection is refused.
+        assert_eq!(live, "x [redacted] y");
     }
 
     fn spec(net: bool) -> ExecSpec {
