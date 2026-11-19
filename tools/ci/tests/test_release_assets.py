@@ -41,7 +41,7 @@ class ReleaseAssets(unittest.TestCase):
         self.assertLess(publish.index('compare/$GITHUB_SHA...main'), publish.index('gh release create dev'))
         self.assertLess(publish.index('compare/$(cat dev-sha)...$GITHUB_SHA'), publish.index('gh release upload dev'))
         self.assertIn('uses: ./.github/workflows/release-build.yml', dev)
-        self.assertIn('needs: [version, build]', dev)
+        self.assertIn('needs: [version, build, macos]', dev)
         self.assertNotIn('contents: write', dev.split('  publish:', 1)[0])
         self.assertIn("github.ref == 'refs/heads/main'", dev.split('  publish:', 1)[1])
         self.assertIn('for arch in aarch64 x86_64', dev)
@@ -51,6 +51,25 @@ class ReleaseAssets(unittest.TestCase):
         self.assertTrue(all(' dev ' in line for line in release_commands))
         self.assertEqual(dev.count('--prerelease --latest=false'), 2)
         self.assertIn('actions/attest-build-provenance@', dev)
+
+    def test_dev_macos_asset_is_optional_checksummed_and_mach_o(self):
+        dev = (W / 'dev-build.yml').read_text()
+        macos = dev.split('  macos:', 1)[1].split('  publish:', 1)[0]
+        publish = dev.split('  publish:', 1)[1]
+        # A red macOS build never blocks the Linux release.
+        self.assertIn('continue-on-error: true', macos)
+        self.assertIn('runs-on: macos-15', macos)
+        self.assertIn('bash packaging/macos/stage.sh', macos)
+        self.assertIn('!cancelled() && needs.build.result == \'success\'', publish)
+        self.assertNotIn('needs.macos.result', publish)
+        # The archive is in dist/ before the checksums and the attestation cover it.
+        copy = publish.index('macos-dist/ox-llm-$VERSION-macos-arm64.tar.gz')
+        self.assertLess(copy, publish.index('sha256sum -- * > SHA256SUMS'))
+        self.assertLess(copy, publish.index('actions/attest-build-provenance@'))
+        # ELF is required for Linux archives; Mach-O only for the macOS one.
+        self.assertIn("path.name.endswith('-macos-arm64.tar.gz')", publish)
+        self.assertIn("b'\\xcf\\xfa\\xed\\xfe'", publish)
+        self.assertIn("b'\\x7fELF'", publish)
 
     def test_release_environment_resolves_itself_when_sourced_by_a_workflow(self):
         with tempfile.TemporaryDirectory() as temporary:

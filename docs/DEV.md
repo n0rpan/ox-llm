@@ -21,3 +21,16 @@ No stable prefix, service or PATH is changed. The executable is at
 `~/.local/state/oxc/dev-builds/default/bin/oxa` and its receipt is at
 `~/.local/state/oxc/dev-builds/default/current/receipt.json`. The current and one
 previous build are retained.
+
+## macOS arm64 dev build
+
+`dev-build.yml` also builds `oxa` natively on `macos-15` and publishes
+`ox-llm-<version>-macos-arm64.tar.gz` (`usr/bin/oxa` only, staged by
+`packaging/macos/stage.sh`) to the same `dev` prerelease. It is covered by the same
+`SHA256SUMS-<version>` and provenance. The job is best effort: if it fails, the Linux
+assets still publish and the Mac asset is simply absent.
+
+On an Apple Silicon Mac, with `gh` installed (`brew install gh`; used only to verify
+provenance), run `bash tools/lab/dev-update-macos.sh` from a checkout. The install is at
+`~/.local/state/oxc/dev-builds/default/bin/oxa`. There is no OS sandbox on macOS yet: oxa
+says so, and runs commands with your full user rights.
