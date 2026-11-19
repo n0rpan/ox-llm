@@ -183,6 +183,10 @@ impl CoreHost {
         let (reply, answer) = mpsc::channel();
         let tx = self.tx.lock().unwrap_or_else(|p| p.into_inner());
         tx.send(HostRequest { action, reply }).map_err(|_| gone())?;
+        drop(tx);
+        // The request is in the channel before the wake: a front end that waits instead of
+        // polling (see `Handle::set_attention_waker`) finds it when it serves the host.
+        self.shared.gate.attention.notify();
         Ok(answer)
     }
 
@@ -1296,6 +1300,7 @@ fn notice(sink: &mut dyn EventSink, level: Level, text: impl Into<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Handle;
     use oxa_config::{Dirs, Settings};
     use oxa_proto::{Engine, FrozenPrefix, HeadlessUi, Mode, ThinkingLevel, VecSink};
     use oxa_sandbox::NoSandbox;
@@ -1404,6 +1409,41 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         handle.join().expect("caller thread")
+    }
+
+    /// O-386: a host request posted while the front end waits (instead of polling) wakes it, so
+    /// the request is served at once and not at the front end's next idle tick. The request is
+    /// in the channel before the wake, so a woken front end finds it.
+    #[test]
+    fn a_posted_host_request_wakes_the_front_end() {
+        let f = fixture();
+        let fired = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = fired.clone();
+        let handle = Handle {
+            shared: f.st.shared.clone(),
+        };
+        handle.set_attention_waker(Arc::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        }));
+        f.host
+            .call(HostAction::SendMessage {
+                custom_type: "test".into(),
+                content: "wake".into(),
+                display: true,
+                details: Value::Null,
+                deliver: Delivery::FollowUp,
+                trigger_turn: true,
+            })
+            .expect("accepted");
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            1,
+            "the posted request wakes the front end"
+        );
+        assert!(
+            f.rx.try_recv().is_ok(),
+            "the request is in the channel the front end serves"
+        );
     }
 
     /// #554 / #557: host writes use the same truthful unattended refusal as built-in tools,

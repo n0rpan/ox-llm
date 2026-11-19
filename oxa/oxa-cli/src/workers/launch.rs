@@ -6,8 +6,10 @@
 //!   wider than its parent: a requested mode above the parent's ceiling is clamped to it and a
 //!   notice is returned. `yolo` is passed only when the parent runs in yolo and `yolo` was asked
 //!   for explicitly; a worker without a requested mode runs in `workspace`.
-//! * **Worktrees.** `git -c core.hooksPath=/dev/null worktree add -b agent/<name>
-//!   <repo-parent>/.oxa-worktrees/<repo>/<name> <base>`: hooks are off for the checkout.
+//! * **Worktrees.** `git -c core.hooksPath=/dev/null worktree add --no-checkout -b agent/<name>
+//!   <repo-parent>/.oxa-worktrees/<repo>/<name> <base>`: metadata only on the host, so no hook,
+//!   smudge filter or `.gitattributes` callback of the repository runs outside the sandbox. The
+//!   caller materializes the files inside the sandbox (`oxa work --supervise`, checkout).
 //! * **Child env.** `OXA_WORKER_DEPTH=1`; the parent's `OXA_TRUST_PROJECT` and `OXA_SESSION_HINT`
 //!   are not inherited.
 //! * **Integration boundary (K4).** `child_env` copies whatever GitHub token variables the caller
@@ -69,6 +71,8 @@ pub struct WorkerSpec {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Narrowing {
     pub offline: bool,
+    /// `--no-context-files`: do not rediscover repository instructions in the worker checkout.
+    pub no_context_files: bool,
     /// `--tools <list>`: the allowlist.
     pub tools: Option<Vec<String>>,
     pub no_tools: bool,
@@ -196,12 +200,15 @@ pub(super) fn scope_args(
     if let Some(tools) = &n.tools {
         let allowed: Vec<&str> = tools.iter().map(String::as_str).collect();
         for tool in &allowed {
-            check_value("allowed tool", tool)?;
+            // `--tools=<list>` is one argument, so a `+name` / `-name` patch entry (CLI-027)
+            // cannot read as a flag; the name itself still may not start with a dash.
+            check_value("allowed tool", tool.strip_prefix(['+', '-']).unwrap_or(tool))?;
         }
         args.push(format!("--tools={}", allowed.join(",")));
     }
     for (on, flag) in [
         (n.offline, "--offline"),
+        (n.no_context_files, "--no-context-files"),
         (n.no_tools, "--no-tools"),
         (n.no_builtin_tools, "--no-builtin-tools"),
         (n.no_mcp, "--no-mcp"),
@@ -244,6 +251,7 @@ pub fn worktree_argv(repo: &Path, name: &str, base: &str) -> Vec<Vec<String>> {
         "core.hooksPath=/dev/null".into(),
         "worktree".into(),
         "add".into(),
+        "--no-checkout".into(),
         "-b".into(),
         format!("agent/{name}"),
         path,
@@ -433,6 +441,7 @@ mod tests {
         let mut spec = spec(None);
         spec.narrowing = Narrowing {
             offline: true,
+            no_context_files: true,
             tools: Some(vec!["read".into(), "grep".into()]),
             no_tools: true,
             no_builtin_tools: true,
@@ -443,6 +452,7 @@ mod tests {
         let (args, _) = child_argv(&spec, Mode::Workspace, Autonomy::Standard).unwrap();
         for expected in [
             "--offline",
+            "--no-context-files",
             "--tools=read,grep",
             "--no-tools",
             "--no-builtin-tools",
@@ -465,6 +475,13 @@ mod tests {
         assert!(!plain
             .iter()
             .any(|a| a.starts_with("--no-") || a == "--offline" || a.starts_with("--tools")));
+        // A `-name` / `+name` patch selection is forwarded in the one-argument form.
+        spec.narrowing.tools = Some(vec!["-ls".into(), "+codemode".into()]);
+        let (patched, _) = child_argv(&spec, Mode::Workspace, Autonomy::Standard).expect("patch selection");
+        assert!(
+            patched.contains(&"--tools=-ls,+codemode".to_string()),
+            "{patched:?}"
+        );
         // A value that would read as a flag is refused.
         spec.narrowing.tools = Some(vec!["--yolo".into()]);
         assert!(child_argv(&spec, Mode::Workspace, Autonomy::Standard).is_err());
@@ -481,6 +498,7 @@ mod tests {
                 "core.hooksPath=/dev/null",
                 "worktree",
                 "add",
+                "--no-checkout",
                 "-b",
                 "agent/k2-slice",
                 "/home/u/Work/.oxa-worktrees/ox-llm/k2-slice",

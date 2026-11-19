@@ -156,9 +156,7 @@ fn names(list: &[&str]) -> Vec<String> {
 }
 
 fn all_tools() -> Vec<String> {
-    names(&[
-        "ask", "bash", "edit", "find", "grep", "ls", "read", "worker", "write",
-    ])
+    names(&["ask", "bash", "edit", "find", "grep", "ls", "read", "write"])
 }
 
 /// Every `.jsonl` file below the agent directory's `sessions`.
@@ -945,9 +943,7 @@ fn cli_027() {
     let minus = tool_names(&reqs[1]);
     assert!(!minus.contains(&"ls".to_string()) && minus.contains(&"read".to_string()));
     // Lead defaults include ask plus subagent where O-146 offers it.
-    let default_minus_ls = names(&[
-        "ask", "bash", "edit", "find", "grep", "read", "subagent", "worker", "write",
-    ]);
+    let default_minus_ls = names(&["ask", "bash", "edit", "find", "grep", "read", "subagent", "write"]);
     assert_eq!(minus, default_minus_ls, "the default selection minus ls");
     // Below 32K subagent is not offered, but lead-only ask remains.
     let small = fake_opts(
@@ -964,7 +960,7 @@ fn cli_027() {
     ));
     assert_eq!(
         tool_names(&small.requests()[0]),
-        names(&["ask", "bash", "edit", "find", "grep", "read", "worker", "write"]),
+        names(&["ask", "bash", "edit", "find", "grep", "read", "write"]),
         "the default selection minus ls on a model below 32K"
     );
     let mixed = run(&env, &server.url(), &["-p", "-t", "read,+ls", "x"]);

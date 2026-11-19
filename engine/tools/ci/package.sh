@@ -20,12 +20,12 @@ cp "$ROOT/vendor/ggml-flash/LICENSE" "$STAGE/licenses/ggml-flash-LICENSE"
 cp "$ROOT/third_party/stable-diffusion.cpp-LICENSE" "$STAGE/licenses/"
 feat=()
 [ "$FEATURES" = "-" ] || feat=(--features "$FEATURES")
-(cd "$ROOT" && python3 -I tools/ci/crate_licenses.py "$PKG" "$STAGE/licenses/crates" "${feat[@]}")
+(cd "$ROOT" && tools/ci/crate_licenses.sh "$PKG" "$STAGE/licenses/crates" ${feat[@]+"${feat[@]}"})
 
 flash_note=""
 if [[ "$FEATURES" =~ (^|[[:space:],])(server/)?flash($|[[:space:],]) ]]; then
   : "${OXF_GGML_PROD:?Flash packaging requires the pinned source licence bundle}"
-  python3 -I "$ROOT/tools/ci/flash_licenses.py" package "$OXF_GGML_PROD" "$STAGE"
+  "$ROOT/tools/ci/flash_licenses.sh" package "$OXF_GGML_PROD" "$STAGE"
   cp "$OXF_GGML_PROD/MANIFEST" "$STAGE/GGML-PROD-MANIFEST.txt"
   flash_note="
 Flash links the production ggml static libraries, built in the same CI run from the
@@ -69,8 +69,8 @@ places, so outputs can differ from those builds in the last bits of floating-poi
 (the "reorder" class of the project's correctness rules). The model-free tests and the Flash
 selftest pass on it; it has not been through the lab's model-based identity or quality gates.
 
-Usage, models and benchmarks: README.md of this repository and its oxc/ directory
-https://github.com/n0rpan/ox-llm/tree/main/oxc. No model weights are included.
+Usage, models and benchmarks: README.md of this repository
+https://github.com/n0rpan/ox-llm. No model weights are included.
 
 Verify this download:
   sha256sum -c SHA256SUMS                        (from the same release)

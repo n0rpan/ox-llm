@@ -201,6 +201,18 @@ pub fn run_print_outcome(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<RunOutcome, OxaError> {
+    run_print_prompts(session, prompts, out, err, None)
+}
+
+/// [`run_print_outcome`] over an optional session inbox, told to reconsider retained
+/// messages once each prompt has drained the queue (as the RPC and TUI owners do).
+fn run_print_prompts(
+    session: &mut Session,
+    prompts: Vec<(String, Vec<Part>)>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    inbox: Option<&oxa_session::Inbox>,
+) -> Result<RunOutcome, OxaError> {
     let mut sink = PrintSink {
         out,
         err,
@@ -216,6 +228,7 @@ pub fn run_print_outcome(
         io_error: None,
     };
     let mut ui = HeadlessUi::default();
+    let retry = inbox.map(|inbox| inbox.retry_handle());
     let mut failed = false;
     let mut outcome = RunOutcome::NothingToDo;
     let n = prompts.len();
@@ -233,7 +246,14 @@ pub fn run_print_outcome(
         sink.is_last_prompt = i + 1 == n;
         let _ = session.take_outcome();
         let before = session.inner().tree.leaf().to_string();
-        let lines = match prompt_or_command(session, text, parts, &mut sink, &mut ui) {
+        let result = {
+            let mut drain = DrainRetry {
+                inner: &mut sink,
+                retry: retry.clone(),
+            };
+            prompt_or_command(session, text, parts, &mut drain, &mut ui)
+        };
+        let lines = match result {
             Ok(Message::Prompt | Message::Extension) => None,
             Ok(Message::Command(lines)) => Some(lines),
             Err(e) => {
@@ -267,6 +287,9 @@ pub fn run_print_outcome(
         // included); print only says why on stderr.
         let settled = session.take_outcome();
         outcome.include(settled);
+        if let Some(inbox) = inbox {
+            inbox.retry();
+        }
         // goal_done can settle the run on the tool-call message itself. Its
         // content is final only after goal, schema and project checks succeed.
         if sink.is_last_prompt
@@ -347,8 +370,10 @@ pub fn run_print_outcome_with_inbox(
     agent_dir: &std::path::Path,
     headless_inbox_enabled: bool,
 ) -> Result<RunOutcome, OxaError> {
-    let _inbox = headless_inbox(session, agent_dir, headless_inbox_enabled, err);
-    run_print_outcome(session, prompts, out, err)
+    let inbox = headless_inbox(session, agent_dir, headless_inbox_enabled, err);
+    let result = run_print_prompts(session, prompts, out, err, inbox.as_ref());
+    let restored = restore_undelivered(session, inbox, agent_dir);
+    restored.and(result)
 }
 
 /// `--mode json` with the plain session inbox: [`run_json_outcome`] with [`headless_inbox`]
@@ -362,8 +387,62 @@ pub fn run_json_outcome_with_inbox(
     headless_inbox_enabled: bool,
 ) -> Result<RunOutcome, OxaError> {
     write_json_header(session, out)?;
-    let _inbox = headless_inbox(session, agent_dir, headless_inbox_enabled, err);
-    run_json_prompts(session, prompts, out, err)
+    let inbox = headless_inbox(session, agent_dir, headless_inbox_enabled, err);
+    let result = run_json_prompts(session, prompts, out, err, inbox.as_ref());
+    let restored = restore_undelivered(session, inbox, agent_dir);
+    restored.and(result)
+}
+
+/// The run is over: stop the watcher, then give back every message it admitted that no turn
+/// consumed (one admitted after the last queue drain) as an inbox file, so the next owner of
+/// the session takes it. A failed durable handoff fails the run instead of reporting success.
+fn restore_undelivered(
+    session: &Session,
+    inbox: Option<oxa_session::Inbox>,
+    agent_dir: &std::path::Path,
+) -> Result<(), OxaError> {
+    let Some(inbox) = inbox else { return Ok(()) };
+    drop(inbox);
+    let active = session.state().session_id;
+    // A message admitted before the run switched sessions goes back to the inbox it came from.
+    let undelivered = session
+        .handle()
+        .dequeue()
+        .into_iter()
+        .map(|text| (active.clone(), text))
+        .chain(
+            session
+                .handle()
+                .take_inactive_inbox()
+                .into_iter()
+                .flat_map(|(id, texts)| texts.into_iter().map(move |text| (id.clone(), text))),
+        );
+    let mut failed = None;
+    for (id, text) in undelivered {
+        if let Err(error) = oxa_session::send_inbox(agent_dir, &id, &text) {
+            failed.get_or_insert_with(|| {
+                OxaError::io("cannot restore an undelivered session inbox message", &error)
+            });
+        }
+    }
+    failed.map_or(Ok(()), Err)
+}
+
+/// Reports every queue drain to the owner's watcher, so a message refused at capacity is
+/// admitted during the run that drained the queue. A goal run is one prompt, so the per-prompt
+/// retry alone would leave it on disk until the process exits.
+struct DrainRetry<'a> {
+    inner: &'a mut dyn EventSink,
+    retry: Option<oxa_session::InboxRetry>,
+}
+
+impl EventSink for DrainRetry<'_> {
+    fn emit(&mut self, e: &AgentEvent) {
+        if let (Some(retry), AgentEvent::QueueUpdate { .. }) = (&self.retry, e) {
+            retry.retry();
+        }
+        self.inner.emit(e);
+    }
 }
 
 /// The session inbox of a headless run, watched until the returned watcher is dropped. It is
@@ -410,7 +489,7 @@ pub fn run_json_outcome(
     err: &mut dyn Write,
 ) -> Result<RunOutcome, OxaError> {
     write_json_header(session, out)?;
-    run_json_prompts(session, prompts, out, err)
+    run_json_prompts(session, prompts, out, err, None)
 }
 
 fn write_json_header(session: &Session, out: &mut dyn Write) -> Result<(), OxaError> {
@@ -472,7 +551,7 @@ pub fn run_json_outcome_with_steering_authority(
         true
     })
     .map_err(|error| OxaError::io("cannot mount managed steering inbox", &error))?;
-    run_json_prompts(session, prompts, &mut writer, err)
+    run_json_prompts(session, prompts, &mut writer, err, None)
 }
 
 #[cfg(all(
@@ -510,8 +589,10 @@ fn run_json_prompts(
     prompts: Vec<(String, Vec<Part>)>,
     out: &mut dyn Write,
     err: &mut dyn Write,
+    inbox: Option<&oxa_session::Inbox>,
 ) -> Result<RunOutcome, OxaError> {
     let mut ui = HeadlessUi::default();
+    let retry = inbox.map(|inbox| inbox.retry_handle());
     let mut sink = JsonSink {
         out: &mut *out,
         error: None,
@@ -524,7 +605,14 @@ fn run_json_prompts(
         }
         let _ = session.take_outcome();
         let before = session.inner().tree.leaf().to_string();
-        match prompt_or_command(session, text, parts, &mut sink, &mut ui) {
+        let result = {
+            let mut drain = DrainRetry {
+                inner: &mut sink,
+                retry: retry.clone(),
+            };
+            prompt_or_command(session, text, parts, &mut drain, &mut ui)
+        };
+        match result {
             Ok(Message::Prompt | Message::Extension) => {}
             // A command's lines are `notice` records (info).
             Ok(Message::Command(mut lines)) => {
@@ -547,6 +635,9 @@ fn run_json_prompts(
         // before classifying a concurrent output failure.
         let settled = session.take_outcome();
         outcome.include(settled);
+        if let Some(inbox) = inbox {
+            inbox.retry();
+        }
         if let Some(e) = sink.error.take() {
             let _ = writeln!(err, "{e}");
             outcome.include(RunOutcome::from_error(&e));
@@ -762,6 +853,7 @@ mod tests {
     fn assistant(text: &str) -> EventMessage {
         EventMessage {
             msg: oxa_proto::WireMsg {
+                images: Vec::new(),
                 role: Role::Assistant,
                 content: Some(text.to_string()),
                 reasoning: None,

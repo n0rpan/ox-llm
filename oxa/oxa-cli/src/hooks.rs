@@ -25,7 +25,7 @@
 //!   (through the same serial gate: one child at a time).
 //! * **builtin:worker** (K5a): the `worker` tool (start, list, stop background workers in their
 //!   own git worktrees). Not built in a worker child (`OXA_WORKER_DEPTH`); `oxa.workers.enabled`
-//!   false switches it off. Shut down with the process (`Hooks::shutdown` stops the workers).
+//!   false (user settings only) switches it off. Shut down with the process (`Hooks::shutdown` stops the workers).
 //! * **codemode**: off by default, because its tool is part of the frozen prefix (W3). It is
 //!   on with the setting `codemode.enabled`, or when an enabled MCP server has codemode tools
 //!   (`McpManager::wants_codemode`, pi's `autoEnableCodemode`); `tool_search` / `call_tool`
@@ -243,8 +243,7 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
 
     // ---- builtin:worker (K5a) ----
     // Off in a worker child (`OXA_WORKER_DEPTH` set, even to an empty value: `Env::get` treats
-    // empty as unset, so the pairs are read directly) and when `oxa.workers.enabled` is false (user settings only: a project file cannot change the
-    // worker settings).
+    // empty as unset, so the pairs are read directly) and when `oxa.workers.enabled` is false (user settings only).
     let worker_depth = i
         .env
         .pairs()
@@ -252,13 +251,24 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
         .rev()
         .find(|(k, _)| k == worker_tool::ENV_WORKER_DEPTH)
         .map(|(_, v)| v.as_str());
-    if worker_tool::built(worker_depth, worker_tool::enabled(i.settings)) {
+    if !i.args.no_session && worker_tool::built(worker_depth, worker_tool::enabled(i.settings)) {
         match std::env::current_exe() {
             Ok(bin) => {
                 // The supervisor needs a trusted `kill` from the host PATH (never a project shim),
                 // so no worker starts without a way to stop it.
                 let host_path = std::ffi::OsString::from(i.env.get("PATH").unwrap_or(""));
-                match crate::workers::proc::start(i.settings, &host_path, i.cwd, &i.dirs.home) {
+                let project = i
+                    .cwd
+                    .canonicalize()
+                    .ok()
+                    .and_then(|cwd| {
+                        cwd.ancestors()
+                            .filter(|path| path.join(".git").exists())
+                            .last()
+                            .map(Path::to_path_buf)
+                    })
+                    .unwrap_or_else(|| i.cwd.to_path_buf());
+                match crate::workers::proc::start(i.settings, &host_path, &project, &i.dirs.home) {
                     Ok(supervisor) => {
                         // The worker child writes its sessions where this session does.
                         let sessions_dir = i
@@ -275,6 +285,7 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
                             session_dir: (sessions_dir != default_sessions).then(|| sessions_dir.clone()),
                             narrowing: crate::workers::launch::Narrowing {
                                 offline: i.args.offline,
+                                no_context_files: i.args.no_context_files,
                                 tools: i.args.tools.clone(),
                                 no_tools: i.args.no_tools,
                                 no_builtin_tools: i.args.no_builtin_tools,
@@ -283,10 +294,15 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
                                 no_extensions: i.args.no_extensions,
                             },
                         };
+                        let agent_dir = if i.dirs.agent_dir.is_absolute() {
+                            i.dirs.agent_dir.clone()
+                        } else {
+                            i.cwd.join(&i.dirs.agent_dir)
+                        };
                         let workers = Arc::new(WorkerHooks::new(WorkerConfig {
                             oxa_bin: bin,
                             cwd: i.cwd.to_path_buf(),
-                            agent_dir: i.dirs.agent_dir.clone(),
+                            agent_dir,
                             max: worker_tool::max_workers(i.settings),
                             supervisor,
                             sessions_dir,
