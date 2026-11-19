@@ -96,6 +96,11 @@ pub enum Flow {
     Stop,
 }
 
+/// Called once with the status and the lowercased headers.
+pub type HeadFn<'a> = dyn FnMut(u16, &[(String, String)]) -> Flow + 'a;
+/// Called for each body chunk as it arrives.
+pub type BytesFn<'a> = dyn FnMut(&[u8]) -> Flow + 'a;
+
 pub struct Client {
     inner: reqwest::Client,
 }
@@ -170,8 +175,8 @@ impl Client {
         &self,
         req: &Request<'_>,
         cancel: &CancelToken,
-        on_head: &mut dyn FnMut(u16, &[(String, String)]) -> Flow,
-        on_bytes: &mut dyn FnMut(&[u8]) -> Flow,
+        on_head: &mut HeadFn<'_>,
+        on_bytes: &mut BytesFn<'_>,
     ) -> Result<(), Error> {
         self.pump(req, cancel, &mut |ev| {
             Ok(match ev {
