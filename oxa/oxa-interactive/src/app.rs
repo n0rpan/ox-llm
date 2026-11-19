@@ -1202,11 +1202,10 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
         AgentEvent::ThinkingLevelChanged { level } => vm.status.thinking = Some(*level),
         AgentEvent::SessionInfoChanged { name } => vm.status.session_name = name.clone(),
         AgentEvent::BashExecutionUpdate { delta, .. } => {
-            if let Some(Block::Bash {
-                output,
-                running: true,
-                ..
-            }) = vm.blocks.last_mut()
+            if let Some(Block::Bash { output, .. }) = vm
+                .blocks
+                .iter_mut()
+                .find(|block| matches!(block, Block::Bash { running: true, .. }))
             {
                 append_live_bash(output, delta);
             }
@@ -1299,9 +1298,10 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
                     running: false,
                     expanded: false,
                 };
-                let live = vm.blocks.iter().rposition(
-                    |b| matches!(b, Block::Bash { running: true, command: c, .. } if c == command),
-                );
+                let live = vm
+                    .blocks
+                    .iter()
+                    .position(|b| matches!(b, Block::Bash { running: true, command: c, .. } if c == command));
                 match live {
                     Some(i) => vm.blocks[i] = done,
                     None => vm.blocks.push(done),
