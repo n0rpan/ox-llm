@@ -114,12 +114,13 @@ impl ResultFacts {
             add(&mut state.turns, 1);
         }
         if self.usage_log.is_some() {
-            state.pending.push_back(Call {
+            let call = Call {
                 kind,
                 request: state.requests.unwrap_or(0),
                 turn: state.turns.unwrap_or(0),
                 started: Instant::now(),
-            });
+            };
+            state.pending.push_back(call);
         }
         if let Some(active) = state.active.checked_add(1) {
             state.active = active;
