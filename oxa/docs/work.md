@@ -56,15 +56,21 @@ no GitHub reads while disabled. Findings take precedence over failed required CI
 conflicts, missing nonempty `Removes:` lines for source removal, then green draft
 promotion and reviewed readiness. Pending CI or unknown mergeability waits; other
 PRs wait for review. Release-pinned PRs sort first, then action priority and number.
-Active leases and a per-PR UTC daily attempt cap
-make entries ineligible without hiding them. Snapshot adapters must supply the
+Active leases make entries ineligible without hiding them. Snapshot adapters must supply the
 complete open set, current-head required checks, unresolved findings, source-removal
 facts and review-policy approval for the PR's own diff. Callers
 select private repository-scoped claim storage outside worker-writable binds.
 `Claims::open(root).snapshot()` supplies durable state for `Board::read`.
 Before dispatch, `claim(entry, policy, holder, now, ttl)` atomically reserves a
 lease and an attempt under a kernel file lock, then syncs state before returning.
-The default daily cap is three; a crash after reservation consumes an attempt.
+`budget_pools.limits.max_attempts_per_day` sets the daily attempt threshold as an
+advisory default of three per UTC day, and zero warns immediately: a claim past the
+threshold is still reserved, and `oxa work board --refill` prints one operator
+warning on stderr with the attempt ordinal, the threshold and its UTC window. The
+attempt count never fences admission: `enabled: false`, the pause marker, wait
+actions, stale-head and protected-configuration checks, active leases and Claims
+failures still do.
+A crash after reservation consumes an attempt.
 `release(number, lease)` fences stale workers and never refunds attempts. Active
 leases survive UTC midnight; corrupt state, or state that vanished after a PR's
 first reservation, fails closed. Execution, fresh-head validation and CLI polling

@@ -188,6 +188,7 @@ mod tests {
             lease: None,
             attempts_today: 0,
             eligible: true,
+            evidence_incomplete: None,
         };
         let lease = claims
             .claim_idle_for(
