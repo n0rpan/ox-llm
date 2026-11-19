@@ -126,7 +126,7 @@ fn listing_page(connection: &Value) -> Result<(&Vec<Value>, u64, bool), String> 
 }
 impl QueryError {
     fn retryable(&self) -> bool {
-        matches!(self, Self::Http(502 | 503 | 504))
+        matches!(self, Self::Http(502..=504))
     }
     fn message(self) -> String {
         match self {
@@ -341,6 +341,88 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// Complete one pull request's changed-file connection with bounded
+/// continuations. Every page is the same bounded slice and is held to the same
+/// rules: it must belong to the pinned head and total, carry at most the 100
+/// nodes it asks for, list distinct paths, and progress only while evidence
+/// remains. The pages must cover the whole connection; anything else fails the
+/// snapshot before it is published, exactly as an incomplete first page did.
+fn complete_changed_files(
+    reader: &Reader,
+    number: u64,
+    head: &str,
+    row: &mut Value,
+) -> Result<(), SnapshotError> {
+    let files = &row["files"];
+    let total = files["totalCount"].as_u64().ok_or("missing changed-file count")?;
+    let mut page = files.clone();
+    let mut rows: Vec<Value> = Vec::new();
+    let mut paths = BTreeSet::new();
+    let mut cursors = BTreeSet::new();
+    loop {
+        let more = page["pageInfo"]["hasNextPage"]
+            .as_bool()
+            .ok_or("missing changed-file pagination")?;
+        let batch = page["nodes"].as_array().ok_or("missing changed-file page")?;
+        if batch.len() > 100 {
+            return Err(SnapshotError::from("invalid changed-file page"));
+        }
+        for file in batch {
+            if !paths.insert(changed_path(file)?.to_owned()) {
+                return Err(SnapshotError::from("duplicate changed file"));
+            }
+        }
+        rows.extend(batch.iter().cloned());
+        if rows.len() as u64 > total {
+            return Err(SnapshotError::from("invalid changed-file page"));
+        }
+        if !more {
+            break;
+        }
+        let cursor = page["pageInfo"]["endCursor"]
+            .as_str()
+            .filter(|cursor| !cursor.is_empty())
+            .ok_or("missing changed-file cursor")?
+            .to_owned();
+        if batch.is_empty() || rows.len() as u64 >= total || !cursors.insert(cursor.clone()) {
+            return Err(SnapshotError::from("invalid changed-file pagination progress"));
+        }
+        let (next, _) = reader
+            .query(&format!(
+                "p{number}:pullRequest(number:{number}){{number headRefOid \
+                 files(first:100,after:{cursor:?}){{totalCount pageInfo{{hasNextPage endCursor}} \
+                 nodes{{path deletions}}}}}}"
+            ))
+            .map_err(|error| SnapshotError::from(error.message()))?;
+        let continuation = &next[format!("p{number}")];
+        let (seen, seen_head) = identity(continuation)?;
+        if seen != number {
+            return Err(SnapshotError::from("mismatched PR number"));
+        }
+        if seen_head != head || continuation["files"]["totalCount"].as_u64() != Some(total) {
+            return Err(SnapshotError::Changed("mismatched PR details; retry later"));
+        }
+        page = continuation["files"].clone();
+    }
+    if rows.len() as u64 != total {
+        return Err(SnapshotError::from("incomplete changed-file listing"));
+    }
+    row["files"] = serde_json::json!({
+        "totalCount": total,
+        "pageInfo": {"hasNextPage": false, "endCursor": Value::Null},
+        "nodes": rows,
+    });
+    Ok(())
+}
+
+/// One changed-file node's path, which must be usable evidence on its own.
+fn changed_path(file: &Value) -> Result<&str, String> {
+    file["path"]
+        .as_str()
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| "missing changed-file path".to_string())
+}
+
 fn nodes(value: &Value) -> Result<&Vec<Value>, String> {
     let rows = value["nodes"].as_array().ok_or("missing GitHub connection")?;
     if value["totalCount"].as_u64() != Some(rows.len() as u64) {
@@ -413,7 +495,7 @@ impl Reader<'_> {
                 r#"p{n}:pullRequest(number:{n}){{number headRefOid baseRefName state body isDraft reviewDecision mergeable mergeStateStatus {review_fields}
                 baseRef{{refUpdateRule{{requiredStatusCheckContexts}} rules(first:100){{totalCount nodes{{type parameters{{... on RequiredStatusChecksParameters{{requiredStatusChecks{{context}}}}}}}}}}}}
                 labels(first:100){{totalCount nodes{{name}}}}
-                files(first:100){{totalCount nodes{{path deletions}}}}
+                files(first:100){{totalCount pageInfo{{hasNextPage endCursor}} nodes{{path deletions}}}}
                 reviewThreads(first:100){{totalCount nodes{{isResolved}}}}
                 latestOpinionatedReviews(first:100,writersOnly:true){{totalCount nodes{{state commit{{oid}} author{{login}}}}}}
                 commits(last:1){{nodes{{commit{{statusCheckRollup{{contexts(first:100){{totalCount nodes{{
@@ -422,7 +504,7 @@ impl Reader<'_> {
                 }}}}}}}}}}}}}}"#
                 ));
             }
-            let (page, _) = match self.query(&fields) {
+            let (mut page, _) = match self.query(&fields) {
                 Ok(page) => page,
                 Err(error) if error.retryable() && end - offset > 1 => {
                     size = (end - offset) / 2;
@@ -437,14 +519,19 @@ impl Reader<'_> {
                 ));
             }
             for n in &numbers[offset..end] {
-                let row = &page[format!("p{n}")];
-                let (number, _) = identity(row)?;
-                if number != *n {
-                    return Err(SnapshotError::from("mismatched PR number"));
-                }
-                if row["headRefOid"] != expected[n]["headRefOid"] {
-                    return Err(SnapshotError::Changed("mismatched PR details; retry later"));
-                }
+                let head = {
+                    let row = &page[format!("p{n}")];
+                    let (number, head) = identity(row)?;
+                    if number != *n {
+                        return Err(SnapshotError::from("mismatched PR number"));
+                    }
+                    if row["headRefOid"] != expected[n]["headRefOid"] {
+                        return Err(SnapshotError::Changed("mismatched PR details; retry later"));
+                    }
+                    head.to_owned()
+                };
+                let row = &mut page[format!("p{n}")];
+                complete_changed_files(self, *n, &head, row)?;
                 details[format!("p{n}")] = row.clone();
             }
             offset = end;
