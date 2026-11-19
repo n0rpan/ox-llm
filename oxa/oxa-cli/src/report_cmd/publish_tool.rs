@@ -29,6 +29,7 @@ use oxa_proto::{
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::cell::RefCell;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -113,7 +114,10 @@ not count. Takes the draft path the draft command printed."
         Ok(real)
     }
 
-    fn publish(&self, args: &Value, ui: &mut dyn Ui) -> ToolOutput {
+    fn publish(&self, args: &Value, mode: oxa_proto::Mode, ui: &mut dyn Ui) -> ToolOutput {
+        if mode == oxa_proto::Mode::Plan {
+            return ToolOutput::error("report_publish is unavailable in plan mode (read-only)");
+        }
         let draft = match self.draft_path(args) {
             Ok(path) => path,
             Err(message) => return ToolOutput::error(message),
@@ -131,11 +135,13 @@ not count. Takes the draft path the draft command printed."
         let shown = out.clone();
         let unattended_ok = self.yolo.full();
         let awaiting = std::cell::Cell::new(false);
+        let final_preview = RefCell::new(String::new());
         let mut confirm = |question: &str| {
             let text = dialog_text(question, &shown.text());
             let digest = format!("{:x}", Sha256::digest(text.as_bytes()));
             // Yolo posts without asking; the result is shown below.
             if unattended_ok {
+                *final_preview.borrow_mut() = text;
                 return Some(true);
             }
             // The owner already typed `yes` for exactly this text.
@@ -179,7 +185,14 @@ not count. Takes the draft path the draft command printed."
             return ToolOutput::ok(text);
         }
         match result {
-            Ok(Submission::Created(_) | Submission::Commented(_)) => ToolOutput::ok(text),
+            Ok(Submission::Created(_) | Submission::Commented(_)) => {
+                let preview = final_preview.into_inner();
+                if preview.is_empty() {
+                    ToolOutput::ok(text)
+                } else {
+                    ToolOutput::ok(format!("{preview}\n\n{text}"))
+                }
+            }
             Ok(Submission::Local(reason)) => ToolOutput::ok(format!(
                 "{text}\nNot posted by the owner's decision or a check ({reason}). Do not retry unless the owner asks."
             )),
@@ -193,7 +206,10 @@ impl Tool for PublishTool {
     fn spec(&self) -> &ToolSpec {
         &self.spec
     }
-    fn access(&self, args: &Value, _: &ToolCtx) -> Result<Vec<Access>, String> {
+    fn access(&self, args: &Value, ctx: &ToolCtx) -> Result<Vec<Access>, String> {
+        if ctx.mode == oxa_proto::Mode::Plan {
+            return Err("report_publish is unavailable in plan mode (read-only)".into());
+        }
         // No permission to grant or to skip: the owner's dialog is the only approval, so no
         // mode, yolo switch or remembered grant can stand in for it.
         self.draft_path(args).map(|_| Vec::new())
@@ -201,12 +217,18 @@ impl Tool for PublishTool {
     fn needs_ui(&self) -> bool {
         true
     }
-    fn run(&self, args: &Value, _: &ToolCtx, _: &mut dyn FnMut(&str)) -> ToolOutput {
+    fn run(&self, args: &Value, ctx: &ToolCtx, _: &mut dyn FnMut(&str)) -> ToolOutput {
         let mut headless = oxa_proto::HeadlessUi::default();
-        self.publish(args, &mut headless)
+        self.publish(args, ctx.mode, &mut headless)
     }
-    fn run_with_ui(&self, args: &Value, _: &ToolCtx, _: &mut dyn FnMut(&str), ui: &mut dyn Ui) -> ToolOutput {
-        self.publish(args, ui)
+    fn run_with_ui(
+        &self,
+        args: &Value,
+        ctx: &ToolCtx,
+        _: &mut dyn FnMut(&str),
+        ui: &mut dyn Ui,
+    ) -> ToolOutput {
+        self.publish(args, ctx.mode, ui)
     }
 }
 
@@ -219,10 +241,10 @@ pub(crate) fn dialog_text(question: &str, shown: &str) -> String {
         .map_or(question, |at| &question[..at])
         .trim_end();
     if question.starts_with("Post this issue publicly to") {
-        let preview = shown
-            .rfind("Repository: ")
-            .map_or(shown, |at| &shown[at..])
-            .trim_end();
+        // `shown` is a fresh writer owned by this invocation, so its complete contents are the
+        // structured preview printed by submit_record.  Searching it for a marker would let an
+        // untrusted title/body containing that marker hide preceding publication text.
+        let preview = shown.trim_end();
         return format!("{question}\n\n{preview}");
     }
     question.to_string()
@@ -279,6 +301,16 @@ mod tests {
         assert_eq!(
             text,
             "Post this issue publicly to o/r?\n\nRepository: o/r\nTitle: T\n\nBody line"
+        );
+    }
+
+    #[test]
+    fn plain_question_does_not_treat_body_text_as_a_preview_delimiter() {
+        let shown = "Repository: o/r\nTitle: T\n\nFirst line\nRepository: harmless example\n";
+        let text = dialog_text("Post this issue publicly to o/r? Type yes to post: ", shown);
+        assert!(
+            text.contains("Title: T\n\nFirst line\nRepository: harmless example"),
+            "{text}"
         );
     }
 }

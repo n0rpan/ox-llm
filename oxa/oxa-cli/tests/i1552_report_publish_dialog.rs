@@ -25,17 +25,35 @@ impl Sandbox for NoSandbox {
 }
 
 fn context<'a>(env: &'a TestEnv, cancel: &'a CancelToken) -> ToolCtx<'a> {
+    context_in_mode(env, cancel, Mode::Workspace)
+}
+
+fn context_in_mode<'a>(env: &'a TestEnv, cancel: &'a CancelToken, mode: Mode) -> ToolCtx<'a> {
     ToolCtx {
         cwd: env.root(),
         spill_dir: env.root(),
         sandbox: &NoSandbox,
-        mode: Mode::Workspace,
+        mode,
         cancel,
         env: &[],
         tune: Default::default(),
         checked: &[],
         hidden: None,
     }
+}
+
+#[test]
+fn plan_mode_refuses_before_preview_or_network() {
+    let _guard = guard();
+    let f = fixture();
+    let cancel = CancelToken::default();
+    let ctx = context_in_mode(&f.env, &cancel, Mode::Plan);
+    let mut owner = Owner::new(Some(true), f.marker.clone());
+    assert!(tool(&f).access(&args(&f), &ctx).is_err());
+    let out = tool(&f).run_with_ui(&args(&f), &ctx, &mut |_| {}, &mut owner);
+    assert!(out.is_error && out.text.contains("plan mode"), "{}", out.text);
+    assert!(owner.shown.is_empty());
+    assert_eq!(gh_calls(&f), "");
 }
 
 /// A person at the dialog: records what was shown, answers like a key press would.

@@ -681,7 +681,10 @@ impl Built {
                     crate::PublishTool::new(
                         self.dirs.clone(),
                         env.clone(),
-                        self.settings.clone(),
+                        // Reporting is an owner-consent boundary.  In particular, a trusted
+                        // project's settings must not enable semantic dedupe (and thereby send
+                        // report text to GitHub and the judge) on the owner's behalf.
+                        Settings::load(&self.dirs, &self.cwd, false),
                         self.cwd.clone(),
                     )
                     .with_yolo(self.yolo.clone()),
