@@ -309,7 +309,7 @@ ledger records the full amount and admission continues.
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `externalEditor` | string | `null` | editor for Ctrl+G; wins over `VISUAL` and `EDITOR` |
-| `oxa.reportIssue.repo` | string | `null` | repository for `oxa report-issue submit`, as `OWNER/NAME` |
+| `oxa.reportIssue.repo` | string | `null` (reports go to `oxstack/ox-llm`) | repository for `oxa report-issue submit`, as `OWNER/NAME`; a value that is not `OWNER/NAME` (for example `off`) turns reporting off |
 | `oxa.reportIssue.semanticDedupe` | bool | `false` | verify dogfood reports against current main and search open and recently closed issues before posting. Matching reports become comments. New issues are limited to one per task and three per worker per UTC day |
 | `oxa.builtinSkills` | bool | `true` | include the skills built into oxa |
 | `oxa.share.remoteModels` | string list | `[]` | user-only allowlist of metered cloud aliases eligible for explicit LAN sharing; personal subscriptions are excluded |

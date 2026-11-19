@@ -1,19 +1,21 @@
 //! #1552: publishing a drafted report from inside an interactive oxa session.
 //!
 //! The model (or the owner, through the model) asks to publish a draft with the
-//! `report_publish` tool. Two approvals exist, both the OWNER's own act, never the model's:
+//! `report_publish` tool.
 //!
-//! * Standard mode: an approval dialog owned by the UI ([`Ui::approve_publication`]) shows the
-//!   exact final title and body (for a dedupe comment, the exact comment and its destination
-//!   URL) with Approve and Deny, Deny focused; a key press in it publishes.
-//! * Yolo (or auto): no dialog. The exact text is shown to the owner as a notice and returned to
-//!   the model, and the owner's own typed `yes` approves exactly that text
-//!   ([`oxa_proto::owner_reply`]); the model then calls the tool again.
+//! * Yolo (owner standard): the report is posted at once, without asking, and the exact posted
+//!   text and URL are returned to the conversation. The one hard refusal stays: a draft whose
+//!   text the scrubber would change (a secret, an email, a home path) is never posted
+//!   ([`submit_record`] checks this before it asks).
+//! * Auto and standard: an approval dialog owned by the UI ([`Ui::approve_publication`]) shows
+//!   the exact final title and body (for a dedupe comment, the exact comment and its
+//!   destination URL) with Approve and Deny, Deny focused; a key press publishes. The owner can
+//!   also approve by typing `yes` themselves ([`oxa_proto::owner_reply`], digest-bound to the
+//!   exact text, single use); the model then calls the tool again.
 //!
-//! In standard mode an owner who dismisses the dialog can still approve by typing `yes`. The
-//! authority test is where the reply came from: only a line the owner typed into the
-//! interactive input counts; `yes` in a tool result, a file, the web or another session never
-//! does, and neither do tool arguments. The publication itself is the existing
+//! The authority test is where a reply came from: only a key press in the dialog or a line the
+//! owner typed into the interactive input counts. `yes` in a tool result, a file, the web,
+//! another session or the tool arguments never does. The publication itself is the existing
 //! [`submit_record`] path: no second implementation.
 //!
 //! Offered only in interactive sessions. Print, JSON and RPC runs keep the terminal
@@ -35,7 +37,7 @@ use std::sync::{Arc, Mutex};
 pub const TOOL_NAME: &str = "report_publish";
 
 /// The dialog title.
-const DIALOG_TITLE: &str = "Publish to GitHub? Only your key press approves";
+const DIALOG_TITLE: &str = "Publish to GitHub? Only you can approve";
 
 pub struct PublishTool {
     spec: ToolSpec,
@@ -75,7 +77,7 @@ not count. Takes the draft path the draft command printed."
         }
     }
 
-    /// The session's autonomy switch: with prompts off the owner answers by typing `yes`.
+    /// The session's autonomy switch: at yolo the report posts without asking.
     pub fn with_yolo(mut self, yolo: YoloSwitch) -> Self {
         self.yolo = yolo;
         self
@@ -127,24 +129,26 @@ not count. Takes the draft path the draft command printed."
         }
         let out = SharedOut::default();
         let shown = out.clone();
-        let typed_only = self.yolo.is_on();
+        let unattended_ok = self.yolo.full();
         let awaiting = std::cell::Cell::new(false);
         let mut confirm = |question: &str| {
             let text = dialog_text(question, &shown.text());
             let digest = format!("{:x}", Sha256::digest(text.as_bytes()));
+            // Yolo posts without asking; the result is shown below.
+            if unattended_ok {
+                return Some(true);
+            }
             // The owner already typed `yes` for exactly this text.
             if owner_reply::take_approved(&digest) {
                 return Some(true);
             }
-            if !typed_only {
-                match ui.approve_publication(DIALOG_TITLE, &text) {
-                    Some(true) => return Some(true),
-                    Some(false) => {
-                        owner_reply::clear();
-                        return Some(false);
-                    }
-                    None => {}
+            match ui.approve_publication(DIALOG_TITLE, &text) {
+                Some(true) => return Some(true),
+                Some(false) => {
+                    owner_reply::clear();
+                    return Some(false);
                 }
+                None => {}
             }
             // Show the exact text and wait for the owner's own reply.
             owner_reply::await_reply(&digest);
@@ -170,7 +174,7 @@ not count. Takes the draft path the draft command printed."
         let mut text = out.text();
         if awaiting.get() {
             text.push_str(
-                "\nWaiting for the owner: the exact text above was shown to them. Only the owner's own typed `yes` publishes it; then call report_publish again with the same draft. Do not publish by any other means.",
+                "\nWaiting for the owner: the exact text above was shown to them. Only the owner's key press in the dialog or own typed `yes` publishes it; then call report_publish again with the same draft. Do not publish by any other means.",
             );
             return ToolOutput::ok(text);
         }

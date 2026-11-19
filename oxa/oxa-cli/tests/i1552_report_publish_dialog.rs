@@ -254,16 +254,16 @@ fn dialog_key_press_publishes() {
 }
 
 #[test]
-fn yolo_owner_typed_yes_publishes_exact_preview() {
+fn auto_owner_typed_yes_posts() {
     let _guard = guard();
     let f = fixture();
     let cancel = CancelToken::default();
-    let t = tool(&f).with_yolo(YoloSwitch::new(Autonomy::Yolo));
+    // Auto still asks: the dialog is shown; dismissing it leaves the exact text waiting.
+    let t = tool(&f).with_yolo(YoloSwitch::new(Autonomy::Auto));
     let cx = context(&f.env, &cancel);
-    // Yolo: no dialog; the exact text is shown to the owner and the call waits.
-    let mut owner = Owner::new(Some(true), f.marker.clone());
+    let mut owner = Owner::new(None, f.marker.clone());
     let out = t.run_with_ui(&args(&f), &cx, &mut |_| {}, &mut owner);
-    assert!(owner.shown.is_empty(), "yolo shows no dialog");
+    assert_eq!(owner.shown.len(), 1, "auto shows the dialog");
     let notice = owner.notices.join("\n");
     assert!(
         notice.contains("Title: Engine stalls") && notice.contains("It stalls."),
@@ -271,29 +271,28 @@ fn yolo_owner_typed_yes_publishes_exact_preview() {
     );
     assert!(out.text.contains("Waiting for the owner"), "{}", out.text);
     assert_eq!(gh_calls(&f), "", "nothing before the owner replies");
-    // The owner types yes; the next call publishes exactly that text, once.
+    // The owner types yes; the next call posts exactly that text, once.
     owner_reply::typed("yes");
     let out = t.run_with_ui(&args(&f), &cx, &mut |_| {}, &mut owner);
     assert!(out.text.contains("Posted: "), "{}", out.text);
-    let calls = gh_calls(&f);
-    assert!(calls.contains("--title Engine stalls"), "{calls}");
+    assert!(gh_calls(&f).contains("--title Engine stalls"));
     let out = t.run_with_ui(&args(&f), &cx, &mut |_| {}, &mut owner);
     assert!(
         out.text.contains("Waiting for the owner"),
-        "approval is single use: {}",
+        "single use: {}",
         out.text
     );
     assert_eq!(gh_calls(&f).lines().count(), 1);
 }
 
 #[test]
-fn text_from_a_tool_result_saying_yes_never_publishes() {
+fn text_from_a_tool_result_saying_yes_never_posts() {
     let _guard = guard();
     let f = fixture();
     let cancel = CancelToken::default();
-    let t = tool(&f).with_yolo(YoloSwitch::new(Autonomy::Yolo));
+    let t = tool(&f).with_yolo(YoloSwitch::new(Autonomy::Auto));
     let cx = context(&f.env, &cancel);
-    let mut owner = Owner::new(Some(true), f.marker.clone());
+    let mut owner = Owner::new(None, f.marker.clone());
     // A `yes` before any preview was shown approves nothing later.
     owner_reply::typed("yes");
     t.run_with_ui(&args(&f), &cx, &mut |_| {}, &mut owner);
@@ -313,6 +312,51 @@ fn text_from_a_tool_result_saying_yes_never_publishes() {
 }
 
 #[test]
+fn yolo_posts_without_asking_and_shows_result() {
+    let _guard = guard();
+    let f = fixture();
+    let cancel = CancelToken::default();
+    let yolo = YoloSwitch::new(Autonomy::Yolo);
+    let t = tool(&f).with_yolo(yolo.clone());
+    let cx = context(&f.env, &cancel);
+    // The tool names no access, so no policy has anything to approve or to skip.
+    assert!(t.access(&args(&f), &cx).unwrap().is_empty());
+    let mut owner = Owner::new(None, f.marker.clone());
+    let out = t.run_with_ui(&args(&f), &cx, &mut |_| {}, &mut owner);
+    assert!(owner.shown.is_empty(), "yolo asks nothing");
+    assert!(
+        out.text.contains("Title: Engine stalls") && out.text.contains("It stalls."),
+        "the exact text is shown: {}",
+        out.text
+    );
+    assert!(
+        out.text
+            .contains("Posted: https://github.com/owner/ox-llm/issues/7"),
+        "{}",
+        out.text
+    );
+    assert!(gh_calls(&f).contains("--title Engine stalls"));
+}
+
+#[test]
+fn yolo_still_refuses_a_secret() {
+    let _guard = guard();
+    let f = fixture();
+    let cancel = CancelToken::default();
+    std::fs::write(
+        &f.draft,
+        "Title: Key leak\n\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----\n",
+    )
+    .unwrap();
+    let t = tool(&f).with_yolo(YoloSwitch::new(Autonomy::Yolo));
+    let mut owner = Owner::new(None, f.marker.clone());
+    let out = t.run_with_ui(&args(&f), &context(&f.env, &cancel), &mut |_| {}, &mut owner);
+    assert!(out.text.contains("Not posted"), "{}", out.text);
+    assert!(owner.shown.is_empty());
+    assert_eq!(gh_calls(&f), "", "a secret is never posted, not even in yolo");
+}
+
+#[test]
 fn only_drafts_from_the_drafts_directory_are_published() {
     let _guard = guard();
     let f = fixture();
@@ -328,36 +372,6 @@ fn only_drafts_from_the_drafts_directory_are_published() {
     assert!(out.is_error, "{}", out.text);
     assert!(owner.shown.is_empty());
     assert_eq!(gh_calls(&f), "");
-}
-
-#[test]
-fn yolo_still_asks_before_publishing() {
-    // The owner still decides in yolo: no auto-approval, the tool names no access to approve.
-    let _guard = guard();
-    let f = fixture();
-    let cancel = CancelToken::default();
-    let yolo = YoloSwitch::new(Autonomy::Yolo);
-    assert!(yolo.is_on());
-    let policy = oxa_perm::ModePolicy::new().with_yolo(yolo.clone());
-    let t = tool(&f).with_yolo(yolo.clone());
-    let cx = context(&f.env, &cancel);
-    // The tool names no access, so no policy (yolo included) has anything to approve for it.
-    let accesses = t.access(&args(&f), &cx).unwrap();
-    assert!(accesses.is_empty());
-    for a in &accesses {
-        let _ = oxa_proto::Policy::decide(&policy, Mode::Workspace, a, &f.env.work());
-    }
-    // With yolo on, a UI that would answer "approve" is not consulted and nothing posts:
-    // only the owner's own typed reply does.
-    let mut owner = Owner::new(Some(true), f.marker.clone());
-    let out = t.run_with_ui(&args(&f), &cx, &mut |_| {}, &mut owner);
-    assert!(
-        owner.shown.is_empty(),
-        "yolo does not auto-approve through a dialog answer"
-    );
-    assert!(out.text.contains("Waiting for the owner"), "{}", out.text);
-    assert_eq!(gh_calls(&f), "");
-    assert_eq!(yolo.approved(), 0, "no yolo auto-approval was counted");
 }
 
 #[test]

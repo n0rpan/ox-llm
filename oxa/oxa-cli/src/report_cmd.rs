@@ -2,7 +2,7 @@
 //! skill. `draft` collects a scrubbed digest and saves a draft; `submit` shows the exact text
 //! and posts it with `gh issue create` only after the user typed `yes` on the controlling
 //! terminal, or pressed Approve in the interactive session's approval dialog (#1552, [`PublishTool`]).
-//! Reporting is off until `oxa.reportIssue.repo` names the public repository.
+//! Reporting goes to `oxstack/ox-llm` unless `oxa.reportIssue.repo` names another repository (or turns it off).
 //!
 //! What a draft may contain: the user's description (scrubbed, capped, no transcript records),
 //! the identity facts (version, machine, OS, models) and the controller's `status --json`
@@ -30,7 +30,11 @@ const USAGE: &str =
 /// The setting that names the target repository (`OWNER/NAME`); unset = reporting is off.
 pub const SETTING_REPORT_REPO: &str = "oxa.reportIssue.repo";
 
-/// What `submit` says while no repository is configured.
+/// Where oxa's own issues go when `oxa.reportIssue.repo` is unset. A value that is not
+/// `OWNER/NAME` (for example `off`) turns reporting off.
+pub const DEFAULT_REPORT_REPO: &str = "oxstack/ox-llm";
+
+/// What `submit` says while reporting is turned off by the setting.
 pub const REPORT_DISABLED: &str = "Issue reporting is off: the public ox-llm repository does not exist yet. \
 Nothing was posted. The draft stays where it is; you can file it by hand, or set \
 `oxa.reportIssue.repo` (OWNER/NAME) in ~/.oxa/agent/settings.json once the repository exists.";
@@ -320,6 +324,14 @@ pub fn save_draft(
     Ok((path, title, body))
 }
 
+/// [`report_repo`], or [`DEFAULT_REPORT_REPO`] when the setting is unset.
+pub(crate) fn report_target(settings: &Settings) -> Option<String> {
+    match settings.string(SETTING_REPORT_REPO) {
+        None => Some(DEFAULT_REPORT_REPO.to_string()),
+        Some(_) => report_repo(settings),
+    }
+}
+
 /// `OWNER/NAME` from the settings; `None` = reporting is off.
 pub fn report_repo(settings: &Settings) -> Option<String> {
     let repo = settings.string(SETTING_REPORT_REPO)?;
@@ -420,7 +432,7 @@ pub(crate) fn submit_record(
         .map_err(w)?;
         return Ok(Submission::Local("draft needs scrubbing".into()));
     }
-    let Some(repo) = report_repo(settings) else {
+    let Some(repo) = report_target(settings) else {
         writeln!(out, "{REPORT_DISABLED}\nDraft: {}", draft.display()).map_err(w)?;
         return Ok(Submission::Disabled);
     };
