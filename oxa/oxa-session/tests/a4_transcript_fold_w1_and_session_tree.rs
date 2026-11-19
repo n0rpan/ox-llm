@@ -609,6 +609,7 @@ fn unreported_usage_keeps_the_previous_context_baseline() {
     let user = |text: &str| WireMsg {
         role: Role::User,
         content: Some(text.to_string()),
+        images: Vec::new(),
         reasoning: None,
         tool_calls: Vec::new(),
         provider_history: None,
@@ -617,6 +618,7 @@ fn unreported_usage_keeps_the_previous_context_baseline() {
     let reply = |text: &str| WireMsg {
         role: Role::Assistant,
         content: Some(text.to_string()),
+        images: Vec::new(),
         reasoning: None,
         tool_calls: Vec::new(),
         provider_history: None,
