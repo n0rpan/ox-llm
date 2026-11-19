@@ -174,6 +174,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `oxa.allowHomeCwd` | bool | `false` | allow oxa to start in the home directory, `/` or a parent of home. Without it print, JSON and RPC modes refuse and interactive mode asks; the environment variable `OXA_ALLOW_HOME_CWD` also allows it. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
+| `oxa.approval.always` | list | `[]` | exact `<rule> <command>` keys written by "Always allow" in the dangerous-command prompt (#1512). Each key matches one command of one rule; remove a line to revoke it. User settings only |
 | `oxa.approval.dangerous` | list | `[]` | rules for dangerous commands, matched on the parsed command (#1512). `[]` (the default) is all built-in rules. `+id` adds a rule, `-id` removes one, `+cmd:<words>` adds a rule for a command (`+cmd:terraform destroy`), and a list without `+`/`-` entries replaces the built-in set (a plain `cmd:<words>` there turns the built-in rules off). Built-in ids: `rm-recursive-outside`, `git-push-force`, `credential-write`, `pipe-to-shell`, `disk-destroy`, `chmod-recursive-open`, `sudo`, `sql-drop`, `kill-foreign`, `oxa-self-approve`, `eval-dynamic`, `unparsed`. Unknown entries are ignored with a warning. User settings only |
 | `oxa.mode` | `plan` / `workspace` / `ask` | `workspace` | table mode at start |
 | `defaultProjectTrust` | `ask` / `always` / `never` | `ask` | what happens in a project that is not trusted yet; user settings only |
@@ -352,7 +353,11 @@ never permits an additional review.
 | `oxa.builtinSkills` | bool | `true` | include the skills built into oxa |
 | `oxa.share.remoteModels` | string list | `[]` | user-only allowlist of metered cloud aliases eligible for explicit LAN sharing; personal subscriptions are excluded |
 | `oxa.skills.includeSynced` | bool | `false` | also list the skills another product synced into `~/.agents/skills` (a `synced/` folder, or a folder whose `manifest.json` lists `skillId`s); they are written for that product's tools, so oxa skips them by default |
-| `oxa.workers.stopGraceSeconds` | number (seconds) | `10` | how long a stopped worker gets after SIGINT before its whole process group gets SIGTERM; SIGKILL follows 2 seconds later if the group is still alive |
+| `oxa.workers.enabled` | bool | `true` | user settings only (a project file cannot change it). The `worker` tool (start, list, stop background workers, each in its own git worktree); `false` removes it. Never offered inside a worker |
+| `oxa.workers.max` | number | `4` | user settings only (a project file cannot change it). Most live workers one session may run; a `start` past this limit is refused |
+| `oxa.workers.stopGraceSeconds` | number (seconds) | `10` | user settings only (a project file cannot change it). How long a stopped worker gets after SIGINT before its whole process group gets SIGTERM; SIGKILL follows 2 seconds later if the group is still alive |
+
+A worker is never wider than its parent session. It runs with the parent's permission ceiling, `--exclude-tools` and `--no-<tool>` exclusions, `--tools`, `--no-tools`, `--no-builtin-tools`, `--no-mcp`, `--no-web-search`, `--no-extensions`, `--offline` and session directory. `git` and `env` for the launch come from a trusted `PATH` directory outside the project, never from a project shim. The worktree is created without a checkout and its files are written inside the sandbox (`oxa work --supervise`), so a repository's smudge filters never run on the host; a launch is refused when the `oxa` executable changed after the session started. Token budgets warn and record; they never block: with `--max-tokens N` each worker gets the parent's whole allowance `N` (the start notice says so), so a session with `max` live workers can use up to (1 + `max`) times `N` in total.
 
 ## Example
 
