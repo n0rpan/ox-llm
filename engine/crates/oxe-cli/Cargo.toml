@@ -25,13 +25,5 @@ oxn = { path = "../oxn", optional = true }
 name = "oxe"
 path = "src/bin/oxe.rs"
 
-[[bin]]
-name = "barrier-bench"
-path = "src/bin/barrier-bench.rs"
-
-[[bin]]
-name = "gguf-dump"
-path = "src/bin/gguf-dump.rs"
-
 [dev-dependencies]
 model = { path = "../model", features = ["testkit"] }
