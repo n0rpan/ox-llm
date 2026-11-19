@@ -51,15 +51,10 @@ pub fn offline_argv(
     Ok(no_network_argv(&b.bwrap, cwd, env, argv))
 }
 
-/// The no-network wrapper for model shell commands also hides host runtime IPC.
-pub(crate) fn model_offline_argv(
-    path_var: &str,
-    home: &Path,
-    cwd: &Path,
-    command: &str,
-) -> Result<Vec<String>, OxaError> {
-    let bwrap = Bwrap::detect(path_var, home)?;
-    let mut argv = no_network_argv(&bwrap.bwrap, cwd, &[], &[]);
+/// The no-network wrapper for model shell commands also hides host runtime IPC. `bwrap` is the
+/// caller's pinned, already probed bwrap (`FullAccess` resolves it once, before model work).
+pub(crate) fn model_offline_argv(bwrap: &Path, home: &Path, cwd: &Path, command: &str) -> Vec<String> {
+    let mut argv = no_network_argv(bwrap, cwd, &[], &[]);
     argv.pop(); // the command separator
     crate::bwrap::mask_runtime_ipc(
         &mut argv,
@@ -69,5 +64,5 @@ pub(crate) fn model_offline_argv(
         &mut Vec::new(),
     );
     argv.extend(["--", "bash", "-c", command].map(str::to_string));
-    Ok(argv)
+    argv
 }
