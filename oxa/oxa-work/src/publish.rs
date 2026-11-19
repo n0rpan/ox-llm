@@ -908,6 +908,8 @@ mod scan_tests {
             terminate_binary: None,
             offline: false,
             runner_owns_github: false,
+            autonomy: Default::default(),
+            autonomy_now: None,
             storage: dir.path().join("storage"),
         };
         git_ok(dir.path(), &["init", "-q", "-b", "main"]);
@@ -1032,11 +1034,15 @@ mod scan_tests {
 
     fn items(text: &str) -> Vec<(String, Option<usize>, String)> {
         let seen = std::cell::RefCell::new(vec![]);
-        scan_patch(text, &|item| {
-            seen.borrow_mut()
-                .push((item.path.to_string(), item.line, item.text.to_string()));
-            None
-        })
+        scan_patch(
+            text,
+            &|item| {
+                seen.borrow_mut()
+                    .push((item.path.to_string(), item.line, item.text.to_string()));
+                None
+            },
+            &|_, _| None,
+        )
         .unwrap();
         seen.into_inner()
     }
@@ -1064,12 +1070,16 @@ mod scan_tests {
     fn a_secret_path_is_withheld_from_the_refusal() {
         let patch =
             "\0aaaa\n\ndiff --git a/hidden b/hidden\nnew file mode 100644\n--- /dev/null\n+++ b/hidden\n";
-        let error = scan_patch(patch, &|_| {
-            Some(ContentFinding {
-                label: "a known access token format",
-                secret_path: true,
-            })
-        })
+        let error = scan_patch(
+            patch,
+            &|_| {
+                Some(ContentFinding {
+                    label: "a known access token format",
+                    secret_path: true,
+                })
+            },
+            &|_, _| None,
+        )
         .unwrap_err();
         assert!(!error.contains("hidden"), "{error}");
     }
