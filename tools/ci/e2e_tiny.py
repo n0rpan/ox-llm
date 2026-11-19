@@ -101,7 +101,10 @@ def probe(port, messages, max_tokens):
 
 
 def run_oxa(oxa, prompt, cwd, env, usage_log, timeout, max_time, max_tokens, name, out):
-    cmd = [oxa, '-p', '--thinking', 'off', '--no-mcp', '--no-web-search', '--session-id', 'e2e-tiny',
+    # --yolo: the container has no usable bwrap, so a sandboxed run has no bash at all, and the 0.8B
+    # model then retries `cat hello.txt` until --max-time (real-model runs). The container is
+    # throwaway; yolo is the owner's standard for unattended work (AGENTS.md sandbox standard).
+    cmd = [oxa, '-p', '--yolo', '--thinking', 'off', '--no-mcp', '--no-web-search', '--session-id', 'e2e-tiny',
            '--usage-log', str(usage_log), '--max-time', str(max_time), '--max-tokens', str(max_tokens), prompt]
     t0 = time.monotonic()
     p = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
