@@ -586,6 +586,11 @@ fn open_gateway_with_go(
                 .map_err(|e| OxaError::new(e.code, e.message))?;
         }
     }
+    if let Some(provider) = cloud.get("openrouter_provider").filter(|v| !v.is_null()) {
+        runtime = runtime
+            .with_openrouter_provider(provider)
+            .map_err(|e| OxaError::new(e.code, e.message))?;
+    }
     if let Some(diagnostics) = diagnostics {
         runtime = runtime.with_diagnostics(diagnostics);
     }

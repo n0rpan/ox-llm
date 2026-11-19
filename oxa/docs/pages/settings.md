@@ -242,6 +242,14 @@ Known provider or configured prices take precedence over this setting.
 When the same provider has several configured base URLs, select the discovery
 endpoint with `oxa.cloud.discovery.<provider>.base_url`.
 
+OpenRouter privacy routing is the owner's choice and is never forced. By
+default oxa sends no `provider` preferences, so your OpenRouter account and
+workspace settings apply. To choose, set `oxa.cloud.openrouter_provider` in user
+settings: `zdr` (`true` or `false`) limits or allows routing by zero data
+retention, and `data_collection` (`allow` or `deny`) controls providers that may
+train on or keep prompts. Values are sent exactly as set; any other key or value
+is refused at load. A client request cannot override them.
+
 The merged catalog is available through the model picker and `--list-models`.
 The LAN guest catalog lists only guest-allowlisted models.
 

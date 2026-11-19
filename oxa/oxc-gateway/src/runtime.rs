@@ -56,6 +56,8 @@ pub struct Runtime {
     ledger_dir: PathBuf,
     ledger: OnceLock<Result<Ledger, Refusal>>,
     cap: Value,
+    /// Owner-chosen OpenRouter `provider` routing preferences. `None` sends nothing.
+    openrouter_provider: Option<Value>,
     ledger_enabled: bool,
     subscription_limits: Option<crate::billing::SubscriptionLimits>,
     #[cfg(feature = "upstream-openai")]
@@ -201,6 +203,7 @@ impl Runtime {
             ledger_dir,
             ledger: OnceLock::new(),
             cap: json!(options.daily_budget_usd),
+            openrouter_provider: None,
             ledger_enabled: options.ledger_enabled,
             subscription_limits: options.subscription_limits,
             #[cfg(feature = "upstream-openai")]
@@ -221,6 +224,27 @@ impl Runtime {
             self.unpriced_discovered.insert(alias.clone(), price);
         }
         Ok(self)
+    }
+    /// Trusted user settings: OpenRouter provider routing preferences, sent
+    /// exactly as configured. Only `zdr` (bool) and `data_collection`
+    /// (`allow` or `deny`) are accepted; anything else is refused. Never forced.
+    pub fn with_openrouter_provider(mut self, raw: &Value) -> Result<Self, Refusal> {
+        let bad = || invalid("openrouter_provider");
+        let map = raw.as_object().ok_or_else(bad)?;
+        let mut out = serde_json::Map::new();
+        for (key, value) in map {
+            match (key.as_str(), value) {
+                ("zdr", Value::Bool(_)) => {}
+                ("data_collection", Value::String(s)) if matches!(s.as_str(), "allow" | "deny") => {}
+                _ => return Err(bad()),
+            }
+            out.insert(key.clone(), value.clone());
+        }
+        self.openrouter_provider = (!out.is_empty()).then_some(Value::Object(out));
+        Ok(self)
+    }
+    pub(crate) fn openrouter_provider(&self) -> Option<&Value> {
+        self.openrouter_provider.as_ref()
     }
     /// Enable catalog writes only for the owner-selected discovery setting.
     pub fn with_catalog_cache(mut self) -> Self {

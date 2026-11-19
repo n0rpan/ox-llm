@@ -371,6 +371,7 @@ mod tests {
         for key in [
             "oxa.cloud.models",
             "oxa.cloud.unpriced_discovered_pricing",
+            "oxa.cloud.openrouter_provider",
             "oxa.cloud.discovery",
         ] {
             let descriptor = descriptors()

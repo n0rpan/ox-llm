@@ -380,7 +380,7 @@ OpenAI v1 endpoint by choosing a model name.
 
 - **D1 upstream routing:** a model catalog entry kind `remote` (OpenRouter, OpenAI-compatible: base URL,
   upstream model id, context window, max output, pricing). Requests for a remote model are proxied upstream
-  with `provider: {zdr: true, data_collection: "deny"}` always set. The API key lives once in an oxc secrets
+  with the owner's optional `cloud.openrouter_provider` preferences (zdr, data_collection; default: nothing sent, owner decision O-384). The API key lives once in an oxc secrets
   file (0600, outside the repo), read at request time, NEVER logged (redact it in errors and debug output),
   never in status output.
 - **D2 privacy switch:** cloud is OFF by default (`cloud.enabled: false`); remote models are not even listed
