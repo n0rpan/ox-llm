@@ -22,8 +22,9 @@ fn with_policy(sandbox: Arc<dyn Sandbox>, settings: &Settings, github_auth: bool
     let on = !runner_owns_github && sandbox_net_setting(settings.string(SETTING_SANDBOX_NET).as_deref());
     let offline = oxa_proto::offline();
     // The `gh` lookup can stall (a mise shim may try to install gh): run it lazily, at the first
-    // bash command that needs injection or output masking, never at startup. Keep the source
-    // installed while network is off: yolo can still read the user's gh login from the host.
+    // networked bash command that needs injection/masking, or the first yolo command, never at
+    // startup. Keep the source installed while network is off only for yolo: ordinary sandboxed
+    // streams must not depend on a host secret they cannot otherwise read.
     let lookup = github_lookup_allowed(
         github_auth,
         runner_owns_github,
