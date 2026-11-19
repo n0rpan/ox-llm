@@ -343,9 +343,11 @@ fn yolo_still_refuses_a_secret() {
     let _guard = guard();
     let f = fixture();
     let cancel = CancelToken::default();
+    // A synthetic PEM envelope exercises the publication guard without key material.
+    let label = "OPENSSH PRIVATE KEY";
     std::fs::write(
         &f.draft,
-        "Title: Key leak\n\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----\n",
+        format!("Title: Key leak\n\n-----BEGIN {label}-----\nsynthetic fixture\n-----END {label}-----\n"),
     )
     .unwrap();
     let t = tool(&f).with_yolo(YoloSwitch::new(Autonomy::Yolo));
