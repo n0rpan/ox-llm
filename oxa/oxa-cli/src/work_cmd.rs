@@ -1,4 +1,4 @@
-use oxa_config::{Dirs, Env};
+use oxa_config::{Dirs, Env, Settings};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -98,7 +98,7 @@ pub(crate) fn run(
     let result = (|| -> Result<i32, String> {
         if let [flag, request] = args {
             if flag == "--supervise" {
-                return crate::work_checks::run(request, cwd, env, dirs, err);
+                return crate::work_checks::run(request, cwd, env, dirs, out, err);
             }
         }
         let binary: PathBuf = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -258,6 +258,9 @@ pub(crate) fn run(
             cwd: root.clone(),
             binary: binary.clone(),
             policy: policy.clone(),
+            local_checks: oxa_work::LocalCheckCommands::from_owner_setting(
+                Settings::load(dirs, &root, false).get("oxa.work.localChecks"),
+            )?,
             dirs: dirs.clone(),
             env: env.clone(),
             rerun,
@@ -411,7 +414,10 @@ pub(crate) fn run(
             };
             if matches!(
                 record.outcome,
-                oxa_work::Outcome::Red | oxa_work::Outcome::Blocked | oxa_work::Outcome::Interrupted
+                oxa_work::Outcome::Red
+                    | oxa_work::Outcome::Blocked
+                    | oxa_work::Outcome::Interrupted
+                    | oxa_work::Outcome::Unverified
             ) || record.reports.iter().any(|report| report.disposition == "failed")
             {
                 code = 1;
@@ -434,6 +440,7 @@ struct Context {
     cwd: PathBuf,
     binary: PathBuf,
     policy: oxa_work::RunPolicy,
+    local_checks: oxa_work::LocalCheckCommands,
     dirs: Dirs,
     env: Env,
     rerun: bool,
@@ -469,6 +476,7 @@ impl Context {
         let mut record = if let Some(record) = cached {
             record
         } else {
+            locked.set_local_checks(&self.local_checks);
             let ctx = crate::report_cmd::ScrubCtx::from_env(env, dirs);
             match locked.run_with_notes(root, binary, plan, rerun, observer, &|note| {
                 crate::work_reports::scrub_note(note, &ctx)
