@@ -2,7 +2,7 @@
 // ported from pi packages/coding-agent/docs/rpc-extension-ui.md and src/modes/rpc/rpc-mode.ts
 use crate::server::write_out;
 use crate::{Out, RpcCommand};
-use oxa_proto::{Access, Answer, Level, Placement, Ui, Value};
+use oxa_proto::{Access, Answer, DangerAnswer, Level, Placement, Ui, Value};
 use serde_json::{json, Map};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -260,6 +260,22 @@ impl Ui for RpcUi {
         ) {
             Some(true) => Answer::Once,
             _ => Answer::Deny,
+        }
+    }
+
+    /// A dangerous command is relayed like an access request: the client has a person behind it,
+    /// and a yes runs the command this once. Session and Always grants stay with the surfaces that
+    /// can write the owner's approval file.
+    fn ask_dangerous(&mut self, a: &Access, reasons: &[String], _keys: &[String]) -> DangerAnswer {
+        let what = describe(a);
+        let detail = if reasons.is_empty() {
+            "The command matches a dangerous rule.".to_string()
+        } else {
+            reasons.join("; ")
+        };
+        match self.confirm(&format!("Run dangerous command: {what}?"), &detail, None) {
+            Some(true) => DangerAnswer::Once,
+            _ => DangerAnswer::Deny,
         }
     }
 

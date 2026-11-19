@@ -1,6 +1,4 @@
 //! C11 acceptance tests: RPC session commands.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 //!
 //! The server runs in a thread over an OS pipe, as in the C10 tests. Each test drives the
