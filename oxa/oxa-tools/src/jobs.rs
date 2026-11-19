@@ -68,6 +68,8 @@ struct Out {
     total: u64,
     /// `total` as of the last read: what the model has seen.
     seen: u64,
+    /// A foreground command keeps its complete result until it finishes or is detached.
+    keep_all: bool,
 }
 
 /// The shared state of one job.
@@ -245,7 +247,10 @@ impl JobRegistry {
         state.next += 1;
         let id = format!("job-{}", state.next);
         let cancel = CancelToken::new();
-        let output = Arc::new(Mutex::new(Out::default()));
+        let output = Arc::new(Mutex::new(Out {
+            keep_all,
+            ..Out::default()
+        }));
         let status = Arc::new(Mutex::new(JobStatus::Running));
         let unsandboxed = Arc::new(AtomicBool::new(false));
         let unsandboxed_job = unsandboxed.clone();
@@ -266,7 +271,7 @@ impl JobRegistry {
                 let mut out = output.lock().unwrap();
                 out.total += chunk.len() as u64;
                 out.buf.extend_from_slice(chunk);
-                if !keep_all && out.buf.len() > BUFFER_CAP {
+                if !out.keep_all && out.buf.len() > BUFFER_CAP {
                     let keep = out.buf.len() - BUFFER_CAP;
                     out.buf.drain(..keep);
                 }
@@ -280,6 +285,19 @@ impl JobRegistry {
             *status.lock().unwrap() = final_status;
         });
         Ok(id)
+    }
+
+    /// Switch a followed foreground command to bounded output retention when it detaches.
+    pub(crate) fn bound_output(&self, id: &str) -> Result<(), String> {
+        let state = self.state.lock().unwrap();
+        let job = state.jobs.get(id).ok_or_else(|| format!("Unknown job: {id}"))?;
+        let mut out = job.output.lock().unwrap();
+        out.keep_all = false;
+        if out.buf.len() > BUFFER_CAP {
+            let drop_len = out.buf.len() - BUFFER_CAP;
+            out.buf.drain(..drop_len);
+        }
+        Ok(())
     }
 
     /// Read a job's status and the last [`READ_CAP`] bytes of its output. `Err` for an
