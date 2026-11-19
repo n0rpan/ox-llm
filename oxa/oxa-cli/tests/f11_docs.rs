@@ -269,6 +269,28 @@ fn security_documents_headless_inbox_policy() {
     }
 }
 
+/// The security review policy must not reject delegated Go transport that the protected owner key
+/// authorizes, while still requiring the explicit owner setting for project-selected and restored
+/// models.
+#[test]
+fn security_documents_keyed_go_delegation_policy() {
+    let repository = repo_root();
+    let repository = repository.parent().expect("repository root");
+    let security = fs::read_to_string(repository.join("SECURITY.md")).expect("read SECURITY.md");
+    let security = security.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    for required in [
+        "protected user key authorizes an actual Go model argument",
+        "delegated `oxa work` worker or nested child",
+        "No project-selected or restored model enables it without an explicit `oxa.cloud.opencode.enabled: true`",
+    ] {
+        assert!(
+            security.contains(required),
+            "SECURITY.md must document the keyed Go delegation policy: missing {required:?}"
+        );
+    }
+}
+
 /// Memory persistence is a security policy, so the review rules, security policy and user guide
 /// must all retain the owner-only modes and the upgrade behaviour for an existing loose directory.
 #[test]
