@@ -401,7 +401,6 @@ impl Shared {
             cancel: CancelToken::new(),
             cancel_retry: CancelToken::new(),
             wait_wake: CancelToken::new(),
-            wake: Default::default(),
             busy: std::sync::atomic::AtomicBool::new(false),
             modes: Mutex::new((steering, follow_up)),
             dirty: std::sync::atomic::AtomicBool::new(false),
