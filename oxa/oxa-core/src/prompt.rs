@@ -624,9 +624,10 @@ pub fn set_headless(on: bool) {
     HEADLESS.store(on, std::sync::atomic::Ordering::SeqCst);
 }
 
-/// Whether this process is a headless (print or JSON) run.
+/// Whether this process is a headless (print or JSON) run of its own. A subagent child is not:
+/// its parent is the one reading the result, and its prefix stays as it was.
 pub fn is_headless() -> bool {
-    HEADLESS.load(std::sync::atomic::Ordering::SeqCst)
+    HEADLESS.load(std::sync::atomic::Ordering::SeqCst) && !crate::subagent::is_child_process()
 }
 
 /// FH-N2: the `<autonomy>` block of the preamble in a headless run. Frozen text: a change moves
