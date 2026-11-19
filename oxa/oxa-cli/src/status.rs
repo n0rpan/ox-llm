@@ -295,7 +295,7 @@ impl ProgressObserver for StatusWriter {
             Progress::RequestEnd { usage, remote } => {
                 snapshot.requests = snapshot.requests.saturating_sub(1);
                 snapshot.remote |= remote;
-                if let Some(usage) = usage {
+                if let Some(usage) = usage.filter(|usage| !usage.unreported) {
                     snapshot.prompt = snapshot.prompt.saturating_add(usage.prompt as u64);
                     snapshot.completion = snapshot.completion.saturating_add(usage.completion as u64);
                     snapshot.cached = snapshot.cached.saturating_add(usage.cached as u64);
@@ -549,6 +549,41 @@ mod tests {
         assert_eq!(record["phase"], "finished");
         assert_eq!(record["outcome"]["error_class"], "terminal_closed");
         assert_eq!(record["outcome"]["exit_code"], 129);
+    }
+
+    #[test]
+    fn a_reply_without_usage_keeps_the_snapshot_incomplete() {
+        let env = TestEnv::new();
+        let session = SessionRef {
+            id: "one".into(),
+            path: env.work().join("session.jsonl"),
+        };
+        let path = session.path.with_extension("status.json");
+        let writer = StatusWriter::new(None);
+        writer.notify(
+            &session,
+            Progress::Session {
+                file: Some(&session.path),
+            },
+        );
+        writer.notify(
+            &session,
+            Progress::RequestStart {
+                kind: TurnKind::Chat,
+                remote: true,
+            },
+        );
+        writer.notify(
+            &session,
+            Progress::RequestEnd {
+                usage: Some(Usage::unreported()),
+                remote: true,
+            },
+        );
+        writer.finish(Ok(RunOutcome::Done), &mut Vec::new()).unwrap();
+        let status = read_snapshot(&path).unwrap();
+        assert_eq!(status["tokens"]["complete"], false);
+        assert_eq!(status["tokens"]["unreported_requests"], 1);
     }
 
     #[test]
