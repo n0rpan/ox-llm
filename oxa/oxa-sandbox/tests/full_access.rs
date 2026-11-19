@@ -474,3 +474,24 @@ fn os_sandbox_on_inline_hooks_stay_sandboxed_under_yolo() {
     );
     let _ = std::fs::remove_file(&target);
 }
+
+/// RP6: yolo bash has no sandbox, so a host socket (the docker socket) is reachable without
+/// any `oxa.sandbox.sockets` entry.
+#[test]
+fn yolo_bash_sees_the_docker_socket() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work()).unwrap();
+    let dir = tempdir_outside(&env);
+    let sock = dir.join("docker.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind socket");
+    let (sb, _switch) = full(Autonomy::Yolo, &env);
+    let s = spec(
+        &env,
+        format!("test -S '{}' && echo reachable", sock.display()),
+        true,
+    );
+    let r = sb.run(&s, &CancelToken::new(), &mut |_| {});
+    assert_eq!(r.exit, Some(0), "{}", String::from_utf8_lossy(&r.output));
+    assert_eq!(String::from_utf8_lossy(&r.output), "reachable\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}

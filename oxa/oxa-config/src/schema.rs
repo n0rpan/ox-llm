@@ -179,6 +179,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
+    // R1: the first wait after a transient request failure of a pursuing goal; `0` opts out.
+    key("oxa.goal.failureBackoffSeconds", Kind::Number, "60"),
     // K3: a headless print or JSON run of a persisted session with a pursuing goal takes
     // `oxa send` follow-ups from the session inbox for the run; false = off.
     key("oxa.inbox.headless", Kind::Bool, "true"),
@@ -227,6 +229,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.sandbox.readPaths", Kind::StringList, "[]"),
     // #1512 S3: the OS sandbox of an unattended run (workers, subagents, headless goals).
     key("oxa.sandbox.unattended", Kind::Bool, "true"),
+    // RP6: host runtime sockets (docker, podman) bound into bash; user settings only.
+    key("oxa.sandbox.sockets", Kind::StringList, "[]"),
     key("oxa.sandbox.writePaths", Kind::StringList, "[]"),
     // Skills another product synced into `~/.agents/skills` (`synced/`); off = skipped.
     key("oxa.share.remoteModels", Kind::StringList, "[]"),

@@ -125,8 +125,9 @@ To return to v0.2.0, stop the native runtime and select the retained legacy
 installation explicitly. Do not run both to repair a shared token, restore a
 stale token backup over a refreshed record or delete user data to switch versions.
 
-LAN sharing, panel, Studio/images, the lead layer and a controller/HTTP daemon are
-outside v0.2.1. See [release qualification and upgrade boundary](https://github.com/oxstack/ox-llm/blob/main/docs/RELEASE.md#v021-rust-only-upgrade-boundary).
+Status as of v0.2.1: LAN sharing is not in the release binaries; the omarchy panel
+source is in the repository but is not packaged; Studio/images, the lead layer and a
+controller/HTTP daemon are outside v0.2.1. See [release qualification and upgrade boundary](https://github.com/oxstack/ox-llm/blob/main/docs/RELEASE.md#v021-rust-only-upgrade-boundary).
 
 The approved native `local-ai-memlat-boot` utility is retained. The four MEMLAT
 hook/script templates are `05-local-ai-memlat-fallback.hook`,

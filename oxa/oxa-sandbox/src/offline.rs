@@ -61,7 +61,13 @@ pub(crate) fn model_offline_argv(
     let bwrap = Bwrap::detect(path_var, home)?;
     let mut argv = no_network_argv(&bwrap.bwrap, cwd, &[], &[]);
     argv.pop(); // the command separator
-    crate::bwrap::mask_runtime_ipc(&mut argv, crate::bwrap::runtime_ipc_paths(home), false);
+    crate::bwrap::mask_runtime_ipc(
+        &mut argv,
+        crate::bwrap::runtime_ipc_paths(home),
+        false,
+        &[],
+        &mut Vec::new(),
+    );
     argv.extend(["--", "bash", "-c", command].map(str::to_string));
     Ok(argv)
 }
