@@ -426,6 +426,7 @@ impl Session {
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = Some(observer);
         crate::progress::session(&self.st);
+        crate::goal::publish_status(&self.st);
     }
 
     /// S1 / ENG-002: run the steering and follow-up messages that are queued, as one run, when
@@ -795,6 +796,18 @@ impl Session {
 
     /// Replace the session goal while idle, persisting before exposing controls.
     pub fn set_goal(
+        &mut self,
+        goal: Option<oxa_session::Goal>,
+        sink: &mut dyn EventSink,
+    ) -> Result<(), OxaError> {
+        self.replace_goal(goal, sink)?;
+        crate::goal::publish_status(&self.st);
+        Ok(())
+    }
+
+    /// Replace the saved goal without publishing it. Callers that require an
+    /// explicit store sync publish only after that sync succeeds.
+    pub(crate) fn replace_goal(
         &mut self,
         mut goal: Option<oxa_session::Goal>,
         sink: &mut dyn EventSink,
