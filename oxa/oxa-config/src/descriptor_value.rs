@@ -114,9 +114,9 @@ fn count_unit(unit: Option<Unit>, n: u64) -> String {
 fn human_ms(ms: u64) -> String {
     match ms {
         0..=999 => format!("{ms} ms"),
-        1_000..=59_999 if ms % 1_000 == 0 => format!("{} s", ms / 1_000),
+        1_000..=59_999 if ms.is_multiple_of(1_000) => format!("{} s", ms / 1_000),
         1_000..=59_999 => format!("{:.1} s", ms as f64 / 1_000.0),
-        _ if ms % 60_000 == 0 => format!("{} min", ms / 60_000),
+        _ if ms.is_multiple_of(60_000) => format!("{} min", ms / 60_000),
         _ => format!("{:.1} min", ms as f64 / 60_000.0),
     }
 }
@@ -300,8 +300,8 @@ fn search_in<'a>(table: &'a [Descriptor], query: &str) -> Vec<&'a Descriptor> {
             3
         }
     };
-    let mut hits: Vec<&Descriptor> = table.iter().filter(|d| rank(*d) < 3).collect();
-    hits.sort_by_key(|d| rank(*d));
+    let mut hits: Vec<&Descriptor> = table.iter().filter(|d| rank(d) < 3).collect();
+    hits.sort_by_key(|d| rank(d));
     hits
 }
 
