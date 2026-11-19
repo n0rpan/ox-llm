@@ -213,6 +213,7 @@ fn select_changed_paths(root: &Path, paths: &[u8]) -> Result<Selected, String> {
 /// workspace's member paths (globs allowed; comments and multiline tolerated).
 #[derive(Default, Debug, PartialEq, Eq)]
 struct Manifest {
+    present: bool,
     package: Option<String>,
     workspace: bool,
     members: Vec<String>,
@@ -314,7 +315,7 @@ fn read_manifest(root: &Path, dir: &str, budget: &mut ManifestBudget) -> Result<
             budget.bytes_left -= bytes.len() as u64;
             let path = join_dir(dir, "Cargo.toml");
             let text = std::str::from_utf8(&bytes).map_err(|_| format!("{path} is not UTF-8"))?;
-            let manifest = parse_manifest(text);
+            let mut manifest = parse_manifest(text);
             if manifest.unsupported_workspace_list
                 || manifest.members.len() > MAX_MEMBERS
                 || manifest.excludes.len() > MAX_MEMBERS
@@ -326,6 +327,7 @@ fn read_manifest(root: &Path, dir: &str, budget: &mut ManifestBudget) -> Result<
             {
                 return Err(format!("unsupported or incomplete workspace path list in {path}"));
             }
+            manifest.present = true;
             Ok(Some(manifest))
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -516,8 +518,7 @@ impl Manifests {
         }
         Ok(&self.root[dir])
     }
-    /// The directories at and above `dir` with a package or workspace manifest, deepest
-    /// first, reading manifests on the way.
+    /// The manifest-bearing directories at and above `dir`, deepest first.
     fn ancestors(&mut self, root: &Path, dir: &str) -> Result<Vec<String>, String> {
         // Apply the manifest reader's existing path limit before expanding ancestors.
         if !dir.is_empty() && !valid_member_path(dir) {
@@ -527,7 +528,7 @@ impl Manifests {
         let mut current = dir;
         loop {
             let manifest = self.at(root, current)?;
-            if manifest.package.is_some() || manifest.workspace {
+            if manifest.present {
                 found.push(current.to_owned());
             }
             if current.is_empty() {
@@ -588,10 +589,9 @@ fn select(root: &Path, paths: &[String]) -> Result<Selected, String> {
         }
         for ancestor in manifests.ancestors(root, dir)? {
             let manifest = &manifests.root[&ancestor];
-            // A workspace member can consume files outside its package directory.
-            selected.requires_hosted |= manifest.workspace;
+            // Unmapped manifests can still own build inputs that need hosted tests.
+            selected.requires_hosted = true;
             if let Some(package) = manifest.package.clone() {
-                selected.requires_hosted = true;
                 let in_dir = manifests.in_dir(root, &ancestor, &mut budget)?;
                 selected.packages.insert((package, in_dir));
                 break;

@@ -45,6 +45,10 @@ maintainer, who says in the PR when a hardware check is needed.
   rules in that PR, not by changing the behaviour.
 - **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
   registry with its surfaces and help (P1 if added outside it or without an exception reason).
+- **Work acceptance.** In `oxa work`, zero or skipped checks leave the task `Unverified`. The
+  owner-only `oxa.work.localChecks` defaults to a per-package `cargo check`. Rust work requires
+  hosted test evidence at the exact head for acceptance and publication. Worker declarations
+  can add hosted requirements. Review their coverage against the task's acceptance criteria.
 - Owner policy: nothing blocks by default except the security invariants above (secrets,
   sandbox, user-only settings, offline, fork safety). Limits, budgets, retries and guards are owner
   settings with generous defaults that warn and record; a hard block exists only when the owner
