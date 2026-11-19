@@ -675,9 +675,23 @@ pub(crate) fn uncertain(error: &oxa_proto::OxaError, output: bool, pre_cancelled
             | codes::INVALID
             | codes::USAGE
             | codes::UNSUPPORTED_IN_OXA
+            | "cost_unknown_history"
             | "cloud_credentials_unavailable"
             | "cloud_sdk_unavailable"
     )
+}
+
+#[cfg(test)]
+mod uncertain_tests {
+    use super::uncertain;
+
+    #[test]
+    fn unknown_cost_history_is_known_pre_admission_usage() {
+        let error = oxa_proto::OxaError::new("cost_unknown_history", "prior usage has no known cost");
+
+        assert!(!uncertain(&error, false, false));
+        assert!(uncertain(&error, true, false));
+    }
 }
 
 /// A parsed `/goal` command.
