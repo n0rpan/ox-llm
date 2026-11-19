@@ -17,6 +17,7 @@ fn user_and_system_bytes() {
 #[test]
 fn assistant_bytes_keep_everything_as_streamed() {
     let m = WireMsg {
+        images: Vec::new(),
         role: Role::Assistant,
         content: Some("  spaced  ".into()),
         reasoning: Some("think ".into()),
@@ -37,6 +38,7 @@ fn assistant_bytes_keep_everything_as_streamed() {
 #[test]
 fn assistant_without_content_is_null_and_omits_empty_fields() {
     let m = WireMsg {
+        images: Vec::new(),
         role: Role::Assistant,
         content: None,
         reasoning: None,
@@ -46,6 +48,7 @@ fn assistant_without_content_is_null_and_omits_empty_fields() {
     };
     assert_eq!(json(&m), r#"{"role":"assistant","content":null}"#);
     let e = WireMsg {
+        images: Vec::new(),
         reasoning: Some(String::new()),
         ..m
     };

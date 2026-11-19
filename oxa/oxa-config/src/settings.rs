@@ -421,9 +421,20 @@ impl Settings {
             Source::Default
         }
     }
+    /// True when a layer or an in-memory override sets `key`. A built-in default does not count.
+    pub(crate) fn is_explicit(&self, key: &str) -> bool {
+        self.source(key) != Source::Default || self.overrides.iter().any(|(k, _)| k == key)
+    }
     /// The value `key` has in the user file, if any (not the merged value).
     pub fn user_value(&self, key: &str) -> Option<&Value> {
         lookup(&self.user, key)
+    }
+    /// Read a numeric setting from the user file with no project override.
+    pub fn user_u32(&self, key: &str, default: u32) -> u32 {
+        self.user_value(key)
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(default)
     }
     /// Set a key in memory and persist it to the user file (`project = false`) or the project
     /// file, keeping unrelated content and key order of that file. A field of a descriptor with
