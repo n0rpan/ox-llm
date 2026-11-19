@@ -55,10 +55,16 @@ fn setup(env: &TestEnv, base: &str) {
     write!(file, "{}", json!({"opencode":CREDENTIAL})).unwrap();
 }
 fn run(env: &TestEnv, args: &[&str]) -> Output {
+    run_with(env, args, &[])
+}
+fn run_with(env: &TestEnv, args: &[&str], extra: &[(&str, &str)]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
     cmd.current_dir(env.work())
         .env_clear()
         .envs(env.envs("http://127.0.0.1:9"));
+    for (name, value) in extra {
+        cmd.env(name, value);
+    }
     cmd.args(args).stdin(Stdio::null()).output().unwrap()
 }
 fn terminal(output: &Output) -> Value {
@@ -432,6 +438,138 @@ fn project_default_cannot_select_a_credential_enabled_go_route() {
     assert!(mock.requests().is_empty());
     assert!(!env.agent_dir().join("cloud-ledger").exists());
     mock.assert_healthy();
+}
+
+#[test]
+fn an_agent_marker_does_not_make_a_model_argument_the_owners_choice() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"synthetic plan reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    fs::write(path, settings.to_string()).unwrap();
+
+    // Tool subprocesses carry these markers; their `--model` is not the owner's selection.
+    for marker in ["AI_AGENT", "OXA_CODING_AGENT"] {
+        let output = run_with(
+            &env,
+            &["--model", MODEL, "--no-tools", "-p", "Synthetic task"],
+            &[(marker, "1")],
+        );
+        assert!(!output.status.success(), "{marker}");
+        assert!(mock.requests().is_empty(), "{marker}");
+    }
+    assert!(!env.agent_dir().join("cloud-ledger").exists());
+
+    // The same run from the owner's own shell does select the key-only Go model.
+    let owner = run(&env, &["--model", MODEL, "--no-tools", "-p", "Synthetic task"]);
+    assert!(
+        owner.status.success(),
+        "{}",
+        String::from_utf8_lossy(&owner.stderr)
+    );
+    assert_eq!(mock.requests().len(), 2);
+    mock.assert_healthy();
+}
+
+#[test]
+fn a_fuzzy_local_alias_does_not_hide_the_exact_go_model_in_a_scope() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"synthetic plan reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    // Native local with a neighbouring alias, and no explicit Go switch: the key plus the
+    // exact scope is the admission.
+    settings["oxa"]["engine"] = json!({"inProcessLocal": true});
+    settings["oxa"]["local"] = json!({"binary":"/synthetic/not-launched-oxe",
+        "models":{"opencode/synthetic-flash-local":{"model":"/synthetic/model.gguf"}},
+        "limits":{"opencode/synthetic-flash-local":{"context_window":4096,"max_output":64,
+            "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,"mtp_state_bytes":0,"margin_bytes":1044480}}}});
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    fs::write(path, settings.to_string()).unwrap();
+
+    let output = run(&env, &["--models", MODEL, "--no-tools", "-p", "Synthetic task"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("synthetic plan reply"));
+    assert_eq!(mock.requests().len(), 2);
+    assert_eq!(rows(&env).len(), 1);
+    mock.assert_healthy();
+}
+
+#[test]
+fn a_go_scope_admission_serves_only_that_scope() {
+    let env = TestEnv::new();
+    let other = MockOpenAi::start(vec![]);
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"synthetic plan reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    // The owner's Go scope is the admission, and another provider's alias is configured.
+    settings["enabledModels"] = json!([MODEL]);
+    settings["oxa"]["cloud"]["models"]["synthetic-other"] = json!({
+        "provider":"openai", "upstream_model":"synthetic-other",
+        "context_window":32768, "max_output":64,
+        "base_url":format!("http://{}", other.address())
+    });
+    fs::write(path, settings.to_string()).unwrap();
+    // The project may not move the run onto the other provider.
+    env.write(
+        "work/.oxa/settings.json",
+        &json!({"defaultModel":"synthetic-other"}).to_string(),
+    );
+
+    // The run stays on the model the owner's scope named, not on the project's choice.
+    let output = run(&env, &["--no-tools", "-p", "Synthetic task"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("synthetic plan reply"));
+    assert!(
+        other.requests().is_empty(),
+        "a Go admission must not spend another provider: {:?}",
+        other.requests()
+    );
+    assert_eq!(rows(&env).len(), 1);
+    mock.assert_healthy();
+    other.assert_healthy();
 }
 
 #[test]

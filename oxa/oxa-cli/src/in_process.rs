@@ -326,8 +326,7 @@ fn select_for(
     // its own and the effective settings do have one.
     let project_scope = scope.is_empty() && !effective.list("enabledModels").is_empty();
     let scope_go = !scope.is_empty()
-        && !(native_local
-            && routing::scope_resolves_in_catalog(scope, endpoint, local_models.iter().cloned()));
+        && !(native_local && routing::scope_owns_in_catalog(scope, endpoint, local_models.iter().cloned()));
     // A keyed catalog is available for inventory and owner model selection.
     // A project default alone cannot choose a new cloud transport.
     let native_cloud = explicit_cloud
@@ -398,6 +397,13 @@ fn select_for(
             go_error: go_error.cloned().or(go_failure),
             endpoint: endpoint.to_owned(),
             default: effective.string("defaultModel"),
+            // A gateway opened by the owner's Go scope answers for that scope only. An owner
+            // switch (`oxa.cloud.opencode.enabled`, `oxa.engine.inProcessCloud`) opens it whole.
+            admitted: if explicit_go || explicit_cloud {
+                Vec::new()
+            } else {
+                scope.to_vec()
+            },
         }
         .into_engine(requested)
         .map(|engine| (engine, catalog_notices));

@@ -53,6 +53,9 @@ pub(super) struct Routed {
     pub go_error: Option<OxaError>,
     pub endpoint: String,
     pub default: Option<String>,
+    /// The models the owner's scope admitted. Empty means the whole catalog was admitted by an
+    /// owner switch; otherwise a model outside it is not this run's to spend.
+    pub admitted: Vec<String>,
 }
 impl Routed {
     pub fn into_engine(mut self, requested: Option<&str>) -> Result<Arc<dyn Engine>, OxaError> {
@@ -93,10 +96,23 @@ impl Routed {
             None
         }
     }
+    /// `true` when the owner scope that admitted this gateway names `model`. The effective
+    /// settings may replace the scope with the project's, so selection must stay inside the
+    /// admitted one: another provider's alias is not reached on a Go admission's authority.
+    fn admitted(&self, model: &str) -> bool {
+        self.admitted.is_empty()
+            || oxa_config::resolve_scoped(
+                &self.admitted,
+                &model_refs(&self.endpoint, self.cloud_models.iter().cloned()),
+            )
+            .0
+            .iter()
+            .any(|model_ref| own_name(&model_ref.model, &self.endpoint) == own_name(model, &self.endpoint))
+    }
     fn backend(&self, model: &str) -> Result<&dyn Engine, OxaError> {
         let backend = if self.local_models.contains(model) {
             &self.local
-        } else if self.cloud_models.contains(model) {
+        } else if self.cloud_models.contains(model) && self.admitted(model) {
             &self.cloud
         } else if let Some(error) = self.dynamic_error(model) {
             return Err(error.clone());
@@ -169,42 +185,47 @@ impl Engine for Routed {
 /// `…flash`) does not make the local catalog the owner, so it may not exclude the cloud model of
 /// exactly that name.
 pub(super) fn catalog_owns(pattern: &str, endpoint: &str, models: impl IntoIterator<Item = String>) -> bool {
-    /// The name without a `:thinking` suffix, case-folded: the resolver's own spelling rules.
-    fn bare(model: &str) -> String {
-        let model = model.trim().to_ascii_lowercase();
-        match model.find(':') {
-            Some(i) => model[..i].to_string(),
-            None => model,
-        }
-    }
     let available = model_refs(endpoint, models);
+    let want = own_name(pattern, endpoint);
     // `oxe/opencode/x` and `opencode/x` name the same model: the resolver returns the latter.
-    let without_endpoint = |model: &str| {
-        let bare = bare(model);
-        match bare.strip_prefix(&format!("{}/", endpoint.to_ascii_lowercase())) {
-            Some(rest) if !endpoint.is_empty() => rest.to_string(),
-            _ => bare,
-        }
-    };
-    let want = without_endpoint(pattern);
     oxa_config::resolve_scoped(&[pattern.to_string()], &available)
         .0
         .iter()
-        .any(|model| without_endpoint(&model.model) == want)
+        .any(|model| own_name(&model.model, endpoint) == want)
 }
 
-/// `true` when every pattern of `scope` resolves in `models` (the local catalog): such a scope
-/// names local models only, so it may not open the cloud gateway.
-pub(super) fn scope_resolves_in_catalog(
+/// The name without a `:thinking` suffix or an endpoint prefix, case-folded.
+fn own_name(model: &str, endpoint: &str) -> String {
+    let bare = model
+        .trim()
+        .to_ascii_lowercase()
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    match bare.strip_prefix(&format!("{}/", endpoint.to_ascii_lowercase())) {
+        Some(rest) if !endpoint.is_empty() => rest.to_string(),
+        _ => bare,
+    }
+}
+
+/// `true` when every entry of `scope` is owned by `models`: a concrete name must be an exact
+/// model of that catalog (a fuzzy neighbour is not), while a wildcard may match one. A local
+/// alias named `opencode/x-local` therefore cannot hide a requested `opencode/x`.
+pub(super) fn scope_owns_in_catalog(
     scope: &[String],
     endpoint: &str,
-    models: impl IntoIterator<Item = String>,
+    models: impl IntoIterator<Item = String> + Clone,
 ) -> bool {
-    let available = model_refs(endpoint, models);
     !scope.is_empty()
         && scope.iter().all(|pattern| {
-            !oxa_config::resolve_scoped(std::slice::from_ref(pattern), &available)
-                .0
-                .is_empty()
+            let pattern = pattern.trim();
+            if pattern.contains(['*', '?']) {
+                !oxa_config::resolve_scoped(&[pattern.to_string()], &model_refs(endpoint, models.clone()))
+                    .0
+                    .is_empty()
+            } else {
+                catalog_owns(pattern, endpoint, models.clone())
+            }
         })
 }
