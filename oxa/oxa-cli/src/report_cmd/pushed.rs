@@ -206,8 +206,8 @@ fn block_scalar_secret(text: &str) -> bool {
     BLOCK
         .get_or_init(|| {
             regex::Regex::new(concat!(
-                r"(?i)(?:^|[^a-z])(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|token",
-                r"|secret|password|passwd|passphrase|authorization|key)\s*:\s*[|>](?:[+-]?\d?|\d[+-])?\s*(?:#[^\n]*)?\n[^\n]*?([^\s].*)$"
+                r#"(?i)(?:^|[^a-z])"?[^"\n]*(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|token"#,
+                r#"|secret|password|passwd|passphrase|authorization|key)"?\s*:\s*[|>](?:[+-]?\d?|\d[+-])?\s*(?:#[^\n]*)?\n[^\n]*?([^\s].*)$"#
             ))
             .expect("YAML secret block pattern")
         })

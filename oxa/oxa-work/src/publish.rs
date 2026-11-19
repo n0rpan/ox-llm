@@ -365,6 +365,7 @@ fn scan_patch(
             if row.starts_with("new file mode ") {
                 added = true;
             } else if let Some(header) = row.strip_prefix("+++ ") {
+                previous_added = None;
                 path = diff_path(header);
                 if let Some(name) = path.as_deref().filter(|_| added) {
                     let item = PushedContent {
@@ -1105,7 +1106,7 @@ mod scan_tests {
     /// JSON pair may split across two added lines. Both must still reach the scanners.
     #[test]
     fn split_and_indented_credentials_are_found() {
-        for header in ["|2-", "|+2", ">-2", "|2 # credential", "|"] {
+        for header in ["|2-", "|+2", ">-2", "|2 # credential", "|", r#"|-"#] {
             let patch = format!(
                 "\0aaaa\n\ndiff --git a/settings.yml b/settings.yml\nnew file mode 100644\n--- /dev/null\n+++ b/settings.yml\n@@ -0,0 +1,2 @@\n+password: {header}\n+  opaque-pass-value-17\n"
             );
@@ -1115,6 +1116,12 @@ mod scan_tests {
             );
         }
         let split = "\0aaaa\n\ndiff --git a/settings.json b/settings.json\nnew file mode 100644\n--- /dev/null\n+++ b/settings.json\n@@ -0,0 +1,3 @@\n+{\n+  \"password\":\n+  \"opaque-pass-value-17\"\n";
+        // A quoted YAML key opens a block scalar too (`"password": |-`).
+        let quoted = "\0aaaa\n\ndiff --git a/settings.yml b/settings.yml\nnew file mode 100644\n--- /dev/null\n+++ b/settings.yml\n@@ -0,0 +1,2 @@\n+\"password\": |-\n+  opaque-pass-value-17\n";
+        assert!(
+            scan_patch(quoted, &containing("opaque-pass-value-17"), &|_, _| None).is_err(),
+            "a quoted YAML key did not open the block scalar"
+        );
         assert!(
             scan_patch(split, &containing("opaque-pass-value-17"), &|_, _| None).is_err(),
             "a JSON credential split over two lines was not scanned"
