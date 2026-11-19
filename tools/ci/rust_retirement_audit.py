@@ -9,7 +9,7 @@ import sys
 import tomllib
 
 
-WORKSPACES = ("oxa", "engine", "oxc-rs")
+WORKSPACES = ("oxa", "engine")
 
 
 def main():

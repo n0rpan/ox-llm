@@ -117,7 +117,7 @@ maintainer, who says in the PR when a hardware check is needed.
   work around it.
 - **CI tiers:** draft PRs run formatting and all secret/SDK/isolation/receipt scans (plus cheap path
   controls). Ready PRs also run clippy, the oxa build and the x86 stub checks. Engine/Flash builds,
-  oxa's mandatory-bwrap workspace tests and the lab suite skip at job level on PR events, so every
+  oxa's mandatory-bwrap workspace tests skip at job level on PR events, so every
   required check name still reports. The merge queue (`merge_group`), manual and nightly runs execute
   the full set regardless of changed paths. The queue is the full integration gate. Main pushes run
   the fast set only: the queue already ran the full set on exactly the tree that lands, and the nightly
@@ -186,8 +186,6 @@ consumers against main. Shared workspace manifests/locks expand the affected wor
 release-relevant features, Cargo registry/target caches via GitHub-owned actions, and standard free
 Ubuntu x64/ARM runners. Cache keys include the lockfile, toolchain and architecture; lane caches
 use their own namespace and branch scope, preserving the required workflows' main-cache policy.
-The native-controller crate runs its existing CLI conformance/refusal controls against the real
-native binary; an empty Rust unit inventory alone never qualifies it.
 Native engine tests requiring Oryon CPU features remain on the existing self-hosted route. The lane
 workflow does not replace or change the merge queue's required checks. Start full-workspace and
 release CI only when the change is close to done. Each started job records its queue delay in its
@@ -214,7 +212,6 @@ Run these in GitHub CI before saying a task is done. Automatic local helpers mus
   - `cargo clippy -p <crate> -- -D warnings` for each touched crate
   - `cargo test -p <crate>` for each touched crate
   - UI/TUI change: CI must build the real binary and drive it through the existing PTY/tmux live checks. Unit tests alone are not enough; they have passed for changes that did nothing in the real TUI.
-- **lab** (Python controller, in CI): `cd oxc && ./tools/run_lab_tests.sh`. It sets a throwaway HOME; never run the tests with the real HOME.
 - **Bug fix:** show the new test failing before the fix.
 
 ## Hard rules (never break these)
@@ -268,15 +265,12 @@ hardwire it further to the local engine).
 | B2 | After this there is NO profile name at all: no `--profile`, no `oxa.profile`, no `OXA_PROFILE`; docs say "oxa's tools/context handling", no brand name. Delete the `Profile` type and let the compiler find every branch: `oxa-proto/src/profile.rs`, `oxa-core/src/profile.rs`, the `Profile::` branches in `oxa-core/src/tune.rs`, `compaction.rs`, `prefix.rs`, `session.rs`, the `oxa.profile` setting and its env override in `oxa-config`. The local values become the defaults. Keep the thinking policy in `oxa-config/src/profile.rs`. In the same PR, remove any pi pass and `OXA_PARITY_PROFILE`/`profile_env` from the workflows. | T2 |
 | B3 | Remove pi session import (`oxa-session/src/migrate.rs`, `/import`, rows SLASH-016, SES-008 and FMT-019, `h_import_session.rs`, the import part of `b14_fork_clone_import_picker_metadata.rs`) and `oxa config --import-pi` (`oxa-cli/src/config_cmd.rs`, `args.rs`, rows CLI-053 and CFG-008). | T2 |
 | B4 | Tests: drop the "O" rows in `PARITY.md` (they assert that a pi feature is absent) and the pi-exact branches in `oxa-parity/tests/{tools,compaction,extensions}.rs` and in `oxa-core` tests naming `Profile::Pi`. Rename `fixtures/pi` to plain goldens. Rewrite the ship-gate text: the parity suite becomes oxa's own behaviour regression suite. | T1/T2 |
-| B5 | Settings and docs: remove the pi fallbacks (`defaultTools` restoring pi's four, `thinkingBudgets` accepted with a warning), replace `oxa/docs/differences.md` + `oxa/ci/gen_docs.py` with one paragraph "derived from pi", retire `WAVES.toml`, and remove the P arm in `oxc/tools/interim/`, the I3 matrix code and any pi job in `.github/workflows/`. | T1/T2 |
+| B5 | Settings and docs: remove the pi fallbacks (`defaultTools` restoring pi's four, `thinkingBudgets` accepted with a warning), replace `oxa/docs/differences.md` + `oxa/ci/gen_docs.py` with one paragraph "derived from pi", retire `WAVES.toml`, and remove the I3 matrix code and any pi job in `.github/workflows/`. | T1/T2 |
 
 ## Wave C: after the maintainer says "Wave C go"
 
 | ID | Task | Tier |
 |---|---|---|
-| C1 | Remove the one-off stage scripts in `oxc/tools/`: `stage_controller_release.py`, `stage_flash_memory.py`, `stage_flash_oxe_production.py`, `stage_idle_output_defaults.py`, `stage_npu_image.py`, `stage_ornith_beta.py`, `stage_oxe_production.py`, `stage_qwen_night.py`, `stage_studio_npu.py`, `stage_v013_final.py`, `v013_batch.py`. **Keep** `stage_v020_final.py`, `stage_rollback_guard.py` and the tiny-real loop. **First** grep that the uninstaller and the rollback guard don't import them. | T1 |
-| C2 | Remove `oxc/benchmarks/gatepack/` unless something on `main` still calls it. Simplify `oem_drills.py` and `release_update.py` to install, rollback and a smoke check. **Keep** the tree/secret scan in `export_receipt.py` untouched. | T1/T2 |
-| C3 | Controller v0.1.x leftovers: `classic_beta.py`, `RETIRED_MODELS`. For `oxc/benchmarks/`, keep only results cited in public docs; fold model qualification data into the model catalog. Open this as a draft with a list of what you'd delete first. | T2 |
 | C4 | Engine features that are default-off with no user path: fair time-slicing (`fair.rs`, `--fair-quantum-ms`) and the MTP guard (`mtp_guard.rs`). **Don't remove them yet**: open a draft PR that adds an oxc config switch for each (default off), so they can be measured on hardware. | T2 |
 
 ## Wave D: cloud models through oxc (implement now; D1 and D4 are T3)
@@ -304,8 +298,7 @@ OpenAI v1 endpoint by choosing a model name.
   capability; also in the start banner. Test both states.
 - **D5 tests:** a mock OpenRouter server (no network): routing, the key never logged or exposed, cloud off by
   default, offline refusal (oxc and oxa), the budget cap, an oxa tool-call loop through oxc to the mock.
-- **D6 Anthropic upstream:** catalog entries of kind `remote/anthropic`, implemented in oxc with the official
-  `anthropic` Python SDK and the native Messages API (not an OpenAI-compat shim): translate OpenAI v1 ↔
+- **D6 Anthropic upstream:** catalog entries of kind `remote/anthropic`, implemented in oxc in Rust against the native Messages API (not an OpenAI-compat shim): translate OpenAI v1 ↔
   Messages (tools, streaming tool calls, `stop_reason` incl. `refusal`), map thinking to adaptive thinking +
   `output_config.effort`, and place `cache_control` breakpoints on the frozen prefix and the latest history
   turn. Same key handling, cloud-off default, budget cap and ledger as D1/D2. Tests against a mock server only.

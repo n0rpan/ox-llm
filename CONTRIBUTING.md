@@ -5,7 +5,7 @@ a measurement, or that make measuring easier, are the most useful. Good places t
 [oxc/docs/HELP-WANTED.md](oxc/docs/HELP-WANTED.md).
 
 Each product has its own guide with the details:
-[oxc/CONTRIBUTING.md](oxc/CONTRIBUTING.md) (measurement rules, receipts, privacy, lab tests) and
+[oxc/CONTRIBUTING.md](oxc/CONTRIBUTING.md) (measurement rules, receipts, privacy) and
 [engine/CONTRIBUTING.md](engine/CONTRIBUTING.md) (kernels, vendored code, engine tests).
 
 ## Ground rules
@@ -17,8 +17,7 @@ Each product has its own guide with the details:
    a decision. These laptops throttle within about 30 s of all-core load.
 3. **Production shapes:** real context sizes, head counts and thread counts.
 4. **New paths ship behind a flag, default off,** with a model-free bitwise or reference test.
-5. **Client-neutral core:** no client-specific code, version pins or byte templates in `engine/` or
-   `oxc/src`. Client policy belongs in the client (`oxa/`) or in a thin optional adapter.
+5. **Client-neutral core:** no client-specific code, version pins or byte templates in `engine/`. Client policy belongs in the client (`oxa/`) or in a thin optional adapter.
 6. **Isolation in tests:** every test runs with a throwaway `HOME` and XDG directories, and never
    touches an installed runtime, its state or a model.
 
@@ -118,7 +117,6 @@ run the test with `env -u TMPDIR cargo test ...` to use the system temporary dir
 `CARGO_TARGET_DIR` may still point inside the checkout for build output.
 
 ```sh
-cd oxc && ./tools/run_lab_tests.sh                       # lab
 cd engine && cargo test --release --locked --workspace --exclude qwen4exp   # engine (Flash: see engine/CONTRIBUTING.md)
 cd oxa && cargo test --locked                            # oxa
 python3 -I -m unittest discover -s tools/release/tests   # release tooling (repository root)
@@ -129,8 +127,7 @@ Hosted CI runs in three tiers:
 - Draft PRs run formatting, cheap path controls and all secret, SDK-material, product-isolation
   and receipt scans. Test locally while iterating, then mark the PR ready for review.
 - Ready PRs also run clippy, the oxa build and the x86 stub checks. Engine/Flash builds, oxa's
-  mandatory-bwrap workspace tests and the lab suite skip via job-level conditions, so all nine
-  required check names still report. Documentation links are checked when applicable.
+  mandatory-bwrap workspace tests skip via job-level conditions, so every required check name still reports. Documentation links are checked when applicable.
 - The native merge queue (`merge_group`) is the full integration gate. Queue runs, pushes to
   main, manual runs and nightly runs execute the full set, including the loopback OpenAI contract,
   regardless of changed paths. Ordinary branch pushes do not duplicate the PR workflow.
