@@ -29,7 +29,7 @@ pub use gitdirs::{resolve as resolve_git_binds, GitBinds, MAX_ALTERNATES_DEPTH};
 pub use layout::{
     expand_home, home_protected_paths, is_home_itself, is_home_or_above, is_secret_name, protected_paths,
     sensitive_paths, toolchain_env, Layout, LayoutInputs, SETTING_ALLOW_HOME_WRITE, SETTING_READ_PATHS,
-    SETTING_WRITE_PATHS,
+    SETTING_SOCKETS, SETTING_WRITE_PATHS,
 };
 pub use net::{sandbox_net_setting, NetSandbox, SETTING_SANDBOX_NET};
 pub use offline::{no_network_argv, offline_argv};
@@ -247,8 +247,67 @@ impl Bwrap {
         capture: bool,
     ) -> ExecResult {
         let (public, secret) = split_secrets(s);
+        use std::os::fd::AsRawFd;
+        let pinned: Vec<(&Path, std::fs::File)> = Vec::new();
+        #[cfg(target_os = "linux")]
+        let mut pinned = pinned;
+        #[cfg(target_os = "linux")]
+        if public.net {
+            for socket in &self.layout.sockets {
+                match PinnedCwd::open_socket(socket) {
+                    Ok(fd) => pinned.push((socket, fd)),
+                    Err(error) => {
+                        let mut result =
+                            refused(format!("cannot validate a configured sandbox socket: {error}"));
+                        if !capture {
+                            live(&result.output);
+                            result.output.clear();
+                        }
+                        return result;
+                    }
+                }
+            }
+        }
+        let sockets: Vec<_> = pinned
+            .iter()
+            .map(|(path, file)| (*path, file.as_raw_fd()))
+            .collect();
+        // Offline, a listed socket is masked at its path rather than bound by fd. A mask
+        // under a writable mount can be moved away by renaming its parent, which would
+        // expose the real host socket through the read-only root bind: refuse such a
+        // configuration instead of emitting a mask that can drift (read-only areas, like
+        // the remounted runtime-IPC directories, keep the mask stable).
+        if !public.net {
+            for socket in &self.layout.sockets {
+                if offline_socket_mask_can_drift(
+                    socket,
+                    &public.cwd,
+                    public.writable,
+                    &self.home,
+                    &self.layout,
+                ) {
+                    let mut result = refused(format!(
+                        "the configured sandbox socket {} lies under a writable mount; its \
+                         offline mask could be moved, so the sandbox refuses. Relocate the \
+                         socket or remove it from oxa.sandbox.sockets.",
+                        socket.display()
+                    ));
+                    if !capture {
+                        live(&result.output);
+                        result.output.clear();
+                    }
+                    return result;
+                }
+            }
+        }
         let mut argv = vec![self.bwrap.to_string_lossy().into_owned()];
-        argv.extend(bwrap_args_with(&public, &self.home, &self.layout));
+        argv.extend(bwrap::bwrap_args_pinned(
+            &public,
+            &self.home,
+            &self.layout,
+            bwrap::account_home().as_deref(),
+            &sockets,
+        ));
         let mut args_fd = None;
         if !secret.is_empty() {
             let mut data = Vec::new();
@@ -273,10 +332,11 @@ impl Bwrap {
                 }
             }
         }
-        let res = run::run_argv_fd(
+        let fds = sockets.iter().map(|(_, fd)| *fd).chain(args_fd).collect();
+        let res = run::run_argv_fds(
             &argv,
             stdin,
-            args_fd,
+            fds,
             s.timeout_s,
             c,
             live,
@@ -290,9 +350,151 @@ impl Bwrap {
     }
 }
 
+fn offline_socket_mask_can_drift(
+    socket: &Path,
+    cwd: &Path,
+    writable: bool,
+    home: &Path,
+    layout: &Layout,
+) -> bool {
+    canonical_root_contains(cwd, socket)
+        || canonical_root_contains(home, socket)
+        || socket.starts_with(Path::new("/tmp"))
+        || layout
+            .write
+            .iter()
+            .any(|root| canonical_root_contains(root, socket))
+        || (writable
+            && layout
+                .git
+                .rw
+                .iter()
+                .any(|root| canonical_root_contains(root, socket)))
+}
+
+fn canonical_root_contains(root: &Path, path: &Path) -> bool {
+    path.starts_with(root.canonicalize().unwrap_or_else(|_| root.to_path_buf()))
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod secret_tests {
     use super::*;
+
+    #[test]
+    fn bwrap_child_receives_a_socket_descriptor() {
+        use std::os::unix::fs::PermissionsExt;
+        let env = oxa_fake::TestEnv::new();
+        let socket = env.work().join("socket");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let socket = socket.canonicalize().unwrap();
+        let fake = env.write(
+            "bin/mock-bwrap",
+            "#!/bin/bash\nwhile [ \"$1\" != --bind-fd ] && [ \"$#\" -gt 0 ]; do shift; done\n[ \"$1\" = --bind-fd ] && test -S \"/proc/self/fd/$2\"\n",
+        );
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sandbox = Bwrap {
+            bwrap: fake,
+            home: env.home(),
+            layout: Layout {
+                sockets: vec![socket],
+                ..Layout::default()
+            },
+        };
+        let spec = ExecSpec {
+            command: "true".into(),
+            cwd: env.work(),
+            writable: true,
+            net: true,
+            timeout_s: Some(10),
+            env: Vec::new(),
+        };
+        let result = sandbox.run(&spec, &CancelToken::new(), &mut |_| {});
+        assert_eq!(
+            result.exit,
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&result.output)
+        );
+    }
+
+    #[test]
+    fn offline_socket_under_a_writable_mount_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let env = oxa_fake::TestEnv::new();
+        let socket = env.work().join("socket");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let socket = socket.canonicalize().unwrap();
+        // The refusal happens before any bwrap execution: a stub that must never run.
+        let fake = env.write("bin/mock-bwrap", "#!/bin/sh\necho ran >&2\nexit 1\n");
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sandbox = Bwrap {
+            bwrap: fake,
+            home: env.home(),
+            layout: Layout {
+                sockets: vec![socket],
+                ..Layout::default()
+            },
+        };
+        let spec = ExecSpec {
+            command: "true".into(),
+            cwd: env.work(),
+            writable: true,
+            net: false,
+            timeout_s: Some(10),
+            env: Vec::new(),
+        };
+        let result = sandbox.run(&spec, &CancelToken::new(), &mut |_| {});
+        let out = String::from_utf8_lossy(&result.output).into_owned();
+        assert!(
+            out.contains("under a writable mount"),
+            "the driftable mask must be refused, not launched: {out}"
+        );
+        assert!(!out.contains("ran"), "no bwrap may run for a driftable mask");
+    }
+
+    #[test]
+    fn symlinked_write_mount_is_canonicalized_for_offline_socket_check() {
+        use std::os::unix::fs::symlink;
+        let env = oxa_fake::TestEnv::new();
+        let writable = env.home().join("writable");
+        std::fs::create_dir_all(&writable).unwrap();
+        let socket = writable.join("socket");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let alias = env.home().join("write-alias");
+        symlink(&writable, &alias).unwrap();
+        assert!(canonical_root_contains(&alias, &socket));
+    }
+
+    #[test]
+    fn aliased_cwd_is_canonicalized_for_offline_socket_check() {
+        let env = oxa_fake::TestEnv::new();
+        let sub = env.work().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let socket = env.work().join("socket");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let aliased_cwd = sub.join("..");
+
+        assert!(offline_socket_mask_can_drift(
+            &socket.canonicalize().unwrap(),
+            &aliased_cwd,
+            true,
+            &env.home(),
+            &Layout::default(),
+        ));
+    }
+
+    #[test]
+    fn writable_external_git_dir_is_in_offline_socket_check() {
+        let mut git_layout = Layout::default();
+        git_layout.git.rw.push(PathBuf::from("/external.git"));
+        assert!(offline_socket_mask_can_drift(
+            Path::new("/external.git/socket"),
+            Path::new("/workspace"),
+            true,
+            Path::new("/home/example"),
+            &git_layout,
+        ));
+    }
 
     #[test]
     fn args_pipe_is_cloexec_and_readable() {

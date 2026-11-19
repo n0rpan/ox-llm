@@ -240,7 +240,7 @@ mod tests {
 "#;
         fs::write(
             &path,
-            &[
+            [
                 reader.as_slice(),
                 without_quota.as_slice(),
                 publications.as_slice(),
@@ -270,7 +270,7 @@ mod tests {
         );
         fs::write(
             &path,
-            &[
+            [
                 reader.as_slice(),
                 padded_publication.as_bytes(),
                 padded_publication.as_bytes(),

@@ -140,7 +140,7 @@ fn lead_chat_keeps_the_metered_guard_and_routes_the_go_subscription_choice() {
     // Credentials and the ledger deliberately refuse repository paths; keep HOME
     // outside the checkout as the other in-process cloud proofs do.
     let env = TestEnv::new_in(std::path::Path::new("/tmp"));
-    fs::set_permissions(&env.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(env.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let metered = MockAnthropic::start(vec![]);
     let go = MockOpenAi::start_with(|base| {
         vec![
@@ -252,7 +252,7 @@ fn length_stream(partial: &str) -> Reply {
 #[test]
 fn a_length_stopped_bounded_reply_fails_typed_without_an_impossible_retry() {
     let env = TestEnv::new_in(std::path::Path::new("/tmp"));
-    fs::set_permissions(&env.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(env.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let metered = MockAnthropic::start(vec![]);
     let go = MockOpenAi::start_with(|base| {
         // One chat process: one catalog discovery, then the one bounded turn.
@@ -345,7 +345,7 @@ fn a_length_stopped_bounded_reply_fails_typed_without_an_impossible_retry() {
 #[test]
 fn a_reasoning_heavy_go_reply_still_completes_inside_the_bounded_turn() {
     let env = TestEnv::new_in(std::path::Path::new("/tmp"));
-    fs::set_permissions(&env.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(env.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let metered = MockAnthropic::start(vec![]);
     let reasoning_usage = json!({"prompt_tokens":100,"completion_tokens":3050,"total_tokens":3150,
         "prompt_tokens_details":{"cached_tokens":80},"cost":0,

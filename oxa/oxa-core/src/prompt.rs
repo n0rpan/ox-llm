@@ -335,6 +335,10 @@ pub struct IdentityModel {
     pub context: u32,
     /// Maximum output tokens (0 = not published).
     pub max_output: u32,
+    /// Whether the endpoint reports that this model runs remotely.
+    pub remote: bool,
+    /// The remote provider reported by the endpoint (`None` for local models).
+    pub remote_provider: Option<String>,
 }
 
 /// First paragraph of the identity: who oxa is and where it runs.
@@ -376,11 +380,11 @@ pub fn identity_text(f: &IdentityFacts) -> String {
     if f.models.is_empty() {
         lines.push("- Models: not known (the engine was not reachable when this was written); run `oxa --list-models` to see them".to_string());
     } else {
-        // A `provider/model` alias is a cloud model; an alias without `/` is local. Cloud
-        // models are named by provider only, so a catalog change does not change these bytes
-        // (and so not the cached prefix); `oxa --list-models` prints them with their limits.
+        // Cloud models are named by their reported provider only, so a catalog change does not
+        // change these bytes (and so not the cached prefix); `oxa --list-models` prints them
+        // with their limits.
         let (cloud, local): (Vec<&IdentityModel>, Vec<&IdentityModel>) =
-            f.models.iter().partition(|m| m.alias.contains('/'));
+            f.models.iter().partition(|m| m.remote);
         if !local.is_empty() {
             lines.push("- Local models (oxe loads one at a time; switching reloads it and reads the whole conversation again):".to_string());
             for m in local {
@@ -398,7 +402,10 @@ pub fn identity_text(f: &IdentityFacts) -> String {
                 });
             }
         }
-        let mut providers: Vec<&str> = cloud.iter().filter_map(|m| m.alias.split('/').next()).collect();
+        let mut providers: Vec<&str> = cloud
+            .iter()
+            .map(|m| m.remote_provider.as_deref().unwrap_or("unknown"))
+            .collect();
         providers.sort_unstable();
         providers.dedup();
         if !providers.is_empty() {
