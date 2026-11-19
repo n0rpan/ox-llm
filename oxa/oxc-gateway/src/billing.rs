@@ -41,10 +41,18 @@ impl SubscriptionLimits {
         let near = u128::from(total.requests) * 5 >= u128::from(self.requests) * 4
             || u128::from(total.tokens) * 5 >= u128::from(self.tokens) * 4;
         match (go, full, near) {
-            (true, true, _) => Some("OpenCode Go: projected usage reached 100% of oxa.cloud.subscription_limits; continuing."),
-            (true, false, true) => Some("OpenCode Go: projected usage reached 80% of oxa.cloud.subscription_limits; continuing."),
-            (false, true, _) => Some("ChatGPT plan: projected usage reached 100% of oxa.cloud.subscription_limits; continuing."),
-            (false, false, true) => Some("ChatGPT plan: projected usage reached 80% of oxa.cloud.subscription_limits; continuing."),
+            (true, true, _) => Some(
+                "OpenCode Go: projected usage reached 100% of oxa.cloud.subscription_limits; continuing.",
+            ),
+            (true, false, true) => {
+                Some("OpenCode Go: projected usage reached 80% of oxa.cloud.subscription_limits; continuing.")
+            }
+            (false, true, _) => Some(
+                "ChatGPT plan: projected usage reached 100% of oxa.cloud.subscription_limits; continuing.",
+            ),
+            (false, false, true) => Some(
+                "ChatGPT plan: projected usage reached 80% of oxa.cloud.subscription_limits; continuing.",
+            ),
             _ => None,
         }
     }
@@ -95,12 +103,45 @@ mod tests {
         let total = used.add(held).unwrap();
         // 2 of 3 requests and 60 of 100 tokens is below the first warning.
         let warn = |extra: Counts, go| limits.advisory_warning(total.add(extra).unwrap(), go);
-        assert_eq!(warn(Counts { requests: 0, tokens: 0 }, true), None);
+        assert_eq!(
+            warn(
+                Counts {
+                    requests: 0,
+                    tokens: 0
+                },
+                true
+            ),
+            None
+        );
         // The projected day reaches 80% of the tokens: advisory, naming the route.
-        assert!(warn(Counts { requests: 0, tokens: 20 }, true).unwrap().contains("80%"));
-        assert!(warn(Counts { requests: 1, tokens: 0 }, false).unwrap().starts_with("ChatGPT plan"));
+        assert!(warn(
+            Counts {
+                requests: 0,
+                tokens: 20
+            },
+            true
+        )
+        .unwrap()
+        .contains("80%"));
+        assert!(warn(
+            Counts {
+                requests: 1,
+                tokens: 0
+            },
+            false
+        )
+        .unwrap()
+        .starts_with("ChatGPT plan"));
         // Past 100% still only warns; there is no refusal path.
-        assert!(warn(Counts { requests: 5, tokens: 500 }, false).unwrap().contains("100%"));
+        assert!(warn(
+            Counts {
+                requests: 5,
+                tokens: 500
+            },
+            false
+        )
+        .unwrap()
+        .contains("100%"));
     }
 
     #[test]

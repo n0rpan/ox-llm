@@ -22,7 +22,13 @@ fn signed_in_chatgpt(dirs: &Dirs) -> bool {
         .is_some_and(|dir| dir.join("chatgpt-auth.json").is_file())
 }
 
-fn route(provider: &str, upstream: &str, context: u32, output: u32, pricing: Option<Value>) -> (String, Value) {
+fn route(
+    provider: &str,
+    upstream: &str,
+    context: u32,
+    output: u32,
+    pricing: Option<Value>,
+) -> (String, Value) {
     let mut value = json!({
         "provider": provider,
         "upstream_model": upstream,
@@ -52,8 +58,20 @@ fn anthropic() -> Vec<(String, Value)> {
         tier
     };
     vec![
-        route("anthropic", "claude-opus-5-5", 1_000_000, 128_000, flat(4.0, 20.0)),
-        route("anthropic", "claude-sonnet-5-5", 1_000_000, 128_000, flat(2.0, 10.0)),
+        route(
+            "anthropic",
+            "claude-opus-5-5",
+            1_000_000,
+            128_000,
+            flat(4.0, 20.0),
+        ),
+        route(
+            "anthropic",
+            "claude-sonnet-5-5",
+            1_000_000,
+            128_000,
+            flat(2.0, 10.0),
+        ),
         route(
             "anthropic",
             "claude-haiku-5-5",
@@ -61,8 +79,20 @@ fn anthropic() -> Vec<(String, Value)> {
             128_000,
             Some(json!({"tiers": [haiku(0.1, 0.5, json!(100_000)), haiku(0.5, 2.5, Value::Null)]})),
         ),
-        route("anthropic", "claude-opus-4-8", 1_000_000, 128_000, flat(5.0, 25.0)),
-        route("anthropic", "claude-sonnet-4-6", 1_000_000, 128_000, flat(3.0, 15.0)),
+        route(
+            "anthropic",
+            "claude-opus-4-8",
+            1_000_000,
+            128_000,
+            flat(5.0, 25.0),
+        ),
+        route(
+            "anthropic",
+            "claude-sonnet-4-6",
+            1_000_000,
+            128_000,
+            flat(3.0, 15.0),
+        ),
         route("anthropic", "claude-haiku-4-5", 200_000, 64_000, flat(1.0, 5.0)),
     ]
 }
@@ -188,7 +218,10 @@ mod tests {
         let applied = with_keyed_defaults(&settings, &dirs);
         assert!(applied.bool("oxa.engine.inProcessCloud", false));
         assert!(applied.bool("oxa.cloud.discover_models", false));
-        let models = applied.get("oxa.cloud.models").and_then(Value::as_object).unwrap();
+        let models = applied
+            .get("oxa.cloud.models")
+            .and_then(Value::as_object)
+            .unwrap();
         assert!(models.contains_key("anthropic/claude-opus-5-5"));
         // Only the keyed provider's models appear.
         assert!(models.keys().all(|alias| alias.starts_with("anthropic/")));
@@ -204,10 +237,14 @@ mod tests {
         assert!(applied.get("oxa.cloud.models").is_none());
         let own = json!({"provider":"openai","upstream_model":"gpt-5","context_window":1000,"max_output":10,
             "pricing":{"input_per_million":1,"output_per_million":2}});
-        let settings = user(json!({"oxa":{"cloud":{"discover_models":false,"models":{"openai/gpt-5":own.clone()}}}}));
+        let settings =
+            user(json!({"oxa":{"cloud":{"discover_models":false,"models":{"openai/gpt-5":own.clone()}}}}));
         let applied = with_keyed_defaults(&settings, &dirs);
         assert!(!applied.bool("oxa.cloud.discover_models", true));
-        let models = applied.get("oxa.cloud.models").and_then(Value::as_object).unwrap();
+        let models = applied
+            .get("oxa.cloud.models")
+            .and_then(Value::as_object)
+            .unwrap();
         assert_eq!(models["openai/gpt-5"], own);
         assert!(models.contains_key("anthropic/claude-sonnet-5-5"));
     }
@@ -227,7 +264,10 @@ mod tests {
         let settings = user(json!({}));
         let applied = with_keyed_defaults(&settings, &dirs);
         assert!(cloud_enabled(&settings, &dirs));
-        let models = applied.get("oxa.cloud.models").and_then(Value::as_object).unwrap();
+        let models = applied
+            .get("oxa.cloud.models")
+            .and_then(Value::as_object)
+            .unwrap();
         assert!(models.values().all(|route| route["provider"] == "chatgpt"));
         assert!(!models.is_empty());
     }
@@ -235,7 +275,11 @@ mod tests {
     #[test]
     fn every_recommended_model_is_a_valid_priced_route() {
         for (alias, route) in anthropic().into_iter().chain(openai()) {
-            let provider = if route["provider"] == "anthropic" { Provider::Anthropic } else { Provider::OpenAi };
+            let provider = if route["provider"] == "anthropic" {
+                Provider::Anthropic
+            } else {
+                Provider::OpenAi
+            };
             Model::new(
                 &alias,
                 provider,
