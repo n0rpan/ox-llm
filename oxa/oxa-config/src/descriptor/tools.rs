@@ -101,7 +101,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     )
     .control(Control::Path)
     .apply(Apply::Reload)
-    .web(WebEdit::Terminal)
+    .web(WebEdit::Confirm)
     .widens("Bash and `!cmd` will run in this shell."),
     d(
         "shellCommandPrefix",
@@ -112,7 +112,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     )
     .text()
     .apply(Apply::Reload)
-    .web(WebEdit::Terminal)
+    .web(WebEdit::Confirm)
     .widens("Text is put in front of every bash command."),
     d(
         "oxa.webSearch.enabled",
@@ -156,7 +156,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     )
     .control(Control::List(Item::Text))
     .apply(Apply::Reload)
-    .web(WebEdit::Terminal)
+    .web(WebEdit::Confirm)
     .widens("These commands run after each run that edits files."),
     d(
         "hooks",
@@ -165,9 +165,9 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Exec hooks",
         "A program to run on an event.",
     )
-    .control(Control::Map(MapKind::Text))
+    .control(Control::Raw)
     .apply(Apply::Reload)
-    .web(WebEdit::Terminal)
+    .web(WebEdit::Confirm)
     .widens("This program runs on the chosen event."),
     d(
         "oxa.builtinSkills",
@@ -220,7 +220,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     )
     .control(Control::List(Item::Path))
     .apply(Apply::Reload)
-    .web(WebEdit::Terminal)
+    .web(WebEdit::Confirm)
     .widens("Extension code from these folders runs in oxa."),
     d(
         "oxa.reportIssue.repo",
@@ -359,6 +359,33 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// Dynamic objects keep their nested values in the raw JSON editor, while sensitive settings
+    /// remain web-editable only through review and confirmation.
+    #[test]
+    fn structured_and_sensitive_controls_are_preserved() {
+        for key in [
+            "oxa.cloud.models",
+            "oxa.cloud.unpriced_discovered_pricing",
+            "oxa.cloud.discovery",
+            "hooks",
+        ] {
+            let descriptor = descriptors()
+                .iter()
+                .find(|descriptor| descriptor.key == key)
+                .unwrap_or_else(|| panic!("missing descriptor for {key}"));
+            assert_eq!(descriptor.control, Control::Raw, "{key}");
+        }
+
+        for key in ["shellPath", "shellCommandPrefix", "done", "hooks", "extensions"] {
+            let descriptor = descriptors()
+                .iter()
+                .find(|descriptor| descriptor.key == key)
+                .unwrap_or_else(|| panic!("missing descriptor for {key}"));
+            assert_eq!(descriptor.web, WebEdit::Confirm, "{key}");
+            assert!(!descriptor.widens.is_empty(), "{key}");
         }
     }
 }

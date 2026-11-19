@@ -21,7 +21,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         Group::Budgets,
         "",
         "Daily cloud budget",
-        "USD a day for metered cloud models.",
+        "USD a day for metered cloud models; unset means no cap.",
     )
     .decimal()
     .unit(Unit::Usd)
@@ -71,7 +71,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Cloud models",
         "Model routes: provider, upstream model, limits, prices.",
     )
-    .control(Control::Fields)
+    .control(Control::Raw)
     .apply(Apply::Restart)
     .web(WebEdit::Confirm)
     .user_only()
@@ -83,7 +83,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Prices for unpriced models",
         "Your own USD rates for discovered models with no known price.",
     )
-    .control(Control::Fields)
+    .control(Control::Raw)
     .apply(Apply::Reload)
     .web(WebEdit::Confirm)
     .user_only()
@@ -95,7 +95,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Discovery endpoints",
         "Base URL per provider when several are configured.",
     )
-    .control(Control::Map(MapKind::Text))
+    .control(Control::Raw)
     .apply(Apply::Restart)
     .web(WebEdit::ReadOnly)
     .advanced()
