@@ -1011,7 +1011,11 @@ fn prepare(
     if !owner_chat && env.get(oxa_proto::names::ENV_TEST_ISOLATION) != Some("1") && !child.nested() {
         let probe = (!oxa_proto::offline()).then_some(engine.as_ref());
         let facts = crate::identity_cmd::identity_facts(Path::new("/"), probe);
-        let keep_known_models = facts.models.is_empty() && oxa_resources::read_identity(dirs).is_some();
+        // An old file is kept only when it is in the current format; one written by an older
+        // oxa (old head, cloud model lines) is rewritten with `Models: not known`.
+        let keep_known_models = facts.models.is_empty()
+            && oxa_resources::read_identity(dirs)
+                .is_some_and(|t| t.starts_with(oxa_core::prompt::IDENTITY_HEAD));
         if !keep_known_models {
             if let Err(e) = crate::identity_cmd::write_identity(dirs, &facts) {
                 notices.push((Level::Warning, e.message));
@@ -1632,6 +1636,7 @@ fn run_headless(
         continue_goal,
         ..
     } = prep;
+    oxa_core::set_headless(true);
     let mut session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
         Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),

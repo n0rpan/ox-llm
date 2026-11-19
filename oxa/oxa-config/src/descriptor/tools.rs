@@ -165,6 +165,8 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Exec hooks",
         "A program to run on an event.",
     )
+    // Hook values may be strings, command objects, or arrays containing either shape. A typed
+    // string map cannot round-trip every form accepted by `oxa_ext::parse_exec_hooks`.
     .control(Control::Raw)
     .apply(Apply::Reload)
     .web(WebEdit::Confirm)
@@ -370,7 +372,6 @@ mod tests {
             "oxa.cloud.models",
             "oxa.cloud.unpriced_discovered_pricing",
             "oxa.cloud.discovery",
-            "hooks",
         ] {
             let descriptor = descriptors()
                 .iter()
@@ -387,5 +388,22 @@ mod tests {
             assert_eq!(descriptor.web, WebEdit::Confirm, "{key}");
             assert!(!descriptor.widens.is_empty(), "{key}");
         }
+    }
+
+    /// The hooks editor must round-trip all supported entry shapes instead of narrowing them to a
+    /// map of strings.
+    #[test]
+    fn hooks_control_preserves_structured_entries() {
+        let descriptor = crate::descriptor("hooks").expect("hooks descriptor");
+        let input = r#"{
+            "tool_call": ["first", {"command": "second", "timeout": 60}],
+            "session_start": {"command": "prepare", "timeout": 15}
+        }"#;
+        let expected: serde_json::Value = serde_json::from_str(input).expect("valid fixture");
+
+        assert_eq!(descriptor.control, Control::Raw);
+        let parsed = crate::parse_input(descriptor, input).expect("structured hooks are editable");
+        assert_eq!(parsed, expected);
+        assert_eq!(crate::check(descriptor, &parsed), Ok(None));
     }
 }

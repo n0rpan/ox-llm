@@ -117,6 +117,8 @@ pub struct Gate {
     pub inbox_wake_pending: std::sync::atomic::AtomicBool,
     /// Foreground work, excluding settlement after a dropped reply.
     pub running: std::sync::atomic::AtomicBool,
+    /// Serializes abort publication with foreground reservation claims and releases.
+    pub(crate) foreground_transition: Mutex<()>,
     /// Coalesce worker wakes for ordinary editor queues, independently of bound inbox wakes.
     pub queued_wake_pending: std::sync::atomic::AtomicBool,
     pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
@@ -252,7 +254,7 @@ fn take_by_mode(list: &mut Vec<String>, mode: QueueMode) -> Vec<String> {
     }
 }
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     match m.lock() {
         Ok(g) => g,
         Err(p) => p.into_inner(),
@@ -718,11 +720,21 @@ impl Handle {
 
     /// Abort the current run. The partial reply is shown, never sent (W2). Queued messages stay
     /// queued; the front end restores them with `dequeue`. A no-op when no run is in progress
-    /// (a stale cancel must not abort the next prompt; `Session` also resets the token).
+    /// (a stale cancel must not abort the next prompt; `Session` also resets the token). A
+    /// foreground reservation counts as the current run: preserve an abort until its claim.
     pub fn abort(&self) {
+        let _transition = lock(&self.shared.gate.foreground_transition);
         if self.shared.busy.load(Ordering::SeqCst) {
             self.shared.cancel.cancel();
             self.shared.gate.bg_cancel.cancel();
+        } else if self.shared.gate.running.load(Ordering::SeqCst) {
+            self.shared.gate.abort_next.store(true, Ordering::SeqCst);
+            // The reservation may have become a claim after the first busy check. Cancel it
+            // directly too; its guard clears the sticky bit if `begin` already passed it.
+            if self.shared.busy.load(Ordering::SeqCst) {
+                self.shared.cancel.cancel();
+                self.shared.gate.bg_cancel.cancel();
+            }
         }
     }
     /// Cancel only this instance's BACKGROUND work (a boot preload, a draft prefill, an idle

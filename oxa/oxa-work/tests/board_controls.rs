@@ -205,6 +205,7 @@ fn typed_issue_intake_uses_one_snapshot_and_builder_authority() {
                     has_open_pull_request: number == 6,
                 })
                 .collect(),
+            incomplete: vec![],
         },
         0,
     );

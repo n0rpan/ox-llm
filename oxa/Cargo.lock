@@ -1177,6 +1177,7 @@ dependencies = [
 name = "oxa-cli"
 version = "0.2.0"
 dependencies = [
+ "libc",
  "oxa-cli",
  "oxa-codemode",
  "oxa-compact",
@@ -1309,7 +1310,10 @@ dependencies = [
 name = "oxa-http"
 version = "0.2.0"
 dependencies = [
+ "futures-util",
  "oxa-proto",
+ "reqwest",
+ "tokio",
 ]
 
 [[package]]

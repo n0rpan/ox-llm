@@ -5,8 +5,7 @@
 //! Reporting goes to `oxstack/ox-llm` unless `oxa.reportIssue.repo` names another repository (or turns it off).
 //!
 //! What a draft may contain: the user's description (scrubbed, capped, no transcript records),
-//! the identity facts (version, machine, OS, models) and the controller's `status --json`
-//! scalars and `digest --json` (numbers only). Never prompts, transcripts, file contents,
+//! the identity facts (version, machine, OS, models). No controller is called. Never prompts, transcripts, file contents,
 //! emails, home paths, user or host names, IP addresses or secrets.
 mod publish_tool;
 mod semantic;
@@ -17,7 +16,7 @@ use oxa_config::{Dirs, Env, Settings};
 use oxa_proto::{codes, OxaError};
 use oxa_resources::{read_identity, write_atomic};
 use regex::Regex;
-use serde_json::{Map, Value as Json};
+use serde_json::Value as Json;
 use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
 use std::io::{BufRead, Write};
@@ -202,31 +201,6 @@ pub fn clean_notes(notes: &str, ctx: &ScrubCtx) -> String {
     scrub(&text, ctx)
 }
 
-/// The controller's CLI: `oxc` (v0.2.0), else the pre-rename `local-ai`.
-const CONTROLLER_CLIS: [&str; 2] = ["oxc", "local-ai"];
-
-/// Run `<controller> args`; the first CLI that runs wins.
-fn controller(runner: Runner<'_>, args: &[&str]) -> Option<String> {
-    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-    CONTROLLER_CLIS
-        .iter()
-        .find_map(|cli| runner(cli, &args))
-        .map(|(_, out)| out)
-}
-
-/// The top-level scalar fields of a JSON object (no nested objects or arrays: they may hold
-/// paths or lists the report does not need).
-fn scalars(json: &str) -> Option<String> {
-    let Json::Object(obj) = serde_json::from_str::<Json>(json).ok()? else {
-        return None;
-    };
-    let kept: Map<String, Json> = obj
-        .into_iter()
-        .filter(|(_, v)| !(v.is_object() || v.is_array()))
-        .collect();
-    serde_json::to_string_pretty(&Json::Object(kept)).ok()
-}
-
 fn cap(text: &str) -> String {
     if text.chars().count() <= MAX_SECTION_CHARS {
         text.to_string()
@@ -235,9 +209,8 @@ fn cap(text: &str) -> String {
     }
 }
 
-/// The body of an issue: the description, the identity facts, the controller's status
-/// scalars and today's health digest. Every part is scrubbed.
-pub fn draft_body(notes: &str, dirs: &Dirs, ctx: &ScrubCtx, runner: Runner<'_>) -> String {
+/// The body of an issue: the description and the identity facts. Every part is scrubbed.
+pub fn draft_body(notes: &str, dirs: &Dirs, ctx: &ScrubCtx, _runner: Runner<'_>) -> String {
     let mut parts: Vec<String> = Vec::new();
     let notes = clean_notes(notes, ctx);
     parts.push(format!("## What happened\n\n{}", notes));
@@ -253,24 +226,6 @@ pub fn draft_body(notes: &str, dirs: &Dirs, ctx: &ScrubCtx, runner: Runner<'_>) 
         system.push("- identity: not installed".to_string());
     }
     parts.push(format!("## System\n\n{}", scrub(&system.join("\n"), ctx)));
-    let status = controller(runner, &["status", "--json"]).and_then(|o| scalars(&o));
-    parts.push(format!(
-        "## Controller status\n\n{}",
-        match status {
-            Some(s) => format!("```json\n{}\n```", scrub(&cap(&s), ctx)),
-            None => "(the controller CLI did not answer)".to_string(),
-        }
-    ));
-    let digest = controller(runner, &["digest", "--json"])
-        .and_then(|o| serde_json::from_str::<Json>(&o).ok())
-        .and_then(|v| serde_json::to_string_pretty(&v).ok());
-    parts.push(format!(
-        "## Health digest (today)\n\n{}",
-        match digest {
-            Some(d) => format!("```json\n{}\n```", scrub(&cap(&d), ctx)),
-            None => "(no digest available)".to_string(),
-        }
-    ));
     parts.push(
         "Drafted by `oxa report-issue`: scrubbed of emails, home paths, user and host names, IP addresses and secrets; no prompts or transcripts."
             .to_string(),
