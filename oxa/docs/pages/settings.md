@@ -21,7 +21,7 @@ Settings can be nested or dotted. These two files are the same:
 
 ## Validation
 
-A setting that is not in the list below is kept in the file, ignored, and reported as a warning at start-up: `unknown setting ...`. A setting with the wrong type is also reported, and the default is used. A file that is not valid JSON, or whose top level is not an object, is ignored with a warning (`settings file is not valid JSON ...; ignored`). Nothing in a settings file stops oxa from starting.
+A setting that is not in the list below is kept in the file, ignored, and reported as a warning at start-up: `unknown setting ...`. A setting with the wrong type is also reported, and the default is used. A project file that is not valid JSON, or whose top level is not an object, is ignored with a warning (`settings file is not valid JSON ...; ignored`). Nothing in a settings file stops oxa from starting. Your user file is different: if it exists but cannot be read, is empty, is not valid JSON or its top level is not an object, oxa fails safe. It keeps the most restrictive security settings (`oxa.offline` on, `oxa.sandbox.net` off, `oxa.engine.allowRemote` off, `defaultProjectTrust` never), uses defaults for everything else, and warns at start-up with how to recover: fix or restore the file and restart. A missing file (first launch) and `{}` are normal and use the usual defaults. A live edit that fails to load keeps the settings already in use.
 
 Settings that older files may contain but oxa does not implement are not listed here. Their use is reported as a warning: `setting ... is accepted but ignored in oxa`.
 
@@ -111,13 +111,13 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `oxa.work.localChecks` | list of strings | `["cargo check"]` | owner-only local compile commands for `oxa work`. The runner adds `-p <crate>` for a touched crate. The hosted lane supplies the test verdict. |
 | `oxa.toolRepeatGuard` | bool | `true` | answer a tool call that returned the same result three times in a row with a short note, and warn once (shown and kept in the session) if it goes on; the run continues ([tools.md](tools.md#repeated-calls)) |
 | `oxa.goal.failureBackoffSeconds` | number (seconds) | `60` | a pursuing goal whose request fails transiently (stream cut, engine down or busy, timeout, 429 or 5xx) notes it, waits this long without a model request, and sends the same request again; each further consecutive failure doubles the wait, capped at 900 s unless this is set higher. There is no attempt cap. `0` opts out: the run ends as before. Auth errors, refusals, a repetition stop, an abort and an owner-set budget still stop the goal with the reason shown |
-| `oxa.wait.maxSeconds` | number (seconds) | `3600` | cap on one `wait` call's `seconds` (schema maximum 86400); a longer request is cut to it |
+| `oxa.wait.maxSeconds` | number (seconds) | `86400` | cap on one `wait` call's `seconds`. The default is the tool's own maximum (one day), so nothing is cut unless you set a lower value; a longer request is cut to it |
 | `oxa.wait.pollSeconds` | number (seconds) | `30` | how often a `wait` with an `until` condition asks the hook sets for its state; no model request is made meanwhile |
 | `oxa.subagent.enabled` | bool | unset | the `subagent` tool; unset is on unless the model is Flash or its window is below 32K |
 | `oxa.subagent.smallContext` | bool | `false` | declare `subagent` on a model with a window below 32K |
 | `oxa.subagent.softTokens` | number | `24000` | compaction point of a child agent |
 | `oxa.subagent.maxChildren` | number | `8` | children one parent session runs or queues over every call in flight, and the most `tasks` or `chain` steps one call takes. User settings only. At least 1 |
-| `oxa.subagent.remoteConcurrency` | number | `4` | children of one `tasks` call that run at once when some run on a cloud model (local children run one at a time) |
+| `oxa.subagent.remoteConcurrency` | number | `8` | children of one `tasks` call that run at once when some run on a cloud model (local children run one at a time). Never above `oxa.subagent.maxChildren`; lower it if your provider rate-limits parallel requests |
 | `oxa.subagent.resultCap` | number (bytes) | `6144` | cap on the text a child returns |
 | `oxa.webSearch.enabled` | bool | `true` | the `web_search` tool, when a key exists |
 | `oxa.webSearch.provider` | `brave` / `none` | `brave` | search provider; `none` turns the tool off |
@@ -174,6 +174,7 @@ The compaction rules are in [compaction.md](compaction.md).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
+| `oxa.allowHomeCwd` | bool | `false` | allow oxa to start in the home directory, `/` or a parent of home. Without it print, JSON and RPC modes refuse and interactive mode asks. An explicit `--yolo` or `--auto` on the command line also allows it, with a warning and no question; the environment variable `OXA_ALLOW_HOME_CWD` also allows it. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
 | `oxa.allowHomeCwd` | bool | `false` | allow oxa to start in the home directory, `/` or a parent of home. Without it print, JSON and RPC modes refuse and interactive mode asks; the environment variable `OXA_ALLOW_HOME_CWD` also allows it. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
 | `oxa.approval.always` | list | `[]` | exact `<rule> <command>` keys written by "Always allow" in the dangerous-command prompt (#1512). Each key matches one command of one rule; remove a line to revoke it. User settings only |
 | `oxa.approval.dangerous` | list | `[]` | rules for dangerous commands, matched on the parsed command (#1512). `[]` (the default) is all built-in rules. `+id` adds a rule, `-id` removes one, `+cmd:<words>` adds a rule for a command (`+cmd:terraform destroy`), and a list without `+`/`-` entries replaces the built-in set (a plain `cmd:<words>` there turns the built-in rules off). Built-in ids: `rm-recursive-outside`, `git-push-force`, `credential-write`, `pipe-to-shell`, `disk-destroy`, `chmod-recursive-open`, `sudo`, `sql-drop`, `kill-foreign`, `oxa-self-approve`, `eval-dynamic`, `unparsed`. Unknown entries are ignored with a warning. User settings only |
@@ -185,7 +186,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.inbox.headless` | bool | `true` | a headless print or JSON run (`--mode json`) of a persisted session whose goal is pursuing takes `oxa send` follow-ups from that session's inbox for the length of the run. Each message is an ordinary follow-up user message, at most 256 KiB and 64 queued; a larger file stays on disk. Runs without a pursuing goal never watch the inbox, and `false` turns this off. Read from the user settings file only; a project file cannot change it |
 | `oxa.local` | object | `{}` | literal native binary/model/arguments/environment and model limits; user settings only; see [native local configuration](../../oxc-local/CONFIGURATION.md) |
 | `oxa.a2a.enabled` | bool | `true` | sessions accept follow-ups and control (steer, pause, resume, cancel) from the lead over a local authenticated channel, from the same user only. `false`: file inbox only, and `nativeSteering` is refused. User settings only. See [security.md](security.md#agent-control-channel) |
-| `oxa.lead.shadow` | bool | `false` | enable the read-only `oxa lead --shadow` proposal preset; user settings only; no live runner actions |
+| `oxa.lead.shadow` | bool | `true` | the read-only `oxa lead --shadow` proposal preset; `false` turns it off; user settings only; no live runner actions |
 | `oxa.engine.inProcessCloud` | bool | `false` | select the in-process Rust cloud gateway for sessions and model discovery; user settings only |
 | `oxa.cloud.opencode.enabled` | bool | on when a key exists | OpenCode Go is on when the `opencode` key exists in the protected cloud key file and the run has an actual `--model` argument naming a Go model (including a delegated worker or nested child), or an owner model scope that is not a local alias; `false` opts out everywhere; project settings and restored sessions cannot enable it; offline mode refuses; user settings only |
 | `oxa.cloud` | object | `{}` | native cloud models, prices, USD budget and subscription caps; user settings only; see below |

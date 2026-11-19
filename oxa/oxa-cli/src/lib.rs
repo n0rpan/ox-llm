@@ -28,6 +28,7 @@ mod home_cwd;
 mod hooks;
 mod identity_cmd;
 mod in_process;
+mod key_hints;
 pub mod lead;
 pub mod lead_access;
 pub(crate) mod lead_chat;
@@ -53,6 +54,7 @@ mod sandbox_layout;
 #[cfg(feature = "share")]
 mod share_cmd;
 mod status;
+mod suite_status;
 mod themes;
 mod usage_cmd;
 mod usage_log;

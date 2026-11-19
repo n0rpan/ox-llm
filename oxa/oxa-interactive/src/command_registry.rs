@@ -154,6 +154,23 @@ commands! {
         },
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
     },
+    Status {
+        path: &["status"],
+        aliases: &[],
+        summary: "Show session status, or print suite status as JSON",
+        arguments: &[
+            Argument { name: "session-id|session-file", kind: ArgumentKind::Word, required: false },
+            Argument { name: "json", kind: ArgumentKind::Flag, required: false },
+            Argument { name: "session-dir", kind: ArgumentKind::Flag, required: false },
+        ],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("The slash menu has no status command"),
+            menu: Availability::Exception("The menu has no status command"),
+            web: Availability::Exception("No web frontend is shipped"),
+        },
+        requirements: NO_REQUIREMENTS,
+    },
     Lead {
         path: &["lead"], aliases: &[], summary: "Chat with the dedicated Lead session",
         arguments: &[Argument { name: "prompt", kind: ArgumentKind::Tail, required: false }],
@@ -370,6 +387,21 @@ mod tests {
         assert_eq!(parsed.args, &cli[2..]);
         assert!(parse_cli(&words("unknown help")).is_none());
         assert!(dispatch_slash(&words("unknown")).is_none());
+    }
+
+    #[test]
+    fn status_json_is_declared_for_the_cli_surface() {
+        let input = words("status --json");
+        let parsed = parse_cli(&input).expect("status resolves as a CLI command");
+        assert_eq!(parsed.command.id, CommandId::Status);
+        assert_eq!(parsed.args, &input[1..]);
+        assert!(parsed
+            .command
+            .arguments
+            .iter()
+            .any(|argument| argument.name == "json" && argument.kind == ArgumentKind::Flag));
+        assert!(dispatch_slash(&input).is_none());
+        assert!(entries(Surface::Cli).any(|entry| entry.id == CommandId::Status));
     }
 
     #[test]
