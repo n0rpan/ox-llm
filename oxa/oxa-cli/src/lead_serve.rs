@@ -3,7 +3,7 @@ use crate::dispatch::LeadOwnerBinding;
 use crate::lead_access::{self, proxy, Config, IdentityProvider, Mode, VerifiedIdentity};
 use crate::lead_chat::conversation::ConversationReply;
 use crate::lead_http::{OwnerForm, OwnerSubmission, RefusalFact, RefusalLog, Stage};
-use oxa_config::{Dirs, Env};
+use oxa_config::{Dirs, Env, Settings};
 use oxa_perm::ApprovalDesk;
 use oxa_proto::{codes, OxaError};
 use std::{
@@ -73,8 +73,13 @@ fn conversation_refusal(error: &OxaError) -> RefusalFact {
     match error.code {
         "budget_not_configured" => fact(
             Stage::Limits,
-            "metered_budget_absent",
-            "choose a subscription route with the user-only oxa.lead.model setting, or configure oxa.cloud.daily_budget_usd",
+            "budget_invalid",
+            "set oxa.cloud.daily_budget_usd to a positive number, or unset it for no USD limit",
+        ),
+        "cost_unknown_history" => fact(
+            Stage::Limits,
+            "cost_unknown_history",
+            "unset oxa.cloud.daily_budget_usd, or wait for the next spend day; earlier uncapped requests today have an unknown cost",
         ),
         "budget_exceeded" | codes::BUDGET_EXHAUSTED => fact(
             Stage::Limits,
@@ -493,6 +498,17 @@ impl Source {
     }
 }
 
+/// With no `oxa.cloud.daily_budget_usd` there is no budget check: a metered Lead model is admitted
+/// and its cost recorded, not limited. The owner is told once at startup.
+fn no_budget_warning(settings: &Settings) -> Option<&'static str> {
+    let capped = settings
+        .get("oxa.cloud.daily_budget_usd")
+        .is_some_and(|cap| !cap.is_null());
+    (!capped).then_some(
+        "lead chat: no oxa.cloud.daily_budget_usd is set, so metered cloud use is recorded but not limited by USD",
+    )
+}
+
 /// Called only by a registry-resolved handler; this module declares no command or flag.
 pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i32, OxaError> {
     if oxa_proto::offline() {
@@ -562,6 +578,11 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
     let identity_journal = journal.clone();
     let refusal_log = journal.sink();
     let listener = TcpListener::bind(config.endpoint()).map_err(|_| invalid("cannot bind lead endpoint"))?;
+    if owner.is_some() {
+        if let Some(warning) = no_budget_warning(&Settings::load(dirs, cwd, false)) {
+            writeln!(out, "{warning}").map_err(|_| invalid("cannot report lead startup"))?;
+        }
+    }
     writeln!(out, "lead board: listening on configured loopback endpoint")
         .and_then(|()| out.flush())
         .map_err(|_| invalid("cannot report lead startup"))?;
@@ -728,22 +749,35 @@ mod tests {
     }
 
     #[test]
+    fn lead_chat_no_budget_warns() {
+        let none = Settings::from_values(serde_json::json!({"oxa":{"cloud":{}}}), serde_json::json!({}));
+        let warning = no_budget_warning(&none).unwrap();
+        assert!(warning.contains("not limited by USD"));
+        let capped = Settings::from_values(
+            serde_json::json!({"oxa":{"cloud":{"daily_budget_usd":5}}}),
+            serde_json::json!({}),
+        );
+        assert!(no_budget_warning(&capped).is_none());
+    }
+
+    #[test]
     fn refusal_reasons_are_allowlisted_and_carry_no_error_bytes() {
         let budget = conversation_refusal(&OxaError::new(
             "budget_not_configured",
-            "Cloud models need a positive oxa.cloud.daily_budget_usd in oxa user settings.",
+            "oxa.cloud.daily_budget_usd must be a positive number in oxa user settings, or unset for no USD limit.",
         ));
         assert_eq!(
             budget,
             RefusalFact {
                 status: 503,
                 stage: Stage::Limits,
-                reason: "metered_budget_absent",
-                fix: "choose a subscription route with the user-only oxa.lead.model setting, or configure oxa.cloud.daily_budget_usd",
+                reason: "budget_invalid",
+                fix: "set oxa.cloud.daily_budget_usd to a positive number, or unset it for no USD limit",
             }
         );
         for (code, stage, reason) in [
             (codes::BUDGET_EXHAUSTED, Stage::Limits, "metered_budget_exhausted"),
+            ("cost_unknown_history", Stage::Limits, "cost_unknown_history"),
             (
                 "subscription_limits_not_configured",
                 Stage::Limits,

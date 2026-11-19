@@ -1,4 +1,4 @@
-use crate::{Access, CancelToken, Mode, Sandbox, Ui, Value};
+use crate::{Access, CancelToken, Mode, Sandbox, Ui, Value, WireImage};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -75,11 +75,16 @@ pub struct ToolOutput {
     pub is_error: bool,
     /// For display only (diff, exit code, duration). **Never reaches the wire.**
     pub ui: Value,
+    /// Images the tool returns (B2a: the type; `read` fills it in B2b). They belong to the tool
+    /// result message, after `text`, and are the only tool output that may reach the wire as
+    /// an image part. Empty for every other tool.
+    pub images: Vec<WireImage>,
 }
 
 impl ToolOutput {
     pub fn ok(text: impl Into<String>) -> Self {
         ToolOutput {
+            images: Vec::new(),
             text: text.into(),
             is_error: false,
             ui: Value::Null,
@@ -87,6 +92,7 @@ impl ToolOutput {
     }
     pub fn error(text: impl Into<String>) -> Self {
         ToolOutput {
+            images: Vec::new(),
             text: text.into(),
             is_error: true,
             ui: Value::Null,
@@ -113,6 +119,12 @@ pub mod tool_errors {
     /// #1512 S5: an unattended run under the OS sandbox refuses a dangerous command at once.
     /// `{why}` is the matched rules.
     pub const DANGEROUS_REFUSED: &str = "Refused: dangerous command ({why}). Unattended runs with the OS sandbox refuse dangerous commands. Do the task another way, or report that the owner must run it.";
+    /// #1512 S5: the owner setting `oxa.approval.unattended = "refuse"` refuses a dangerous
+    /// command in an unattended run without the OS sandbox. `{why}` is the matched rules.
+    pub const DANGEROUS_REFUSED_SETTING: &str = "Refused: dangerous command ({why}). The owner setting oxa.approval.unattended refuses dangerous commands in unattended runs. Do the task another way, or report that the owner must run it.";
+    /// #1512 S5: the approval request could not be filed (the approval desk failed), so the
+    /// command is refused. `{why}` is the matched rules.
+    pub const DANGEROUS_REFUSED_NO_REQUEST: &str = "Refused: dangerous command ({why}). An approval request could not be filed for this unattended run. Do the task another way, or report that the owner must run it.";
     /// #1512 S5: an unattended run without the OS sandbox files an approval request instead.
     /// `{id}` is the request id, `{session}` the session, `{why}` the matched rules.
     pub const DANGEROUS_REQUESTED: &str = "Needs owner approval (request {id}): {why}. The owner answers with `oxa send {session} --approve {id} once|session|always|deny` or on the lead web page. Continue with other work and retry this exact command after it is approved.";

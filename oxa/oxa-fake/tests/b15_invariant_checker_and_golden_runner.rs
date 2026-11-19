@@ -74,6 +74,7 @@ fn good_body() -> Vec<u8> {
 fn mid_run_flow(head: Vec<WireMsg>) -> Vec<Recorded> {
     let prompt = WireMsg::user("fix bug");
     let call = WireMsg {
+        images: Vec::new(),
         role: oxa_proto::Role::Assistant,
         content: None,
         reasoning: None,

@@ -350,23 +350,14 @@ fn go_captured_terminal_usage_settles_even_without_public_delivery() {
                 assert_eq!(saved[0]["opencode"]["tokens"]["cache_read"], 80);
                 assert_eq!(saved[0]["cached_tokens"], 80);
                 assert_eq!(saved[0]["cache_write_tokens"], 0);
-                let next = gateway
-                    .runtime
-                    .begin(&payload, Context::default())
-                    .expect("actual usage leaves room for next hold");
-                next.finish(Outcome::Complete, 200, None).unwrap();
             } else {
-                assert!(saved[0].get("cost_usd").is_none());
-                assert_eq!(
-                    gateway
-                        .runtime
-                        .begin(&payload, Context::default())
-                        .err()
-                        .unwrap()
-                        .code,
-                    "subscription_limit_exceeded"
-                );
+                // Without final usage the Go cost stays unknown: no amount is recorded.
+                assert!(saved[0].get("cost_usd").is_none(), "{}", saved[0]);
             }
+            let next = gateway.runtime.begin(&payload, Context::default()).unwrap();
+            let threshold = if known { "80%" } else { "100%" };
+            assert!(next.budget_warning().unwrap().contains(threshold));
+            next.finish(Outcome::Complete, 200, None).unwrap();
         }
     }
 }
@@ -539,23 +530,17 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
         );
         if known {
             assert_eq!(saved[0]["opencode"]["allowance"], 0.0008, "{name}");
-            let next = gateway
-                .runtime
-                .begin(&payload, context())
-                .expect("actual terminal usage leaves room");
-            next.finish(Outcome::Complete, 200, None).unwrap();
         } else {
             assert_eq!(saved[0]["usage_missing"], true, "{name}");
             assert!(
                 saved[0]["opencode"].is_null(),
                 "invalidated allowance must not be reported as final: {name}"
             );
-            assert_eq!(
-                gateway.runtime.begin(&payload, context()).err().unwrap().code,
-                "subscription_limit_exceeded",
-                "{name}"
-            );
         }
+        let next = gateway.runtime.begin(&payload, context()).unwrap();
+        let threshold = if known { "80%" } else { "100%" };
+        assert!(next.budget_warning().unwrap().contains(threshold), "{name}");
+        next.finish(Outcome::Complete, 200, None).unwrap();
         assert_eq!(mock.requests().len(), 2, "discovery plus one generation only");
         mock.assert_healthy();
     }

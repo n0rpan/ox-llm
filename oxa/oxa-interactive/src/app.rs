@@ -21,7 +21,7 @@ use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -171,6 +171,14 @@ fn run_session_inner(
     for (level, text) in std::mem::take(&mut opts.notices) {
         vm.blocks.push(Block::Notice { level, text });
     }
+    // G3: a stored pursuing goal is announced on open, not run; a queued run is not repeated.
+    let run_queued = opts.initial_prompt.is_some() || !opts.initial_follow_ups.is_empty();
+    if let Some(text) = resumed_goal_notice(&session, run_queued) {
+        vm.blocks.push(Block::Notice {
+            level: Level::Info,
+            text,
+        });
+    }
     let prev = StatusModel {
         cwd: cwd.display().to_string(),
         home: opts.dirs.home.display().to_string(),
@@ -180,9 +188,11 @@ fn run_session_inner(
     vm.status = status_from(&state, &stats, &prev);
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<SessionCmd>();
+    let cmd_tx = Arc::new(cmd_tx);
     let (msg_tx, msg_rx) = mpsc::channel::<WorkerMsg>();
     let (ui_tx, ui_rx) = mpsc::channel::<UiRequest>();
     let handle = session.handle();
+    handle.watch_live_settings();
 
     if let Some(text) = opts.initial_prompt.take() {
         let parts = std::mem::take(&mut opts.initial_parts);
@@ -208,9 +218,12 @@ fn run_session_inner(
     );
     let stop = WorkerStop::new();
     let worker_stop = stop.clone();
+    // The front end owns the wake sender. The worker keeps only a weak reference, so
+    // dropping all front-end senders still disconnects its receiver.
+    let wake = Arc::downgrade(&cmd_tx);
     let spawned = thread::Builder::new()
         .name("oxa-worker".to_string())
-        .spawn(move || worker_loop_inner(session, reopen, cmd_rx, msg_tx, ui_tx, worker_stop, pinned));
+        .spawn(move || worker_loop_inner(session, reopen, cmd_rx, msg_tx, ui_tx, worker_stop, wake, pinned));
     let worker = match spawned {
         Ok(w) => w,
         Err(_) => return (1, None),
@@ -220,7 +233,7 @@ fn run_session_inner(
         term,
         opts,
         handle,
-        cmd_tx.clone(),
+        cmd_tx.as_ref().clone(),
         &msg_rx,
         &ui_rx,
         vm,
@@ -378,7 +391,29 @@ impl WorkerStop {
 
 /// How long the worker waits for a command before its idle tick serves the session's host
 /// (`Session::serve_host`: timers, MCP callbacks, `sendMessage` with `triggerTurn`).
-pub const WORKER_IDLE_TICK: Duration = Duration::from_millis(50);
+///
+/// The wait is not the only wake: a host request posted while the worker waits calls the
+/// session's attention waker (`Handle::set_attention_waker`), which sends one
+/// [`SessionCmd::Wake`], so the host is served at once. This is the deadline for the tick
+/// itself, and a session without hook sets posts no host request at all.
+pub const WORKER_IDLE_TICK: Duration = Duration::from_millis(250);
+
+/// Install the worker's idle wake on `handle`: the session calls it when something the worker
+/// cannot see through `cmds` happens (a host request posted while it waits, a wrap-up
+/// request), and one coalesced [`SessionCmd::Wake`] is sent so the host is served at once
+/// instead of at the next idle tick. One wake in flight is enough: the worker clears the flag
+/// when it serves.
+fn install_wake(handle: &Handle, wake: &Weak<Sender<SessionCmd>>, pending: &Arc<AtomicBool>) {
+    let tx = wake.clone();
+    let pending = pending.clone();
+    handle.set_attention_waker(Arc::new(move || {
+        if !pending.swap(true, Ordering::SeqCst) {
+            if let Some(tx) = tx.upgrade() {
+                let _ = tx.send(SessionCmd::Wake);
+            }
+        }
+    }));
+}
 
 /// The UI loop over an arbitrary terminal (tests pass `oxa_tui::TestTerminal` and scripted
 /// channels). Ends when an [`AppAction::Quit`] was carried out or `worker` disconnects.
@@ -490,14 +525,17 @@ pub fn worker_loop(
     cmds: Receiver<SessionCmd>,
     out: Sender<WorkerMsg>,
     ui: Sender<UiRequest>,
+    wake: Weak<Sender<SessionCmd>>,
 ) -> Option<SessionInfo> {
-    worker_loop_with(session, reopen, cmds, out, ui, WorkerStop::new())
+    worker_loop_with(session, reopen, cmds, out, ui, WorkerStop::new(), wake)
 }
 
 /// [`worker_loop`] with the worker's stop signal (see [`WorkerStop`]). Between commands the
 /// worker waits at most [`WORKER_IDLE_TICK`] and then serves the session's host, so host
 /// requests made while idle are answered and a turn an extension triggered runs, its events
-/// reaching the UI like a prompt's.
+/// reaching the UI like a prompt's. `wake` is a sender on the same channel as `cmds`, used to
+/// weakly borrow the front-end sender for [`SessionCmd::Wake`] when a host request arrives (see
+/// [`install_wake`]): the tick is the deadline, not the only wake.
 pub fn worker_loop_with(
     session: Session,
     reopen: ReopenFn,
@@ -505,8 +543,9 @@ pub fn worker_loop_with(
     out: Sender<WorkerMsg>,
     ui: Sender<UiRequest>,
     stop: WorkerStop,
+    wake: Weak<Sender<SessionCmd>>,
 ) -> Option<SessionInfo> {
-    worker_loop_inner(session, reopen, cmds, out, ui, stop, false)
+    worker_loop_inner(session, reopen, cmds, out, ui, stop, wake, false)
 }
 
 fn worker_loop_inner(
@@ -516,11 +555,15 @@ fn worker_loop_inner(
     out: Sender<WorkerMsg>,
     ui: Sender<UiRequest>,
     stop: WorkerStop,
+    wake: Weak<Sender<SessionCmd>>,
     pinned: bool,
 ) -> Option<SessionInfo> {
     let mut ui_proxy = UiProxy::new(ui.clone());
     let mut last = StatusModel::default();
     stop.enter(session.handle());
+    // One wake in flight is enough; the flag is shared with the waker of the session in force.
+    let pending = Arc::new(AtomicBool::new(false));
+    install_wake(&session.handle(), &wake, &pending);
     let mut memory_status = session.inner().engine.local_memory_status(&session.state().model);
     let _ = out.send(WorkerMsg::Session(session_info(&session)));
     let mut session = Some(session);
@@ -528,6 +571,9 @@ fn worker_loop_inner(
     // seen before that work starts: stop takes precedence (a prompt queued before the quit
     // must not begin after it).
     let mut backlog: VecDeque<SessionCmd> = VecDeque::new();
+    // O-152: the boot preload is due as soon as a session is ready, not at the next idle tick.
+    // Set again when a reopen gives the worker a new session.
+    let mut preload_due = true;
     loop {
         // An extension's `ctx.newSession()` / `ctx.switchSession()` is applied as a reopen
         // before the next command (the commands queued behind it run in the new session).
@@ -578,16 +624,35 @@ fn worker_loop_inner(
         }
         let cmd = match backlog.pop_front() {
             Some(cmd) => cmd,
-            None => match cmds.recv_timeout(WORKER_IDLE_TICK) {
-                Ok(cmd) => cmd,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
+            None => {
+                // O-152 / O-386: with nothing queued the worker is about to wait, and a session
+                // in force that has not preloaded its prefix yet does so now — the boot preload
+                // must not wait for the idle tick, which is now 250 ms and serves the host
+                // (a hook request pending at this instant still defers it to `idle_tick`).
+                if preload_due {
+                    preload_due = false;
                     if let Some(s) = session.as_mut() {
-                        idle_tick(s, &out, &mut ui_proxy, &mut last, &stop);
+                        run_boot_preload(s, &out, &mut ui_proxy, &stop, &cmds, &mut backlog);
                     }
-                    continue;
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            },
+                if stop.is_stopped() || backlog.iter().any(|c| matches!(c, SessionCmd::Shutdown)) {
+                    break;
+                }
+                if let Some(cmd) = backlog.pop_front() {
+                    cmd
+                } else {
+                    match cmds.recv_timeout(WORKER_IDLE_TICK) {
+                        Ok(cmd) => cmd,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            if let Some(s) = session.as_mut() {
+                                idle_tick(s, &out, &mut ui_proxy, &mut last, &stop, &cmds, &mut backlog);
+                            }
+                            continue;
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+            }
         };
         // A command taken in the same instant as the stop does not start.
         if stop.is_stopped() {
@@ -607,6 +672,16 @@ fn worker_loop_inner(
         }
         match cmd {
             SessionCmd::Shutdown => break,
+            // The session's attention waker (see [`install_wake`]): something the worker cannot
+            // see through `cmds` happened while it waited — a host request was posted, or a
+            // wrap-up was requested. Serve the host now instead of at the next idle tick. The
+            // flag is cleared first, so a wake arriving while the host is served is not lost.
+            SessionCmd::Wake => {
+                pending.store(false, Ordering::SeqCst);
+                if let Some(s) = session.as_mut() {
+                    idle_tick(s, &out, &mut ui_proxy, &mut last, &stop, &cmds, &mut backlog);
+                }
+            }
             SessionCmd::Reopen(how) => {
                 // The session to return to when the new one cannot be opened (an unreadable
                 // file): the old one is already shut down by then.
@@ -626,6 +701,7 @@ fn worker_loop_inner(
                     Reopen::Resume(_) => "Resumed session".to_string(),
                     Reopen::Fork(_) => "Forked to new session".to_string(),
                 };
+                let resumed = matches!(&how, Reopen::Resume(_));
                 let mut opened = false;
                 if let Some(mut old) = session.take() {
                     // The hook sets are shared with the session that replaces this one, so
@@ -635,6 +711,8 @@ fn worker_loop_inner(
                 match reopen(how, carry) {
                     Ok(new) => {
                         stop.enter(new.handle());
+                        install_wake(&new.handle(), &wake, &pending);
+                        preload_due = true;
                         session = Some(new);
                         opened = true;
                     }
@@ -650,6 +728,8 @@ fn worker_loop_inner(
                         match again {
                             Ok(s) => {
                                 stop.enter(s.handle());
+                                install_wake(&s.handle(), &wake, &pending);
+                                preload_due = true;
                                 session = Some(s);
                             }
                             Err(e) => {
@@ -665,10 +745,19 @@ fn worker_loop_inner(
                     // what the rebinding has to tell the user lands in the new transcript.
                     let msg = reopened(s, &mut last);
                     let _ = out.send(msg);
-                    let _ = out.send(WorkerMsg::Rebind(s.handle()));
+                    let handle = s.handle();
+                    handle.watch_live_settings();
+                    let _ = out.send(WorkerMsg::Rebind(handle));
                     let _ = out.send(WorkerMsg::Session(session_info(s)));
                     if opened {
                         let _ = out.send(WorkerMsg::Event(notice_event(&status)));
+                        if resumed {
+                            let run_queued =
+                                backlog.iter().any(|cmd| matches!(cmd, SessionCmd::Prompt { .. }));
+                            if let Some(text) = resumed_goal_notice(s, run_queued) {
+                                let _ = out.send(WorkerMsg::Event(notice_event(&text)));
+                            }
+                        }
                     }
                 }
             }
@@ -742,6 +831,34 @@ fn worker_loop_inner(
     ended
 }
 
+/// O-152: the boot preload of the session in force while its wire is still empty: prefill its
+/// frozen prefix (H6, background) so the first prompt starts warm. Once per entered session,
+/// and only if no host request is pending (then it is retried on a tick). The preload is
+/// invisible: its progress events are not shown (they would set the foreground activity and
+/// make the UI treat the next prompt as steering), and the UI cancels it on input
+/// (`WorkerStop::is_preloading`).
+fn run_boot_preload(
+    s: &mut Session,
+    out: &Sender<WorkerMsg>,
+    ui: &mut UiProxy,
+    stop: &WorkerStop,
+    cmds: &Receiver<SessionCmd>,
+    backlog: &mut VecDeque<SessionCmd>,
+) {
+    stop.set_preloading(true);
+    s.preload_prefix_if(&mut PreloadSink(ChanSink(out.clone())), ui, || {
+        loop {
+            match cmds.try_recv() {
+                Ok(cmd) => backlog.push_back(cmd),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => return false,
+            }
+        }
+        backlog.is_empty() && !stop.is_stopped()
+    });
+    stop.set_preloading(false);
+}
+
 /// The worker's idle tick: serve what hook sets asked for while the session was idle. A turn
 /// an extension triggered runs here (its events go out like a prompt's); a fresh status
 /// follows whenever something was reported.
@@ -751,15 +868,15 @@ fn idle_tick(
     ui: &mut UiProxy,
     last: &mut StatusModel,
     stop: &WorkerStop,
+    cmds: &Receiver<SessionCmd>,
+    backlog: &mut VecDeque<SessionCmd>,
 ) {
-    // O-152: the first idle tick of a session with an empty wire prefills its frozen prefix
-    // (H6, background), so the first prompt starts warm. Once per entered session. The preload
-    // is invisible: its progress events are not shown (they would set the foreground activity
-    // and make the UI treat the next prompt as steering), and the UI cancels it on input
-    // (`WorkerStop::is_preloading`).
-    stop.set_preloading(true);
-    s.preload_prefix(&mut PreloadSink(ChanSink(out.clone())), ui);
-    stop.set_preloading(false);
+    // O-386: the preload is due before the worker's first wait (see `worker_loop_with`); this
+    // call is the retry for a session whose hook set had requests pending then.
+    run_boot_preload(s, out, ui, stop, cmds, backlog);
+    if !backlog.is_empty() || stop.is_stopped() {
+        return;
+    }
     let mut sink = CountingSink {
         inner: ChanSink(out.clone()),
         count: 0,
@@ -825,6 +942,32 @@ fn notice_event(text: &str) -> AgentEvent {
         level: Level::Info,
         text: text.to_string(),
     }
+}
+
+/// The notice for a stored goal that is still pursuing when the session opens. Nothing runs
+/// on open: `/goal resume` continues it and `/goal clear` drops it. `None` when a run is
+/// already queued (its prompt carries the goal) or the goal is not pursuing.
+fn resumed_goal_notice(s: &Session, run_queued: bool) -> Option<String> {
+    if run_queued {
+        return None;
+    }
+    let goal = s
+        .goal()
+        .filter(|g| g.status == oxa_session::GoalStatus::Pursuing)?;
+    // The objective may come from a repository file: drop terminal controls (ESC, BEL, C1) so
+    // the notice cannot clear the screen, retitle the window or write the clipboard.
+    let first: String = goal
+        .objective
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect();
+    let first = first.trim();
+    Some(format!(
+        "Goal pursuing: {first}; /goal resume continues, /goal clear drops it"
+    ))
 }
 
 /// What the UI thread needs to know about the worker's session.
@@ -1128,6 +1271,14 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
             EntryBody::Shown { text, why } => {
                 if [shown_why::ABORTED, shown_why::FAILED, shown_why::CUT].contains(why) {
                     shown_reply(vm, text, why);
+                    // The reply was dropped: the turn is over, whatever the session is still
+                    // claimed for (the settle work, including the front end's status file).
+                    // Leaving the activity at `Thinking` made the UI treat a prompt typed
+                    // after the dropped reply as steering on a run that had already ended
+                    // (#699). A run that continues (a wrap-up turn, a replay after a cut)
+                    // reports its next turn and sets the activity again.
+                    vm.status.activity = Activity::Idle;
+                    vm.status.activity_ms = 0;
                 }
             }
             EntryBody::Msg { wire, parts, .. } if wire.role == Role::User => {
@@ -1671,6 +1822,7 @@ fn execute(
         SessionCmd::Reopen(_)
         | SessionCmd::Snapshot
         | SessionCmd::Shutdown
+        | SessionCmd::Wake
         | SessionCmd::PrefillDraft { .. } => (Ok(()), false),
     }
 }

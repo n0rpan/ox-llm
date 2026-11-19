@@ -7,6 +7,7 @@
 //! name is replaced, never followed. The desk refuses a symlinked agent directory or desk
 //! directory, and one owned by another user.
 use crate::danger::DangerHit;
+use crate::policy::danger_key;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs::{self, DirBuilder, File, OpenOptions};
@@ -17,8 +18,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The directory under the agent directory that holds the requests.
 const DIR_NAME: &str = "approvals";
+/// The advisory lock file of the desk, held across an answer or a consumption.
+const LOCK_NAME: &str = ".lock";
 /// The answers the owner can give (`oxa send --approve <id> <answer>`).
 const ANSWERS: &[&str] = &["once", "session", "always", "deny"];
+
+// This rule includes shell source read from files, processes or the network. A command
+// string alone cannot identify the bytes an unattended retry will execute.
+pub(crate) const OPAQUE_SHELL_INPUT: &str = "pipe-to-shell";
 
 /// How an unattended run answers a dangerous command: the setting `oxa.approval.unattended`.
 /// `Auto` refuses under the OS sandbox and files a request without it.
@@ -115,6 +122,15 @@ pub struct ApprovalDesk {
     dir: PathBuf,
 }
 
+/// The held desk lock; dropping it releases the lock and closes the descriptor.
+struct DeskLock(File);
+
+impl Drop for DeskLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
 impl ApprovalDesk {
     /// Open (and create, private) the desk under `agent_dir`. Refuses a symlinked agent or desk
     /// directory, and a desk directory that another user owns.
@@ -127,7 +143,18 @@ impl ApprovalDesk {
             Ok(meta) if meta.is_dir() => {}
             Ok(_) => return Err(invalid_dir("approval desk is not a directory")),
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                DirBuilder::new().mode(0o700).create(&dir)?;
+                // Two processes can see `NotFound` at once: the loser of the create gets
+                // `AlreadyExists` and must carry on with the directory the winner made, or
+                // approval requests would be disabled for that whole process.
+                match DirBuilder::new().mode(0o700).create(&dir) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                        if !fs::metadata(&dir)?.is_dir() {
+                            return Err(invalid_dir("approval desk is not a directory"));
+                        }
+                    }
+                    Err(e) => return Err(e),
+                }
             }
             Err(e) => return Err(e),
         }
@@ -154,6 +181,21 @@ impl ApprovalDesk {
         Ok(ApprovalDesk { dir })
     }
 
+    /// Hold the desk's exclusive advisory lock for one read-modify-write transition. The lock
+    /// lives in the kernel (`flock(2)` through `std`), so a process that dies holding it releases
+    /// it: a crashed answer can never lock the desk forever. The lock file is not a record, so
+    /// `all` ignores it.
+    fn lock(&self) -> io::Result<DeskLock> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .open(self.dir.join(LOCK_NAME))?;
+        file.lock()?;
+        Ok(DeskLock(file))
+    }
+
     /// File a request for `hits` of `command` in `session`. A `pending` request reuses the open
     /// one with the same session and keys. Returns the request id.
     pub fn record(
@@ -164,12 +206,17 @@ impl ApprovalDesk {
         hits: &[DangerHit],
         status: &str,
     ) -> io::Result<String> {
-        let keys: Vec<String> = hits.iter().map(DangerHit::key).collect();
+        // The same key the policy grants use: the rule over the complete command line, so an
+        // approval is bound to the command the owner reviewed and never to a bare segment.
+        let keys: Vec<String> = hits.iter().map(|h| danger_key(h, command)).collect();
+        // Dedup and the write are one transition: two runs filing at once must not both insert.
+        let _lock = self.lock()?;
+        let dir = dir_key(cwd);
         if status == "pending" {
             let open = self
                 .all()?
                 .into_iter()
-                .find(|r| r.status == "pending" && r.session == session && r.keys == keys);
+                .find(|r| r.status == "pending" && r.session == session && r.cwd == dir && r.keys == keys);
             if let Some(open) = open {
                 return Ok(open.id);
             }
@@ -177,7 +224,7 @@ impl ApprovalDesk {
         let rec = Record {
             id: random_hex(8),
             session: session.to_string(),
-            cwd: cwd.display().to_string(),
+            cwd: dir,
             command: command.to_string(),
             keys,
             reasons: hits.iter().map(|h| format!("{}: {}", h.rule, h.reason)).collect(),
@@ -186,8 +233,30 @@ impl ApprovalDesk {
             created_ms: now_ms(),
             answered_ms: None,
         };
+        if status == "refused" {
+            self.rotate_refused()?;
+        }
         self.write(&rec)?;
         Ok(rec.id)
+    }
+
+    /// Make room for one more `refused` record: delete the oldest ones beyond [`REFUSED_KEEP`].
+    /// Called with the desk lock held.
+    fn rotate_refused(&self) -> io::Result<()> {
+        let refused: Vec<Record> = self
+            .all()?
+            .into_iter()
+            .filter(|r| r.status == "refused")
+            .collect();
+        let excess = (refused.len() + 1).saturating_sub(REFUSED_KEEP);
+        for rec in refused.iter().take(excess) {
+            match fs::remove_file(self.dir.join(format!("{}.json", rec.id))) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     }
 
     /// The owner's answer to a `pending` request. Any other status is refused.
@@ -198,10 +267,7 @@ impl ApprovalDesk {
         if !ANSWERS.contains(&status) {
             return Err(invalid_input("answer must be once, session, always or deny"));
         }
-        // CLI and web callers share this private directory. Hold its lock across
-        // the pending check and atomic replacement so a second answer sees the first.
-        let lock = File::open(&self.dir)?;
-        lock.lock()?;
+        let _lock = self.lock()?;
         let mut rec = self
             .load(id)?
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such approval request"))?;
@@ -211,28 +277,63 @@ impl ApprovalDesk {
                 rec.status
             )));
         }
+        if status != "deny"
+            && rec.keys.iter().any(|key| {
+                key.split_once(' ')
+                    .is_some_and(|(rule, _)| rule == OPAQUE_SHELL_INPUT)
+            })
+        {
+            return Err(invalid_input(
+                "shell input cannot be approved for unattended replay",
+            ));
+        }
         rec.status = status.to_string();
         rec.answered_ms = Some(now_ms());
         self.write(&rec)?;
         Ok(rec)
     }
 
-    /// `true` when a grant for `session` covers every key. `session` and `always` grants stay;
-    /// a `once` grant is consumed here (marked used), so the next run asks again. Consumes
-    /// nothing on `false`.
-    pub fn granted(&self, session: &str, keys: &[String]) -> bool {
+    /// `true` when a grant for `session` covers every key, spending nothing. A policy asks this
+    /// while it is still deciding (a verdict, a `danger_ask` the caller may yet turn into a
+    /// prompt), so a `once` grant stays available until [`ApprovalDesk::consume`] confirms that
+    /// the command it approved is the one about to run.
+    pub fn covers(&self, session: &str, cwd: &Path, keys: &[String]) -> bool {
         if keys.is_empty() {
             return false;
         }
         let Ok(records) = self.all() else {
             return false;
         };
+        let dir = dir_key(cwd);
+        records.iter().any(|rec| {
+            rec.session == session
+                && rec.cwd == dir
+                && keys.iter().all(|k| rec.keys.contains(k))
+                && match rec.status.as_str() {
+                    "session" | "always" => true,
+                    "once" => !rec.used,
+                    _ => false,
+                }
+        })
+    }
+
+    fn claim(&self, session: &str, cwd: &Path, keys: &[String], reusable: bool) -> bool {
+        if keys.is_empty() {
+            return false;
+        }
+        let Ok(_lock) = self.lock() else {
+            return false;
+        };
+        let Ok(records) = self.all() else {
+            return false;
+        };
+        let dir = dir_key(cwd);
         for mut rec in records {
-            if rec.session != session || !keys.iter().all(|k| rec.keys.contains(k)) {
+            if rec.session != session || rec.cwd != dir || !keys.iter().all(|k| rec.keys.contains(k)) {
                 continue;
             }
             match rec.status.as_str() {
-                "session" | "always" => return true,
+                "session" | "always" if reusable => return true,
                 "once" if !rec.used => {
                     rec.used = true;
                     return self.write(&rec).is_ok();
@@ -241,6 +342,64 @@ impl ApprovalDesk {
             }
         }
         false
+    }
+
+    /// Spend a matching unused `once` grant. Reusable grants stay untouched.
+    pub fn consume(&self, session: &str, cwd: &Path, keys: &[String]) -> bool {
+        self.claim(session, cwd, keys, false)
+    }
+
+    /// Check and claim authorization under one lock, requiring a successful write for `once`.
+    pub fn granted(&self, session: &str, cwd: &Path, keys: &[String]) -> bool {
+        self.claim(session, cwd, keys, true)
+    }
+
+    /// Remove the records of `session` (all of them when `None`) from the desk under
+    /// `agent_dir`, without creating it: a directory that does not exist holds nothing, so a
+    /// wipe leaves no empty approval directory behind.
+    pub fn wipe(agent_dir: &Path, session: Option<&str>) -> io::Result<usize> {
+        if !agent_dir.join(DIR_NAME).is_dir() {
+            return Ok(0);
+        }
+        let desk = ApprovalDesk::open(agent_dir)?;
+        match session {
+            Some(id) => desk.forget_session(id),
+            None => desk.forget_all(),
+        }
+    }
+
+    /// Remove every record of `session`: a wiped session keeps no copy of its commands, working
+    /// directories or ids. Returns how many records were removed.
+    pub fn forget_session(&self, session: &str) -> io::Result<usize> {
+        self.forget(|rec| rec.session == session)
+    }
+
+    /// Remove every record, for `oxa wipe --all`.
+    pub fn forget_all(&self) -> io::Result<usize> {
+        self.forget(|_| true)
+    }
+
+    fn forget(&self, doomed: impl Fn(&Record) -> bool) -> io::Result<usize> {
+        // The same lock as an answer or a consumption: an update already running cannot rename
+        // its copy of a record back into place after this wipe removed it.
+        let _lock = self.lock()?;
+        let mut removed = 0;
+        for rec in self.all()? {
+            if !doomed(&rec) {
+                continue;
+            }
+            match fs::remove_file(self.dir.join(format!("{}.json", rec.id))) {
+                Ok(()) => removed += 1,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Every record, pending or answered.
+    pub fn records(&self) -> io::Result<Vec<Record>> {
+        self.all()
     }
 
     /// Every request still waiting for the owner, oldest first.
@@ -277,14 +436,21 @@ impl ApprovalDesk {
     /// One record by id; a symlink, a non-file or an unreadable record is `None`.
     fn load(&self, id: &str) -> io::Result<Option<Record>> {
         let path = self.dir.join(format!("{id}.json"));
-        match fs::symlink_metadata(&path) {
-            Ok(meta) if meta.is_file() => {}
+        let before = match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_file() => meta,
             Ok(_) => return Ok(None),
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e),
+        };
+        // No `O_NOFOLLOW` without libc: the opened file must be the very inode checked above, so
+        // a symlink swapped in between the check and the open is never followed.
+        let mut file = File::open(&path)?;
+        let opened = file.metadata()?;
+        if opened.dev() != before.dev() || opened.ino() != before.ino() || !opened.is_file() {
+            return Ok(None);
         }
         let mut text = String::new();
-        File::open(&path)?.read_to_string(&mut text)?;
+        file.read_to_string(&mut text)?;
         Ok(serde_json::from_str::<Value>(&text)
             .ok()
             .as_ref()
@@ -342,6 +508,20 @@ fn invalid_input(text: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, text)
 }
 
+/// The directory identity a grant binds to: the canonical path, so a symlink retargeted after
+/// the owner approved no longer matches the directory the command will run in. A directory that
+/// cannot be resolved keeps its given path.
+fn dir_key(cwd: &Path) -> String {
+    fs::canonicalize(cwd)
+        .unwrap_or_else(|_| cwd.to_path_buf())
+        .display()
+        .to_string()
+}
+
+/// How many `refused` records the desk keeps. A refusal needs no answer, so older ones rotate out
+/// instead of growing the directory without bound when a model repeats refused commands.
+const REFUSED_KEEP: usize = 500;
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -366,4 +546,103 @@ fn random_hex(bytes: usize) -> String {
         buf = digest.iter().take(bytes).copied().collect();
     }
     buf.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("oxa-desk-{tag}-{}", random_hex(6)));
+        fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    fn hit() -> DangerHit {
+        DangerHit {
+            rule: "force-push".into(),
+            reason: "overwrites remote history".into(),
+            segment: "git push --force".into(),
+        }
+    }
+
+    /// A wipe waits for the desk lock, so it cannot interleave with an answer that has already
+    /// loaded a record and is about to write it back.
+    #[test]
+    fn forgetting_records_waits_for_the_desk_lock() {
+        let root = temp_dir("lock");
+        let desk = ApprovalDesk::open(&root).expect("desk");
+        let cwd = temp_dir("lockcwd");
+        desk.record("s1", &cwd, "git push --force", &[hit()], "pending")
+            .expect("record");
+        let guard = desk.lock().expect("lock");
+        let (tx, rx) = mpsc::channel();
+        let other = desk.clone();
+        let wipe = std::thread::spawn(move || {
+            let removed = other.forget_all().expect("forget");
+            tx.send(removed).expect("send");
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "forget must wait while another update holds the lock"
+        );
+        drop(guard);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(10)).expect("removed"), 1);
+        wipe.join().expect("thread");
+    }
+
+    /// A symlink retargeted after approval is another directory: the grant no longer matches.
+    #[test]
+    fn a_grant_follows_the_canonical_directory_not_a_symlink_name() {
+        let root = temp_dir("link");
+        let desk = ApprovalDesk::open(&root).expect("desk");
+        let (a, b) = (temp_dir("linka"), temp_dir("linkb"));
+        let link = root.join("work");
+        std::os::unix::fs::symlink(&a, &link).expect("link");
+        let command = "git push --force";
+        let keys = vec![danger_key(&hit(), command)];
+        let id = desk
+            .record("s1", &link, command, &[hit()], "pending")
+            .expect("record");
+        desk.answer(&id, "session").expect("answer");
+        assert!(desk.covers("s1", &link, &keys));
+        fs::remove_file(&link).expect("unlink");
+        std::os::unix::fs::symlink(&b, &link).expect("relink");
+        assert!(
+            !desk.covers("s1", &link, &keys),
+            "the retargeted link is another directory"
+        );
+        assert!(!desk.granted("s1", &link, &keys));
+        assert!(
+            desk.covers("s1", &a, &keys),
+            "the reviewed directory still is covered"
+        );
+    }
+
+    /// Refused records rotate: repeating refused commands cannot grow the desk without bound.
+    #[test]
+    fn refused_records_rotate_at_a_fixed_count() {
+        let root = temp_dir("rotate");
+        let desk = ApprovalDesk::open(&root).expect("desk");
+        let cwd = temp_dir("rotatecwd");
+        for i in 0..REFUSED_KEEP + 25 {
+            desk.record(
+                "s1",
+                &cwd,
+                &format!("git push --force origin b{i}"),
+                &[hit()],
+                "refused",
+            )
+            .expect("record");
+        }
+        let kept = desk.records().expect("records");
+        assert_eq!(kept.len(), REFUSED_KEEP);
+        assert!(kept.iter().all(|r| r.status == "refused"));
+        let pending = desk
+            .record("s1", &cwd, "git push --force origin main", &[hit()], "pending")
+            .expect("pending");
+        assert!(desk.pending().expect("pending").iter().any(|r| r.id == pending));
+    }
 }

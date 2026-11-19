@@ -74,7 +74,7 @@ pub fn parse_info_for(
     let no_engine = status.get("engine_mode").and_then(Value::as_str) == Some("none");
     let model = ["/model", "/model_alias"]
         .iter()
-        .filter(|_| !(no_engine && !ids.is_empty()))
+        .filter(|_| !no_engine || ids.is_empty())
         .find_map(|p| {
             status
                 .pointer(p)

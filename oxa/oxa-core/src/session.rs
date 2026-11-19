@@ -2,6 +2,7 @@
 // ported from pi packages/coding-agent/src/core/agent-session.ts
 use crate::agent_loop::{persist, run_loop, RunEnd};
 use crate::host::{attach_hosts, first_reply, observe_hooks, pumped, serve_host, serve_idle, Serve};
+use crate::queue::lock;
 use crate::{Expanded, Handle, SessionState, Shared, Toolset};
 use oxa_compact::CompactPolicy;
 use oxa_config::{Dirs, Settings};
@@ -165,6 +166,11 @@ struct BusyGuard(Arc<Shared>);
 
 impl Drop for BusyGuard {
     fn drop(&mut self) {
+        let _transition = lock(&self.0.gate.foreground_transition);
+        // An explicit `abort_next` may arrive after `begin` consumed an earlier request. Do not
+        // leak that bit to a later run.
+        self.0.gate.abort_next.store(false, Ordering::SeqCst);
+        self.0.gate.running.store(false, Ordering::SeqCst);
         self.0.busy.store(false, Ordering::SeqCst);
     }
 }
@@ -426,6 +432,7 @@ impl Session {
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = Some(observer);
         crate::progress::session(&self.st);
+        crate::goal::publish_status(&self.st);
     }
 
     /// S1 / ENG-002: run the steering and follow-up messages that are queued, as one run, when
@@ -505,7 +512,7 @@ impl Session {
         sink: &mut dyn EventSink,
         ui: &mut dyn Ui,
     ) -> Result<Option<String>, OxaError> {
-        let _guard = self.begin()?;
+        let _guard = self.begin_foreground()?;
         crate::navigate(&mut self.st, target, summarize, instructions, sink, ui)
     }
 
@@ -578,6 +585,11 @@ impl Session {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .take()
+    }
+
+    /// The model this session sends its requests to (the last model switch or the opened one).
+    pub fn model(&self) -> &str {
+        &self.st.model
     }
 
     /// Model switch = a new epoch (W3), applied now when idle. Appends `ModelChange`, then
@@ -796,6 +808,18 @@ impl Session {
     /// Replace the session goal while idle, persisting before exposing controls.
     pub fn set_goal(
         &mut self,
+        goal: Option<oxa_session::Goal>,
+        sink: &mut dyn EventSink,
+    ) -> Result<(), OxaError> {
+        self.replace_goal(goal, sink)?;
+        crate::goal::publish_status(&self.st);
+        Ok(())
+    }
+
+    /// Replace the saved goal without publishing it. Callers that require an
+    /// explicit store sync publish only after that sync succeeds.
+    pub(crate) fn replace_goal(
+        &mut self,
         mut goal: Option<oxa_session::Goal>,
         sink: &mut dyn EventSink,
     ) -> Result<(), OxaError> {
@@ -860,6 +884,17 @@ impl Session {
     /// only while its wire is empty. Front ends call it from their idle tick before the first
     /// prompt; it claims the session like a run, so a busy session is skipped (`false`).
     pub fn preload_prefix(&mut self, sink: &mut dyn EventSink, ui: &mut dyn Ui) -> bool {
+        self.preload_prefix_if(sink, ui, || true)
+    }
+
+    /// Recheck front-end admission after claiming background work and before any engine call.
+    /// The caller arms cancellation before this call, then checks its existing command queue.
+    pub fn preload_prefix_if(
+        &mut self,
+        sink: &mut dyn EventSink,
+        ui: &mut dyn Ui,
+        should_start: impl FnOnce() -> bool,
+    ) -> bool {
         if self.preloaded {
             return false;
         }
@@ -874,6 +909,10 @@ impl Session {
         let Ok(_guard) = self.begin() else {
             return false;
         };
+        if !should_start() {
+            self.preloaded = false;
+            return false;
+        }
         // A turn an extension triggers while the preload request runs waits for the next idle
         // tick (`serve_host`) instead of being queued into a run that never comes.
         crate::host::holding_triggers(|| crate::compaction::boot_preload(&mut self.st, sink, ui))
@@ -1002,7 +1041,7 @@ impl Session {
     /// is never lost to a later reset.
     /// New prompt/extension work gets fresh run-local flags; prefill-only claims do not.
     fn begin_run(&mut self) -> Result<BusyGuard, OxaError> {
-        let guard = self.begin()?;
+        let guard = self.begin_foreground()?;
         crate::progress::notify(&self.st, crate::Progress::RunStart);
         self.st.stats.done_failed = false;
         self.st.stats.output_truncated = false;
@@ -1010,8 +1049,38 @@ impl Session {
         Ok(guard)
     }
 
+    /// Claim a user-facing operation which must remain cancellable even when it emits no
+    /// activity events. Unlike [`Session::begin_run`], this does not start an agent turn or
+    /// reset its outcome bookkeeping.
+    fn begin_foreground(&self) -> Result<BusyGuard, OxaError> {
+        // Publish foreground intent before the claim.  `begin()` used to set `busy` first,
+        // leaving a small but user-visible window in which the terminal could classify an
+        // input event as idle before it consumed AgentStart.
+        {
+            let _transition = lock(&self.st.shared.gate.foreground_transition);
+            if self
+                .st
+                .shared
+                .gate
+                .running
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                return Err(OxaError::new(codes::BUSY, "the session is busy"));
+            }
+        }
+        match self.begin() {
+            Ok(guard) => Ok(guard),
+            Err(error) => {
+                self.st.shared.gate.running.store(false, Ordering::SeqCst);
+                Err(error)
+            }
+        }
+    }
+
     fn begin(&self) -> Result<BusyGuard, OxaError> {
         let shared = self.st.shared.clone();
+        let _transition = lock(&shared.gate.foreground_transition);
         if shared
             .busy
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -1030,6 +1099,7 @@ impl Session {
             shared.cancel.cancel();
             shared.gate.bg_cancel.cancel();
         }
+        drop(_transition);
         Ok(BusyGuard(shared))
     }
 
@@ -1066,6 +1136,7 @@ impl Session {
             _ => {}
         }
 
+        crate::settings_refresh::refresh_at_run_start(st, sink);
         // L5 (`oxa.compaction.turnStart`): an aborted turn left its tool result uncounted; the
         // prompt is compacted first when the context is already above the soft limit.
         let can_run = compact_before_run(st, sink, ui)?;
@@ -1127,7 +1198,7 @@ impl Session {
             _ => {}
         }
 
-        run_from_wire(st, sink, ui).map(Some)
+        run_with_current_settings(st, sink, ui).map(Some)
     }
 }
 
@@ -1286,6 +1357,16 @@ pub(crate) fn run_from_wire(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<RunEnd, OxaError> {
+    // L1: one stat per settings file; a changed file is applied before the first request.
+    crate::settings_refresh::refresh_at_run_start(st, sink);
+    run_with_current_settings(st, sink, ui)
+}
+
+fn run_with_current_settings(
+    st: &mut SessionState,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+) -> Result<RunEnd, OxaError> {
     // X3: while the engine has not yet published metadata for the selected model (a switch
     // to a model that is not loaded, a resumed session), re-read it before the run and
     // again before the after-reply compaction decision.
@@ -1316,7 +1397,8 @@ fn settle_runs(
         if end == RunEnd::Stopped && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
             return run_loop(st, sink, ui);
         }
-        while end == RunEnd::Stopped {
+        while end == RunEnd::Stopped && st.shared.has_follow_up() {
+            crate::settings_refresh::refresh_at_run_start(st, sink);
             let follow = st.shared.take_follow_up();
             if follow.is_empty() {
                 break;
@@ -1354,14 +1436,18 @@ fn queued_run(
     ui: &mut dyn Ui,
     turn_start: bool,
 ) -> Result<Option<RunEnd>, OxaError> {
+    let goal_pending = st
+        .goal
+        .as_ref()
+        .is_some_and(|goal| goal.pursuing() && goal.has_pending_steer());
+    if !st.shared.has_input() && !goal_pending {
+        return Ok(None);
+    }
+    // Apply delivery modes before taking messages for this run.
+    crate::settings_refresh::refresh_at_run_start(st, sink);
     let mut taken = st.shared.take_steering();
     taken.extend(st.shared.take_follow_up());
-    if taken.is_empty()
-        && !st
-            .goal
-            .as_ref()
-            .is_some_and(|goal| goal.pursuing() && goal.has_pending_steer())
-    {
+    if taken.is_empty() && !goal_pending {
         return Ok(None);
     }
     let can_run = !turn_start || compact_before_run(st, sink, ui)?;
@@ -2152,6 +2238,10 @@ pub(crate) fn refresh_budget(st: &mut SessionState, prev_enabled: Option<bool>, 
             format!("could not re-read the engine limits ({e}); keeping the previous ones"),
         ),
     }
+    apply_budget_settings(st, prev_enabled);
+}
+
+pub(crate) fn apply_budget_settings(st: &mut SessionState, prev_enabled: Option<bool>) {
     st.compact = policy_for_model(&st.info, &st.settings, &st.model);
     if prev_enabled.is_some_and(|p| p != st.compact.enabled) {
         st.auto_compaction = st.compact.enabled;
@@ -2203,6 +2293,67 @@ mod tests {
             session_id: None,
             jobs: Arc::new(oxa_tools::JobRegistry::new()),
         }
+    }
+
+    /// A published foreground start is itself exclusive, even before the session claim is
+    /// visible. This is the interval in which the terminal has not consumed `AgentStart` yet.
+    #[test]
+    fn foreground_start_reservation_rejects_a_second_run() {
+        let env = oxa_fake::TestEnv::new();
+        let session = Session::open(deps(&env, Arc::new(MemStore::new())), Open::New).unwrap();
+        session.st.shared.gate.running.store(true, Ordering::SeqCst);
+
+        let error = session
+            .begin_foreground()
+            .err()
+            .expect("second run must be refused");
+
+        assert_eq!(error.code, codes::BUSY);
+        assert!(!session.handle().is_busy());
+        assert!(session.handle().is_running());
+    }
+
+    /// #1717: Ctrl+C/Escape is routed to `abort` as soon as the foreground reservation is
+    /// published. The abort must survive until that reservation claims `busy`.
+    #[test]
+    fn abort_during_foreground_reservation_cancels_the_claim() {
+        let env = oxa_fake::TestEnv::new();
+        let session = Session::open(deps(&env, Arc::new(MemStore::new())), Open::New).unwrap();
+        let handle = session.handle();
+        session.st.shared.gate.running.store(true, Ordering::SeqCst);
+
+        handle.abort();
+        let guard = session
+            .begin()
+            .expect("the reserved foreground run claims the session");
+
+        assert!(handle.is_aborting(), "the reservation must retain its abort");
+        drop(guard);
+        assert!(!handle.is_busy());
+    }
+
+    /// #1737: an abort that starts while a run is releasing must observe the completed
+    /// release, rather than publishing a sticky abort for an unrelated later prompt.
+    #[test]
+    fn abort_racing_foreground_release_does_not_cancel_the_next_claim() {
+        let env = oxa_fake::TestEnv::new();
+        let session = Session::open(deps(&env, Arc::new(MemStore::new())), Open::New).unwrap();
+        let handle = session.handle();
+        session.st.shared.gate.running.store(true, Ordering::SeqCst);
+
+        let transition = lock(&session.st.shared.gate.foreground_transition);
+        let aborting = std::thread::spawn({
+            let handle = handle.clone();
+            move || handle.abort()
+        });
+        session.st.shared.gate.running.store(false, Ordering::SeqCst);
+        drop(transition);
+        aborting.join().unwrap();
+
+        assert!(!session.st.shared.gate.abort_next.load(Ordering::SeqCst));
+        let guard = session.begin_foreground().expect("the next run starts normally");
+        assert!(!handle.is_aborting());
+        drop(guard);
     }
 
     /// #543, #555: only the active session and its fork/clone ancestors read spill output

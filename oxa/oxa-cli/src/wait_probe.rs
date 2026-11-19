@@ -14,6 +14,8 @@
 //! cwd (github.com only) and never from the call; every call has a deadline and an output cap;
 //! stderr is discarded and no token or environment value is printed; `gh` is found with
 //! `netguard::trusted_executable_for` like every other host tool, so a project shim is never run.
+//! The read probes `pr_view`, `pr_checks`, `run_log_failed` and `issue_view` live in `gh_probe.rs`
+//! and follow the same rules.
 //! A runner-owned worker session (`OXA_RUNNER_OWNS_GITHUB=1`) runs no `gh` at all, `GH_HOST` is
 //! pinned to github.com, and every call is bounded by the wait's own remaining time.
 use oxa_proto::{CommandSpec, HookPoint, HookReply, Hooks, OxaError, Tool, Ui};
@@ -27,7 +29,7 @@ use std::time::{Duration, Instant};
 /// One `gh` or `git` call must finish within this.
 const CALL_DEADLINE: Duration = Duration::from_secs(20);
 /// Most bytes of one `gh` answer that are read; more is an error.
-const OUTPUT_CAP: usize = 256 * 1024;
+pub(crate) const OUTPUT_CAP: usize = 256 * 1024;
 /// Most failed job names put in the evidence.
 const MAX_FAILED_JOBS: usize = 20;
 
@@ -65,6 +67,16 @@ impl ProbeHooks {
     }
 
     #[cfg(test)]
+    pub(crate) fn for_test_paths(cwd: &Path, home: &Path, path: &Path, repo: &str) -> Self {
+        Self::for_test_role(cwd, home, path, repo, false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_runner_owned_paths(cwd: &Path, home: &Path, path: &Path, repo: &str) -> Self {
+        Self::for_test_role(cwd, home, path, repo, true)
+    }
+
+    #[cfg(test)]
     fn for_test_role(cwd: &Path, home: &Path, path: &Path, repo: &str, runner_owns_github: bool) -> Self {
         Self {
             cwd: cwd.to_path_buf(),
@@ -85,6 +97,23 @@ impl ProbeHooks {
     }
 
     fn run(&self, program: &str, args: &[String], budget: Duration) -> Result<String, String> {
+        self.run_accepting(program, args, budget, OUTPUT_CAP, &[0])
+    }
+
+    /// The home directory as text, for the output scrubber.
+    pub(crate) fn home_string(&self) -> String {
+        self.home.to_string_lossy().into_owned()
+    }
+
+    /// Like `run`, with its own read cap, and the listed exit codes count as an answer.
+    pub(crate) fn run_accepting(
+        &self,
+        program: &str,
+        args: &[String],
+        budget: Duration,
+        cap: usize,
+        ok_codes: &[i32],
+    ) -> Result<String, String> {
         let exe = self.exe(program).ok_or_else(|| {
             format!("{program} was not found in a trusted PATH directory; wait until ci / pr_merged needs the GitHub CLI (gh)")
         })?;
@@ -100,12 +129,12 @@ impl ProbeHooks {
             // send the call to an enterprise instance with a same-named repository.
             command.env("GH_HOST", "github.com");
         }
-        match oxa_work::command_runner(command, Some(OUTPUT_CAP), budget) {
+        match oxa_work::command_runner(command, Some(cap), budget) {
             None => Err(format!(
-                "{program} did not finish within {} seconds, could not be started, or printed more than {OUTPUT_CAP} bytes",
+                "{program} did not finish within {} seconds, could not be started, or printed more than {cap} bytes",
                 budget.as_secs()
             )),
-            Some((0, out)) => Ok(out),
+            Some((code, out)) if ok_codes.contains(&code) => Ok(out),
             Some((code, _)) => Err(format!(
                 "{program} exited with status {code} (is `gh auth status` logged in, and does the repository exist?)"
             )),
@@ -113,7 +142,7 @@ impl ProbeHooks {
     }
 
     /// `owner/name` from the `origin` remote of the session cwd.
-    fn repo(&self, budget: Duration) -> Result<String, String> {
+    pub(crate) fn repo(&self, budget: Duration) -> Result<String, String> {
         let mut cached = self.repo.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(r) = cached.as_ref() {
             return Ok(r.clone());
@@ -129,7 +158,7 @@ impl ProbeHooks {
         Ok(repo)
     }
 
-    fn gh(&self, args: &[&str], budget: Duration) -> Result<Value, String> {
+    pub(crate) fn gh(&self, args: &[&str], budget: Duration) -> Result<Value, String> {
         let args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
         let out = self.run("gh", &args, budget)?;
         serde_json::from_str(&out).map_err(|_| "gh printed output that is not JSON".to_string())
@@ -318,7 +347,7 @@ impl Hooks for ProbeHooks {
         args: &Value,
         budget: Duration,
     ) -> Option<Result<Option<String>, String>> {
-        if kind != "ci" && kind != "pr_merged" {
+        if kind != "ci" && kind != "pr_merged" && !crate::gh_probe::is_read_kind(kind) {
             return None;
         }
         if self.runner_owns_github {
@@ -340,10 +369,10 @@ impl Hooks for ProbeHooks {
             return Some(Ok(None));
         }
         let deadline = Instant::now() + budget;
-        Some(if kind == "ci" {
-            self.ci(args, deadline)
-        } else {
-            self.pr_merged(args, deadline)
+        Some(match kind {
+            "ci" => self.ci(args, deadline),
+            "pr_merged" => self.pr_merged(args, deadline),
+            _ => self.read_probe(kind, args, budget).map(Some),
         })
     }
 }

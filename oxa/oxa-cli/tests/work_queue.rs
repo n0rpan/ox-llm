@@ -106,7 +106,7 @@ fn managed_native_worker(case: ManagedCase) {
     use std::os::unix::fs::PermissionsExt;
 
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let controls = env.agent_dir().join("native-test");
     let queue = controls.join("queue");
     let claims_path = controls.join("claims");
@@ -125,6 +125,7 @@ fn managed_native_worker(case: ManagedCase) {
         lease: None,
         attempts_today: 0,
         eligible: true,
+        evidence_incomplete: None,
     };
     let policy = Policy {
         enabled: true,
@@ -288,7 +289,7 @@ fn managed_native_worker(case: ManagedCase) {
 #[test]
 fn oldest_file_runs_first_and_restart_skips_completed_agents() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     task_file(&env, "a-new", "new", 10);
     task_file(&env, "z-old", "old", 20);
     let server = FakeServer::start(
@@ -325,7 +326,7 @@ fn oldest_file_runs_first_and_restart_skips_completed_agents() {
 #[test]
 fn concurrency_is_bounded_and_monitor_snapshot_is_a_complete_line() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     for (index, id) in ["a", "b", "c"].iter().enumerate() {
         task_file(&env, id, id, index as u64);
     }
@@ -393,7 +394,7 @@ fn invalid_file_does_not_skip_later_valid_work() {
 #[test]
 fn a_surviving_worker_counts_against_max_until_its_lock_releases() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     task_file(&env, "held", "held", 20);
     task_file(&env, "next", "next", 10);
     fs::create_dir_all(storage(&env)).unwrap();
@@ -427,7 +428,7 @@ fn a_surviving_worker_counts_against_max_until_its_lock_releases() {
 #[test]
 fn files_arriving_while_a_worker_runs_are_picked_up_before_once_exits() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     task_file(&env, "first", "first", 1);
     let server = FakeServer::start(
         vec![ScriptTurn::text("done"); 2],
@@ -519,7 +520,7 @@ fn preparing_git_keeps_ownership_after_a_queue_controller_is_killed() {
         }
     }
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     task_file(&env, "preparing", "preparing", 1);
     let tree = env.work().join(".oxa-worktrees/project/preparing");
     env.write(
@@ -584,7 +585,7 @@ touch .prep-done
 fn concurrent_same_problem_reports_search_and_file_serially() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     task_file(&env, "a", "a", 2);
     task_file(&env, "b", "b", 1);
     env.write(
@@ -658,7 +659,7 @@ fn has_active(env: &TestEnv, count: usize) -> bool {
 fn appended_tasks_and_archived_inputs_do_not_fail_or_interrupt_active_work() {
     use std::process::Stdio;
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     task_file(&env, "input", "first", 1);
     let server = FakeServer::start(
         vec![ScriptTurn::text("done"); 2],
@@ -699,7 +700,7 @@ fn appended_tasks_and_archived_inputs_do_not_fail_or_interrupt_active_work() {
 fn correcting_a_malformed_file_clears_its_queue_error() {
     use std::process::Stdio;
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     env.write("work/queue/bad.json", "{");
     task_file(&env, "active", "active", 1);
     let server = FakeServer::start(
@@ -744,6 +745,8 @@ fn a_monitor_error_drains_admitted_workers_before_returning() {
         terminate_binary: None,
         offline: true,
         runner_owns_github: false,
+        autonomy: Default::default(),
+        autonomy_now: None,
         storage: env.agent_dir().join("work/monitor-fixture"),
     };
     let result = oxa_work::run_queue(
@@ -753,6 +756,7 @@ fn a_monitor_error_drains_admitted_workers_before_returning() {
             max: 1,
             min_free_bytes: 0,
             once: true,
+            ..oxa_work::QueueOptions::default()
         },
         &policy,
         std::path::Path::new("/usr/bin/df"),
@@ -824,7 +828,7 @@ fn a_full_common_git_volume_blocks_admission_independently() {
 fn a_retained_busy_lease_without_an_input_counts_against_max() {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     task_file(&env, "next", "next", 1);
     fs::DirBuilder::new()
         .recursive(true)

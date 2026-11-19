@@ -4,7 +4,7 @@
 
 use oxa_fake::TestEnv;
 use oxa_proto::{Autonomy, CancelToken, ExecResult, ExecSpec, OxaError, Sandbox, YoloSwitch};
-use oxa_sandbox::{FullAccess, NoSandbox};
+use oxa_sandbox::{FullAccess, Layout, NetSandbox, NoSandbox};
 use std::sync::Arc;
 
 fn spec(env: &TestEnv, command: String, writable: bool) -> ExecSpec {
@@ -23,6 +23,108 @@ fn full(level: Autonomy, env: &TestEnv) -> (FullAccess, YoloSwitch) {
     // The wrapped sandbox refuses everything: whatever runs did not go through it.
     let sb = FullAccess::new(Arc::new(NoSandbox), switch.clone(), "", env.home(), false, false);
     (sb, switch)
+}
+
+#[test]
+fn attended_host_bash_uses_the_toolchain_environment_and_scrubs_output() {
+    let env = TestEnv::new();
+    let (sb, _) = full(Autonomy::Standard, &env);
+    let cargo = env.home().join("cargo");
+    let layout = Layout {
+        path: vec!["/usr/bin".into(), "/bin".into()],
+        env: vec![("CARGO_HOME".into(), cargo.display().to_string())],
+        ..Layout::default()
+    };
+    let synthetic = "fixture-value-for-redaction";
+    let net = NetSandbox::new(Arc::new(NoSandbox), true, false).with_gh_token(Some(synthetic.into()));
+    let sb = sb
+        .with_os_sandbox(false)
+        .with_host_controls(layout, Arc::new(net));
+    let mut spec = spec(
+        &env,
+        format!(
+            "test -z \"${{GH_TOKEN+x}}\" && printf '%s|%s|%s|%s' \"$HOME\" \"$PATH\" \"$CARGO_HOME\" '{}'",
+            synthetic,
+        ),
+        true,
+    );
+    spec.net = true;
+    let expected = format!(
+        "{}|/usr/bin:/bin|{}|[redacted]",
+        env.home().display(),
+        cargo.display()
+    );
+    let mut live = Vec::new();
+    let result = sb.run(&spec, &CancelToken::new(), &mut |bytes| {
+        live.extend_from_slice(bytes)
+    });
+    assert_eq!(
+        result.exit,
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&result.output)
+    );
+    assert_eq!(result.output, expected.as_bytes());
+    assert_eq!(live, expected.as_bytes());
+
+    live.clear();
+    let result = sb.run_streaming(&spec, &CancelToken::new(), &mut |bytes| {
+        live.extend_from_slice(bytes)
+    });
+    assert_eq!(result.exit, Some(0));
+    assert!(result.output.is_empty());
+    assert_eq!(live, expected.as_bytes());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn network_disabled_host_bash_uses_the_cleared_environment() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    let fake = env.write(
+        "bin/bwrap",
+        "#!/bin/sh\n[ \"$1\" = --unshare-all ] && exit 0\n[ \"$1\" = --unshare-net ] || exit 1\n[ -z \"${GH_TOKEN+x}\" ] || exit 2\nprintf '%s|%s' \"$HOME\" \"$OXA_SESSION_ID\"\n",
+    );
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let switch = YoloSwitch::new(Autonomy::Standard);
+    let sb = FullAccess::new(
+        Arc::new(NoSandbox),
+        switch,
+        fake.parent().unwrap().to_str().unwrap(),
+        env.home(),
+        false,
+        true,
+    )
+    .with_os_sandbox(false);
+    let mut spec = spec(&env, "true".into(), true);
+    spec.env.push(("GH_TOKEN".into(), "fixture-value".into()));
+    spec.env.push(("OXA_SESSION_ID".into(), "fixture-session".into()));
+    let result = sb.run(&spec, &CancelToken::new(), &mut |_| {});
+    assert_eq!(
+        result.exit,
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&result.output)
+    );
+    assert_eq!(
+        result.output,
+        format!("{}|fixture-session", env.home().display()).as_bytes()
+    );
+}
+
+#[test]
+fn requiring_sandbox_at_run_start_updates_existing_bash_views() {
+    let env = TestEnv::new();
+    let (sb, _) = full(Autonomy::Standard, &env);
+    let sb = sb.with_os_sandbox(false);
+    let view = sb.with_inner(Arc::new(NoSandbox));
+    let command = spec(&env, "printf ran".into(), true);
+    let result = view.run(&command, &CancelToken::new(), &mut |_| {});
+    assert_eq!(result.exit, Some(0));
+
+    sb.require_os_sandbox();
+    let result = view.run(&command, &CancelToken::new(), &mut |_| {});
+    assert_eq!(result.exit, None);
 }
 
 #[test]
@@ -188,6 +290,7 @@ impl Sandbox for Wrapped {
             output: b"wrapped".to_vec(),
             exit: Some(42),
             timed_out: false,
+            unsandboxed: false,
         }
     }
 }
@@ -211,8 +314,8 @@ fn no_os_sandbox_bypasses_bwrap_for_writable_spec() {
     let _ = std::fs::remove_file(&target);
 }
 
-/// #1512 S3: a read-only (plan) spec keeps bwrap when bwrap is present, with or without the
-/// OS sandbox: only a missing bwrap lets the read-only spec run with the user's rights.
+/// #1512 S3: a read-only (plan) spec always keeps bwrap. Missing bwrap fails closed rather
+/// than treating the command classifier as filesystem confinement.
 #[test]
 fn no_os_sandbox_plan_spec_uses_bwrap_when_present() {
     let env = TestEnv::new();
@@ -223,9 +326,22 @@ fn no_os_sandbox_plan_spec_uses_bwrap_when_present() {
     assert_eq!(sb.launch_argv(&s).unwrap()[0], "bwrap");
     let r = sb.run(&s, &CancelToken::new(), &mut |_| {});
     assert_eq!(r.exit, Some(42), "plan keeps the wrapped sandbox");
+
+    let missing = FullAccess::new(
+        Arc::new(NoSandbox),
+        YoloSwitch::new(Autonomy::Standard),
+        "",
+        env.home(),
+        false,
+        false,
+    )
+    .with_os_sandbox(false);
+    let r = missing.run(&s, &CancelToken::new(), &mut |_| {});
+    assert_eq!(r.exit, None, "plan must fail closed without bwrap");
 }
 
-/// #1512 S3: exec hooks without the OS sandbox run with the user's rights, with their stdin.
+/// The raw FullAccess stdin path remains host-side when selected directly. Dispatch does not
+/// give this view to exec hooks; `hook_sandbox` is tested below.
 #[test]
 fn no_os_sandbox_hooks_run_unsandboxed() {
     let env = TestEnv::new();
@@ -318,4 +434,43 @@ fn no_os_sandbox_persistence_notice_is_none() {
         false,
     );
     assert_eq!(on.persistence_notice(), Some("scratch"));
+}
+
+/// #1512 S3: with the OS sandbox on, the exec hooks' sandbox keeps the inline (`run`) path
+/// wrapped too when yolo is switched on live, including when interactive bash opted out.
+#[test]
+fn os_sandbox_on_inline_hooks_stay_sandboxed_under_yolo() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work()).unwrap();
+    let target = env.root().join("inline-hook-wrote-os-on.txt");
+    let switch = YoloSwitch::new(Autonomy::Standard);
+    let full = Arc::new(FullAccess::new(
+        Arc::new(NoSandbox),
+        switch.clone(),
+        "",
+        env.home(),
+        false,
+        false,
+    ));
+    let hooks = FullAccess::hook_sandbox(&full);
+    switch.set_level(Autonomy::Yolo);
+    let s = spec(&env, format!("echo x > '{}'", target.display()), true);
+    let r = hooks.run(&s, &CancelToken::new(), &mut |_| {});
+    assert_eq!(r.exit, None, "{}", String::from_utf8_lossy(&r.output));
+    assert!(
+        !target.exists(),
+        "an inline hook ran outside the wrapped sandbox under yolo"
+    );
+
+    let off = Arc::new(
+        FullAccess::new(Arc::new(NoSandbox), switch, "", env.home(), false, false).with_os_sandbox(false),
+    );
+    let hooks = FullAccess::hook_sandbox(&off);
+    let r = hooks.run(&s, &CancelToken::new(), &mut |_| {});
+    assert_eq!(r.exit, None, "{}", String::from_utf8_lossy(&r.output));
+    assert!(
+        !target.exists(),
+        "interactive bash policy must not release exec hooks from their sandbox"
+    );
+    let _ = std::fs::remove_file(&target);
 }

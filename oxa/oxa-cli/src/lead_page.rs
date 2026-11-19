@@ -93,6 +93,7 @@ fn action(value: Action) -> &'static str {
         Action::WaitMergeability => "Wait for mergeability",
         Action::WaitReview => "Wait for review",
         Action::WaitIssue => "Wait for issue intake",
+        Action::EvidenceIncomplete => "Evidence incomplete",
     }
 }
 fn subject(value: &Subject) -> String {
@@ -673,6 +674,7 @@ mod tests {
                 }),
                 attempts_today: 0,
                 eligible: true,
+                evidence_incomplete: None,
             }],
         };
         let mut quota = crate::lead_quota::GitHubQuotas::default();
@@ -882,6 +884,7 @@ mod tests {
                 lease: None,
                 attempts_today: 0,
                 eligible: true,
+                evidence_incomplete: None,
             }],
         };
         let ready = owner_goal_html(Page::Home, &goal, &reference, Some(&board));
@@ -1904,6 +1907,7 @@ return true;
                 lease: None,
                 attempts_today: 2,
                 eligible: true,
+                evidence_incomplete: None,
             }],
         };
         for page in [Page::Home, Page::Board, Page::BoardQuery(Query::default())] {
@@ -2141,6 +2145,7 @@ return true;
                 }),
                 attempts_today: 2,
                 eligible: true,
+                evidence_incomplete: None,
             }],
         };
         let render = |board: Option<&Board>| {

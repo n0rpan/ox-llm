@@ -33,7 +33,12 @@ pub struct EnvFacts {
     pub thinking: String,
     pub mode: String,
     pub bash_network: bool,
+    /// The sandbox cannot enforce a refused bash network (no OS sandbox): the note must not
+    /// claim "off" then.
+    pub network_unenforced: bool,
     pub offline: bool,
+    /// No OS sandbox on this platform: bash runs with the user's rights.
+    pub no_os_sandbox: bool,
 }
 
 /// The date line's `{weekday} {date}` (the key that says whether the wire already has today).
@@ -66,9 +71,23 @@ pub fn full_block(t: &LocalTime, f: &EnvFacts) -> String {
     lines.push(format!(
         "Session: {} mode, bash network {}, offline {}",
         f.mode,
-        if f.bash_network { "on" } else { "off" },
+        if f.bash_network {
+            "on"
+        } else if f.network_unenforced {
+            oxa_proto::NET_NOT_RESTRICTED_NOTICE
+        } else {
+            "off"
+        },
         if f.offline { "yes" } else { "no" }
     ));
+    // A network the platform cannot restrict is itself a missing OS sandbox: say it even when
+    // bash networking is enabled, so the model is not told only "bash network on".
+    if f.no_os_sandbox || f.network_unenforced {
+        lines.push(
+            "Sandbox: none. There is no OS sandbox on this platform: commands run with your user rights, and bash is disabled while the bash network is off."
+                .to_string(),
+        );
+    }
     lines.push(
         "Use this date for \"today\", \"latest\" and \"recent\" (also for web_search freshness).".to_string(),
     );
@@ -180,7 +199,9 @@ pub fn facts(st: &SessionState) -> EnvFacts {
         thinking: st.thinking.as_str().to_string(),
         mode: st.mode.as_str().to_string(),
         bash_network: st.sandbox.network(),
+        network_unenforced: !st.sandbox.network_enforced(),
         offline: oxa_proto::offline(),
+        no_os_sandbox: !oxa_proto::OS_SANDBOX,
     }
 }
 
@@ -281,7 +302,9 @@ mod tests {
             thinking: "medium".into(),
             mode: "workspace".into(),
             bash_network: false,
+            network_unenforced: false,
             offline: false,
+            no_os_sandbox: false,
         }
     }
 
@@ -296,6 +319,42 @@ mod tests {
              Use this date for \"today\", \"latest\" and \"recent\" (also for web_search freshness).\n</env>"
         );
         assert_eq!(time_note(&t("2026-11-14", "09:05")), "[local time 09:05 CET]");
+    }
+
+    #[test]
+    fn offline_off_linux_tells_the_model_network_is_not_restricted() {
+        let mut facts = f();
+        facts.offline = true;
+        facts.network_unenforced = true;
+        let block = full_block(&t("2026-11-14", "13:42"), &facts);
+        assert!(
+            block.contains("bash network is NOT restricted on this platform (no OS sandbox), offline yes"),
+            "{block}"
+        );
+        assert!(!block.contains("bash network off"), "{block}");
+        facts.bash_network = true;
+        let block = full_block(&t("2026-11-14", "13:42"), &facts);
+        assert!(block.contains("bash network on"), "{block}");
+        // Networking on does not hide the missing OS sandbox.
+        assert!(block.contains("Sandbox: none."), "{block}");
+    }
+
+    #[test]
+    fn env_note_names_a_missing_sandbox_and_is_unchanged_with_one() {
+        let with = full_block(&t("2026-11-14", "13:42"), &f());
+        assert!(!with.contains("Sandbox:"));
+        let none = full_block(
+            &t("2026-11-14", "13:42"),
+            &EnvFacts {
+                no_os_sandbox: true,
+                ..f()
+            },
+        );
+        assert!(none.contains(
+            "Sandbox: none. There is no OS sandbox on this platform: commands run with your user rights"
+        ));
+        assert_eq!(none.replace(
+            "Sandbox: none. There is no OS sandbox on this platform: commands run with your user rights, and bash is disabled while the bash network is off.\n", ""), with);
     }
 
     #[test]
