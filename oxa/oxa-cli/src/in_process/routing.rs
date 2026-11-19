@@ -61,6 +61,9 @@ pub(super) struct Routed {
     /// The gateway was admitted by the owner's Go switch alone: only its Go models may be
     /// reached, not another configured provider's metered alias.
     pub go_only: bool,
+    /// The aliases the owner configured in `oxa.cloud.models`. Each one carries its own provider,
+    /// so a configured alias is not a Go model whatever its name spells.
+    pub metered: BTreeSet<String>,
 }
 impl Routed {
     pub fn into_engine(mut self, requested: Option<&str>) -> Result<Arc<dyn Engine>, OxaError> {
@@ -105,7 +108,7 @@ impl Routed {
     /// settings may replace the scope with the project's, so selection must stay inside the
     /// admitted one: another provider's alias is not reached on a Go admission's authority.
     fn admitted(&self, model: &str) -> bool {
-        if self.go_only && !is_go_model(model, &self.endpoint) {
+        if self.go_only && (self.metered.contains(model) || !is_go_model(model, &self.endpoint)) {
             return false;
         }
         self.admitted.is_empty()

@@ -535,23 +535,28 @@ fn the_go_switch_does_not_open_another_providers_alias() {
     let path = env.agent_dir().join("settings.json");
     let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     settings.as_object_mut().unwrap().remove("defaultModel");
-    // The owner's Go switch is on; another provider's metered alias is configured beside it.
-    settings["oxa"]["cloud"]["models"]["synthetic-other"] = json!({
-        "provider":"openai", "upstream_model":"synthetic-other",
-        "context_window":32768, "max_output":64,
-        "base_url":format!("http://{}", other.address())
-    });
+    // The Go switch (`oxa.cloud.opencode.enabled`, written by `setup`) is the only admission:
+    // `inProcessCloud` would open the whole gateway and hide the Go-only rule.
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    // Another provider's metered alias is configured beside it, under a name that spells Go.
+    for alias in ["synthetic-other", "opencode/synthetic-metered"] {
+        settings["oxa"]["cloud"]["models"][alias] = json!({
+            "provider":"openai", "upstream_model":"synthetic-other",
+            "context_window":32768, "max_output":64,
+            "base_url":format!("http://{}", other.address())
+        });
+    }
     fs::write(path, settings.to_string()).unwrap();
 
     // The Go model answers.
     let go = run(&env, &["--model", MODEL, "--no-tools", "-p", "Synthetic task"]);
     assert!(go.status.success(), "{}", String::from_utf8_lossy(&go.stderr));
-    // The switch does not authorize the other provider's alias.
-    let refused = run(
-        &env,
-        &["--model", "synthetic-other", "--no-tools", "-p", "Synthetic task"],
-    );
-    assert!(!refused.status.success());
+    // The switch does not authorize the other provider's aliases, not even a Go-spelled name:
+    // admission comes from the catalog provider, not from the spelling.
+    for alias in ["synthetic-other", "opencode/synthetic-metered"] {
+        let refused = run(&env, &["--model", alias, "--no-tools", "-p", "Synthetic task"]);
+        assert!(!refused.status.success(), "{alias}");
+    }
     assert!(
         other.requests().is_empty(),
         "the Go switch must not spend another provider: {:?}",
