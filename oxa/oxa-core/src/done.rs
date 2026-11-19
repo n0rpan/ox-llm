@@ -68,42 +68,6 @@ impl Proof {
     }
 }
 
-/// Commands that run a project's tests or checks. Matched on whole words after the shell
-/// separators are blanked, so `make testdata` and `cat tsc.log` do not count.
-const CHECK_COMMANDS: &[&str] = &[
-    "cargo test",
-    "cargo check",
-    "cargo clippy",
-    "go test",
-    "pytest",
-    "npm test",
-    "npm run test",
-    "pnpm test",
-    "yarn test",
-    "bun test",
-    "deno test",
-    "make test",
-    "make check",
-    "jest",
-    "vitest",
-    "ctest",
-    "mvn test",
-    "gradle test",
-    "dotnet test",
-    "ruff check",
-    "mypy",
-    "pyright",
-    "tsc",
-];
-
-fn is_check_command(command: &str) -> bool {
-    let spaced = command
-        .to_lowercase()
-        .replace(['&', '|', ';', '(', ')', '\n'], " ");
-    let padded = format!(" {} ", spaced.split_whitespace().collect::<Vec<_>>().join(" "));
-    CHECK_COMMANDS.iter().any(|c| padded.contains(&format!(" {c} ")))
-}
-
 /// Seconds a git probe may run before the fingerprint gives up (`None`: checks stay as they were).
 const PROBE_TIMEOUT_S: u64 = 20;
 
@@ -235,6 +199,18 @@ fn git_fingerprint(cwd: &Path) -> Option<u64> {
 }
 
 impl DoneState {
+    fn observe_tree(&mut self, now: Option<u64>, file_edit: bool) {
+        // In a mixed batch, note_proof has already used call order to decide whether a check
+        // followed the edit. Keep that decision and only synchronize the observed tree here.
+        if file_edit {
+            self.tree = now;
+        } else if now != self.tree {
+            self.dirty = true;
+            self.proof.changed();
+            self.tree = now;
+        }
+    }
+
     pub(crate) fn note_edits(&mut self, results: &[CallResult]) {
         if results
             .iter()
@@ -254,11 +230,13 @@ impl DoneState {
             match res.tool_name.as_str() {
                 "edit" | "write" => self.proof.changed(),
                 "bash" => {
-                    let command = serde_json::from_str::<serde_json::Value>(&call.args_raw)
-                        .ok()
-                        .and_then(|args| args["command"].as_str().map(str::to_owned));
+                    let args = serde_json::from_str::<serde_json::Value>(&call.args_raw).ok();
                     let exited_zero = res.ui["exit"].as_i64() == Some(0) && res.ui["timedOut"] != true;
-                    if exited_zero && command.is_some_and(|c| is_check_command(&c)) {
+                    if exited_zero
+                        && args
+                            .as_ref()
+                            .is_some_and(|args| crate::think::executed_check(&call.name, args).is_some())
+                    {
                         self.proof.passed();
                     }
                 }
@@ -278,19 +256,24 @@ impl DoneState {
     /// tools; not the read-only built-ins): a changed work folder counts as an edit.
     pub(crate) fn note_bash(&mut self, st: &SessionState, results: &[CallResult]) {
         const READ_ONLY: [&str; 4] = ["read", "grep", "find", "ls"];
+        let file_edit = results
+            .iter()
+            .any(|r| !r.is_error && (r.tool_name == "edit" || r.tool_name == "write"));
         // Already dirty and unproven: a look at the tree cannot change the answer.
         if (self.dirty && !self.proof.checked)
             || self.tree.is_none()
             || results.iter().all(|r| READ_ONLY.contains(&r.tool_name.as_str()))
         {
+            // File tools mark the proof directly, but their successful edit must also advance
+            // the fingerprint. Otherwise a passing check in the next batch compares with the
+            // pre-edit tree and incorrectly treats the already-observed edit as a later change.
+            if file_edit && self.tree.is_some() {
+                self.observe_tree(tree_fingerprint(&st.cwd), true);
+            }
             return;
         }
         let now = tree_fingerprint(&st.cwd);
-        if now != self.tree {
-            self.dirty = true;
-            self.proof.changed();
-            self.tree = now;
-        }
+        self.observe_tree(now, file_edit);
     }
 }
 
@@ -729,6 +712,23 @@ mod tests {
     }
 
     #[test]
+    fn observed_edit_fingerprint_does_not_undo_a_later_passing_check() {
+        let mut state = DoneState {
+            tree: Some(1),
+            ..DoneState::default()
+        };
+        state.dirty = true;
+        state.proof.changed();
+
+        // This is the file-edit branch of note_bash: synchronize the edit while it is known.
+        state.observe_tree(Some(2), true);
+        state.proof.passed();
+        state.observe_tree(Some(2), false);
+
+        assert!(!state.proof.unproven());
+    }
+
+    #[test]
     fn read_only_runs_are_never_asked() {
         let mut proof = Proof::default();
         assert!(!proof.unproven());
@@ -737,15 +737,24 @@ mod tests {
     }
 
     #[test]
-    fn check_commands_match_whole_words() {
-        assert!(is_check_command("cargo test -p oxa-core"));
-        assert!(is_check_command(
-            "cd oxa && cargo clippy -p oxa-core -- -D warnings"
-        ));
-        assert!(is_check_command("npm test;echo done"));
-        assert!(is_check_command("pytest -q"));
-        assert!(!is_check_command("make testdata"));
-        assert!(!is_check_command("cat tsc.log"));
-        assert!(!is_check_command("echo cargo-tester"));
+    fn echoed_check_does_not_prove_an_edit() {
+        let mut state = DoneState::default();
+        state.proof.changed();
+        let call = ToolCall {
+            id: "call-1".to_string(),
+            name: "bash".to_string(),
+            args_raw: serde_json::json!({ "command": "echo pytest" }).to_string(),
+        };
+        let result = CallResult {
+            msg: oxa_proto::WireMsg::tool_result("call-1", "pytest"),
+            tool_name: "bash".to_string(),
+            is_error: false,
+            ui: serde_json::json!({ "exit": 0, "timedOut": false }),
+            warn: false,
+        };
+
+        state.note_proof(&[call], &[result]);
+
+        assert!(state.proof.unproven());
     }
 }

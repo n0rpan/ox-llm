@@ -18,14 +18,19 @@ The sandbox can forward the owner's `CARGO_TARGET_DIR` to worker shells. Externa
 paths are writable only through an explicit owner `oxa.sandbox.writePaths` mount.
 
 Persisted headless print and JSON runs with a pursuing goal consume plain `oxa send` inbox
-messages by default. The user-only `oxa.inbox.headless` setting can opt out; project settings
-cannot enable or disable it. Non-persisted sessions, sessions without a pursuing goal, and the
-managed-steering path do not mount the plain inbox watcher.
+messages with `oxa.inbox.headless` set to `true` by default. This user-only setting can opt out;
+project settings cannot enable or disable it. Non-persisted sessions, sessions without a pursuing
+goal, and the managed-steering path do not mount the plain inbox watcher.
 
 The background-job and per-parent child limits are configurable through `oxa.bash.maxJobs`
 (default 16) and `oxa.subagent.maxChildren` (default 8). Read both caps from the user file.
 Project settings for remote concurrency remain bounded by the user’s child cap. An explicit
 bash `timeout: 0` opts out of the call timeout. Sandbox and permission checks still apply.
+
+Automated Go review reads at most 200 GitHub comment pages (20,000 comments) when it checks the
+configured daily quota and prior same-diff receipts. If either listing is incomplete, review is
+deferred before quota reservation, provider authentication, or provider I/O. An incomplete history
+cannot authorize another token-spending review.
 
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 

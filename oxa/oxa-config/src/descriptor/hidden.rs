@@ -238,6 +238,16 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     )
     .key(Kind::StringList, "[\"cargo check\"]")
     .hidden(),
+    // K4: seconds a worker gets after SIGINT before its process group gets SIGTERM.
+    d(
+        "oxa.workers.stopGraceSeconds",
+        Group::Advanced,
+        "",
+        "oxa.workers.stopGraceSeconds",
+        "",
+    )
+    .key(Kind::Number, "10")
+    .hidden(),
     d("prompts", Group::Advanced, "", "prompts", "")
         .key(Kind::StringList, "[]")
         .hidden(),
