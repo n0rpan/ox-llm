@@ -252,49 +252,21 @@ impl HttpTransport {
 /// Parse an SSE response body into the JSON messages of its `data:` fields (multi-line data
 /// joined with `\n`; comments and other fields ignored; a non-JSON event is `Err(mcp)`).
 pub fn parse_sse_messages(body: &str) -> Result<Vec<Value>, OxaError> {
-    fn flush(data: &mut Option<String>, out: &mut Vec<Value>) -> Result<(), OxaError> {
-        if let Some(text) = data.take() {
-            if !text.trim().is_empty() {
-                let message = serde_json::from_str::<Value>(&text).map_err(|e| {
-                    OxaError::new(codes::MCP, format!("invalid SSE message from MCP server: {e}"))
-                })?;
-                out.push(message);
-            }
-        }
-        Ok(())
-    }
-
+    let invalid = |e: &dyn std::fmt::Display| {
+        OxaError::new(codes::MCP, format!("invalid SSE message from MCP server: {e}"))
+    };
+    let mut framer = oxa_http::sse::Framer::default();
     let mut out = Vec::new();
-    // Data lines of the event being read; `None` until a `data` field appears.
-    let mut data: Option<String> = None;
-    for raw in body.split('\n') {
-        let line = raw.strip_suffix('\r').unwrap_or(raw);
-        if line.is_empty() {
-            flush(&mut data, &mut out)?;
+    // The trailing blank line delivers a last event that has none of its own.
+    for byte in body.bytes().chain(*b"\n\n") {
+        let Some(oxa_http::sse::Frame::Data(data)) = framer.push(byte) else {
             continue;
-        }
-        if line.starts_with(':') {
-            continue;
-        }
-        let (field, value) = match line.find(':') {
-            Some(i) => {
-                let rest = &line[i + 1..];
-                (&line[..i], rest.strip_prefix(' ').unwrap_or(rest))
-            }
-            None => (line, ""),
         };
-        if field == "data" {
-            match &mut data {
-                Some(buf) => {
-                    buf.push('\n');
-                    buf.push_str(value);
-                }
-                None => data = Some(value.to_string()),
-            }
+        let text = String::from_utf8(data).map_err(|e| invalid(&e))?;
+        if !text.trim().is_empty() {
+            out.push(serde_json::from_str::<Value>(&text).map_err(|e| invalid(&e))?);
         }
     }
-    // A last event without its blank line is still delivered.
-    flush(&mut data, &mut out)?;
     Ok(out)
 }
 
@@ -438,5 +410,45 @@ impl Transport for HttpTransport {
     }
     fn kind(&self) -> &'static str {
         "http"
+    }
+}
+
+#[cfg(test)]
+mod sse_tests {
+    use super::parse_sse_messages;
+    use serde_json::json;
+
+    #[test]
+    fn crlf_and_lf_bodies_parse_the_same() {
+        let want = vec![json!({"a": 1}), json!({"b": 2})];
+        assert_eq!(
+            parse_sse_messages("event: message\r\nid: 1\r\ndata: {\"a\":1}\r\n\r\ndata: {\"b\":2}\r\n\r\n")
+                .unwrap(),
+            want
+        );
+        assert_eq!(
+            parse_sse_messages("event: message\nid: 1\ndata: {\"a\":1}\n\ndata: {\"b\":2}\n\n").unwrap(),
+            want
+        );
+    }
+
+    #[test]
+    fn data_field_forms_and_multiline_join() {
+        let got =
+            parse_sse_messages("data:{\"a\":1}\n\ndata: {\"b\":2}\n\ndata\n\n: c\ndata: [1,\ndata: 2]\n\n")
+                .unwrap();
+        assert_eq!(got, vec![json!({"a": 1}), json!({"b": 2}), json!([1, 2])]);
+    }
+
+    #[test]
+    fn last_event_without_blank_line_is_delivered() {
+        assert_eq!(
+            parse_sse_messages("data: {\"a\":1}").unwrap(),
+            vec![json!({"a": 1})]
+        );
+        assert_eq!(
+            parse_sse_messages("data: {\"a\":1}\n").unwrap(),
+            vec![json!({"a": 1})]
+        );
     }
 }
