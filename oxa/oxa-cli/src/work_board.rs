@@ -126,7 +126,7 @@ fn listing_page(connection: &Value) -> Result<(&Vec<Value>, u64, bool), String> 
 }
 impl QueryError {
     fn retryable(&self) -> bool {
-        matches!(self, Self::Http(502 | 503 | 504))
+        matches!(self, Self::Http(502..=504))
     }
     fn message(self) -> String {
         match self {
