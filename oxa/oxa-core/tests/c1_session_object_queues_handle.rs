@@ -5,23 +5,35 @@
 
 use oxa_config::{Dirs, QueueMode, Settings};
 use oxa_core::{Deps, Open, Queue, Session, Shared, ToolSelection};
-use oxa_fake::{ScriptedEngine, TestEnv};
+use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
-use oxa_proto::{Access, AgentEvent, Decision, EntryBody, HeadlessUi, Mode, Part, ThinkingLevel, VecSink};
+use oxa_proto::{
+    Access, AgentEvent, CommandSpec, Decision, EntryBody, HeadlessUi, HookPoint, HookReply, Hooks, Mode,
+    OxaError, Part, ThinkingLevel, Tool, Ui, Value, VecSink,
+};
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
 use oxa_session::{MemStore, SessionStore};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Deps over a scripted engine with no turns, the given store and the test's own directories.
 fn deps(env: &TestEnv, store: Arc<dyn SessionStore>) -> Deps {
+    deps_with(env, store, Arc::new(ScriptedEngine::new(Vec::new())), Vec::new())
+}
+
+fn deps_with(
+    env: &TestEnv,
+    store: Arc<dyn SessionStore>,
+    engine: Arc<ScriptedEngine>,
+    hooks: Vec<Arc<dyn Hooks>>,
+) -> Deps {
     Deps {
-        engine: Arc::new(ScriptedEngine::new(Vec::new())),
+        engine,
         store,
         tools: Vec::new(),
-        hooks: Vec::new(),
+        hooks,
         policy: Box::new(ModePolicy::new()),
         sandbox: Arc::new(NoSandbox),
         // Exact prompt-byte fixtures select note-free queues/RPC/replay.
@@ -554,6 +566,87 @@ fn a_user_bash_command_is_foreground_work_until_it_ends() {
         "the session is foreground work while the command holds it"
     );
     assert!(!handle.is_running(), "the signal ends with the command");
+    assert!(!handle.is_busy());
+}
+
+/// #877: `/tree` branch-summary generation emits no agent activity events, but it is still
+/// foreground work and must remain cancellable from the interactive front end.
+#[test]
+fn a_branch_summary_is_foreground_work_until_navigation_ends() {
+    struct RunningAtTreeHook {
+        handle: Mutex<Option<oxa_core::Handle>>,
+        seen: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl Hooks for RunningAtTreeHook {
+        fn fire(&self, point: HookPoint, _payload: &Value, _ui: &mut dyn Ui) -> HookReply {
+            if point == HookPoint::SessionBeforeTree {
+                self.seen.store(
+                    self.handle.lock().unwrap().as_ref().unwrap().is_running(),
+                    Ordering::SeqCst,
+                );
+            }
+            HookReply::Continue
+        }
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            Vec::new()
+        }
+        fn commands(&self) -> Vec<CommandSpec> {
+            Vec::new()
+        }
+        fn run_command(&self, _name: &str, _args: &str, _ui: &mut dyn Ui) -> Result<(), OxaError> {
+            Ok(())
+        }
+        fn prompt_sections(&self) -> Vec<(String, String)> {
+            Vec::new()
+        }
+    }
+
+    let env = TestEnv::new();
+    let hook = Arc::new(RunningAtTreeHook {
+        handle: Mutex::new(None),
+        seen: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    });
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("first reply"),
+        ScriptTurn::text("second reply"),
+        ScriptTurn::text("branch summary"),
+    ]));
+    let mut session = Session::open(
+        deps_with(&env, Arc::new(MemStore::new()), engine, vec![hook.clone()]),
+        Open::New,
+    )
+    .unwrap();
+    let handle = session.handle();
+    *hook.handle.lock().unwrap() = Some(handle.clone());
+    let mut sink = VecSink::default();
+    let mut ui = HeadlessUi::default();
+    session
+        .prompt("one".into(), Vec::new(), &mut sink, &mut ui)
+        .unwrap();
+    session
+        .prompt("two".into(), Vec::new(), &mut sink, &mut ui)
+        .unwrap();
+    let target = session
+        .inner()
+        .tree
+        .entries()
+        .iter()
+        .find(|entry| {
+            matches!(&entry.body, EntryBody::Msg { wire, .. } if wire.content.as_deref() == Some("first reply"))
+        })
+        .unwrap()
+        .id
+        .clone();
+
+    session
+        .navigate(&target, true, None, &mut sink, &mut ui)
+        .expect("navigate with a branch summary");
+
+    assert!(
+        hook.seen.load(Ordering::SeqCst),
+        "branch-summary navigation is foreground while it holds the session"
+    );
+    assert!(!handle.is_running(), "the signal ends with navigation");
     assert!(!handle.is_busy());
 }
 

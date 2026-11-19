@@ -506,7 +506,7 @@ impl Session {
         sink: &mut dyn EventSink,
         ui: &mut dyn Ui,
     ) -> Result<Option<String>, OxaError> {
-        let _guard = self.begin()?;
+        let _guard = self.begin_foreground()?;
         crate::navigate(&mut self.st, target, summarize, instructions, sink, ui)
     }
 
@@ -1018,12 +1018,20 @@ impl Session {
     /// is never lost to a later reset.
     /// New prompt/extension work gets fresh run-local flags; prefill-only claims do not.
     fn begin_run(&mut self) -> Result<BusyGuard, OxaError> {
-        let guard = self.begin()?;
-        self.st.shared.gate.running.store(true, Ordering::SeqCst);
+        let guard = self.begin_foreground()?;
         crate::progress::notify(&self.st, crate::Progress::RunStart);
         self.st.stats.done_failed = false;
         self.st.stats.output_truncated = false;
         crate::goal::begin(&self.st);
+        Ok(guard)
+    }
+
+    /// Claim a user-facing operation which must remain cancellable even when it emits no
+    /// activity events. Unlike [`Session::begin_run`], this does not start an agent turn or
+    /// reset its outcome bookkeeping.
+    fn begin_foreground(&self) -> Result<BusyGuard, OxaError> {
+        let guard = self.begin()?;
+        self.st.shared.gate.running.store(true, Ordering::SeqCst);
         Ok(guard)
     }
 
