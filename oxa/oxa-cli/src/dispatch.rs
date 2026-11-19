@@ -908,6 +908,8 @@ fn prepare(
             endpoint: &endpoint.name,
             // Delegated model arguments still need a user-enabled provider:
             // a key or `true` in user settings, never a project file.
+            model_argument: (a.model.is_some() || continued_go.is_some())
+                && env.get(oxa_work::PlannedTask::DELEGATED_MODEL_ENV).is_none(),
             owner_selected: !child.nested()
                 && env.get(oxa_work::PlannedTask::DELEGATED_MODEL_ENV).is_none()
                 && (a.model.is_some()

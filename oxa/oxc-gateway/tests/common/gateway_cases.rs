@@ -344,12 +344,15 @@ fn go_captured_terminal_usage_settles_even_without_public_delivery() {
             assert_eq!(saved[0]["subscription_requests"], 1);
             assert_eq!(saved[0]["subscription_tokens"], if known { 105 } else { 1124 });
             assert_eq!(saved[0]["settled"], if known { "usage" } else { "reserved" });
-            assert_eq!(saved[0]["cost_usd"], 0.0);
             if known {
+                assert_eq!(saved[0]["cost_usd"], 0.0);
                 assert_eq!(saved[0]["opencode"]["allowance"], 0.0008);
                 assert_eq!(saved[0]["opencode"]["tokens"]["cache_read"], 80);
                 assert_eq!(saved[0]["cached_tokens"], 80);
                 assert_eq!(saved[0]["cache_write_tokens"], 0);
+            } else {
+                // Without final usage the Go cost stays unknown: no amount is recorded.
+                assert!(saved[0].get("cost_usd").is_none(), "{}", saved[0]);
             }
             let next = gateway.runtime.begin(&payload, Context::default()).unwrap();
             let threshold = if known { "80%" } else { "100%" };
