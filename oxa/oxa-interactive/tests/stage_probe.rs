@@ -161,3 +161,35 @@ fn host_and_battery_come_from_env_and_system_files() {
     );
     assert_eq!(probe.battery_percent, Some(42));
 }
+
+#[cfg(unix)]
+#[test]
+fn disk_probe_rejects_fifo_head_without_blocking() {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use oxa_interactive::skin::stage::probe::DiskFs;
+
+    let root = std::env::temp_dir().join(format!("oxa-stage-probe-fifo-{}", std::process::id()));
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    let fifo = root.join("fifo");
+    let fifo_c = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);
+    std::os::unix::fs::symlink(&fifo, root.join(".git/HEAD")).unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let probe_root = root.clone();
+    std::thread::spawn(move || {
+        let result = run_probe(&DiskFs { root: probe_root }, &no_env);
+        tx.send(result).ok();
+    });
+    let result = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("probing a FIFO through a symlink must not block");
+    assert!(!result.on_default_branch);
+    assert!(!result.detached);
+
+    std::fs::remove_dir_all(root).unwrap();
+}

@@ -119,18 +119,32 @@ impl ProbeFs for DiskFs {
     }
 
     fn read_capped(&self, path: &str, max: usize) -> Option<String> {
-        let file = std::fs::File::open(self.root.join(path)).ok()?;
+        let file = open_for_probe(&self.root.join(path))?;
+        if !file.metadata().ok()?.is_file() {
+            return None;
+        }
         let mut buf = Vec::new();
         file.take(max as u64).read_to_end(&mut buf).ok()?;
         Some(String::from_utf8_lossy(&buf).into_owned())
     }
 }
 
+fn open_for_probe(path: &std::path::Path) -> Option<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    options.open(path).ok()
+}
+
 /// Reads the probe once. `env` looks up one environment variable by name.
 pub fn run_probe(fs: &dyn ProbeFs, env: &dyn Fn(&str) -> Option<String>) -> Probe {
     let ci = CI_MARKERS
         .iter()
-        .find(|(path, _)| fs.exists(*path))
+        .find(|(path, _)| fs.exists(path))
         .map(|(_, ci)| *ci);
     let head = fs.read_capped(".git/HEAD", READ_CAP);
     let (on_default_branch, detached) = head_state(head.as_deref());
