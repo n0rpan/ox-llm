@@ -69,6 +69,8 @@ pub struct WorkerSpec {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Narrowing {
     pub offline: bool,
+    /// `--no-context-files`: do not rediscover repository instructions in the worker checkout.
+    pub no_context_files: bool,
     /// `--tools <list>`: the allowlist.
     pub tools: Option<Vec<String>>,
     pub no_tools: bool,
@@ -180,6 +182,7 @@ pub fn child_argv(
     }
     for (on, flag) in [
         (n.offline, "--offline"),
+        (n.no_context_files, "--no-context-files"),
         (n.no_tools, "--no-tools"),
         (n.no_builtin_tools, "--no-builtin-tools"),
         (n.no_mcp, "--no-mcp"),
@@ -411,6 +414,7 @@ mod tests {
         let mut spec = spec(None);
         spec.narrowing = Narrowing {
             offline: true,
+            no_context_files: true,
             tools: Some(vec!["read".into(), "grep".into()]),
             no_tools: true,
             no_builtin_tools: true,
@@ -421,6 +425,7 @@ mod tests {
         let (args, _) = child_argv(&spec, Mode::Workspace, Autonomy::Standard).unwrap();
         for expected in [
             "--offline",
+            "--no-context-files",
             "--tools=read,grep",
             "--no-tools",
             "--no-builtin-tools",
