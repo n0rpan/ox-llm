@@ -59,6 +59,11 @@ Semantic report verification is one consent, by owner decision (#1448): opting i
 
 Intentional removals must be stated in the PR body with a `Removes:` line; flag silent deletion of security checks as high.
 
+The rolling dev release always requires its reproducible Linux artifacts. Its native macOS arm64
+archive is best effort, so a failed macOS build cannot suppress the Linux release. When the macOS
+archive is present, the workflow includes it in the versioned SHA256 checksum file and in the same
+build-provenance attestation as the other dev assets before publishing it.
+
 ## Sandbox standard (owner decision)
 
 - **Interactive CLI:** no OS sandbox by default, on Linux and macOS. Dangerous commands ask the owner.

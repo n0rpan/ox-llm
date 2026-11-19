@@ -1,4 +1,6 @@
 """Exercise packaging/macos/stage.sh with a fake Mach-O file; runs on Linux and macOS."""
+import os
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -10,7 +12,7 @@ VERSION = 'v0.2.1-dev.abcdef0'
 
 
 class MacosStage(unittest.TestCase):
-    def run_stage(self, content, version=VERSION):
+    def run_stage(self, content, version=VERSION, env=None):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
@@ -18,7 +20,7 @@ class MacosStage(unittest.TestCase):
         binary.write_bytes(content)
         binary.chmod(0o755)
         proc = subprocess.run(['bash', str(SCRIPT), version, str(binary), str(root / 'out')],
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, env=env)
         return root, proc
 
     def test_archive_has_exactly_the_layout_the_installer_extracts(self):
@@ -31,6 +33,30 @@ class MacosStage(unittest.TestCase):
         self.assertTrue(members['usr/bin/oxa'].isfile())
         self.assertEqual(members['usr/bin/oxa'].mode & 0o777, 0o755)
         self.assertEqual((members['usr/bin/oxa'].uid, members['usr/bin/oxa'].gid), (0, 0))
+
+    def test_uses_bsdtar_numeric_ownership_flags_on_macos(self):
+        with tempfile.TemporaryDirectory() as fake_dir:
+            fake_tar = Path(fake_dir) / 'tar'
+            real_tar = shutil.which('tar')
+            self.assertIsNotNone(real_tar)
+            fake_tar.write_text(f'''#!/usr/bin/env bash
+if [[ $1 == --version ]]; then echo 'bsdtar 3.5.3'; exit 0; fi
+args=()
+while (($#)); do
+  case $1 in
+    --owner*|--group*|--numeric-owner) echo 'GNU ownership flag passed to bsdtar' >&2; exit 64 ;;
+    --uid) args+=(--owner="$2"); shift 2 ;;
+    --gid) args+=(--group="$2"); shift 2 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+exec {real_tar} "${{args[@]}}"
+''')
+            fake_tar.chmod(0o755)
+            env = os.environ.copy()
+            env['PATH'] = fake_dir + os.pathsep + env['PATH']
+            _, proc = self.run_stage(b'\xcf\xfa\xed\xfe' + b'\0' * 64, env=env)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_refuses_a_non_mach_o_binary(self):
         root, proc = self.run_stage(b'\x7fELF' + b'\0' * 64)

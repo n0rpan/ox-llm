@@ -8,9 +8,8 @@ SHA. SHA256SUMS and downloadable provenance accompany them. The workflow moves o
 `dev` tag; normal release tags and installs are untouched. Python controller payloads fail
 publication until the canonical Rust-only packaging is present.
 
-Linux is the only supported dev-update target today. A macOS arm64 twin,
-`tools/lab/dev-update-macos.sh`, exists, but its dev asset is not published yet: the macOS build is still
-in progress (see [KNOWN-ISSUES.md](../KNOWN-ISSUES.md)).
+Linux dev assets are required for publication. The macOS arm64 twin,
+`tools/lab/dev-update-macos.sh`, uses a best-effort asset which may be absent when its native build fails.
 
 Run `tools/lab/dev-update.sh` (lab copy: `~/oxa-lab/dev-update.sh`). It requires Linux,
 Bash, GNU coreutils/tar, getent, flock, curl, jq and a recent GitHub CLI. No login or saved GitHub

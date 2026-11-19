@@ -72,6 +72,21 @@ class ReleaseAssets(unittest.TestCase):
         script = (W.parents[1] / 'packaging/release/no-python.sh').read_text()
         self.assertIn('*-macos-arm64.tar.gz) native=cffaedfe', script)
 
+    def test_macos_dev_publish_policy_is_documented_consistently(self):
+        root = W.parents[1]
+        documents = {
+            'agent policy': (root / 'AGENTS.md').read_text(),
+            'security policy': (root / 'SECURITY.md').read_text(),
+            'developer guide': (root / 'docs/DEV.md').read_text(),
+            'installation guide': (root / 'oxa/docs/pages/install.md').read_text(),
+        }
+        for name, document in documents.items():
+            with self.subTest(document=name):
+                self.assertIn('best effort', document)
+        install = documents['installation guide']
+        self.assertNotIn('No macOS build is published yet', install)
+        self.assertIn('versioned checksum and build provenance', install)
+
     def test_dev_version_extraction_handles_spaces_around_assignment(self):
         dev = (W / 'dev-build.yml').read_text()
         self.assertIn('split($0,a,"=");gsub(/[" ]/,"",a[2]);print a[2]', dev)

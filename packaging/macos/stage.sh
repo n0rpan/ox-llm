@@ -20,7 +20,13 @@ cp "$binary" "$stage/usr/bin/oxa"
 chmod 0755 "$stage/usr" "$stage/usr/bin" "$stage/usr/bin/oxa"
 archive="$out/ox-llm-$version-macos-arm64.tar.gz"
 # Entries listed explicitly, no recursion, no extended attributes or resource forks, root owner.
-COPYFILE_DISABLE=1 tar -c -f - --no-recursion --no-xattrs --owner=0 --group=0 --numeric-owner -C "$stage" \
+if tar --version 2>/dev/null | grep -q 'GNU tar'; then
+  owner_args=(--owner=0 --group=0 --numeric-owner)
+else
+  # macOS supplies bsdtar, which spells the numeric ownership options this way.
+  owner_args=(--uid 0 --gid 0)
+fi
+COPYFILE_DISABLE=1 tar -c -f - --no-recursion --no-xattrs "${owner_args[@]}" -C "$stage" \
   usr usr/bin usr/bin/oxa | gzip -n -9 > "$archive"
 tar -tzf "$archive" | grep -qx 'usr/bin/oxa'
 echo "$archive"
