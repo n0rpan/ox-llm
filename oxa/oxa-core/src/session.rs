@@ -421,11 +421,15 @@ impl Session {
     /// yolo the broker answers yes and records it; otherwise the owner's dialog answer or
     /// typed message decides. A bind failure leaves the session without a broker.
     pub fn enable_owner_confirm(&mut self, yolo: oxa_proto::YoloSwitch) -> std::io::Result<()> {
+        // One directory per session, never per process alone: two SDK sessions in one process
+        // share `Dirs`, and a pid-only name would let the second broker unlink and rebind the
+        // first session's socket — the first session's exported path would then reach the
+        // second session's broker, and a yolo second would answer yes to a standard first.
         let dir = self
             .st
             .dirs
             .tmp_dir
-            .join(format!("confirm-{}", std::process::id()));
+            .join(format!("confirm-{}-{}", std::process::id(), self.st.sref.id));
         let broker = crate::owner_confirm::OwnerConfirm::start(&dir, yolo)?;
         let old = self
             .st
