@@ -29,6 +29,7 @@ fn write_board(path: &Path, observed_at: u64, rows: &[(u64, Action, bool, Option
                 }),
                 attempts_today: 0,
                 eligible,
+                evidence_incomplete: None,
             })
             .collect(),
     };
@@ -65,7 +66,8 @@ fn running_lead_reopens_the_same_owner_ask_after_process_kill() {
         command
     };
 
-    assert!(command().output().unwrap().status.success());
+    let help = command().arg("--help").output().unwrap();
+    assert!(help.status.success(), "{help:?}");
     write_board(&board, 1, &[(42, Action::Ready, true, None)]);
     let agent = command()
         .env("AI_AGENT", "")

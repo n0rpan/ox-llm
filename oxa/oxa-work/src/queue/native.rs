@@ -131,23 +131,20 @@ impl NativeQueueOwner<'_> {
 }
 
 fn finished(record: &Record) -> bool {
+    // Releasing the worker's claim does not certify its acceptance result.
     record.step == Step::Finished
         && record.checkpoint_kind == CheckpointKind::TaskTransition
         && record.checkpoint_revision > 0
         && matches!(
             record.outcome,
-            Outcome::Done | Outcome::NothingToDo | Outcome::Red
+            Outcome::Done | Outcome::NothingToDo | Outcome::Red | Outcome::Unverified
         )
 }
 
 #[cfg(test)]
-#[path = "../../tests/support/private_dir.rs"]
-mod test_dir;
-
-#[cfg(test)]
 mod tests {
-    use super::test_dir::PrivateDir;
     use super::*;
+    use crate::test_dir::PrivateDir;
     use crate::{blocked_record, state, QueueEvent, QueueOptions, QueueRun};
     use board::assignment::{ManualAuthority, Role, Worker, WorkerKind};
     use board::{Action, AttemptState, Claims, Entry, ImportState, Policy};
@@ -190,6 +187,7 @@ mod tests {
             lease: None,
             attempts_today: 0,
             eligible: true,
+            evidence_incomplete: None,
         };
         let lease = claims
             .claim_idle_for(
@@ -221,6 +219,8 @@ mod tests {
             terminate_binary: None,
             offline: true,
             runner_owns_github: false,
+            autonomy: Default::default(),
+            autonomy_now: None,
             storage: directory.path().join("runner"),
         };
         (directory, claims, binding, prepared, policy)
@@ -304,6 +304,15 @@ mod tests {
 
     #[test]
     fn native_queue_dispatches_one_canonical_attempt_and_settles_before_the_event() {
+        native_queue_settlement(Outcome::NothingToDo, 0);
+    }
+
+    #[test]
+    fn native_queue_releases_finished_unverified_without_accepting_it() {
+        native_queue_settlement(Outcome::Unverified, 1);
+    }
+
+    fn native_queue_settlement(outcome: Outcome, expected_failed: usize) {
         if crate::lock_process::in_parent() {
             return;
         }
@@ -327,7 +336,7 @@ mod tests {
             .success());
         fs::write(
             queue.join("task.json"),
-            serde_json::to_vec(&[task.clone()]).unwrap(),
+            serde_json::to_vec(std::slice::from_ref(&task)).unwrap(),
         )
         .unwrap();
 
@@ -346,7 +355,7 @@ mod tests {
             assert!(second.is_err(), "worker must receive the held task lock");
             started.fetch_add(1, Ordering::Relaxed);
             let mut saved = state::State::new(found.clone(), blocked_record(found, String::new()), true);
-            saved.record.outcome = Outcome::NothingToDo;
+            saved.record.outcome = outcome;
             let mut writer =
                 state::Writer::new(locked.policy.storage.join(format!("{}.json", found.id)), false);
             writer
@@ -371,13 +380,17 @@ mod tests {
             .run_native(&owner, worker.clone(), &mut |event| {
                 if let QueueEvent::Task { record } = event {
                     assert_eq!(record.id, task.id);
+                    assert_eq!(record.outcome, outcome);
                     assert!(claims.snapshot().unwrap()[&binding.number].lease.is_none());
                     completed += 1;
                 }
                 Ok(())
             })
             .unwrap();
-        assert_eq!((status.finished, status.failed, completed), (1, 0, 1));
+        assert_eq!(
+            (status.finished, status.failed, completed),
+            (1, expected_failed, 1)
+        );
 
         let again = run().run_native(&owner, worker, &mut |_| Ok(())).unwrap();
         assert_eq!((again.finished, again.failed), (0, 1));

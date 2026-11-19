@@ -80,7 +80,7 @@ Context files are read in an untrusted project as well, because they are text. T
 
 ### The identity
 
-The system prompt starts with a short identity text that describes this machine and the engine. It is read from `~/.oxa/agent/identity.md`, which oxa refreshes by itself at every start from this machine (model, chip, memory, OS, oxa version) and the engine's model list; the file is rewritten only when a fact changed, so the system prompt and its cache stay the same otherwise, and a running session keeps its text until its next prefix epoch. When the engine does not answer, the model list in the file is kept. `oxa identity --refresh` does the same by hand (with `--offline`, without asking the engine). Without the file, oxa uses a generic line. `oxa identity` without `--refresh` prints the current text.
+The system prompt starts with a short identity text that describes this machine and the engine. It is read from `~/.oxa/agent/identity.md`, which oxa refreshes by itself at every start from this machine (model, chip, memory, OS, oxa version) and the engine's model list; the file is rewritten only when a fact changed, so the system prompt and its cache stay the same otherwise, and a running session keeps its text until its next prefix epoch. Local models get one line each with their limits; cloud models are named by provider only (one line, so a provider's catalog change does not change the prompt), and `oxa --list-models [search]` prints them with their limits. When the engine does not answer, a file in the current format is kept as it is. `oxa identity --refresh` does the same by hand (with `--offline`, without asking the engine). Without the file, oxa uses a generic line. `oxa identity` without `--refresh` prints the current text.
 
 ## Themes
 

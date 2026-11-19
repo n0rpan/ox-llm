@@ -6,7 +6,21 @@ use oxa_proto::{HeadlessUi, ToolCall, VecSink};
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
 use oxa_session::{FsStore, Goal, GoalBudget, GoalStatus, MemStore, SessionStore};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+#[derive(Debug, Default)]
+struct GoalStatusTrace(Mutex<Vec<(String, Option<String>)>>);
+
+impl oxa_core::ProgressObserver for GoalStatusTrace {
+    fn notify(&self, _: &oxa_session::SessionRef, progress: oxa_core::Progress<'_>) {
+        if let oxa_core::Progress::GoalStatus { status, reason } = progress {
+            self.0
+                .lock()
+                .unwrap()
+                .push((status.into(), reason.map(str::to_owned)));
+        }
+    }
+}
 fn deps(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<ScriptedEngine>) -> Deps {
     Deps {
         engine,
@@ -34,6 +48,31 @@ fn deps(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<ScriptedEngine>
 
 fn objective(budget: GoalBudget) -> Goal {
     Goal::new("Review synthetic work and wait for more.".into(), budget, 1000).unwrap()
+}
+
+#[test]
+fn direct_goal_setup_and_observer_attachment_publish_the_saved_goal() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+    let trace = Arc::new(GoalStatusTrace::default());
+    session.set_progress_observer(trace.clone());
+
+    let mut goal = objective(GoalBudget::default());
+    goal.pause();
+    goal.pause_reason = Some("synthetic saved reason".into());
+    session.set_goal(Some(goal), &mut VecSink::default()).unwrap();
+    assert_eq!(
+        trace.0.lock().unwrap().last().cloned(),
+        Some(("paused".into(), Some("synthetic saved reason".into())))
+    );
+
+    let attached = Arc::new(GoalStatusTrace::default());
+    session.set_progress_observer(attached.clone());
+    assert_eq!(
+        *attached.0.lock().unwrap(),
+        vec![("paused".into(), Some("synthetic saved reason".into()))]
+    );
 }
 
 #[test]
@@ -880,6 +919,29 @@ fn goal_command_pause_resume_returns_continue_prompt() {
     assert_eq!(session.goal().unwrap().status, GoalStatus::Pursuing);
 }
 
+/// G3 fix: the resumed-goal notice advertises `/goal resume` for a pursuing goal, so resume
+/// continues it without a status transition (the revision does not move).
+#[test]
+fn goal_command_resume_continues_a_pursuing_goal() {
+    use oxa_core::goal::{parse_goal_command, GoalCommand};
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .apply_goal_command(parse_goal_command("Keep the tests green"), 1000, &mut sink)
+        .unwrap();
+    let revision = session.goal_revision();
+
+    let (lines, prompt) = session
+        .apply_goal_command(GoalCommand::Resume, 2000, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["Goal resumed.".to_string()]);
+    assert_eq!(prompt, Some(oxa_core::prompt::GOAL_CONTINUE.to_string()));
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Pursuing);
+    assert_eq!(session.goal_revision(), revision);
+}
+
 #[test]
 fn goal_command_set_is_refused_while_busy() {
     use oxa_core::goal::{parse_goal_command, GoalCommand};
@@ -1131,6 +1193,190 @@ fn wait_for_inactive_session_message_keeps_waiting() {
         .any(|m| m.tool_call_id.as_deref() == Some("wait") && m.content.as_deref() == Some("Wait ended.")));
 }
 
+/// The wait-until probe seam: a hook set that answers `until` conditions from a closure.
+type PollFn = Box<dyn Fn(&str, &serde_json::Value) -> Option<Result<Option<String>, String>> + Send + Sync>;
+struct Probe(PollFn);
+impl oxa_proto::Hooks for Probe {
+    fn fire(
+        &self,
+        _p: oxa_proto::HookPoint,
+        _payload: &serde_json::Value,
+        _ui: &mut dyn oxa_proto::Ui,
+    ) -> oxa_proto::HookReply {
+        oxa_proto::HookReply::Continue
+    }
+    fn tools(&self) -> Vec<Arc<dyn oxa_proto::Tool>> {
+        Vec::new()
+    }
+    fn commands(&self) -> Vec<oxa_proto::CommandSpec> {
+        Vec::new()
+    }
+    fn run_command(
+        &self,
+        _name: &str,
+        _args: &str,
+        _ui: &mut dyn oxa_proto::Ui,
+    ) -> Result<(), oxa_proto::OxaError> {
+        Ok(())
+    }
+    fn prompt_sections(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    fn poll_event(
+        &self,
+        kind: &str,
+        args: &serde_json::Value,
+        _budget: std::time::Duration,
+    ) -> Option<Result<Option<String>, String>> {
+        (self.0)(kind, args)
+    }
+}
+
+/// Deps with one probe hook set and a 1-second poll interval.
+fn probe_deps(env: &TestEnv, engine: Arc<ScriptedEngine>, probe: Probe) -> Deps {
+    let mut d = deps(env, Arc::new(MemStore::new()), engine);
+    d.hooks = vec![Arc::new(probe) as Arc<dyn oxa_proto::Hooks>];
+    d.settings = Settings::from_values(
+        serde_json::json!({"oxa": {"envNote": false, "wait": {"pollSeconds": 1}}}),
+        serde_json::json!({}),
+    );
+    d
+}
+
+#[test]
+fn wait_until_returns_probe_evidence() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let polls = Arc::new(AtomicUsize::new(0));
+    let counter = polls.clone();
+    let probe = Probe(Box::new(
+        move |kind: &str, args: &serde_json::Value| -> Option<Result<Option<String>, String>> {
+            if kind != "ci" || args["sha"].as_str() != Some("abc123") {
+                return None;
+            }
+            if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                Some(Ok(None))
+            } else {
+                Some(Ok(Some("CI green for abc123 (lane).".into())))
+            }
+        },
+    ));
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool(
+            "wait",
+            "wait",
+            r#"{"seconds":60,"reason":"CI probe test","until":{"kind":"ci","sha":"abc123","workflow":"lane"}}"#,
+        ),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"CI evidence seen."}"#,
+        ),
+    ]));
+    let mut session = Session::open(probe_deps(&env, engine.clone(), probe), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let start = std::time::Instant::now();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    // One pending poll, one sleep of pollSeconds, then the done poll: no full-length wait.
+    assert!(start.elapsed() >= std::time::Duration::from_secs(1));
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    assert_eq!(polls.load(Ordering::SeqCst), 2);
+    assert!(engine.requests()[1]
+        .messages
+        .iter()
+        .any(|m| m.tool_call_id.as_deref() == Some("wait")
+            && m.content.as_deref() == Some("CI green for abc123 (lane).")));
+}
+
+#[test]
+fn wait_until_deadline_reports_last_state() {
+    let probe = Probe(Box::new(
+        |kind: &str, _args: &serde_json::Value| -> Option<Result<Option<String>, String>> {
+            (kind == "pr_merged").then_some(Ok(None))
+        },
+    ));
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool(
+            "wait",
+            "wait",
+            r#"{"seconds":2,"reason":"Deadline probe test","until":{"kind":"pr_merged","pr":7}}"#,
+        ),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Deadline reported."}"#,
+        ),
+    ]));
+    let mut session = Session::open(probe_deps(&env, engine.clone(), probe), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let start = std::time::Instant::now();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert!(start.elapsed() >= std::time::Duration::from_secs(2));
+    assert!(engine.requests()[1]
+        .messages
+        .iter()
+        .any(|m| m.tool_call_id.as_deref() == Some("wait")
+            && m.content.as_deref() == Some("Wait ended: deadline; last state: none")));
+}
+
+#[test]
+fn wait_until_unknown_kind_errors_without_sleeping() {
+    let probe = Probe(Box::new(
+        |_kind: &str, _args: &serde_json::Value| -> Option<Result<Option<String>, String>> { None },
+    ));
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool(
+            "wait",
+            "wait",
+            r#"{"seconds":3600,"reason":"Unknown kind test","until":{"kind":"nope"}}"#,
+        ),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Unknown kind reported."}"#,
+        ),
+    ]));
+    let mut session = Session::open(probe_deps(&env, engine.clone(), probe), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let start = std::time::Instant::now();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert!(engine.requests()[1]
+        .messages
+        .iter()
+        .any(|m| m.tool_call_id.as_deref() == Some("wait")
+            && m.content.as_deref() == Some("Unknown wait condition: nope.")));
+}
+
 /// Delegates to a MemStore; `sync` counts its calls and fails while `fail_sync` is set.
 #[derive(Default)]
 struct SyncFailStore {
@@ -1220,5 +1466,68 @@ fn goal_command_clear_fails_when_store_sync_fails() {
     assert!(store.syncs.load(Ordering::SeqCst) > 0);
 
     store.fail_sync.store(false, Ordering::SeqCst);
+    session.shutdown(&mut HeadlessUi::default());
+}
+
+#[test]
+fn idle_pause_records_reason() {
+    use oxa_core::goal::parse_goal_command;
+    use oxa_proto::AgentEvent;
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("Idle"),
+        ScriptTurn::text("Still idle"),
+    ]));
+    let store = Arc::new(MemStore::new());
+    let mut session = Session::open(deps(&env, store, engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    let statuses = Arc::new(GoalStatusTrace::default());
+    session.set_progress_observer(statuses.clone());
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    session
+        .prompt(
+            "Start the stored goal".into(),
+            vec![],
+            &mut sink,
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert_eq!(session.stats().outcome, RunOutcome::Stalled);
+    let goal = session.goal().unwrap();
+    assert_eq!(goal.status, GoalStatus::Paused);
+    assert_eq!(
+        goal.pause_reason.as_deref(),
+        Some("two replies without an action")
+    );
+    assert_eq!(
+        statuses.0.lock().unwrap().last().cloned(),
+        Some(("paused".into(), Some("two replies without an action".into()))),
+        "the durable idle checkpoint publishes the terminal status"
+    );
+    let notices: Vec<String> = sink
+        .0
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::Notice { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        notices
+            .iter()
+            .filter(|text| text.as_str() == "Goal paused: two replies without an action; /goal resume")
+            .count(),
+        1,
+        "the pause is announced exactly once: {notices:?}"
+    );
+
+    let (lines, prompt) = session
+        .apply_goal_command(parse_goal_command("resume"), 2000, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["Goal resumed.".to_string()]);
+    assert_eq!(prompt, Some(oxa_core::prompt::GOAL_CONTINUE.to_string()));
+    assert_eq!(session.goal().unwrap().pause_reason, None);
     session.shutdown(&mut HeadlessUi::default());
 }

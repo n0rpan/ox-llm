@@ -7,8 +7,9 @@
 //!
 //! Identity: the leader stays unreaped (a zombie is enough) until its group is confirmed empty.
 //! While the leader is unreaped its pid, and therefore its process group number, cannot be
-//! reused, so every signal the supervisor sends reaches the group it started. Group membership
-//! is read from `/proc`, which skips zombies, so an exited leader does not look like a live group.
+//! reused, so every signal the supervisor sends reaches the group it started. Live members are
+//! read from Linux `/proc`. Platforms without procfs are rejected before the
+//! supervisor thread starts, so they can never admit a worker that the supervisor cannot stop.
 //!
 //! Environment: a worker gets exactly the environment its caller passes (`env_clear` first), so the
 //! launch policy in `launch::child_env` is applied by the caller and never bypassed by inheritance.
@@ -21,6 +22,7 @@
 
 use oxa_config::Settings;
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use std::fs;
 use std::io;
 use std::os::unix::process::CommandExt;
@@ -75,6 +77,7 @@ impl Supervisor {
                 "the kill helper must be an absolute path",
             ));
         }
+        require_procfs(cfg!(target_os = "linux"))?;
         let (tx, rx) = mpsc::channel();
         thread::Builder::new()
             .name("oxa-workers".into())
@@ -116,6 +119,19 @@ impl Supervisor {
 
     fn send(&self, msg: Msg) -> io::Result<()> {
         self.tx.send(msg).map_err(|_| gone())
+    }
+}
+
+/// Refuse supervision where the process membership probe is unavailable. This check happens in
+/// `Supervisor::new`, before its thread starts and therefore before it can spawn a child.
+fn require_procfs(available: bool) -> io::Result<()> {
+    if available {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "worker supervision requires Linux procfs",
+        ))
     }
 }
 
@@ -229,30 +245,31 @@ impl Table {
         Ok(pgid)
     }
 
-    /// Reap exited leaders only after the same teardown used by an explicit stop. `/proc` can
-    /// report a multithreaded process leader as a zombie while another thread is still alive;
-    /// `group_alive` cannot see that thread, so always sweep before relinquishing ownership.
+    /// Reap the leaders whose group is empty. A leader whose group still has members stays
+    /// unreaped, which keeps its group number reserved. A probe error keeps the worker tracked.
     fn reap(&mut self) {
-        let candidates: Vec<u32> = self
+        let empty: Vec<u32> = self
             .live
             .keys()
             .copied()
             .filter(|pgid| matches!(group_alive(*pgid), Ok(false)))
             .collect();
-        for pgid in candidates {
-            // Sweep while the leader is still our unreaped child, so its process-group number
-            // cannot have been reused between the probe and the kill.
-            if self.teardown(pgid).is_err() {
-                continue;
+        let mut finished = Vec::new();
+        for pgid in empty {
+            // The process probe skips zombie thread-group leaders. Do not reap the identity anchor
+            // until the sweep has either landed or a thread-aware probe independently proves that
+            // nothing remains. In particular, a broken helper leaves the worker tracked to retry.
+            if self.sweep(pgid).is_ok() {
+                if let Some(child) = self.live.get_mut(&pgid) {
+                    if let Ok(Some(status)) = child.try_wait() {
+                        finished.push((pgid, status));
+                    }
+                }
             }
-            let status = self
-                .live
-                .get_mut(&pgid)
-                .and_then(|child| child.try_wait().ok().flatten());
-            if let Some(status) = status {
-                self.live.remove(&pgid);
-                self.done.insert(pgid, status);
-            }
+        }
+        for (pgid, status) in finished {
+            self.live.remove(&pgid);
+            self.done.insert(pgid, status);
         }
     }
 
@@ -305,8 +322,14 @@ impl Table {
     /// "No such process" (the usual case, the group really is empty) is not an error; the group is
     /// then probed again.
     fn sweep(&self, pgid: u32) -> io::Result<()> {
-        let _ = signal(&self.kill, &format!("-{pgid}"), "KILL");
-        if settle(pgid, Instant::now() + KILL_AFTER)? {
+        let sent = signal(&self.kill, &format!("-{pgid}"), "KILL");
+        // The ordinary process probe intentionally ignores zombie thread-group leaders. Check
+        // every task before accepting a failed signal as the normal "group already gone" case.
+        if !thread_group_alive(pgid)? {
+            Ok(())
+        } else if let Err(error) = sent {
+            Err(error)
+        } else if settle_threads(pgid, Instant::now() + KILL_AFTER)? {
             Ok(())
         } else {
             Err(io::Error::new(
@@ -327,6 +350,19 @@ impl Table {
         }
         self.done.clear();
         first.map_or(Ok(()), Err)
+    }
+}
+
+/// Poll until no live thread remains in the group (true) or `until` passes (false).
+fn settle_threads(pgid: u32, until: Instant) -> io::Result<bool> {
+    loop {
+        if !thread_group_alive(pgid)? {
+            return Ok(true);
+        }
+        if Instant::now() >= until {
+            return Ok(false);
+        }
+        thread::sleep(POLL);
     }
 }
 
@@ -362,14 +398,54 @@ fn signal(kill: &Path, target: &str, sig: &str) -> io::Result<()> {
     }
 }
 
-/// Whether the leader `pid` is still running (not a zombie).
+/// Whether the leader `pid` is still running (not a zombie), from its procfs state.
+#[cfg(target_os = "linux")]
 fn leader_running(pid: u32) -> io::Result<bool> {
     Ok(matches!(proc_stat(pid)?, Some((state, _)) if state != 'Z' && state != 'X'))
+}
+
+/// Whether the leader `pid` is still running. Without procfs the unreaped leader is observed
+/// with `waitid(WNOWAIT)`, which reports its exit without reaping it.
+#[cfg(not(target_os = "linux"))]
+fn leader_running(pid: u32) -> io::Result<bool> {
+    Ok(!leader_exited(pid)?)
+}
+
+/// Whether our unreaped leader `pid` has already exited. `waitid` with `WNOWAIT` observes the
+/// exit and leaves the pid reserved, so the group number cannot be reused. `ECHILD` means the
+/// process is no longer an unreaped child of this thread: it is not a zombie we hold.
+#[cfg(not(target_os = "linux"))]
+fn leader_exited(pid: u32) -> io::Result<bool> {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: waitid fills the siginfo we own; WNOWAIT leaves the child unreaped.
+    let rc = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if rc != 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ECHILD) {
+            return Ok(false);
+        }
+        return Err(error);
+    }
+    // SAFETY: waitid succeeded, so the union holds this child's id.
+    Ok(unsafe { info.si_pid() } == pid as libc::pid_t)
 }
 
 /// Whether any process of group `pgid` is running. Zombies do not count. Errors are returned,
 /// never read as absence, except that a pid whose stat cannot be read for permission reasons is
 /// not ours (see [`group_alive_with`]).
+///
+/// Linux reads every pid's procfs record. A platform without procfs asks the kernel whether the
+/// group still has a member (`killpg(0)`) and whether our unreaped leader is a zombie: either way
+/// a member that outlived the leader is caught by the group SIGKILL sweep the caller runs next
+/// (`Table::sweep`, `Table::reap`), so nothing escapes.
+#[cfg(target_os = "linux")]
 fn group_alive(pgid: u32) -> io::Result<bool> {
     let mut pids = Vec::new();
     for entry in fs::read_dir("/proc")? {
@@ -385,9 +461,80 @@ fn group_alive(pgid: u32) -> io::Result<bool> {
     group_alive_with(pgid, pids, proc_stat)
 }
 
+/// Whether any non-zombie thread belongs to `pgid`. Unlike [`group_alive`], this walks each
+/// process's task directory, so a process whose main thread is a zombie cannot hide surviving
+/// threads. Inaccessible processes are unrelated (our workers have the supervisor's uid).
+#[cfg(target_os = "linux")]
+fn thread_group_alive(pgid: u32) -> io::Result<bool> {
+    for entry in fs::read_dir("/proc")? {
+        let entry = entry?;
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let tasks = match fs::read_dir(format!("/proc/{pid}/task")) {
+            Ok(tasks) => tasks,
+            Err(error) if process_gone(&error) || permission_denied(&error) => continue,
+            Err(error) => return Err(error),
+        };
+        for task in tasks {
+            let task = match task {
+                Ok(task) => task,
+                Err(error) if process_gone(&error) => continue,
+                Err(error) => return Err(error),
+            };
+            match fs::read(task.path().join("stat")) {
+                Ok(bytes) => {
+                    let (state, group) = parse_stat(&bytes)?;
+                    if group == pgid && state != 'Z' && state != 'X' {
+                        return Ok(true);
+                    }
+                }
+                Err(error) if process_gone(&error) || permission_denied(&error) => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// [`group_alive`] without procfs: ask the kernel whether the group has a member. `ESRCH` is an
+/// empty group; `EPERM` is a member we may not signal, which the Linux path treats the same way.
+/// This probe must not be short-circuited by the leader's exit: another member can survive it.
+#[cfg(not(target_os = "linux"))]
+fn group_alive(pgid: u32) -> io::Result<bool> {
+    // SAFETY: killpg only inspects the group; signal 0 delivers nothing.
+    if unsafe { libc::killpg(pgid as libc::pid_t, 0) } == 0 {
+        return group_alive_from_probe(Ok(()), libc::ESRCH, libc::EPERM);
+    }
+    group_alive_from_probe(Err(io::Error::last_os_error()), libc::ESRCH, libc::EPERM)
+}
+
+/// Interpret the portable signal-0 process-group probe.
+#[cfg(any(test, not(target_os = "linux")))]
+fn group_alive_from_probe(probe: io::Result<()>, missing: i32, denied: i32) -> io::Result<bool> {
+    let Err(error) = probe else {
+        return Ok(true);
+    };
+    match error.raw_os_error() {
+        Some(code) if code == missing => Ok(false),
+        Some(code) if code == denied => Ok(true),
+        _ => Err(error),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn thread_group_alive(pgid: u32) -> io::Result<bool> {
+    group_alive(pgid)
+}
+
 /// [`group_alive`] over the given pids with an injectable stat reader. A pid that answers EPERM or
 /// EACCES (another user's process under `hidepid`) is not in our group: workers run as our own
 /// uid, and a same-uid process is always readable.
+#[cfg(target_os = "linux")]
 fn group_alive_with(
     pgid: u32,
     pids: impl IntoIterator<Item = u32>,
@@ -405,6 +552,7 @@ fn group_alive_with(
 }
 
 /// True for EPERM (1) and EACCES (13), however the error was classified.
+#[cfg(target_os = "linux")]
 fn permission_denied(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::PermissionDenied || matches!(error.raw_os_error(), Some(1 | 13))
 }
@@ -412,10 +560,12 @@ fn permission_denied(error: &io::Error) -> bool {
 /// `ESRCH`: the pid exited between the open and the read. Linux returns this from a
 /// `/proc/<pid>` read rather than `NotFound`, and `group_alive` scans unrelated processes, so
 /// ordinary host churn hits it.
+#[cfg(target_os = "linux")]
 const ESRCH: i32 = 3;
 
 /// The state letter and process group of `pid` from `/proc/<pid>/stat`, or `None` once the
 /// process is gone.
+#[cfg(target_os = "linux")]
 fn proc_stat(pid: u32) -> io::Result<Option<(char, u32)>> {
     match fs::read(format!("/proc/{pid}/stat")) {
         Ok(bytes) => parse_stat(&bytes).map(Some),
@@ -425,12 +575,14 @@ fn proc_stat(pid: u32) -> io::Result<Option<(char, u32)>> {
 }
 
 /// True for the two ways a `/proc/<pid>` read reports that the process is gone.
+#[cfg(target_os = "linux")]
 fn process_gone(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(ESRCH)
 }
 
 /// Parse a `/proc/<pid>/stat` record as bytes: `comm` may hold any byte (not only UTF-8), so only
 /// the ASCII fields after the last `)` are decoded.
+#[cfg(target_os = "linux")]
 fn parse_stat(bytes: &[u8]) -> io::Result<(char, u32)> {
     let malformed = || io::Error::new(io::ErrorKind::InvalidData, "malformed /proc stat line");
     // `pid (comm) state ppid pgrp ...`: comm may contain spaces and parentheses, so split after
@@ -453,7 +605,7 @@ fn parse_stat(bytes: &[u8]) -> io::Result<(char, u32)> {
     Ok((state, group))
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -530,6 +682,13 @@ mod tests {
             "the background sleep survived stop"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// On platforms without procfs, an exited leader must not override the kernel's report that
+    /// its process group still contains a surviving child.
+    #[test]
+    fn successful_group_probe_reports_survivors_after_leader_exit() {
+        assert!(group_alive_from_probe(Ok(()), ESRCH, 1).expect("group probe"));
     }
 
     #[test]
@@ -793,6 +952,13 @@ mod tests {
     }
 
     #[test]
+    fn a_platform_without_procfs_is_rejected_before_supervision() {
+        let error = require_procfs(false).expect_err("a platform without procfs was admitted");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(error.to_string(), "worker supervision requires Linux procfs");
+    }
+
+    #[test]
     fn kill_helper_refuses_a_project_shim() {
         let dir = scratch("shim");
         let project = dir.join("project");
@@ -972,6 +1138,95 @@ mod tests {
             started.elapsed() < Duration::from_secs(20),
             "stop waited for the surviving thread instead of killing the group"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Whether any thread of `pid` still runs (a task whose state is neither `Z` nor `X`).
+    fn thread_survives(pid: u32) -> bool {
+        let Ok(tasks) = fs::read_dir(format!("/proc/{pid}/task")) else {
+            return false;
+        };
+        tasks.flatten().any(|task| {
+            matches!(
+                fs::read(task.path().join("stat")).map(|bytes| parse_stat(&bytes)),
+                Ok(Ok((state, _))) if state != 'Z' && state != 'X'
+            )
+        })
+    }
+
+    #[test]
+    fn a_descendant_thread_outliving_its_exited_leader_is_swept() {
+        let python = Path::new("/usr/bin/python3");
+        if !python.exists() {
+            return;
+        }
+        let dir = scratch("descendant");
+        let sup = Supervisor::new(GRACE, real_kill()).expect("supervisor");
+        let pidfile = dir.join("bg.pid");
+        // The leader shell exits at once. Its background python keeps one thread running after
+        // its main thread called pthread_exit, so the group probe reads as empty while a thread
+        // still executes. Without the reap sweep that thread would outlive the supervisor's
+        // ownership of the worker.
+        let code = "import ctypes,threading,time\nthreading.Thread(target=lambda: time.sleep(60)).start()\nctypes.CDLL(None).pthread_exit(None)";
+        let script = format!("/usr/bin/python3 -c '{code}' & echo $! > {}", pidfile.display());
+        let _pgid = sup
+            .spawn(&["/bin/sh", "-c", &script], &host_env(), &dir.join("worker.log"))
+            .expect("spawn");
+        let descendant = background_pid(&pidfile);
+        let until = Instant::now() + Duration::from_secs(10);
+        while thread_survives(descendant) && Instant::now() < until {
+            thread::sleep(POLL);
+        }
+        assert!(
+            !thread_survives(descendant),
+            "a thread of a retired worker kept running: the reaper did not sweep its group"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_final_sweep_keeps_a_worker_for_retry() {
+        let python = Path::new("/usr/bin/python3");
+        if !python.exists() {
+            return;
+        }
+        let dir = scratch("failed-sweep");
+        let allow = dir.join("allow");
+        let helper = dir.join("kill");
+        script(
+            &helper,
+            &format!(
+                "[ -e '{}' ] || exit 2\nexec '{}' \"$@\"",
+                allow.display(),
+                real_kill().display()
+            ),
+        );
+        let sup = Supervisor::new(GRACE, helper).expect("supervisor");
+        let pidfile = dir.join("bg.pid");
+        let code = "import ctypes,threading,time\nthreading.Thread(target=lambda: time.sleep(60)).start()\nctypes.CDLL(None).pthread_exit(None)";
+        let body = format!("/usr/bin/python3 -c '{code}' & echo $! > {}", pidfile.display());
+        let pgid = sup
+            .spawn(&["/bin/sh", "-c", &body], &host_env(), &dir.join("worker.log"))
+            .expect("spawn");
+        let descendant = background_pid(&pidfile);
+        thread::sleep(Duration::from_millis(500));
+
+        assert!(thread_survives(descendant), "the fixture thread exited early");
+        assert!(
+            sup.stop(pgid).is_err(),
+            "a failed sweep retired a worker with a surviving thread"
+        );
+        assert!(
+            thread_survives(descendant),
+            "the failed helper somehow killed the thread"
+        );
+
+        fs::write(&allow, "").expect("allow");
+        assert!(
+            sup.stop(pgid).expect("retry stop").is_some(),
+            "the failed sweep lost the worker's identity anchor"
+        );
+        assert!(!thread_survives(descendant), "the retry did not sweep the thread");
         let _ = fs::remove_dir_all(&dir);
     }
 }

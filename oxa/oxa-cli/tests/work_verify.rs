@@ -103,7 +103,7 @@ fn committed_checks_cannot_temporarily_replace_tracked_inputs() {
 #[test]
 fn a_retained_ignored_helper_cannot_make_the_committed_export_pass() {
     let env = TestEnv::new();
-    setup(&env, r#"["sh helper.sh"]"#);
+    setup(&env, r#"["test -f helper.sh && sh helper.sh"]"#);
     let project = env.work().join("project");
     env.write("work/project/.gitignore", "helper.sh\n");
     git(&env, &project, &["add", ".gitignore"]);
@@ -131,7 +131,7 @@ fn a_retained_ignored_helper_cannot_make_the_committed_export_pass() {
 #[test]
 fn a_later_commit_cannot_reuse_the_saved_verdict() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let record = run(&env, vec![ScriptTurn::text("done")]);
     let retained = Path::new(record["worktree"].as_str().unwrap());
     fs::write(retained.join("later.txt"), "later").unwrap();

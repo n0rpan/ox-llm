@@ -174,6 +174,50 @@ fn final_reply(text: &str) -> mock::Reply {
         "usage":{"input_tokens":7,"output_tokens":2,"total_tokens":9}}}),
     ])
 }
+
+#[test]
+fn a_configured_openai_alias_in_the_go_namespace_keeps_its_provider() {
+    let env = TestEnv::new();
+    let peer = mock::MockOpenAi::start(vec![
+        final_reply("Synthetic configured reply"),
+        final_reply("Synthetic scoped reply"),
+    ]);
+    settings(&env, &peer.base_url(), false);
+    let path = env.agent_dir().join("settings.json");
+    let mut user: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let cloud = &mut user["oxa"]["cloud"];
+    let models = cloud["models"].as_object_mut().unwrap();
+    let model = models.remove(MODEL).unwrap();
+    let alias = "opencode/synthetic-openai";
+    models.insert(alias.into(), model);
+    cloud["opencode"] = json!({"enabled": false});
+    fs::write(path, user.to_string()).unwrap();
+    private_file(
+        &env.home().join(".config/oxc/llm/cloud-secrets.json"),
+        &json!({"openai": KEY}).to_string(),
+    );
+
+    let output = run(
+        &env,
+        &["--model", alias, "--no-tools", "-p", "Synthetic request"],
+        None,
+    );
+    success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Synthetic configured reply"));
+    let scoped = run(
+        &env,
+        &["--models", alias, "--no-tools", "-p", "Synthetic scoped request"],
+        None,
+    );
+    success(&scoped);
+    assert!(String::from_utf8_lossy(&scoped.stdout).contains("Synthetic scoped reply"));
+    assert_eq!(peer.requests().len(), 2);
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 2);
+    assert!(ledger.iter().all(|row| row["remote_provider"] == "openai"));
+    peer.assert_healthy();
+}
+
 fn rows(env: &TestEnv) -> Vec<Value> {
     fs::read_dir(env.home().join(".oxa/agent/cloud-ledger"))
         .unwrap()
@@ -242,6 +286,44 @@ fn unpriced_discovery_uses_owner_rates_for_admission_and_estimated_ledger_spend(
         2,
         "the persisted estimate counts against the cap"
     );
+    peer.assert_healthy();
+}
+
+#[test]
+fn openai_responses_without_cap_succeeds_and_records_cost() {
+    let env = TestEnv::new();
+    let peer = mock::MockOpenAi::start(vec![final_reply("Synthetic uncapped answer")]);
+    settings(&env, &peer.base_url(), false);
+    let path = env.agent_dir().join("settings.json");
+    let mut config: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    // No owner cap: no budget check, and the request is still recorded.
+    config["oxa"]["cloud"]
+        .as_object_mut()
+        .unwrap()
+        .remove("daily_budget_usd");
+    fs::write(&path, config.to_string()).unwrap();
+    private_file(
+        &env.home().join(".config/oxc/llm/cloud-secrets.json"),
+        &json!({"openai":KEY}).to_string(),
+    );
+    let output = run(
+        &env,
+        &["-p", "--no-session", "--no-tools", "Synthetic prompt"],
+        None,
+    );
+    success(&output);
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("Synthetic uncapped answer"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(peer.requests().len(), 1);
+    let rows = rows(&env);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["remote_provider"], "openai");
+    assert_eq!(rows[0]["settled"], "usage");
+    assert!(rows[0]["cost_usd"].as_f64().unwrap() > 0.0);
+    assert!(rows[0].get("cost_unknown").is_none());
     peer.assert_healthy();
 }
 

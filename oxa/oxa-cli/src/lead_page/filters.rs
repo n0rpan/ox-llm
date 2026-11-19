@@ -141,9 +141,11 @@ fn blocked(row: &Entry, view: &View<'_>) -> Option<bool> {
 fn group(action: Action) -> Filter {
     match action {
         Action::Ready => Filter::Ready,
-        Action::WaitRequiredCi | Action::WaitMergeability | Action::WaitReview | Action::WaitIssue => {
-            Filter::Waiting
-        }
+        Action::WaitRequiredCi
+        | Action::WaitMergeability
+        | Action::WaitReview
+        | Action::WaitIssue
+        | Action::EvidenceIncomplete => Filter::Waiting,
         Action::FixFindings
         | Action::FixRequiredCi
         | Action::ResolveConflict
@@ -190,6 +192,7 @@ mod tests {
             lease: None,
             attempts_today: 0,
             eligible: true,
+            evidence_incomplete: None,
         };
         let board = Board {
             observed_at: 1,
