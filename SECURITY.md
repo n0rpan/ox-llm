@@ -28,6 +28,10 @@ output-only guard: it does not block or alter the command. In every mode, stream
 always holds back the last token-length-minus-one bytes whatever they are, so how much a running
 command has shown never reveals whether its output began to match the token.
 
+`oxa send` keeps owner messages over the 256 KiB inline inbox limit in the receiving session's
+private spill directory and queues a short pointer. The sandbox exposes that spill directory only
+to the receiving session and sessions inheriting its history; the private agent directory remains
+denied to model tools.
 Persisted headless print and JSON runs with a pursuing goal consume plain `oxa send` inbox
 messages with `oxa.inbox.headless` set to `true` by default. This user-only setting can opt out;
 project settings cannot enable or disable it. Non-persisted sessions, sessions without a pursuing
@@ -38,6 +42,11 @@ The background-job and per-parent child limits are configurable through `oxa.bas
 Project settings for remote concurrency remain bounded by the user’s child cap. An explicit
 bash `timeout: 0` opts out of the call timeout. Sandbox and permission checks still apply.
 
+The agent control lane (steer, pause, resume, cancel for headless sessions) is reachable in release
+builds. Control requests are accepted only from the same user and are checked against the lease and
+goal revision by the session owner. `oxa.a2a.enabled: false` in the user settings turns the lane
+off. A way for another user, a project file or a model to send or authorise a control request is
+high severity.
 Automated Go review reads at most 200 GitHub comment pages (20,000 comments) when it checks the
 configured daily quota and prior same-diff receipts. If either listing is incomplete, review is
 deferred before quota reservation, provider authentication, or provider I/O. An incomplete history
@@ -60,6 +69,7 @@ in a tree with Cargo manifests. A worker declaration can add requirements to tha
 
 The repeat guard warns and continues by owner decision (#1448): the third identical tool result gets a notice, a call that still repeats gets one persisted warning, and the run is not stopped. A finding that asks for the old stopping behaviour is not a finding; `oxa.maxTurns` is the configured cap.
 
+A background bash job that finishes on its own queues one follow-up message with the command as written, its exit code and last lines, by owner decision (#1448 W4): `oxa.jobs.wakeOnFinish` (default `true`, `false` opts out, user settings only so a project file cannot turn it on) is the control, and it wakes only the session the job started in. A job the model or the user stopped wakes nothing, and a completion retained behind a failed or interrupted turn stays queued, also across a session reopen, until the next prompt. A finding that asks for a default-off switch, for the output to stay silent, or for a cross-session wake is not a finding; it is answered here.
 A pursuing goal whose request fails transiently (stream cut, engine down or busy, timeout, 429, 5xx) waits without a model request and then sends the same request again, by owner decision (#1448): `oxa.goal.failureBackoffSeconds` (default 60, doubling, capped at 900 unless set higher, `0` opts out) is the only control, and there is no attempt cap. Auth errors, refusals, a repetition stop, an abort and an owner-set budget still stop the goal with the reason shown. A finding that asks for an attempt cap, a default-off switch or a new terminal exception is not a finding; it is answered here.
 
 Board evidence limits degrade only the affected pull request. A connection that cannot be read
@@ -70,6 +80,13 @@ unobserved pull request has unknown queue state and cannot trigger a queue actio
 Semantic report verification is one consent, by owner decision (#1448): opting into `oxa.reportIssue.semanticDedupe` is the owner's consent to send the scrubbed report, a public source excerpt and candidate summaries to the configured model and to search the repository for matching issues, so the post asks one question — the final preview. New issues are limited to one per task, and the per-worker daily count is the owner setting `oxa.reportIssue.dailyNew`: unset means no check, and at or over a configured cap the preview warns, the ledger records it and the owner's yes still posts. A finding that asks for a second consent question, for a built-in daily cap, or for the cap to block is answered here.
 
 Intentional removals must be stated in the PR body with a `Removes:` line; flag silent deletion of security checks as high.
+
+The owner confirm broker (`oxa-core/src/owner_confirm.rs`, `OXA_CONFIRM_SOCK`) answers an oxa
+confirmation only from the owner: yolo chosen for the session (answer yes, shown and recorded), the
+owner's answer to the session's own dialog, or the owner's typed message while a confirmation waits.
+A confirmation that a model-run command can satisfy without the broker is high. A broker answer
+derived from tool, file, web or agent-inbox text is high. A socket readable by another user is high.
+The broker bounds each newline-terminated request to 64 KiB before accepting it for confirmation.
 
 ## Sandbox standard (owner decision)
 

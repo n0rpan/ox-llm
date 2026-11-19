@@ -401,4 +401,13 @@ pub trait Policy: Send {
     fn path_filter_for_mode(&self, _mode: Mode) -> Option<std::sync::Arc<dyn crate::PathFilter>> {
         self.path_filter()
     }
+    /// #1512 S2: the dangerous-command floor for `a` (an exec of `cwd`): one `(key, "rule: reason")`
+    /// per matching rule that no grant covers. Empty = no dangerous prompt. The key is what a
+    /// session or always grant stores ([`Policy::grant_danger`]).
+    fn danger_ask(&self, _a: &Access, _cwd: &Path) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    /// #1512 S2: remember the keys of [`Policy::danger_ask`] for this session (`Session` and
+    /// `Always` answers). Never covers any other access.
+    fn grant_danger(&mut self, _keys: &[String]) {}
 }
