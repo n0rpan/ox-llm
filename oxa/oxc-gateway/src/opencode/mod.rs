@@ -355,6 +355,7 @@ impl PlanName {
 pub struct Usage {
     pub billing_source: PlanName,
     pub cost: f64,
+    pub estimated: bool,
     pub prompt: u64,
     pub completion: u64,
     pub cache_read: Option<u64>,
@@ -383,6 +384,10 @@ impl Usage {
             .filter(|n| n.is_finite() && *n >= 0.0)
             .filter(|n| *n != 0.0 || amount.is_zero())
             .ok_or(Error::Usage)?;
+        let estimated = match go.get("estimated") {
+            Some(value) => value.as_bool().ok_or(Error::Usage)?,
+            None => false,
+        };
         money(&go["allowance"])?;
         money(&go["list_cost"])?;
         let prompt = value["prompt_tokens"].as_u64().ok_or(Error::Usage)?;
@@ -422,6 +427,7 @@ impl Usage {
         Ok(Self {
             billing_source: PlanName::from_value(&go["billing_source"]),
             cost,
+            estimated,
             prompt,
             completion,
             cache_read,

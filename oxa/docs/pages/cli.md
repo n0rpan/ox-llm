@@ -124,7 +124,7 @@ $ oxa share key list
 
 Start an interactive owner session with `oxa --share-model ALIAS` to share that session's native engine. A queued owner request goes before a waiting guest, and an active guest keeps its lease through cleanup. The startup notice gives the guest API address. Use `/engine status` to see live guest activity and per-key usage for the UTC day. Exiting the owner session drains the listener.
 
-Metered cloud aliases need `oxa.engine.inProcessCloud`, a configured price and daily USD cap, and an entry in the user-only `oxa.share.remoteModels` allowlist. Choose each guest alias with `--model` for foreground serving or `--share-model` for an owner session. Personal subscription routes are excluded.
+Metered cloud aliases need `oxa.engine.inProcessCloud`, a configured price, and an entry in the user-only `oxa.share.remoteModels` allowlist. Choose each guest alias with `--model` for foreground serving or `--share-model` for an owner session. Personal subscription routes are excluded. Without `oxa.cloud.daily_budget_usd` there is no USD limit on guest spending (usage is still recorded, and guest request and token quotas apply); `oxa share` and the session status show a warning while that is the case.
 
 `oxa update --self`, `--all` and `--models` report that they are not supported: oxa does not update itself and does not refresh model catalogues. Update oxa by installing a new build.
 
@@ -239,7 +239,7 @@ See [tools.md](tools.md) for the tool names.
 | `--permission-mode <mode>` | `standard`, `auto`, `yolo`, `plan`, or the table modes `workspace` and `ask`; default: the `permissions.defaultMode` setting, else `auto` |
 | `--standard` | permission mode standard: the permission table asks you |
 | `--auto` | permission mode auto: no prompts for table questions; the deny-list and protected paths stay on, dangerous commands still ask, and bash has the OS sandbox only where it is on ([security.md](security.md#standard-auto-and-yolo)) |
-| `--yolo` | permission mode yolo: no prompts, dangerous commands included; bash runs without the OS sandbox, and the deny-list and protected paths stay enforced for file tools ([security.md](security.md#standard-auto-and-yolo)) |
+| `--yolo` | permission mode yolo: no prompts, dangerous commands included; bash runs without the OS sandbox, and the file tools' deny-list and protected-path questions are answered too ([security.md](security.md#standard-auto-and-yolo)) |
 | `--approve`, `-a` | trust the project's configuration and resources for this run |
 | `--no-approve`, `-na` | ignore the project's configuration and resources for this run |
 | `--share-model <alias>` | share one native local model during the interactive owner session in a build with the `share` feature, repeat to select more aliases |
