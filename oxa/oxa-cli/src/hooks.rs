@@ -2,7 +2,7 @@
 //! session the process opens (`/new`, `/resume`, fork).
 //!
 //! Order (it is the order in which the core fires them): JavaScript extensions, exec hooks,
-//! MCP, web_search, `builtin:subagent`, codemode.
+//! MCP, web_search, wait probes (`wait_probe.rs`), `builtin:subagent`, codemode.
 //!
 //! * **Extensions** (`oxa-ext`): the paths `oxa_resources::discover` found
 //!   (`Resources::extension_paths`: agent dir, trusted project, packages, settings, `-e`; `-ne`
@@ -84,7 +84,7 @@ pub struct HookInputs<'a> {
 }
 
 /// The `worker` tool's hook set (K5a/K5b), or `None` when it is off (a worker child, the
-/// `oxa.workers.enabled` setting, no trusted `kill`, no executable); the reason is a notice.
+/// `oxa.workers.enabled` setting (user settings only), no trusted `kill`, no executable); the reason is a notice.
 /// One builder for every session that starts workers: the ordinary one and the live owner Lead
 /// session ([`build_owner_hooks`]), so both use the same launch, limits (`oxa.workers.max`) and
 /// supervisor.
@@ -98,7 +98,7 @@ fn build_worker_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) ->
         .rev()
         .find(|(k, _)| k == worker_tool::ENV_WORKER_DEPTH)
         .map(|(_, v)| v.as_str());
-    if worker_tool::built(worker_depth, i.settings.bool(worker_tool::SETTING_ENABLED, true)) {
+    if worker_tool::built(worker_depth, worker_tool::enabled(i.settings)) {
         match std::env::current_exe() {
             Ok(bin) => {
                 // The supervisor needs a trusted `kill` from the host PATH (never a project shim),
@@ -123,7 +123,7 @@ fn build_worker_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) ->
                         let workers = Arc::new(WorkerHooks::new(WorkerConfig {
                             oxa_bin: bin,
                             agent_dir: i.dirs.agent_dir.clone(),
-                            max: usize::try_from(i.settings.u32(worker_tool::SETTING_MAX, 4)).unwrap_or(4),
+                            max: worker_tool::max_workers(i.settings),
                             supervisor,
                             sessions_dir,
                             parent_env: i.env.pairs().to_vec(),
@@ -281,6 +281,11 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
         }
         sets.hooks.push(Arc::new(web));
     }
+
+    // ---- wait probes (W3) ----
+    // `wait` with `until` kind `ci` / `pr_merged`: answered through `gh`, no tools or prompt text.
+    sets.hooks
+        .push(Arc::new(crate::wait_probe::ProbeHooks::new(i.cwd, &i.dirs.home)));
 
     // ---- builtin:subagent ----
     // O-146: built unless switched off; the hook set itself declares the tool per epoch (on by
@@ -509,6 +514,20 @@ mod tests {
             &mut notices,
         );
         assert!(none.workers.is_none() && none.hooks.is_empty());
+        // The worker settings are user-only: a trusted project file cannot give the owner
+        // session the tool when the user turned it off.
+        std::fs::create_dir_all(dirs.settings_file().parent().unwrap()).unwrap();
+        std::fs::write(dirs.settings_file(), r#"{"oxa":{"workers":{"enabled":false}}}"#).unwrap();
+        test.write(
+            "work/.oxa/settings.json",
+            r#"{"oxa":{"workers":{"enabled":true}}}"#,
+        );
+        let layered = Settings::load(&dirs, &cwd, true);
+        let denied = build_owner_hooks(
+            &inputs(&args, &dirs, &cwd, &layered, &resources, &sandbox, &env),
+            &mut notices,
+        );
+        assert!(denied.workers.is_none() && denied.hooks.is_empty());
     }
 
     #[test]

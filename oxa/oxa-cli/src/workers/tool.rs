@@ -51,6 +51,17 @@ const DESCRIPTION: &str = "Background workers: each is a separate oxa process th
 
 const SCHEMA: &str = r#"{"type":"object","properties":{"action":{"type":"string","enum":["start","list","stop","send"]},"name":{"type":"string"},"goal":{"type":"string"},"text":{"type":"string"},"model":{"type":"string"},"mode":{"type":"string","enum":["plan","ask","workspace","auto","yolo"]}},"required":["action"]}"#;
 
+/// `oxa.workers.enabled` from the user settings only (default true): a project file cannot turn
+/// process launch on or off.
+pub fn enabled(settings: &oxa_config::Settings) -> bool {
+    settings.user_bool(SETTING_ENABLED, true)
+}
+
+/// `oxa.workers.max` from the user settings only (default 4): a project file cannot raise it.
+pub fn max_workers(settings: &oxa_config::Settings) -> usize {
+    usize::try_from(settings.user_u32(SETTING_MAX, 4)).unwrap_or(4)
+}
+
 /// Whether the worker hook set is built: not in a worker child (`worker_depth` is the value of
 /// `OXA_WORKER_DEPTH`, `None` when unset) and the setting is not false.
 pub fn built(worker_depth: Option<&str>, enabled: bool) -> bool {
@@ -854,7 +865,12 @@ impl Hooks for WorkerHooks {
         }
         HookReply::Continue
     }
-    fn poll_event(&self, kind: &str, args: &Value) -> Option<Result<Option<String>, String>> {
+    fn poll_event(
+        &self,
+        kind: &str,
+        args: &Value,
+        _budget: std::time::Duration,
+    ) -> Option<Result<Option<String>, String>> {
         (kind == TOOL_NAME).then(|| self.core.probe(args))
     }
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
@@ -1058,9 +1074,15 @@ mod tests {
         let rec = registry::load(&agent, "parent-1").unwrap().remove(0);
         let args = json!({"kind": "worker", "name": "alpha"});
         // Running: still pending.
-        assert_eq!(hooks.poll_event("worker", &args), Some(Ok(None)));
+        assert_eq!(
+            hooks.poll_event("worker", &args, std::time::Duration::from_secs(5)),
+            Some(Ok(None))
+        );
         // Another kind is not ours.
-        assert_eq!(hooks.poll_event("pr", &args), None);
+        assert_eq!(
+            hooks.poll_event("pr", &args, std::time::Duration::from_secs(5)),
+            None
+        );
         // The worker reports its outcome; the log has more than 20 lines.
         let status = json!({"session_id": rec.session_id, "pid": rec.pid, "phase": "finished",
             "outcome": {"type": "oxa_result", "outcome": "done", "error_class": null, "exit_code": 0}});
@@ -1068,13 +1090,21 @@ mod tests {
         fs::write(&rec.status_file, status.to_string()).unwrap();
         let log: Vec<String> = (1..=25).map(|n| format!("line {n}")).collect();
         fs::write(&rec.log_file, log.join("\n")).unwrap();
-        let text = hooks.poll_event("worker", &args).unwrap().unwrap().expect("done");
+        let text = hooks
+            .poll_event("worker", &args, std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap()
+            .expect("done");
         assert!(text.contains("outcome done"), "{text}");
         assert!(text.contains("line 25") && text.contains("line 6"), "{text}");
         assert!(!text.contains("line 5\n") && !text.ends_with("line 5"), "{text}");
         // An unknown worker is a probe failure.
         assert!(hooks
-            .poll_event("worker", &json!({"name": "nope"}))
+            .poll_event(
+                "worker",
+                &json!({"name": "nope"}),
+                std::time::Duration::from_secs(5)
+            )
             .unwrap()
             .is_err());
         let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
@@ -1204,6 +1234,32 @@ mod tests {
             assert_eq!(now.pid, rec.pid);
         }
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_true_cannot_enable_workers() {
+        let user_off = json!({"oxa": {"workers": {"enabled": false}}});
+        let project_on = json!({"oxa": {"workers": {"enabled": true}}});
+        let set = oxa_config::Settings::from_values(user_off, project_on.clone());
+        assert!(!enabled(&set));
+        assert!(!built(None, enabled(&set)));
+        // The project is ignored in both directions: unset by the user means the default.
+        assert!(enabled(&oxa_config::Settings::from_values(json!({}), project_on)));
+        let project_off = json!({"oxa": {"workers": {"enabled": false}}});
+        assert!(enabled(&oxa_config::Settings::from_values(
+            json!({}),
+            project_off
+        )));
+    }
+
+    #[test]
+    fn project_cannot_raise_worker_max() {
+        let set = |user: Value, project: Value| oxa_config::Settings::from_values(user, project);
+        let two = json!({"oxa": {"workers": {"max": 2}}});
+        let ten = json!({"oxa": {"workers": {"max": 10}}});
+        assert_eq!(max_workers(&set(two.clone(), ten.clone())), 2);
+        assert_eq!(max_workers(&set(json!({}), ten)), 4);
+        assert_eq!(max_workers(&set(two, json!({}))), 2);
     }
 
     #[test]

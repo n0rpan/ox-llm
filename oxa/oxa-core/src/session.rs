@@ -1066,6 +1066,7 @@ impl Session {
             _ => {}
         }
 
+        crate::settings_refresh::refresh_at_run_start(st, sink);
         // L5 (`oxa.compaction.turnStart`): an aborted turn left its tool result uncounted; the
         // prompt is compacted first when the context is already above the soft limit.
         let can_run = compact_before_run(st, sink, ui)?;
@@ -1127,7 +1128,7 @@ impl Session {
             _ => {}
         }
 
-        run_from_wire(st, sink, ui).map(Some)
+        run_with_current_settings(st, sink, ui).map(Some)
     }
 }
 
@@ -1286,6 +1287,16 @@ pub(crate) fn run_from_wire(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<RunEnd, OxaError> {
+    // L1: one stat per settings file; a changed file is applied before the first request.
+    crate::settings_refresh::refresh_at_run_start(st, sink);
+    run_with_current_settings(st, sink, ui)
+}
+
+fn run_with_current_settings(
+    st: &mut SessionState,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+) -> Result<RunEnd, OxaError> {
     // X3: while the engine has not yet published metadata for the selected model (a switch
     // to a model that is not loaded, a resumed session), re-read it before the run and
     // again before the after-reply compaction decision.
@@ -1316,7 +1327,8 @@ fn settle_runs(
         if end == RunEnd::Stopped && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
             return run_loop(st, sink, ui);
         }
-        while end == RunEnd::Stopped {
+        while end == RunEnd::Stopped && st.shared.has_follow_up() {
+            crate::settings_refresh::refresh_at_run_start(st, sink);
             let follow = st.shared.take_follow_up();
             if follow.is_empty() {
                 break;
@@ -1354,14 +1366,18 @@ fn queued_run(
     ui: &mut dyn Ui,
     turn_start: bool,
 ) -> Result<Option<RunEnd>, OxaError> {
+    let goal_pending = st
+        .goal
+        .as_ref()
+        .is_some_and(|goal| goal.pursuing() && goal.has_pending_steer());
+    if !st.shared.has_input() && !goal_pending {
+        return Ok(None);
+    }
+    // Apply delivery modes before taking messages for this run.
+    crate::settings_refresh::refresh_at_run_start(st, sink);
     let mut taken = st.shared.take_steering();
     taken.extend(st.shared.take_follow_up());
-    if taken.is_empty()
-        && !st
-            .goal
-            .as_ref()
-            .is_some_and(|goal| goal.pursuing() && goal.has_pending_steer())
-    {
+    if taken.is_empty() && !goal_pending {
         return Ok(None);
     }
     let can_run = !turn_start || compact_before_run(st, sink, ui)?;
@@ -2150,6 +2166,10 @@ pub(crate) fn refresh_budget(st: &mut SessionState, prev_enabled: Option<bool>, 
             format!("could not re-read the engine limits ({e}); keeping the previous ones"),
         ),
     }
+    apply_budget_settings(st, prev_enabled);
+}
+
+pub(crate) fn apply_budget_settings(st: &mut SessionState, prev_enabled: Option<bool>) {
     st.compact = policy_for_model(&st.info, &st.settings, &st.model);
     if prev_enabled.is_some_and(|p| p != st.compact.enabled) {
         st.auto_compaction = st.compact.enabled;

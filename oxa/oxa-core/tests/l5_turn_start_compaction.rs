@@ -257,6 +257,41 @@ fn explicit_setting_wins() {
     assert_eq!(kinds(&off), vec!["chat", "chat", "compaction"]);
 }
 
+#[test]
+fn live_compaction_edit_applies_before_the_next_direct_prompt() {
+    let env = TestEnv::new();
+    let soft = measured_abort_context(&env, BIG) + 1000;
+    let dirs = Dirs::under(env.root());
+    let path = dirs.settings_file();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut values = json!({
+        "oxa": {"compaction": {"softTokens": soft, "turnStart": true}, "toolOutputCap": 16384}
+    });
+    std::fs::write(&path, values.to_string()).unwrap();
+
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        read_turn("c1"),
+        ScriptTurn::text("answer"),
+    ]));
+    let settings = Settings::load(&dirs, &env.work(), false);
+    let mut session = open(&env, engine.clone(), vec![read_tool(BIG, true)], settings);
+    let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
+    session
+        .prompt("look".into(), Vec::new(), &mut sink, &mut ui)
+        .unwrap();
+    assert!(sink
+        .0
+        .iter()
+        .any(|e| matches!(e, AgentEvent::AgentSettled { aborted: true })));
+
+    values["compaction"] = json!({"enabled": false});
+    std::fs::write(&path, values.to_string()).unwrap();
+    session
+        .prompt("next task".into(), Vec::new(), &mut sink, &mut ui)
+        .unwrap();
+    assert_eq!(kinds(&engine), ["chat", "chat"]);
+}
+
 /// (e) Auto-compaction switched off at runtime: no compaction at turn start.
 #[test]
 fn runtime_auto_compaction_off_disables_it() {
