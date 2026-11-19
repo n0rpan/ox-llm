@@ -146,6 +146,7 @@ impl ResultFacts {
                 state.log_failed = true;
             }
         }
+        let usage = usage.and_then(Usage::reported);
         if let Some(usage) = usage {
             add(&mut state.prompt, usage.prompt.into());
             add(&mut state.completion, usage.completion.into());
@@ -249,6 +250,7 @@ mod tests {
             completion,
             cached,
             cached_missing: false,
+            unreported: false,
         }
     }
 
