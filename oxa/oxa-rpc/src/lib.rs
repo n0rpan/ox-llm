@@ -19,10 +19,7 @@
 //!   does. stdin close = shutdown.
 #![forbid(unsafe_code)]
 
-#[cfg(all(
-    target_os = "linux",
-    any(feature = "a2a-control", feature = "managed-steering")
-))]
+#[cfg(target_os = "linux")]
 mod a2a_control;
 
 mod client;
@@ -39,18 +36,16 @@ pub use events::{
     JsonSink,
 };
 pub use ext_ui::{RpcUi, UiRouter};
-#[cfg(all(
-    target_os = "linux",
-    any(feature = "a2a-control", feature = "managed-steering")
-))]
+#[cfg(target_os = "linux")]
 pub use print::run_json_outcome_with_steering_authority;
 pub use print::{
     run_json, run_json_outcome, run_json_outcome_with_inbox, run_print, run_print_outcome,
     run_print_outcome_with_inbox,
 };
-#[cfg(all(target_os = "linux", feature = "a2a-control"))]
-pub use server::serve_outcome_with_steering_authority;
-pub use server::{parse_command, response_err, response_ok, serve, serve_outcome, RpcCommand};
+pub use server::{
+    parse_command, response_err, response_ok, serve, serve_outcome, serve_outcome_gated,
+    serve_outcome_with_steering_authority, RpcCommand,
+};
 
 use oxa_core::{Handle, Session};
 use oxa_proto::{OxaError, Value};
