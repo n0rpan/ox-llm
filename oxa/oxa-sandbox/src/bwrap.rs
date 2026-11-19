@@ -97,10 +97,14 @@ pub(crate) fn bwrap_args_pinned(
     let cwd_path = cwd_c.as_path();
     let cwd = cwd_c.to_string_lossy().into_owned();
     let mut a: Vec<String> = Vec::new();
-    // Keep a tool from manufacturing another PID/user namespace in which its own
-    // confirmation listener appears to be a host-side peer. Owner-confirm authentication
-    // relies on the session broker being outside this (single) sandbox PID namespace.
-    push(&mut a, &["--unshare-all", "--disable-userns"]);
+    push(&mut a, &["--unshare-all"]);
+    if s.env.iter().any(|(key, _)| key == "OXA_CONFIRM_SOCK") {
+        // Keep a tool from manufacturing another user/PID/mount namespace in which its own
+        // confirmation listener appears to be a host-side peer or covers the broker socket.
+        // `--disable-userns` needs an explicit `--unshare-user`. The launcher only keeps the
+        // broker for a bwrap that supports this ([`denies_nested_userns`]).
+        push(&mut a, &["--unshare-user", "--disable-userns"]);
+    }
     if s.net {
         push(&mut a, &["--share-net"]);
     }
@@ -528,7 +532,13 @@ mod confirm_socket_tests {
         let args = bwrap_args(&spec, &env.home());
         assert!(args
             .windows(2)
-            .any(|w| w == ["--unshare-all", "--disable-userns"]));
+            .any(|w| w == ["--unshare-user", "--disable-userns"]));
+        let mut plain = spec.clone();
+        keep_broker_only_if(&mut plain, false);
+        assert!(plain.env.is_empty(), "no denial support, no broker");
+        let plain_args = bwrap_args(&plain, &env.home());
+        assert!(!plain_args.iter().any(|x| x == "--disable-userns"));
+        assert!(!plain_args.iter().any(|x| x == &*socket.to_string_lossy()));
         let socket = socket.to_string_lossy();
         assert!(args.windows(3).any(|w| w == ["--ro-bind", &*socket, &*socket]));
         let parent = private.to_string_lossy();
@@ -1301,6 +1311,53 @@ fn is_executable(p: &Path) -> bool {
     std::fs::metadata(p)
         .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
+}
+
+/// Whether `bwrap` can deny nested user namespaces (`--unshare-user --disable-userns`,
+/// bubblewrap 0.8 and later, with user namespaces available). Probed once per binary.
+pub(crate) fn denies_nested_userns(bwrap: &Path) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashMap<PathBuf, bool>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(known) = seen.lock().unwrap_or_else(|p| p.into_inner()).get(bwrap) {
+        return *known;
+    }
+    let argv: Vec<String> = [
+        bwrap.to_string_lossy().as_ref(),
+        "--unshare-all",
+        "--unshare-user",
+        "--disable-userns",
+        "--ro-bind",
+        "/",
+        "/",
+        "true",
+    ]
+    .iter()
+    .map(|x| (*x).to_string())
+    .collect();
+    let r = run_argv(
+        &argv,
+        &[],
+        Some(PROBE_TIMEOUT_S),
+        &CancelToken::new(),
+        &mut |_| {},
+    );
+    let ok = r.exit == Some(0);
+    seen.lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(bwrap.to_path_buf(), ok);
+    ok
+}
+
+/// Keep the owner confirm broker in `s` only when `denied` (nested user namespaces are denied
+/// in the sandbox). Without that denial a command could forge a host-side peer or cover the
+/// socket and fake the owner's yes, so the command gets no broker: its confirmation is then
+/// "none" and nothing is published (fail closed).
+pub(crate) fn keep_broker_only_if(s: &mut ExecSpec, denied: bool) {
+    if !denied {
+        s.env.retain(|(key, _)| key != "OXA_CONFIRM_SOCK");
+    }
 }
 
 /// Run `bwrap --unshare-all --ro-bind / / true`; anything but a clean exit is `no_sandbox`.

@@ -33,12 +33,14 @@ maintainer, who says in the PR when a hardware check is needed.
   files, web pages, other sessions, agent inbox) never approves. In yolo the broker answers yes and
   records it. The broker socket is owned by the session (dir 0700, socket 0600) and validates a
   complete, bounded request frame before asking. Do not add
-  `/dev/tty`-only confirmations or env-marker refusals for owner actions. On Linux, sandboxed
-  tool children authenticate the broker as a peer outside their PID namespace; the sandbox
-  disables nested user namespaces so a tool cannot manufacture another such boundary. Visible peers,
-  including same-user ancestor wrappers, are refused. Non-Linux tool children cannot authenticate
-  a Unix peer PID and therefore cannot use broker-backed owner actions; run those actions directly
-  from the owner's terminal there.
+  `/dev/tty`-only confirmations or env-marker refusals for owner actions. The owner's typed yes
+  in oxa counts on every platform; never require the owner's own terminal for an owner action.
+  Inside the Linux sandbox, tool children authenticate the broker as a peer outside their PID
+  namespace, and the sandbox denies nested user namespaces whenever the broker is mounted, so a
+  tool cannot manufacture another such boundary; visible peers there, including same-user
+  ancestor wrappers, are refused. Without an OS sandbox the command already holds the owner's
+  rights, so the exported broker is used as is; the broker itself never answers from model-read
+  text.
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
   in the ledger (an unknown cost is recorded as unknown). Limits are owner configuration: with no cap

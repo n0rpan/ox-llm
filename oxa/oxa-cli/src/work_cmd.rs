@@ -251,9 +251,8 @@ pub(crate) fn run(
             end -= 1;
         }
         // A session's tool child reaches the owner through the confirm broker, which is the
-        // owner's yolo choice, dialog or typed yes. The broker must prove itself first
-        // (Linux checks the peer through the kernel; off Linux a child cannot prove a broker
-        // at all, so the marker still refuses and the owner publishes from their terminal).
+        // owner's yolo choice, dialog or typed yes, on every platform. Inside the Linux
+        // sandbox the broker must prove itself through the kernel (owner_confirm_client).
         if (publish || reports)
             && crate::owner_confirm_client::session_broker(env).is_none()
             && env.pairs().iter().any(|(name, _)| {

@@ -313,12 +313,14 @@ without replaying the agent. Offline mode refuses network publication.
 Before each push, the runner asks the owner to approve the accepted commit, branch and
 PR destination. Inside a session the question goes to the session's owner confirm
 broker (`OXA_CONFIRM_SOCK`): yolo answers yes and records it, standard and auto show a
-dialog that the owner's typed `yes` also answers. The broker must prove itself: on
-Linux the sandbox exposes only the session's private broker directory and the kernel names
-the process that bound the socket (`SO_PEERCRED`); the peer must be the same-user session
-outside the child's PID namespace. Every visible listener, including a tool-created ancestor
-wrapper, is refused, so a model-run command cannot answer its own question. Off Linux a child cannot prove a unix
-listener at all, so the broker never authorizes there and the agent marker refuses.
+dialog that the owner's typed `yes` also answers. Inside the Linux sandbox the
+broker must prove itself: the sandbox exposes only the session's private broker directory,
+denies nested user namespaces, and the kernel names the process that bound the socket
+(`SO_PEERCRED`); the peer must be the same-user session outside the child's PID namespace.
+Every visible listener there, including a tool-created ancestor wrapper, is refused, so a
+sandboxed command cannot answer its own question. Without an OS sandbox (and on every
+platform other than Linux) the command already holds the owner's rights, so the exported
+broker is used as is: the owner's yes in oxa works the same everywhere.
 Run from a terminal, the answer is typed on `/dev/tty`. Piped input and text the model
 read never approve it, and the agent marker alone still refuses when no provable
 broker is present. After the yes the runner

@@ -64,11 +64,13 @@ confirmation only from the owner: yolo chosen for the session (answer yes, shown
 owner's answer to the session's own dialog, or the owner's typed message while a confirmation waits.
 A confirmation that a model-run command can satisfy without the broker is high. A broker answer
 derived from tool, file, web or agent-inbox text is high. A socket readable by another user is high.
-On Linux the sandbox exposes only the session's private broker socket, disables nested user
-namespaces, and the child accepts only a same-user peer outside its PID namespace; visible peers,
-including ancestor wrappers, are refused.
-Non-Linux tool children cannot authenticate the broker peer and owner actions must instead be run
-directly from the owner's terminal. The broker bounds each newline-terminated request to 64 KiB
+The owner's typed yes in oxa (or dialog answer, or yolo) passes owner actions on every platform;
+a terminal-only requirement for an owner action is a bug. Inside the Linux sandbox the broker
+socket is exposed only where bwrap denies nested user namespaces, and the child accepts only a
+same-user peer outside its PID namespace; visible peers there, including ancestor wrappers, are
+refused, and a sandboxed child that accepts one is high. Without an OS sandbox (interactive and
+yolo, and every non-Linux platform) a command already runs with the owner's full rights, so the
+child uses the exported broker without a peer proof; model-read text still never answers. The broker bounds each newline-terminated request to 64 KiB
 before accepting it for confirmation.
 
 ## Sandbox standard (owner decision)

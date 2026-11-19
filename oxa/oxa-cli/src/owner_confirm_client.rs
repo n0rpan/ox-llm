@@ -2,63 +2,41 @@
 //!
 //! `oxa work --publish` and `--report-problems` ask the owner through the session's broker
 //! socket (`OXA_CONFIRM_SOCK`, served by `oxa_core::owner_confirm`). The broker answers yes in
-//! yolo, and otherwise asks the owner (dialog or typed message). Nothing this process reads
-//! can answer: the only inputs are the broker's reply and, outside a session, `/dev/tty`.
+//! yolo, and otherwise asks the owner (dialog or typed message): the owner's typed yes in oxa
+//! counts, text the model read never does. Nothing this process reads can answer: the only
+//! inputs are the broker's reply and, outside a session, `/dev/tty`.
 //!
 //! The socket path arrives through the environment, which a tool child's parent controls: a
-//! model-run command can name a listener of its own. So the path alone proves nothing. On
-//! Linux the kernel names the process that created the peer socket (`SO_PEERCRED`), and the
-//! answer counts only when that peer is this child's session: the peer's effective user must
-//! be this user, and its pid must either be invisible in this child's pid namespace (`0`: the
-//! host side of the sandbox, which nothing a tool spawns can enter, because a tool's children
-//! share its namespace). Visible peers are never trusted: a model-controlled wrapper can be a
-//! same-uid strict ancestor with exactly the shape of an unsandboxed session. Off Linux no kernel check
-//! exists and a same-user parent can replace the socket file unseen, so a tool child never
-//! accepts a broker answer there: the agent-marker refusal stands and the owner publishes
-//! from their own terminal (`tty_confirm`). The host-side protocol (the session performing
-//! the publish after its own dialog) remains the stronger design if that convenience is
-//! wanted off Linux.
+//! model-run command can name a listener of its own. Where that matters, the child proves the
+//! peer. Inside the Linux sandbox (a user namespace of its own, with nested user namespaces
+//! denied by bwrap whenever the broker is mounted) the kernel names the process that created
+//! the peer socket (`SO_PEERCRED`): the answer counts only when the peer is this user and its
+//! pid is invisible in this child's pid namespace (`0`: the host side of the sandbox, which
+//! nothing a tool spawns can enter). A visible peer there is a listener the model made and is
+//! refused. Without an OS sandbox (the interactive and yolo standard, and every platform
+//! other than Linux) a command already runs with the owner's full rights: it could run `gh`
+//! itself, so a peer check would protect nothing the command cannot do anyway. There the
+//! session's broker is used as exported, so the owner's dialog or typed yes works the same on
+//! every platform, and the broker itself still never answers from model-read text.
 use oxa_config::Env;
-#[cfg(target_os = "linux")]
 use serde_json::{json, Value};
-#[cfg(target_os = "linux")]
 use sha2::{Digest, Sha256};
-#[cfg(target_os = "linux")]
 use std::io::Write;
-#[cfg(target_os = "linux")]
 use std::io::{BufRead, BufReader};
-#[cfg(target_os = "linux")]
 use std::os::unix::net::UnixStream;
-#[cfg(target_os = "linux")]
 use std::path::Path;
 
-/// The socket a session exported to its tool children, when there is one.
-#[cfg(target_os = "linux")]
-pub(crate) fn broker_socket(env: &Env) -> Option<&str> {
-    env.get(oxa_core::owner_confirm::SOCK_ENV)
-}
-
-/// A session broker this child may trust with its question. On Linux the path from the
-/// environment is only a candidate: `ask_broker` proves the peer through the kernel before
-/// it asks anything. Off Linux there is no proof a child could check (module docs), so there
-/// is never a trusted broker and the agent-marker refusal stands.
+/// The socket a session exported to its tool children, when there is one. `ask_broker`
+/// proves the peer where the child can (inside the Linux sandbox) before it asks anything.
 pub(crate) fn session_broker(env: &Env) -> Option<&str> {
-    #[cfg(target_os = "linux")]
-    {
-        broker_socket(env)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = env;
-        None
-    }
+    env.get(oxa_core::owner_confirm::SOCK_ENV)
 }
 
 /// Ask the broker at `sock`. `Some(true)` yes, `Some(false)` no, `None` nobody could answer
 /// (broker gone, peer not this child's session, no way to ask the owner, unreadable reply).
-#[cfg(target_os = "linux")]
 pub(crate) fn ask_broker(sock: &Path, question: &str) -> Option<bool> {
     let mut stream = UnixStream::connect(sock).ok()?;
+    #[cfg(target_os = "linux")]
     if !peer_is_session_broker(&stream) {
         return None;
     }
@@ -78,9 +56,9 @@ pub(crate) fn ask_broker(sock: &Path, question: &str) -> Option<bool> {
 }
 
 /// The peer must be the session that exported the socket, never a listener this child's
-/// parent chose. The kernel reports the credentials of the process that created the peer
-/// socket: its effective user must be this user, and its pid must name a host-side owner
-/// process (the module docs explain the two proof paths).
+/// parent chose, wherever the child can tell the two apart. The kernel reports the
+/// credentials of the process that created the peer socket: its effective user must be this
+/// user, and inside the sandbox its pid must name a host-side process (module docs).
 #[cfg(target_os = "linux")]
 fn peer_is_session_broker(stream: &UnixStream) -> bool {
     use std::os::fd::AsRawFd;
@@ -102,23 +80,44 @@ fn peer_is_session_broker(stream: &UnixStream) -> bool {
         )
     } == 0;
     // SAFETY: geteuid has no preconditions and touches no memory.
-    ok && cred.uid == unsafe { libc::geteuid() } && peer_pid_is_session(cred.pid)
+    ok && cred.uid == unsafe { libc::geteuid() } && peer_pid_accepted(cred.pid, in_sandbox_userns())
+}
+
+/// Inside the sandbox only a host-side peer (pid `0` here) is the session; without a sandbox
+/// the session is an ordinary visible process and the command holds the owner's rights anyway.
+#[cfg(target_os = "linux")]
+fn peer_pid_accepted(pid: libc::pid_t, sandboxed: bool) -> bool {
+    pid == 0 || !sandboxed
+}
+
+/// `true` unless this process is in the initial user namespace (`uid_map` maps the whole id
+/// range onto itself). bwrap gives every sandboxed command a user namespace of its own and,
+/// with the broker mounted, denies nested ones, so a command cannot leave it or fake this.
+/// An unreadable map counts as sandboxed (fail closed).
+#[cfg(target_os = "linux")]
+fn in_sandbox_userns() -> bool {
+    match std::fs::read_to_string("/proc/self/uid_map") {
+        Ok(map) => !is_initial_uid_map(&map),
+        Err(_) => true,
+    }
 }
 
 #[cfg(target_os = "linux")]
-fn peer_pid_is_session(pid: libc::pid_t) -> bool {
-    pid == 0
+fn is_initial_uid_map(map: &str) -> bool {
+    let rows: Vec<Vec<&str>> = map
+        .lines()
+        .map(|line| line.split_whitespace().collect())
+        .filter(|row: &Vec<&str>| !row.is_empty())
+        .collect();
+    rows == [vec!["0", "0", "4294967295"]]
 }
 
 /// The confirmation for the owner's publish and report actions: the session broker when the
-/// session exported a provable one (the agent marker is then no refusal, the broker is the
-/// owner), the controlling terminal otherwise (`tty_confirm`, which refuses under the agent
-/// marker). Off Linux the broker cannot be proven from a child, so the marker refusal and the
-/// terminal answer stand.
+/// session exported one (the agent marker is then no refusal, the broker is the owner), the
+/// controlling terminal otherwise (`tty_confirm`, which refuses under the agent marker).
 pub(crate) fn owner_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
     let mut tty = crate::report_cmd::tty_confirm(env);
     move |question: &str| {
-        #[cfg(target_os = "linux")]
         if let Some(sock) = session_broker(env) {
             return ask_broker(Path::new(sock), question);
         }
@@ -136,12 +135,14 @@ mod tests {
         std::env::temp_dir().join(format!("oxa-ocl-{name}-{}", std::process::id()))
     }
 
-    /// The kernel names the creator of the peer socket: a socket this process bound itself
-    /// (what a parent wrapping its own listener into the child's exec looks like) is not a
-    /// session broker, and no question is asked through it.
-    #[cfg(target_os = "linux")]
+    /// Without an OS sandbox the session's broker answers for the owner (here yolo), on every
+    /// platform: the owner's yes in oxa counts, never a terminal-only path.
     #[test]
-    fn a_socket_this_process_bound_is_not_a_session_broker() {
+    fn an_unsandboxed_child_reaches_the_session_broker() {
+        #[cfg(target_os = "linux")]
+        if in_sandbox_userns() {
+            return; // The test itself runs sandboxed; the sandbox rule is tested below.
+        }
         let d = dir("self");
         let broker = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Yolo)).expect("start");
         let sock = broker.sock_path().to_string_lossy().into_owned();
@@ -149,18 +150,25 @@ mod tests {
             ("OXA_CODING_AGENT", "true"),
             (oxa_core::owner_confirm::SOCK_ENV, &sock),
         ]);
-        assert_eq!(owner_confirm(&env)("Push?"), None);
-        assert!(broker.take_records().is_empty(), "no question was asked");
+        assert_eq!(owner_confirm(&env)("Push?"), Some(true));
+        assert_eq!(broker.take_records().len(), 1, "the broker recorded the answer");
         broker.close();
         let _ = std::fs::remove_dir_all(d);
     }
 
-    /// A model can put its listener in a parent wrapper and exec the CLI below it. Such a
-    /// same-uid ancestor is still visible in the child's namespace and must not approve.
+    /// Inside the sandbox a model can put its listener in a parent wrapper and exec the CLI
+    /// below it. Such a same-uid peer is visible in the child's namespace and must not
+    /// approve; only the host-side session (pid 0 here) does.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_visible_ancestor_is_not_a_session_broker() {
-        assert!(!peer_pid_is_session(unsafe { libc::getppid() }));
+    fn inside_the_sandbox_only_a_host_side_peer_is_the_broker() {
+        let visible = unsafe { libc::getppid() };
+        assert!(!peer_pid_accepted(visible, true));
+        assert!(peer_pid_accepted(0, true));
+        assert!(peer_pid_accepted(visible, false));
+        assert!(is_initial_uid_map("         0          0 4294967295\n"));
+        assert!(!is_initial_uid_map("      1000       1000          1\n"));
+        assert!(!is_initial_uid_map(""));
     }
 
     #[test]
@@ -172,22 +180,5 @@ mod tests {
             (oxa_core::owner_confirm::SOCK_ENV, "/nonexistent/confirm.sock"),
         ]);
         assert_eq!(owner_confirm(&gone)("Push?"), None);
-    }
-
-    /// Off Linux no kernel check exists (module docs): even a real session broker cannot
-    /// prove itself to a tool child, so the marker refusal stands.
-    #[cfg(not(target_os = "linux"))]
-    #[test]
-    fn off_linux_a_session_socket_is_not_trusted_under_the_marker() {
-        let d = dir("other");
-        let broker = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Yolo)).expect("start");
-        let sock = broker.sock_path().to_string_lossy().into_owned();
-        let env = Env::from_pairs(&[
-            ("OXA_CODING_AGENT", "true"),
-            (oxa_core::owner_confirm::SOCK_ENV, &sock),
-        ]);
-        assert_eq!(owner_confirm(&env)("Push?"), None);
-        broker.close();
-        let _ = std::fs::remove_dir_all(d);
     }
 }
