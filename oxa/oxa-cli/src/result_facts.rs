@@ -3,7 +3,18 @@ use oxa_core::{Progress, ProgressObserver, RunOutcome, Session};
 use oxa_proto::OxaError;
 use oxa_proto::{TurnKind, Usage};
 use serde_json::{json, Value};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+/// A model call that has started and not ended yet (`--usage-log` needs its start to time it).
+#[derive(Debug)]
+struct Call {
+    kind: TurnKind,
+    request: u64,
+    turn: u64,
+    started: Instant,
+}
 
 #[derive(Debug)]
 struct State {
@@ -19,6 +30,9 @@ struct State {
     completion: Option<u64>,
     cached: Option<u64>,
     unreported: Option<u64>,
+    model: Option<String>,
+    pending: VecDeque<Call>,
+    log_failed: bool,
 }
 impl Default for State {
     fn default() -> Self {
@@ -35,6 +49,9 @@ impl Default for State {
             completion: Some(0),
             cached: Some(0),
             unreported: Some(0),
+            model: None,
+            pending: VecDeque::new(),
+            log_failed: false,
         }
     }
 }
@@ -47,10 +64,15 @@ pub(crate) struct ResultFacts {
     state: Mutex<State>,
     status: Option<Arc<crate::status::StatusWriter>>,
     billing: Option<oxc_gateway::diagnostics::Diagnostics>,
+    usage_log: Option<crate::usage_log::UsageLog>,
 }
 impl ResultFacts {
     pub(crate) fn with_billing(mut self, billing: oxc_gateway::diagnostics::Diagnostics) -> Self {
         self.billing = Some(billing);
+        self
+    }
+    pub(crate) fn with_usage_log(mut self, log: Option<crate::usage_log::UsageLog>) -> Self {
+        self.usage_log = log;
         self
     }
 
@@ -61,6 +83,7 @@ impl ResultFacts {
         }
     }
     pub(crate) fn attach(self: &Arc<Self>, session: &mut Session) -> Result<(), OxaError> {
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).model = Some(session.model().to_string());
         session.set_progress_observer(self.clone());
         self.status.as_ref().map_or(Ok(()), |status| status.check())
     }
@@ -90,6 +113,14 @@ impl ResultFacts {
         if matches!(kind, TurnKind::Chat | TurnKind::Subagent) {
             add(&mut state.turns, 1);
         }
+        if self.usage_log.is_some() {
+            state.pending.push_back(Call {
+                kind,
+                request: state.requests.unwrap_or(0),
+                turn: state.turns.unwrap_or(0),
+                started: Instant::now(),
+            });
+        }
         if let Some(active) = state.active.checked_add(1) {
             state.active = active;
         } else {
@@ -105,6 +136,12 @@ impl ResultFacts {
             state.balanced = false;
         } else {
             state.active -= 1;
+        }
+        if let (Some(log), Some(call)) = (&self.usage_log, state.pending.pop_front()) {
+            let record = call_record(&call, state.model.as_deref(), usage);
+            if log.write(&record).is_err() {
+                state.log_failed = true;
+            }
         }
         if let Some(usage) = usage {
             add(&mut state.prompt, usage.prompt.into());
@@ -125,6 +162,9 @@ impl ResultFacts {
         let mut guard = facts.map(|facts| facts.state.lock().unwrap_or_else(|p| p.into_inner()));
         if let Some(state) = &mut guard {
             state.finished = true;
+        }
+        if guard.as_ref().is_some_and(|state| state.log_failed) {
+            record["usage_log"] = json!("write_failed");
         }
         let state = guard.as_ref().filter(|state| state.opened);
         record["session_id"] = state
@@ -157,6 +197,23 @@ impl ResultFacts {
     }
 }
 
+/// One `--usage-log` line: numbers, ids and timings. No message text, tool output or request body.
+/// `reasoning_tokens` is null: the engine's usage does not carry the reasoning part yet.
+fn call_record(call: &Call, model: Option<&str>, usage: Option<Usage>) -> Value {
+    json!({
+        "request": call.request,
+        "turn": call.turn,
+        "kind": call.kind.as_str(),
+        "model": model,
+        "usage_reported": usage.is_some(),
+        "prompt": usage.as_ref().map(|u| u.prompt),
+        "cached": usage.as_ref().filter(|u| !u.cached_missing).map(|u| u.cached),
+        "output": usage.as_ref().map(|u| u.completion),
+        "reasoning_tokens": Value::Null,
+        "duration_ms": u64::try_from(call.started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    })
+}
+
 impl ProgressObserver for ResultFacts {
     fn notify(&self, session: &oxa_session::SessionRef, progress: Progress<'_>) {
         match progress {
@@ -174,6 +231,7 @@ impl ProgressObserver for ResultFacts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
     fn usage(prompt: u32, completion: u32, cached: u32) -> Usage {
         Usage {
             prompt,
@@ -263,5 +321,105 @@ mod tests {
         assert_eq!(record["turns"], 0);
         assert_eq!(record["tokens"]["prompt"], 0);
         assert_eq!(record["tokens"]["complete"], true);
+    }
+    fn log_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("oxa-ul-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+    fn logged_facts(path: &Path) -> ResultFacts {
+        let log = crate::usage_log::UsageLog::create(path).unwrap();
+        ResultFacts::default().with_usage_log(Some(log))
+    }
+    fn lines(path: &Path) -> Vec<Value> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn usage_log_has_one_record_per_call() {
+        let dir = log_dir("calls");
+        let path = dir.join("usage.jsonl");
+        let facts = logged_facts(&path);
+        facts.session(Some("saved"));
+        for kind in [TurnKind::Chat, TurnKind::Compaction, TurnKind::Chat] {
+            facts.request_start(kind);
+            facts.request_end(Some(usage(100, 4, 60)));
+        }
+        facts.request_start(TurnKind::Chat);
+        facts.request_end(None);
+        let records = lines(&path);
+        assert_eq!(records.len(), 4);
+        assert_eq!(records[0]["request"], 1);
+        assert_eq!(records[0]["turn"], 1);
+        assert_eq!(records[1]["kind"], "compaction");
+        assert_eq!(records[1]["turn"], 1, "compaction is not a chat turn");
+        assert_eq!(records[2]["turn"], 2);
+        assert_eq!(records[3]["usage_reported"], false);
+        assert!(records[3]["prompt"].is_null());
+        assert!(records[3]["cached"].is_null());
+        assert!(records[0]["duration_ms"].is_u64());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn usage_log_totals_match_oxa_result() {
+        let dir = log_dir("totals");
+        let path = dir.join("usage.jsonl");
+        let facts = logged_facts(&path);
+        facts.session(None);
+        facts.request_start(TurnKind::Chat);
+        facts.request_end(Some(usage(100, 4, 60)));
+        facts.request_start(TurnKind::Prefill);
+        facts.request_end(Some(usage(50, 2, 10)));
+        facts.request_start(TurnKind::Chat);
+        facts.request_end(None);
+        let record = ResultFacts::record(RunOutcome::Done, Some(&facts));
+        let records = lines(&path);
+        let sum = |key: &str| -> u64 { records.iter().filter_map(|r| r[key].as_u64()).sum() };
+        assert_eq!(records.len() as u64, record["requests"].as_u64().unwrap());
+        assert_eq!(sum("prompt"), record["tokens"]["prompt"].as_u64().unwrap());
+        assert_eq!(sum("output"), record["tokens"]["completion"].as_u64().unwrap());
+        assert_eq!(sum("cached"), record["tokens"]["cached"].as_u64().unwrap());
+        assert_eq!(record["tokens"]["unreported_requests"], 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn usage_log_never_holds_message_text() {
+        let dir = log_dir("text");
+        let path = dir.join("usage.jsonl");
+        let facts = logged_facts(&path);
+        facts.state.lock().unwrap().model = Some("model-id".to_string());
+        facts.request_start(TurnKind::Chat);
+        facts.request_end(Some(usage(7, 3, 1)));
+        let allowed = [
+            "request",
+            "turn",
+            "kind",
+            "model",
+            "usage_reported",
+            "prompt",
+            "cached",
+            "output",
+            "reasoning_tokens",
+            "duration_ms",
+        ];
+        for record in lines(&path) {
+            for (key, value) in record.as_object().unwrap() {
+                assert!(allowed.contains(&key.as_str()), "unexpected key {key}");
+                if let Some(text) = value.as_str() {
+                    assert!(
+                        text == "chat" || text == "model-id",
+                        "unexpected text value {text}"
+                    );
+                }
+            }
+            assert_eq!(record["model"], "model-id");
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
