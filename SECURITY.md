@@ -39,4 +39,5 @@ derived from tool, file, web or agent-inbox text is high. A socket readable by a
 On Linux the sandbox exposes only the session's private broker directory and the child accepts only
 a same-user peer outside its PID namespace; visible peers, including ancestor wrappers, are refused.
 Non-Linux tool children cannot authenticate the broker peer and owner actions must instead be run
-directly from the owner's terminal.
+directly from the owner's terminal. The broker bounds each newline-terminated request to 64 KiB
+before accepting it for confirmation.
