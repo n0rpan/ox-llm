@@ -392,6 +392,16 @@ anyway: the exact-head lane run is that hosted evidence. The task stays `unverif
 while the run is pending and becomes `done` only when it is green; the push still
 passes the structural checks, owner confirmation and content scan first.
 
+The lane run only counts for what it actually ran. The workflow selects the crates
+the branch diff touches (and their reverse dependencies), so a declared acceptance
+crate is covered only when the task diff selects it: a declaration the head does not
+touch refuses with the uncovered crate names, and the work stays `unverified` rather
+than crediting a suite that never ran.
+
+A `lane_ci` task's worker launches GitHub-isolated, like a runner-owned task: no
+host `gh` token is injected into its bash (and no MCP, extensions, web search or
+subagents), because the runner alone performs the owner-approved public push.
+
 A green run accepts the task (`done`). A completed `failure` spends the task's
 single repair round, shared with a local acceptance repair, with the failed job,
 step and test names; the runner saves and pushes the repaired commit and observes

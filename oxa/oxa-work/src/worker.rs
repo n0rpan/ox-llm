@@ -130,9 +130,12 @@ pub(crate) fn run(
     if policy.offline {
         command.arg("--offline");
     }
-    if policy.runner_owns_github {
+    if github_isolated(policy, task) {
         // The provider connection is host-side. The worker's tool sandbox and
-        // independent tool adapters have no GitHub access.
+        // independent tool adapters have no GitHub access. A lane task is treated
+        // the same way: its work ends in a runner-driven public push, so the worker
+        // never receives the host GitHub credentials (the owner approves the push,
+        // the runner alone performs it).
         crate::restrict_child_github(&mut command);
         command.args(["--no-mcp", "--no-extensions", "--no-web-search", "--no-subagent"]);
     }
@@ -377,10 +380,59 @@ pub(crate) fn keep_tail(tail: &mut Vec<u8>, bytes: &[u8], cap: usize) {
     }
 }
 
+/// Whether this worker's launch strips the host's GitHub credentials: a runner-owned task
+/// (the runner alone talks to GitHub), and every lane task, whose work ends in a
+/// runner-driven public push that the owner approves.
+pub(crate) fn github_isolated(policy: &RunPolicy, task: &Task) -> bool {
+    policy.runner_owns_github || task.lane_ci
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_lane_task_worker_launch_strips_the_host_github_credentials() {
+        let policy = RunPolicy {
+            git_binary: "/usr/bin/git".into(),
+            host_path: "/usr/bin:/bin".into(),
+            terminate_binary: None,
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
+            offline: true,
+            runner_owns_github: false,
+            storage: std::env::temp_dir(),
+        };
+        let mut task = Task {
+            id: "lane-1".into(),
+            model: "fake".into(),
+            branch: "agent/lane-1".into(),
+            base: "main".into(),
+            prompt: "Synthetic lane task".into(),
+            max_time: 2700,
+            reviewed_pull_request: None,
+            lane_ci: true,
+        };
+        assert!(
+            github_isolated(&policy, &task),
+            "a lane task's worker never receives the host GitHub credentials"
+        );
+        task.lane_ci = false;
+        assert!(
+            !github_isolated(&policy, &task),
+            "a plain task keeps the normal worker environment"
+        );
+        let runner_owned = RunPolicy {
+            runner_owns_github: true,
+            ..policy
+        };
+        assert!(
+            github_isolated(&runner_owned, &task),
+            "a runner-owned task stays isolated without lane CI"
+        );
+    }
 
     #[test]
     fn a_discarded_assistant_event_leaves_declaration_evidence_unreadable() {

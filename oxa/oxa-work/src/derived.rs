@@ -148,6 +148,25 @@ pub(crate) fn committed_requires_hosted(
     base: &str,
     head: &str,
 ) -> Result<bool, String> {
+    Ok(committed_selection(policy, root, base, head)?.requires_hosted)
+}
+
+/// The package names this exact committed change selects. The hosted lane runs the suites
+/// of exactly these crates (plus their reverse dependencies, which only widen coverage).
+pub(crate) fn committed_packages(
+    policy: &RunPolicy,
+    root: &Path,
+    base: &str,
+    head: &str,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    Ok(committed_selection(policy, root, base, head)?
+        .packages
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect())
+}
+
+fn committed_selection(policy: &RunPolicy, root: &Path, base: &str, head: &str) -> Result<Selected, String> {
     let diff = output(git(
         policy,
         root,
@@ -168,7 +187,7 @@ pub(crate) fn committed_requires_hosted(
     if !diff.status.success() {
         return Err("committed change inventory failed".into());
     }
-    Ok(select_changed_paths(root, &diff.stdout)?.requires_hosted)
+    select_changed_paths(root, &diff.stdout)
 }
 
 #[cfg(test)]
