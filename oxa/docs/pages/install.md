@@ -10,8 +10,9 @@ The workflow artifact is named `oxa-portable-linux-x86_64`. It holds `oxa` and `
 sha256sum -c oxa.sha256
 ```
 
-GitHub artifact downloads do not preserve executable permissions, so restore the
-permission before putting `oxa` anywhere on `PATH` or running it by its full path:
+GitHub artifact downloads do not preserve executable permissions. After each fresh
+download, restore the permission before putting `oxa` anywhere on `PATH` or running
+it by its full path:
 
 ```console
 $ chmod +x oxa
