@@ -288,6 +288,7 @@ impl Runner<'_> {
                             source: self.repo.to_path_buf(),
                             operation: SupervisorOperation::ChangedPaths {
                                 base: point.base.clone(),
+                                deadline_at_ms: state.deadline_at_ms,
                             },
                         },
                         self.policy,

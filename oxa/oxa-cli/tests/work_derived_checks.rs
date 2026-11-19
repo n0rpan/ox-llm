@@ -148,6 +148,47 @@ fn the_supervisor_uses_one_deadline_for_every_check_in_a_round() {
 }
 
 #[test]
+fn change_inventory_uses_the_round_deadline() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let source = env.work().join("project");
+    let base = git(&env, &source, &["rev-parse", "HEAD"]);
+    fs::write(source.join("notes.txt"), "updated notes").unwrap();
+    let inventory = |deadline| {
+        let request = json!({
+            "source": &source,
+            "operation": {
+                "kind": "changed_paths",
+                "base": &base,
+                "deadline_at_ms": deadline,
+            },
+        });
+        Command::new(env!("CARGO_BIN_EXE_oxa"))
+            .args(["work", "--supervise", &request.to_string()])
+            .current_dir(&source)
+            .env_clear()
+            .envs(env.envs("http://127.0.0.1:1"))
+            .output()
+            .unwrap()
+    };
+
+    let live = inventory(oxa_proto::time::now_ms() + 60_000);
+    assert!(live.status.success(), "{}", String::from_utf8_lossy(&live.stderr));
+    assert!(live
+        .stdout
+        .split(|byte| *byte == 0)
+        .any(|path| path == b"notes.txt"));
+
+    let expired = inventory(0);
+    assert!(
+        !expired.status.success(),
+        "the inventory ran after the round expired"
+    );
+    assert!(expired.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&expired.stderr).contains("change inventory deadline elapsed"));
+}
+
+#[test]
 fn local_compile_for_the_touched_crate_is_a_precheck_without_hosted_acceptance() {
     let env = TestEnv::new();
     setup_with_files(&env, r#"["true"]"#, &crate_files());

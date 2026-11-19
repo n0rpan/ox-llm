@@ -846,6 +846,7 @@ pub enum SupervisorOperation {
     },
     ChangedPaths {
         base: String,
+        deadline_at_ms: u64,
     },
     Inspect,
     InspectCommitted {

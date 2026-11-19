@@ -85,7 +85,10 @@ pub(crate) fn run(
     b.check().map_err(|e| e.to_string())?;
     let settings = Settings::load(dirs, &source, true);
     let (commands, deadline_at_ms) = match request.operation {
-        SupervisorOperation::ChangedPaths { base } => return changed_paths(&b, &root, &base, out),
+        SupervisorOperation::ChangedPaths {
+            base,
+            deadline_at_ms: _,
+        } => return changed_paths(&b, &root, &base, out),
         SupervisorOperation::Inspect => return inspect(&b, &root),
         SupervisorOperation::InspectCommitted { index } => return inspect_committed(&b, &root, &index),
         SupervisorOperation::Checkout {
