@@ -1647,6 +1647,21 @@ mod tests {
     }
 
     #[test]
+    fn issue_packet_carries_the_issue_text() {
+        // A worker without GitHub access cannot read the issue, so its title and the whole
+        // body, lines included, arrive in the packet the runner built.
+        let prompt = issue_prompt(
+            42,
+            &json!({"title": "Worker packets", "body": "Carry the facts.\nSecond line.", "state": "OPEN"}),
+        )
+        .unwrap();
+        assert!(
+            prompt.starts_with("Implement issue #42: Worker packets\n\nCarry the facts.\nSecond line.\n\n"),
+            "{prompt}"
+        );
+    }
+
+    #[test]
     fn issue_packet_carries_the_state_the_runner_fetched() {
         // The worker cannot open the issue from inside the sandbox, so a closed or open
         // state has to arrive with the text the runner already fetched.
