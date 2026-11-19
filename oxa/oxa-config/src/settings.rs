@@ -143,7 +143,19 @@ impl Settings {
 
     fn read_files(files: SettingsFiles, keep_project: Option<&Value>) -> Settings {
         let mut diagnostics = Vec::new();
-        let user = read_layer(&files.user, &mut diagnostics);
+        let mut user = read_layer(&files.user, &mut diagnostics);
+        // A present user file that cannot be used must not drop the owner's security
+        // settings (#1449): keep the most restrictive reading of them and say so.
+        if !diagnostics.is_empty() {
+            user = fail_safe_user_layer();
+            diagnostics.push(warn(
+                &files.user.display().to_string(),
+                "user settings are unusable, so oxa keeps the most restrictive security settings: \
+                 offline on, bash network off, new projects not trusted. Other settings use their \
+                 defaults. Fix or restore this file (or run `oxa config` to review it) and restart \
+                 to recover.",
+            ));
+        }
         let (project, project_src) = match (files.project.as_deref(), keep_project) {
             (Some(path), Some(layer)) => (layer.clone(), path.display().to_string()),
             (Some(path), None) => (read_layer(path, &mut diagnostics), path.display().to_string()),
@@ -777,6 +789,16 @@ fn queue_mode(value: Option<&str>) -> QueueMode {
         Some("all") => QueueMode::All,
         _ => QueueMode::OneAtATime,
     }
+}
+
+/// The user layer used when the user's settings file exists but cannot be read, parsed or is
+/// not an object: every network and trust setting at its most restrictive value. Other
+/// settings are absent, so they take their defaults.
+fn fail_safe_user_layer() -> Value {
+    serde_json::json!({
+        "oxa": {"offline": true, "sandbox": {"net": "off"}, "engine": {"allowRemote": false}},
+        "defaultProjectTrust": "never"
+    })
 }
 
 /// Read one settings file. A missing file is an empty object; an unreadable or unparsable file
