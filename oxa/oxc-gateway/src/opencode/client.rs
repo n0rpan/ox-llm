@@ -183,6 +183,7 @@ pub struct Chat<'a> {
     pub payload: &'a Value,
     pub key: &'a Key,
     pub hint: &'a SessionHint,
+    pub rules: &'a crate::model_rules::Rules,
 }
 pub async fn stream<F>(
     client: &Client,
@@ -233,9 +234,10 @@ where
         payload,
         key,
         hint,
+        rules,
     } = chat;
     let endpoint = model.chat_endpoint().map_err(|_| Error::Endpoint)?;
-    let body = serde_json::to_vec(&model.request(payload).map_err(|_| Error::Request)?)
+    let body = serde_json::to_vec(&model.request_with(payload, rules).map_err(|_| Error::Request)?)
         .map_err(|_| Error::Request)?;
     if body.len() > MAX_BODY {
         return Err(Error::TooLarge);

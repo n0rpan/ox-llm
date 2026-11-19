@@ -547,7 +547,7 @@ mod tests {
         assert_eq!(fields_of("oxa.lead.serve").count(), 9);
         assert_eq!(in_group(Group::Display).count(), 30);
         // The merged tree adds this branch's `oxa.sandbox.sockets` to main's 146.
-        assert_eq!(descriptors().len(), 147);
+        assert_eq!(descriptors().len(), 148);
     }
 
     #[test]

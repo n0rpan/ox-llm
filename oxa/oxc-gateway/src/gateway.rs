@@ -669,6 +669,7 @@ impl Gateway {
                 payload: &payload,
                 key: &key,
                 hint: &hint,
+                rules: self.runtime.model_rules(),
             },
             cancel,
             &mut |event| match event {
