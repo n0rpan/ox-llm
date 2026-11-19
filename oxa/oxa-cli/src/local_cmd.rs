@@ -385,6 +385,37 @@ fn absolute_heads(launch: &[String], cwd: &Path) -> Result<Vec<String>, OxaError
     Ok(out)
 }
 
+/// Launch controls the admission report accepts but does not echo (they change nothing it
+/// computes): they are still what the owner asked the server to run with, so they are kept.
+/// `--host`, `--port` and `--alias` are owned by the supervisor and never kept.
+const KEPT_FLAGS: &[&str] = &["--mlock", "--mtp-sampled"];
+const KEPT_WITH_VALUE: &[&str] = &["--mtp-max-ctx", "--ubatch-size", "-ub", "--oxe-weights"];
+
+fn with_kept_controls(mut arguments: Vec<String>, launch: &[String]) -> Vec<String> {
+    let mut kept = Vec::new();
+    let mut it = launch.iter();
+    while let Some(word) = it.next() {
+        if KEPT_FLAGS.contains(&word.as_str()) {
+            kept.push(word.clone());
+        } else if KEPT_WITH_VALUE.contains(&word.as_str()) {
+            kept.push(word.clone());
+            if let Some(value) = it.next() {
+                kept.push(value.clone());
+            }
+        }
+    }
+    let mut it = kept.into_iter().peekable();
+    while let Some(word) = it.next() {
+        let takes_value = KEPT_WITH_VALUE.contains(&word.as_str());
+        let value = if takes_value { it.next() } else { None };
+        if !arguments.contains(&word) {
+            arguments.push(word);
+            arguments.extend(value);
+        }
+    }
+    arguments
+}
+
 fn add(args: &AddArgs, dirs: &Dirs, cwd: &Path, out: &mut dyn Write) -> Result<i32, OxaError> {
     let gguf = std::fs::canonicalize(&args.gguf)
         .ok()
@@ -396,6 +427,7 @@ fn add(args: &AddArgs, dirs: &Dirs, cwd: &Path, out: &mut dyn Write) -> Result<i
     let launch = absolute_heads(&args.launch, cwd)?;
     let report = admission_report(&oxe, args, &launch, &gguf)?;
     let (limits, arguments) = from_report(&report, args.max_output)?;
+    let arguments = with_kept_controls(arguments, &launch);
 
     // USER settings only: the project file is never read or written here. The alias is merged
     // into the `oxa.local` the file holds right now, under the settings write lock, so two
@@ -555,5 +587,35 @@ mod tests {
         });
         assert!(dup.is_err());
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn launch_controls_the_report_omits_are_kept() {
+        let report = words(&["--ctx-size", "4096", "--oxe-cpus", "0-3"]);
+        let launch = words(&[
+            "--mtp-sampled",
+            "--mtp-max-ctx",
+            "16384",
+            "--host",
+            "0.0.0.0",
+            "--oxe-cpus",
+            "0-3",
+        ]);
+        assert_eq!(
+            with_kept_controls(report.clone(), &launch),
+            words(&[
+                "--ctx-size",
+                "4096",
+                "--oxe-cpus",
+                "0-3",
+                "--mtp-sampled",
+                "--mtp-max-ctx",
+                "16384"
+            ])
+        );
+        // a control the report already carries is not repeated
+        let echoed = words(&["--ctx-size", "4096", "--mtp-sampled"]);
+        assert_eq!(with_kept_controls(echoed.clone(), &launch[..1]), echoed);
+        assert_eq!(with_kept_controls(report.clone(), &[]), report);
     }
 }
