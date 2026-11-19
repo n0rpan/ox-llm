@@ -441,7 +441,7 @@ fn earlier_calls(wire: &[oxa_proto::WireMsg], batch: &[ToolCall]) -> Vec<(String
 
 /// What an executed check command is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Check {
+pub(crate) enum Check {
     /// A test runner (`cargo test`, `pytest`, `go test`, `npm test`, `make test`, ...): it
     /// passes only with exit 0, no failure marker and a recognised pass summary.
     Test,
@@ -455,7 +455,7 @@ enum Check {
 /// and wrappers such as `time`, `env`, `timeout 60`); a word inside arguments or quotes never
 /// does, so `grep -rn "cargo test" .`, `rg test_`, `echo pytest` or `ls tests/` are not checks.
 /// A test runner wins over a build in the same command.
-fn executed_check(name: &str, args: &Value) -> Option<Check> {
+pub(crate) fn executed_check(name: &str, args: &Value) -> Option<Check> {
     if name != "bash" {
         return None;
     }

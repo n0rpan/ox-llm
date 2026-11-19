@@ -6,9 +6,13 @@
 //! are untouched: validation and merge do not read descriptors.
 
 mod advanced;
+mod budgets;
+mod compaction;
 mod display;
 mod lead;
+mod models;
 mod safety;
+mod tools;
 
 use std::sync::OnceLock;
 
@@ -327,6 +331,23 @@ impl Descriptor {
         });
         self
     }
+    pub const fn unit(mut self, unit: Unit) -> Self {
+        self.unit = Some(unit);
+        self
+    }
+
+    /// An advised minimum with no maximum: values below it save with a note.
+    pub const fn advise_from(mut self, min: u64, step: u64, note: &'static str) -> Self {
+        self.range = Some(Range {
+            min,
+            max: None,
+            hard: false,
+            step,
+            note,
+        });
+        self
+    }
+
     pub const fn advanced(mut self) -> Self {
         self.advanced = true;
         self
@@ -361,6 +382,10 @@ fn table() -> &'static [Descriptor] {
         .get_or_init(|| {
             [
                 display::ENTRIES,
+                budgets::ENTRIES,
+                tools::ENTRIES,
+                models::ENTRIES,
+                compaction::ENTRIES,
                 lead::ENTRIES,
                 safety::ENTRIES,
                 advanced::ENTRIES,
@@ -388,6 +413,22 @@ pub fn in_group(group: Group) -> impl Iterator<Item = &'static Descriptor> {
 /// The field descriptors below one object key, in display order.
 pub fn fields_of(schema_key: &'static str) -> impl Iterator<Item = &'static Descriptor> {
     table().iter().filter(move |d| is_field_of(d.key, schema_key))
+}
+
+/// Test helper: true when `control` edits a value of schema kind `kind`.
+#[cfg(test)]
+pub(crate) fn control_fits(control: Control, kind: crate::schema::Kind) -> bool {
+    use crate::schema::Kind;
+    match control {
+        Control::Toggle => kind == Kind::Bool,
+        Control::Choice => matches!(kind, Kind::Enum(_)),
+        Control::Number | Control::Decimal => kind == Kind::Number,
+        Control::NumberOr(_) => matches!(kind, Kind::Number | Kind::Any),
+        Control::Model | Control::Text => kind == Kind::String,
+        Control::MultiSelect(_) => kind == Kind::StringList,
+        Control::Map(_) | Control::Raw => kind == Kind::Object,
+        _ => false,
+    }
 }
 
 /// True when `key` is `schema_key` followed by "." and a field path.
@@ -494,14 +535,18 @@ mod tests {
     }
 
     #[test]
-    fn unwired_groups_have_no_entries() {
-        // Display (A2a) and Lead, Safety and Advanced (A2d) have data; the other groups arrive in
-        // A2b and A2c.
-        assert!(descriptor("oxa.bash.defaultTimeout").is_none());
-        assert_eq!(in_group(Group::Tools).count(), 0);
+    fn unwired_groups_stay_empty() {
+        // Display (A2a), Models and compaction (A2b), Budgets and Tools (A2c), and Lead,
+        // Safety and Advanced (A2d) have data.
+        assert!(descriptor("oxa.bash.defaultTimeout").is_some());
+        assert!(descriptor("oxa.maxTurns").is_some());
+        assert!(in_group(Group::Budgets).next().is_some());
+        assert!(in_group(Group::Tools).next().is_some());
+        assert!(in_group(Group::Models).next().is_some());
+        assert!(descriptor("compaction.keepRecentTokens").is_some());
         assert_eq!(fields_of("oxa.lead.serve").count(), 9);
         assert_eq!(in_group(Group::Display).count(), 30);
-        assert_eq!(descriptors().len(), 69);
+        assert_eq!(descriptors().len(), 146);
     }
 
     #[test]

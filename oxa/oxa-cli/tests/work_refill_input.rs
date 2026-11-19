@@ -12,18 +12,35 @@ fn write(env: &TestEnv, name: &str, value: &Value) {
 }
 
 fn fixture(count: u64, linked: bool) -> (TestEnv, Vec<Prepared>) {
+    board_fixture(count, linked, BTreeMap::new())
+}
+
+/// The same harness with changed-file tails: each entry keeps 100 files in the
+/// start page and offers the rest through one bounded continuation.
+fn board_fixture(count: u64, linked: bool, tails: BTreeMap<u64, Vec<Value>>) -> (TestEnv, Vec<Prepared>) {
     let env = TestEnv::new();
     fs::set_permissions(env.tmp(), fs::Permissions::from_mode(0o700)).unwrap();
     let gh = env.write(
         "tmp/gh",
         r#"#!/bin/sh
 [ "$GH_TOKEN" = synthetic ] || exit 93
-printf 'HTTP/2.0 200 OK\r\n\r\n'
+reply=
 case "$*" in
-  *headRefName*) case "$*" in *after:*) cat "$0.second";; *) cat "$0.first";; esac ;;
-  *':pullRequest('*) cat "$0.details" ;;
-  *) cat "$0.list" ;;
+  *'files(first:100,after:'*)
+    case "$*" in
+      *'p100:pullRequest('*) reply="$0.files100" ;;
+      *'p101:pullRequest('*) reply="$0.files101" ;;
+      *) exit 8 ;;
+    esac ;;
+  *headRefName*) case "$*" in *after:*) reply="$0.second";; *) reply="$0.first";; esac ;;
+  *':pullRequest('*) reply="$0.details" ;;
+  *) reply="$0.list" ;;
 esac
+status=200
+[ -f "$reply.status" ] && status=$(cat "$reply.status")
+printf 'HTTP/2.0 %s Synthetic\r\n\r\n' "$status"
+[ "$status" = 200 ] || exit 0
+exec /bin/cat "$reply"
 "#,
     );
     fs::set_permissions(gh, fs::Permissions::from_mode(0o700)).unwrap();
@@ -34,11 +51,30 @@ esac
         "totalCount":count,"nodes":list,"pageInfo":{"hasNextPage":false,"endCursor":"last"}}});
     write(&env, "gh.list", &json!({"data":{"repository":repository}}));
     for n in 100..100 + count {
+        let files = match tails.get(&n) {
+            None => json!({"totalCount":0,"nodes":[],
+                "pageInfo":{"hasNextPage":false,"endCursor":null}}),
+            Some(tail) => {
+                let head: Vec<Value> = (0..100)
+                    .map(|i| json!({"path":format!("src/f{i}.rs"),"deletions":0}))
+                    .collect();
+                let total = (head.len() + tail.len()) as u64;
+                let mut next = json!({"data":{"repository":{}}});
+                next["data"]["repository"][format!("p{n}")] = json!({
+                    "number":n,"headRefOid":format!("head-{n}"),
+                    "files":{"totalCount":total,
+                        "pageInfo":{"hasNextPage":false,"endCursor":null},
+                        "nodes":tail}});
+                write(&env, &format!("gh.files{n}"), &next);
+                json!({"totalCount":total,
+                    "pageInfo":{"hasNextPage":true,"endCursor":"next-100"},"nodes":head})
+            }
+        };
         repository[format!("p{n}")] = json!({"number":n,"headRefOid":format!("head-{n}"),
             "baseRefName":"main","state":"OPEN","body":"","isDraft":false,"reviewDecision":null,
             "mergeable":"MERGEABLE","mergeStateStatus":"CLEAN",
             "baseRef":{"refUpdateRule":null,"rules":{"totalCount":0,"nodes":[]}},
-            "labels":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[]},
+            "labels":{"totalCount":0,"nodes":[]},"files":files,
             "reviewThreads":{"totalCount":0,"nodes":[]},"latestOpinionatedReviews":{"totalCount":0,"nodes":[]},
             "commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}});
     }
@@ -138,4 +174,217 @@ fn fresh_revision_and_global_open_pr_cap_gate_issue_admission() {
     let snapshot = source.snapshot().unwrap();
     assert_eq!(snapshot.pull_requests.len(), 40);
     assert!(!snapshot.issues[0].approved);
+}
+
+fn source_removal_tail() -> Vec<Value> {
+    vec![
+        json!({"path":"docs/release-note.md","deletions":0}),
+        json!({"path":"engine/src/legacy-parser.c","deletions":12}),
+    ]
+}
+
+fn long_source_removal_tail() -> Vec<Value> {
+    let mut tail: Vec<Value> = (0..19)
+        .map(|i| json!({"path":format!("docs/tail-{i}.md"),"deletions":0}))
+        .collect();
+    tail.push(json!({"path":"engine/src/legacy-kernel.hpp","deletions":3}));
+    tail
+}
+
+fn snapshot_of(env: &TestEnv, packets: &[Prepared]) -> Result<oxa_work::board::Snapshot, String> {
+    let gh = env.tmp().join("gh");
+    let path = std::env::var_os("PATH").unwrap();
+    Input::new(&gh, &path, "example/project", "synthetic", packets, true).snapshot()
+}
+
+#[test]
+fn changed_file_continuation_completes_a_two_file_tail() {
+    let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
+    let snapshot = snapshot_of(&env, &packets).unwrap();
+    assert_eq!(snapshot.pull_requests.len(), 2);
+    let short = snapshot.pull_requests.iter().find(|pr| pr.number == 100).unwrap();
+    assert_eq!(short.head, "head-100");
+    assert!(
+        short.removes_source,
+        "the tail page's source deletion is evidence the start page cannot see"
+    );
+    let untouched = snapshot.pull_requests.iter().find(|pr| pr.number == 101).unwrap();
+    assert!(!untouched.removes_source);
+
+    // The completed evidence also admits the Board instead of refusing it.
+    let gh = env.tmp().join("gh");
+    let path = std::env::var_os("PATH").unwrap();
+    let mut source = Input::new(&gh, &path, "example/project", "synthetic", &packets, true);
+    let board = Board::read(
+        &mut source,
+        &Policy {
+            enabled: true,
+            ..Policy::default()
+        },
+        &BTreeMap::new(),
+        10,
+    )
+    .unwrap();
+    let entry = board.entries.iter().find(|row| row.number == 100).unwrap();
+    assert_eq!(
+        entry.action,
+        Action::AddRemoves,
+        "the tail page's source deletion must reach the board action"
+    );
+}
+
+#[test]
+fn changed_file_continuation_completes_a_twenty_file_tail() {
+    let (env, packets) = board_fixture(2, false, BTreeMap::from([(101, long_source_removal_tail())]));
+    let snapshot = snapshot_of(&env, &packets).unwrap();
+    assert_eq!(snapshot.pull_requests.len(), 2);
+    let long = snapshot.pull_requests.iter().find(|pr| pr.number == 101).unwrap();
+    assert_eq!(long.head, "head-101");
+    assert!(
+        long.removes_source,
+        "a source deletion after the first hundred files is still evidence"
+    );
+    assert!(
+        !snapshot
+            .pull_requests
+            .iter()
+            .find(|pr| pr.number == 100)
+            .unwrap()
+            .removes_source
+    );
+}
+
+fn continuation_of(env: &TestEnv, number: u64) -> Value {
+    serde_json::from_slice(&fs::read(env.tmp().join(format!("gh.files{number}"))).unwrap()).unwrap()
+}
+
+#[test]
+fn changed_file_continuation_for_a_stale_head_fails_atomically() {
+    let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
+    let mut next = continuation_of(&env, 100);
+    next["data"]["repository"]["p100"]["headRefOid"] = "changed-head".into();
+    write(&env, "gh.files100", &next);
+    let error = snapshot_of(&env, &packets).unwrap_err();
+    assert!(error.contains("mismatched PR details"), "{error}");
+}
+
+#[test]
+fn changed_file_continuation_with_a_changed_total_fails_atomically() {
+    let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
+    let mut next = continuation_of(&env, 100);
+    next["data"]["repository"]["p100"]["files"]["totalCount"] = json!(101);
+    write(&env, "gh.files100", &next);
+    let error = snapshot_of(&env, &packets).unwrap_err();
+    assert!(error.contains("mismatched PR details"), "{error}");
+}
+
+#[test]
+fn changed_file_continuation_without_full_coverage_degrades_only_that_pr() {
+    let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
+    let mut next = continuation_of(&env, 100);
+    next["data"]["repository"]["p100"]["files"]["nodes"] =
+        json!([{"path":"docs/release-note.md","deletions":0}]);
+    write(&env, "gh.files100", &next);
+    let snapshot = snapshot_of(&env, &packets).unwrap();
+    assert_eq!(
+        snapshot
+            .pull_requests
+            .iter()
+            .map(|pr| pr.number)
+            .collect::<Vec<_>>(),
+        vec![101]
+    );
+    assert_eq!(snapshot.incomplete[0].number, 100);
+    assert!(snapshot.incomplete[0].reason.contains("changed files"));
+}
+
+#[test]
+fn changed_file_continuation_repeating_a_path_degrades_only_that_pr() {
+    let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
+    let mut next = continuation_of(&env, 100);
+    next["data"]["repository"]["p100"]["files"]["nodes"][0] = json!({"path":"src/f0.rs","deletions":4});
+    write(&env, "gh.files100", &next);
+    let snapshot = snapshot_of(&env, &packets).unwrap();
+    assert_eq!(
+        snapshot
+            .pull_requests
+            .iter()
+            .map(|pr| pr.number)
+            .collect::<Vec<_>>(),
+        vec![101]
+    );
+    assert_eq!(snapshot.incomplete[0].number, 100);
+}
+
+#[test]
+fn interrupted_changed_file_continuation_degrades_only_that_pr() {
+    let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
+    fs::write(env.tmp().join("gh.files100.status"), "502").unwrap();
+    let snapshot = snapshot_of(&env, &packets).unwrap();
+    assert_eq!(
+        snapshot
+            .pull_requests
+            .iter()
+            .map(|pr| pr.number)
+            .collect::<Vec<_>>(),
+        vec![101]
+    );
+    assert_eq!(snapshot.incomplete[0].number, 100);
+}
+
+fn details_of(env: &TestEnv) -> Value {
+    serde_json::from_slice(&fs::read(env.tmp().join("gh.details")).unwrap()).unwrap()
+}
+
+fn assert_pr_100_degraded(snapshot: oxa_work::board::Snapshot) {
+    assert_eq!(
+        snapshot
+            .pull_requests
+            .iter()
+            .map(|pr| pr.number)
+            .collect::<Vec<_>>(),
+        vec![101]
+    );
+    assert_eq!(snapshot.incomplete[0].number, 100);
+}
+
+#[test]
+fn changed_file_continuation_degrades_a_duplicate_on_the_first_page() {
+    let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
+    let mut details = details_of(&env);
+    details["data"]["repository"]["p100"]["files"]["nodes"][1] = json!({"path":"src/f0.rs","deletions":0});
+    write(&env, "gh.details", &details);
+    assert_pr_100_degraded(snapshot_of(&env, &packets).unwrap());
+}
+
+#[test]
+fn changed_file_continuation_degrades_a_first_page_that_claims_progress() {
+    let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
+    let mut details = details_of(&env);
+    details["data"]["repository"]["p100"]["files"]["nodes"] = json!([]);
+    write(&env, "gh.details", &details);
+    assert_pr_100_degraded(snapshot_of(&env, &packets).unwrap());
+}
+
+#[test]
+fn changed_file_continuation_degrades_an_empty_page_that_claims_more() {
+    let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
+    let mut next = continuation_of(&env, 100);
+    next["data"]["repository"]["p100"]["files"]["nodes"] = json!([]);
+    next["data"]["repository"]["p100"]["files"]["pageInfo"] =
+        json!({"hasNextPage":true,"endCursor":"next-200"});
+    write(&env, "gh.files100", &next);
+    assert_pr_100_degraded(snapshot_of(&env, &packets).unwrap());
+}
+
+#[test]
+fn changed_file_continuation_degrades_an_oversized_page() {
+    let (env, packets) = board_fixture(2, false, BTreeMap::from([(100, source_removal_tail())]));
+    let mut next = continuation_of(&env, 100);
+    let oversized: Vec<Value> = (0..101)
+        .map(|i| json!({"path":format!("docs/extra-{i}.md"),"deletions":0}))
+        .collect();
+    next["data"]["repository"]["p100"]["files"]["nodes"] = json!(oversized);
+    write(&env, "gh.files100", &next);
+    assert_pr_100_degraded(snapshot_of(&env, &packets).unwrap());
 }

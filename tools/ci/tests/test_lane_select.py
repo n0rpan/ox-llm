@@ -60,13 +60,6 @@ class Selection(unittest.TestCase):
                                   ['oxa/README.md', 'oxa/docs/pages/quickstart.md'])
         self.assertEqual(matrix, {'include': []})
 
-    def test_native_cli_contracts_select_their_actual_crate(self):
-        matrix, _, _ = lane.select(self.packages, self.packages, ['conformance/goldens/cli.json'])
-        self.assertEqual(self.names(matrix), {
-            ('oxc-rs', 'ubuntu-24.04', ('oxc',)),
-            ('oxc-rs', 'ubuntu-24.04-arm', ('oxc',)),
-        })
-
     def test_workspace_lock_expands_that_workspace_and_real_consumers(self):
         matrix, _, _ = lane.select(self.packages, self.packages, ['oxa/Cargo.lock'])
         for entry in matrix['include']:

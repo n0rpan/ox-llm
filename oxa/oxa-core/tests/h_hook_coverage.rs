@@ -110,6 +110,7 @@ impl Hooks for Recorder {
         self.seen.lock().unwrap().push((p, payload.clone()));
         match p {
             HookPoint::UserBash => HookReply::ReplaceResult(ToolOutput {
+                images: Vec::new(),
                 text: "replaced".into(),
                 is_error: false,
                 ui: json!({"exit": 0}),
@@ -222,6 +223,7 @@ impl Tool for TestTool {
     fn run(&self, _args: &Value, _cx: &ToolCtx, live: &mut dyn FnMut(&str)) -> ToolOutput {
         live("half");
         ToolOutput {
+            images: Vec::new(),
             text: "done".into(),
             is_error: false,
             ui: Value::Null,
