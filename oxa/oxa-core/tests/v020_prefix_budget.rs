@@ -151,7 +151,8 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// 2026-11-16: issue #519 added `kill` to the `bash` schema and documented per-job cancellation
 /// and explicit background timeouts; both default tool prefixes intentionally changed.
 /// 2026-11-19: S12 documents explicit zero in the bash timeout schema.
-const DEFAULT_STABLE_SHA: &str = "cbf4707823e59a8973e33b0a63bb3c34c0cfb9b4a04dc43ff60d00fa9c09a92f";
+/// 2026-11-19: R2 rewrote the built-in `ox-llm` skill description (no controller).
+const DEFAULT_STABLE_SHA: &str = "f0c43ac3c282929ee61851e75cf1d041c876fa3a6e9fb847fd5d515e8beaad72";
 const DEFAULT_STABLE_SHA_SUBAGENT: &str = "dc4c0c1240eb632f636b5f24620469d34a00e23be2ab3f5e1a799aef739f59ba";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
