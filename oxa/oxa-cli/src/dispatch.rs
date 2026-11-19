@@ -657,6 +657,16 @@ fn open_named(
     Ok(session)
 }
 
+/// Open a session selected from the interactive UI and install the per-session services that
+/// must survive a `/new`, `/resume`, or fork switch (including the recovery open after a switch
+/// fails). The interactive worker closes the old session before it invokes this function.
+fn open_interactive_session(base: &Built, deps: Deps, how: Open) -> Result<Session, OxaError> {
+    let mut session = Session::open(deps, how)?;
+    // No broker (a bind failure) means no confirmation is possible, matching the initial open.
+    let _ = session.enable_owner_confirm(base.yolo.clone());
+    Ok(session)
+}
+
 /// The parts of a session that do not depend on the open mode. Cloned into the interactive
 /// `reopen` closure, which builds sessions for `/new`, `/resume`, fork and import.
 #[derive(Clone)]
@@ -2090,10 +2100,7 @@ fn run_tui(
             Reopen::Resume(sref) => Open::Resume(sref),
             Reopen::Fork(sref) => Open::Fork(sref),
         };
-        let mut session = Session::open(deps, how)?;
-        // Replacement interactive sessions need the same per-session confirmation broker as
-        // the initially opened session.
-        let _ = session.enable_owner_confirm(base.yolo.clone());
+        let mut session = open_interactive_session(&base, deps, how)?;
         if let Some(binding) = &owner {
             binding.recheck()?;
             if &session.inner().sref != binding.session_ref() {
@@ -3022,6 +3029,25 @@ mod session_scratch_tests {
     use super::*;
     use oxa_proto::ExecSpec;
     use oxa_sandbox::{Layout, NetSandbox};
+    use std::os::unix::fs::FileTypeExt;
+
+    fn socket_count(dir: &Path) -> usize {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .map(|path| {
+                if path.symlink_metadata().is_ok_and(|m| m.file_type().is_socket()) {
+                    1
+                } else if path.is_dir() {
+                    socket_count(&path)
+                } else {
+                    0
+                }
+            })
+            .sum()
+    }
 
     /// The host directory a session's sandbox mounts at `/tmp` (`None` = a fresh tmpfs).
     fn tmp_dir(d: &Deps, cwd: &Path) -> Option<PathBuf> {
@@ -3132,6 +3158,57 @@ mod session_scratch_tests {
         assert!(b.is_dir(), "ending one session removed another's scratch");
         drop(second);
         assert!(!b.exists(), "the second session's scratch outlived it");
+    }
+
+    /// #1819: after the worker closes an interactive session, both the requested replacement
+    /// and the fallback open use this path and must export a fresh owner-confirmation broker.
+    #[test]
+    fn interactive_reopens_install_a_fresh_owner_confirmation_broker() {
+        let env = oxa_fake::TestEnv::new();
+        let base: Arc<dyn Sandbox> = Arc::new(NoSandbox);
+        let yolo = oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard);
+        let built = Built {
+            lead: false,
+            status: None,
+            result_facts: Arc::new(crate::result_facts::ResultFacts::default()),
+            output_schema: None,
+            goal: None,
+            engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
+            cloud_diagnostics: oxc_gateway::diagnostics::Diagnostics::default(),
+            store: Arc::new(MemStore::new()),
+            sandbox: base.clone(),
+            settings: Settings::default(),
+            dirs: Dirs::under(env.root()),
+            cwd: env.work(),
+            resources: Resources::default(),
+            theme_paths: Vec::new(),
+            selection: ToolSelection::default(),
+            model: None,
+            thinking: None,
+            mode: None,
+            supervised_child: false,
+            ask_owner_present: true,
+            hook_sets: HookSets::default(),
+            bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
+                base,
+                yolo.clone(),
+                "",
+                env.home(),
+                false,
+            )),
+            yolo,
+            danger: Arc::new(oxa_perm::DangerRules::builtin()),
+        };
+
+        let first = open_interactive_session(&built, built.deps(None), Open::New).unwrap();
+        assert_eq!(socket_count(&built.dirs.tmp_dir), 1);
+        drop(first);
+        assert_eq!(socket_count(&built.dirs.tmp_dir), 0);
+
+        // The worker calls the same closure a second time when the requested switch fails.
+        let recovered = open_interactive_session(&built, built.deps(None), Open::New).unwrap();
+        assert_eq!(socket_count(&built.dirs.tmp_dir), 1);
+        drop(recovered);
     }
 
     /// #1512 S7: an edit list in `oxa.approval.dangerous` edits the built-in rules. Adding a
