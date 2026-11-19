@@ -30,7 +30,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -103,11 +103,11 @@ pub struct ParentScope {
 pub struct WorkerCore {
     oxa_bin: PathBuf,
     agent_dir: PathBuf,
-    max: usize,
+    max: AtomicUsize,
     sessions_dir: PathBuf,
     parent_env: Vec<(String, String)>,
     parent_scope: ParentScope,
-    yolo: YoloSwitch,
+    yolo: Mutex<YoloSwitch>,
     resume_on_start: bool,
     /// The owner Lead session: resume waits for [`WorkerHooks::resume_after_owner_check`].
     hold_resume: AtomicBool,
@@ -333,11 +333,11 @@ impl WorkerCore {
         WorkerCore {
             oxa_bin: cfg.oxa_bin,
             agent_dir: cfg.agent_dir,
-            max: cfg.max,
+            max: AtomicUsize::new(cfg.max),
             sessions_dir: cfg.sessions_dir,
             parent_env: cfg.parent_env,
             parent_scope: cfg.parent_scope,
-            yolo: cfg.yolo,
+            yolo: Mutex::new(cfg.yolo),
             resume_on_start: cfg.resume_on_start,
             hold_resume: AtomicBool::new(false),
             persistent: AtomicBool::new(false),
@@ -438,10 +438,11 @@ impl WorkerCore {
             ));
         }
         let live = records.iter().filter(|r| is_live(r, &self.sessions_dir)).count();
-        if live >= self.max {
+        let max = self.max.load(Ordering::SeqCst);
+        if live >= max {
             return ToolOutput::error(format!(
                 "worker: {live} live workers already; the limit is {} (oxa.workers.max)",
-                self.max
+                max
             ));
         }
         let branch = format!("agent/{name}");
@@ -692,7 +693,7 @@ impl WorkerCore {
             Ok(records) => records,
             Err(e) => return vec![format!("worker: cannot resume workers: {e}")],
         };
-        let autonomy = self.yolo.level();
+        let autonomy = lock(&self.yolo).level();
         // An unknown table mode is taken as the most restrictive one, never a wider one.
         let table_mode = (*lock(&self.table_mode)).unwrap_or(Mode::Plan);
         let env = child_env(&self.parent_env, oxa_proto::offline());
@@ -704,7 +705,7 @@ impl WorkerCore {
             if !resume::due(rec, &live_state(rec, &self.sessions_dir), alive) {
                 continue;
             }
-            if live >= self.max {
+            if live >= self.max.load(Ordering::SeqCst) {
                 notices.push(format!(
                     "worker {}: not resumed, {live} live workers already (oxa.workers.max)",
                     rec.name
@@ -816,7 +817,9 @@ impl Tool for WorkerTool {
 
     fn run(&self, args: &Value, cx: &ToolCtx, _live: &mut dyn FnMut(&str)) -> ToolOutput {
         match str_arg(args, "action") {
-            Some("start") => self.core.start(args, cx.cwd, cx.mode, self.core.yolo.level()),
+            Some("start") => self
+                .core
+                .start(args, cx.cwd, cx.mode, lock(&self.core.yolo).level()),
             Some("list") => self.core.list(),
             Some("stop") => self.core.stop(args),
             Some("send") => self.core.send(args),
@@ -870,6 +873,15 @@ impl WorkerHooks {
         self.core.persistent.store(true, Ordering::SeqCst);
     }
 
+    /// Apply the current owner's launch ceiling to a supervisor retained from an earlier turn.
+    /// Existing children keep their original mode; every new start or resume uses this ceiling.
+    fn refresh_authority_from(&self, current: &WorkerHooks) {
+        self.core
+            .max
+            .store(current.core.max.load(Ordering::SeqCst), Ordering::SeqCst);
+        *lock(&self.core.yolo) = lock(&current.core.yolo).clone();
+    }
+
     /// Stop every live worker now, whether or not the hook set is kept across turns.
     pub fn stop_all(&self) {
         let _ = self.core.supervisor.stop_all();
@@ -884,6 +896,7 @@ static OWNER_WORKERS: Mutex<Vec<(PathBuf, Arc<WorkerHooks>)>> = Mutex::new(Vec::
 pub fn kept_owner_workers(key: &Path, made: Arc<WorkerHooks>) -> Arc<WorkerHooks> {
     let mut all = lock(&OWNER_WORKERS);
     if let Some((_, hooks)) = all.iter().find(|(k, _)| k == key) {
+        hooks.refresh_authority_from(&made);
         return hooks.clone();
     }
     made.keep_across_turns();
@@ -1268,6 +1281,35 @@ mod tests {
         // Lead shutdown stops the tree.
         stop_owner_workers();
         assert!(!PathBuf::from(format!("/proc/{}", rec.pid)).exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn retained_owner_workers_refresh_the_current_launch_ceiling() {
+        let (root, repo, agent, fake) = fixture("owner-authority");
+        let first = Arc::new(hooks(&fake, &agent));
+        let kept = kept_owner_workers(&agent, first.clone());
+        set_session(&kept, "parent-authority");
+        start_alpha(&kept, &repo);
+
+        let current = Arc::new(hooks(&fake, &agent));
+        current.core.max.store(1, Ordering::SeqCst);
+        *lock(&current.core.yolo) = YoloSwitch::new(Autonomy::Standard);
+        let reused = kept_owner_workers(&agent, current);
+        assert!(Arc::ptr_eq(&reused, &first));
+        assert_eq!(reused.core.max.load(Ordering::SeqCst), 1);
+        assert_eq!(lock(&reused.core.yolo).level(), Autonomy::Standard);
+
+        let out = reused.core.start(
+            &json!({"action": "start", "name": "beta", "goal": "two"}),
+            &repo,
+            Mode::Workspace,
+            Autonomy::Standard,
+        );
+        assert!(out.is_error, "{}", out.text);
+        assert!(out.text.contains("limit is 1"), "{}", out.text);
+        assert!(!worktree_path(&repo, "beta").unwrap().exists());
+        stop_owner_workers();
         let _ = fs::remove_dir_all(&root);
     }
 

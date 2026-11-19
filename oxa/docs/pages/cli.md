@@ -203,8 +203,16 @@ $ oxa memory rm <name>
 | `--max-tokens <N>` | softly limit new prompt + output tokens in a headless run; cached tokens are free |
 | `--stall-timeout <seconds>` | flag a session as stalled after this long without progress; a signal that never cancels the run |
 | `--export <input> [output]` | export a session file to HTML and exit |
+
 | `--tui-mode <mode>` | `fullscreen` (default) or `regular` |
 | `--verbose` | show more start-up information |
+
+The live, owner-authorized Lead service exposes only the `worker` tool. It may create Git
+worktrees and launch, list, steer, or stop child `oxa` processes; workers remain supervised across
+service chat turns. New launches obey the current permission mode and the user-only
+`oxa.workers.enabled` and `oxa.workers.max` settings. The `oxa lead --shadow` preset is read-only,
+and standalone one-shot `oxa lead chat <message>` exposes no tools because its process cannot keep
+a background worker alive for a later turn.
 
 ### Sessions
 

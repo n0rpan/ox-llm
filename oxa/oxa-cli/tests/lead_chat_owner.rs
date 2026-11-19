@@ -1,8 +1,19 @@
 //! Real CLI controls for free-text chat through the protected owner Session.
-use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
+use oxa_fake::{FakeOpts, FakeServer, Recorded, ScriptTurn, TestEnv};
 use oxa_session::{FsStore, SessionStore};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::process::{Command, Output};
+
+fn tool_names(request: &Recorded) -> Vec<String> {
+    serde_json::from_str::<serde_json::Value>(&request.tools_json)
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool.pointer("/function/name").and_then(|name| name.as_str()))
+        .map(str::to_owned)
+        .collect()
+}
 
 fn run(test: &TestEnv, server: &FakeServer, words: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_oxa"))
@@ -138,8 +149,10 @@ fn dedicated_lead_session_keeps_its_own_history_across_cli_turns() {
     assert_eq!(requests.len(), 3);
     for request in &requests[1..] {
         assert!(request.max_tokens <= 4096);
-        // M1: the live owner Lead session declares the worker tool and nothing else.
-        assert!(request.tools_json.contains("\"worker\"") && !request.tools_json.contains("\"bash\""));
+        assert!(
+            tool_names(request).is_empty(),
+            "one-shot chat must not offer background work"
+        );
         assert!(request.messages.iter().all(|message| {
             !message
                 .content
@@ -255,8 +268,10 @@ fn one_shot_lead_message_shares_the_bounded_owner_conversation_path() {
     assert_eq!(requests.len(), 2);
     for request in &requests {
         assert!(request.max_tokens <= 4096);
-        // M1: the live owner Lead session declares the worker tool and nothing else.
-        assert!(request.tools_json.contains("\"worker\"") && !request.tools_json.contains("\"bash\""));
+        assert!(
+            tool_names(request).is_empty(),
+            "one-shot chat must not offer background work"
+        );
     }
     assert!(requests[0]
         .messages
@@ -549,13 +564,9 @@ fn normal_lead_tui_and_direct_print_use_one_dedicated_session() {
         .content
         .as_deref()
         .is_some_and(|text| text.contains("Terminal follow-up."))));
-    // M1: the live owner Lead session declares the worker tool and nothing else.
-    assert!(
-        requests
-            .iter()
-            .all(|request| request.tools_json.contains("\"worker\"")
-                && !request.tools_json.contains("\"bash\""))
-    );
+    assert!(tool_names(&requests[0]).is_empty());
+    assert_eq!(tool_names(&requests[1]), ["worker"]);
+    assert!(tool_names(&requests[2]).is_empty());
     let sessions = FsStore::new(test.agent_dir().join("sessions")).list(None);
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].sref.id, id.trim());

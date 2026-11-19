@@ -290,11 +290,12 @@ impl OwnerChat {
         })?;
         match submission {
             OwnerSubmission::Message(message) => {
-                let reply =
-                    crate::lead_chat::converse_bound(&message, &self.binding, env).map_err(|error| {
+                let reply = crate::lead_chat::converse_bound(&message, &self.binding, env, true).map_err(
+                    |error| {
                         self.journal.log(conversation_refusal(&error));
                         "503 Service Unavailable"
-                    })?;
+                    },
+                )?;
                 self.binding.recheck().map_err(|_| {
                     self.journal.log(RefusalFact {
                         status: 503,
