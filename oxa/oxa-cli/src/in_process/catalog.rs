@@ -127,6 +127,10 @@ pub(crate) fn with_keyed_defaults<'a>(user: &'a Settings, dirs: &Dirs) -> Cow<'a
     if oxa_proto::offline() || explicit.is_some_and(|value| value != &Value::Bool(true)) {
         return Cow::Borrowed(user);
     }
+    // An owner who switched Go on explicitly chose a Go-only gateway; keys do not widen it.
+    if explicit.is_none() && user.get(super::GO_SETTING) == Some(&Value::Bool(true)) {
+        return Cow::Borrowed(user);
+    }
     let cloud = user.get("oxa.cloud");
     if cloud.is_some_and(|value| !value.is_object() && !value.is_null()) {
         return Cow::Borrowed(user);
