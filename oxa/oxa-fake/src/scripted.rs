@@ -266,6 +266,7 @@ impl Engine for ScriptedEngine {
                 completion: 0,
                 cached: if self.omit_cached { 0 } else { cached as u32 },
                 cached_missing: self.omit_cached,
+                unreported: false,
             };
             rec.usage = Some(usage);
             g.seen.push(rec);
@@ -273,6 +274,7 @@ impl Engine for ScriptedEngine {
             g.cache.push((session, prompt_bytes.clone()));
             return Ok(AssistantTurn {
                 msg: WireMsg {
+                    images: Vec::new(),
                     role: oxa_proto::Role::Assistant,
                     content: None,
                     reasoning: None,
@@ -419,6 +421,7 @@ impl Engine for ScriptedEngine {
             completion,
             cached: if self.omit_cached { 0 } else { cached as u32 },
             cached_missing: self.omit_cached,
+            unreported: false,
         };
         rec.reply = Some(msg.clone());
         rec.usage = Some(usage);

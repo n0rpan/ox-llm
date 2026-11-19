@@ -106,7 +106,7 @@ fn task_lock_requires_a_regular_owner_file() {
 fn dirty_success_is_saved_and_records_the_actual_head_and_tree() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let record = run(&env, vec![write_turn(), ScriptTurn::text("done")]);
     assert_eq!(record["outcome"], "done", "{record}");
     assert_eq!(record["step"], "finished");
@@ -167,7 +167,7 @@ fn task_usage_retains_the_initial_worker_and_repair_after_reopening() {
 #[test]
 fn a_legacy_resume_keeps_task_usage_unknown_after_a_measured_worker() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let first = run(&env, vec![ScriptTurn::text("initial")]);
 
     let mut legacy = load(&env);
@@ -191,7 +191,7 @@ fn a_legacy_resume_keeps_task_usage_unknown_after_a_measured_worker() {
 #[test]
 fn finished_success_is_cached_and_explicit_rerun_keeps_revisions_monotonic() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let first = run(&env, vec![ScriptTurn::text("done")]);
     let (again, requests) = run_observed(&env, vec![], &["work", "../tasks.json"], None);
     assert_eq!(first, again);
@@ -211,7 +211,7 @@ fn finished_success_is_cached_and_explicit_rerun_keeps_revisions_monotonic() {
 #[test]
 fn restart_at_saving_preserves_the_verdict_and_does_not_replay_the_worker() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let first = run(&env, vec![ScriptTurn::text("done")]);
     fs::write(tree(&first).join("recovered.txt"), "recovered").unwrap();
     let mut state = load(&env);
@@ -259,7 +259,7 @@ fn restart_at_acceptance_uses_the_durable_base_and_commands() {
 #[test]
 fn a_deleted_base_cannot_strand_saving_or_a_cached_success() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let first = run(&env, vec![ScriptTurn::text("done")]);
     git(&env, &project(&env), &["checkout", "--detach"]);
     git(&env, &project(&env), &["branch", "-D", "main"]);
@@ -295,11 +295,13 @@ fn a_deleted_base_cannot_strand_saving_or_a_cached_success() {
 fn failed_commit_hook_preserves_files_and_blocks() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let hook = env.write("work/project/.git/hooks/pre-commit", "#!/bin/sh\nexit 1\n");
     fs::set_permissions(hook, fs::Permissions::from_mode(0o755)).unwrap();
     let record = run(&env, vec![write_turn(), ScriptTurn::text("done")]);
     assert_eq!(record["outcome"], "blocked", "{record}");
+    assert_eq!(record["acceptance_outcome"], "done", "{record}");
+    assert_eq!(record["checks"][0]["status"], "passed", "{record}");
     assert_eq!(
         fs::read_to_string(tree(&record).join("answer.txt")).unwrap(),
         "retained"
@@ -311,7 +313,7 @@ fn failed_commit_hook_preserves_files_and_blocks() {
 fn saving_hooks_run_inside_the_real_sandbox() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let hook = env.write(
         "work/project/.git/hooks/pre-commit",
         r#"#!/bin/sh
@@ -340,7 +342,7 @@ printf ran > "$(git rev-parse --git-path save-hook-ran)"
 fn a_parent_crash_during_saving_keeps_the_task_locked_until_the_commit_finishes() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     env.write(
         "work/project/.git/info/exclude",
         "/.save-hook-started\n/.release-save-hook\n",
@@ -393,7 +395,7 @@ fn a_parent_crash_during_saving_keeps_the_task_locked_until_the_commit_finishes(
 #[test]
 fn a_parent_crash_retains_session_and_child_lock_then_resumes_the_same_session() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let server = FakeServer::start(
         vec![ScriptTurn::text("first")],
         FakeOpts {
@@ -913,20 +915,21 @@ fn acceptance_deadline_case() {
         1,
         "expired task budget refuses repair admission: {record}"
     );
-    assert_eq!(record["outcome"], "interrupted", "{record}");
-    assert_eq!(record["interruption"], "deadline");
+    assert_eq!(record["outcome"], "unverified", "{record}");
     assert_eq!(
         record["worker"]["outcome"], "done",
-        "worker success remains distinct from task interruption"
+        "worker success remains distinct from an unverified acceptance round"
     );
-    assert_eq!(git(&env, tree(&record), &["show", "HEAD:failure.txt"]), "failed");
-    assert_eq!(
-        git(&env, tree(&record), &["show", "HEAD:acceptance-started"]),
-        "started"
-    );
+    let checks = record["checks"].as_array().expect("acceptance evidence");
+    assert_eq!(checks.len(), 1, "{record}");
+    assert_eq!(checks[0]["status"], "not_run", "{record}");
+    assert_eq!(checks[0]["timed_out"], true, "{record}");
+    assert!(checks[0]["exit"].is_null(), "{record}");
+    assert!(!tree(&record).join("acceptance-started").exists(), "{record}");
+    assert!(!tree(&record).join("failure.txt").exists(), "{record}");
     let state = load(&env);
     assert_eq!(state["task"]["max_time"], 2);
-    assert!(record["checkpoint_at_ms"].as_u64().unwrap() >= state["deadline_at_ms"].as_u64().unwrap());
+    assert!(oxa_proto::time::now_ms() >= state["deadline_at_ms"].as_u64().unwrap());
 }
 
 #[test]

@@ -8,12 +8,14 @@
 //! kill: true}`) and [`JobRegistry::kill_all`] cancels every
 //! running job, which makes the sandbox's run loop kill the whole process group.
 //!
-//! Limits: at most [`MAX_JOBS`] jobs run at once (a further start is refused); a
+//! Limits: at most [`MAX_JOBS`] jobs run at once by default (`oxa.bash.maxJobs` sets it per
+//! registry, see [`JobRegistry::with_max_jobs`]; a further start is refused); a
 //! finished job keeps at most [`BUFFER_CAP`] bytes of output (a ring buffer), and only the
 //! last [`MAX_FINISHED`] finished jobs stay readable.
 
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, Sandbox};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -23,8 +25,8 @@ const WAIT_TICK: Duration = Duration::from_millis(10);
 /// How long [`JobRegistry::kill`] waits for a cancelled job to settle.
 const KILL_SETTLE: Duration = Duration::from_secs(5);
 
-/// How many background jobs may run at once.
-pub const MAX_JOBS: usize = 4;
+/// The default for how many background jobs may run at once (`oxa.bash.maxJobs`).
+pub const MAX_JOBS: usize = 16;
 /// How many finished jobs stay readable; spawning a job forgets the oldest ones beyond this.
 pub const MAX_FINISHED: usize = 16;
 /// The ring-buffer cap of a job's combined output, in bytes.
@@ -75,6 +77,18 @@ struct Job {
     status: Arc<Mutex<JobStatus>>,
     /// When the job was started, for the age a listing shows.
     started: Instant,
+    /// The sandbox ran the command with the user's own rights (no OS sandbox).
+    unsandboxed: Arc<AtomicBool>,
+}
+
+/// A finished job taken out of the registry by [`JobRegistry::take_finished`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobDone {
+    pub status: JobStatus,
+    /// All the output the job wrote (a job started with `keep_all`), else its last
+    /// [`BUFFER_CAP`] bytes.
+    pub output: Vec<u8>,
+    pub unsandboxed: bool,
 }
 
 /// A snapshot of a job for a read.
@@ -122,6 +136,8 @@ pub struct JobRegistry {
     state: Mutex<State>,
     /// The sandbox every job runs under, set once by the session that owns the registry.
     sandbox: Mutex<Option<Arc<dyn Sandbox>>>,
+    /// How many jobs may run at once ([`MAX_JOBS`] unless the owner set `oxa.bash.maxJobs`).
+    max_jobs: usize,
 }
 
 impl Default for JobRegistry {
@@ -129,6 +145,7 @@ impl Default for JobRegistry {
         JobRegistry {
             state: Mutex::new(State::default()),
             sandbox: Mutex::new(None),
+            max_jobs: MAX_JOBS,
         }
     }
 }
@@ -142,6 +159,14 @@ impl std::fmt::Debug for JobRegistry {
 impl JobRegistry {
     pub fn new() -> JobRegistry {
         JobRegistry::default()
+    }
+
+    /// A registry that runs at most `max` jobs at once (`oxa.bash.maxJobs`; at least 1).
+    pub fn with_max_jobs(max: usize) -> JobRegistry {
+        JobRegistry {
+            max_jobs: max.max(1),
+            ..JobRegistry::default()
+        }
     }
 
     /// The sandbox every job runs under. Set once by the session that owns the registry
@@ -161,8 +186,9 @@ impl JobRegistry {
             .count()
     }
 
-    /// Start `spec` detached and return its id. `Err` when [`MAX_JOBS`] jobs are already
-    /// running, or when no sandbox has been set.
+    /// Start `spec` detached and return its id. `Err` when the registry's limit of jobs is
+    /// already running (the refusal names the oldest one, so the model can stop it), or when no
+    /// sandbox has been set.
     pub fn spawn(&self, spec: ExecSpec) -> Result<String, String> {
         let sandbox = self
             .sandbox
@@ -170,16 +196,35 @@ impl JobRegistry {
             .unwrap()
             .clone()
             .ok_or_else(|| "background jobs are unavailable: no sandbox".to_string())?;
+        self.spawn_on(sandbox, spec, false)
+    }
+
+    /// Like [`JobRegistry::spawn`], on `sandbox`. With `keep_all` the job keeps every byte of
+    /// its output (not only the last [`BUFFER_CAP`]): a foreground command that may move to the
+    /// background keeps the whole result it had before, and [`JobRegistry::take_finished`]
+    /// hands it over and forgets the job.
+    pub fn spawn_on(
+        &self,
+        sandbox: Arc<dyn Sandbox>,
+        spec: ExecSpec,
+        keep_all: bool,
+    ) -> Result<String, String> {
         let mut state = self.state.lock().unwrap();
-        if state
+        let running: Vec<String> = state
             .jobs
-            .values()
-            .filter(|j| *j.status.lock().unwrap() == JobStatus::Running)
-            .count()
-            >= MAX_JOBS
-        {
+            .iter()
+            .filter(|(_, j)| *j.status.lock().unwrap() == JobStatus::Running)
+            .map(|(id, _)| id.clone())
+            .collect();
+        if running.len() >= self.max_jobs {
+            let oldest = running
+                .iter()
+                .min_by_key(|id| job_number(id))
+                .cloned()
+                .unwrap_or_default();
             return Err(format!(
-                "At most {MAX_JOBS} background jobs can run at once; wait for one to finish"
+                "At most {} background jobs can run at once. Stop one with bash {{\"job\": \"{oldest}\", \"kill\": true}} or wait for it to finish. The limit is oxa.bash.maxJobs.",
+                self.max_jobs
             ));
         }
         // Forget the oldest finished jobs (ids grow with start order), so a long session does
@@ -202,6 +247,8 @@ impl JobRegistry {
         let cancel = CancelToken::new();
         let output = Arc::new(Mutex::new(Out::default()));
         let status = Arc::new(Mutex::new(JobStatus::Running));
+        let unsandboxed = Arc::new(AtomicBool::new(false));
+        let unsandboxed_job = unsandboxed.clone();
         state.jobs.insert(
             id.clone(),
             Job {
@@ -209,6 +256,7 @@ impl JobRegistry {
                 output: output.clone(),
                 status: status.clone(),
                 started: Instant::now(),
+                unsandboxed,
             },
         );
         drop(state);
@@ -218,12 +266,13 @@ impl JobRegistry {
                 let mut out = output.lock().unwrap();
                 out.total += chunk.len() as u64;
                 out.buf.extend_from_slice(chunk);
-                if out.buf.len() > BUFFER_CAP {
+                if !keep_all && out.buf.len() > BUFFER_CAP {
                     let keep = out.buf.len() - BUFFER_CAP;
                     out.buf.drain(..keep);
                 }
             };
             let res: ExecResult = sandbox.run_streaming(&spec, &cancel, &mut sink);
+            unsandboxed_job.store(res.unsandboxed, Ordering::SeqCst);
             let final_status = match res.exit {
                 Some(code) => JobStatus::Exited(code),
                 None => JobStatus::Killed,
@@ -248,6 +297,25 @@ impl JobRegistry {
             output: text,
             total: out.total,
         })
+    }
+
+    /// Take a finished job out of the registry: its status, all buffered output and whether it
+    /// ran unsandboxed. `Ok(None)` while the job still runs (it stays); `Err` for an unknown id.
+    pub fn take_finished(&self, id: &str) -> Result<Option<JobDone>, String> {
+        let mut state = self.state.lock().unwrap();
+        let job = state.jobs.get(id).ok_or_else(|| format!("Unknown job: {id}"))?;
+        let status = *job.status.lock().unwrap();
+        if status == JobStatus::Running {
+            return Ok(None);
+        }
+        let output = std::mem::take(&mut job.output.lock().unwrap().buf);
+        let unsandboxed = job.unsandboxed.load(Ordering::SeqCst);
+        state.jobs.remove(id);
+        Ok(Some(JobDone {
+            status,
+            output,
+            unsandboxed,
+        }))
     }
 
     /// #150 (2): block for up to `max` until the job exits, prints output it has not yet shown
@@ -409,6 +477,7 @@ mod tests {
                 output: b"started\n".to_vec(),
                 exit: None,
                 timed_out: false,
+                unsandboxed: false,
             }
         }
     }
@@ -473,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn fifth_job_is_refused() {
+    fn job_past_the_limit_is_refused() {
         let reg = JobRegistry::new();
         let sb = Arc::new(Blocking {
             seen: Mutex::new(None),
@@ -484,8 +553,31 @@ mod tests {
         }
         assert_eq!(reg.running(), MAX_JOBS);
         let err = reg.spawn(spec()).unwrap_err();
-        assert!(err.contains("At most 4 background jobs"), "{err}");
+        assert!(
+            err.contains(&format!("At most {MAX_JOBS} background jobs")),
+            "{err}"
+        );
+        assert!(err.contains("\"job\": \"job-1\""), "{err}");
         reg.kill_all();
+    }
+
+    /// `oxa.bash.maxJobs` is the registry's limit: a registry built with 2 refuses the third
+    /// start and names the oldest running job; the default registry keeps [`MAX_JOBS`].
+    #[test]
+    fn jobs_limit_is_per_registry() {
+        let reg = JobRegistry::with_max_jobs(2);
+        let sb = Arc::new(Blocking {
+            seen: Mutex::new(None),
+        });
+        reg.set_sandbox(sb.clone());
+        reg.spawn(spec()).unwrap();
+        reg.spawn(spec()).unwrap();
+        let err = reg.spawn(spec()).unwrap_err();
+        assert!(err.contains("At most 2 background jobs"), "{err}");
+        assert!(err.contains("\"job\": \"job-1\""), "{err}");
+        reg.kill_all();
+        assert_eq!(JobRegistry::with_max_jobs(0).max_jobs, 1);
+        assert_eq!(JobRegistry::new().max_jobs, MAX_JOBS);
     }
 
     #[test]
@@ -504,6 +596,7 @@ mod tests {
                     output: b"done\n".to_vec(),
                     exit: Some(self.0),
                     timed_out: false,
+                    unsandboxed: false,
                 }
             }
         }
@@ -541,6 +634,7 @@ mod tests {
                     output: b"ok\n".to_vec(),
                     exit: Some(0),
                     timed_out: false,
+                    unsandboxed: false,
                 }
             }
         }
@@ -585,6 +679,7 @@ mod tests {
                     output: Vec::new(),
                     exit: Some(0),
                     timed_out: false,
+                    unsandboxed: false,
                 }
             }
         }
@@ -665,6 +760,7 @@ mod tests {
                     output: Vec::new(),
                     exit: Some(0),
                     timed_out: false,
+                    unsandboxed: false,
                 }
             }
         }

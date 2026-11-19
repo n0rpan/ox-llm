@@ -180,7 +180,7 @@ pub fn request(
         progress.notify(
             &session,
             crate::Progress::RequestEnd {
-                usage: turn.as_ref().ok().map(|turn| turn.usage),
+                usage: turn.as_ref().ok().and_then(|turn| turn.usage.reported()),
                 remote: st.info.caps.remote,
             },
         );
@@ -188,7 +188,7 @@ pub fn request(
     let turn = match turn {
         Ok(turn) => turn,
         Err(error) => {
-            if crate::goal::uncertain(&error, generated, pre_cancelled) {
+            if crate::goal::uncertain_on(st.info.caps.remote, &error, generated, pre_cancelled) {
                 if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
                     goal.uncertain_request()?;
                     crate::goal::checkpoint(st, false, sink)?;
@@ -203,9 +203,14 @@ pub fn request(
     crate::Handle {
         shared: st.shared.clone(),
     }
-    .account_tokens(
-        u64::from(turn.usage.prompt.saturating_sub(turn.usage.cached)) + u64::from(turn.usage.completion),
-    );
+    .account_usage(turn.usage);
+    if turn.usage.unreported {
+        // The reply carried no usage: its spend is unknown, not zero. The goal records an
+        // uncertain request so its token cap still applies (the answer itself is kept).
+        if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
+            goal.uncertain_request()?;
+        }
+    }
     if opts.events {
         // The closing `*_end` records go through the same sink, so `message_update` sees them.
         stream.finish(&turn, &mut hooks.sink(st, sink, ui));
@@ -284,8 +289,9 @@ pub(crate) struct CallResult {
     pub is_error: bool,
     /// `ToolOutput::ui`, stored for display on resume.
     pub ui: Value,
-    /// The repeat guard asks to end the run after this batch (`repeat.rs`).
-    pub stop: bool,
+    /// The repeat guard reached its give-up point in this batch (`repeat.rs`): the loop warns
+    /// the user once and continues (#1448).
+    pub warn: bool,
 }
 
 /// What became of a call before anything ran.
@@ -344,7 +350,7 @@ pub(crate) fn fail_truncated_calls(
                 tool_name: call.name.clone(),
                 is_error: true,
                 ui: Value::Null,
-                stop: false,
+                warn: false,
             }
         })
         .collect()
@@ -408,8 +414,8 @@ pub(crate) fn run_calls(
             }
             i = j;
         } else {
-            let warming = !prefilled
-                && !(st.goal.is_some() && matches!(prepared[i].name.as_str(), "goal_done" | "wait"))
+            let warming = !(prefilled
+                || st.goal.is_some() && matches!(prepared[i].name.as_str(), "goal_done" | "wait"))
                 && start_tool_prefill(st, &prepared, &outputs, i, &mut early);
             // Held while the call runs: an unwind ends the prefill too.
             let guard = warming.then(|| PrefillGuard(st.shared.clone()));
@@ -435,8 +441,10 @@ pub(crate) fn run_calls(
             _ => oxa_tools::shape(output.text.as_bytes(), cap, p.exec, &st.spill_dir),
         };
         // The repeat guard: a call that ran and returned the same result LIMIT times in a row is
-        // answered with a notice (the call ran; only its result text changes).
-        let mut stop = false;
+        // answered with a notice (the call ran; only its result text changes). Past the notice
+        // budget the batch also carries the warn flag: the loop shows one user warning and
+        // continues (#1448).
+        let mut warn = false;
         let ran = matches!(p.plan, Plan::Run { .. });
         // A successful native goal wait deliberately returns the same result on
         // every scheduled wake. Other tools and failed waits keep the guard.
@@ -458,9 +466,9 @@ pub(crate) fn run_calls(
                     });
                     output = ToolOutput::error(text);
                 }
-                crate::repeat::Verdict::Stop(text) => {
+                crate::repeat::Verdict::Warn(text) => {
                     output = ToolOutput::error(text);
-                    stop = true;
+                    warn = true;
                 }
             }
         }
@@ -478,7 +486,7 @@ pub(crate) fn run_calls(
             tool_name: p.name.clone(),
             is_error: output.is_error,
             ui: output.ui.clone(),
-            stop,
+            warn,
         });
     }
     out
@@ -837,16 +845,13 @@ fn start_tool_prefill(
                     progress.notify(
                         &session,
                         crate::Progress::RequestEnd {
-                            usage: res.as_ref().ok().map(|turn| turn.usage),
+                            usage: res.as_ref().ok().and_then(|turn| turn.usage.reported()),
                             remote: false,
                         },
                     );
                 }
                 if let Ok(turn) = &res {
-                    budget.account_tokens(
-                        u64::from(turn.usage.prompt.saturating_sub(turn.usage.cached))
-                            + u64::from(turn.usage.completion),
-                    );
+                    budget.account_usage(turn.usage);
                 }
                 if let Err(error) = &res {
                     if crate::goal::uncertain(error, false, pre_cancelled) {
@@ -854,6 +859,15 @@ fn start_tool_prefill(
                             if let Err(error) = goal.uncertain_request() {
                                 res = Err(error);
                             }
+                        }
+                    }
+                }
+                // A reply without usage has no measured spend: the prefill is charged to the
+                // goal as an uncertain request, exactly like a failed one.
+                if res.as_ref().is_ok_and(|turn| turn.usage.unreported) {
+                    if let Some(goal) = &goal {
+                        if let Err(error) = goal.uncertain_request() {
+                            res = Err(error);
                         }
                     }
                 }
@@ -1348,6 +1362,10 @@ impl StreamState {
 
     fn handle(&mut self, ev: StreamEvent, sink: &mut dyn EventSink, events: bool) {
         match ev {
+            StreamEvent::Warning(text) => sink.emit(&AgentEvent::Notice {
+                level: Level::Warning,
+                text: text.into(),
+            }),
             StreamEvent::Prefill { done, total, secs } => {
                 sink.emit(&AgentEvent::Prefill { done, total, secs });
             }
@@ -1641,7 +1659,7 @@ pub(crate) fn reply_event(turn: &AssistantTurn, ts_ms: u64) -> EventMessage {
         msg: turn.msg.clone(),
         ts_ms,
         stop: Some(StopReason::from(turn.finish)),
-        usage: Some(turn.usage),
+        usage: turn.usage.reported(),
         model: Some(turn.model.clone()),
         tool_name: None,
         is_error: false,

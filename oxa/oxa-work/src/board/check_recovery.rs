@@ -246,7 +246,7 @@ pub fn decide(enabled: bool, check: &Observation<'_>, now: u64, history: History
         .completed_at
         .and_then(oxa_session::parse_utc_seconds)
         .and_then(|completed_at| now.checked_sub(completed_at));
-    if !age.is_some_and(|age| age > STALE_CHECK_SECONDS) {
+    if age.is_none_or(|age| age <= STALE_CHECK_SECONDS) {
         return Decision::Quiet;
     }
 
@@ -386,7 +386,6 @@ mod tests {
             },
             attempt: &later_attempt,
             job: &later_job,
-            ..evidence
         })
         .unwrap();
         assert!(later.attempt.replaces(&matched.attempt));
@@ -415,7 +414,6 @@ mod tests {
             },
             attempt: &later_attempt,
             job: &later_job,
-            ..evidence
         })
         .unwrap();
         assert_eq!(

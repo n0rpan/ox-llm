@@ -17,6 +17,7 @@
 #![forbid(unsafe_code)]
 
 mod descriptor;
+mod descriptor_value;
 mod dirs;
 mod env;
 mod keybindings;
@@ -29,8 +30,9 @@ pub use descriptor::{
     descriptor, descriptors, fields_of, in_group, Apply, Control, Descriptor, Group, Item, MapKind, Options,
     Range, Unit, WebEdit,
 };
+pub use descriptor_value::{check, current, display_value, parse_input, search, Shown};
 pub use dirs::dirs_from_env;
-pub use env::{env_flag, Env, EnvFlag, EnvVar, ENV_TABLE, FALSE_WORDS, TRUE_WORDS};
+pub use env::{env_flag, Env, EnvFlag, EnvKind, EnvVar, ENV_TABLE, FALSE_WORDS, TRUE_WORDS};
 pub use keybindings::{ActionDef, Keymap};
 pub use models::{
     resolve_model, resolve_scoped, valid_cloud_name, CloudApi, CloudModel, CloudPrice, CloudProvider,
@@ -38,7 +40,9 @@ pub use models::{
 };
 pub use profile::{ThinkingPolicy, BASH_TIMEOUT_DEFAULT, SUMMARY_TARGET_DEFAULT};
 pub use schema::{apply_list_patch, merge_settings, schema, validate, KeyDef, Kind};
-pub use settings::{CompactionSettings, ProviderRetrySettings, QueueMode, RetrySettings, Settings, Source};
+pub use settings::{
+    CompactionSettings, ProviderRetrySettings, QueueMode, RetrySettings, Settings, SettingsFiles, Source,
+};
 
 use oxa_proto::Level;
 use std::path::{Path, PathBuf};

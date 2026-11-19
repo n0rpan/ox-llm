@@ -23,6 +23,23 @@ const MISSING_HINT: &str =
 const UNUSABLE_HINT: &str = "check that unprivileged user namespaces are allowed: `sysctl kernel.unprivileged_userns_clone` must be 1, \
 and on Ubuntu-based systems `sysctl kernel.apparmor_restrict_unprivileged_userns` must be 0; the `bubblewrap` package must be installed";
 
+/// The whole environment a command sees: nothing is inherited (bwrap `--clearenv`, or
+/// `env_clear` off Linux, [`crate::Unsandboxed`]), so credential variables of the process never
+/// reach the model's bash. The fixed base, the layout's passed-through variables, then the
+/// spec's own, in that order (a later one wins).
+pub(crate) fn base_env(s: &ExecSpec, home: &str, layout: &Layout) -> Vec<(String, String)> {
+    let mut e = vec![
+        ("PATH".to_string(), layout.path_value()),
+        ("HOME".to_string(), home.to_string()),
+        ("LANG".to_string(), BASE_LANG.to_string()),
+        ("TERM".to_string(), BASE_TERM.to_string()),
+        ("AI_AGENT".to_string(), oxa_proto::names::AI_AGENT.to_string()),
+    ];
+    e.extend(layout.env.iter().cloned());
+    e.extend(s.env.iter().cloned());
+    e
+}
+
 /// The exact bwrap argv (without `bwrap` itself) for `s` with the minimal layout (base `PATH`,
 /// no toolchain binds, the deny-list of `home`): [`bwrap_args_with`].
 pub fn bwrap_args(s: &ExecSpec, home: &Path) -> Vec<String> {
@@ -59,6 +76,16 @@ pub(crate) fn bwrap_args_homes(
     home: &Path,
     layout: &Layout,
     real_home: Option<&Path>,
+) -> Vec<String> {
+    bwrap_args_pinned(s, home, layout, real_home, &[])
+}
+
+pub(crate) fn bwrap_args_pinned(
+    s: &ExecSpec,
+    home: &Path,
+    layout: &Layout,
+    real_home: Option<&Path>,
+    sockets: &[(&Path, i32)],
 ) -> Vec<String> {
     let home_s = home.to_string_lossy().into_owned();
     // sbx-symhome: every decision and every mount uses the canonical cwd and home, so a cwd
@@ -295,14 +322,35 @@ pub(crate) fn bwrap_args_homes(
     // (which starts processes outside the sandbox), the system bus and the Docker/Podman
     // sockets, and systemd-resolved (DNS with the network unshared). Mask them after every
     // bind, before the deny-list.
+    // RP6: a socket the owner listed (`oxa.sandbox.sockets`) is not masked: a masked directory
+    // gets the socket bound back before it turns read-only, the rest is bound after the loop.
+    let sockets = if s.net { sockets } else { &[] };
+    let mut rebound = Vec::new();
+    if !s.net {
+        for sock in &layout.sockets {
+            if std::fs::symlink_metadata(sock).is_ok_and(|m| {
+                use std::os::unix::fs::FileTypeExt;
+                m.file_type().is_socket()
+            }) {
+                push(&mut a, &["--ro-bind", "/dev/null", &sock.to_string_lossy()]);
+            }
+        }
+    }
     if layout.mask_runtime_ipc {
         for p in runtime_ipc_paths(&home_c) {
             let Ok(meta) = std::fs::symlink_metadata(&p) else {
                 continue;
             };
+            if sockets.iter().any(|(sock, _)| *sock == p) {
+                continue;
+            }
             let ps = p.to_string_lossy();
             if meta.is_dir() {
                 push(&mut a, &["--tmpfs", &ps]);
+                for &(sock, fd) in sockets.iter().filter(|(sock, _)| sock.starts_with(&p)) {
+                    push(&mut a, &["--bind-fd", &fd.to_string(), &sock.to_string_lossy()]);
+                    rebound.push(sock);
+                }
                 if s.net && p == Path::new("/run/systemd/resolve") {
                     // Preserve only DNS configuration online; all resolver IPC stays hidden.
                     for name in ["resolv.conf", "stub-resolv.conf"] {
@@ -318,6 +366,9 @@ pub(crate) fn bwrap_args_homes(
                 push(&mut a, &["--ro-bind", "/dev/null", &ps]);
             }
         }
+    }
+    for &(sock, fd) in sockets.iter().filter(|(sock, _)| !rebound.contains(sock)) {
+        push(&mut a, &["--bind-fd", &fd.to_string(), &sock.to_string_lossy()]);
     }
     // #60: the gh token-store masks, after every bind that could cover them (the git data and the
     // cwd's `.git` above included), like the deny-list below.
@@ -409,16 +460,8 @@ pub(crate) fn bwrap_args_homes(
         }
     }
     push(&mut a, &["--chdir", &cwd, "--clearenv"]);
-    push(&mut a, &["--setenv", "PATH", &layout.path_value()]);
-    push(&mut a, &["--setenv", "HOME", &home_s]);
-    push(&mut a, &["--setenv", "LANG", BASE_LANG]);
-    push(&mut a, &["--setenv", "TERM", BASE_TERM]);
-    push(&mut a, &["--setenv", "AI_AGENT", oxa_proto::names::AI_AGENT]);
-    for (k, v) in &layout.env {
-        push(&mut a, &["--setenv", k, v]);
-    }
-    for (k, v) in &s.env {
-        push(&mut a, &["--setenv", k, v]);
+    for (k, v) in base_env(s, &home_s, layout) {
+        push(&mut a, &["--setenv", &k, &v]);
     }
     push(&mut a, &["--", "bash", "-c", &s.command]);
     a
@@ -1137,6 +1180,7 @@ fn push(a: &mut Vec<String>, xs: &[&str]) {
 
 /// The body of `Bwrap::detect` (lib.rs, architect-owned, must delegate here): find `bwrap` on
 /// `path_var` and probe it. Failure = `no_sandbox` with a hint.
+#[cfg(target_os = "linux")]
 pub(crate) fn detect_bwrap(path_var: &str, home: &Path) -> Result<Bwrap, OxaError> {
     let bwrap = find_on_path(path_var, "bwrap").ok_or_else(|| {
         OxaError::new(codes::NO_SANDBOX, "bwrap is not available; bash is disabled").with_hint(MISSING_HINT)
@@ -1154,8 +1198,21 @@ pub(crate) fn detect_bwrap(path_var: &str, home: &Path) -> Result<Bwrap, OxaErro
 
 /// The body of `Sandbox::check` for [`Bwrap`] (lib.rs, architect-owned, must delegate here):
 /// re-run the probe for `b.bwrap`.
+#[cfg(target_os = "linux")]
 pub(crate) fn check_bwrap(b: &Bwrap) -> Result<(), OxaError> {
     probe(&b.bwrap)
+}
+
+/// Off Linux there is no bubblewrap: `Bwrap` cannot be detected. The front end uses
+/// [`crate::Unsandboxed`] there instead.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn detect_bwrap(_path_var: &str, _home: &Path) -> Result<Bwrap, OxaError> {
+    Err(OxaError::new(codes::NO_SANDBOX, crate::NO_OS_SANDBOX_NOTICE))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn check_bwrap(_b: &Bwrap) -> Result<(), OxaError> {
+    Err(OxaError::new(codes::NO_SANDBOX, crate::NO_OS_SANDBOX_NOTICE))
 }
 
 /// The first absolute PATH entry holding an executable `name`. Relative entries are ignored.
@@ -1594,6 +1651,67 @@ mod tests {
             "{on:?}"
         );
         assert!(!on.windows(3).any(|w| w[0] == "--bind" && w[1] == ssh), "{on:?}");
+    }
+
+    /// RP6: with no listed socket every runtime socket stays on the mask list.
+    #[test]
+    fn docker_socket_hidden_by_default() {
+        let env = TestEnv::new();
+        let masked = runtime_ipc_paths(&env.home());
+        assert!(masked.contains(&PathBuf::from("/run/docker.sock")));
+        assert!(masked.contains(&PathBuf::from("/run/podman/podman.sock")));
+        let layout = Layout {
+            mask_runtime_ipc: true,
+            ..Layout::default()
+        };
+        let argv = bwrap_args_with(&spec(&env.work(), false), &env.home(), &layout);
+        for socket in ["/run/docker.sock", "/run/podman/podman.sock"] {
+            assert!(!binds_src(&argv, Path::new(socket)), "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn listed_socket_uses_a_bound_descriptor_only_online() {
+        let env = TestEnv::new();
+        let socket = env.work().join("test.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind socket");
+        let socket = canon(&socket);
+        let layout = Layout {
+            sockets: vec![socket.clone()],
+            ..Layout::default()
+        };
+        let path = socket.to_string_lossy();
+        let fds = [(socket.as_path(), 42)];
+        let online = bwrap_args_pinned(&spec(&env.work(), true), &env.home(), &layout, None, &fds);
+        assert!(online.windows(3).any(|w| w == ["--bind-fd", "42", &path]));
+        assert!(!binds_src(&online, &socket));
+
+        let offline = bwrap_args_pinned(&spec(&env.work(), false), &env.home(), &layout, None, &fds);
+        assert!(!offline.iter().any(|w| w == "--bind-fd"));
+        assert!(masked(&offline, &socket));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn socket_pin_rejects_replacement_and_keeps_the_original_socket() {
+        use std::os::unix::fs::FileTypeExt;
+        let env = TestEnv::new();
+        let socket = canon(&env.work()).join("test.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind socket");
+        let file = crate::PinnedCwd::open_socket(&socket).expect("pin socket");
+        let original = file.metadata().unwrap();
+        std::fs::rename(&socket, socket.with_extension("old")).unwrap();
+        std::fs::write(&socket, "fixture").unwrap();
+        assert!(crate::PinnedCwd::open_socket(&socket).is_err());
+        std::fs::remove_file(&socket).unwrap();
+        std::os::unix::fs::symlink(socket.with_extension("old"), &socket).unwrap();
+        assert!(crate::PinnedCwd::open_socket(&socket).is_err());
+        let still_pinned = file.metadata().unwrap();
+        assert!(still_pinned.file_type().is_socket());
+        assert_eq!(
+            (still_pinned.dev(), still_pinned.ino()),
+            (original.dev(), original.ino())
+        );
     }
 
     #[test]

@@ -274,6 +274,7 @@ fn f1_cached_is_prompt_plus_completion_minus_one() {
             completion: completion1 as u32,
             cached: 0,
             cached_missing: false,
+            unreported: false,
         }
     );
 }
@@ -462,6 +463,7 @@ fn f6_overflow_only_when_the_prompt_does_not_fit() {
 fn f13_bad_tool_arguments_are_refused() {
     let p = prefix();
     let call = WireMsg {
+        images: Vec::new(),
         role: oxa_proto::Role::Assistant,
         content: None,
         reasoning: None,

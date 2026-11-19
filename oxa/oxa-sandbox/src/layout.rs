@@ -40,6 +40,9 @@ use std::path::{Path, PathBuf};
 pub const SETTING_READ_PATHS: &str = "oxa.sandbox.readPaths";
 /// Setting: extra read-write binds (user settings only).
 pub const SETTING_WRITE_PATHS: &str = "oxa.sandbox.writePaths";
+/// Setting: host runtime sockets (docker, podman) bound into bash (user settings only,
+/// default none; a project file cannot list them).
+pub const SETTING_SOCKETS: &str = "oxa.sandbox.sockets";
 /// Setting: make `$HOME` a workspace when oxa runs in it (user settings only; see the module
 /// docs). Never for `/` or a parent of `$HOME`. The deny-list still holds.
 pub const SETTING_ALLOW_HOME_WRITE: &str = "oxa.sandbox.allowHomeWrite";
@@ -98,6 +101,7 @@ pub const CACHE_WRITE: &[&str] = &[
 /// Environment variables passed through when set (toolchain locations, never secrets).
 pub const TOOLCHAIN_ENV: &[&str] = &[
     "CARGO_HOME",
+    "CARGO_TARGET_DIR",
     "RUSTUP_HOME",
     "RUSTUP_TOOLCHAIN",
     "GOPATH",
@@ -150,6 +154,19 @@ pub fn is_secret_name(name: &str) -> bool {
     .any(|w| up.contains(w))
 }
 
+/// The variables of `env` that may reach a command: toolchain locations ([`TOOLCHAIN_ENV`],
+/// `MISE_*`), never a name that looks like a secret ([`is_secret_name`]). Everything else of the
+/// process environment stays out (bwrap `--clearenv`, the same off Linux).
+pub fn toolchain_env(env: &[(String, String)]) -> Vec<(String, String)> {
+    env.iter()
+        .filter(|(k, _)| {
+            (TOOLCHAIN_ENV.contains(&k.as_str()) || TOOLCHAIN_ENV_PREFIXES.iter().any(|p| k.starts_with(p)))
+                && !is_secret_name(k)
+        })
+        .cloned()
+        .collect()
+}
+
 /// What the sandbox shows of the machine. `Layout::default()` = the minimal layout: base
 /// `PATH`, nothing bound beyond the cwd, the deny-list of `$HOME` only.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -174,6 +191,9 @@ pub struct Layout {
     /// systemd-resolved) in the argv. Set by the front end ([`Bwrap::detect`] and the CLI's
     /// layout); off in the pure-argv tests, whose `Layout::default()` is not a sandbox.
     pub mask_runtime_ipc: bool,
+    /// The owner-listed host sockets ([`SETTING_SOCKETS`]; absolute, canonical, existing,
+    /// sorted by the front end) that stay reachable although the runtime masks cover them.
+    pub sockets: Vec<PathBuf>,
     /// #457: the session directory, mounted at `/tmp` (`scratch.rs`). `None` = a fresh tmpfs
     /// per command.
     pub scratch: Option<std::sync::Arc<Scratch>>,
@@ -325,16 +345,7 @@ impl Layout {
             .filter(|(_, rw)| *rw)
             .map(|(p, _)| p.clone())
             .collect();
-        let mut env: Vec<(String, String)> = i
-            .env
-            .iter()
-            .filter(|(k, _)| {
-                (TOOLCHAIN_ENV.contains(&k.as_str())
-                    || TOOLCHAIN_ENV_PREFIXES.iter().any(|p| k.starts_with(p)))
-                    && !is_secret_name(k)
-            })
-            .cloned()
-            .collect();
+        let mut env = toolchain_env(&i.env);
         // Version-manager shims (mise) write state under the read-only home and warn on
         // every call; point it at the sandbox /tmp unless the caller set it.
         if !env.iter().any(|(n, _)| n == "MISE_STATE_DIR") {
@@ -396,6 +407,7 @@ impl Layout {
             allow_home_write: i.allow_home_write,
             git: GitBinds::default(),
             mask_runtime_ipc: false,
+            sockets: Vec::new(),
             scratch: None,
             scratch_root: None,
             cache_home: crate::scratch::user_cache_home(&i.home, &i.env),
@@ -459,6 +471,25 @@ mod tests {
         assert!(!l.read.contains(&bin), "{:?}", l.read);
         assert!(l.env.iter().any(|(k, _)| k == "OXA_RUNNING_BIN"));
         assert!(!l.env.iter().any(|(k, _)| k == "OXA_BIN"));
+    }
+
+    #[test]
+    fn cargo_target_is_forwarded_without_granting_a_mount() {
+        let directory = oxa_fake::TestEnv::new();
+        let target = directory.home().join(".cache/oxa-worker-target");
+        std::fs::create_dir_all(&target).unwrap();
+        let entry = ("CARGO_TARGET_DIR".to_owned(), target.display().to_string());
+        let mut inputs = LayoutInputs {
+            home: directory.home().clone(),
+            env: vec![entry.clone()],
+            ..Default::default()
+        };
+        let layout = Layout::build(&inputs);
+        assert!(layout.env.contains(&entry));
+        assert!(layout.write.iter().all(|path| !target.starts_with(path)));
+
+        inputs.write_extra.push(target.clone());
+        assert!(Layout::build(&inputs).write.contains(&target));
     }
 
     #[test]
