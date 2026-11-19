@@ -22,6 +22,13 @@ impl oxa_core::ProgressObserver for GoalStatusTrace {
     }
 }
 fn deps(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<ScriptedEngine>) -> Deps {
+    let engine: Arc<dyn oxa_proto::Engine> = engine;
+    deps_engine(env, store, engine)
+}
+
+/// [`deps`] over any engine: a test that rewrites the engine's replies cannot use the scripted
+/// type directly.
+fn deps_engine(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<dyn oxa_proto::Engine>) -> Deps {
     Deps {
         engine,
         store,
@@ -1467,6 +1474,66 @@ fn goal_command_clear_fails_when_store_sync_fails() {
 
     store.fail_sync.store(false, Ordering::SeqCst);
     session.shutdown(&mut HeadlessUi::default());
+}
+
+/// An engine whose replies carry no usage, like an upstream the embedded gateway accepts a
+/// finished reply from without one (the ledger settles that request as `usage_missing`).
+struct Unreported(Arc<ScriptedEngine>);
+impl oxa_proto::Engine for Unreported {
+    fn info(&self, target: Option<&str>) -> Result<oxa_proto::EngineInfo, oxa_proto::OxaError> {
+        self.0.info(target)
+    }
+    fn count_tokens(&self, text: &str) -> Result<u32, oxa_proto::OxaError> {
+        self.0.count_tokens(text)
+    }
+    fn chat(
+        &self,
+        r: &oxa_proto::ChatRequest,
+        cancel: &oxa_proto::CancelToken,
+        on: &mut dyn FnMut(oxa_proto::StreamEvent),
+    ) -> Result<oxa_proto::AssistantTurn, oxa_proto::OxaError> {
+        let mut turn = self.0.chat(r, cancel, on)?;
+        turn.usage = oxa_proto::Usage::unreported();
+        Ok(turn)
+    }
+}
+
+#[test]
+fn a_reply_without_usage_charges_the_goal_as_uncertain() {
+    let env = TestEnv::new();
+    let scripted = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("First answer."),
+        ScriptTurn::text("Second answer."),
+    ]));
+    let engine: Arc<dyn oxa_proto::Engine> = Arc::new(Unreported(scripted.clone()));
+    let mut session = Session::open(deps_engine(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+    session
+        .set_goal(
+            Some(objective(GoalBudget {
+                max_tokens: Some(1_000_000),
+                ..Default::default()
+            })),
+            &mut VecSink::default(),
+        )
+        .unwrap();
+    // The run ends at the token cap: an error outcome is the expected shape.
+    let _ = session.prompt(
+        "Start".into(),
+        vec![],
+        &mut VecSink::default(),
+        &mut HeadlessUi::default(),
+    );
+    let goal = session.goal().unwrap();
+    assert_eq!(
+        goal.unknown_requests, 1,
+        "an unreported usage is unknown spend, not zero"
+    );
+    assert_eq!(goal.status, GoalStatus::Blocked, "the token cap still applies");
+    assert_eq!(
+        scripted.requests().len(),
+        1,
+        "an unknown spend stops the next generation"
+    );
 }
 
 #[test]
