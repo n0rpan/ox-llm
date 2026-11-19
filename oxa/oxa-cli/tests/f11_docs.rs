@@ -392,6 +392,47 @@ fn every_doc_command_line_runs_against_fake() {
     );
 }
 
+/// The key setup documented before the first oxa run must work when the agent directory does not
+/// exist yet.
+#[test]
+fn brave_key_command_works_for_a_fresh_install() {
+    let root = repo_root();
+    let page = fs::read_to_string(root.join("docs/pages/quickstart.md")).expect("quickstart.md");
+    let command = fenced_blocks(&page)
+        .into_iter()
+        .filter(|block| block.info == "console")
+        .flat_map(|block| block.lines)
+        .map(|(_, line)| line)
+        .find(|line| line.contains("~/.oxa/agent/brave-search.key"))
+        .and_then(|line| line.strip_prefix("$ ").map(str::to_owned))
+        .expect("Brave key setup command");
+
+    let env = TestEnv::new();
+    fs::remove_dir_all(env.agent_dir()).expect("remove pre-created agent directory");
+    let mut child = Command::new("bash")
+        .args(["-c", &command])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", env.home())
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("run documented key command");
+    use std::io::Write;
+    child
+        .stdin
+        .take()
+        .expect("command stdin")
+        .write_all(b"synthetic-brave-key\n")
+        .expect("write synthetic key");
+    let status = child.wait().expect("wait for documented key command");
+
+    assert!(status.success(), "documented key command failed: {status}");
+    assert_eq!(
+        fs::read_to_string(env.agent_dir().join("brave-search.key")).expect("saved key"),
+        "synthetic-brave-key\n"
+    );
+}
+
 /// no `~/.pi`, `PI_` or `pi ` command in ported pages
 #[test]
 fn no_pi_names_left() {
