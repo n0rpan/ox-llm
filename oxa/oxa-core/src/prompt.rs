@@ -75,8 +75,7 @@ pub const RULE_SUBAGENT_CHECK: &str =
 pub const RULE_VERIFY: &str =
     "Before you call a task done, run the project's own tests or checks and report the result; if you ran none, say so";
 /// Added with the output diet when `wait` is declared (every session, unless `oxa.tools.wait` is off).
-pub const RULE_WAIT: &str =
-    "To wait for CI, a merge or a job, call wait; never sleep-poll";
+pub const RULE_WAIT: &str = "To wait for CI, a merge or a job, call wait; never sleep-poll";
 /// L4-SUBVERIFY: added after [`RULES_DIET_OUTPUT`] only with the output diet
 /// on, and only in a subagent child (the child verifies what it reports).
 pub const RULE_CHILD_VERIFY: &str = "Before you answer, check every claim about the code with a tool; give path:line for each, and write \"not verified\" for anything you did not check";
