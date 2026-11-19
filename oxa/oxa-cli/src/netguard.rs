@@ -21,11 +21,11 @@ fn with_policy(sandbox: Arc<dyn Sandbox>, settings: &Settings, github_auth: bool
     let runner_owns_github = std::env::var_os(oxa_work::RUNNER_GITHUB_ENV).is_some_and(|value| value == "1");
     let on = !runner_owns_github && sandbox_net_setting(settings.string(SETTING_SANDBOX_NET).as_deref());
     let offline = oxa_proto::offline();
-    // The `gh` lookup can stall (a mise shim may try to install gh): run it lazily, at the first
-    // bash command that has the network, never at startup.
+    // The `gh` lookup can stall (a mise shim may try to install gh): run it lazily, at the
+    // first bash command, never at startup — with or without the network, because
+    // `gh auth token` reads its config locally, so the output mask must know the secret in
+    // every mode; only the `GH_TOKEN` injection is network-gated (in `token_for`).
     let lookup = github_auth
-        && on
-        && !offline
         && !test_isolated(
             std::env::var(oxa_proto::names::ENV_TEST_ISOLATION)
                 .ok()

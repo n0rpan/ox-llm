@@ -195,6 +195,30 @@ fn yolo_bash_output_redacts_gh_token() {
     assert!(streamed.output.is_empty());
 }
 
+/// Yolo with the network off (`oxa.sandbox.net: off`) still masks the token: `gh auth token`
+/// reads the credential locally, so the output mask never depends on the network. Only the
+/// `GH_TOKEN` injection is network-gated, and this run has none.
+#[test]
+fn yolo_bash_output_redacts_gh_token_with_the_network_off() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work()).unwrap();
+    let inner =
+        NetSandbox::new(Arc::new(NoSandbox), false, false).with_gh_token(Some("ghp_SYNTH_OFF".into()));
+    let sb = FullAccess::new(
+        Arc::new(inner),
+        YoloSwitch::new(Autonomy::Yolo),
+        "",
+        env.home(),
+        false,
+    );
+    let s = spec(&env, "echo token=ghp_SYNTH_OFF; echo plain".to_string(), true);
+    let mut live = Vec::new();
+    let r = sb.run(&s, &CancelToken::new(), &mut |b| live.extend_from_slice(b));
+    let want = "token=[redacted]\nplain\n";
+    assert_eq!(String::from_utf8_lossy(&r.output), want);
+    assert_eq!(String::from_utf8_lossy(&live), want);
+}
+
 #[test]
 fn yolo_redaction_does_not_block() {
     let env = TestEnv::new();
