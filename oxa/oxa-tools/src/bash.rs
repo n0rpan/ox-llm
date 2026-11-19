@@ -2312,4 +2312,52 @@ mod poll_tests {
         assert_eq!(jobs.running(), 0);
         assert!(jobs.list().is_empty());
     }
+
+    /// #1782: an executor can fail before it has a process to stream from. The foreground job
+    /// path must retain the diagnostic returned in `ExecResult.output`.
+    #[test]
+    fn foreground_job_preserves_process_creation_failure() {
+        struct SpawnFails;
+
+        impl Sandbox for SpawnFails {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+
+            fn run(&self, _s: &ExecSpec, _c: &CancelToken, _live: &mut dyn FnMut(&[u8])) -> ExecResult {
+                unreachable!("the foreground job path uses run_streaming")
+            }
+
+            fn run_streaming(
+                &self,
+                _s: &ExecSpec,
+                _c: &CancelToken,
+                _live: &mut dyn FnMut(&[u8]),
+            ) -> ExecResult {
+                ExecResult {
+                    output: b"bash: synthetic process creation failure".to_vec(),
+                    exit: None,
+                    timed_out: false,
+                    unsandboxed: false,
+                }
+            }
+        }
+
+        let jobs = Arc::new(JobRegistry::new());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone())
+            .with_sandbox(Arc::new(SpawnFails));
+        let (out, streamed) = job_call(&tool, json!({"command": "true", "timeout": 30}));
+
+        assert!(out.is_error, "{out:?}");
+        assert!(
+            out.text.contains("bash: synthetic process creation failure"),
+            "{out:?}"
+        );
+        assert_eq!(streamed, "bash: synthetic process creation failure");
+        assert!(jobs.list().is_empty());
+    }
 }

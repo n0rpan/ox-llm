@@ -2,28 +2,30 @@
 
 The permission mode decides how much the agent may do without asking you. This page says what each mode does and what it does not do. The rules behind the modes (the permission table, the sandbox, the deny-list, project trust) are in [security.md](security.md).
 
+Execution context matters independently of the permission mode. Interactive CLI sessions do not use an OS sandbox by default; dangerous commands ask for your approval. Unattended runs without yolo keep the Bubblewrap sandbox by default. Yolo never uses an OS sandbox, including for unattended work it starts. In every context, the in-process guards remain: secret masking, private-path denials, user-only settings, and offline mode.
+
 ## The four modes
 
 | Mode | Asks you | Bash | File tools |
 |---|---|---|---|
-| `standard` | before a write outside the project, a read outside it, and other steps that reach beyond the project | in the sandbox | refuse credentials and protected paths |
-| `auto` (default) | no; one exception: a write to the project's `.oxa` configuration | in the sandbox | refuse credentials and protected paths |
-| `yolo` | never | **no sandbox**: runs as you | refuse nothing |
+| `standard` | before a write outside the project, a read outside it, and other steps that reach beyond the project | no OS sandbox interactively; sandboxed when unattended | refuse credentials and protected paths |
+| `auto` (default) | no routine questions; protected configuration and dangerous commands still ask | no OS sandbox interactively; sandboxed when unattended | refuse credentials and protected paths |
+| `yolo` | never for routine or dangerous commands | **no sandbox**: runs as you | in-process security guards remain |
 | `plan` | as `standard` | read-only commands only | no writes |
 
 The status bar always shows the mode. In print, JSON and RPC mode it is written to stderr at start.
 
 ## standard
 
-Work inside the project runs without a question: reading, editing, and bash in the sandbox. oxa asks before it reads or writes outside the project and before an extension command that wants the network. It offers "Allow once", "Allow for this session" and "Deny". A session grant is kept in memory and is gone when the session ends.
+Work inside the project runs without a routine question: reading, editing, and bash. In an interactive CLI session, bash runs with your user rights and dangerous commands require approval. In an unattended standard run, bash uses the OS sandbox. oxa also asks before it reads or writes outside the project and before an extension command that wants the network. It offers "Allow once", "Allow for this session", "Always allow" and "Deny". A session grant is kept in memory and is gone when the session ends.
 
 Choose it when you want to see each step that leaves the project.
 
 ## auto
 
-`auto` is the default of a fresh install. It removes the questions and nothing else:
+`auto` is the default of a fresh install. It removes routine permission questions, but does not bypass dangerous-command approval in an interactive CLI session:
 
-- bash still runs in the sandbox, with its deny-list;
+- interactive bash runs with your user rights; unattended bash keeps the sandbox unless the run is yolo;
 - the file tools still refuse `~/.ssh`, `~/.gnupg`, cloud and git credentials, `~/.config/oxc`, browser profiles and the agent directory;
 - `.git/hooks` and `.git/config` are never written;
 - a write to the project's `.oxa` configuration still asks.
@@ -34,17 +36,17 @@ Bash has network access by default, in `auto` as in `standard`. A command can se
 
 ## yolo
 
-`yolo` is full power. It removes every guard that oxa has:
+`yolo` is full power for command execution. It removes the permission prompts and OS sandbox:
 
 - no questions;
 - no bash sandbox: a command runs as you, in your own environment, with your files, your credentials and your network;
-- no deny-list and no protected paths: the file tools read and write whatever you can.
+- the in-process guards listed above remain, including secret masking and private-path denials.
 
-A yolo session can read your SSH keys and your provider keys, push to any remote you can push to, publish what it finds, and delete anything you can delete. oxa does not inspect what a yolo command does, and it does not stop one. The model can also be steered by text it reads: a file in the project, a web page, the output of an MCP server.
+A yolo command runs with your user rights and can reach files and credentials available to that process, push to any remote you can push to, and delete anything you can delete. Oxa still masks secrets and hard-refuses publishing them or an OS-breaking wipe, but it does not ask before other commands. The model can also be steered by text it reads: a file in the project, a web page, or the output of an MCP server.
 
-Two things still hold in yolo. Plan mode stays read-only. With `--offline`, bash still has no network.
+The in-process guards still hold in yolo. Plan mode stays read-only, and with `--offline`, bash still has no network.
 
-Use yolo only in a session you watch, on a machine and in a project you can restore. When you want no questions but still want the sandbox, use `auto`.
+Use yolo only on a machine and in a project you can restore. When an unattended run needs OS isolation, use a non-yolo mode.
 
 The status bar shows a flame and `YOLO full access`, and the first switch to yolo in a session prints a one-line notice.
 
@@ -63,7 +65,7 @@ On macOS there is no OS sandbox, in any mode. This is the honest picture:
 
 So on macOS a bash command can read any file you can read, in `standard` and `auto` too. The file tools protect your credentials; bash does not. To approve each command yourself, start with `--permission-mode ask`.
 
-On Linux, oxa never runs bash unsandboxed outside yolo. Without a usable `bwrap` the bash tool is turned off, and oxa says so at start.
+On Linux, unattended non-yolo runs require a usable `bwrap`; without it, the bash tool is turned off and oxa says so at start. Interactive non-yolo sessions deliberately run without that OS sandbox and use dangerous-command approvals instead.
 
 ## Choosing and switching
 
