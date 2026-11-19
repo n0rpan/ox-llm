@@ -243,7 +243,8 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
 
     // ---- builtin:worker (K5a) ----
     // Off in a worker child (`OXA_WORKER_DEPTH` set, even to an empty value: `Env::get` treats
-    // empty as unset, so the pairs are read directly) and when `oxa.workers.enabled` is false.
+    // empty as unset, so the pairs are read directly) and when `oxa.workers.enabled` is false (user settings only: a project file cannot change the
+    // worker settings).
     let worker_depth = i
         .env
         .pairs()
@@ -251,7 +252,7 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
         .rev()
         .find(|(k, _)| k == worker_tool::ENV_WORKER_DEPTH)
         .map(|(_, v)| v.as_str());
-    if worker_tool::built(worker_depth, i.settings.bool(worker_tool::SETTING_ENABLED, true)) {
+    if worker_tool::built(worker_depth, worker_tool::enabled(i.settings)) {
         match std::env::current_exe() {
             Ok(bin) => {
                 // The supervisor needs a trusted `kill` from the host PATH (never a project shim),
@@ -276,7 +277,7 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
                         let workers = Arc::new(WorkerHooks::new(WorkerConfig {
                             oxa_bin: bin,
                             agent_dir: i.dirs.agent_dir.clone(),
-                            max: usize::try_from(i.settings.u32(worker_tool::SETTING_MAX, 4)).unwrap_or(4),
+                            max: worker_tool::max_workers(i.settings),
                             supervisor,
                             sessions_dir,
                             parent_env: i.env.pairs().to_vec(),
