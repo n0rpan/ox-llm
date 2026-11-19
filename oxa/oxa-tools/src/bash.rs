@@ -2303,7 +2303,9 @@ mod poll_tests {
             .with_sandbox(Arc::new(Burst(expected.as_bytes().to_vec())));
         let (out, streamed) = job_call(&tool, json!({"command": "burst", "timeout": 30}));
 
-        assert!(!out.is_error, "{}", out.text);
+        // Do not include arbitrary command output in assertion diagnostics: it may contain
+        // sensitive data even though this fixture is synthetic.
+        assert!(!out.is_error);
         assert_eq!(streamed, expected);
         assert_eq!(out.text, expected);
     }
