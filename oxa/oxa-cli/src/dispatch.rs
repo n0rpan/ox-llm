@@ -465,7 +465,13 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     let prep = match prepared {
         Ok(p) => p,
         Err(e) if e.code == FORK_DECLINED => {
-            let _ = writeln!(stdout, "Aborted.");
+            // The RPC stream carries JSON records only, and a declined offer is a normal
+            // outcome there: the sentence goes to stderr.
+            if mode == RunMode::Rpc {
+                let _ = writeln!(stderr, "Aborted.");
+            } else {
+                let _ = writeln!(stdout, "Aborted.");
+            }
             return if headless {
                 finish_outcome(Ok(oxa_core::RunOutcome::Interrupted), &mut *stderr)
             } else {

@@ -21,7 +21,11 @@ fn seed(env: &TestEnv, server: &FakeServer) {
 }
 
 /// An RPC client for `fork-owner-1` from `other`, with an owner present.
-fn spawn_rpc(env: &TestEnv, server: &FakeServer, other: &Path) -> (Child, ChildStdin, Receiver<Value>) {
+fn spawn_rpc(
+    env: &TestEnv,
+    server: &FakeServer,
+    other: &Path,
+) -> (Child, ChildStdin, Receiver<Value>, Receiver<String>) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
         .args(["--mode", "rpc", "--session", "fork-owner-1"])
         .env_clear()
@@ -36,9 +40,12 @@ fn spawn_rpc(env: &TestEnv, server: &FakeServer, other: &Path) -> (Child, ChildS
     let stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
+    // Every raw line, so a test can prove the stream is JSON only.
+    let (raw_tx, raw) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
             let Ok(line) = line else { break };
+            let _ = raw_tx.send(line.clone());
             if let Ok(record) = serde_json::from_str::<Value>(&line) {
                 if tx.send(record).is_err() {
                     break;
@@ -46,7 +53,7 @@ fn spawn_rpc(env: &TestEnv, server: &FakeServer, other: &Path) -> (Child, ChildS
             }
         }
     });
-    (child, stdin, rx)
+    (child, stdin, rx, raw)
 }
 
 /// The first extension-UI request of the run: the fork offer.
@@ -76,7 +83,7 @@ fn rpc_fork_question_reaches_owner() {
     )
     .unwrap();
     seed(&env, &server);
-    let (mut child, mut stdin, rx) = spawn_rpc(&env, &server, &other_dir(&env));
+    let (mut child, mut stdin, rx, raw) = spawn_rpc(&env, &server, &other_dir(&env));
     let request = next_request(&rx);
     assert_eq!(request["method"], "confirm");
     assert!(request["title"]
@@ -120,7 +127,7 @@ fn rpc_fork_question_declined_aborts_without_a_session() {
     let env = TestEnv::new();
     let server = FakeServer::start(vec![ScriptTurn::text("first")], FakeOpts::default()).unwrap();
     seed(&env, &server);
-    let (mut child, mut stdin, rx) = spawn_rpc(&env, &server, &other_dir(&env));
+    let (mut child, mut stdin, rx, raw) = spawn_rpc(&env, &server, &other_dir(&env));
     let request = next_request(&rx);
     writeln!(
         stdin,
@@ -142,4 +149,15 @@ fn rpc_fork_question_declined_aborts_without_a_session() {
     };
     assert!(!status.success());
     assert_eq!(server.requests().len(), 1, "nothing is sent after a decline");
+    // The RPC stream is JSON only: the decline must not add a plain sentence to stdout.
+    let mut lines: Vec<String> = Vec::new();
+    while let Ok(line) = raw.recv_timeout(Duration::from_millis(500)) {
+        lines.push(line);
+    }
+    for line in &lines {
+        assert!(
+            serde_json::from_str::<Value>(line).is_ok(),
+            "a non-JSON line reached the RPC client: {line}"
+        );
+    }
 }
