@@ -139,6 +139,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.allowHomeCwd", Kind::Bool, "false"),
     // F5: seconds; unset = 120; 0 = none.
     key("oxa.bash.defaultTimeout", Kind::Number, "null"),
+    // Background jobs that may run at once (`bash {background: true}`); at least 1.
+    key("oxa.bash.maxJobs", Kind::Number, "16"),
     key("oxa.bootPreload", Kind::Bool, "true"),
     key("oxa.builtinSkills", Kind::Bool, "true"),
     key("oxa.cloud", Kind::Object, "{}"),
@@ -206,6 +208,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.skills.includeSynced", Kind::Bool, "false"),
     // O-146: unset = on except on Flash and below 32K (`SubagentHooks::declared_for`).
     key("oxa.subagent.enabled", Kind::Bool, "null"),
+    // Children per parent session (running or queued) and tasks or steps per call; at least 1.
+    key("oxa.subagent.maxChildren", Kind::Number, "8"),
     key("oxa.subagent.remoteConcurrency", Kind::Number, "4"),
     key("oxa.subagent.resultCap", Kind::Number, "6144"),
     key("oxa.subagent.smallContext", Kind::Bool, "false"),
