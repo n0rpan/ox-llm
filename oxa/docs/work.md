@@ -300,9 +300,15 @@ without replaying the agent. Offline mode refuses network publication.
 Before each push, the runner asks the owner to approve the accepted commit, branch and
 PR destination. Inside a session the question goes to the session's owner confirm
 broker (`OXA_CONFIRM_SOCK`): yolo answers yes and records it, standard and auto show a
-dialog that the owner's typed `yes` also answers. Run from a terminal, the answer is
-typed on `/dev/tty`. Piped input and text the model read never approve it, and the
-agent marker alone still refuses when no broker is present. After the yes the runner
+dialog that the owner's typed `yes` also answers. The broker must prove itself: on
+Linux the kernel names the process that bound the socket (`SO_PEERCRED`) and it must
+be this child's session — a listener the tool spawned beside the child, the child
+itself, or another session is refused, so a model-run command cannot answer its own
+question by naming a socket in the environment. Off Linux a child cannot prove a unix
+listener at all, so the broker never authorizes there and the agent marker refuses.
+Run from a terminal, the answer is typed on `/dev/tty`. Piped input and text the model
+read never approve it, and the agent marker alone still refuses when no provable
+broker is present. After the yes the runner
 re-checks the origin push URL and the task head, and refuses if either moved. When the
 task is not accepted as done, the record's `detail` says it was not published and why.
 
