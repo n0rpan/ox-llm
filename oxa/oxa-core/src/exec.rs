@@ -5,9 +5,9 @@ use crate::host::{fire_hook, pumped, serve_level, Serve};
 use crate::SessionState;
 use oxa_proto::{
     codes, rebase_why, tool_errors, wire_is_prefix, Access, AgentEvent, Answer, AssistantTurn, ChatRequest,
-    Decision, EntryBody, EventMessage, EventSink, Hints, HookPoint, HookReply, Level, MessageDelta, OxaError,
-    StopReason, StreamEvent, Tool, ToolCall, ToolClass, ToolCtx, ToolOutput, TurnKind, Ui, Usage, Value,
-    WireMsg,
+    DangerAnswer, Decision, EntryBody, EventMessage, EventSink, Hints, HookPoint, HookReply, Level,
+    MessageDelta, OxaError, StopReason, StreamEvent, Tool, ToolCall, ToolClass, ToolCtx, ToolOutput,
+    TurnKind, Ui, Usage, Value, WireMsg,
 };
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -965,19 +965,41 @@ fn prepare(st: &mut SessionState, call: &ToolCall, sink: &mut dyn EventSink, ui:
                 let text = format!("{}{}", tool_errors::DENIED_PREFIX, reason);
                 return mk(args, exec, Plan::Done(ToolOutput::error(text)));
             }
-            Decision::Ask => match crate::fire::ask_access(st, a, sink, ui) {
-                Answer::Once => {}
-                Answer::Session => st.policy.remember(a),
-                Answer::Deny => {
-                    // #554: with no one to ask, nobody declined; say what was refused and why.
-                    let text = if ui.interactive() {
-                        tool_errors::DENIED_BY_USER.to_string()
-                    } else {
-                        tool_errors::DENIED_UNATTENDED.replace("{what}", &crate::fire::access_title(a))
-                    };
-                    return mk(args, exec, Plan::Done(ToolOutput::error(text)));
+            Decision::Ask => {
+                // #1512 S2: a dangerous command asks first; its answer covers only its rule keys.
+                let danger = st.policy.danger_ask(a, &st.cwd);
+                if !danger.is_empty() {
+                    let (keys, reasons): (Vec<String>, Vec<String>) = danger.into_iter().unzip();
+                    match crate::fire::ask_dangerous(st, a, &keys, &reasons, sink, ui) {
+                        DangerAnswer::Once => continue,
+                        DangerAnswer::Session | DangerAnswer::Always => {
+                            st.policy.grant_danger(&keys);
+                            continue;
+                        }
+                        DangerAnswer::Deny => {
+                            let text = if ui.interactive() {
+                                tool_errors::DENIED_BY_USER.to_string()
+                            } else {
+                                tool_errors::DANGEROUS_UNATTENDED.replace("{why}", &reasons.join("; "))
+                            };
+                            return mk(args, exec, Plan::Done(ToolOutput::error(text)));
+                        }
+                    }
                 }
-            },
+                match crate::fire::ask_access(st, a, sink, ui) {
+                    Answer::Once => {}
+                    Answer::Session => st.policy.remember(a),
+                    Answer::Deny => {
+                        // #554: with no one to ask, nobody declined; say what was refused and why.
+                        let text = if ui.interactive() {
+                            tool_errors::DENIED_BY_USER.to_string()
+                        } else {
+                            tool_errors::DENIED_UNATTENDED.replace("{what}", &crate::fire::access_title(a))
+                        };
+                        return mk(args, exec, Plan::Done(ToolOutput::error(text)));
+                    }
+                }
+            }
         }
     }
     // X4: canonicalise BEFORE sorting and deduplicating, so the lock order is the order of the

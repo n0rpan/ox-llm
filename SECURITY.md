@@ -21,6 +21,10 @@ Host runtime sockets (docker, podman) stay masked in sandboxed bash unless the o
 through an FD-based bind (user settings only; the docker socket gives root on the host, so it is noted
 at start, not blocked).
 
+`oxa send` keeps owner messages over the 256 KiB inline inbox limit in the receiving session's
+private spill directory and queues a short pointer. The sandbox exposes that spill directory only
+to the receiving session and sessions inheriting its history; the private agent directory remains
+denied to model tools.
 Persisted headless print and JSON runs with a pursuing goal consume plain `oxa send` inbox
 messages with `oxa.inbox.headless` set to `true` by default. This user-only setting can opt out;
 project settings cannot enable or disable it. Non-persisted sessions, sessions without a pursuing
@@ -35,6 +39,11 @@ Automated Go review reads at most 200 GitHub comment pages (20,000 comments) whe
 configured daily quota and prior same-diff receipts. If either listing is incomplete, review is
 deferred before quota reservation, provider authentication, or provider I/O. An incomplete history
 cannot authorize another token-spending review.
+
+The memory store (`memory/` under the agent directory) is owner-only: folder `0700`, tightened by a
+save when an existing one is looser; entries and `MEMORY.md` `0600` via a private synced temporary;
+lock created `0600`. A save is bounded (8 KiB body, 4 KiB frontmatter) and the index scan reads each
+file only that far.
 
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 
