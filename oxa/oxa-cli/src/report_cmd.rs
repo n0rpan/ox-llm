@@ -424,7 +424,11 @@ pub(crate) fn submit_record(
         }
     } else {
         writeln!(out, "Repository: {repo}\nTitle: {title}\n\n{body}\n").map_err(w)?;
-        match confirm(&format!("Post this issue publicly to {repo}? Type yes to post: ")) {
+        // The broker displays and records this string, so keep the exact publication in the
+        // confirmation itself. The caller's stdout may be redirected or hidden from the owner.
+        match confirm(&format!(
+            "Post this issue publicly to {repo}?\n\nTitle: {title}\n\n{body}\n\nType yes to post: "
+        )) {
             Some(true) => {}
             Some(false) => {
                 writeln!(out, "Not posted.").map_err(w)?;

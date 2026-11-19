@@ -329,12 +329,16 @@ fn submit_posts_the_exact_text_after_yes() {
     let body = "## What happened\n\nIt stalls.\n\n## System\n\n- oxa version: 0.2.0";
     let draft = write_draft(&env, "Engine stalls", body);
     let mut calls: Vec<(String, Vec<String>, String)> = Vec::new();
+    let mut confirmation = String::new();
     let mut out = Vec::new();
     let code = submit(
         &draft,
         &repo_settings(Some("owner/ox-llm")),
         &ctx(),
-        &mut |_: &str| Some(true),
+        &mut |question: &str| {
+            confirmation = question.to_string();
+            Some(true)
+        },
         &mut |p: &str, args: &[String]| {
             let posted = args
                 .iter()
@@ -367,6 +371,13 @@ fn submit_posts_the_exact_text_after_yes() {
     );
     assert_eq!(posted, body, "the body posted is the body shown");
     assert!(!args.iter().any(|arg| arg == "--body-file"));
+    assert_eq!(
+        confirmation,
+        format!(
+            "Post this issue publicly to owner/ox-llm?\n\nTitle: Engine stalls\n\n{body}\n\nType yes to post: "
+        ),
+        "the broker must display and record the exact publication"
+    );
     assert!(String::from_utf8(out)
         .unwrap()
         .contains("Posted: https://github.com/owner/ox-llm/issues/1"));
