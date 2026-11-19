@@ -20,6 +20,7 @@ maintainer, who says in the PR when a hardware check is needed.
   - **Yolo:** no OS sandbox anywhere. That covers the owner's session and every worker, subagent,
     lead-started, headless and unattended run it starts. Yolo never asks. It hard-refuses only
     publishing secrets and an OS-breaking wipe, and the owner's typed yes passes everything else.
+    Exec hooks run unsandboxed under yolo too (`FullAccess::hook_sandbox`), `--offline` still holds.
   - **Unattended runs without yolo** (workers, subagents, headless, `oxa work`) keep bwrap by default.
   - **In-process guards stay in every mode:** secret masking, file-tool denials for private paths,
     user-only settings, offline mode.

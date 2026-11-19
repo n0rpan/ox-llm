@@ -1185,13 +1185,16 @@ fn prepare(
         dirs.home.clone(),
         oxa_proto::offline(),
     ));
+    // Exec hooks keep the wrapped sandbox except under yolo (owner standard: no sandbox
+    // anywhere), see `FullAccess::hook_sandbox`.
+    let hook_sandbox = oxa_sandbox::FullAccess::hook_sandbox(&bash_sandbox);
     let hook_inputs = HookInputs {
         args: a,
         dirs,
         cwd,
         settings: &settings,
         resources: &resources,
-        sandbox: &sandbox,
+        sandbox: &hook_sandbox,
         trusted: direct_project_trust,
         nested: child.nested(),
         env,
