@@ -1,5 +1,5 @@
 //! #307 assignment/leases: real native CLI composition with renewable ownership.
-#![cfg(all(target_os = "linux", feature = "managed-steering"))]
+#![cfg(target_os = "linux")]
 #[path = "common/work_repo.rs"]
 mod work;
 

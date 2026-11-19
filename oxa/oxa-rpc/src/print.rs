@@ -361,10 +361,7 @@ fn write_json_header(session: &Session, out: &mut dyn Write) -> Result<(), OxaEr
 
 /// The managed frontend has authenticated the assignment before mounting this worker.
 /// The JSON header remains first. All model events and receipts share one line writer.
-#[cfg(all(
-    target_os = "linux",
-    any(feature = "a2a-control", feature = "managed-steering")
-))]
+#[cfg(target_os = "linux")]
 pub fn run_json_outcome_with_steering_authority(
     session: &mut Session,
     prompts: Vec<(String, Vec<Part>)>,
@@ -411,16 +408,10 @@ pub fn run_json_outcome_with_steering_authority(
     run_json_prompts(session, prompts, &mut writer, err)
 }
 
-#[cfg(all(
-    target_os = "linux",
-    any(feature = "a2a-control", feature = "managed-steering")
-))]
+#[cfg(target_os = "linux")]
 struct SharedRecords(crate::Out);
 
-#[cfg(all(
-    target_os = "linux",
-    any(feature = "a2a-control", feature = "managed-steering")
-))]
+#[cfg(target_os = "linux")]
 impl Write for SharedRecords {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.0

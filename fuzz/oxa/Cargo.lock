@@ -412,6 +412,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "oxa-a2a"
+version = "0.2.0"
+dependencies = [
+ "oxa-proto",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "oxa-compact"
 version = "0.2.0"
 dependencies = [
@@ -494,6 +503,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxa-orchestrator"
+version = "0.2.0"
+dependencies = [
+ "libc",
+ "oxa-proto",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "oxa-perm"
 version = "0.2.0"
 dependencies = [
@@ -524,9 +544,11 @@ dependencies = [
 name = "oxa-rpc"
 version = "0.2.0"
 dependencies = [
+ "oxa-a2a",
  "oxa-config",
  "oxa-core",
  "oxa-export",
+ "oxa-orchestrator",
  "oxa-proto",
  "oxa-session",
  "serde_json",

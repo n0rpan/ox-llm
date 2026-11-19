@@ -268,7 +268,7 @@ pub fn session_header_record(h: &SessionHeader) -> Value {
 
 pub(crate) fn session_state(session: &oxa_core::Session) -> Value {
     let state = state_to_json(&session.state());
-    #[cfg(all(target_os = "linux", feature = "a2a-control"))]
+    #[cfg(target_os = "linux")]
     let state = {
         let mut state = state;
         state["goalRevision"] = Value::from(session.goal_revision());

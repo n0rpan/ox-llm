@@ -24,7 +24,7 @@ use oxa_perm::{
 };
 use oxa_proto::{codes, Engine, EntryBody, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
 use oxa_resources::{discover, DiscoverOpts, Resources};
-use oxa_rpc::{run_json_outcome, run_print_outcome, serve_outcome, Out};
+use oxa_rpc::{run_json_outcome, run_print_outcome, serve_outcome_gated, Out};
 use oxa_sandbox::Bwrap;
 #[cfg(target_os = "linux")]
 use oxa_sandbox::NoSandbox;
@@ -408,11 +408,22 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     // (main.ts `promptConfirm`): the notice and the question on stdout, one answer line from
     // stdin (read byte by byte, so piped prompt text after it stays unread).
     let mut a = a;
-    #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+    // `oxa.a2a.enabled` (user layer only): the local agent channel and control lane.
+    let a2a_enabled = Settings::load(&dirs, &cwd, false).a2a_enabled();
+    #[cfg(target_os = "linux")]
     let managed_steering = match mode {
         RunMode::Json => {
             use oxa_work::managed_steering::{ManagedSteering, FD_ENV};
             use std::os::fd::AsFd;
+            if !a2a_enabled && env.get(FD_ENV).is_some() {
+                return finish_outcome(
+                    Err(OxaError::new(
+                        codes::INVALID,
+                        "native steering needs the agent channel; set oxa.a2a.enabled to true in the user settings",
+                    )),
+                    &mut *stderr,
+                );
+            }
             match env
                 .get(FD_ENV)
                 .map(|fd| ManagedSteering::receive(fd, &dirs.agent_dir, std::io::stdin().as_fd()))
@@ -492,7 +503,16 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         RunMode::Interactive => run_tui(&a, env, &cwd, prep, &mut *stderr, None),
         RunMode::Rpc => {
             let dirs = prep.built.dirs.clone();
-            run_rpc(prep, a.max_time, a.max_tokens, dirs, stdin, stdout, &mut *stderr)
+            run_rpc(
+                prep,
+                a.max_time,
+                a.max_tokens,
+                dirs,
+                stdin,
+                stdout,
+                &mut *stderr,
+                a2a_enabled,
+            )
         }
         RunMode::Print | RunMode::Json => {
             let stdin_text = match read_piped_stdin(&mut *stdin, stdin_is_tty) {
@@ -516,7 +536,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 prompts,
                 stdout,
                 &mut *stderr,
-                #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+                #[cfg(target_os = "linux")]
                 managed_steering,
             )
         }
@@ -1599,9 +1619,7 @@ fn run_headless(
     prompts: Vec<(String, Vec<Part>)>,
     stdout: Box<dyn Write + Send>,
     stderr: &mut dyn Write,
-    #[cfg(all(target_os = "linux", feature = "managed-steering"))] managed_steering: Option<
-        oxa_work::managed_steering::ManagedSteering,
-    >,
+    #[cfg(target_os = "linux")] managed_steering: Option<oxa_work::managed_steering::ManagedSteering>,
 ) -> i32 {
     let Prep {
         built,
@@ -1617,7 +1635,7 @@ fn run_headless(
         Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),
     };
     let starts_goal = built.goal.is_some();
-    #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+    #[cfg(target_os = "linux")]
     let starts_goal = if let Some(steering) = managed_steering.as_ref().filter(|_| session.goal().is_none()) {
         if let Err(error) = crate::goal_cmd::from_objective(steering.objective().into(), max_time, max_tokens)
             .and_then(|goal| session.set_goal(Some(goal), &mut oxa_proto::VecSink::default()))
@@ -1728,10 +1746,10 @@ fn run_headless(
         }
     };
     let mut stdout = Some(stdout);
-    #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+    #[cfg(target_os = "linux")]
     let mut managed_out = None;
     let result = match mode {
-        #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+        #[cfg(target_os = "linux")]
         RunMode::Json if managed_steering.is_some() => {
             use oxa_core::goal::{SteeringAuthority, SteeringLease};
             let steering = managed_steering.expect("matched managed steering");
@@ -1779,7 +1797,7 @@ fn run_headless(
         if let Some(stdout) = stdout.as_deref_mut() {
             let _ = writeln!(stdout, "{usage}");
         }
-        #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+        #[cfg(target_os = "linux")]
         if let Some(out) = managed_out {
             let _ = writeln!(out.lock().unwrap_or_else(|poison| poison.into_inner()), "{usage}");
         }
@@ -1803,6 +1821,7 @@ fn run_rpc(
     stdin: Box<dyn Read + Send>,
     stdout: Box<dyn Write + Send>,
     stderr: &mut dyn Write,
+    control_lane: bool,
 ) -> i32 {
     let Prep {
         built,
@@ -1836,7 +1855,7 @@ fn run_rpc(
     };
     let out: Out = Arc::new(Mutex::new(stdout));
     let input = Box::new(BufReader::new(stdin));
-    let result = serve_outcome(session, dirs, input, out);
+    let result = serve_outcome_gated(session, dirs, input, out, control_lane);
     let result = match &built.status {
         Some(status) => status.finish(result, stderr),
         None => result,

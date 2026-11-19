@@ -124,7 +124,53 @@ fn session_deps(env: &TestEnv, engine: Arc<dyn Engine>) -> Deps {
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+#[cfg(target_os = "linux")]
+#[test]
+fn control_files_are_not_consumed_when_the_control_lane_is_off() {
+    use oxa_session::send_inbox_control;
+
+    fn control_files(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| {
+                        let path = entry.path();
+                        if path.is_dir() {
+                            control_files(&path)
+                        } else {
+                            usize::from(path.to_string_lossy().contains(".control-"))
+                        }
+                    })
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let owner = open_session(&env, engine);
+    let bound = owner.inner().sref.clone();
+    let agent = Dirs::under(env.root()).agent_dir;
+    let mut rpc = Rpc::start_with(owner, &env, |session, dirs, input, out| {
+        oxa_rpc::serve_outcome_gated(session, dirs, input, out, false)
+    });
+    rpc.call("ready", json!({"type":"get_state"}));
+    let packet = json!({"method":"cancel","id":"off","revision":1});
+    send_inbox_control(&agent, &bound, &packet.to_string()).unwrap();
+    assert_eq!(control_files(&agent), 1);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(control_files(&agent), 1, "the control file must stay unread");
+    assert!(
+        !rpc.records()
+            .iter()
+            .any(|record| record["type"] == "goal_control_receipt"),
+        "no receipt without the control lane"
+    );
+    rpc.finish();
+}
+
+#[cfg(target_os = "linux")]
 #[test]
 fn file_control_receipts_report_revisioned_and_durable_owner_transitions() {
     use oxa_orchestrator::control::Request;
@@ -372,7 +418,7 @@ fn has_settled(records: &[Value], aborted: bool) -> bool {
         .any(|r| r["type"] == "agent_settled" && r["aborted"] == aborted)
 }
 
-#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+#[cfg(target_os = "linux")]
 mod live_steering {
     use super::*;
     use oxa_core::goal::SteeringLease;

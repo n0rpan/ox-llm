@@ -141,6 +141,7 @@ const SCHEMA: &[KeyDef] = &[
     ),
     key("modelThinkingLevels", Kind::Object, "{}"),
     key("outputPad", Kind::Number, "1"),
+    key("oxa.a2a.enabled", Kind::Bool, "true"),
     key("oxa.allowHomeCwd", Kind::Bool, "false"),
     // F5: seconds; unset = 120; 0 = none.
     key("oxa.bash.defaultTimeout", Kind::Number, "null"),

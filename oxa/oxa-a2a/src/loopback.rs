@@ -2,8 +2,8 @@
 //!
 //! It cannot reach remote hosts, resolve DNS, follow redirects, use proxies or
 //! load credentials from the environment. This is not a production TLS client.
-//! Responses require Content-Length by default. The optional agent-host feature
-//! permits explicitly close-delimited SSE; chunked encoding is not supported.
+//! Responses require Content-Length by default, except that an event stream may be
+//! explicitly close-delimited; chunked encoding is not supported.
 use crate::sse::SseReader;
 use crate::wire::*;
 use serde_json::{json, Value};
@@ -11,7 +11,6 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Read, Take, Write};
 use std::net::{SocketAddr, TcpStream};
-#[cfg(feature = "agent-host")]
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
@@ -74,25 +73,21 @@ pub struct Client {
     capability: Capability,
     limits: Limits,
     next_id: u64,
-    #[cfg(feature = "agent-host")]
     budget: ResponseBudget,
 }
 
 /// Shared aggregate incoming wire-byte allowance, including HTTP headers and
 /// ignored optional fields. Concurrent readers reserve before reading so they
 /// cannot overspend the allowance. It never holds credentials or message data.
-#[cfg(feature = "agent-host")]
 #[derive(Clone, Debug)]
 pub struct ResponseBudget(Arc<Incoming>);
 
-#[cfg(feature = "agent-host")]
 #[derive(Debug)]
 struct Incoming {
     remaining: AtomicUsize,
     used: AtomicUsize,
 }
 
-#[cfg(feature = "agent-host")]
 impl ResponseBudget {
     pub fn new(bytes: usize) -> Self {
         Self(Arc::new(Incoming {
@@ -172,7 +167,6 @@ impl Client {
             capability,
             limits,
             next_id: 0,
-            #[cfg(feature = "agent-host")]
             budget: ResponseBudget::new(usize::MAX),
         })
     }
@@ -181,7 +175,6 @@ impl Client {
         format!("http://{}/", self.address)
     }
 
-    #[cfg(feature = "agent-host")]
     pub fn with_response_budget(mut self, budget: ResponseBudget) -> Self {
         self.budget = budget;
         self
@@ -189,13 +182,11 @@ impl Client {
 
     /// Clone only the registered endpoint/capability. The caller supplies an
     /// independent aggregate budget (or deliberately shares one).
-    #[cfg(feature = "agent-host")]
     pub fn fork(&self, limits: Limits, budget: ResponseBudget) -> io::Result<Self> {
         Ok(Self::new(self.address, self.capability.clone(), limits)?.with_response_budget(budget))
     }
 
     /// Reduce transport bounds; never widen the original registration's limits.
-    #[cfg(feature = "agent-host")]
     pub fn constrain(&mut self, limits: Limits) -> io::Result<()> {
         if limits.timeout.is_zero() || limits.body_bytes == 0 || limits.event_bytes == 0 {
             return Err(invalid("limits must be positive"));
@@ -310,7 +301,6 @@ impl Client {
         let mut stream = DeadlineStream {
             socket,
             deadline,
-            #[cfg(feature = "agent-host")]
             budget: Some(self.budget.clone()),
         };
         write!(stream, "{method} {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nAccept: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", self.address, self.capability.0, body.len())?;
@@ -323,8 +313,7 @@ impl Client {
         if head.headers.get("content-type").and_then(|s| s.split(';').next()) != Some(content_type) {
             return Err(invalid("unexpected agent content type"));
         }
-        let length = if cfg!(feature = "agent-host")
-            && content_type == "text/event-stream"
+        let length = if content_type == "text/event-stream"
             && !head.headers.contains_key("content-length")
             && !head.headers.contains_key("transfer-encoding")
             && head
@@ -452,7 +441,6 @@ impl EventStream {
 pub(crate) struct DeadlineStream {
     pub(crate) socket: TcpStream,
     pub(crate) deadline: Instant,
-    #[cfg(feature = "agent-host")]
     pub(crate) budget: Option<ResponseBudget>,
 }
 
@@ -468,7 +456,6 @@ impl DeadlineStream {
 impl Read for DeadlineStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.socket.set_read_timeout(Some(self.remaining()?))?;
-        #[cfg(feature = "agent-host")]
         if let Some(budget) = &self.budget {
             return budget.read(&mut self.socket, buf);
         }

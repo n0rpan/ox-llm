@@ -1166,7 +1166,6 @@ dependencies = [
 name = "oxa-a2a"
 version = "0.2.0"
 dependencies = [
- "oxa-a2a",
  "oxa-proto",
  "serde",
  "serde_json",
@@ -1176,7 +1175,7 @@ dependencies = [
 name = "oxa-cli"
 version = "0.2.0"
 dependencies = [
- "oxa-cli",
+ "oxa-a2a",
  "oxa-codemode",
  "oxa-compact",
  "oxa-config",
@@ -1340,7 +1339,6 @@ version = "0.2.0"
 dependencies = [
  "libc",
  "oxa-fake",
- "oxa-orchestrator",
  "oxa-proto",
  "serde",
  "serde_json",
@@ -1401,13 +1399,13 @@ dependencies = [
 name = "oxa-rpc"
 version = "0.2.0"
 dependencies = [
+ "oxa-a2a",
  "oxa-config",
  "oxa-core",
  "oxa-export",
  "oxa-fake",
  "oxa-orchestrator",
  "oxa-proto",
- "oxa-rpc",
  "oxa-session",
  "serde_json",
 ]

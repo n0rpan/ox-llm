@@ -22,6 +22,12 @@ The background-job and per-parent child limits are configurable through `oxa.bas
 Project settings for remote concurrency remain bounded by the user’s child cap. An explicit
 bash `timeout: 0` opts out of the call timeout. Sandbox and permission checks still apply.
 
+The agent control lane (steer, pause, resume, cancel for headless sessions) is reachable in release
+builds. Control requests are accepted only from the same user and are checked against the lease and
+goal revision by the session owner. `oxa.a2a.enabled: false` in the user settings turns the lane
+off. A way for another user, a project file or a model to send or authorise a control request is
+high severity.
+
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 
 Do not report: style, pre-existing issues outside the diff, test-only code that never runs in production, or hypothetical risks without a concrete path.
