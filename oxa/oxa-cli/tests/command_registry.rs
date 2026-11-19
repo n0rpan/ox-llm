@@ -32,6 +32,12 @@ fn suite_status_json_resolves_to_the_native_status_command() {
         matches!(parsed.subcommand, Some(oxa_cli::Subcommand::Status(args))
         if args == ["--json"])
     );
+fn engine_admission_does_not_reserve_oxa_prompt_words() {
+    let words = vec!["admission".to_owned(), "criteria".to_owned()];
+    assert!(parse_cli(&words).is_none());
+    let args = oxa_cli::parse_args(&words, &[]).unwrap();
+    assert!(args.subcommand.is_none());
+    assert_eq!(args.messages, words);
 }
 
 #[test]

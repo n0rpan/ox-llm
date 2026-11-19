@@ -113,7 +113,7 @@ The normal chat envelope is 24 GiB high/25 GiB maximum, swap 0. Its ordinary
 admission check is model-file bytes plus 3 GiB: approximately 24.107 GiB for MoE
 and 18.411 GiB for dense. This check refuses a load; it does not shrink weights
 or set an expert-cache capacity. [Profiles and envelope](lab-notes/RUNTIME-SETUP.md),
-[controller](../src/oxc/runtime/controller.py).
+controller.
 
 The available historical memory records are **loaded snapshots, not peaks**:
 

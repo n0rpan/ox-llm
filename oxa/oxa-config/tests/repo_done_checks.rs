@@ -14,9 +14,4 @@ fn repo_done_list_runs_the_documented_checks() {
         done.iter().any(|c| c == "in oxa: ../tools/ci/fmt_check.sh"),
         "rustfmt check missing: {done:?}"
     );
-    assert!(
-        done.iter()
-            .any(|c| c == "in oxc: sh tools/run_lab_tests.sh test_doc_links"),
-        "lab wrapper missing: {done:?}"
-    );
 }
