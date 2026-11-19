@@ -76,6 +76,50 @@ class ReleaseAssets(unittest.TestCase):
         self.assertIn('ox-llm-v*-linux-$(uname -m).tar.gz', t)
         self.assertIn('ox-llm-0.2.0-linux-$(uname -m).tar.gz', t)
 
+    def test_no_python_check_is_wired_into_every_release_path(self):
+        script = (W.parents[1] / 'packaging/release/no-python.sh').read_text()
+        self.assertTrue(script.startswith('#!/bin/sh\n'))
+        for rule in ('python shebang', 'non-native executable', 'controller payload', 'python invocation'):
+            self.assertIn(rule, script)
+        self.assertIn('packaging/release/no-python.sh "$artifact"',
+                      (W / 'release-build.yml').read_text())
+        self.assertIn('packaging/release/no-python.sh:/no-python.sh:ro',
+                      (W / 'release-build.yml').read_text())
+        self.assertIn('packaging/release/no-python.sh dist/*.tar.gz', (W / 'release.yml').read_text())
+        dev = (W / 'dev-build.yml').read_text()
+        publish = dev.split('  publish:', 1)[1]
+        self.assertLess(publish.index('packaging/release/no-python.sh dist/*.tar.gz'),
+                        publish.index('gh release upload dev'))
+        arch = (W.parents[1] / 'packaging/release/arch-test.sh').read_text()
+        self.assertIn('sh /no-python.sh --list /tmp/installed-files', arch)
+        for name in ('dev-build.yml', 'release-build.yml'):
+            self.assertNotIn('python3 -I - <<', (W / name).read_text())
+            self.assertNotIn('tomllib', (W / name).read_text())
+
+    def test_no_python_script_flags_python_and_passes_native_trees(self):
+        script = W.parents[1] / 'packaging/release/no-python.sh'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            good = root / 'good/usr/bin'
+            good.mkdir(parents=True)
+            (good / 'oxa').write_bytes(b'\x7fELF\x02\x01')
+            (root / 'good/usr/share/licenses').mkdir(parents=True)
+            (root / 'good/usr/share/licenses/LICENSE').write_text('python3 is mentioned in a licence\n')
+            run = lambda *a: subprocess.run(['/bin/sh', str(script), *a], text=True, capture_output=True)
+            self.assertEqual(run(str(root / 'good')).returncode, 0)
+            cases = {
+                'usr/share/x/tool.py': 'print(1)\n',
+                'usr/bin/script': '#!/usr/bin/env python3\n',
+                'usr/share/ox-llm/memlat/hook.sh': '#!/bin/sh\nexec /usr/bin/python3 x\n',
+                'usr/share/ox-llm/oxc/a': 'x\n',
+            }
+            for name, text in cases.items():
+                bad = root / ('bad-' + str(len(name)))
+                shutil.copytree(root / 'good', bad)
+                (bad / name).parent.mkdir(parents=True, exist_ok=True)
+                (bad / name).write_text(text)
+                self.assertEqual(run(str(bad)).returncode, 1, name)
+
 
 if __name__ == '__main__':
     unittest.main()
