@@ -110,22 +110,6 @@ impl Settings {
         }
         Some(cur)
     }
-    /// `true` when the user or the project settings file names `key`. The injected defaults
-    /// layer does not count, so a settings row can tell an explicit value (`defaultTools`
-    /// included) from a built-in one.
-    pub fn is_set(&self, key: &str) -> bool {
-        let names = |layer: &Value| {
-            let mut cur = layer;
-            for part in key.split('.') {
-                match cur.as_object().and_then(|o| o.get(part)) {
-                    Some(v) => cur = v,
-                    None => return false,
-                }
-            }
-            true
-        };
-        names(&self.user) || names(&self.project)
-    }
     pub fn bool(&self, key: &str, default: bool) -> bool {
         self.get(key).and_then(Value::as_bool).unwrap_or(default)
     }

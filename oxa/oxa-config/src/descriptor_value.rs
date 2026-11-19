@@ -4,15 +4,8 @@
 
 use crate::descriptor::{descriptors, Control, Descriptor, MapKind, Options, Unit};
 use crate::schema::{find_key, kind_matches, kind_name};
-use crate::{Settings, FALSE_WORDS, TRUE_WORDS};
+use crate::{Settings, Source, FALSE_WORDS, TRUE_WORDS};
 use serde_json::Value;
-
-/// Where a value comes from. `Set` waits for `Settings::source` (A4) to tell user from project.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Source {
-    Default,
-    Set,
-}
 
 /// The value a row shows, and where it comes from.
 #[derive(Debug, Clone, PartialEq)]
@@ -242,17 +235,13 @@ pub fn current(settings: &Settings, d: &Descriptor) -> Shown {
         .and_then(|def| serde_json::from_str::<Value>(def.default).ok())
         .unwrap_or(Value::Null);
     let default = if schema.is_null() { eff(d) } else { schema };
+    // The provenance comes from the settings layers (A4), so a value injected by the defaults
+    // layer (`defaultTools`) is not reported as the user's or the project's.
     match settings.get(d.key) {
-        // A value injected by the defaults layer (`defaultTools`) is not an explicit setting.
-        Some(v) if settings.is_set(d.key) => Shown {
-            value: v.clone(),
-            source: Source::Set,
-            differs: *v != default,
-        },
         Some(v) => Shown {
             value: v.clone(),
-            source: Source::Default,
-            differs: false,
+            source: settings.source(d.key),
+            differs: settings.source(d.key) != Source::Default && *v != default,
         },
         None => Shown {
             value: default,
@@ -381,7 +370,7 @@ mod tests {
         let set = d("oxa.test.k", Group::Tools, "", "L", "h").number(Unit::Count);
         let shown = current(&s, &set);
         assert_eq!(shown.value, json!(5));
-        assert_eq!(shown.source, Source::Set);
+        assert_eq!(shown.source, Source::User);
         assert!(shown.differs);
         let unset = d("oxa.test.other", Group::Tools, "", "L", "h")
             .toggle()
@@ -403,7 +392,7 @@ mod tests {
         assert!(!shown.differs);
         let s = Settings::from_values(json!({ "defaultTools": ["read"] }), Value::Null);
         let shown = current(&s, &list);
-        assert_eq!(shown.source, Source::Set);
+        assert_eq!(shown.source, Source::User);
         assert_eq!(shown.value, json!(["read"]));
         assert!(shown.differs);
     }
