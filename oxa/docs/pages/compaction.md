@@ -96,6 +96,7 @@ When the summary of a compaction fails, or is cancelled twice in a row, oxa does
 | `compaction.reserveTokens` | `16384` | room kept free for the summary and the next reply |
 | `compaction.keepRecentTokens` | `4000` | size of the kept tail |
 | `compaction.modelOverrides` | `null` | per model: `{"<model-id>": {"reserveTokens": n, "keepRecentTokens": n}}` |
+| `compaction.reactivateSkills` | `false` | retain invoked skills and ask the model to re-read them after compaction |
 | `oxa.compaction.softTokens` | unset | context size that starts the idle compaction |
 | `oxa.compaction.idleSummary` | unset (on) | writes the next summary in idle time |
 | `oxa.compaction.summaryTarget` | unset (700) | soft length target of the summary, in tokens |

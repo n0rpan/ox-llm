@@ -66,7 +66,10 @@ fn build(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Vec<Arc<dyn Hooks>>) -> 
         hooks,
         policy: Box::new(ModePolicy::new()) as Box<dyn Policy>,
         sandbox: Arc::new(NoSandbox),
-        settings: Settings::default(),
+        settings: Settings::from_values(
+            serde_json::json!({"compaction": {"reactivateSkills": true}}),
+            Value::Object(Default::default()),
+        ),
         dirs: Dirs::under(env.root()),
         cwd: cwd.clone(),
         all_tools: Vec::new(),
@@ -349,7 +352,8 @@ fn active_skills_carry_across_repeated_compaction() {
 fn quoted_skill_tag_is_not_an_active_skill() {
     let env = TestEnv::new();
     let mut st = state(&env, Vec::new());
-    // The same bytes a loaded skill is sent as, with no such skill in the session's resources.
+    st.resources.skills = vec![lint_skill()];
+    // Even a discovered skill is not active when its canonical wrapper is merely quoted.
     say(
         &mut st,
         &format!("explain this form: {}", skill_message("lint", LINT)),
@@ -364,16 +368,33 @@ fn quoted_skill_tag_is_not_an_active_skill() {
     assert!(!head.contains(LINT), "{head}");
 }
 
+/// Skill reactivation changes model context and is therefore explicitly opt-in.
+#[test]
+fn skill_reactivation_is_off_by_default() {
+    let env = TestEnv::new();
+    let mut st = state(&env, Vec::new());
+    st.settings = Settings::default();
+    st.resources.skills = vec![lint_skill()];
+    say(&mut st, &skill_message("lint", LINT));
+    push(&mut st, WireMsg::assistant("linted"));
+    say(&mut st, "the next task");
+    push(&mut st, WireMsg::assistant("done"));
+    compact(&mut st);
+
+    let head = summary_head(&st);
+    assert!(!head.contains("<active-skills>"), "{head}");
+}
+
 /// The retained skills list shares the summary budget: whole lines are kept while they fit and
 /// the rest are counted, so a long history cannot grow the summary without bound.
 #[test]
 fn retained_skills_stay_within_the_summary_budget() {
     let env = TestEnv::new();
     let mut st = state(&env, Vec::new());
-    // Ten discovered skills, each line 22 bytes; a 70-byte summary budget leaves room for two.
-    st.compact.summary_max = 70;
+    // Ten discovered skills cannot all fit once the complete block (including its wrapper and
+    // instruction) is charged to this deliberately small summary budget.
+    st.compact.summary_max = 180;
     let mut skills = Vec::new();
-    let mut message = String::new();
     for i in 0..10 {
         let name = format!("s{i:02}");
         let location = format!("/skills/{name}/SKILL.md");
@@ -385,11 +406,10 @@ fn retained_skills_stay_within_the_summary_budget() {
             source: ResourceSource::User,
             disable_model_invocation: false,
         });
-        message.push_str(&skill_message(&name, &location));
+        say(&mut st, &skill_message(&name, &location));
+        push(&mut st, WireMsg::assistant("loaded"));
     }
     st.resources.skills = skills;
-    say(&mut st, &message);
-    push(&mut st, WireMsg::assistant("loaded"));
     say(&mut st, "the next task");
     push(&mut st, WireMsg::assistant("done"));
     compact(&mut st);

@@ -15,6 +15,10 @@ const BLOCK_OPEN: &str = "\n\n<active-skills>\n";
 const BLOCK_CLOSE: &str = "\n</active-skills>";
 /// The last line of the block, before [`BLOCK_CLOSE`].
 const RE_READ: &str = "Re-read these files before continuing.";
+/// Compaction metadata is durable and sits outside the model-produced summary. Keep it small
+/// even if an imported transcript contains hostile `activeSkills` details.
+const MAX_ACTIVE_SKILLS: usize = 64;
+const MAX_SKILL_FIELD_BYTES: usize = 1024;
 
 /// The `(name, location)` pairs of the skills active in `branch`: the `<skill>` tags of the
 /// user messages of `branch`, plus the `activeSkills` carried in the `details` of earlier
@@ -25,7 +29,7 @@ pub fn active_skills(branch: &[&Entry]) -> Vec<(String, String)> {
         match &e.body {
             EntryBody::Msg { wire, .. } if wire.role == Role::User => {
                 if let Some(text) = wire.content.as_deref() {
-                    skills.extend(skill_tags(text));
+                    skills.extend(skill_tag(text));
                 }
             }
             EntryBody::Compaction {
@@ -48,39 +52,43 @@ pub fn active_skills(branch: &[&Entry]) -> Vec<(String, String)> {
                         item.get("name").and_then(Value::as_str),
                         item.get("location").and_then(Value::as_str),
                     ) {
-                        skills.insert((name.to_owned(), location.to_owned()));
+                        insert_skill(&mut skills, name, location);
                     }
                 }
             }
             _ => {}
         }
     }
-    skills.into_iter().collect()
+    skills.into_iter().take(MAX_ACTIVE_SKILLS).collect()
 }
 
-/// The `(name, location)` of each `<skill name=".." location="..">` opening tag in `text`.
-fn skill_tags(text: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let mut rest = text;
-    while let Some(at) = rest.find(TAG_OPEN) {
-        rest = &rest[at + TAG_OPEN.len()..];
-        let Some(name_end) = rest.find('"') else {
-            break;
-        };
-        let name = &rest[..name_end];
-        let Some(after_name) = rest[name_end..].strip_prefix("\" location=\"") else {
-            continue;
-        };
-        let Some(loc_end) = after_name.find('"') else {
-            break;
-        };
-        let location = &after_name[..loc_end];
-        if !name.is_empty() && !location.is_empty() && after_name[loc_end..].starts_with("\">") {
-            out.push((name.to_owned(), location.to_owned()));
-        }
-        rest = &after_name[loc_end..];
+/// The canonical skill wrapper is the whole user-message prefix produced by
+/// `expand_skill_command`; a tag quoted later in an ordinary prompt is not an invocation.
+fn skill_tag(text: &str) -> Option<(String, String)> {
+    let rest = text.strip_prefix(TAG_OPEN)?;
+    let name_end = rest.find('"')?;
+    let name = &rest[..name_end];
+    let after_name = rest[name_end..].strip_prefix("\" location=\"")?;
+    let loc_end = after_name.find('"')?;
+    let location = &after_name[..loc_end];
+    after_name[loc_end..].starts_with("\">").then(|| {
+        let mut skills = BTreeSet::new();
+        insert_skill(&mut skills, name, location);
+        skills.into_iter().next()
+    })?
+}
+
+fn insert_skill(skills: &mut BTreeSet<(String, String)>, name: &str, location: &str) {
+    if skills.len() < MAX_ACTIVE_SKILLS
+        && !name.is_empty()
+        && !location.is_empty()
+        && name.len() <= MAX_SKILL_FIELD_BYTES
+        && location.len() <= MAX_SKILL_FIELD_BYTES
+        && !name.contains(['\r', '\n'])
+        && !location.contains(['\r', '\n'])
+    {
+        skills.insert((name.to_owned(), location.to_owned()));
     }
-    out
 }
 
 /// The block listing `skills` (one `name location` line each) for a summary text, starting with
@@ -108,25 +116,26 @@ pub fn active_skills_block_within(
     if skills.is_empty() {
         return String::new();
     }
-    let mut kept: Vec<String> = Vec::new();
-    let mut used = 0u32;
-    for (name, location) in skills {
-        let line = format!("{name} {location}");
-        let cost = count(&line);
-        if used.saturating_add(cost) > budget {
-            break;
+    let lines: Vec<String> = skills
+        .iter()
+        .map(|(name, location)| format!("{name} {location}"))
+        .collect();
+    // Count the complete candidate, including delimiters, instruction, separators and the
+    // elision notice. Tokenizers need not be additive, so count the rendered string itself.
+    for keep in (1..=lines.len()).rev() {
+        let mut body = lines[..keep].to_vec();
+        if keep < lines.len() {
+            body.push(format!(
+                "({} more not listed: summary budget)",
+                lines.len() - keep
+            ));
         }
-        used = used.saturating_add(cost);
-        kept.push(line);
+        let block = format!("{BLOCK_OPEN}{}\n{RE_READ}{BLOCK_CLOSE}", body.join("\n"));
+        if count(&block) <= budget {
+            return block;
+        }
     }
-    if kept.is_empty() {
-        return String::new();
-    }
-    let left = skills.len() - kept.len();
-    if left > 0 {
-        kept.push(format!("({left} more not listed: summary budget)"));
-    }
-    format!("{BLOCK_OPEN}{}\n{RE_READ}{BLOCK_CLOSE}", kept.join("\n"))
+    String::new()
 }
 
 /// A summary text without the trailing [`active_skills_block`] it may end with.
@@ -148,11 +157,12 @@ mod tests {
     fn parses_skill_tags_only() {
         let text = "<skill name=\"lint\" location=\"/s/lint/SKILL.md\">\nbody\n</skill>\n\nrun";
         assert_eq!(
-            skill_tags(text),
-            vec![("lint".to_string(), "/s/lint/SKILL.md".to_string())]
+            skill_tag(text),
+            Some(("lint".to_string(), "/s/lint/SKILL.md".to_string()))
         );
-        assert!(skill_tags("<skill name=\"x\">no location</skill>").is_empty());
-        assert!(skill_tags("plain text").is_empty());
+        assert!(skill_tag("<skill name=\"x\">no location</skill>").is_none());
+        assert!(skill_tag("plain text").is_none());
+        assert!(skill_tag(&format!("quoted: {text}")).is_none());
     }
 
     #[test]
@@ -178,13 +188,16 @@ mod tests {
         let skills: Vec<(String, String)> = (0..5)
             .map(|i| (format!("s{i}"), format!("/s/s{i}/SKILL.md")))
             .collect();
-        // Two lines fit in 40 bytes (each is 17), the third does not.
-        let block = active_skills_block_within(&skills, 40, bytes);
+        let two_line_budget = bytes(&format!(
+            "{BLOCK_OPEN}s0 /s/s0/SKILL.md\ns1 /s/s1/SKILL.md\n(3 more not listed: summary budget)\n{RE_READ}{BLOCK_CLOSE}"
+        ));
+        let block = active_skills_block_within(&skills, two_line_budget, bytes);
         assert!(block.contains("s0 /s/s0/SKILL.md"), "{block}");
         assert!(block.contains("s1 /s/s1/SKILL.md"), "{block}");
         assert!(!block.contains("s2 "), "{block}");
         assert!(block.contains("(3 more not listed: summary budget)"), "{block}");
         assert!(block.ends_with("Re-read these files before continuing.\n</active-skills>"));
+        assert!(bytes(&block) <= two_line_budget);
         // Nothing fits: no block at all, like a session with no skills.
         assert_eq!(active_skills_block_within(&skills, 5, bytes), "");
         // Everything fits: the plain block, no elision line.
