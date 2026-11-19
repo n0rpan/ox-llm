@@ -197,6 +197,7 @@ impl ApprovalDesk {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .mode(0o600)
             .open(self.dir.join(LOCK_NAME))?;
         file.lock()?;

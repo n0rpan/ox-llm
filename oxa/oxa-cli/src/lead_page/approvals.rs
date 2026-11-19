@@ -111,12 +111,13 @@ fn scrub_shell(command: &str, ctx: &ScrubCtx) -> String {
     out
 }
 
-/// One shell word, masked for display. A word with an expansion (`$`, a backtick) is shown as
-/// it is: the shell runs what it holds, so the owner must see it. A secret-named assignment
+/// One shell word, masked for display. A word with an executable expansion (`$`, a backtick)
+/// is shown as it is: the shell runs what it holds, so the owner must see it. Quoted or escaped
+/// expansion markers are literal credential text and remain eligible for masking. A secret-named assignment
 /// (`password=...`, `--api-key=...`, `TOKEN='...'`) shows its name and `<secret>` for the whole
 /// value, quotes included. Any other word goes through the report scrubber (known token formats).
 fn mask_word(word: &str, ctx: &ScrubCtx) -> String {
-    if word.contains('$') || word.contains('`') {
+    if has_executable_expansion(word) {
         return word.to_string();
     }
     if let Some(eq) = word.find('=') {
@@ -143,6 +144,29 @@ fn mask_word(word: &str, ctx: &ScrubCtx) -> String {
         }
     }
     scrub(word, ctx)
+}
+
+/// Whether the shell can act on an expansion marker in this word. Single quotes make both
+/// markers literal, and a backslash makes the following marker literal; double quotes still
+/// permit parameter and command substitution.
+fn has_executable_expansion(word: &str) -> bool {
+    let (mut single, mut double, mut escaped) = (false, false, false);
+    for c in word.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if c == '\\' && !single {
+            escaped = true;
+        } else if c == '\'' && !double {
+            single = !single;
+        } else if c == '"' && !single {
+            double = !double;
+        } else if !single && matches!(c, '$' | '`') {
+            return true;
+        }
+    }
+    false
 }
 
 /// Whole seconds, minutes or hours since the request was filed. A timestamp ahead of this clock reads as new.
@@ -317,6 +341,14 @@ mod tests {
             (
                 r#"API_KEY='a b opaque-example' git push --force origin main"#,
                 "opaque-example",
+            ),
+            (
+                r#"password='opaque$example' git push --force origin main"#,
+                "opaque$example",
+            ),
+            (
+                r#"password=opaque\$example git push --force origin main"#,
+                r#"opaque\$example"#,
             ),
         ] {
             let waiting = vec![ApprovalRecord {
