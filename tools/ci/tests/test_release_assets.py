@@ -76,6 +76,43 @@ class ReleaseAssets(unittest.TestCase):
         self.assertIn('ox-llm-v*-linux-$(uname -m).tar.gz', t)
         self.assertIn('ox-llm-0.2.0-linux-$(uname -m).tar.gz', t)
 
+    def test_release_build_needs_no_python(self):
+        root = W.parents[1]
+        rb = (W / 'release-build.yml').read_text()
+        for gone in ('sbom.py', 'smoke.py', 'python3 -B', 'python3 -I -'):
+            self.assertNotIn(gone, rb)
+        self.assertIn('packaging/release/sbom.sh /build/payload', rb)
+        self.assertIn('packaging/release/smoke.sh:/smoke.sh:ro', rb)
+        self.assertIn('bash packaging/release/no-python-installers.sh', rb)
+        self.assertFalse((root / 'packaging/release/sbom.py').exists())
+        self.assertFalse((root / 'packaging/release/smoke.py').exists())
+        self.assertNotRegex((root / 'packaging/release/setup.sh').read_text(), r'\bpython')
+        arch = (root / 'packaging/release/arch-test.sh').read_text()
+        self.assertNotIn('python -B', arch)
+        self.assertIn('bash /smoke.sh', arch)
+        self.assertNotRegex(arch.split('pacman -Syu', 1)[1].splitlines()[0], r'\bpython\b')
+        self.assertIn('(depend|makedepend|checkdepend) = python', arch)
+
+    def test_installer_check_flags_python_recipes_and_scripts(self):
+        script = W.parents[1] / 'packaging/release/no-python-installers.sh'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'packaging/release').mkdir(parents=True)
+            (root / 'packaging/arch/x').mkdir(parents=True)
+            copied = root / 'packaging/release/no-python-installers.sh'
+            shutil.copyfile(script, copied)
+            recipe = root / 'packaging/arch/x/PKGBUILD'
+            helper = root / 'packaging/release/helper.sh'
+            run = lambda: subprocess.run(['/bin/bash', str(copied)], text=True, capture_output=True)
+            recipe.write_text("depends=('glibc')\nmakedepends=('cargo' 'cmake')\n")
+            helper.write_text('# python3 only in a comment\nbash stage.sh\n')
+            self.assertEqual(run().returncode, 0, run().stderr)
+            recipe.write_text("depends=('glibc')\nmakedepends=('cargo'\n 'python')\n")
+            self.assertEqual(run().returncode, 1)
+            recipe.write_text("depends=('glibc')\n")
+            helper.write_text('python3 -B tool.py\n')
+            self.assertEqual(run().returncode, 1)
+
 
 if __name__ == '__main__':
     unittest.main()

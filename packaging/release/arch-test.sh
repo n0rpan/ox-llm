@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run as root in a fresh archlinux:latest container, with artifacts mounted at /artifacts.
 set -euo pipefail
-pacman -Syu --noconfirm --needed base-devel namcap python bubblewrap rust cmake ninja git
+pacman -Syu --noconfirm --needed base-devel namcap bubblewrap rust cmake ninja git
 useradd -m builder
 install -d -o builder -g builder /build
 cp /artifacts/* /build/
@@ -24,7 +24,7 @@ for variant in ox-llm-bin ox-llm; do
   runuser -u builder -- makepkg --noconfirm --cleanbuild
   package=$(find . -maxdepth 1 -name '*.pkg.tar.zst' -print)
   bsdtar -xOf "$package" .PKGINFO | awk '
-    /^depend = python($|[-<>=])/ { print "Unexpected runtime dependency: " $0; failed = 1 }
+    /^(depend|makedepend|checkdepend) = python($|[-<>=:])/ { print "Unexpected Python dependency: " $0; failed = 1 }
     END { exit failed }
   '
   namcap PKGBUILD 2>&1 | tee /tmp/namcap.log
@@ -41,7 +41,7 @@ for variant in ox-llm-bin ox-llm; do
     echo "Unexpected Python files in $variant" >&2
     exit 1
   fi
-  python -B /smoke.py
+  bash /smoke.sh
   pacman -Qkk "$variant"
   pacman -Rns --noconfirm "$variant"
   while read -r path; do
