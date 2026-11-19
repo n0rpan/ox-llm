@@ -12,6 +12,10 @@ fn auto_mode_text_never_claims_a_sandbox_when_none_is_available() {
         // opposite and must not be read as one.
         assert!(!t.contains("dangerous commands ask; sandbox"), "{m:?}: {t}");
         assert!(!t.contains("the bash sandbox,"), "{m:?}: {t}");
+        if matches!(m, PermissionMode::Standard | PermissionMode::Auto) {
+            assert!(t.contains("bash runs with your rights"), "{m:?}: {t}");
+            assert!(!t.contains("bash is disabled"), "{m:?}: {t}");
+        }
     }
 }
 
