@@ -178,7 +178,9 @@ pub fn child_argv(
     if let Some(tools) = &n.tools {
         let allowed: Vec<&str> = tools.iter().map(String::as_str).collect();
         for tool in &allowed {
-            check_value("allowed tool", tool)?;
+            // `--tools=<list>` is one argument, so a `+name` / `-name` patch entry (CLI-027)
+            // cannot read as a flag; the name itself still may not start with a dash.
+            check_value("allowed tool", tool.strip_prefix(['+', '-']).unwrap_or(tool))?;
         }
         args.push(format!("--tools={}", allowed.join(",")));
     }
@@ -451,6 +453,13 @@ mod tests {
         assert!(!plain
             .iter()
             .any(|a| a.starts_with("--no-") || a == "--offline" || a.starts_with("--tools")));
+        // A `-name` / `+name` patch selection is forwarded in the one-argument form.
+        spec.narrowing.tools = Some(vec!["-ls".into(), "+codemode".into()]);
+        let (patched, _) = child_argv(&spec, Mode::Workspace, Autonomy::Standard).expect("patch selection");
+        assert!(
+            patched.contains(&"--tools=-ls,+codemode".to_string()),
+            "{patched:?}"
+        );
         // A value that would read as a flag is refused.
         spec.narrowing.tools = Some(vec!["--yolo".into()]);
         assert!(child_argv(&spec, Mode::Workspace, Autonomy::Standard).is_err());
