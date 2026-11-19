@@ -90,7 +90,7 @@ fn live_anthropic_discovery_keeps_the_priced_overlay_and_uses_the_cache() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(output.status.success(), "{stderr}");
         assert!(stdout.contains(MODEL));
-        assert!(!stdout.contains("synthetic-without-price"));
+        assert!(stdout.contains("synthetic-without-price"));
         assert!(stderr.contains("1 offers with unknown pricing"), "{stderr}");
         assert!(!stdout.contains(CREDENTIAL) && !stderr.contains(CREDENTIAL));
     }

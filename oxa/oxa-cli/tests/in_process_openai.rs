@@ -98,7 +98,7 @@ fn live_openai_ids_filter_the_configured_overlay_and_reuse_the_cache() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains(MODEL));
         assert!(!stdout.contains("synthetic-not-offered"));
-        assert!(!stdout.contains("synthetic-unknown-metadata"));
+        assert!(stdout.contains("synthetic-unknown-metadata"));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             stderr.contains("1 offers with unknown pricing and 1 with unknown limits"),
@@ -147,7 +147,7 @@ fn live_openrouter_discovery_uses_the_key_scoped_priced_text_offers() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stdout.contains("openrouter/vendor/synthetic-priced"), "{stdout}");
-        assert!(!stdout.contains("synthetic-unpriced"));
+        assert!(stdout.contains("synthetic-unpriced"));
         assert!(stderr.contains("1 offers with unknown pricing"), "{stderr}");
         assert!(!stdout.contains(KEY) && !stderr.contains(KEY));
     }

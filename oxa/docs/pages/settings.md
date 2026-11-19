@@ -209,12 +209,19 @@ See [quickstart.md](quickstart.md#cloud-models) for the keys file and a first se
 `openrouter`, `openai` or `anthropic` key, or after `oxa login chatgpt`; with it
 on, `oxa.cloud.discover_models` also defaults to `true`. An explicit value
 always wins, so `false` opts out (a local HTTP engine with a key in the file
-sets it to `false`). The built-in recommended models of a keyed provider
-(Anthropic and OpenAI current models with their limits and prices, and the
-ChatGPT plan models after sign-in) are merged under `oxa.cloud.models`: an
-entry of yours with the same alias (`provider/upstream-model`) is never
-replaced, and discovery refines the built-in limits and prices. Prices go stale;
-set your own entry to pin one. Offline mode
+sets it to `false`). There is no built-in model table: model data is always
+fetched. The model list comes from each provider's models endpoint with your
+key; limits and prices the provider does not list come from OpenRouter's public
+model catalog (`GET https://openrouter.ai/api/v1/models`, sent with no key and
+no data about you, matched by model id), and the last successful fetch stays in
+the on-disk catalog cache for when a fetch fails. A model nobody lists limits
+for gets a conservative default window (128,000 tokens, 8,192 output) and a
+model nobody prices is usable with unknown cost, recorded as uncertain spend
+(`--list-models` start-up notices say how many and where the data came from).
+An entry of yours under `oxa.cloud.models` with the same alias
+(`provider/upstream-model`) always wins; set one to pin a limit or price.
+Public metadata is used only for a provider's default endpoint, never when you
+point discovery at a proxy. Offline mode
 refuses before opening the gateway; configuration or gateway failures are returned
 directly. Project settings cannot enable this transport or change its cloud policy.
 

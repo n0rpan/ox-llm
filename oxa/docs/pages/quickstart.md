@@ -57,7 +57,7 @@ Go is a subscription. oxa counts its requests and tokens and records any paid ch
 
 ### OpenRouter, OpenAI and Anthropic
 
-These are metered providers. Put the key in the protected key file (see above) and that is all: the gateway and model discovery turn on by themselves, and the current Anthropic and OpenAI models are built in with their limits and prices. Set `oxa.engine.inProcessCloud` to `false` to opt out. A budget is optional; merge this into `~/.oxa/agent/settings.json` to set one:
+These are metered providers. Put the key in the protected key file (see above) and that is all: the gateway and model discovery turn on by themselves, and the model list, limits and prices are always fetched live (nothing is built in). Set `oxa.engine.inProcessCloud` to `false` to opt out. A budget is optional; merge this into `~/.oxa/agent/settings.json` to set one:
 
 ```json
 {
@@ -109,7 +109,7 @@ Sign in once, in your own terminal:
 $ oxa login chatgpt --experimental
 ```
 
-That is all: the plan models appear as `chatgpt/gpt-6.2-astra`, `chatgpt/gpt-6.2-sol` and the other Codex plan models, with no route and no limits to write. To add your own route or advisory daily limits (a warning at 80% and 100%, never a refusal), use:
+That opens the gateway; plan models are not listed automatically yet, so add a `chatgpt` route under `oxa.cloud.models` for each model you want (see the settings reference). To add your own route or advisory daily limits (a warning at 80% and 100%, never a refusal), use:
 
 ```json
 {
