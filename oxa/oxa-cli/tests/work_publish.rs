@@ -235,7 +235,7 @@ fn exercise_save_recovery(test_name: &str, case: SaveRecovery) {
 #[test]
 fn a_legacy_done_without_checks_cannot_publish() {
     let env = TestEnv::new();
-    setup(&env, r#"["true"]"#);
+    setup(&env, "[]");
     let record = run(&env, edits());
     assert_eq!(record["outcome"], "unverified", "{record}");
     let state_path = state_path(&env);
