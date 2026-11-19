@@ -116,6 +116,9 @@ maintainer, who says in the PR when a hardware check is needed.
   sandbox, user-only settings, offline, fork safety). Limits, budgets, retries and guards are owner
   settings with generous defaults that warn and record; a hard block exists only when the owner
   configures it. Do not ask for a new default block or for a feature to be default-off.
+  Owner messages sent with `oxa send` are not refused for size: text over the 256 KiB inline
+  inbox limit is stored in the receiving session's private, tool-readable spill directory and
+  only a short pointer is queued. The agent directory remains denied.
   The repeat guard follows this: the third identical tool result gets a short note, a call that
   still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
   is the cap against loops the guard cannot see. A pursuing goal whose request fails transiently
