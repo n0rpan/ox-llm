@@ -531,6 +531,8 @@ fn the_go_switch_does_not_open_another_providers_alias() {
             stream(json!({"content":"synthetic plan reply"}), "stop"),
             Reply::json(discovery(base)),
             Reply::json(discovery(base)),
+            Reply::json(discovery(base)),
+            stream(json!({"content":"project-safe reply"}), "stop"),
         ]
     });
     setup(&env, &format!("http://{}", mock.address()));
@@ -565,12 +567,25 @@ fn the_go_switch_does_not_open_another_providers_alias() {
         let refused = run(&env, &["--model", alias, "--no-tools", "-p", "Synthetic task"]);
         assert!(!refused.status.success(), "{alias}");
     }
+    // A project default with Go spelling still carries the configured OpenAI provider. It may
+    // not use the owner's Go opt-in to leave the Go catalog when the owner names no model.
+    env.write(
+        "work/.oxa/settings.json",
+        &json!({"defaultModel":"opencode/synthetic-metered"}).to_string(),
+    );
+    let project = run(&env, &["--no-tools", "-p", "Synthetic task"]);
+    assert!(
+        project.status.success(),
+        "{}",
+        String::from_utf8_lossy(&project.stderr)
+    );
+    assert!(String::from_utf8_lossy(&project.stdout).contains("project-safe reply"));
     assert!(
         other.requests().is_empty(),
         "the Go switch must not spend another provider: {:?}",
         other.requests()
     );
-    assert_eq!(mock.requests().len(), 4);
+    assert_eq!(mock.requests().len(), 6);
     mock.assert_healthy();
     other.assert_healthy();
 }
