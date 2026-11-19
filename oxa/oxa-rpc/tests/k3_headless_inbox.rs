@@ -343,6 +343,53 @@ fn message_admitted_after_last_drain_is_not_lost() {
 }
 
 #[test]
+fn failed_late_message_restore_fails_the_run() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("only answer")]));
+    let mut session = open(&env, engine);
+    pursue(&mut session);
+    let id = session.state().session_id;
+    let handle = session.handle();
+    let agent = agent_dir(&env);
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let run = {
+        let agent = agent.clone();
+        thread::spawn(move || {
+            let mut out = BlockAtSettled {
+                entered: entered_tx,
+                release: Mutex::new(Some(release_rx)),
+            };
+            let mut err = Vec::new();
+            run_json_outcome_with_inbox(&mut session, prompt("start"), &mut out, &mut err, &agent, true)
+        })
+    };
+    entered_rx
+        .recv_timeout(WAIT)
+        .expect("the run reaches its closing record, after its last drain");
+    send_inbox(&agent, &id, "late follow-up").unwrap();
+    wait_until("the watcher to admit the late message", || {
+        handle.has_inbox_input()
+    });
+
+    let destination = agent.join("inbox").join(&id);
+    fs::remove_dir_all(&destination).unwrap();
+    fs::write(&destination, "blocks inbox directory recreation").unwrap();
+    release_tx.send(()).unwrap();
+
+    let error = run
+        .join()
+        .expect("the run finishes")
+        .expect_err("a failed durable handoff must fail the run");
+    assert!(
+        error
+            .to_string()
+            .contains("cannot restore an undelivered session inbox message"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn refused_at_capacity_is_retried_after_each_prompt() {
     // The wrappers must call `Inbox::retry` as the RPC and TUI owners do: a message refused
     // while the queue was full is admitted once a prompt has drained it, without a new send.

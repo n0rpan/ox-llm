@@ -17,6 +17,11 @@ Treat as **high** severity:
 The sandbox can forward the owner's `CARGO_TARGET_DIR` to worker shells. External cache
 paths are writable only through an explicit owner `oxa.sandbox.writePaths` mount.
 
+Persisted headless print and JSON runs with a pursuing goal consume plain `oxa send` inbox
+messages by default. The user-only `oxa.inbox.headless` setting can opt out; project settings
+cannot enable or disable it. Non-persisted sessions, sessions without a pursuing goal, and the
+managed-steering path do not mount the plain inbox watcher.
+
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 
 Do not report: style, pre-existing issues outside the diff, test-only code that never runs in production, or hypothetical risks without a concrete path.

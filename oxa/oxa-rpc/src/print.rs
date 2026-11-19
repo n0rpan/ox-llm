@@ -372,8 +372,8 @@ pub fn run_print_outcome_with_inbox(
 ) -> Result<RunOutcome, OxaError> {
     let inbox = headless_inbox(session, agent_dir, headless_inbox_enabled, err);
     let result = run_print_prompts(session, prompts, out, err, inbox.as_ref());
-    restore_undelivered(session, inbox, agent_dir, err);
-    result
+    let restored = restore_undelivered(session, inbox, agent_dir);
+    restored.and(result)
 }
 
 /// `--mode json` with the plain session inbox: [`run_json_outcome`] with [`headless_inbox`]
@@ -389,20 +389,19 @@ pub fn run_json_outcome_with_inbox(
     write_json_header(session, out)?;
     let inbox = headless_inbox(session, agent_dir, headless_inbox_enabled, err);
     let result = run_json_prompts(session, prompts, out, err, inbox.as_ref());
-    restore_undelivered(session, inbox, agent_dir, err);
-    result
+    let restored = restore_undelivered(session, inbox, agent_dir);
+    restored.and(result)
 }
 
 /// The run is over: stop the watcher, then give back every message it admitted that no turn
 /// consumed (one admitted after the last queue drain) as an inbox file, so the next owner of
-/// the session takes it. An accepted message is never lost with the process.
+/// the session takes it. A failed durable handoff fails the run instead of reporting success.
 fn restore_undelivered(
     session: &Session,
     inbox: Option<oxa_session::Inbox>,
     agent_dir: &std::path::Path,
-    err: &mut dyn Write,
-) {
-    let Some(inbox) = inbox else { return };
+) -> Result<(), OxaError> {
+    let Some(inbox) = inbox else { return Ok(()) };
     drop(inbox);
     let active = session.state().session_id;
     // A message admitted before the run switched sessions goes back to the inbox it came from.
@@ -418,11 +417,15 @@ fn restore_undelivered(
                 .into_iter()
                 .flat_map(|(id, texts)| texts.into_iter().map(move |text| (id.clone(), text))),
         );
+    let mut failed = None;
     for (id, text) in undelivered {
         if let Err(error) = oxa_session::send_inbox(agent_dir, &id, &text) {
-            let _ = writeln!(err, "Session inbox message could not be kept: {error}");
+            failed.get_or_insert_with(|| {
+                OxaError::io("cannot restore an undelivered session inbox message", &error)
+            });
         }
     }
+    failed.map_or(Ok(()), Err)
 }
 
 /// Reports every queue drain to the owner's watcher, so a message refused at capacity is
