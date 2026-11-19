@@ -20,11 +20,12 @@ use oxa_interactive::{
     TrustChoice,
 };
 use oxa_perm::{
-    gated_resources, resolve_trust, DefaultTrust, ModePolicy, TrustInputs, TrustOutcome, TrustStore,
+    gated_resources, resolve_trust, DangerRules, DefaultTrust, ModePolicy, TrustInputs, TrustOutcome,
+    TrustStore,
 };
 use oxa_proto::{codes, Engine, EntryBody, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
 use oxa_resources::{discover, DiscoverOpts, Resources};
-use oxa_rpc::{run_json_outcome_with_inbox, run_print_outcome_with_inbox, serve_outcome, Out};
+use oxa_rpc::{run_json_outcome_with_inbox, run_print_outcome_with_inbox, serve_outcome_gated, Out};
 use oxa_sandbox::Bwrap;
 #[cfg(target_os = "linux")]
 use oxa_sandbox::NoSandbox;
@@ -409,11 +410,22 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     // (main.ts `promptConfirm`): the notice and the question on stdout, one answer line from
     // stdin (read byte by byte, so piped prompt text after it stays unread).
     let mut a = a;
-    #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+    // `oxa.a2a.enabled` (user layer only): the local agent channel and control lane.
+    let a2a_enabled = Settings::load(&dirs, &cwd, false).a2a_enabled();
+    #[cfg(target_os = "linux")]
     let managed_steering = match mode {
         RunMode::Json => {
             use oxa_work::managed_steering::{ManagedSteering, FD_ENV};
             use std::os::fd::AsFd;
+            if !a2a_enabled && env.get(FD_ENV).is_some() {
+                return finish_outcome(
+                    Err(OxaError::new(
+                        codes::INVALID,
+                        "native steering needs the agent channel; set oxa.a2a.enabled to true in the user settings",
+                    )),
+                    &mut *stderr,
+                );
+            }
             match env
                 .get(FD_ENV)
                 .map(|fd| ManagedSteering::receive(fd, &dirs.agent_dir, std::io::stdin().as_fd()))
@@ -493,7 +505,16 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         RunMode::Interactive => run_tui(&a, env, &cwd, prep, &mut *stderr, None),
         RunMode::Rpc => {
             let dirs = prep.built.dirs.clone();
-            run_rpc(prep, a.max_time, a.max_tokens, dirs, stdin, stdout, &mut *stderr)
+            run_rpc(
+                prep,
+                a.max_time,
+                a.max_tokens,
+                dirs,
+                stdin,
+                stdout,
+                &mut *stderr,
+                a2a_enabled,
+            )
         }
         RunMode::Print | RunMode::Json => {
             let stdin_text = match read_piped_stdin(&mut *stdin, stdin_is_tty) {
@@ -517,7 +538,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 prompts,
                 stdout,
                 &mut *stderr,
-                #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+                #[cfg(target_os = "linux")]
                 managed_steering,
             )
         }
@@ -634,6 +655,8 @@ struct Built {
     /// #202: the sandbox of the bash tool and its background jobs: the session's sandbox,
     /// bypassed while the switch is at yolo (full access).
     bash_sandbox: Arc<oxa_sandbox::FullAccess>,
+    /// #1512 S2: the dangerous-command rules of the user settings, shared by every session.
+    danger: Arc<DangerRules>,
 }
 
 /// #597: `guard` plus the session's scratch directory (`/tmp` in its sandbox), which the file
@@ -687,6 +710,8 @@ impl Built {
             hooks: self.hook_sets.hooks.clone(),
             // B3: the file tools keep the deny-list and protected paths in standard/auto.
             // #202/#314: only user-selected yolo outside plan mode bypasses that floor.
+            // #1512 S2: dangerous commands ask in standard and auto; the keys of "always allow"
+            // are read from the user settings now, so a save covers the next session too.
             policy: Box::new(
                 ModePolicy::new()
                     .with_guard(session_guard(
@@ -698,7 +723,11 @@ impl Built {
                         ),
                         sandbox.as_ref(),
                     ))
-                    .with_yolo(self.yolo.clone()),
+                    .with_yolo(self.yolo.clone())
+                    .with_danger(
+                        self.danger.clone(),
+                        Settings::load(&self.dirs, &self.cwd, false).list("oxa.approval.always"),
+                    ),
             ),
             // File names follow bash's current view, without giving hooks/extensions the
             // bash-only execution bypass. The shared switch also handles live /yolo changes.
@@ -715,6 +744,24 @@ impl Built {
             jobs,
         }
     }
+}
+
+/// #1512 S2: the dangerous-command rules of the user settings. `[]` (the default) is every
+/// built-in rule; a plain entry replaces the built-ins and `+id` / `-id` patch them. The raw
+/// user entries are read: the merged value has already applied a `+x` / `-x` list to the empty
+/// default, which would turn `["+cmd:x"]` into a plain list that drops every built-in rule.
+fn dangerous_rules(user_settings: &Settings) -> (DangerRules, Vec<String>) {
+    let builtin_ids: Vec<String> = oxa_perm::BUILTIN_RULES
+        .iter()
+        .map(|row| row.0.to_string())
+        .collect();
+    let patch = user_settings.user_list(oxa_perm::SETTING_DANGEROUS);
+    let entries = if patch.is_empty() {
+        builtin_ids
+    } else {
+        oxa_config::apply_list_patch(&builtin_ids, &patch)
+    };
+    DangerRules::from_list(&entries)
 }
 
 /// `--goal` runs in print, JSON and the interactive terminal; RPC has no goal path.
@@ -786,6 +833,9 @@ fn prepare(
     };
     let mut notices: Vec<(Level, String)> = Vec::new();
     let user_settings = Settings::load(dirs, cwd, false);
+    // #1512 S2: the dangerous-command rules come from the user settings only.
+    let (danger, danger_warnings) = dangerous_rules(&user_settings);
+    notices.extend(danger_warnings.into_iter().map(|w| (Level::Warning, w)));
     // Only user settings may enable this default-off proposal session.
     if a.lead && !user_settings.bool(crate::lead_preset::SETTING, false) {
         return Err(OxaError::new(
@@ -1238,6 +1288,7 @@ fn prepare(
         hook_sets,
         yolo,
         bash_sandbox,
+        danger: Arc::new(danger),
     };
     Ok(Prep {
         built,
@@ -1609,9 +1660,7 @@ fn run_headless(
     prompts: Vec<(String, Vec<Part>)>,
     stdout: Box<dyn Write + Send>,
     stderr: &mut dyn Write,
-    #[cfg(all(target_os = "linux", feature = "managed-steering"))] managed_steering: Option<
-        oxa_work::managed_steering::ManagedSteering,
-    >,
+    #[cfg(target_os = "linux")] managed_steering: Option<oxa_work::managed_steering::ManagedSteering>,
 ) -> i32 {
     let Prep {
         built,
@@ -1628,7 +1677,7 @@ fn run_headless(
         Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),
     };
     let starts_goal = built.goal.is_some();
-    #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+    #[cfg(target_os = "linux")]
     let starts_goal = if let Some(steering) = managed_steering.as_ref().filter(|_| session.goal().is_none()) {
         if let Err(error) = crate::goal_cmd::from_objective(steering.objective().into(), max_time, max_tokens)
             .and_then(|goal| session.set_goal(Some(goal), &mut oxa_proto::VecSink::default()))
@@ -1739,10 +1788,10 @@ fn run_headless(
         }
     };
     let mut stdout = Some(stdout);
-    #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+    #[cfg(target_os = "linux")]
     let mut managed_out = None;
     let result = match mode {
-        #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+        #[cfg(target_os = "linux")]
         RunMode::Json if managed_steering.is_some() => {
             use oxa_core::goal::{SteeringAuthority, SteeringLease};
             let steering = managed_steering.expect("matched managed steering");
@@ -1805,7 +1854,7 @@ fn run_headless(
         if let Some(stdout) = stdout.as_deref_mut() {
             let _ = writeln!(stdout, "{usage}");
         }
-        #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+        #[cfg(target_os = "linux")]
         if let Some(out) = managed_out {
             let _ = writeln!(out.lock().unwrap_or_else(|poison| poison.into_inner()), "{usage}");
         }
@@ -1829,6 +1878,7 @@ fn run_rpc(
     stdin: Box<dyn Read + Send>,
     stdout: Box<dyn Write + Send>,
     stderr: &mut dyn Write,
+    control_lane: bool,
 ) -> i32 {
     let Prep {
         built,
@@ -1862,7 +1912,7 @@ fn run_rpc(
     };
     let out: Out = Arc::new(Mutex::new(stdout));
     let input = Box::new(BufReader::new(stdin));
-    let result = serve_outcome(session, dirs, input, out);
+    let result = serve_outcome_gated(session, dirs, input, out, control_lane);
     let result = match &built.status {
         Some(status) => status.finish(result, stderr),
         None => result,
@@ -2942,6 +2992,7 @@ mod session_scratch_tests {
                 false,
             )),
             yolo,
+            danger: Arc::new(oxa_perm::DangerRules::builtin()),
         };
         let first = built.deps(None);
         let second = built.deps(None);
@@ -2985,6 +3036,110 @@ mod session_scratch_tests {
         assert!(b.is_dir(), "ending one session removed another's scratch");
         drop(second);
         assert!(!b.exists(), "the second session's scratch outlived it");
+    }
+
+    /// #1512 S7: an edit list in `oxa.approval.dangerous` edits the built-in rules. Adding a
+    /// custom rule keeps every built-in rule, `-id` removes only that rule, and only a plain
+    /// list replaces the built-in set (the merged value must not turn `+x` into a plain list).
+    #[test]
+    fn dangerous_rules_edit_list_keeps_the_builtin_rules() {
+        let env = oxa_fake::TestEnv::new();
+        let guard = oxa_perm::PathGuard::new(&env.home(), &env.agent_dir(), &env.tmp());
+        let cwd = env.work();
+        let rules = |list: serde_json::Value| {
+            let user = serde_json::json!({"oxa": {"approval": {"dangerous": list}}});
+            dangerous_rules(&Settings::from_values(user, serde_json::json!({}))).0
+        };
+        let hits = |r: &DangerRules, cmd: &str| -> Vec<String> {
+            r.classify(cmd, &cwd, &guard)
+                .into_iter()
+                .map(|h| h.rule)
+                .collect()
+        };
+        let has = |r: &DangerRules, cmd: &str, rule: &str| hits(r, cmd).iter().any(|h| h == rule);
+        let force = "git push --force origin main";
+        let added = rules(serde_json::json!(["+cmd:terraform destroy"]));
+        assert!(has(&added, "terraform destroy", "cmd:terraform destroy"));
+        assert!(has(&added, force, "git-push-force"));
+        assert!(has(&added, "sudo ls", "sudo"));
+        let edited = rules(serde_json::json!(["-sudo", "+cmd:terraform destroy"]));
+        assert!(!has(&edited, "sudo ls", "sudo"));
+        assert!(has(&edited, force, "git-push-force"));
+        assert!(has(&edited, "terraform destroy", "cmd:terraform destroy"));
+        let removed = rules(serde_json::json!(["-sudo"]));
+        assert!(!has(&removed, "sudo ls", "sudo"));
+        assert!(has(&removed, force, "git-push-force"));
+        let replaced = rules(serde_json::json!(["cmd:terraform destroy"]));
+        assert!(hits(&replaced, force).is_empty());
+        assert!(has(&replaced, "terraform destroy", "cmd:terraform destroy"));
+    }
+    /// #1512 S2: the dangerous-command rules and the always keys come from the user settings
+    /// only. A project file that replaces the rules and lists the key changes nothing; the same
+    /// key in the user file allows the command.
+    #[test]
+    fn approval_keys_are_read_from_user_layer_only() {
+        use oxa_proto::{Access, Decision, Mode, Policy};
+        let env = oxa_fake::TestEnv::new();
+        let dirs = Dirs::under(env.root());
+        let cwd = env.work();
+        let key = "git-push-force git push --force origin main";
+        // The default list is every built-in rule (an empty list never means "no rules").
+        assert_eq!(dangerous_rules(&Settings::default()).0, DangerRules::builtin());
+        let dangerous = Access::Exec {
+            command: "git push --force origin main".into(),
+            net: false,
+        };
+        env.write(
+            "work/.oxa/settings.json",
+            &serde_json::json!({"oxa": {"approval": {"dangerous": [], "always": [key]}}}).to_string(),
+        );
+        let build = || {
+            let base: Arc<dyn Sandbox> = Arc::new(NoSandbox);
+            let yolo = oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard);
+            Built {
+                lead: false,
+                status: None,
+                result_facts: Arc::new(crate::result_facts::ResultFacts::default()),
+                output_schema: None,
+                goal: None,
+                engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
+                cloud_diagnostics: oxc_gateway::diagnostics::Diagnostics::default(),
+                store: Arc::new(MemStore::new()),
+                sandbox: base.clone(),
+                settings: Settings::default(),
+                dirs: dirs.clone(),
+                cwd: cwd.clone(),
+                resources: Resources::default(),
+                theme_paths: Vec::new(),
+                selection: ToolSelection::default(),
+                model: None,
+                thinking: None,
+                mode: None,
+                supervised_child: false,
+                ask_owner_present: true,
+                hook_sets: HookSets::default(),
+                bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
+                    base.clone(),
+                    yolo.clone(),
+                    "",
+                    env.home(),
+                    false,
+                )),
+                yolo,
+                danger: Arc::new(oxa_perm::DangerRules::builtin()),
+            }
+        };
+        let policy = build().deps(None).policy;
+        assert_eq!(policy.decide(Mode::Workspace, &dangerous, &cwd), Decision::Ask);
+        // The user layer, the same key: allowed.
+        std::fs::create_dir_all(dirs.settings_file().parent().unwrap()).unwrap();
+        std::fs::write(
+            dirs.settings_file(),
+            serde_json::json!({"oxa": {"approval": {"always": [key]}}}).to_string(),
+        )
+        .unwrap();
+        let policy = build().deps(None).policy;
+        assert_eq!(policy.decide(Mode::Workspace, &dangerous, &cwd), Decision::Allow);
     }
 }
 

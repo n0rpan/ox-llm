@@ -1,6 +1,4 @@
 //! E8 acceptance tests: MCP streamable HTTP.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 //!
 //! The tests talk to a tiny HTTP/1.1 server bound to 127.0.0.1 (std only, one connection per

@@ -616,6 +616,15 @@ impl Ui for PromptTap<'_> {
         let title = access_title(a);
         self.span("confirm", Some(&title), |u| u.ask_access(a))
     }
+    fn ask_dangerous(
+        &mut self,
+        a: &oxa_proto::Access,
+        reasons: &[String],
+        keys: &[String],
+    ) -> oxa_proto::DangerAnswer {
+        let title = access_title(a);
+        self.span("confirm", Some(&title), |u| u.ask_dangerous(a, reasons, keys))
+    }
     fn editor_text(&mut self) -> String {
         self.inner.editor_text()
     }
@@ -681,6 +690,36 @@ fn prompt_payload(m: &PromptMark) -> Value {
         v["title"] = json!(t);
     }
     v
+}
+
+/// #1512 S2: the dangerous-command prompt of a tool call, asked on the session thread like
+/// [`ask_access`] (the same `ui_prompt_start` / `ui_prompt_end` marks).
+pub(crate) fn ask_dangerous(
+    st: &mut SessionState,
+    a: &oxa_proto::Access,
+    keys: &[String],
+    reasons: &[String],
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+) -> oxa_proto::DangerAnswer {
+    if PromptTap::quiet() {
+        return ui.ask_dangerous(a, reasons, keys);
+    }
+    let title = Some(access_title(a));
+    let log: PromptLog = Arc::default();
+    let push = |start: bool| {
+        log.lock().unwrap_or_else(|p| p.into_inner()).push(PromptMark {
+            start,
+            kind: "confirm",
+            title: title.clone(),
+        });
+    };
+    push(true);
+    fire_prompts(st, &log, sink, ui);
+    let answer = ui.ask_dangerous(a, reasons, keys);
+    push(false);
+    fire_prompts(st, &log, sink, ui);
+    answer
 }
 
 /// The permission prompt of a tool call, asked on the session thread: `ui_prompt_start`, the

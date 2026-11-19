@@ -1,6 +1,4 @@
 //! D13 acceptance tests: Binary and dispatch.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_cli::{choose_mode, parse_args, run, RunMode, Stdio};
@@ -624,4 +622,29 @@ fn send_rejects_missing_arguments_and_path_ids_without_an_engine() {
         assert!(r.err.contains("Usage: oxa send"), "{}", r.err);
         assert!(!r.err.contains("cannot reach the engine"));
     }
+}
+
+#[test]
+fn send_spills_large_messages_where_the_receiving_session_can_read_them() {
+    let env = TestEnv::new();
+    let full = "owner text ".repeat(24_000);
+    let r = go(&env, &closed_url(), &["send", "session-638", &full]);
+    assert_eq!(r.code, 0, "{}", r.err);
+
+    let dirs = oxa_config::Dirs::under(env.root());
+    let spill_dir = dirs.agent_dir.join("tmp/session-638");
+    let spills: Vec<_> = std::fs::read_dir(&spill_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(spills.len(), 1);
+    assert_eq!(std::fs::read_to_string(&spills[0]).unwrap(), full);
+
+    let messages: Vec<_> = std::fs::read_dir(dirs.agent_dir.join("inbox/session-638"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(messages.len(), 1);
+    let pointer = std::fs::read_to_string(&messages[0]).unwrap();
+    assert!(pointer.contains(&spills[0].display().to_string()), "{pointer}");
 }
