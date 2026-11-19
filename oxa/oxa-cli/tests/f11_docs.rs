@@ -269,6 +269,34 @@ fn security_documents_headless_inbox_policy() {
     }
 }
 
+/// Memory persistence is a security policy, so the review rules, security policy and user guide
+/// must all retain the owner-only modes and the upgrade behaviour for an existing loose directory.
+#[test]
+fn memory_store_policy_is_documented_everywhere() {
+    let root = repo_root();
+    let repository = root.parent().expect("repository root");
+
+    for (page, path, anchor) in [
+        ("AGENTS.md", repository.join("AGENTS.md"), "memory store's"),
+        ("SECURITY.md", repository.join("SECURITY.md"), "memory store"),
+        (
+            "docs/pages/cli.md",
+            root.join("docs/pages/cli.md"),
+            "agent directory's `memory/`",
+        ),
+    ] {
+        let text = fs::read_to_string(path).expect("read memory policy documentation");
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        for required in [anchor, "`0700`", "`0600`", "existing", "tighten"] {
+            assert!(
+                text.contains(required),
+                "{page} must document the memory-store permission policy: missing {required:?}"
+            );
+        }
+    }
+}
+
 /// The user guide must match the owner sandbox policy: watched CLI sessions rely on approvals and
 /// in-process guards, while unattended non-yolo runs retain Bubblewrap.
 #[test]
