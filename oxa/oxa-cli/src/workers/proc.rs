@@ -7,10 +7,9 @@
 //!
 //! Identity: the leader stays unreaped (a zombie is enough) until its group is confirmed empty.
 //! While the leader is unreaped its pid, and therefore its process group number, cannot be
-//! reused, so every signal the supervisor sends reaches the group it started. Zombies are not
-//! live members: Linux reads that from `/proc`, and a platform without procfs asks the kernel
-//! for the group (`killpg(0)`) and observes the unreaped leader with `waitid(WNOWAIT)`. A member
-//! that outlives its leader is caught by the group SIGKILL sweep before the worker is retired.
+//! reused, so every signal the supervisor sends reaches the group it started. Live members are
+//! read from Linux `/proc`. Platforms without procfs are rejected before the
+//! supervisor thread starts, so they can never admit a worker that the supervisor cannot stop.
 //!
 //! Environment: a worker gets exactly the environment its caller passes (`env_clear` first), so the
 //! launch policy in `launch::child_env` is applied by the caller and never bypassed by inheritance.
@@ -78,6 +77,7 @@ impl Supervisor {
                 "the kill helper must be an absolute path",
             ));
         }
+        require_procfs(cfg!(target_os = "linux"))?;
         let (tx, rx) = mpsc::channel();
         thread::Builder::new()
             .name("oxa-workers".into())
@@ -119,6 +119,19 @@ impl Supervisor {
 
     fn send(&self, msg: Msg) -> io::Result<()> {
         self.tx.send(msg).map_err(|_| gone())
+    }
+}
+
+/// Refuse supervision where the process membership probe is unavailable. This check happens in
+/// `Supervisor::new`, before its thread starts and therefore before it can spawn a child.
+fn require_procfs(available: bool) -> io::Result<()> {
+    if available {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "worker supervision requires Linux procfs",
+        ))
     }
 }
 
@@ -488,22 +501,27 @@ fn thread_group_alive(pgid: u32) -> io::Result<bool> {
     Ok(false)
 }
 
-/// [`group_alive`] without procfs: a live member is an existing group that is not just our
-/// unreaped leader. `ESRCH` is an empty group; `EPERM` is a member we may not signal, which the
-/// Linux path treats the same way.
+/// [`group_alive`] without procfs: ask the kernel whether the group has a member. `ESRCH` is an
+/// empty group; `EPERM` is a member we may not signal, which the Linux path treats the same way.
+/// This probe must not be short-circuited by the leader's exit: another member can survive it.
 #[cfg(not(target_os = "linux"))]
 fn group_alive(pgid: u32) -> io::Result<bool> {
-    if leader_exited(pgid)? {
-        return Ok(false);
-    }
     // SAFETY: killpg only inspects the group; signal 0 delivers nothing.
     if unsafe { libc::killpg(pgid as libc::pid_t, 0) } == 0 {
-        return Ok(true);
+        return group_alive_from_probe(Ok(()), libc::ESRCH, libc::EPERM);
     }
-    let error = io::Error::last_os_error();
+    group_alive_from_probe(Err(io::Error::last_os_error()), libc::ESRCH, libc::EPERM)
+}
+
+/// Interpret the portable signal-0 process-group probe.
+#[cfg(any(test, not(target_os = "linux")))]
+fn group_alive_from_probe(probe: io::Result<()>, missing: i32, denied: i32) -> io::Result<bool> {
+    let Err(error) = probe else {
+        return Ok(true);
+    };
     match error.raw_os_error() {
-        Some(libc::ESRCH) => Ok(false),
-        Some(libc::EPERM) => Ok(true),
+        Some(code) if code == missing => Ok(false),
+        Some(code) if code == denied => Ok(true),
         _ => Err(error),
     }
 }
@@ -664,6 +682,13 @@ mod tests {
             "the background sleep survived stop"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// On platforms without procfs, an exited leader must not override the kernel's report that
+    /// its process group still contains a surviving child.
+    #[test]
+    fn successful_group_probe_reports_survivors_after_leader_exit() {
+        assert!(group_alive_from_probe(Ok(()), ESRCH, 1).expect("group probe"));
     }
 
     #[test]
@@ -924,6 +949,13 @@ mod tests {
     #[test]
     fn kill_helper_must_be_an_absolute_path() {
         assert!(Supervisor::new(GRACE, PathBuf::from("kill")).is_err());
+    }
+
+    #[test]
+    fn a_platform_without_procfs_is_rejected_before_supervision() {
+        let error = require_procfs(false).expect_err("a platform without procfs was admitted");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(error.to_string(), "worker supervision requires Linux procfs");
     }
 
     #[test]

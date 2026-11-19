@@ -28,6 +28,8 @@ Tool names, descriptions and schemas are part of the system prompt. They stay th
 
 ## Choosing tools
 
+In a headless run (`-p`, `--mode json`) with the output diet on, the prompt adds one integrity rule: solve the task yourself, do not look up its ready-made solution online and do not read verifier, grader or hidden-test files. The `oxa_result` record reports `web_lookups`, the number of `web_search` calls. It is a prompt rule and a count, not a block: a tool call is never refused because of it.
+
 | Option or setting | Effect |
 |---|---|
 | `--tools a,b` (`-t`) | allowlist of names or patterns; `*` matches any characters. Only these tools are on |
@@ -37,6 +39,8 @@ Tool names, descriptions and schemas are part of the system prompt. They stay th
 | `--no-tools` (`-nt`) | disables all tools |
 | `--no-mcp` | no MCP servers connect and no MCP tools are offered |
 | `defaultTools` setting | the list of tools on by default. Names may include `subagent`, `web_search`, `codemode` and `tool_search`, and a list can be patched with `+name` and `-name` |
+
+With the output diet on (the default) the rules also tell the model to run the project's own checks before it calls a task done (when `bash` is on), and to use `wait` instead of polling (when a goal is pursued).
 
 Examples:
 

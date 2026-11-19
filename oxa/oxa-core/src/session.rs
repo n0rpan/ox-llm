@@ -2,6 +2,7 @@
 // ported from pi packages/coding-agent/src/core/agent-session.ts
 use crate::agent_loop::{persist, run_loop, RunEnd};
 use crate::host::{attach_hosts, first_reply, observe_hooks, pumped, serve_host, serve_idle, Serve};
+use crate::queue::lock;
 use crate::{Expanded, Handle, SessionState, Shared, Toolset};
 use oxa_compact::CompactPolicy;
 use oxa_config::{Dirs, Settings};
@@ -165,8 +166,9 @@ struct BusyGuard(Arc<Shared>);
 
 impl Drop for BusyGuard {
     fn drop(&mut self) {
-        // An abort racing the reservation-to-claim transition may set this after `begin`
-        // consumed it and cancel the claimed run directly. Do not leak that bit to a later run.
+        let _transition = lock(&self.0.gate.foreground_transition);
+        // An explicit `abort_next` may arrive after `begin` consumed an earlier request. Do not
+        // leak that bit to a later run.
         self.0.gate.abort_next.store(false, Ordering::SeqCst);
         self.0.gate.running.store(false, Ordering::SeqCst);
         self.0.busy.store(false, Ordering::SeqCst);
@@ -904,6 +906,12 @@ impl Session {
             return false;
         }
         self.preloaded = true;
+        // Nothing to preload (a turn already filled the wire, an engine without prefill, the
+        // setting off): do not claim the session, or an idle worker shows it busy right after
+        // each command and a front end reading `is_busy` sees a run that never was.
+        if !crate::compaction::boot_preload_applies(&self.st) {
+            return false;
+        }
         let Ok(_guard) = self.begin() else {
             return false;
         };
@@ -1054,15 +1062,18 @@ impl Session {
         // Publish foreground intent before the claim.  `begin()` used to set `busy` first,
         // leaving a small but user-visible window in which the terminal could classify an
         // input event as idle before it consumed AgentStart.
-        if self
-            .st
-            .shared
-            .gate
-            .running
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
         {
-            return Err(OxaError::new(codes::BUSY, "the session is busy"));
+            let _transition = lock(&self.st.shared.gate.foreground_transition);
+            if self
+                .st
+                .shared
+                .gate
+                .running
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                return Err(OxaError::new(codes::BUSY, "the session is busy"));
+            }
         }
         match self.begin() {
             Ok(guard) => Ok(guard),
@@ -1075,6 +1086,7 @@ impl Session {
 
     fn begin(&self) -> Result<BusyGuard, OxaError> {
         let shared = self.st.shared.clone();
+        let _transition = lock(&shared.gate.foreground_transition);
         if shared
             .busy
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -1093,6 +1105,7 @@ impl Session {
             shared.cancel.cancel();
             shared.gate.bg_cancel.cancel();
         }
+        drop(_transition);
         Ok(BusyGuard(shared))
     }
 
@@ -2321,6 +2334,30 @@ mod tests {
         assert!(handle.is_aborting(), "the reservation must retain its abort");
         drop(guard);
         assert!(!handle.is_busy());
+    }
+
+    /// #1737: an abort that starts while a run is releasing must observe the completed
+    /// release, rather than publishing a sticky abort for an unrelated later prompt.
+    #[test]
+    fn abort_racing_foreground_release_does_not_cancel_the_next_claim() {
+        let env = oxa_fake::TestEnv::new();
+        let session = Session::open(deps(&env, Arc::new(MemStore::new())), Open::New).unwrap();
+        let handle = session.handle();
+        session.st.shared.gate.running.store(true, Ordering::SeqCst);
+
+        let transition = lock(&session.st.shared.gate.foreground_transition);
+        let aborting = std::thread::spawn({
+            let handle = handle.clone();
+            move || handle.abort()
+        });
+        session.st.shared.gate.running.store(false, Ordering::SeqCst);
+        drop(transition);
+        aborting.join().unwrap();
+
+        assert!(!session.st.shared.gate.abort_next.load(Ordering::SeqCst));
+        let guard = session.begin_foreground().expect("the next run starts normally");
+        assert!(!handle.is_aborting());
+        drop(guard);
     }
 
     /// #543, #555: only the active session and its fork/clone ancestors read spill output

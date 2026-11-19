@@ -29,13 +29,13 @@ Cold startup is another phase: the reviewed llama mapping path uses `MAP_POPULAT
 
 ## Optional Linux process-scoped exec tool
 
-[`tools/exec_no_thp.py`](../tools/exec_no_thp.py) is original MIT-licensed code, copied byte-for-byte from the tested candidate wrapper. It is not automatically installed, selected or added to a production launcher. It verifies an absolute resolved executable path and SHA256, disables THP in its own wrapper process, verifies the kernel flag and replaces itself with the requested command through `os.execv`.
+`tools/exec_no_thp.py` is original MIT-licensed code, copied byte-for-byte from the tested candidate wrapper. It is not automatically installed, selected or added to a production launcher. It verifies an absolute resolved executable path and SHA256, disables THP in its own wrapper process, verifies the kernel flag and replaces itself with the requested command through `os.execv`.
 
 ```sh
 python3 -I -B tools/exec_no_thp.py --sha256 EXPECTED_SHA256 -- /absolute/resolved/executable arguments
 ```
 
-Its model-free validation receipt (wrapper SHA-256, tested-candidate byte identity) is [`tools/exec_no_thp-validation.json`](../tools/exec_no_thp-validation.json).
+Its model-free validation receipt (wrapper SHA-256, tested-candidate byte identity) is `tools/exec_no_thp-validation.json`.
 
 The command and its descendants inherit the process flag across exec. The calling shell, other processes and global THP controls remain unchanged. The separate classic dense profiles are unaffected. Dense weights inside the selected streamed process also lose THP, so a memory benefit need not be a speed benefit. No shell or `preexec_fn` is used, and PID/process-group identity is preserved. [Kernel process controls and inheritance](https://docs.kernel.org/admin-guide/mm/transhuge.html#process-thp-controls)
 

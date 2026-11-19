@@ -196,7 +196,6 @@ consumers against main. Shared workspace manifests/locks expand the affected wor
 release-relevant features, Cargo registry/target caches via GitHub-owned actions, and standard free
 Ubuntu x64/ARM runners. Cache keys include the lockfile, toolchain and architecture; lane caches
 use their own namespace and branch scope, preserving the required workflows' main-cache policy.
-The oxc-rs crate has no unit cases of its own; the lane selects it only by its sources.
 Native engine tests requiring Oryon CPU features remain on the existing self-hosted route. The lane
 workflow does not replace or change the merge queue's required checks. Start full-workspace and
 release CI only when the change is close to done. Each started job records its queue delay in its
