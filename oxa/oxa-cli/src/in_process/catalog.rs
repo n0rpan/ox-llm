@@ -57,21 +57,12 @@ fn anthropic() -> Vec<(String, Value)> {
         tier["max_prompt_tokens"] = max;
         tier
     };
+    // Opus 5.5 and Sonnet 5.5 cache reads are $0.20 and $0.10 per MTok (0.05x of input) per the model table.
+    let opus_5_5 = Some(rates(4.0, 20.0, 0.2, 5.0));
+    let sonnet_5_5 = Some(rates(2.0, 10.0, 0.1, 2.5));
     vec![
-        route(
-            "anthropic",
-            "claude-opus-5-5",
-            1_000_000,
-            128_000,
-            flat(4.0, 20.0),
-        ),
-        route(
-            "anthropic",
-            "claude-sonnet-5-5",
-            1_000_000,
-            128_000,
-            flat(2.0, 10.0),
-        ),
+        route("anthropic", "claude-opus-5-5", 1_000_000, 128_000, opus_5_5),
+        route("anthropic", "claude-sonnet-5-5", 1_000_000, 128_000, sonnet_5_5),
         route(
             "anthropic",
             "claude-haiku-5-5",
@@ -97,21 +88,42 @@ fn anthropic() -> Vec<(String, Value)> {
     ]
 }
 
+/// Sources, read 2026-11-19 (official pages only):
+/// * OpenAI API models and prices: https://developers.openai.com/api/docs/models, the per-model
+///   pages under https://developers.openai.com/api/docs/models/<id> and
+///   https://developers.openai.com/api/docs/pricing (standard tier, prompts up to 272K input
+///   tokens; longer prompts are billed higher and are not modelled here).
+/// * ChatGPT sign-in models in Codex: https://developers.openai.com/codex/models (now
+///   https://learn.chatgpt.com/docs/models).
+/// * Anthropic ids, windows and prices: the Claude API model table (claude-api skill, cached
+///   2026-11-03) and https://platform.claude.com/docs/en/about-claude/models.
 fn openai() -> Vec<(String, Value)> {
-    let priced = |input: f64, output: f64| Some(rates(input, output, input * 0.1, input));
+    let priced = |input: f64, cached: f64, output: f64| Some(rates(input, output, cached, input));
+    let route = |id: &str, input: f64, cached: f64, output: f64| {
+        route("openai", id, 1_050_000, 128_000, priced(input, cached, output))
+    };
     vec![
-        route("openai", "gpt-5", 400_000, 128_000, priced(1.25, 10.0)),
-        route("openai", "gpt-5-mini", 400_000, 128_000, priced(0.25, 2.0)),
-        route("openai", "gpt-5-nano", 400_000, 128_000, priced(0.05, 0.4)),
+        route("gpt-6.2-astra", 8.0, 0.4, 40.0),
+        route("gpt-6.2-sol", 2.0, 0.1, 10.0),
+        route("gpt-6.1-terra", 1.0, 0.05, 5.0),
+        route("gpt-6-luna", 0.1, 0.01, 0.5),
     ]
 }
 
 /// Subscription routes carry no price; the plan's limits are the owner's advisory setting.
+/// The models Codex offers with ChatGPT sign-in; windows are the API figures for the same ids.
 fn chatgpt() -> Vec<(String, Value)> {
-    vec![
-        route("chatgpt", "gpt-5", 400_000, 128_000, None),
-        route("chatgpt", "gpt-5-codex", 400_000, 128_000, None),
+    [
+        "gpt-6.2-astra",
+        "gpt-6.2-sol",
+        "gpt-6.1-sol",
+        "gpt-6.1-terra",
+        "gpt-6-astra",
+        "gpt-6-luna",
     ]
+    .into_iter()
+    .map(|id| route("chatgpt", id, 1_050_000, 128_000, None))
+    .collect()
 }
 
 /// The owner's user settings with the keyed defaults applied, in memory only.
@@ -247,17 +259,18 @@ mod tests {
         let applied = with_keyed_defaults(&off, &dirs);
         assert!(!applied.bool("oxa.engine.inProcessCloud", true));
         assert!(applied.get("oxa.cloud.models").is_none());
-        let own = json!({"provider":"openai","upstream_model":"gpt-5","context_window":1000,"max_output":10,
+        let own = json!({"provider":"openai","upstream_model":"gpt-6.2-sol","context_window":1000,"max_output":10,
             "pricing":{"input_per_million":1,"output_per_million":2}});
-        let settings =
-            user(json!({"oxa":{"cloud":{"discover_models":false,"models":{"openai/gpt-5":own.clone()}}}}));
+        let settings = user(
+            json!({"oxa":{"cloud":{"discover_models":false,"models":{"openai/gpt-6.2-sol":own.clone()}}}}),
+        );
         let applied = with_keyed_defaults(&settings, &dirs);
         assert!(!applied.bool("oxa.cloud.discover_models", true));
         let models = applied
             .get("oxa.cloud.models")
             .and_then(Value::as_object)
             .unwrap();
-        assert_eq!(models["openai/gpt-5"], own);
+        assert_eq!(models["openai/gpt-6.2-sol"], own);
         assert!(models.contains_key("anthropic/claude-sonnet-5-5"));
     }
 

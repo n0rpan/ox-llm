@@ -109,7 +109,7 @@ Sign in once, in your own terminal:
 $ oxa login chatgpt --experimental
 ```
 
-That is all: the plan models appear as `chatgpt/gpt-5` and `chatgpt/gpt-5-codex`, with no route and no limits to write. To add your own route or advisory daily limits (a warning at 80% and 100%, never a refusal), use:
+That is all: the plan models appear as `chatgpt/gpt-6.2-astra`, `chatgpt/gpt-6.2-sol` and the other Codex plan models, with no route and no limits to write. To add your own route or advisory daily limits (a warning at 80% and 100%, never a refusal), use:
 
 ```json
 {

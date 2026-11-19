@@ -311,7 +311,7 @@ An invalid saved binding refuses the request before provider I/O.
 A `chatgpt` route defaults to `https://chatgpt.com/backend-api/codex` and uses the
 existing owner-only `chatgpt-auth.json` beside the key file. It does not discover
 other applications' credentials or start a sign-in. After `oxa login chatgpt` the plan models
-(`chatgpt/gpt-5`, `chatgpt/gpt-5-codex`) exist without a route in your settings;
+(`chatgpt/gpt-6.2-astra`, `chatgpt/gpt-6.2-sol` and the other models Codex offers with ChatGPT sign-in) exist without a route in your settings;
 the optional user-only `oxa.cloud.subscription_limits` object (positive integer
 `daily_requests` and `daily_tokens`) only adds warnings. The separate optional `oxa.cloud.subscription` refresh object
 accepts a public `client_id` override (`[A-Za-z0-9_.-]{1,128}`); its default is the
