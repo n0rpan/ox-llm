@@ -569,7 +569,11 @@ fn a_user_bash_command_is_foreground_work_until_it_ends() {
     assert!(!handle.is_busy());
 }
 
+<<<<<<< HEAD
 /// #1693: `/tree` branch-summary generation emits no agent activity events, but it is still
+=======
+/// #877: `/tree` branch-summary generation emits no agent activity events, but it is still
+>>>>>>> origin/agent/yolo-s11
 /// foreground work and must remain cancellable from the interactive front end.
 #[test]
 fn a_branch_summary_is_foreground_work_until_navigation_ends() {
@@ -638,7 +642,10 @@ fn a_branch_summary_is_foreground_work_until_navigation_ends() {
         .id
         .clone();
 
+<<<<<<< HEAD
     let navigation_events = sink.0.len();
+=======
+>>>>>>> origin/agent/yolo-s11
     session
         .navigate(&target, true, None, &mut sink, &mut ui)
         .expect("navigate with a branch summary");
@@ -647,6 +654,7 @@ fn a_branch_summary_is_foreground_work_until_navigation_ends() {
         hook.seen.load(Ordering::SeqCst),
         "branch-summary navigation is foreground while it holds the session"
     );
+<<<<<<< HEAD
     assert!(
         !sink.0[navigation_events..].iter().any(|event| matches!(
             event,
@@ -654,6 +662,8 @@ fn a_branch_summary_is_foreground_work_until_navigation_ends() {
         )),
         "branch-summary navigation must not rely on activity events"
     );
+=======
+>>>>>>> origin/agent/yolo-s11
     assert!(!handle.is_running(), "the signal ends with navigation");
     assert!(!handle.is_busy());
 }

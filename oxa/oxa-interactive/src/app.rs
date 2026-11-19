@@ -639,6 +639,9 @@ fn worker_loop_inner(
                         run_boot_preload(s, &out, &mut ui_proxy, &stop, &cmds, &mut backlog);
                     }
                 }
+                if limit_exit_if_requested(session.as_ref(), &out) {
+                    break;
+                }
                 if stop.is_stopped() || backlog.iter().any(|c| matches!(c, SessionCmd::Shutdown)) {
                     break;
                 }
@@ -909,7 +912,7 @@ fn idle_tick(
     // O-386: the preload is due before the worker's first wait (see `worker_loop_with`); this
     // call is the retry for a session whose hook set had requests pending then.
     run_boot_preload(s, out, ui, stop, cmds, backlog);
-    if !backlog.is_empty() || stop.is_stopped() {
+    if !backlog.is_empty() || stop.is_stopped() || s.handle().wrap_up_requested() {
         return;
     }
     let mut sink = CountingSink {

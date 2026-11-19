@@ -1503,6 +1503,7 @@ mod tests {
         handle.join().expect("caller thread")
     }
 
+<<<<<<< HEAD
     /// #1512 S2: answers the dangerous-command prompt with `answer` and counts the questions.
     struct DangerUi {
         answer: DangerAnswer,
@@ -1573,6 +1574,8 @@ mod tests {
         assert!(gate_pinned(&mut f.st, &plain, &mut headless).is_ok());
     }
 
+=======
+>>>>>>> origin/agent/yolo-s11
     /// O-386: a host request posted while the front end waits (instead of polling) wakes it, so
     /// the request is served at once and not at the front end's next idle tick. The request is
     /// in the channel before the wake, so a woken front end finds it.

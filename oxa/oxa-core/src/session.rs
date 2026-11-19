@@ -169,10 +169,13 @@ struct BusyGuard(Arc<Shared>);
 
 impl Drop for BusyGuard {
     fn drop(&mut self) {
+<<<<<<< HEAD
         let _transition = lock(&self.0.gate.foreground_transition);
         // An explicit `abort_next` may arrive after `begin` consumed an earlier request. Do not
         // leak that bit to a later run.
         self.0.gate.abort_next.store(false, Ordering::SeqCst);
+=======
+>>>>>>> origin/agent/yolo-s11
         self.0.gate.running.store(false, Ordering::SeqCst);
         self.0.busy.store(false, Ordering::SeqCst);
     }
@@ -1106,6 +1109,7 @@ impl Session {
     /// activity events. Unlike [`Session::begin_run`], this does not start an agent turn or
     /// reset its outcome bookkeeping.
     fn begin_foreground(&self) -> Result<BusyGuard, OxaError> {
+<<<<<<< HEAD
         // Publish foreground intent before the claim.  `begin()` used to set `busy` first,
         // leaving a small but user-visible window in which the terminal could classify an
         // input event as idle before it consumed AgentStart.
@@ -1129,6 +1133,11 @@ impl Session {
                 Err(error)
             }
         }
+=======
+        let guard = self.begin()?;
+        self.st.shared.gate.running.store(true, Ordering::SeqCst);
+        Ok(guard)
+>>>>>>> origin/agent/yolo-s11
     }
 
     fn begin(&self) -> Result<BusyGuard, OxaError> {

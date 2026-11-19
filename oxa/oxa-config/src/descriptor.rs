@@ -546,6 +546,7 @@ mod tests {
         assert!(descriptor("compaction.keepRecentTokens").is_some());
         assert_eq!(fields_of("oxa.lead.serve").count(), 9);
         assert_eq!(in_group(Group::Display).count(), 30);
+<<<<<<< HEAD
         // The merged tree adds this branch's `oxa.sandbox.sockets` to main's 146.
         assert_eq!(descriptors().len(), 147);
     }
@@ -556,6 +557,9 @@ mod tests {
         assert_eq!(sockets.group, Group::Safety);
         assert!(sockets.user_only);
         assert_eq!(sockets.web, WebEdit::Confirm);
+=======
+        assert_eq!(descriptors().len(), 109);
+>>>>>>> origin/agent/yolo-s11
     }
 
     #[test]
