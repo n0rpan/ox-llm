@@ -69,6 +69,18 @@ impl Ui for UiProxy {
         }
         rx.recv().ok().flatten()
     }
+    fn approve_publication(&mut self, title: &str, body: &str) -> Option<bool> {
+        let (reply, rx) = channel();
+        let req = UiRequest::ApprovePublication {
+            title: title.to_string(),
+            body: body.to_string(),
+            reply,
+        };
+        if !self.post(req) {
+            return None;
+        }
+        rx.recv().ok().flatten()
+    }
     fn input(&mut self, title: &str, placeholder: &str) -> Option<String> {
         let (reply, rx) = channel();
         let req = UiRequest::Input {
@@ -258,6 +270,15 @@ impl DialogHost {
                     timeout_ms,
                     Reply::Bool(reply),
                 );
+                self.push(dialog, now_ms);
+            }
+            UiRequest::ApprovePublication { title, body, reply } => {
+                let mut list = choice_list(&["Approve".to_string(), "Deny".to_string()]);
+                // Deny is focused by default: a stray Enter never publishes.
+                list.set_selected_index(1);
+                let lines: Vec<String> = body.lines().map(str::to_string).collect();
+                let dialog =
+                    Dialog::choice(title, lines, list, ChoiceKind::Approve, None, Reply::Bool(reply));
                 self.push(dialog, now_ms);
             }
             UiRequest::Input {
@@ -463,6 +484,12 @@ impl DialogHost {
                     ChoiceKind::Select => {
                         header = None;
                         body.extend(wrap(&title, inner as usize));
+                    }
+                    // Publication text is shown as it will be published: no word re-flow.
+                    ChoiceKind::Approve => {
+                        for line in lines.iter() {
+                            body.extend(hard_wrap(line, inner as usize));
+                        }
                     }
                     _ => {
                         for line in lines.iter() {
@@ -696,6 +723,24 @@ fn choice_list(labels: &[impl AsRef<str>]) -> SelectList {
     SelectList::new(items, MAX_VISIBLE)
 }
 
+/// Cut a line at `width` columns without touching its spaces, so the shown text is the exact
+/// text (an empty line stays one empty row).
+fn hard_wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    let mut line = String::new();
+    for ch in text.chars() {
+        let mut next = line.clone();
+        next.push(ch);
+        if !line.is_empty() && oxa_tui::visible_width(&next) > width {
+            out.push(std::mem::take(&mut line));
+        }
+        line.push(ch);
+    }
+    out.push(line);
+    out
+}
+
 /// Greedy word wrap by visible width. Words wider than `width` stay whole (the frame cuts them).
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
@@ -778,6 +823,8 @@ impl Reply {
 enum ChoiceKind {
     Select,
     Confirm,
+    /// Publication approval: Approve is index 0, the exact text is shown unwrapped-by-words.
+    Approve,
     Access,
 }
 
@@ -785,7 +832,7 @@ impl ChoiceKind {
     fn outcome(self, i: usize) -> Outcome {
         match self {
             ChoiceKind::Select => Outcome::Index(i),
-            ChoiceKind::Confirm => Outcome::Bool(i == 0),
+            ChoiceKind::Confirm | ChoiceKind::Approve => Outcome::Bool(i == 0),
             ChoiceKind::Access => Outcome::Access(ACCESS_ANSWERS.get(i).copied().unwrap_or(Answer::Deny)),
         }
     }
@@ -941,5 +988,55 @@ mod notification_tests {
         assert!(host.take_permission_opened(), "next queued permission");
         host.close_all();
         assert!(!host.take_permission_opened());
+    }
+}
+
+#[cfg(test)]
+mod approval_tests {
+    use super::*;
+
+    fn open(host: &mut DialogHost) -> std::sync::mpsc::Receiver<Option<bool>> {
+        let (reply, rx) = channel();
+        host.handle(
+            UiRequest::ApprovePublication {
+                title: "Publish?".into(),
+                body: "Title: A  B\n    indented".into(),
+                reply,
+            },
+            &mut ViewModel::default(),
+            0,
+        );
+        rx
+    }
+
+    #[test]
+    fn deny_is_focused_and_the_text_is_shown_exactly() {
+        let mut host = DialogHost::new();
+        let rx = open(&mut host);
+        let shown = host.render(80, &Theme::plain()).join("\n");
+        assert!(
+            shown.contains("Title: A  B") && shown.contains("    indented"),
+            "{shown}"
+        );
+        host.key(&Key::press("enter"), &Keymap::defaults());
+        assert_eq!(rx.recv().unwrap(), Some(false), "a stray Enter denies");
+    }
+
+    #[test]
+    fn up_then_enter_approves_and_escape_dismisses() {
+        let mut host = DialogHost::new();
+        let rx = open(&mut host);
+        host.key(&Key::press("up"), &Keymap::defaults());
+        host.key(&Key::press("enter"), &Keymap::defaults());
+        assert_eq!(rx.recv().unwrap(), Some(true));
+        let rx = open(&mut host);
+        host.key(&Key::press("escape"), &Keymap::defaults());
+        assert_eq!(rx.recv().unwrap(), None);
+    }
+
+    #[test]
+    fn long_lines_are_cut_not_reflowed() {
+        assert_eq!(hard_wrap("ab  cd", 4), vec!["ab  ".to_string(), "cd".to_string()]);
+        assert_eq!(hard_wrap("", 4), vec![String::new()]);
     }
 }

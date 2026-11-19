@@ -94,6 +94,14 @@ pub trait Ui: Send {
     fn interactive(&self) -> bool {
         false
     }
+    /// The publication approval dialog: shows `body` exactly, with Approve and Deny (Deny
+    /// focused), and returns `Some(true)` only when the person pressed Approve. Only a UI that
+    /// a person answers by key implements it; the default (print, json, RPC, hooks, tests)
+    /// answers `None`, which callers treat as "not approved". Never relay it to a model, an
+    /// extension or a timeout, and never skip it for yolo.
+    fn approve_publication(&mut self, _title: &str, _body: &str) -> Option<bool> {
+        None
+    }
 }
 
 /// The non-interactive `Ui`: dialogs answer `None`, permission asks answer `Deny`, notifications

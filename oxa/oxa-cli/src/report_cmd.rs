@@ -1,13 +1,17 @@
 //! O-152: `oxa report-issue` (architect-owned), the code behind the built-in `report-issue`
 //! skill. `draft` collects a scrubbed digest and saves a draft; `submit` shows the exact text
 //! and posts it with `gh issue create` only after the user typed `yes` on the controlling
-//! terminal. Reporting is off until `oxa.reportIssue.repo` names the public repository.
+//! terminal, or pressed Approve in the interactive session's approval dialog (#1552, [`PublishTool`]).
+//! Reporting is off until `oxa.reportIssue.repo` names the public repository.
 //!
 //! What a draft may contain: the user's description (scrubbed, capped, no transcript records),
 //! the identity facts (version, machine, OS, models) and the controller's `status --json`
 //! scalars and `digest --json` (numbers only). Never prompts, transcripts, file contents,
 //! emails, home paths, user or host names, IP addresses or secrets.
+mod publish_tool;
 mod semantic;
+
+pub use publish_tool::PublishTool;
 
 use oxa_config::{Dirs, Env, Settings};
 use oxa_proto::{codes, OxaError};
@@ -378,6 +382,13 @@ pub(crate) fn report_ledger(dirs: &Dirs) -> PathBuf {
 
 pub(crate) use semantic::judge as judge_report;
 
+/// The question before a dedupe comment: the exact comment and where it goes (issue and URL).
+pub(crate) fn comment_question(repo: &str, issue: u64, body: &str) -> String {
+    format!(
+        "Comment on {repo}#{issue}?\nDestination: https://github.com/{repo}/issues/{issue}\n\n{body}\n\nType yes to post: "
+    )
+}
+
 pub(crate) fn submit_record(
     draft: &Path,
     storage: &Path,
@@ -451,10 +462,7 @@ pub(crate) fn submit_record(
     let issue = publication.as_ref().and_then(|plan| plan.issue);
     let number;
     let mut args = if let Some(issue) = issue {
-        if confirm(&format!(
-            "Comment on {repo}#{issue}?\n\n{body}\n\nType yes to post: "
-        )) != Some(true)
-        {
+        if confirm(&comment_question(&repo, issue, body)) != Some(true) {
             writeln!(out, "Comment retained locally at {}.", draft.display()).map_err(w)?;
             return Ok(Submission::Local("comment requires confirmation".into()));
         }
@@ -560,6 +568,43 @@ system-wide or put it in a trusted PATH entry outside the project (for example ~
     )
 }
 
+/// The runner `submit` and the in-session publish tool share: the semantic judge for `oxa`,
+/// the trusted `gh` (home as its directory, `GH_HOST` pinned) in semantic mode, the plain
+/// process runner otherwise. One implementation of the publication path.
+pub(crate) fn submit_runner<'a>(
+    dirs: &'a Dirs,
+    cwd: &'a Path,
+    env: &'a Env,
+    settings: &'a Settings,
+) -> impl FnMut(&str, &[String]) -> Option<(i32, String)> + 'a {
+    let mut runner = process_runner(env, cwd, &dirs.home);
+    move |program: &str, args: &[String]| {
+        if program == "oxa" {
+            return semantic::judge(args.first()?, dirs, settings, env).map(|reply| (0, reply));
+        }
+        if semantic_reporting(settings) {
+            let project = cwd
+                .ancestors()
+                .find(|path| path.join(".git").exists())
+                .unwrap_or(cwd);
+            let gh = crate::netguard::trusted_executable_for(
+                "gh",
+                env.get("PATH").map(OsStr::new),
+                Some(project),
+                Some(&dirs.home),
+            )?;
+            let mut command = std::process::Command::new(gh);
+            command
+                .args(args)
+                .current_dir(&dirs.home)
+                .env("GH_HOST", "github.com");
+            command_runner(command, Some(1_048_576), COMMAND_DEADLINE)
+        } else {
+            runner(program, args)
+        }
+    }
+}
+
 /// `oxa report-issue draft|submit ..`. Returns the exit code.
 pub fn run_report_issue(
     words: &[String],
@@ -601,7 +646,8 @@ pub fn run_report_issue(
             writeln!(out, "Draft: {}\n\nTitle: {title}\n\n{body}\n", path.display()).map_err(w)?;
             writeln!(
                 out,
-                "Nothing was posted. To post it, run `oxa report-issue submit {}` in a terminal.",
+                "Nothing was posted. To post it, run `oxa report-issue submit {}` in a terminal. \
+In an interactive oxa session, ask for it to be published: the approval dialog shows this exact text and only the owner's key press posts it.",
                 path.display()
             )
             .map_err(w)?;
@@ -613,31 +659,7 @@ pub fn run_report_issue(
             };
             let settings = Settings::load(dirs, cwd, false);
             let mut confirm = tty_confirm(env);
-            let mut submit_runner = |program: &str, args: &[String]| {
-                if program == "oxa" {
-                    return semantic::judge(args.first()?, dirs, &settings, env).map(|reply| (0, reply));
-                }
-                if semantic_reporting(&settings) {
-                    let project = cwd
-                        .ancestors()
-                        .find(|path| path.join(".git").exists())
-                        .unwrap_or(cwd);
-                    let gh = crate::netguard::trusted_executable_for(
-                        "gh",
-                        env.get("PATH").map(OsStr::new),
-                        Some(project),
-                        Some(&dirs.home),
-                    )?;
-                    let mut command = std::process::Command::new(gh);
-                    command
-                        .args(args)
-                        .current_dir(&dirs.home)
-                        .env("GH_HOST", "github.com");
-                    command_runner(command, Some(1_048_576), COMMAND_DEADLINE)
-                } else {
-                    runner(program, args)
-                }
-            };
+            let mut publish_runner = submit_runner(dirs, cwd, env, &settings);
             let draft = cwd.join(draft);
             submit_with_storage(
                 &draft,
@@ -645,7 +667,7 @@ pub fn run_report_issue(
                 &settings,
                 &ctx,
                 &mut confirm,
-                &mut submit_runner,
+                &mut publish_runner,
                 out,
             )
         }

@@ -429,6 +429,9 @@ impl Ui for LockedUi<'_, '_> {
     fn confirm(&mut self, title: &str, body: &str, timeout_ms: Option<u32>) -> Option<bool> {
         self.with(|u| u.confirm(title, body, timeout_ms))
     }
+    fn approve_publication(&mut self, title: &str, body: &str) -> Option<bool> {
+        self.with(|u| u.approve_publication(title, body))
+    }
     fn input(&mut self, title: &str, placeholder: &str) -> Option<String> {
         self.with(|u| u.input(title, placeholder))
     }

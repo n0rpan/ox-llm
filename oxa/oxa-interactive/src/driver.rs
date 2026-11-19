@@ -1733,6 +1733,8 @@ impl<'a> Loop<'a> {
         if trimmed.is_empty() {
             return;
         }
+        // #1552: the line the owner typed is the one origin that can approve a publication.
+        oxa_proto::owner_reply::typed(&trimmed);
         if let Some(rest) = trimmed.strip_prefix('!') {
             let (excluded, cmd) = match rest.strip_prefix('!') {
                 Some(r) => (true, r),

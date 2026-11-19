@@ -659,6 +659,13 @@ pub enum UiRequest {
         timeout_ms: Option<u32>,
         reply: Sender<Option<bool>>,
     },
+    /// The publication approval dialog (`Ui::approve_publication`): exact text, Approve/Deny,
+    /// Deny focused, no timeout.
+    ApprovePublication {
+        title: String,
+        body: String,
+        reply: Sender<Option<bool>>,
+    },
     Input {
         title: String,
         placeholder: String,
