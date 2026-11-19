@@ -10,10 +10,12 @@ The workflow artifact is named `oxa-portable-linux-x86_64`. It holds `oxa` and `
 sha256sum -c oxa.sha256
 ```
 
-Then put `oxa` anywhere on `PATH`, or run it by its full path, and check it:
+GitHub artifact downloads do not preserve executable permissions, so restore the
+permission before putting `oxa` anywhere on `PATH` or running it by its full path:
 
-```text
-./oxa --version
+```console
+$ chmod +x oxa
+$ ./oxa --version
 ```
 
 The portable binary is the agent only, for hosts that talk to an engine or a cloud model that is already configured.
