@@ -1167,6 +1167,7 @@ name = "oxa-a2a"
 version = "0.2.0"
 dependencies = [
  "oxa-a2a",
+ "oxa-http",
  "oxa-proto",
  "serde",
  "serde_json",
@@ -1185,6 +1186,7 @@ dependencies = [
  "oxa-export",
  "oxa-ext",
  "oxa-fake",
+ "oxa-http",
  "oxa-interactive",
  "oxa-mcp",
  "oxa-orchestrator",
@@ -1265,6 +1267,7 @@ name = "oxa-engine"
 version = "0.2.0"
 dependencies = [
  "oxa-fake",
+ "oxa-http",
  "oxa-proto",
  "oxc-gateway",
  "serde_json",
@@ -1296,9 +1299,17 @@ dependencies = [
 name = "oxa-fake"
 version = "0.2.0"
 dependencies = [
+ "oxa-http",
  "oxa-proto",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "oxa-http"
+version = "0.2.0"
+dependencies = [
+ "oxa-proto",
 ]
 
 [[package]]
@@ -1328,6 +1339,7 @@ dependencies = [
  "libc",
  "oxa-config",
  "oxa-fake",
+ "oxa-http",
  "oxa-proto",
  "oxa-sandbox",
  "serde_json",
@@ -1483,6 +1495,7 @@ dependencies = [
  "libc",
  "oxa-config",
  "oxa-fake",
+ "oxa-http",
  "oxa-perm",
  "oxa-proto",
  "oxa-tools",
@@ -1514,6 +1527,7 @@ dependencies = [
  "num-traits",
  "oxa-config",
  "oxa-engine",
+ "oxa-http",
  "oxa-proto",
  "reqwest",
  "serde_json",
@@ -1531,6 +1545,7 @@ dependencies = [
  "nix 0.30.1",
  "oxa-engine",
  "oxa-fake",
+ "oxa-http",
  "oxa-proto",
  "serde_json",
  "tokio",
