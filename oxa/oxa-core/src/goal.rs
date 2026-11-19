@@ -427,7 +427,7 @@ impl WaitPolicy {
     pub(crate) fn from_settings(settings: &oxa_config::Settings) -> WaitPolicy {
         WaitPolicy {
             poll: Duration::from_secs(u64::from(settings.u32("oxa.wait.pollSeconds", 30)).max(1)),
-            max_secs: u64::from(settings.u32("oxa.wait.maxSeconds", 3600)).clamp(1, 86400),
+            max_secs: u64::from(settings.u32("oxa.wait.maxSeconds", 86400)).clamp(1, 86400),
         }
     }
 }
