@@ -6,7 +6,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 fn repo(branch: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("oxa-publish-{}-{}", std::process::id(), branch.replace('/', "_")));
+    let dir = std::env::temp_dir().join(format!(
+        "oxa-publish-{}-{}",
+        std::process::id(),
+        branch.replace('/', "_")
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join(".git")).unwrap();
     std::fs::write(dir.join(".git/HEAD"), format!("ref: refs/heads/{branch}\n")).unwrap();
@@ -14,12 +18,23 @@ fn repo(branch: &str) -> PathBuf {
 }
 
 fn decide(cwd: &Path, level: Autonomy, command: &str) -> Decision {
-    let guard = PathGuard::new(Path::new("/home/u"), Path::new("/home/u/.oxa/agent"), Path::new("/tmp/oxa-test"));
+    let guard = PathGuard::new(
+        Path::new("/home/u"),
+        Path::new("/home/u/.oxa/agent"),
+        Path::new("/tmp/oxa-test"),
+    );
     let p = ModePolicy::new()
         .with_guard(guard)
         .with_yolo(YoloSwitch::new(level))
         .with_danger(Arc::new(DangerRules::builtin()), Vec::new());
-    p.decide(Mode::Workspace, &Access::Exec { command: command.into(), net: false }, cwd)
+    p.decide(
+        Mode::Workspace,
+        &Access::Exec {
+            command: command.into(),
+            net: false,
+        },
+        cwd,
+    )
 }
 
 #[test]

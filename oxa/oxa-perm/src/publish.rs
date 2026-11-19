@@ -21,8 +21,20 @@ const LOCAL: &[&str] = &[
 ];
 /// `git` subcommands that stay local.
 const GIT_LOCAL: &[&str] = &[
-    "status", "log", "diff", "add", "commit", "branch", "rev-parse", "show", "switch", "checkout", "stash",
-    "restore", "rev-list", "remote",
+    "status",
+    "log",
+    "diff",
+    "add",
+    "commit",
+    "branch",
+    "rev-parse",
+    "show",
+    "switch",
+    "checkout",
+    "stash",
+    "restore",
+    "rev-list",
+    "remote",
 ];
 const DEFAULT_BRANCHES: &[&str] = &["main", "master", "trunk"];
 
@@ -50,7 +62,12 @@ pub(crate) fn publish_hits(stages: &[Stage], cwd: &Path) -> Vec<String> {
             if matches!(first_word(&st.words), Some("cd" | "pushd" | "popd")) {
                 moved = true;
             }
-            if kind == Kind::Allowed && st.redirects.iter().any(|(_, t)| t != "/dev/null" && !t.starts_with('&')) {
+            if kind == Kind::Allowed
+                && st
+                    .redirects
+                    .iter()
+                    .any(|(_, t)| t != "/dev/null" && !t.starts_with('&'))
+            {
                 kind = Kind::Unsafe;
             }
             out.push((i, kind));
@@ -79,7 +96,9 @@ fn first_word(words: &[String]) -> Option<&str> {
 
 fn is_assignment(w: &str) -> bool {
     w.split_once('=').is_some_and(|(n, _)| {
-        !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !n.starts_with(|c: char| c.is_ascii_digit())
+        !n.is_empty()
+            && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !n.starts_with(|c: char| c.is_ascii_digit())
     })
 }
 
@@ -92,7 +111,10 @@ fn base(w: &str) -> &str {
 }
 
 fn is_local(words: &[String], redirects: &[(String, String)]) -> bool {
-    if redirects.iter().any(|(_, t)| t != "/dev/null" && !t.starts_with('&')) {
+    if redirects
+        .iter()
+        .any(|(_, t)| t != "/dev/null" && !t.starts_with('&'))
+    {
         return false;
     }
     if words.iter().any(|w| dynamic(w)) {
@@ -117,7 +139,10 @@ fn env_unsafe(words: &[String]) -> bool {
             || n.starts_with("SSH_")
             || n.starts_with("HTTP")
             || n.starts_with("LD_")
-            || matches!(n, "PATH" | "HOME" | "XDG_CONFIG_HOME" | "EDITOR" | "PAGER" | "BROWSER")
+            || matches!(
+                n,
+                "PATH" | "HOME" | "XDG_CONFIG_HOME" | "EDITOR" | "PAGER" | "BROWSER"
+            )
     })
 }
 
@@ -243,7 +268,8 @@ fn valid_branch(b: &str) -> bool {
     !b.is_empty()
         && !b.starts_with(['-', '+', '/'])
         && !b.contains("..")
-        && b.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
+        && b.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
 }
 
 fn gh_kind(all: &[String], args: &[String]) -> Kind {
@@ -253,18 +279,30 @@ fn gh_kind(all: &[String], args: &[String]) -> Kind {
     let rest = &args[1..];
     let flags_with_value = ["-R", "--repo", "-H", "--head", "--hostname"];
     if rest.iter().any(|a| {
-        flags_with_value.contains(&a.as_str()) || a.starts_with("--repo=") || a.starts_with("--head=") || a.starts_with("-R")
+        flags_with_value.contains(&a.as_str())
+            || a.starts_with("--repo=")
+            || a.starts_with("--head=")
+            || a.starts_with("-R")
     }) {
         return Kind::Unsafe;
     }
-    let words: Vec<&str> = rest.iter().map(String::as_str).filter(|a| !a.starts_with('-')).collect();
-    let (g, s) = (words.first().copied().unwrap_or(""), words.get(1).copied().unwrap_or(""));
+    let words: Vec<&str> = rest
+        .iter()
+        .map(String::as_str)
+        .filter(|a| !a.starts_with('-'))
+        .collect();
+    let (g, s) = (
+        words.first().copied().unwrap_or(""),
+        words.get(1).copied().unwrap_or(""),
+    );
     match (g, s) {
         ("pr", "create" | "edit" | "comment") => {
             // Own branch's PR only: no PR argument, no body file, no other-ref flags.
             let value_flag = rest.iter().any(|a| {
-                matches!(a.as_str(), "-F" | "--body-file" | "--template" | "-T" | "--recover")
-                    || a.starts_with("--body-file=")
+                matches!(
+                    a.as_str(),
+                    "-F" | "--body-file" | "--template" | "-T" | "--recover"
+                ) || a.starts_with("--body-file=")
             });
             // Values of flags (`--title x`) are words too; allow them when they follow a flag.
             let mut stray = false;
@@ -298,12 +336,15 @@ fn gh_kind(all: &[String], args: &[String]) -> Kind {
                 matches!(a.as_str(), "-f" | "-F" | "--field" | "--raw-field" | "--input")
                     || a.starts_with("--field=")
                     || a.starts_with("--input=")
-            }) || rest.windows(2).any(|w| {
-                matches!(w[0].as_str(), "-X" | "--method") && !w[1].eq_ignore_ascii_case("GET")
-            }) || rest.iter().any(|a| {
-                a.strip_prefix("--method=").is_some_and(|m| !m.eq_ignore_ascii_case("GET"))
-                    || a.strip_prefix("-X").is_some_and(|m| !m.is_empty() && !m.eq_ignore_ascii_case("GET"))
-            });
+            }) || rest
+                .windows(2)
+                .any(|w| matches!(w[0].as_str(), "-X" | "--method") && !w[1].eq_ignore_ascii_case("GET"))
+                || rest.iter().any(|a| {
+                    a.strip_prefix("--method=")
+                        .is_some_and(|m| !m.eq_ignore_ascii_case("GET"))
+                        || a.strip_prefix("-X")
+                            .is_some_and(|m| !m.is_empty() && !m.eq_ignore_ascii_case("GET"))
+                });
             if mutating {
                 Kind::Unsafe
             } else {
@@ -334,7 +375,11 @@ fn is_default(dir: &Path, branch: &str) -> bool {
     }
     git_dirs(dir)
         .and_then(|(_, common)| std::fs::read_to_string(common.join("refs/remotes/origin/HEAD")).ok())
-        .and_then(|s| s.trim().strip_prefix("ref: refs/remotes/origin/").map(str::to_string))
+        .and_then(|s| {
+            s.trim()
+                .strip_prefix("ref: refs/remotes/origin/")
+                .map(str::to_string)
+        })
         .is_some_and(|d| d == branch)
 }
 
