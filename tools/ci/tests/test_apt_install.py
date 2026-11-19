@@ -15,7 +15,7 @@ class AptInstall(unittest.TestCase):
                                 f'{path.name}: use tools/ci/apt_install.sh, which retries mirror failures')
 
     def test_bwrap_steps_use_the_script_and_keep_the_hard_check(self):
-        for name, count in (('checks.yml', 3), ('lane.yml', 1), ('build.yml', 1)):
+        for name, count in (('checks.yml', 2), ('lane.yml', 1), ('build.yml', 1)):
             text = (WORKFLOWS / name).read_text()
             self.assertEqual(len(re.findall(r'tools/ci/apt_install\.sh"? bubblewrap', text)), count, name)
         for name in ('checks.yml', 'lane.yml', 'build.yml'):
@@ -27,6 +27,9 @@ class AptInstall(unittest.TestCase):
         self.assertIn('for attempt in 1 2 3', text)
         self.assertIn('sleep "$delay"', text)
         self.assertIn('azure.archive.ubuntu.com', text)
+        self.assertIn('azure.ports.ubuntu.com', text)
+        self.assertIn('dpkg --print-architecture', text)
+        self.assertIn(r'ports\.ubuntu\.com/ubuntu-ports', text)
         self.assertRegex(text, r'(?m)^exit 1$')
         self.assertTrue(SCRIPT.stat().st_mode & 0o111, 'apt_install.sh must be executable')
 

@@ -7,13 +7,16 @@
 set -euo pipefail
 [ "$#" -ge 1 ] || { echo 'usage: apt_install.sh PACKAGE...' >&2; exit 2; }
 opts=(-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
-azure=http://azure.archive.ubuntu.com/ubuntu
+case "$(dpkg --print-architecture)" in
+  amd64 | i386) azure=http://azure.archive.ubuntu.com/ubuntu ;;
+  *) azure=http://azure.ports.ubuntu.com/ubuntu-ports ;;
+esac
 
 use_azure_mirror() {
   local f
   for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
     [ -f "$f" ] || continue
-    sudo sed -i -E "s#https?://([a-z]{2}\.)?(archive|security)\.ubuntu\.com/ubuntu/?#$azure/#g; s#^(URIs:[[:space:]]*)mirror\+file:/etc/apt/apt-mirrors.txt#\1$azure/#; s#^(deb[^#]*[[:space:]])mirror\+file:/etc/apt/apt-mirrors.txt#\1$azure/#" "$f"
+    sudo sed -i -E "s#https?://([a-z]{2}\.)?(archive|security)\.ubuntu\.com/ubuntu/?#$azure/#g; s#https?://ports\.ubuntu\.com/ubuntu-ports/?#$azure/#g; s#^(URIs:[[:space:]]*)mirror\+file:/etc/apt/apt-mirrors.txt#\1$azure/#; s#^(deb[^#]*[[:space:]])mirror\+file:/etc/apt/apt-mirrors.txt#\1$azure/#" "$f"
   done
 }
 
