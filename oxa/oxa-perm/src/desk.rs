@@ -120,6 +120,10 @@ impl Record {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalDesk {
     dir: PathBuf,
+    /// When this process opened the desk. An `always` record answered before it is history:
+    /// the user settings' `oxa.approval.always` (where the answer was saved) decides from then
+    /// on, so removing the line there revokes it.
+    opened_ms: u64,
 }
 
 /// The held desk lock; dropping it releases the lock and closes the descriptor.
@@ -178,7 +182,10 @@ impl ApprovalDesk {
                 "approval desk is not owned by this user",
             ));
         }
-        Ok(ApprovalDesk { dir })
+        Ok(ApprovalDesk {
+            dir,
+            opened_ms: now_ms(),
+        })
     }
 
     /// Hold the desk's exclusive advisory lock for one read-modify-write transition. The lock
@@ -233,23 +240,25 @@ impl ApprovalDesk {
             created_ms: now_ms(),
             answered_ms: None,
         };
-        if status == "refused" {
-            self.rotate_refused()?;
+        if status == "refused" || status == "pending" {
+            self.rotate(status)?;
         }
         self.write(&rec)?;
         Ok(rec.id)
     }
 
-    /// Make room for one more `refused` record: delete the oldest ones beyond [`REFUSED_KEEP`].
-    /// Called with the desk lock held.
-    fn rotate_refused(&self) -> io::Result<()> {
-        let refused: Vec<Record> = self
-            .all()?
-            .into_iter()
-            .filter(|r| r.status == "refused")
-            .collect();
-        let excess = (refused.len() + 1).saturating_sub(REFUSED_KEEP);
-        for rec in refused.iter().take(excess) {
+    /// Make room for one more `refused` or `pending` record: delete the oldest ones of that
+    /// status beyond [`REFUSED_KEEP`] / [`PENDING_KEEP`]. Neither status is a grant, so an
+    /// answered approval is never evicted. Called with the desk lock held.
+    fn rotate(&self, status: &str) -> io::Result<()> {
+        let keep = if status == "pending" {
+            PENDING_KEEP
+        } else {
+            REFUSED_KEEP
+        };
+        let same: Vec<Record> = self.all()?.into_iter().filter(|r| r.status == status).collect();
+        let excess = (same.len() + 1).saturating_sub(keep);
+        for rec in same.iter().take(excess) {
             match fs::remove_file(self.dir.join(format!("{}.json", rec.id))) {
                 Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -310,7 +319,7 @@ impl ApprovalDesk {
                 && rec.cwd == dir
                 && keys.iter().all(|k| rec.keys.contains(k))
                 && match rec.status.as_str() {
-                    "session" | "always" => true,
+                    "session" | "always" => self.reusable(rec),
                     "once" => !rec.used,
                     _ => false,
                 }
@@ -333,7 +342,7 @@ impl ApprovalDesk {
                 continue;
             }
             match rec.status.as_str() {
-                "session" | "always" if reusable => return true,
+                "session" | "always" if reusable && self.reusable(&rec) => return true,
                 "once" if !rec.used => {
                     rec.used = true;
                     return self.write(&rec).is_ok();
@@ -342,6 +351,16 @@ impl ApprovalDesk {
             }
         }
         false
+    }
+
+    /// A `session` grant holds for its session. An `always` grant holds only in the run it was
+    /// answered in; later runs read it from the user settings, so it can be revoked there.
+    fn reusable(&self, rec: &Record) -> bool {
+        match rec.status.as_str() {
+            "session" => true,
+            "always" => rec.answered_ms.is_some_and(|t| t >= self.opened_ms),
+            _ => false,
+        }
     }
 
     /// Spend a matching unused `once` grant. Reusable grants stay untouched.
@@ -521,6 +540,8 @@ fn dir_key(cwd: &Path) -> String {
 /// How many `refused` records the desk keeps. A refusal needs no answer, so older ones rotate out
 /// instead of growing the directory without bound when a model repeats refused commands.
 const REFUSED_KEEP: usize = 500;
+/// The most `pending` requests the desk keeps; the oldest unanswered one makes room.
+const PENDING_KEEP: usize = 500;
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -644,5 +665,58 @@ mod tests {
             .record("s1", &cwd, "git push --force origin main", &[hit()], "pending")
             .expect("pending");
         assert!(desk.pending().expect("pending").iter().any(|r| r.id == pending));
+    }
+
+    /// Pending requests rotate too: varying an inert argument files a new request each time,
+    /// but the desk keeps at most [`PENDING_KEEP`] of them and never evicts an answered grant.
+    #[test]
+    fn pending_records_rotate_and_keep_answered_grants() {
+        let root = temp_dir("rotatepending");
+        let desk = ApprovalDesk::open(&root).expect("desk");
+        let cwd = temp_dir("rotatependingcwd");
+        let granted = desk
+            .record("s1", &cwd, "git push --force origin kept", &[hit()], "pending")
+            .expect("record");
+        desk.answer(&granted, "session").expect("answer");
+        for i in 0..PENDING_KEEP + 25 {
+            desk.record(
+                "s1",
+                &cwd,
+                &format!("git push --force origin p{i}"),
+                &[hit()],
+                "pending",
+            )
+            .expect("record");
+        }
+        let kept = desk.records().expect("records");
+        assert_eq!(
+            kept.iter().filter(|r| r.status == "pending").count(),
+            PENDING_KEEP
+        );
+        assert!(kept.iter().any(|r| r.id == granted && r.status == "session"));
+    }
+
+    /// An `always` answer is a grant in the run it was answered in. A later run (a new desk
+    /// open) relies on the user settings instead, so removing the key there revokes it.
+    #[test]
+    fn an_always_record_from_an_earlier_run_needs_the_user_settings() {
+        let root = temp_dir("alwaysrevoke");
+        let desk = ApprovalDesk::open(&root).expect("desk");
+        let cwd = temp_dir("alwaysrevokecwd");
+        let command = "git push --force origin main";
+        let id = desk
+            .record("s1", &cwd, command, &[hit()], "pending")
+            .expect("record");
+        desk.answer(&id, "always").expect("answer");
+        let keys = vec![danger_key(&hit(), command)];
+        assert!(desk.covers("s1", &cwd, &keys), "the answering run uses it");
+        assert!(desk.granted("s1", &cwd, &keys));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let later = ApprovalDesk::open(&root).expect("desk again");
+        assert!(
+            !later.covers("s1", &cwd, &keys),
+            "a later run must not bypass revocation"
+        );
+        assert!(!later.granted("s1", &cwd, &keys));
     }
 }
