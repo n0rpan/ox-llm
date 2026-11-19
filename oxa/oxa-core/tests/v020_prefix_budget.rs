@@ -150,8 +150,10 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// 2026-11-15: the built-in `pull-request` skill (#181) joined the skills section.
 /// 2026-11-16: issue #519 added `kill` to the `bash` schema and documented per-job cancellation
 /// and explicit background timeouts; both default tool prefixes intentionally changed.
-const DEFAULT_STABLE_SHA: &str = "c9e29711fe640831bb0e3e61abc7bcaaad7610911d485fe2fa4cd681a5f409f5";
-const DEFAULT_STABLE_SHA_SUBAGENT: &str = "a7888f41c42f7f8df979d054cfdeaf36fc4cdb314de4be1e78fca12ee2f52985";
+/// 2026-11-19: S12 documents explicit zero in the bash timeout schema, and #1552 updates
+/// the built-in report-issue skill description.
+const DEFAULT_STABLE_SHA: &str = "cbf4707823e59a8973e33b0a63bb3c34c0cfb9b4a04dc43ff60d00fa9c09a92f";
+const DEFAULT_STABLE_SHA_SUBAGENT: &str = "dc4c0c1240eb632f636b5f24620469d34a00e23be2ab3f5e1a799aef739f59ba";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
 fn has_date(s: &str) -> bool {
@@ -257,12 +259,9 @@ fn prefix_bytes_and_the_anchor() {
 
     // The default prefix stays byte-identical to the pinned bytes.
     assert_eq!(
-        default_sha[0], DEFAULT_STABLE_SHA,
-        "the default prefix bytes drifted"
-    );
-    assert_eq!(
-        default_sha[1], DEFAULT_STABLE_SHA_SUBAGENT,
-        "the default prefix bytes with a subagent drifted"
+        (default_sha[0].as_str(), default_sha[1].as_str()),
+        (DEFAULT_STABLE_SHA, DEFAULT_STABLE_SHA_SUBAGENT),
+        "the default prefix bytes drifted (without and with a subagent)"
     );
 
     // The diet costs prefix bytes (its rules replace one line): exactly the rule lines' bytes,

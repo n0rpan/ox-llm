@@ -171,6 +171,14 @@ fn run_session_inner(
     for (level, text) in std::mem::take(&mut opts.notices) {
         vm.blocks.push(Block::Notice { level, text });
     }
+    // G3: a stored pursuing goal is announced on open, not run; a queued run is not repeated.
+    let run_queued = opts.initial_prompt.is_some() || !opts.initial_follow_ups.is_empty();
+    if let Some(text) = resumed_goal_notice(&session, run_queued) {
+        vm.blocks.push(Block::Notice {
+            level: Level::Info,
+            text,
+        });
+    }
     let prev = StatusModel {
         cwd: cwd.display().to_string(),
         home: opts.dirs.home.display().to_string(),
@@ -627,6 +635,7 @@ fn worker_loop_inner(
                     Reopen::Resume(_) => "Resumed session".to_string(),
                     Reopen::Fork(_) => "Forked to new session".to_string(),
                 };
+                let resumed = matches!(&how, Reopen::Resume(_));
                 let mut opened = false;
                 if let Some(mut old) = session.take() {
                     // The hook sets are shared with the session that replaces this one, so
@@ -672,6 +681,13 @@ fn worker_loop_inner(
                     let _ = out.send(WorkerMsg::Session(session_info(s)));
                     if opened {
                         let _ = out.send(WorkerMsg::Event(notice_event(&status)));
+                        if resumed {
+                            let run_queued =
+                                backlog.iter().any(|cmd| matches!(cmd, SessionCmd::Prompt { .. }));
+                            if let Some(text) = resumed_goal_notice(s, run_queued) {
+                                let _ = out.send(WorkerMsg::Event(notice_event(&text)));
+                            }
+                        }
                     }
                 }
             }
@@ -828,6 +844,32 @@ fn notice_event(text: &str) -> AgentEvent {
         level: Level::Info,
         text: text.to_string(),
     }
+}
+
+/// The notice for a stored goal that is still pursuing when the session opens. Nothing runs
+/// on open: `/goal resume` continues it and `/goal clear` drops it. `None` when a run is
+/// already queued (its prompt carries the goal) or the goal is not pursuing.
+fn resumed_goal_notice(s: &Session, run_queued: bool) -> Option<String> {
+    if run_queued {
+        return None;
+    }
+    let goal = s
+        .goal()
+        .filter(|g| g.status == oxa_session::GoalStatus::Pursuing)?;
+    // The objective may come from a repository file: drop terminal controls (ESC, BEL, C1) so
+    // the notice cannot clear the screen, retitle the window or write the clipboard.
+    let first: String = goal
+        .objective
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect();
+    let first = first.trim();
+    Some(format!(
+        "Goal pursuing: {first}; /goal resume continues, /goal clear drops it"
+    ))
 }
 
 /// What the UI thread needs to know about the worker's session.

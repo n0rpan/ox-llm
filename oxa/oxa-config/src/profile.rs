@@ -37,6 +37,8 @@ impl ThinkingPolicy {
 pub const SUMMARY_TARGET_DEFAULT: u32 = 700;
 /// `bash` timeout in seconds when the call sets none.
 pub const BASH_TIMEOUT_DEFAULT: u32 = 120;
+/// The default of `oxa.bash.maxJobs`: background jobs that may run at once.
+pub const BASH_MAX_JOBS_DEFAULT: u32 = 16;
 
 impl Settings {
     /// `oxa.thinking.policy` as set by a layer; `None` = unset (the default decides).
@@ -99,6 +101,11 @@ impl Settings {
     /// `oxa.bash.defaultTimeout` in seconds (F5); 0 = none. Unset = [`BASH_TIMEOUT_DEFAULT`].
     pub fn bash_default_timeout(&self) -> u32 {
         self.u32("oxa.bash.defaultTimeout", BASH_TIMEOUT_DEFAULT)
+    }
+
+    /// `oxa.bash.maxJobs`: how many background jobs may run at once. Unset = 16; at least 1.
+    pub fn bash_max_jobs(&self) -> usize {
+        (self.user_u32("oxa.bash.maxJobs", BASH_MAX_JOBS_DEFAULT) as usize).max(1)
     }
 }
 
@@ -166,6 +173,7 @@ mod tests {
         assert!(none.prefill_tools());
         assert_eq!(none.summary_target(), SUMMARY_TARGET_DEFAULT);
         assert_eq!(none.bash_default_timeout(), BASH_TIMEOUT_DEFAULT);
+        assert_eq!(none.bash_max_jobs(), 16);
 
         let off = Settings::from_values(
             json!({"oxa": {
@@ -185,5 +193,17 @@ mod tests {
         assert!(!off.prefill_tools());
         assert_eq!(off.summary_target(), 0);
         assert_eq!(off.bash_default_timeout(), 0);
+    }
+
+    /// The background-job cap comes from the owner. Zero is treated as one job.
+    #[test]
+    fn jobs_limit_from_setting() {
+        let project = json!({"oxa": {"bash": {"maxJobs": 32}}});
+        let set = Settings::from_values(json!({"oxa": {"bash": {"maxJobs": 3}}}), project.clone());
+        assert_eq!(set.bash_max_jobs(), 3);
+        let zero = Settings::from_values(json!({"oxa": {"bash": {"maxJobs": 0}}}), json!({}));
+        assert_eq!(zero.bash_max_jobs(), 1);
+        let unset = Settings::from_values(json!({}), project);
+        assert_eq!(unset.bash_max_jobs(), 16);
     }
 }

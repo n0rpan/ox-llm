@@ -1,0 +1,19 @@
+{
+  "type": "oxa_usage", "version": 1,
+  "day": "2026-11-19", "resets_ms": 1795132800000, "ledger": "ok",
+  "pools": [
+    { "id": "metered", "billing": "metered", "providers": ["openai"],
+      "state": "low", "enforcement": "refuse",
+      "spent_usd": 11.2, "cost_unknown": false, "budget_usd": 16.0,
+      "requests": 212, "tokens": { "prompt": 3900000, "completion": 210000, "cached": 2100000 },
+      "credit": null, "windows": [] },
+    { "id": "subscription", "billing": "subscription", "providers": ["chatgpt", "opencode"],
+      "state": "ok", "enforcement": "refuse",
+      "requests": 137, "request_cap": 300, "tokens_used": 4000000, "token_cap": 5000000,
+      "reported_usd": 0.0, "cost_unknown": true,
+      "windows": [ { "provider": "chatgpt", "name": "primary", "used_percent": 12.5,
+                     "resets_ms": 1795110000000, "observed_ms": 1795099000000 } ] },
+    { "id": "local", "billing": "local", "providers": ["local"], "state": "none",
+      "enforcement": "none", "requests": 0, "tokens": { "prompt": 0, "completion": 0, "cached": 0 } }
+  ]
+}
