@@ -119,6 +119,16 @@ class GoReview(unittest.TestCase):
                 review.main()
                 return calls, posted, auth.call_count
 
+    def test_review_prompt_includes_owner_decisions(self):
+        root = SOURCE.parents[2]
+        security = (root / 'SECURITY.md').read_text()
+        owner_decisions = security.split('## Owner decisions (not findings)\n', 1)[1].split('\n## ', 1)[0]
+
+        prompt = review.review_prompt()
+
+        self.assertIn(owner_decisions, prompt)
+        self.assertLessEqual(len(prompt.encode()), review.MAX_PROMPT)
+
     def test_complete_review_posts_one_full_sha_and_diff_hash_receipt(self):
         calls, posted, auth = self.run_review(answer=response([finding(body='Do not emit synthetic-access')]))
         self.assertEqual(auth, 1)

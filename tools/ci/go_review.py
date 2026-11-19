@@ -57,8 +57,11 @@ def review_prompt():
     root = Path(__file__).resolve().parents[2]
     agents = (root / 'AGENTS.md').read_text()
     guidelines = agents.split('## Review guidelines\n', 1)[1].split('\n## ', 1)[0]
+    security = (root / 'SECURITY.md').read_text()
+    owner_decisions = security.split('## Owner decisions (not findings)\n', 1)[1].split('\n## ', 1)[0]
     skill = root / 'oxa/oxa-resources/builtin-skills/review'
     text = PROMPT + '\nProject guidelines:\n' + guidelines + '\n' + (skill / 'SKILL.md').read_text()
+    text += '\nOwner decisions (not findings):\n' + owner_decisions
     text += '\nOutput schema:\n' + (skill / 'findings.schema.json').read_text()
     if len(text.encode()) > MAX_PROMPT:
         raise Refused('Trusted review instructions exceed the bound')
