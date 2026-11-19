@@ -76,7 +76,11 @@ maintainer, who says in the PR when a hardware check is needed.
   configures it. Do not ask for a new default block or for a feature to be default-off.
   The repeat guard follows this: the third identical tool result gets a short note, a call that
   still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
-  is the cap against loops the guard cannot see.
+  is the cap against loops the guard cannot see. A pursuing goal whose request fails transiently
+  (stream cut, engine down or busy, timeout, 429, 5xx) waits without tokens and sends it again:
+  `oxa.goal.failureBackoffSeconds` (default 60, doubling, capped at 900 unless set higher, `0` opts
+  out) is the owner setting. Auth errors, refusals, the repetition stop, aborts and an owner budget
+  still stop the goal with the reason shown.
   Report dedupe follows it as well: `oxa.reportIssue.semanticDedupe` is the owner's consent for the
   search and the model check, the post asks one question, and `oxa.reportIssue.dailyNew` (unset = no
   check) only warns and records over the cap. A finding that asks for a second consent question or
