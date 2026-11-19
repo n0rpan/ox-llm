@@ -1848,6 +1848,9 @@ fn run_tui(
             Reopen::Fork(sref) => Open::Fork(sref),
         };
         let mut session = Session::open(deps, how)?;
+        // Replacement interactive sessions need the same per-session confirmation broker as
+        // the initially opened session.
+        let _ = session.enable_owner_confirm(base.yolo.clone());
         if let Some(binding) = &owner {
             binding.recheck()?;
             if &session.inner().sref != binding.session_ref() {
