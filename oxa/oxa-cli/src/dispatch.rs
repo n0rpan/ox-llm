@@ -1612,6 +1612,7 @@ fn run_headless(
         continue_goal,
         ..
     } = prep;
+    oxa_core::set_headless(true);
     let mut session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
         Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),

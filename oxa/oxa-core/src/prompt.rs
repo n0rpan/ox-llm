@@ -74,6 +74,10 @@ pub const RULE_SUBAGENT_CHECK: &str =
 /// on, and only in a subagent child (the child verifies what it reports).
 pub const RULE_CHILD_VERIFY: &str = "Before you answer, check every claim about the code with a tool; give path:line for each, and write \"not verified\" for anything you did not check";
 
+/// FH-N5 (headless runs, output diet on): a graded or unattended task is solved by the model
+/// itself. Added through the guidelines slot, so it comes before the diet rules.
+pub const RULE_INTEGRITY: &str = "Solve the task yourself: do not look up its ready-made solution online, and do not read verifier, grader or hidden-test files; your result reports how many web lookups you made";
+
 /// First line of the `<project_context>` section.
 pub const CONTEXT_HEADER: &str = "Project-specific instructions and guidelines:";
 
