@@ -17,6 +17,11 @@ Treat as **high** severity:
 The sandbox can forward the owner's `CARGO_TARGET_DIR` to worker shells. External cache
 paths are writable only through an explicit owner `oxa.sandbox.writePaths` mount.
 
+`oxa send` keeps owner messages over the 256 KiB inline inbox limit in the receiving session's
+private spill directory and queues a short pointer. The sandbox exposes that spill directory only
+to the receiving session and sessions inheriting its history; the private agent directory remains
+denied to model tools.
+
 The background-job and per-parent child limits are configurable through `oxa.bash.maxJobs`
 (default 16) and `oxa.subagent.maxChildren` (default 8). Read both caps from the user file.
 Project settings for remote concurrency remain bounded by the user’s child cap. An explicit
