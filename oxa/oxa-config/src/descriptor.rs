@@ -501,7 +501,7 @@ mod tests {
         assert_eq!(in_group(Group::Tools).count(), 0);
         assert_eq!(fields_of("oxa.lead.serve").count(), 9);
         assert_eq!(in_group(Group::Display).count(), 30);
-        assert_eq!(descriptors().len(), 69);
+        assert_eq!(descriptors().len(), 71);
     }
 
     #[test]
