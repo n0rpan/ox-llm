@@ -177,8 +177,18 @@ pub struct PlannedTask {
     base_alias: Option<tree::BaseAlias>,
     native: bool,
     native_binding: Option<board::NativeBinding>,
+    owner_selected_model: bool,
 }
 impl PlannedTask {
+    /// A launcher can deny argument-based provider opt-in, never grant it through this variable.
+    pub const DELEGATED_MODEL_ENV: &str = "OXA_WORK_MODEL_DELEGATED";
+
+    /// Only the trusted frontend can attach provenance for an explicit owner model argument.
+    pub fn with_owner_model_selection(mut self) -> Self {
+        self.owner_selected_model = true;
+        self
+    }
+
     pub fn task(&self) -> &Task {
         &self.task
     }
@@ -222,6 +232,7 @@ fn plan_new_task(repo: &Path, task: Task, policy: &RunPolicy, native: bool) -> R
         base_alias,
         native,
         native_binding: None,
+        owner_selected_model: false,
     })
 }
 
@@ -277,6 +288,7 @@ fn plan_task_mode(
             base_alias: None,
             native,
             native_binding: None,
+            owner_selected_model: false,
         });
     }
     plan_new_task(repo, task, policy, native)
@@ -895,6 +907,11 @@ pub struct RunPolicy {
     /// `oxa.github.tokenCommand` from the user's settings: argv that prints the token the
     /// runner's `gh` and `git push` use when publishing. Empty keeps the stored `gh` login.
     pub github_token_command: Vec<String>,
+    /// The owner's level for the workers this runner starts. Only `Yolo` changes the worker argv.
+    pub autonomy: oxa_proto::Autonomy,
+    /// Re-read of that level at each launch. A queue started while the owner was in yolo must not
+    /// keep passing `--yolo` after the owner lowered `permissions.defaultMode`.
+    pub autonomy_now: Option<std::sync::Arc<dyn Fn() -> oxa_proto::Autonomy + Send + Sync>>,
     pub storage: PathBuf,
 }
 
@@ -1512,6 +1529,7 @@ fn run_locked(
         scrub_note,
         base_alias: planned.base_alias.as_ref(),
         native: planned.native,
+        owner_selected_model: planned.owner_selected_model,
         #[cfg(target_os = "linux")]
         managed_steering: locked.managed_steering.as_ref(),
     })

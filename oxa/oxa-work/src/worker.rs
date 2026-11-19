@@ -84,12 +84,63 @@ impl Worker {
     }
 }
 
+#[cfg(test)]
+mod autonomy_tests {
+    use super::mode_args;
+    use std::sync::{Arc, Mutex};
+
+    /// A queue that started in yolo passes `--yolo` only while the owner's level still is yolo:
+    /// the level is read at each launch.
+    #[test]
+    fn a_lowered_owner_level_stops_passing_yolo() {
+        let level = Arc::new(Mutex::new(oxa_proto::Autonomy::Yolo));
+        let now = {
+            let level = level.clone();
+            Arc::new(move || *level.lock().unwrap()) as Arc<dyn Fn() -> oxa_proto::Autonomy + Send + Sync>
+        };
+        let mut policy = crate::RunPolicy {
+            git_binary: std::path::PathBuf::from("/bin/true"),
+            host_path: std::ffi::OsString::new(),
+            terminate_binary: None,
+            offline: false,
+            runner_owns_github: false,
+            github_token_command: Vec::new(),
+            autonomy: oxa_proto::Autonomy::Yolo,
+            autonomy_now: Some(now),
+            storage: std::path::PathBuf::from("/tmp/storage"),
+        };
+        let autonomy = policy.autonomy_now.as_ref().map_or(policy.autonomy, |now| now());
+        assert_eq!(mode_args(autonomy), &["--yolo"]);
+        *level.lock().unwrap() = oxa_proto::Autonomy::Standard;
+        let autonomy = policy.autonomy_now.as_ref().map_or(policy.autonomy, |now| now());
+        assert!(
+            mode_args(autonomy).is_empty(),
+            "a lowered level must not pass --yolo"
+        );
+        // Without a resolver the snapshot stands (single-shot callers and tests).
+        policy.autonomy_now = None;
+        let autonomy = policy.autonomy_now.as_ref().map_or(policy.autonomy, |now| now());
+        assert_eq!(mode_args(autonomy), &["--yolo"]);
+    }
+}
+
+/// The mode flags of a worker child. Only an owner in yolo passes yolo on: the worker then
+/// runs without the tool sandbox and without prompts. Every other level keeps the default
+/// worker (auto mode inside the sandbox), exactly as before.
+pub(crate) fn mode_args(autonomy: oxa_proto::Autonomy) -> &'static [&'static str] {
+    match autonomy {
+        oxa_proto::Autonomy::Yolo => &["--yolo"],
+        _ => &[],
+    }
+}
+
 pub(crate) fn run(
     binary: &Path,
     source: &Path,
     root: &Path,
     task: &Task,
     prompt: &str,
+    owner_selected_model: bool,
     policy: &RunPolicy,
     lock: &File,
     session: Option<&str>,
@@ -102,6 +153,9 @@ pub(crate) fn run(
         .as_deref()
         .ok_or("no trusted kill executable outside the source project")?;
     let mut command = Command::new(binary);
+    if !owner_selected_model {
+        command.env(crate::PlannedTask::DELEGATED_MODEL_ENV, "1");
+    }
     crate::isolate_git_environment(&mut command);
     #[cfg(target_os = "linux")]
     {
@@ -127,6 +181,10 @@ pub(crate) fn run(
     } else {
         command.arg("-na");
     }
+    // The owner's level is read at launch: a queue that started in yolo stops passing `--yolo`
+    // as soon as the owner lowers `permissions.defaultMode`.
+    let autonomy = policy.autonomy_now.as_ref().map_or(policy.autonomy, |now| now());
+    command.args(mode_args(autonomy));
     if policy.offline {
         command.arg("--offline");
     }
@@ -380,7 +438,26 @@ pub(crate) fn keep_tail(tail: &mut Vec<u8>, bytes: &[u8], cap: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxa_proto::Autonomy;
     use serde_json::json;
+
+    #[test]
+    fn yolo_runner_starts_yolo_worker() {
+        assert_eq!(mode_args(Autonomy::Yolo), ["--yolo"]);
+    }
+
+    #[test]
+    fn non_yolo_runner_worker_keeps_bwrap() {
+        // No yolo flag means the worker keeps its default sandboxed mode.
+        assert!(mode_args(Autonomy::Auto).is_empty());
+        assert!(mode_args(Autonomy::Standard).is_empty());
+    }
+
+    #[test]
+    fn worker_argv_has_no_yolo_by_default() {
+        assert_eq!(Autonomy::default(), Autonomy::Standard);
+        assert!(mode_args(Autonomy::default()).is_empty());
+    }
 
     #[test]
     fn a_discarded_assistant_event_leaves_declaration_evidence_unreadable() {

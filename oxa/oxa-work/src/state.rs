@@ -357,6 +357,8 @@ mod tests {
                 offline: true,
                 runner_owns_github: false,
                 github_token_command: Vec::new(),
+                autonomy: Default::default(),
+                autonomy_now: None,
                 storage: fixture.0.path().to_path_buf(),
             };
             for rerun in [false, true] {

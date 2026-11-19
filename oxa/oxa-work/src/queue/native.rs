@@ -219,6 +219,8 @@ mod tests {
             offline: true,
             runner_owns_github: false,
             github_token_command: Vec::new(),
+            autonomy: Default::default(),
+            autonomy_now: None,
             storage: directory.path().join("runner"),
         };
         (directory, claims, binding, prepared, policy)

@@ -528,6 +528,8 @@ mod tests {
             offline: false,
             runner_owns_github: false,
             github_token_command: command,
+            autonomy: Default::default(),
+            autonomy_now: None,
             storage: dir.join("runner"),
         }
     }

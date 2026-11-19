@@ -200,6 +200,17 @@ gateway for sessions and `--list-models`. The default is `false`. Offline mode
 refuses before opening the gateway; configuration or gateway failures are returned
 directly. Project settings cannot enable this transport or change its cloud policy.
 
+The OpenCode Go subscription is the exception to that switch: a Go key in the
+owner's secrets file (`~/.config/oxc/llm/cloud-secrets.json`, the `opencode`
+entry) already enables the Go transport for the owner's own model choice, without
+`inProcessCloud`. `oxa.cloud.opencode.enabled: false` in the user settings opts
+out again, and `true` enables Go even for a delegated or restored model. Transport
+selection stays user-only: a project settings file, a model a launcher delegated
+through `oxa work`'s task file, and a model restored by `--continue` never turn
+the transport on by themselves. A configured local alias keeps a request local
+only when the alias owns the asked model exactly; a fuzzy local match does not
+hide the Go model of that name.
+
 Set `oxa.cloud.discover_models` to `true` to discover models at startup for the
 configured OpenRouter, OpenAI and Anthropic API keys. It also enables the
 OpenCode model cache when that provider is configured. A fresh cached catalog
@@ -288,10 +299,13 @@ client's 30-second maximum. These settings contain no access or refresh token.
 Client transport tests inject loopback endpoints privately; production refresh
 configuration never supplies one.
 
-Subscription calls require their own positive request/token caps, retain actual
-token usage and settle zero USD. Unknown paid work retains its full token bound;
-the cap includes concurrent and crashed-process reservations. It never falls back
-to a paid API balance. Missing metered pricing still refuses metered requests.
+ChatGPT requires positive request and token caps. For OpenCode Go,
+`oxa.cloud.subscription_limits` is optional and has no default. If configured,
+oxa warns when projected usage reaches 80% or 100% of either limit, including
+concurrent reservations, and continues the request. Both providers keep
+recording requests and tokens, including conservative reservations for unknown
+outcomes. Provider limits and credential, offline, and LAN access checks still
+apply. Missing metered pricing still refuses metered requests.
 
 OpenCode Go and every other subscription request reserve tokens only. Their cost
 is unknown to oxa, so no daily USD headroom is held for them and no local USD

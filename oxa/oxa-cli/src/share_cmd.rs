@@ -451,7 +451,12 @@ mod tests {
             &settings,
             &settings,
             &dirs,
-            Some("synthetic"),
+            crate::in_process::ModelSelection {
+                pattern: Some("synthetic"),
+                scope: &[],
+                endpoint: "",
+                owner_selected: true,
+            },
             None,
             prepared.engines.clone(),
             || panic!("owner should use the shared native engine"),

@@ -234,6 +234,8 @@ mod tests {
             offline: true,
             runner_owns_github: true,
             github_token_command: Vec::new(),
+            autonomy: Default::default(),
+            autonomy_now: None,
             storage: directory.path().into(),
         };
         let lease = Lease {
