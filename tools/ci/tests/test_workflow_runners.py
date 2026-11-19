@@ -143,6 +143,30 @@ class WorkflowRunners(unittest.TestCase):
         text = (WORKFLOWS / 'macos.yml').read_text()
         self.assertNotIn('merge_group', text)
 
+    def test_macos_runs_only_on_main_dispatch_and_platform_paths(self):
+        text = (WORKFLOWS / 'macos.yml').read_text()
+        self.assertIn("branches: ['main']", text)
+        self.assertNotIn("'agent/**'", text)
+        self.assertIn('workflow_dispatch:', text)
+        for path in ('oxa/oxa-session/**', 'oxa/oxa-sandbox/**', 'oxa/oxa-cli/**',
+                     'oxa/oxc-gateway/**', 'packaging/macos/**', '.github/workflows/macos*.yml',
+                     'oxa/Cargo.lock'):
+            self.assertIn(f"'{path}'", text)
+        self.assertNotIn("'oxa/**'", text)
+
+    def test_lane_skips_branches_with_an_open_pr(self):
+        text = (WORKFLOWS / 'lane.yml').read_text()
+        self.assertIn('name: lane plan', text)
+        self.assertIn("needs.pr-check.outputs.has_pr != 'true'", text)
+        self.assertIn('pull-requests: read', text)
+        self.assertIn('[ "$EVENT" = push ]', text)
+
+    def test_superseded_workflows_cancel_off_main(self):
+        for name in ('lane.yml', 'checks.yml', 'macos.yml', 'release-build.yml'):
+            text = (WORKFLOWS / name).read_text()
+            self.assertIn('cancel-in-progress: ', text, name)
+            self.assertNotIn('cancel-in-progress: false', text, name)
+
     def test_lane_matrix_accepts_only_its_fixed_free_runners(self):
         text = ('jobs:\n  test:\n    runs-on: ${{ matrix.runner }}\n'
                 '    strategy:\n      matrix:\n        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n')
