@@ -7,10 +7,9 @@
 //!
 //! Identity: the leader stays unreaped (a zombie is enough) until its group is confirmed empty.
 //! While the leader is unreaped its pid, and therefore its process group number, cannot be
-//! reused, so every signal the supervisor sends reaches the group it started. Zombies are not
-//! live members: Linux reads that from `/proc`, and a platform without procfs asks the kernel
-//! for the group (`killpg(0)`) and observes the unreaped leader with `waitid(WNOWAIT)`. A member
-//! that outlives its leader is caught by the group SIGKILL sweep before the worker is retired.
+//! reused, so every signal the supervisor sends reaches the group it started. Live members are
+//! read from Linux `/proc`. Platforms without procfs are rejected before the
+//! supervisor thread starts, so they can never admit a worker that the supervisor cannot stop.
 //!
 //! Environment: a worker gets exactly the environment its caller passes (`env_clear` first), so the
 //! launch policy in `launch::child_env` is applied by the caller and never bypassed by inheritance.
@@ -78,6 +77,7 @@ impl Supervisor {
                 "the kill helper must be an absolute path",
             ));
         }
+        require_procfs(cfg!(target_os = "linux"))?;
         let (tx, rx) = mpsc::channel();
         thread::Builder::new()
             .name("oxa-workers".into())
@@ -119,6 +119,19 @@ impl Supervisor {
 
     fn send(&self, msg: Msg) -> io::Result<()> {
         self.tx.send(msg).map_err(|_| gone())
+    }
+}
+
+/// Refuse supervision where the process membership probe is unavailable. This check happens in
+/// `Supervisor::new`, before its thread starts and therefore before it can spawn a child.
+fn require_procfs(available: bool) -> io::Result<()> {
+    if available {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "worker supervision requires Linux procfs",
+        ))
     }
 }
 
@@ -924,6 +937,13 @@ mod tests {
     #[test]
     fn kill_helper_must_be_an_absolute_path() {
         assert!(Supervisor::new(GRACE, PathBuf::from("kill")).is_err());
+    }
+
+    #[test]
+    fn a_platform_without_procfs_is_rejected_before_supervision() {
+        let error = require_procfs(false).expect_err("a platform without procfs was admitted");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(error.to_string(), "worker supervision requires Linux procfs");
     }
 
     #[test]
