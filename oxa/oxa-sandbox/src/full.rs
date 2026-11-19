@@ -10,8 +10,7 @@
 //! command goes through bwrap without network, and is refused without bwrap.
 use crate::run::run_unsandboxed_stdin_inherit;
 use crate::{
-    offline_argv, run_argv_capture, run_argv_stdin, run_unsandboxed_capture, run_unsandboxed_stdin, Layout,
-    NetSandbox,
+    offline_argv, run_argv_stdin, run_unsandboxed_capture, run_unsandboxed_stdin, Layout, NetSandbox,
 };
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox, YoloSwitch};
 use std::path::{Path, PathBuf};
