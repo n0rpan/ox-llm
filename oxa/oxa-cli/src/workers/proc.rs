@@ -7,8 +7,10 @@
 //!
 //! Identity: the leader stays unreaped (a zombie is enough) until its group is confirmed empty.
 //! While the leader is unreaped its pid, and therefore its process group number, cannot be
-//! reused, so every signal the supervisor sends reaches the group it started. Group membership
-//! is read from `/proc`, which skips zombies, so an exited leader does not look like a live group.
+//! reused, so every signal the supervisor sends reaches the group it started. Zombies are not
+//! live members: Linux reads that from `/proc`, and a platform without procfs asks the kernel
+//! for the group (`killpg(0)`) and observes the unreaped leader with `waitid(WNOWAIT)`. A member
+//! that outlives its leader is caught by the group SIGKILL sweep before the worker is retired.
 //!
 //! Environment: a worker gets exactly the environment its caller passes (`env_clear` first), so the
 //! launch policy in `launch::child_env` is applied by the caller and never bypassed by inheritance.
@@ -21,6 +23,7 @@
 
 use oxa_config::Settings;
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use std::fs;
 use std::io;
 use std::os::unix::process::CommandExt;
@@ -358,14 +361,54 @@ fn signal(kill: &Path, target: &str, sig: &str) -> io::Result<()> {
     }
 }
 
-/// Whether the leader `pid` is still running (not a zombie).
+/// Whether the leader `pid` is still running (not a zombie), from its procfs state.
+#[cfg(target_os = "linux")]
 fn leader_running(pid: u32) -> io::Result<bool> {
     Ok(matches!(proc_stat(pid)?, Some((state, _)) if state != 'Z' && state != 'X'))
+}
+
+/// Whether the leader `pid` is still running. Without procfs the unreaped leader is observed
+/// with `waitid(WNOWAIT)`, which reports its exit without reaping it.
+#[cfg(not(target_os = "linux"))]
+fn leader_running(pid: u32) -> io::Result<bool> {
+    Ok(!leader_exited(pid)?)
+}
+
+/// Whether our unreaped leader `pid` has already exited. `waitid` with `WNOWAIT` observes the
+/// exit and leaves the pid reserved, so the group number cannot be reused. `ECHILD` means the
+/// process is no longer an unreaped child of this thread: it is not a zombie we hold.
+#[cfg(not(target_os = "linux"))]
+fn leader_exited(pid: u32) -> io::Result<bool> {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: waitid fills the siginfo we own; WNOWAIT leaves the child unreaped.
+    let rc = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if rc != 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ECHILD) {
+            return Ok(false);
+        }
+        return Err(error);
+    }
+    // SAFETY: waitid succeeded, so the union holds this child's id.
+    Ok(unsafe { info.si_pid() } == pid as libc::pid_t)
 }
 
 /// Whether any process of group `pgid` is running. Zombies do not count. Errors are returned,
 /// never read as absence, except that a pid whose stat cannot be read for permission reasons is
 /// not ours (see [`group_alive_with`]).
+///
+/// Linux reads every pid's procfs record. A platform without procfs asks the kernel whether the
+/// group still has a member (`killpg(0)`) and whether our unreaped leader is a zombie: either way
+/// a member that outlived the leader is caught by the group SIGKILL sweep the caller runs next
+/// (`Table::sweep`, `Table::reap`), so nothing escapes.
+#[cfg(target_os = "linux")]
 fn group_alive(pgid: u32) -> io::Result<bool> {
     let mut pids = Vec::new();
     for entry in fs::read_dir("/proc")? {
@@ -381,9 +424,30 @@ fn group_alive(pgid: u32) -> io::Result<bool> {
     group_alive_with(pgid, pids, proc_stat)
 }
 
+/// [`group_alive`] without procfs: a live member is an existing group that is not just our
+/// unreaped leader. `ESRCH` is an empty group; `EPERM` is a member we may not signal, which the
+/// Linux path treats the same way.
+#[cfg(not(target_os = "linux"))]
+fn group_alive(pgid: u32) -> io::Result<bool> {
+    if leader_exited(pgid)? {
+        return Ok(false);
+    }
+    // SAFETY: killpg only inspects the group; signal 0 delivers nothing.
+    if unsafe { libc::killpg(pgid as libc::pid_t, 0) } == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => Ok(false),
+        Some(libc::EPERM) => Ok(true),
+        _ => Err(error),
+    }
+}
+
 /// [`group_alive`] over the given pids with an injectable stat reader. A pid that answers EPERM or
 /// EACCES (another user's process under `hidepid`) is not in our group: workers run as our own
 /// uid, and a same-uid process is always readable.
+#[cfg(target_os = "linux")]
 fn group_alive_with(
     pgid: u32,
     pids: impl IntoIterator<Item = u32>,
@@ -401,6 +465,7 @@ fn group_alive_with(
 }
 
 /// True for EPERM (1) and EACCES (13), however the error was classified.
+#[cfg(target_os = "linux")]
 fn permission_denied(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::PermissionDenied || matches!(error.raw_os_error(), Some(1 | 13))
 }
@@ -408,10 +473,12 @@ fn permission_denied(error: &io::Error) -> bool {
 /// `ESRCH`: the pid exited between the open and the read. Linux returns this from a
 /// `/proc/<pid>` read rather than `NotFound`, and `group_alive` scans unrelated processes, so
 /// ordinary host churn hits it.
+#[cfg(target_os = "linux")]
 const ESRCH: i32 = 3;
 
 /// The state letter and process group of `pid` from `/proc/<pid>/stat`, or `None` once the
 /// process is gone.
+#[cfg(target_os = "linux")]
 fn proc_stat(pid: u32) -> io::Result<Option<(char, u32)>> {
     match fs::read(format!("/proc/{pid}/stat")) {
         Ok(bytes) => parse_stat(&bytes).map(Some),
@@ -421,12 +488,14 @@ fn proc_stat(pid: u32) -> io::Result<Option<(char, u32)>> {
 }
 
 /// True for the two ways a `/proc/<pid>` read reports that the process is gone.
+#[cfg(target_os = "linux")]
 fn process_gone(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(ESRCH)
 }
 
 /// Parse a `/proc/<pid>/stat` record as bytes: `comm` may hold any byte (not only UTF-8), so only
 /// the ASCII fields after the last `)` are decoded.
+#[cfg(target_os = "linux")]
 fn parse_stat(bytes: &[u8]) -> io::Result<(char, u32)> {
     let malformed = || io::Error::new(io::ErrorKind::InvalidData, "malformed /proc stat line");
     // `pid (comm) state ppid pgrp ...`: comm may contain spaces and parentheses, so split after
@@ -449,7 +518,7 @@ fn parse_stat(bytes: &[u8]) -> io::Result<(char, u32)> {
     Ok((state, group))
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use serde_json::json;

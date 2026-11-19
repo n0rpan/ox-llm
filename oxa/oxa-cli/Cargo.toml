@@ -21,6 +21,9 @@ default = []
 share = ["oxc-gateway/share"]
 managed-steering = ["oxa-rpc/managed-steering"]
 
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+libc.workspace = true
+
 [dependencies]
 oxa-work.workspace = true
 oxa-proto.workspace = true
