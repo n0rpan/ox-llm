@@ -280,10 +280,28 @@ fn scan_commit_object(commit: &str, raw: &str, scan: ContentScan<'_>) -> Result<
 
 /// Whether a YAML line ends in a block scalar indicator (`|`, `>`, with `-`/`+`).
 fn opens_block_scalar(row: &str) -> bool {
-    let trimmed = row.trim_end();
-    ["|", "|-", "|+", ">", ">-", ">+"]
-        .iter()
-        .any(|indicator| trimmed.ends_with(indicator))
+    // `key: |`, `|2-`, `|+2`, `>2` and a trailing comment are all valid headers. The
+    // indicator is the last run of `|`/`>` plus optional chomping and indentation markers.
+    let mut text = row.trim_end();
+    if let Some((before, _)) = text.split_once(" #") {
+        text = before.trim_end();
+    }
+    let Some(at) = text.rfind(['|', '>']) else {
+        return false;
+    };
+    let marker = &text[at + 1..];
+    let mut chars = marker.chars().peekable();
+    let mut chomp = false;
+    let mut indent = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '+' | '-' if !chomp => chomp = true,
+            '1'..='9' if !indent => indent = true,
+            '0' => return false,
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// The line that opens the block scalar `current` (the added line at 1-based `line`)
@@ -314,6 +332,7 @@ fn scan_patch(
     let mut recovered = false;
     let (mut path, mut added, mut hunk, mut parents, mut line) = (None::<String>, false, false, 1, 0);
     let mut block_scalar_header: Option<String> = None;
+    let mut previous_added: Option<String> = None;
     for row in text.lines() {
         if let Some(id) = row.strip_prefix('\0') {
             commit = id.trim().to_string();
@@ -368,6 +387,7 @@ fn scan_patch(
         };
         if marks.contains('-') || row.starts_with('\\') {
             block_scalar_header = None;
+            previous_added = None;
             continue;
         }
         if marks.contains('+') {
@@ -404,11 +424,26 @@ fn scan_patch(
                     }
                 }
             }
+            // A credential split over two added lines (`"password":` then the value) matches
+            // neither line alone, so the pair is scanned with its context.
+            if let Some(previous) = previous_added.as_deref() {
+                let context = format!("{previous}\n{rest}");
+                let item = PushedContent {
+                    path: name,
+                    line: Some(line),
+                    text: &context,
+                };
+                if let Some(finding) = scan(&item) {
+                    return Err(refusal(name, Some(line), finding));
+                }
+            }
+            previous_added = Some(rest.to_string());
             if opens_block_scalar(rest) {
                 block_scalar_header = Some(rest.to_string());
             }
         } else {
             block_scalar_header = None;
+            previous_added = None;
         }
         line += 1;
     }
@@ -1203,6 +1238,26 @@ mod scan_tests {
             .map(|(p, l, t)| (p.to_string(), *l, t.to_string()))
             .collect();
         assert_eq!(seen, expected);
+    }
+
+    /// A YAML header may carry chomping/indentation in either order and a trailing comment; a
+    /// JSON pair may split across two added lines. Both must still reach the scanners.
+    #[test]
+    fn split_and_indented_credentials_are_found() {
+        for header in ["|2-", "|+2", ">-2", "|2 # credential", "|"] {
+            let patch = format!(
+                "\0aaaa\n\ndiff --git a/settings.yml b/settings.yml\nnew file mode 100644\n--- /dev/null\n+++ b/settings.yml\n@@ -0,0 +1,2 @@\n+password: {header}\n+  opaque-pass-value-17\n"
+            );
+            assert!(
+                scan_patch(&patch, &containing("opaque-pass-value-17"), &|_, _| None).is_err(),
+                "header {header:?} was not scanned as a block scalar"
+            );
+        }
+        let split = "\0aaaa\n\ndiff --git a/settings.json b/settings.json\nnew file mode 100644\n--- /dev/null\n+++ b/settings.json\n@@ -0,0 +1,3 @@\n+{\n+  \"password\":\n+  \"opaque-pass-value-17\"\n";
+        assert!(
+            scan_patch(split, &containing("opaque-pass-value-17"), &|_, _| None).is_err(),
+            "a JSON credential split over two lines was not scanned"
+        );
     }
 
     #[test]
