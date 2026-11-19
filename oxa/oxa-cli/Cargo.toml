@@ -22,6 +22,7 @@ share = ["oxc-gateway/share"]
 managed-steering = ["oxa-rpc/managed-steering"]
 
 [dependencies]
+oxa-http.workspace = true
 oxa-work.workspace = true
 oxa-proto.workspace = true
 oxa-engine = { workspace = true, features = ["in-process-gateway"] }
