@@ -87,7 +87,7 @@ fn quoted_secret_literal(text: &str) -> bool {
         regex::Regex::new(concat!(
             r#"(?i)(?:(?:^|[^a-z])(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|token|key)"#,
             r#"|secret|password|passwd|passphrase|authorization|(?-i:[a-z](?:Key|Token)))["']?\s*[:=]\s*"#,
-            r#"(?:"([^"]*)"|'([^']*)')"#
+            r#"(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')"#
         ))
         .expect("quoted secret pattern")
     });
@@ -186,6 +186,33 @@ fn environment_secret_assignment(text: &str) -> bool {
 
 /// A JSON credential key at the end of one added line with its value on the next:
 /// `"password":` / `"opaque-pass-value-17"`. Each line alone looks harmless.
+/// A YAML/TOML assignment whose key merely *contains* a credential word: `database_password:`
+/// or `svc.api_token =` — the shared keyed pattern needs a boundary the underscore hides.
+fn prefixed_assignment(text: &str) -> bool {
+    static PREFIXED: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    PREFIXED
+        .get_or_init(|| {
+            regex::Regex::new(concat!(
+                r#"(?i)(?:^|[^a-z0-9_])["']?[a-z0-9_.-]*(?:api[_-]?key|access[_-]?token|auth[_-]?token"#,
+                r#"|refresh[_-]?token|token|secret|password|passwd|passphrase)[a-z0-9_.-]*["']?\s*[:=]\s*["']?([^\s"'#,;]+)"#
+            ))
+            .expect("prefixed assignment pattern")
+        })
+        .captures_iter(text)
+        .any(|found| opaque_value(found[1].trim()))
+}
+
+/// A PuTTY private key is a line-oriented format, not PEM: `PuTTY-User-Key-File-N` and
+/// `Private-MAC` appear in a copied key under any file name.
+fn putty_key(text: &str) -> bool {
+    text.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("PuTTY-User-Key-File-")
+            || line.starts_with("Private-Lines:")
+            || line.starts_with("Private-MAC:")
+    })
+}
+
 fn json_split_secret(text: &str) -> bool {
     static SPLIT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     SPLIT
@@ -337,7 +364,7 @@ impl PushScan {
 
     fn secret_text(&self, text: &str) -> Option<&'static str> {
         let p = patterns();
-        if p.pem_begin.is_match(text) {
+        if p.pem_begin.is_match(text) || putty_key(text) {
             return Some("a private key");
         }
         if p.known.is_match(text) || embedded_known_token(text) {
@@ -349,6 +376,7 @@ impl PushScan {
         if p.keyed.captures_iter(text).any(|found| opaque_value(&found[2]))
             || quoted_secret_literal(text)
             || environment_secret_assignment(text)
+            || prefixed_assignment(text)
             || block_scalar_secret(text)
             || json_split_secret(text)
             || p.bearer
@@ -395,6 +423,29 @@ mod tests {
             line: None,
             text: "",
         }
+    }
+
+    /// Three copy-and-rename forms the scanner missed: an unquoted prefixed YAML key, a JSON
+    /// value whose escaped quote truncated the captured literal, and a PuTTY key under a plain
+    /// file name.
+    #[test]
+    fn prefixed_yaml_escaped_quotes_and_putty_keys_are_refused() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        for text in [
+            "database_password: opaque-pass-value-17",
+            "svc.api_token = opaque-pass-value-17",
+            r#"{"password": "a\"opaque-pass-value-17"}"#,
+            "PuTTY-User-Key-File-3: ssh-rsa",
+        ] {
+            assert!(
+                scan.check(&added("notes.txt", text)).is_some(),
+                "not refused: {text}"
+            );
+        }
+        // A placeholder is still allowed.
+        assert!(scan
+            .check(&added("notes.txt", "database_password: ${DB_PASSWORD}"))
+            .is_none());
     }
 
     #[test]
