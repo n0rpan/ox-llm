@@ -123,7 +123,7 @@ pub struct ModelsConfig {
 
 impl ModelsConfig {
     /// Read `<agent_dir>/models.json`; without a file the single default endpoint is
-    /// `OXA_ENGINE_URL` or `http://127.0.0.1:8092` (the controller). Entries using the
+    /// `OXA_ENGINE_URL` or `http://127.0.0.1:8092` (the local engine). Entries using the
     /// cloud key or pool fields are parsed separately from the legacy engine catalog.
     ///
     /// Legacy engine entry shape in the `providers` map:

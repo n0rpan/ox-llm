@@ -29,6 +29,9 @@ const SUBAGENT_RULE: &str =
     "For a wide search or to read many files, delegate to a subagent and use its summary";
 const SUBAGENT_CHECK_RULE: &str =
     "A subagent's summary can be wrong: before you rely on a claim from it for an edit, read the cited lines yourself";
+/// 2026-11-19: the done check, added with the output diet when `bash` is declared.
+const VERIFY_RULE: &str =
+    "Before you call a task done, run the project's own tests or checks and report the result; if you ran none, say so";
 const SHOW_PATHS: &str = "Show file paths clearly when working with files";
 const CONCISE: &str = "Be concise in your responses";
 
@@ -150,8 +153,12 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// 2026-11-15: the built-in `pull-request` skill (#181) joined the skills section.
 /// 2026-11-16: issue #519 added `kill` to the `bash` schema and documented per-job cancellation
 /// and explicit background timeouts; both default tool prefixes intentionally changed.
-const DEFAULT_STABLE_SHA: &str = "2d4683b3fd6b9a30dce842f87a5cf0626e3e7639cc4ad456386e6eaad22757ea";
-const DEFAULT_STABLE_SHA_SUBAGENT: &str = "5ce26b9bd40a179b6dc68f67dea6ffd02f7ad2cf2922ee535d3fafcc639c2613";
+/// 2026-11-19: S12 documents explicit zero in the bash timeout schema.
+/// 2026-11-19: R2 rewrote the built-in `ox-llm` skill description (no controller), and the
+/// new identity text (Rust-only suite, cloud models as one provider line) and the done-check
+/// rule; hashes copied from the `stable sha256` lines of this test in CI.
+const DEFAULT_STABLE_SHA: &str = "44d38fb90943d9e111559e359399368a8bff5d8fe1e2c8dca61559b04544ea74";
+const DEFAULT_STABLE_SHA_SUBAGENT: &str = "636bb5a19bd57a0c20d29bb3553873c330532df02a042d9370029764e314c2ca";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
 fn has_date(s: &str) -> bool {
@@ -236,6 +243,11 @@ fn prefix_bytes_and_the_anchor() {
         for r in DIET_RULES {
             assert_eq!(system.contains(r), on, "{label}: {r}");
         }
+        assert_eq!(
+            system.contains(VERIFY_RULE),
+            on,
+            "{label}: done check only with the diet on"
+        );
         assert_eq!(system.contains(CONCISE), !on, "{label}: concise rule");
         assert!(system.contains(SHOW_PATHS), "{label}: paths rule");
         assert!(
@@ -277,7 +289,8 @@ fn prefix_bytes_and_the_anchor() {
         };
         let (on, off) = (get("diet on"), get("diet off"));
         let line = |t: &str| t.len() + 3;
-        let mut cost: i64 = DIET_RULES.iter().map(|r| line(r) as i64).sum::<i64>() - line(CONCISE) as i64;
+        let mut cost: i64 = DIET_RULES.iter().map(|r| line(r) as i64).sum::<i64>() - line(CONCISE) as i64
+            + line(VERIFY_RULE) as i64;
         if subagent {
             cost += line(SUBAGENT_RULE) as i64 + line(SUBAGENT_CHECK_RULE) as i64;
         }

@@ -9,6 +9,7 @@ use crate::layout::{
 use crate::run::run_argv;
 use crate::Bwrap;
 use oxa_proto::{codes, CancelToken, ExecSpec, OxaError};
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -131,6 +132,18 @@ pub(crate) fn bwrap_args_homes(
     }
     if !home_first {
         push(&mut a, &["--tmpfs", &home_c.to_string_lossy()]);
+    }
+    // The confirmation broker lives below the otherwise hidden agent home. Expose that one
+    // socket, not its private parent tree. Both permission checks match the broker's creation
+    // contract and keep an injected environment value from becoming a general bind primitive.
+    if let Some(sock) = confirm_socket(s) {
+        if let Some(parent) = sock.parent() {
+            push(&mut a, &["--dir", &parent.to_string_lossy()]);
+            push(
+                &mut a,
+                &["--ro-bind", &sock.to_string_lossy(), &sock.to_string_lossy()],
+            );
+        }
     }
     let mode = effective_mode(s, home, layout, real_home);
     let writable = mode == CwdMode::Writable;
@@ -463,6 +476,59 @@ pub(crate) fn bwrap_args_homes(
     }
     push(&mut a, &["--", "bash", "-c", &s.command]);
     a
+}
+
+fn confirm_socket(s: &ExecSpec) -> Option<&Path> {
+    let path = Path::new(
+        s.env
+            .iter()
+            .rev()
+            .find(|(key, _)| key == "OXA_CONFIRM_SOCK")?
+            .1
+            .as_str(),
+    );
+    let socket = std::fs::symlink_metadata(path).ok()?;
+    let parent = std::fs::symlink_metadata(path.parent()?).ok()?;
+    (path.is_absolute()
+        && socket.file_type().is_socket()
+        && socket.mode() & 0o777 == 0o600
+        && parent.file_type().is_dir()
+        && parent.mode() & 0o777 == 0o700)
+        .then_some(path)
+}
+
+#[cfg(test)]
+mod confirm_socket_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn broker_socket_is_the_only_private_path_exposed() {
+        let env = oxa_fake::TestEnv::new();
+        let private = env.home().join(".oxa/agent/tmp/confirm-test");
+        std::fs::create_dir_all(&private).expect("private dir");
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).expect("dir mode");
+        let socket = private.join("confirm.sock");
+        let _listener = UnixListener::bind(&socket).expect("socket");
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).expect("socket mode");
+        let spec = ExecSpec {
+            command: "true".into(),
+            cwd: env.work(),
+            writable: true,
+            net: false,
+            timeout_s: None,
+            env: vec![("OXA_CONFIRM_SOCK".into(), socket.to_string_lossy().into_owned())],
+        };
+        let args = bwrap_args(&spec, &env.home());
+        let socket = socket.to_string_lossy();
+        assert!(args.windows(3).any(|w| w == ["--ro-bind", &*socket, &*socket]));
+        let parent = private.to_string_lossy();
+        assert!(args.windows(2).any(|w| w == ["--dir", &*parent]));
+        assert!(!args
+            .windows(3)
+            .any(|w| { (w[0] == "--bind" || w[0] == "--ro-bind") && w[1] == parent && w[2] == parent }));
+    }
 }
 
 pub use oxa_proto::account_home;

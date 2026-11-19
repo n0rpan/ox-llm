@@ -297,6 +297,9 @@ impl StreamHooks {
         sink: &mut dyn EventSink,
         ui: &mut dyn Ui,
     ) {
+        if matches!(ev, StreamEvent::Warning(_)) {
+            return;
+        }
         self.respond(st, sink, ui);
         if !self.raw {
             return;
@@ -314,6 +317,7 @@ impl StreamHooks {
                 name,
                 delta,
             } => json!({"type": "tool_args", "index": index, "id": id, "name": name, "delta": delta}),
+            StreamEvent::Warning(_) => return,
         };
         let payload = json!({
             "provider": "oxe",
@@ -583,6 +587,9 @@ impl Ui for PromptTap<'_> {
     }
     fn confirm(&mut self, title: &str, body: &str, timeout_ms: Option<u32>) -> Option<bool> {
         self.span("confirm", Some(title), |u| u.confirm(title, body, timeout_ms))
+    }
+    fn dialog_canceller(&self) -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
+        self.inner.dialog_canceller()
     }
     fn input(&mut self, title: &str, placeholder: &str) -> Option<String> {
         self.span("input", Some(title), |u| u.input(title, placeholder))

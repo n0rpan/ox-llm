@@ -205,6 +205,7 @@ fn typed_issue_intake_uses_one_snapshot_and_builder_authority() {
                     has_open_pull_request: number == 6,
                 })
                 .collect(),
+            incomplete: vec![],
         },
         0,
     );
@@ -445,7 +446,7 @@ fn manual_assignment_and_unassignment_share_revision_fencing_and_attempts() {
 }
 
 #[test]
-fn manual_assignment_never_bypasses_pins_or_the_three_attempt_cap() {
+fn manual_assignment_never_bypasses_pins_but_admits_past_the_advisory_cap() {
     let fixture = Fixture::new();
     let store = fixture.store();
     let worker = worker("slot-1");
@@ -489,7 +490,9 @@ fn manual_assignment_never_bypasses_pins_or_the_three_attempt_cap() {
             .unassign(3, Some(ManualAuthority::Owner), revision + 1, 10, "retry needed")
             .unwrap());
     }
-    assert!(store
+    // The daily three is advisory: the fourth manual attempt is admitted too,
+    // and the pin still fences who may hold it.
+    let lease = store
         .assign(
             &entry,
             &policy(),
@@ -497,12 +500,13 @@ fn manual_assignment_never_bypasses_pins_or_the_three_attempt_cap() {
             7,
             &worker,
             10,
-            10
+            10,
         )
         .unwrap()
-        .is_none());
+        .unwrap();
+    assert_eq!(lease.generation.1, 4);
     let rows = store.assignments().unwrap();
-    assert_eq!(rows[&3].state.attempts, 3);
+    assert_eq!(rows[&3].state.attempts, 4);
     assert_eq!(
         rows[&3].data.policy.as_ref().unwrap().pin,
         Some(Pin::Worker(worker.id))

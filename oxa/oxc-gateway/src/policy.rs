@@ -26,6 +26,15 @@ impl Refusal {
             param: "model",
         }
     }
+    /// A configured cap cannot be verified because an earlier unbudgeted request has no known cost.
+    pub fn cost_unknown_history() -> Self {
+        Self {
+            status: 429,
+            message: "The daily cloud budget cannot be checked: earlier requests today have an unknown cost. Unset the budget or wait for the next spend day.",
+            code: "cost_unknown_history",
+            param: "model",
+        }
+    }
     pub fn body(&self) -> Value {
         let kind = match self.status {
             403 => "permission_error",
@@ -43,6 +52,7 @@ pub fn before_credentials(
     shared: bool,
     offline: bool,
     pricing_known: bool,
+    capped: bool,
 ) -> Result<(), Refusal> {
     if shared {
         return Err(Refusal {
@@ -71,10 +81,12 @@ pub fn before_credentials(
             param: "n",
         });
     }
-    if !pricing_known {
+    // With no daily cap there is no budget check, so a model with no known price is admitted and
+    // its usage is recorded with unknown cost. Only a configured cap needs a price to bound spend.
+    if !pricing_known && capped {
         return Err(Refusal {
             status: 400,
-            message: "Cloud models need catalog pricing or explicit free: true.",
+            message: "With a daily budget set, cloud models need catalog pricing or explicit free: true.",
             code: "cloud_pricing_unavailable",
             param: "pricing",
         });
