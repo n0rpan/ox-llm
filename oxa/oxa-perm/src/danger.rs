@@ -203,7 +203,7 @@ impl DangerRules {
         let mut untracked = false;
         // The parent's directories, saved at each subshell boundary.
         let mut scopes: Vec<(Vec<PathBuf>, bool)> = Vec::new();
-        for stage in stages {
+        for (index, stage) in stages.iter().enumerate() {
             match stage.mark {
                 Some(Mark::Open) => {
                     scopes.push((dirs.clone(), untracked));
@@ -253,14 +253,23 @@ impl DangerRules {
                     k += 1;
                 }
             }
-            let next = cd_target(
-                &stage.words,
-                &Ctx {
-                    cwd: dirs[0].as_path(),
-                    root: ctx.root,
-                    guard: ctx.guard,
-                },
-            );
+            // `cd X | cat` runs `cd` in a subshell: the parent keeps its directory.
+            let piped = stages
+                .get(index + 1)
+                .filter(|next| next.mark.is_none())
+                .is_some_and(|next| next.pipe_in);
+            let next = if piped {
+                None
+            } else {
+                cd_target(
+                    &stage.words,
+                    &Ctx {
+                        cwd: dirs[0].as_path(),
+                        root: ctx.root,
+                        guard: ctx.guard,
+                    },
+                )
+            };
             match next {
                 Some(Some(dir)) => {
                     if stage.conditional {
@@ -306,7 +315,14 @@ impl DangerRules {
         }
         let peeled = peel(words, unknown_in);
         let unknown = peeled.unknown;
-        // `env -C <dir> cmd`: the wrapped command and its redirections run in <dir>.
+        // A redirection belongs to the simple command, whatever wraps it, and the shell opens
+        // it in the current directory before `env` moves: `env -C / true > .npmrc` writes here.
+        for (op, target) in redirects {
+            if WRITE_OPS.contains(&op.as_str()) {
+                self.write_hit(target, &seg, ctx, hits);
+            }
+        }
+        // `env -C <dir> cmd`: the wrapped command runs in <dir>.
         let moved = peeled.dir.as_deref().and_then(|dir| ctx.resolve(dir));
         let scoped = moved.as_ref().map(|dir| Ctx {
             cwd: dir.as_path(),
@@ -314,12 +330,6 @@ impl DangerRules {
             guard: ctx.guard,
         });
         let ctx = scoped.as_ref().unwrap_or(ctx);
-        // A redirection belongs to the simple command, whatever wraps it.
-        for (op, target) in redirects {
-            if WRITE_OPS.contains(&op.as_str()) {
-                self.write_hit(target, &seg, ctx, hits);
-            }
-        }
         let heredoc = redirects
             .iter()
             .any(|(op, _)| matches!(op.as_str(), "<<" | "<<-" | "<<<"));
@@ -500,8 +510,15 @@ impl DangerRules {
                 match target_directory(args) {
                     Some(dir) => {
                         self.write_hit(&dir, seg, ctx, hits);
+                        // `<dir>/<source name>`: joining an absolute source would drop the
+                        // directory and name the source itself.
                         for t in ops.iter().filter(|t| (*t).to_string() != dir) {
-                            self.write_hit(&Path::new(&dir).join(*t).to_string_lossy(), seg, ctx, hits);
+                            let name = Path::new(t).file_name().map(|n| n.to_string_lossy().into_owned());
+                            let target = match name {
+                                Some(name) => format!("{}/{}", dir.trim_end_matches('/'), name),
+                                None => dir.clone(),
+                            };
+                            self.write_hit(&target, seg, ctx, hits);
                         }
                     }
                     None => {
@@ -550,6 +567,31 @@ impl DangerRules {
                             self.push(hits, "disk-destroy", seg);
                         }
                         self.write_hit(t, seg, ctx, hits);
+                    }
+                }
+            }
+            // A downloader's output file is written like any other target: `-o`, `--output`
+            // and `--output-dir` (with `-O`/`--remote-name`, the URL's own name).
+            "curl" | "wget" => {
+                let mut k = 0usize;
+                while k < args.len() {
+                    let a = args[k].as_str();
+                    let inline = a
+                        .strip_prefix("--output=")
+                        .or_else(|| a.strip_prefix("--output-dir="));
+                    if let Some(target) = inline {
+                        self.write_hit(target, seg, ctx, hits);
+                        k += 1;
+                    } else if matches!(
+                        a,
+                        "-o" | "--output" | "-O" | "--output-document" | "--output-dir" | "-P"
+                    ) {
+                        if let Some(target) = args.get(k + 1) {
+                            self.write_hit(target, seg, ctx, hits);
+                        }
+                        k += 2;
+                    } else {
+                        k += 1;
                     }
                 }
             }
@@ -632,7 +674,12 @@ impl DangerRules {
             .map(String::as_str)
             .take_while(|a| !is_find_expr(a))
             .collect();
-        let roots_outside = roots.iter().any(|r| target_outside(r, ctx));
+        // Without a root `find` searches the current directory.
+        let roots_outside = if roots.is_empty() {
+            target_outside(".", ctx)
+        } else {
+            roots.iter().any(|r| target_outside(r, ctx))
+        };
         let outside = unknown || roots_outside;
         if outside && args.iter().any(|a| a == "-delete") {
             self.push(hits, "rm-recursive-outside", seg);
@@ -1421,7 +1468,7 @@ fn shell_script(argv: &[String]) -> Option<String> {
         if a == "--" || a == "-" || !(a.starts_with('-') || a.starts_with('+')) {
             return None;
         }
-        if a == "-o" || a == "+o" {
+        if matches!(a, "-o" | "+o" | "-O" | "+O") {
             k += 2;
             continue;
         }
