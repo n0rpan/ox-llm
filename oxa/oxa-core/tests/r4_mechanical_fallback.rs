@@ -48,6 +48,7 @@ fn build(env: &TestEnv, engine: Arc<dyn Engine>, compact: CompactPolicy, setting
         queue: Mutex::new(Queue::default()),
         cancel: CancelToken::new(),
         cancel_retry: CancelToken::new(),
+        wait_wake: CancelToken::new(),
         busy: AtomicBool::new(false),
         modes: Mutex::new((QueueMode::All, QueueMode::OneAtATime)),
         dirty: AtomicBool::new(false),
@@ -152,6 +153,7 @@ fn push(st: &mut SessionState, wire: WireMsg) {
 
 fn read_call(id: &str, path: &str) -> WireMsg {
     WireMsg {
+        images: Vec::new(),
         role: Role::Assistant,
         content: Some(String::new()),
         reasoning: None,

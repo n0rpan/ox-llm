@@ -75,6 +75,7 @@ fn build_with_store(
         queue: Mutex::new(Queue::default()),
         cancel: CancelToken::new(),
         cancel_retry: CancelToken::new(),
+        wait_wake: CancelToken::new(),
         busy: std::sync::atomic::AtomicBool::new(false),
         modes: Mutex::new((QueueMode::All, QueueMode::OneAtATime)),
         dirty: std::sync::atomic::AtomicBool::new(false),
@@ -178,6 +179,7 @@ fn run(st: &mut SessionState) -> RunEnd {
 /// An assistant message that calls tools (text empty).
 fn calls(list: Vec<(&str, &str, &str)>) -> WireMsg {
     WireMsg {
+        images: Vec::new(),
         role: Role::Assistant,
         content: Some(String::new()),
         reasoning: None,

@@ -41,6 +41,7 @@ fn transcript(msgs: Vec<WireMsg>) -> Transcript {
 /// An assistant message with tool calls `(name, args_raw)`; ids are `call_0`, `call_1`, ...
 fn assistant_calls(text: Option<&str>, calls: &[(&str, &str)]) -> WireMsg {
     WireMsg {
+        images: Vec::new(),
         role: Role::Assistant,
         content: text.map(str::to_owned),
         reasoning: None,
@@ -426,4 +427,14 @@ fn initial_request_uses_initial_instruction() {
 #[test]
 fn rebase_cause_is_compaction() {
     assert_eq!(rebase_why::COMPACTION, "compaction");
+}
+
+/// Both first-summary and update-summary requests keep identifiers verbatim. The rule lives in
+/// the oxa-owned header, because pi's summary prompts are pinned byte-for-byte by parity.
+#[test]
+fn summary_requests_require_verbatim_identifiers() {
+    let line = "Keep verbatim: PR and issue numbers, commit SHAs, branch names, CI run ids with their conclusions, worker names and session ids, and open questions awaiting the owner.";
+    assert!(prompt::SUMMARY_INSTRUCTION_HEADER.contains(line));
+    assert!(prompt::summary_instruction(SummaryKind::Initial, None).contains(line));
+    assert!(prompt::summary_instruction(SummaryKind::Update, None).contains(line));
 }

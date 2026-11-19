@@ -63,6 +63,21 @@ leases survive UTC midnight; corrupt state, or state that vanished after a PR's
 first reservation, fails closed. Execution, fresh-head validation and CLI polling
 remain in the adapter; core claim storage never spawns workers or writes to GitHub.
 
+On a lab host, an owner can share the worker's Cargo check artifacts between
+worktrees. Set `CARGO_TARGET_DIR` in the environment that starts the worker
+and add that directory to the owner-level `oxa.sandbox.writePaths` setting.
+The variable does not grant a writable mount. Keep this cache dedicated to the
+workers. The acceptance supervisor still uses its own isolated check output.
+
+A managed worker can load project resources whose content matches the saved
+approval for its source repository. The runner verifies that the checkout is
+a managed worktree before reusing that approval. An explicit worktree denial
+still wins. Inheritance is per launch, and creates no permanent worktree grant.
+The managed worker refuses inherited approval when project MCP, extensions,
+or settings can load dependencies outside the approval record. Worker
+settings, MCP and agent definitions come from the user configuration. The
+work runner takes acceptance checks from the approved source.
+
 `oxa work tasks.json` opts into sequential tasks in separate git worktrees.
 Run it inside the project repository. The JSON file is an array:
 
@@ -145,16 +160,35 @@ keep their normal read-only protection: a checkout that needs to populate a trac
 protected hook directory blocks with the worktree retained.
 Acceptance commands are frozen from the captured base commit before checkout
 callbacks can change settings. The runner executes those `done` commands outside the
-agent after it exits, even without edits. The source project must pass the existing
+agent after it exits, even without edits. The runner also derives a local compile
+precheck from the Cargo packages touched in the diff against the captured base and
+in untracked files. The owner can configure `oxa.work.localChecks` in user settings.
+It defaults to `["cargo check"]`; the runner supplies `-p <crate>` for each selected
+package. Workspace-wide changes and shared inputs outside packages in a tree with
+Cargo manifests require hosted coverage. These changes do not select a package
+for a local compile check. A successful local compile still leaves Rust work
+unverified pending tests in hosted lane CI at the exact head.
+The worker can name additional acceptance crates by ending its final reply with
+`<oxa-acceptance>["crate-name"]</oxa-acceptance>`; a block that is not readable crate
+names, or a crate that is not part of the repository, keeps the task unverified.
+The source project must pass the existing
 trust and executable-content approval before a task starts. Invoking `work` does
 not approve an untrusted project. Acceptance runs in the normal bwrap sandbox;
-missing or unusable bwrap blocks the task. Checkout and each check have the same ten-minute limit
-as agent-internal done checks. `in subdirectory: command` selects a folder inside
-that sandbox; escaping the worktree is rejected.
+missing or unusable bwrap blocks the task. Checkout has a ten-minute limit. Each
+check and the change inventory have a ten-minute ceiling within the remaining task deadline.
+`in subdirectory: command` selects a folder inside that sandbox. The runner rejects
+paths that escape the worktree. Each working-tree check round also
+gets a private writable output directory beside the worktree (exposed as
+`OXA_WORK_OUTPUT_DIR`, `CARGO_TARGET_DIR` and `TMPDIR`), so generated build outputs
+never dirty the work the round judges; committed rounds keep their export-local one.
 The final Git inspection is also sandboxed, with a read-only workspace, no network
 and fsmonitor disabled. Clean filters stay inside that sandbox; an inspection
 error blocks the task rather than producing a clean verdict.
 Agent-internal done checks may also run when the project is trusted.
+Each round records the evidence its verdict rests on: the task's record carries one
+`checks` entry per check run with its origin, command, exit status, timeout and
+resulting status. Saved verification (`oxa work verify`) evaluates the exact saved
+commit and still requires hosted test evidence for Rust changes or declared suites.
 
 The runner reads the child's exit code, terminal `oxa_result` and session header,
 without retaining its event stream. It checkpoints the session ID as soon as the
@@ -162,11 +196,14 @@ header arrives. A blocked or failed worker remains blocked; an interrupted worke
 remains interrupted. Neither consumes a repair attempt. Failed acceptance after a successful
 worker continues that same saved session once, then acceptance runs once more.
 JSON lines include the worker result, session ID, captured `base_sha`, saved
-`head_sha`/`tree_sha`, step, checkpoint revision and time. Outcomes are `done`,
+`head_sha`/`tree_sha`, step, checkpoint revision and time, and the `checks` evidence
+of the last acceptance round. Outcomes are `done`,
 `nothing_to_do` (no worker commits or file changes), `red` (checks still fail),
-`blocked` (setup or execution failed), or `interrupted`. Deadline interruptions
+`unverified` (checks were absent, could not run, or still require hosted evidence),
+`blocked` (setup or
+execution failed), or `interrupted`. Deadline interruptions
 carry a typed `interruption: "deadline"`. Exit codes are 0 for success, 1 if any
-task is red, blocked or interrupted, and 2 for invalid input, output or checkpoint
+task is red, unverified, blocked or interrupted, and 2 for invalid input, output or checkpoint
 errors. A checkpoint/event-append error stops the entire batch before another
 action. An ordinary task setup failure produces a blocked
 JSON line and does not skip later tasks. If a task cannot be locked or has an

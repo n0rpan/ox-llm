@@ -1,3 +1,6 @@
+// One shared menu of runner fixtures: each test binary uses a subset, so the rest of the
+// menu is dead code in that binary by design.
+#![allow(dead_code)]
 use oxa_fake::TestEnv;
 use std::{path::Path, process::Command};
 pub fn git(env: &TestEnv, dir: &Path, args: &[&str]) -> String {
@@ -16,6 +19,10 @@ pub fn git(env: &TestEnv, dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().into()
 }
 pub fn setup(env: &TestEnv, done: &str) {
+    setup_with_files(env, done, &[]);
+}
+/// The standard fixture, with extra files committed into the base the task starts from.
+pub fn setup_with_files(env: &TestEnv, done: &str, files: &[(&str, &str)]) {
     git(env, &env.work(), &["init", "--bare", "remote.git"]);
     git(env, &env.work(), &["init", "-b", "main", "project"]);
     let project = env.work().join("project");
@@ -25,6 +32,9 @@ pub fn setup(env: &TestEnv, done: &str) {
         "work/project/.oxa/settings.json",
         &format!(r#"{{"done":{done}}}"#),
     );
+    for (path, content) in files {
+        env.write(&format!("work/project/{path}"), content);
+    }
     git(env, &project, &["add", "."]);
     git(env, &project, &["commit", "-m", "fixture"]);
     git(env, &project, &["remote", "add", "origin", "../remote.git"]);

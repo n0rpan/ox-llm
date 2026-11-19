@@ -43,6 +43,7 @@ impl Sandbox for ShSandbox {
             output,
             exit: out.status.code(),
             timed_out: false,
+            unsandboxed: false,
         }
     }
 }
@@ -133,6 +134,7 @@ fn state_with(
         queue: Mutex::new(Queue::default()),
         cancel: CancelToken::new(),
         cancel_retry: CancelToken::new(),
+        wait_wake: CancelToken::new(),
         busy: std::sync::atomic::AtomicBool::new(false),
         modes: Mutex::new((QueueMode::All, QueueMode::OneAtATime)),
         dirty: std::sync::atomic::AtomicBool::new(false),

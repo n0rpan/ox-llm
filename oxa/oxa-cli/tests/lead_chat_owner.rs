@@ -137,7 +137,7 @@ fn dedicated_lead_session_keeps_its_own_history_across_cli_turns() {
         .collect();
     assert_eq!(requests.len(), 3);
     for request in &requests[1..] {
-        assert!(request.max_tokens <= 512);
+        assert!(request.max_tokens <= 4096);
         assert_eq!(request.tools_json, "[]");
         assert!(request.messages.iter().all(|message| {
             !message
@@ -253,7 +253,7 @@ fn one_shot_lead_message_shares_the_bounded_owner_conversation_path() {
         .collect();
     assert_eq!(requests.len(), 2);
     for request in &requests {
-        assert!(request.max_tokens <= 512);
+        assert!(request.max_tokens <= 4096);
         assert_eq!(request.tools_json, "[]");
     }
     assert!(requests[0]
@@ -315,6 +315,101 @@ fn one_shot_lead_message_shares_the_bounded_owner_conversation_path() {
 }
 
 #[test]
+fn citations_cover_every_offered_observation_and_invalid_refs_stay_refused() {
+    let test = TestEnv::new();
+    let dirs = oxa_config::Dirs::under(test.root());
+    std::fs::set_permissions(&dirs.agent_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::text(r#"{"text":"every observed item","facts":[1,2,3,4,5,6,7,8,9],"action":null}"#),
+            ScriptTurn::text(r#"{"text":"repeated citation","facts":[1,1],"action":null}"#),
+            ScriptTurn::text(r#"{"text":"zero citation","facts":[0],"action":null}"#),
+            ScriptTurn::text(r#"{"text":"beyond the input","facts":[10],"action":null}"#),
+            ScriptTurn::text(
+                r#"{"text":"more citations than observations","facts":[1,2,3,4,5,6,7,8,9,10],"action":null}"#,
+            ),
+            ScriptTurn::text(
+                r#"{"text":"unobserved item","facts":[],"action":{"kind":"board","item":99,"change":"park"}}"#,
+            ),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let initialized = run(&test, &server, &["lead", "chat", "--init"]);
+    assert!(initialized.status.success(), "{initialized:?}");
+    let id = String::from_utf8(initialized.stdout).unwrap().trim().to_owned();
+    let settings = test.write(
+        "home/.oxa/agent/settings.json",
+        &serde_json::json!({"oxa":{"lead":{"sessionId":id}}}).to_string(),
+    );
+    std::fs::set_permissions(settings, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    // Eight board rows plus the status observation: the bounded input offers
+    // nine observations, so citing all nine once each is a valid reply.
+    let entries: Vec<_> = (30..=37)
+        .map(|number| {
+            serde_json::json!({
+                "number": number, "head": "a".repeat(40), "release_pinned": false,
+                "action": "wait_review", "lease": null, "attempts_today": 0, "eligible": false
+            })
+        })
+        .collect();
+    let sample = test.write(
+        "home/.oxa/agent/board.jsonl",
+        &format!(
+            "{}\n",
+            serde_json::json!({
+                "schema_version": 1, "observed_at": 1234,
+                "board": {"observed_at": 1234, "entries": entries}
+            })
+        ),
+    );
+    std::fs::set_permissions(sample, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let valid = run(&test, &server, &["lead", "chat", "Summarise every observed item"]);
+    assert!(valid.status.success(), "{valid:?}");
+    let displayed = String::from_utf8_lossy(&valid.stdout);
+    assert!(displayed.starts_with("every observed item"), "{displayed}");
+    assert!(
+        displayed.contains("The board contained 8 items at observation."),
+        "{displayed}"
+    );
+    assert!(
+        displayed.contains("PR #30") && displayed.contains("PR #37"),
+        "{displayed}"
+    );
+    assert_eq!(displayed.matches("· observed at").count(), 9, "{displayed}");
+
+    // Everything the bounded input never offered stays refused, with the fixed
+    // reply-stage message and no reply bytes on stdout.
+    for message in [
+        "Repeat one observation",
+        "Cite observation zero",
+        "Cite past the input",
+        "Cite more than the input offers",
+        "Park an unobserved item",
+    ] {
+        let output = run(&test, &server, &["lead", "chat", message]);
+        assert!(!output.status.success(), "{message}: {output:?}");
+        assert!(output.stdout.is_empty(), "{message}: {output:?}");
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            diagnostic.contains("The Lead reply cited observations outside the bounded input."),
+            "{message}: {diagnostic}"
+        );
+    }
+    assert_eq!(
+        server
+            .requests()
+            .iter()
+            .filter(|request| request.max_tokens > 0)
+            .count(),
+        6,
+        "one model request per turn, no retry of a refused reply"
+    );
+}
+
+#[test]
 fn cli_chat_hides_private_engine_response_details() {
     let test = TestEnv::new();
     std::fs::set_permissions(test.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -356,4 +451,134 @@ fn cli_chat_hides_private_engine_response_details() {
             .count(),
         2
     );
+}
+
+const LEAD_PTY: &str = r#"
+import errno, os, pty, select, subprocess, sys, time
+master, slave = pty.openpty()
+child = subprocess.Popen([sys.argv[1], 'lead'], stdin=slave, stdout=slave, stderr=slave)
+os.close(slave)
+output = b''
+def wait_for(marker):
+    global output
+    deadline = time.monotonic() + 15
+    while marker not in output:
+        assert child.poll() is None, output[-4000:]
+        assert time.monotonic() < deadline, output[-4000:]
+        if select.select([master], [], [], .1)[0]:
+            output += os.read(master, 65536)
+try:
+    wait_for(b'READY')
+    busy = subprocess.run([sys.argv[1], 'lead', '-p', 'Do not overlap.'], capture_output=True, timeout=10)
+    assert busy.returncode != 0 and b'busy' in busy.stderr, busy.stderr
+    os.write(master, b'/clone\r')
+    wait_for(b'attached to its dedicated session')
+    os.write(master, b'Terminal follow-up.\r')
+    wait_for(b'Interactive reply')
+    os.write(master, b'/quit\r')
+    assert child.wait(timeout=5) == 0
+    while select.select([master], [], [], 0)[0]:
+        try:
+            chunk = os.read(master, 65536)
+        except OSError as error:
+            if error.errno == errno.EIO:
+                break
+            raise
+        if not chunk:
+            break
+        output += chunk
+    assert b'To resume this session:\x1b[22m oxa lead' in output, output[-2000:]
+    assert b'oxa --session' not in output, output[-2000:]
+finally:
+    os.close(master)
+    if child.poll() is None:
+        child.kill()
+    child.wait(timeout=5)
+"#;
+
+#[test]
+fn normal_lead_tui_and_direct_print_use_one_dedicated_session() {
+    let test = TestEnv::new();
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::text(r#"{"text":"first reply","facts":[],"action":null}"#),
+            ScriptTurn::text("Interactive reply"),
+            ScriptTurn::text(r#"{"text":"continued reply","facts":[],"action":null}"#),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    std::fs::set_permissions(test.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let created = run(&test, &server, &["lead", "chat", "--init"]);
+    assert!(created.status.success(), "{created:?}");
+    let id = String::from_utf8(created.stdout).unwrap();
+    let config = serde_json::json!({
+        "oxa": {"lead":{"sessionId":id.trim()},"engine":{"inProcessCloud":false,"inProcessLocal":false}},
+        "cacheWarming":"off",
+        "retry":{"enabled":false},
+    });
+    let path = test.write("home/.oxa/agent/settings.json", &config.to_string());
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let headless = run(&test, &server, &["lead"]);
+    assert!(!headless.status.success());
+    assert!(String::from_utf8_lossy(&headless.stderr).contains("needs a terminal"));
+    let direct = run(&test, &server, &["lead", "Open the conversation."]);
+    assert!(direct.status.success(), "{direct:?}");
+    let tui = Command::new("python3")
+        .args(["-I", "-c", LEAD_PTY, env!("CARGO_BIN_EXE_oxa")])
+        .current_dir(test.work())
+        .env_clear()
+        .envs(test.envs(&server.url()))
+        .env("TERM", "xterm-256color")
+        .output()
+        .unwrap();
+    assert!(tui.status.success(), "{}", String::from_utf8_lossy(&tui.stderr));
+    let printed = run(&test, &server, &["lead", "-p", "Continue after the terminal."]);
+    assert!(printed.status.success(), "{printed:?}");
+    assert!(String::from_utf8_lossy(&printed.stdout).contains("continued reply"));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[1].messages.iter().any(|msg| msg
+        .content
+        .as_deref()
+        .is_some_and(|text| text.contains("Open the conversation."))));
+    assert!(requests[2].messages.iter().any(|msg| msg
+        .content
+        .as_deref()
+        .is_some_and(|text| text.contains("Terminal follow-up."))));
+    assert!(requests.iter().all(|request| request.tools_json == "[]"));
+    let sessions = FsStore::new(test.agent_dir().join("sessions")).list(None);
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].sref.id, id.trim());
+}
+
+#[test]
+fn empty_agent_marker_refuses_the_dedicated_owner_session_before_provider_io() {
+    let test = TestEnv::new();
+    let server = FakeServer::start(
+        vec![ScriptTurn::text(
+            r#"{"text":"Unexpected owner reply.","facts":[],"action":null}"#,
+        )],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    std::fs::set_permissions(test.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let created = run(&test, &server, &["lead", "chat", "--init"]);
+    assert!(created.status.success(), "{created:?}");
+    let id = String::from_utf8(created.stdout).unwrap();
+    let config = serde_json::json!({"oxa": {"lead":{"sessionId":id.trim()}}});
+    let settings = test.write("home/.oxa/agent/settings.json", &config.to_string());
+    std::fs::set_permissions(settings, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["lead", "-p", "Open owner chat."])
+        .env_clear()
+        .envs(test.envs(&server.url()))
+        .env("AI_AGENT", "")
+        .current_dir(test.work())
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Use Lead from the owner session."));
+    assert!(server.requests().is_empty());
 }

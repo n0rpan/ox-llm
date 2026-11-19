@@ -42,6 +42,7 @@ impl Sandbox for NoBash {
             output: Vec::new(),
             exit: Some(0),
             timed_out: false,
+            unsandboxed: false,
         }
     }
 }

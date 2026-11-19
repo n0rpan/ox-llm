@@ -413,6 +413,34 @@ fn search_terms_phrases_regex() {
     assert_eq!(search_sessions(&metas, "parser", true), [0]);
 }
 
+/// Issue #573: `re:` runs on every keystroke on the UI thread, so ordinary patterns must neither
+/// overflow the stack on long text nor take exponential time.
+#[test]
+fn regex_search_survives_long_text_and_nested_repeats() {
+    // A small stack makes a recursion per character show up at once; the match must not need one.
+    let out = std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(|| {
+            let long = "lorem ipsum\ndolor ".repeat(5_000);
+            let metas = vec![
+                meta("/work/p1", None, None, 2, "x", &long),
+                meta("/work/p2", None, None, 1, "x", &format!("{long} zzz")),
+            ];
+            let any_text = search_sessions(&metas, "re:(.|\\n)*zzz", false);
+            // Nested repeats on a run that cannot match: linear time, not exponential.
+            let a_run = vec![meta("/work/p3", None, None, 1, "x", &"a".repeat(64))];
+            let started = std::time::Instant::now();
+            let nested = search_sessions(&a_run, "re:(a+)+b", false);
+            (any_text, nested, started.elapsed())
+        })
+        .unwrap()
+        .join()
+        .expect("no stack overflow");
+    assert_eq!(out.0, [1]);
+    assert_eq!(out.1, Vec::<usize>::new());
+    assert!(out.2 < std::time::Duration::from_secs(2), "took {:?}", out.2);
+}
+
 /// `--fork` (pi `SessionManager.forkFrom`): the whole tree is copied (every branch, file order,
 /// so the leaf on load is the source's), the header points at the source, `--session-id` names
 /// the copy, and an empty source is refused.

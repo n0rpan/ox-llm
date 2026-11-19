@@ -32,6 +32,12 @@ const BASE: &[Entry] = &[
         example: "oxa status 20260101-120000-abcd",
     },
     Entry {
+        path: &["usage"],
+        summary: "Print today's cloud spend and request sums per usage pool as JSON",
+        usage: &["oxa usage --json"],
+        example: "oxa usage --json",
+    },
+    Entry {
         path: &["install"],
         summary: "Install a package source and add it to settings",
         usage: &["oxa install <source> [-l]"],
@@ -90,6 +96,30 @@ const BASE: &[Entry] = &[
         summary: "Queue a session follow-up, waking its TUI or RPC owner",
         usage: &["oxa send <session-id> \"text\""],
         example: "oxa send 20260101-120000-abcd \"task finished\"",
+    },
+    Entry {
+        path: &["memory"],
+        summary: "Show the memory index, or show or remove one memory entry",
+        usage: &["oxa memory <list|show|rm>"],
+        example: "oxa memory list",
+    },
+    Entry {
+        path: &["memory", "list"],
+        summary: "Print the memory index",
+        usage: &["oxa memory list"],
+        example: "oxa memory list",
+    },
+    Entry {
+        path: &["memory", "show"],
+        summary: "Print one memory entry",
+        usage: &["oxa memory show <name>"],
+        example: "oxa memory show build-notes",
+    },
+    Entry {
+        path: &["memory", "rm"],
+        summary: "Delete one memory entry and its index line",
+        usage: &["oxa memory rm <name>"],
+        example: "oxa memory rm build-notes",
     },
     Entry {
         path: &["config"],

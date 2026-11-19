@@ -75,7 +75,9 @@ fn bounded_literal_prompt_keeps_evidence_request_local_and_caps_schema_repair() 
             let Some(RunEnd::Failed(error)) = result.unwrap() else {
                 panic!("the repair should be refused when no output remains");
             };
-            assert_eq!(error.code, codes::BUDGET_EXHAUSTED);
+            // The approved behavior change: the local bounded turn reports its own
+            // literal-limit code, never the metered daily-budget class.
+            assert_eq!(error.code, codes::LITERAL_OUTPUT_EXHAUSTED);
             &[10]
         };
         let requests: Vec<_> = engine
@@ -100,6 +102,65 @@ fn bounded_literal_prompt_keeps_evidence_request_local_and_caps_schema_repair() 
         assert_eq!(last.max_tokens, session.inner().info.max_output);
         assert!(!last.messages.contains(&evidence));
     }
+}
+
+/// Live #1461: a remote bounded literal turn whose only reply stops at the
+/// limit after spending the whole bound must not schedule the recovery request
+/// (it could never reserve a token), must not inject its internal instruction
+/// into the protected Session, and must surface the typed local bound.
+#[test]
+fn bounded_literal_length_stop_fails_typed_without_a_recovery_request() {
+    use oxa_core::RunEnd;
+    use oxa_proto::{codes, Finish};
+    use std::num::NonZeroU32;
+
+    const TURN_TOKENS: u32 = 4096;
+    let env = TestEnv::new();
+    let mut cut = ScriptTurn::text(r#"{"text":"a concise answer that ran"#);
+    cut.finish = Finish::Length;
+    cut.completion_tokens = Some(TURN_TOKENS);
+    let engine = Arc::new(
+        ScriptedEngine::new(vec![
+            cut,
+            ScriptTurn::text(r#"{"text":"an impossible recovery","facts":[],"action":null}"#),
+        ])
+        .with_remote(),
+    );
+    let store = Arc::new(MemStore::new());
+    let mut session = Session::open(deps(&env, store.clone(), engine.clone()), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    let mut ui = HeadlessUi::default();
+    let result = session.prompt_literal_bounded(
+        "A concise question?".into(),
+        String::new(),
+        NonZeroU32::new(TURN_TOKENS).unwrap(),
+        &mut sink,
+        &mut ui,
+    );
+    let Some(RunEnd::Failed(error)) = result.unwrap() else {
+        panic!("a length stop at the bounded literal limit must fail typed");
+    };
+    assert_eq!(error.code, codes::LITERAL_OUTPUT_EXHAUSTED);
+    let requests: Vec<_> = engine
+        .requests()
+        .into_iter()
+        .filter(|r| r.max_tokens > 0)
+        .collect();
+    assert_eq!(
+        requests.iter().map(|r| r.max_tokens).collect::<Vec<_>>(),
+        [TURN_TOKENS],
+        "the impossible recovery request is never forwarded"
+    );
+    let entries = store.load(&session.inner().sref).unwrap();
+    let persisted = format!("{entries:?}");
+    assert!(
+        !persisted.contains("reached its output limit and was discarded"),
+        "the internal recovery instruction never enters the Session"
+    );
+    assert!(
+        persisted.contains("a concise answer that ran"),
+        "the cut stays as an audit entry"
+    );
 }
 
 #[test]
@@ -727,4 +788,644 @@ fn a_queued_turn_delivers_durably_staged_input_before_its_first_request() {
         .iter()
         .any(|message| message.content.as_deref() == Some("Synthetic durable steer.")));
     assert!(session.goal().unwrap().lead.unwrap().pending_steer.is_none());
+}
+
+#[test]
+fn goal_command_set_replace_show_clear() {
+    use oxa_core::goal::{parse_goal_command, GoalCommand};
+    assert_eq!(parse_goal_command("  "), GoalCommand::Show);
+    assert_eq!(parse_goal_command(" resume "), GoalCommand::Resume);
+    assert_eq!(
+        parse_goal_command(" Ship it "),
+        GoalCommand::Set("Ship it".into())
+    );
+
+    let env = TestEnv::new();
+    let store = Arc::new(FsStore::new(env.root().join("sessions")));
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, store.clone(), engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+
+    let (lines, prompt) = session
+        .apply_goal_command(GoalCommand::Show, 1000, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["No goal.".to_string()]);
+    assert_eq!(prompt, None);
+
+    let (lines, prompt) = session
+        .apply_goal_command(parse_goal_command("Ship the parser"), 1000, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["Goal set: Ship the parser".to_string()]);
+    assert_eq!(prompt, Some(oxa_core::prompt::goal_start("Ship the parser")));
+    let first = session.goal_revision();
+    assert!(first > 0);
+    assert_eq!(
+        Goal::latest(&store.load(&session.inner().sref).unwrap()).unwrap(),
+        session.goal()
+    );
+
+    session
+        .apply_goal_command(parse_goal_command("Ship the parser v2"), 2000, &mut sink)
+        .unwrap();
+    let second = session.goal_revision();
+    assert!(second > first);
+    let (lines, prompt) = session
+        .apply_goal_command(GoalCommand::Show, 2000, &mut sink)
+        .unwrap();
+    assert_eq!(lines[0], "Objective: Ship the parser v2");
+    assert_eq!(lines[1], "Status: pursuing");
+    assert_eq!(prompt, None);
+    assert_eq!(
+        Goal::latest(&store.load(&session.inner().sref).unwrap()).unwrap(),
+        session.goal()
+    );
+
+    let (lines, prompt) = session
+        .apply_goal_command(GoalCommand::Clear, 3000, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["Goal cleared.".to_string()]);
+    assert_eq!(prompt, None);
+    assert!(session.goal().is_none());
+    assert!(session.goal_revision() > second);
+    assert_eq!(
+        Goal::latest(&store.load(&session.inner().sref).unwrap()).unwrap(),
+        None
+    );
+    session.shutdown(&mut HeadlessUi::default());
+}
+
+#[test]
+fn goal_command_pause_resume_returns_continue_prompt() {
+    use oxa_core::goal::{parse_goal_command, GoalCommand};
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .apply_goal_command(parse_goal_command("Keep the tests green"), 1000, &mut sink)
+        .unwrap();
+
+    let (lines, prompt) = session
+        .apply_goal_command(GoalCommand::Pause, 1500, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["Goal paused.".to_string()]);
+    assert_eq!(prompt, None);
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Paused);
+
+    let (lines, prompt) = session
+        .apply_goal_command(GoalCommand::Resume, 2000, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["Goal resumed.".to_string()]);
+    assert_eq!(prompt, Some(oxa_core::prompt::GOAL_CONTINUE.to_string()));
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Pursuing);
+}
+
+/// G3 fix: the resumed-goal notice advertises `/goal resume` for a pursuing goal, so resume
+/// continues it without a status transition (the revision does not move).
+#[test]
+fn goal_command_resume_continues_a_pursuing_goal() {
+    use oxa_core::goal::{parse_goal_command, GoalCommand};
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .apply_goal_command(parse_goal_command("Keep the tests green"), 1000, &mut sink)
+        .unwrap();
+    let revision = session.goal_revision();
+
+    let (lines, prompt) = session
+        .apply_goal_command(GoalCommand::Resume, 2000, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["Goal resumed.".to_string()]);
+    assert_eq!(prompt, Some(oxa_core::prompt::GOAL_CONTINUE.to_string()));
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Pursuing);
+    assert_eq!(session.goal_revision(), revision);
+}
+
+#[test]
+fn goal_command_set_is_refused_while_busy() {
+    use oxa_core::goal::{parse_goal_command, GoalCommand};
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .apply_goal_command(parse_goal_command("First objective"), 1000, &mut sink)
+        .unwrap();
+    let revision = session.goal_revision();
+
+    session
+        .inner()
+        .shared
+        .busy
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let error = session
+        .apply_goal_command(GoalCommand::Set("Second objective".into()), 2000, &mut sink)
+        .unwrap_err();
+    assert_eq!(error.code, oxa_proto::codes::BUSY);
+    session
+        .inner()
+        .shared
+        .busy
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+
+    assert_eq!(session.goal_revision(), revision);
+    assert_eq!(session.goal().unwrap().objective, "First objective");
+}
+
+#[test]
+fn wait_returns_early_when_follow_up_arrives() {
+    use oxa_proto::{AgentEvent, EventSink};
+    struct InboxDuringWait(oxa_core::Handle, String);
+    impl EventSink for InboxDuringWait {
+        fn emit(&mut self, event: &AgentEvent) {
+            if matches!(event, AgentEvent::ToolExecutionUpdate { tool_name, .. } if tool_name == "wait") {
+                self.0.follow_up_for(&self.1, "Synthetic input.".into());
+            }
+        }
+    }
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("wait", "wait", r#"{"seconds":3600,"reason":"Input wake test"}"#),
+        ScriptTurn::text("Input received."),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Synthetic input handled."}"#,
+        ),
+    ]));
+    let mut session =
+        Session::open(deps(&env, Arc::new(MemStore::new()), engine.clone()), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let id = session.inner().sref.id.clone();
+    let start = std::time::Instant::now();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut InboxDuringWait(session.handle(), id),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert!(engine.requests()[1]
+        .messages
+        .iter()
+        .any(|m| m.tool_call_id.as_deref() == Some("wait")
+            && m.content.as_deref() == Some("Wait ended: input arrived.")));
+}
+
+#[test]
+fn follow_up_after_wait_is_the_next_user_message() {
+    use oxa_proto::{AgentEvent, EventSink};
+    struct FollowUpDuringWait(oxa_core::Handle);
+    impl EventSink for FollowUpDuringWait {
+        fn emit(&mut self, event: &AgentEvent) {
+            if matches!(event, AgentEvent::ToolExecutionUpdate { tool_name, .. } if tool_name == "wait") {
+                self.0.follow_up("Synthetic input.".into());
+            }
+        }
+    }
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("wait", "wait", r#"{"seconds":3600,"reason":"Next message test"}"#),
+        ScriptTurn::text("Input received."),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Synthetic input handled."}"#,
+        ),
+    ]));
+    let mut session =
+        Session::open(deps(&env, Arc::new(MemStore::new()), engine.clone()), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut FollowUpDuringWait(session.handle()),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    let requests = engine.requests();
+    let messages = &requests.last().unwrap().messages;
+    let wait_result = messages
+        .iter()
+        .position(|m| m.tool_call_id.as_deref() == Some("wait"))
+        .unwrap();
+    let next_user = messages
+        .iter()
+        .position(|m| m.content.as_deref() == Some("Synthetic input."))
+        .unwrap();
+    assert!(next_user > wait_result);
+    assert_eq!(messages[next_user].role, oxa_proto::Role::User);
+}
+
+#[test]
+fn wait_keeps_input_admitted_before_it_starts() {
+    use oxa_proto::{AgentEvent, EventSink};
+    struct InboxAtStart(oxa_core::Handle, String);
+    impl EventSink for InboxAtStart {
+        fn emit(&mut self, event: &AgentEvent) {
+            if matches!(event, AgentEvent::ToolExecutionStart { tool_name, .. } if tool_name == "wait") {
+                self.0.follow_up_for(&self.1, "Early input.".into());
+            }
+        }
+    }
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("wait", "wait", r#"{"seconds":3600,"reason":"Early input test"}"#),
+        ScriptTurn::text("Input received."),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Early input handled."}"#,
+        ),
+    ]));
+    let mut session =
+        Session::open(deps(&env, Arc::new(MemStore::new()), engine.clone()), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let id = session.inner().sref.id.clone();
+    let start = std::time::Instant::now();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut InboxAtStart(session.handle(), id),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+}
+
+#[test]
+fn wait_woken_by_follow_up_delivers_it_before_the_next_request() {
+    use oxa_proto::{AgentEvent, EventSink};
+    struct FollowUpDuringWait(oxa_core::Handle);
+    impl EventSink for FollowUpDuringWait {
+        fn emit(&mut self, event: &AgentEvent) {
+            if matches!(event, AgentEvent::ToolExecutionUpdate { tool_name, .. } if tool_name == "wait") {
+                self.0.follow_up("Woken input.".into());
+            }
+        }
+    }
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("wait", "wait", r#"{"seconds":3600,"reason":"Delivery test"}"#),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Woken input handled."}"#,
+        ),
+    ]));
+    let mut session =
+        Session::open(deps(&env, Arc::new(MemStore::new()), engine.clone()), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut FollowUpDuringWait(session.handle()),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    // The request right after the wait already carries the follow-up as a user message.
+    let messages = &engine.requests()[1].messages;
+    let wait_result = messages
+        .iter()
+        .position(|m| m.tool_call_id.as_deref() == Some("wait"))
+        .unwrap();
+    let woken = messages
+        .iter()
+        .position(|m| m.content.as_deref() == Some("Woken input."))
+        .unwrap();
+    assert!(woken > wait_result);
+    assert_eq!(messages[woken].role, oxa_proto::Role::User);
+}
+
+#[test]
+fn wait_for_inactive_session_message_keeps_waiting() {
+    use oxa_proto::{AgentEvent, EventSink};
+    struct InactiveDuringWait(oxa_core::Handle);
+    impl EventSink for InactiveDuringWait {
+        fn emit(&mut self, event: &AgentEvent) {
+            if matches!(event, AgentEvent::ToolExecutionUpdate { tool_name, .. } if tool_name == "wait") {
+                self.0
+                    .follow_up_for("inactive-session", "Other session input.".into());
+            }
+        }
+    }
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("wait", "wait", r#"{"seconds":1,"reason":"Inactive inbox test"}"#),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Synthetic wait finished."}"#,
+        ),
+    ]));
+    let mut session =
+        Session::open(deps(&env, Arc::new(MemStore::new()), engine.clone()), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let start = std::time::Instant::now();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut InactiveDuringWait(session.handle()),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert!(start.elapsed() >= std::time::Duration::from_secs(1));
+    assert!(engine.requests()[1]
+        .messages
+        .iter()
+        .any(|m| m.tool_call_id.as_deref() == Some("wait") && m.content.as_deref() == Some("Wait ended.")));
+}
+
+/// The wait-until probe seam: a hook set that answers `until` conditions from a closure.
+type PollFn = Box<dyn Fn(&str, &serde_json::Value) -> Option<Result<Option<String>, String>> + Send + Sync>;
+struct Probe(PollFn);
+impl oxa_proto::Hooks for Probe {
+    fn fire(
+        &self,
+        _p: oxa_proto::HookPoint,
+        _payload: &serde_json::Value,
+        _ui: &mut dyn oxa_proto::Ui,
+    ) -> oxa_proto::HookReply {
+        oxa_proto::HookReply::Continue
+    }
+    fn tools(&self) -> Vec<Arc<dyn oxa_proto::Tool>> {
+        Vec::new()
+    }
+    fn commands(&self) -> Vec<oxa_proto::CommandSpec> {
+        Vec::new()
+    }
+    fn run_command(
+        &self,
+        _name: &str,
+        _args: &str,
+        _ui: &mut dyn oxa_proto::Ui,
+    ) -> Result<(), oxa_proto::OxaError> {
+        Ok(())
+    }
+    fn prompt_sections(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    fn poll_event(
+        &self,
+        kind: &str,
+        args: &serde_json::Value,
+        _budget: std::time::Duration,
+    ) -> Option<Result<Option<String>, String>> {
+        (self.0)(kind, args)
+    }
+}
+
+/// Deps with one probe hook set and a 1-second poll interval.
+fn probe_deps(env: &TestEnv, engine: Arc<ScriptedEngine>, probe: Probe) -> Deps {
+    let mut d = deps(env, Arc::new(MemStore::new()), engine);
+    d.hooks = vec![Arc::new(probe) as Arc<dyn oxa_proto::Hooks>];
+    d.settings = Settings::from_values(
+        serde_json::json!({"oxa": {"envNote": false, "wait": {"pollSeconds": 1}}}),
+        serde_json::json!({}),
+    );
+    d
+}
+
+#[test]
+fn wait_until_returns_probe_evidence() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let polls = Arc::new(AtomicUsize::new(0));
+    let counter = polls.clone();
+    let probe = Probe(Box::new(
+        move |kind: &str, args: &serde_json::Value| -> Option<Result<Option<String>, String>> {
+            if kind != "ci" || args["sha"].as_str() != Some("abc123") {
+                return None;
+            }
+            if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                Some(Ok(None))
+            } else {
+                Some(Ok(Some("CI green for abc123 (lane).".into())))
+            }
+        },
+    ));
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool(
+            "wait",
+            "wait",
+            r#"{"seconds":60,"reason":"CI probe test","until":{"kind":"ci","sha":"abc123","workflow":"lane"}}"#,
+        ),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"CI evidence seen."}"#,
+        ),
+    ]));
+    let mut session = Session::open(probe_deps(&env, engine.clone(), probe), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let start = std::time::Instant::now();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    // One pending poll, one sleep of pollSeconds, then the done poll: no full-length wait.
+    assert!(start.elapsed() >= std::time::Duration::from_secs(1));
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    assert_eq!(polls.load(Ordering::SeqCst), 2);
+    assert!(engine.requests()[1]
+        .messages
+        .iter()
+        .any(|m| m.tool_call_id.as_deref() == Some("wait")
+            && m.content.as_deref() == Some("CI green for abc123 (lane).")));
+}
+
+#[test]
+fn wait_until_deadline_reports_last_state() {
+    let probe = Probe(Box::new(
+        |kind: &str, _args: &serde_json::Value| -> Option<Result<Option<String>, String>> {
+            (kind == "pr_merged").then_some(Ok(None))
+        },
+    ));
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool(
+            "wait",
+            "wait",
+            r#"{"seconds":2,"reason":"Deadline probe test","until":{"kind":"pr_merged","pr":7}}"#,
+        ),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Deadline reported."}"#,
+        ),
+    ]));
+    let mut session = Session::open(probe_deps(&env, engine.clone(), probe), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let start = std::time::Instant::now();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert!(start.elapsed() >= std::time::Duration::from_secs(2));
+    assert!(engine.requests()[1]
+        .messages
+        .iter()
+        .any(|m| m.tool_call_id.as_deref() == Some("wait")
+            && m.content.as_deref() == Some("Wait ended: deadline; last state: none")));
+}
+
+#[test]
+fn wait_until_unknown_kind_errors_without_sleeping() {
+    let probe = Probe(Box::new(
+        |_kind: &str, _args: &serde_json::Value| -> Option<Result<Option<String>, String>> { None },
+    ));
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool(
+            "wait",
+            "wait",
+            r#"{"seconds":3600,"reason":"Unknown kind test","until":{"kind":"nope"}}"#,
+        ),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Unknown kind reported."}"#,
+        ),
+    ]));
+    let mut session = Session::open(probe_deps(&env, engine.clone(), probe), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let start = std::time::Instant::now();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert!(engine.requests()[1]
+        .messages
+        .iter()
+        .any(|m| m.tool_call_id.as_deref() == Some("wait")
+            && m.content.as_deref() == Some("Unknown wait condition: nope.")));
+}
+
+/// Delegates to a MemStore; `sync` counts its calls and fails while `fail_sync` is set.
+#[derive(Default)]
+struct SyncFailStore {
+    inner: MemStore,
+    syncs: std::sync::atomic::AtomicUsize,
+    fail_sync: std::sync::atomic::AtomicBool,
+}
+
+impl SessionStore for SyncFailStore {
+    fn create(
+        &self,
+        cwd: &std::path::Path,
+        id: Option<&str>,
+        parent: Option<&std::path::Path>,
+    ) -> Result<oxa_session::SessionRef, oxa_proto::OxaError> {
+        self.inner.create(cwd, id, parent)
+    }
+    fn append(&self, s: &oxa_session::SessionRef, e: &oxa_proto::Entry) -> Result<(), oxa_proto::OxaError> {
+        self.inner.append(s, e)
+    }
+    fn load(&self, s: &oxa_session::SessionRef) -> Result<Vec<oxa_proto::Entry>, oxa_proto::OxaError> {
+        self.inner.load(s)
+    }
+    fn header(&self, s: &oxa_session::SessionRef) -> Result<oxa_session::SessionHeader, oxa_proto::OxaError> {
+        self.inner.header(s)
+    }
+    fn list(&self, cwd: Option<&std::path::Path>) -> Vec<oxa_session::SessionMeta> {
+        self.inner.list(cwd)
+    }
+    fn resolve(&self, id_or_path: &str) -> Result<oxa_session::SessionRef, oxa_proto::OxaError> {
+        self.inner.resolve(id_or_path)
+    }
+    fn delete(&self, s: &oxa_session::SessionRef) -> Result<(), oxa_proto::OxaError> {
+        self.inner.delete(s)
+    }
+    fn sync(&self, s: &oxa_session::SessionRef) -> Result<(), oxa_proto::OxaError> {
+        self.syncs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_sync.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(oxa_proto::OxaError::new(
+                oxa_proto::codes::IO,
+                "synthetic sync failure",
+            ));
+        }
+        self.inner.sync(s)
+    }
+}
+
+#[test]
+fn goal_command_set_fails_when_store_sync_fails() {
+    use oxa_core::goal::parse_goal_command;
+    use std::sync::atomic::Ordering;
+    let env = TestEnv::new();
+    let store = Arc::new(SyncFailStore::default());
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, store.clone(), engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    store.fail_sync.store(true, Ordering::SeqCst);
+
+    let error = session
+        .apply_goal_command(parse_goal_command("Ship the parser"), 1000, &mut sink)
+        .unwrap_err();
+    assert_eq!(error.code, "goal_sync_failed");
+    assert!(store.syncs.load(Ordering::SeqCst) > 0);
+
+    store.fail_sync.store(false, Ordering::SeqCst);
+    session.shutdown(&mut HeadlessUi::default());
+}
+
+#[test]
+fn goal_command_clear_fails_when_store_sync_fails() {
+    use oxa_core::goal::{parse_goal_command, GoalCommand};
+    use std::sync::atomic::Ordering;
+    let env = TestEnv::new();
+    let store = Arc::new(SyncFailStore::default());
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, store.clone(), engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .apply_goal_command(parse_goal_command("Ship the parser"), 1000, &mut sink)
+        .unwrap();
+
+    store.fail_sync.store(true, Ordering::SeqCst);
+    let error = session
+        .apply_goal_command(GoalCommand::Clear, 2000, &mut sink)
+        .unwrap_err();
+    assert_eq!(error.code, "goal_sync_failed");
+    assert!(store.syncs.load(Ordering::SeqCst) > 0);
+
+    store.fail_sync.store(false, Ordering::SeqCst);
+    session.shutdown(&mut HeadlessUi::default());
 }

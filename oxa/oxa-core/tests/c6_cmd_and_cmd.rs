@@ -48,6 +48,7 @@ fn build(
         queue: Mutex::new(Queue::default()),
         cancel: CancelToken::new(),
         cancel_retry: CancelToken::new(),
+        wait_wake: CancelToken::new(),
         busy: AtomicBool::new(false),
         modes: Mutex::new((QueueMode::All, QueueMode::OneAtATime)),
         dirty: AtomicBool::new(false),
@@ -340,6 +341,7 @@ fn hook_user_bash_block_and_replace() {
             (
                 "echo original".to_string(),
                 HookReply::ReplaceResult(ToolOutput {
+                    images: Vec::new(),
                     text: "replaced output".to_string(),
                     is_error: false,
                     ui: json!({ "exit": 3 }),
