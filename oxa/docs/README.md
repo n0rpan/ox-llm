@@ -1,12 +1,10 @@
 # oxa documentation
 
-`oxa` is the terminal coding agent of ox-llm. Model requests use the configured engine endpoint. Its tools may use the network, and bash has network access by default; [security.md](pages/security.md) says what each part can reach. oxa runs bash in a sandbox, keeps sessions as trees, and can be extended with JavaScript, skills, prompt templates and MCP servers. These pages are for people who use it from a terminal.
+`oxa` is the terminal coding agent and the front door of the ox suite. It runs cloud models through its own gateway and local models through the `oxe` engine, which it starts itself. Its tools may use the network, and bash has network access by default; [security.md](pages/security.md) says what each part can reach. oxa runs bash in a sandbox on Linux, keeps sessions as trees, and can be extended with JavaScript, skills, prompt templates and MCP servers. These pages are for people who use it from a terminal.
 
 ## Quickstart
 
-For v0.2.1 packages and model setup, follow the [native install and upgrade guide](../../docs/NATIVE-INSTALL.md).
-Choose a native local or cloud model there before the first prompt. When working
-from source, build from the `oxa/` directory of the checkout:
+Install a release or a dev build with [install.md](pages/install.md), then choose a model with [quickstart.md](pages/quickstart.md): a provider key for a cloud model, or `oxa local add` for a GGUF file on your disk. When working from source, build from the `oxa/` directory of the checkout:
 
 ```console
 $ cargo build --release --locked -p oxa-cli
@@ -21,19 +19,23 @@ Type a request in the editor and press Enter. Escape stops a turn, Ctrl+C clears
 $ oxa -p --tools read,ls "List the files"
 ```
 
-The default permission mode is `workspace`: reads and writes inside the project run without a prompt, bash runs in the sandbox, and writes outside the project are asked for. Set `--permission-mode plan` for read-only work. `--offline` refuses oxa's own network connections and takes the network from bash; the programs you start with `!cmd` or as stdio MCP servers run without network, but they are not otherwise sandboxed. See [security.md](pages/security.md#offline-mode).
+The default permission mode is `auto`: oxa does not stop to ask, bash runs in the sandbox, and the file tools still refuse credentials and other protected paths. `--standard` asks before steps that leave the project, `--yolo` is full access without the sandbox, and `--permission-mode plan` is read-only. [modes.md](pages/modes.md) explains each one. `--offline` refuses oxa's own network connections and takes the network from bash; the programs you start with `!cmd` or as stdio MCP servers run without network, but they are not otherwise sandboxed. See [security.md](pages/security.md#offline-mode).
 
-User files live in `~/.oxa/agent/`. Project files live in `.oxa/` and load only in a project you trust. Start with [quickstart.md](pages/quickstart.md) for the full set-up.
+User files live in `~/.oxa/agent/`. Project files live in `.oxa/` and load only in a project you trust.
 
 ## Pages
 
 | Page | Read it for |
 |---|---|
-| [quickstart.md](pages/quickstart.md) | building, connecting to the engine, the first prompt, where files live |
-| [install.md](pages/install.md) | the portable Linux x86_64 binary, its checksum and what CI proves |
+| [install.md](pages/install.md) | the portable Linux x86_64 binary, the stable release, the dev build, building from source, updating and removing |
+| [quickstart.md](pages/quickstart.md) | cloud providers and keys, local models, the first prompt, where files live |
+| [modes.md](pages/modes.md) | standard, auto, yolo and plan: what each mode does, and macOS |
 | [usage.md](pages/usage.md) | the interface: editor, keys, slash commands, footer, selectors |
 | [cli.md](pages/cli.md) | every flag, subcommand and environment variable |
+| [work.md](work.md) | `oxa work`: unattended tasks in git worktrees, workers and the work board |
+| [lead.md](lead.md) | `oxa lead`: the lead session that watches the board and the workers |
 | [lead-web.md](pages/lead-web.md) | default-off lead web access scaffold and future Tailscale setup |
+| [panel.md](pages/panel.md) | the ox AI panel: the JSON that `oxa` prints for it |
 | [settings.md](pages/settings.md) | every settings key, its type and default, and how files are merged |
 | [tools-context.md](pages/tools-context.md) | the tool formats and the context defaults, and the settings that change them |
 | [sessions.md](pages/sessions.md) | session storage, resuming, forking, the tree, labels, export, what is stored and how to remove it |

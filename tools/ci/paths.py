@@ -20,13 +20,12 @@ def documentation(path):
         'README.md', 'CONTRIBUTING.md', 'CHANGELOG.md', 'AGENTS.md', 'SECURITY.md')
 
 
-# Top-level directories and the outputs (job groups) they select. `lab` is the Python controller
-# suite, `cli` the retiring oxc-rs CLI, `gateway` the in-process library. Gateway changes
-# exercise the oxa workspace; the old standalone controller is not its consumer.
-COMPONENTS = {'engine': {'engine'}, 'oxa': {'oxa'}, 'oxc': {'lab', 'cli', 'gateway'},
-              'oxc-rs': {'cli'}, 'conformance': {'cli'}}
+# Top-level directories and the outputs (job groups) they select. `gateway` is the in-process
+# library; gateway changes exercise the oxa workspace. The Python controller suite and the
+# oxc-rs CLI are gone, so oxc/ selects only the gateway job.
+COMPONENTS = {'engine': {'engine'}, 'oxa': {'oxa'}, 'oxc': {'gateway'}}
 FUZZ = {'fuzz/oxa': {'oxa'}, 'fuzz/oxe': {'engine'}}
-OUTPUTS = ('engine', 'oxa', 'lab', 'cli', 'gateway')
+OUTPUTS = ('engine', 'oxa', 'gateway')
 # Anything else (.github/, tools/, packaging/, root files, new directories) marks every component.
 
 

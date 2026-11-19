@@ -88,7 +88,7 @@ fn absolute(path: &Path) -> Option<PathBuf> {
 /// The path with every symlink and `..` resolved the way the kernel resolves it, for the
 /// components that exist; the non-existing tail is kept as written (lexically normalised).
 /// `None` on a symlink loop or an unreadable link.
-pub(crate) fn resolve_real(path: &Path) -> Option<PathBuf> {
+pub fn resolve_real(path: &Path) -> Option<PathBuf> {
     let mut stack: VecDeque<OsString> = VecDeque::new();
     let mut resolved = PathBuf::new();
     for c in path.components() {

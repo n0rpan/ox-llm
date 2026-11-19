@@ -350,23 +350,14 @@ fn go_captured_terminal_usage_settles_even_without_public_delivery() {
                 assert_eq!(saved[0]["opencode"]["tokens"]["cache_read"], 80);
                 assert_eq!(saved[0]["cached_tokens"], 80);
                 assert_eq!(saved[0]["cache_write_tokens"], 0);
-                let next = gateway
-                    .runtime
-                    .begin(&payload, Context::default())
-                    .expect("actual usage leaves room for next hold");
-                next.finish(Outcome::Complete, 200, None).unwrap();
             } else {
-                assert!(saved[0].get("cost_usd").is_none());
-                assert_eq!(
-                    gateway
-                        .runtime
-                        .begin(&payload, Context::default())
-                        .err()
-                        .unwrap()
-                        .code,
-                    "subscription_limit_exceeded"
-                );
+                // Without final usage the Go cost stays unknown: no amount is recorded.
+                assert!(saved[0].get("cost_usd").is_none(), "{}", saved[0]);
             }
+            let next = gateway.runtime.begin(&payload, Context::default()).unwrap();
+            let threshold = if known { "80%" } else { "100%" };
+            assert!(next.budget_warning().unwrap().contains(threshold));
+            next.finish(Outcome::Complete, 200, None).unwrap();
         }
     }
 }
@@ -423,8 +414,21 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
         ),
         (
             "conflicting final usage",
-            vec![finish.clone(), final_usage.clone(), early_usage],
+            vec![finish.clone(), final_usage.clone(), early_usage.clone()],
             false,
+        ),
+        (
+            "early usage then finish without DONE",
+            vec![early_usage.clone(), finish.clone()],
+            false,
+        ),
+        (
+            "cancel a combined terminal frame",
+            vec![json!({
+                "choices":[{"index":0,"delta":{"content":"synthetic visible reply"},"finish_reason":"stop"}],
+                "usage":usage(100,5)
+            })],
+            true,
         ),
         (
             "ordered terminal usage then broken stream",
@@ -443,7 +447,7 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
             for frame in frames {
                 bytes.extend_from_slice(format!("data: {frame}\n\n").as_bytes());
             }
-            if !known {
+            if !known && !name.ends_with("without DONE") {
                 bytes.extend_from_slice(b"data: {malformed\n\n");
             }
             if name.starts_with("completed length") {
@@ -487,6 +491,8 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
         let mut done = false;
         let mut length = false;
         let mut arguments_delivered = false;
+        let mut usage_delivered = 0;
+        let cancel_on_chunk = name.starts_with("cancel ");
         let driver = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -498,6 +504,10 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
             &mut |event| {
                 done |= matches!(event, Event::Done);
                 if let Event::Chunk(chunk) = event {
+                    usage_delivered += usize::from(chunk.get("usage").is_some());
+                    if cancel_on_chunk {
+                        return Control::Stop;
+                    }
                     length |= chunk.pointer("/choices/0/finish_reason") == Some(&json!("length"));
                     if let Some(calls) = chunk
                         .pointer("/choices/0/delta/tool_calls")
@@ -516,11 +526,18 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
             assert_eq!(complete.finish_reason, "length");
             assert_eq!(complete.assistant["tool_calls"], json!([]));
             assert!(done);
+        } else if cancel_on_chunk {
+            assert!(matches!(
+                result,
+                Err(Error::Upstream(anthropic_client::Error::Cancelled))
+            ));
+            assert!(!done, "{name}");
         } else {
             let error = result.err().expect("broken stream must not complete");
             assert_eq!(error.refusal().code, "cloud_upstream_stream_broken", "{name}");
             assert!(!done, "{name}");
         }
+        assert_eq!(usage_delivered, usize::from(done), "{name}");
         if name.contains("length") {
             assert!(length, "length transition must be delivered: {name}");
             assert!(!arguments_delivered, "incomplete arguments stay private: {name}");
@@ -539,23 +556,17 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
         );
         if known {
             assert_eq!(saved[0]["opencode"]["allowance"], 0.0008, "{name}");
-            let next = gateway
-                .runtime
-                .begin(&payload, context())
-                .expect("actual terminal usage leaves room");
-            next.finish(Outcome::Complete, 200, None).unwrap();
         } else {
             assert_eq!(saved[0]["usage_missing"], true, "{name}");
             assert!(
                 saved[0]["opencode"].is_null(),
                 "invalidated allowance must not be reported as final: {name}"
             );
-            assert_eq!(
-                gateway.runtime.begin(&payload, context()).err().unwrap().code,
-                "subscription_limit_exceeded",
-                "{name}"
-            );
         }
+        let next = gateway.runtime.begin(&payload, context()).unwrap();
+        let threshold = if known { "80%" } else { "100%" };
+        assert!(next.budget_warning().unwrap().contains(threshold), "{name}");
+        next.finish(Outcome::Complete, 200, None).unwrap();
         assert_eq!(mock.requests().len(), 2, "discovery plus one generation only");
         mock.assert_healthy();
     }

@@ -70,6 +70,7 @@ pub(crate) fn chat_with_retry_keyed(
     // A `abort_retry` only means something during a wait of this call; a stale one from an
     // earlier call must not cancel this call's wait.
     st.shared.cancel_retry.reset();
+    st.shared.gate.retry_stopped.store(false, Ordering::SeqCst);
 
     if opts.idem_key.is_empty() {
         opts.idem_key = fresh_idem_key(st);
@@ -191,6 +192,7 @@ pub(crate) fn chat_with_retry_keyed(
                     Wait::Elapsed => continue,
                     Wait::RetryCancelled => {
                         st.shared.cancel_retry.reset();
+                        st.shared.gate.retry_stopped.store(true, Ordering::SeqCst);
                         finish_failed(sink, retries, &retry_cancelled());
                         return Err(err);
                     }
@@ -231,6 +233,7 @@ pub(crate) fn chat_with_retry_keyed(
             Wait::RetryCancelled => {
                 // Consume the cancel so it does not reach a later wait.
                 st.shared.cancel_retry.reset();
+                st.shared.gate.retry_stopped.store(true, Ordering::SeqCst);
                 finish_failed(sink, retries, &retry_cancelled());
                 return Err(err);
             }
@@ -370,7 +373,7 @@ fn retryable(e: &OxaError, got_data: bool) -> bool {
 }
 
 /// The HTTP status in an `engine_http` message ("... HTTP 503: ...").
-fn http_status(msg: &str) -> Option<u16> {
+pub(crate) fn http_status(msg: &str) -> Option<u16> {
     let at = msg.find("HTTP ")? + "HTTP ".len();
     let digits: String = msg[at..].chars().take_while(|c| c.is_ascii_digit()).collect();
     if digits.len() != 3 {
@@ -490,7 +493,10 @@ impl Engine for ProbeEngine {
     ) -> Result<AssistantTurn, OxaError> {
         let data = Arc::clone(&self.data);
         let mut probe = |ev: StreamEvent| {
-            if !matches!(ev, StreamEvent::Prefill { .. } | StreamEvent::Queued { .. }) {
+            if !matches!(
+                ev,
+                StreamEvent::Prefill { .. } | StreamEvent::Queued { .. } | StreamEvent::Warning(_)
+            ) {
                 data.store(true, Ordering::SeqCst);
             }
             on(ev);
