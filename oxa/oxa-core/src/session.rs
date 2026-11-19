@@ -122,7 +122,7 @@ pub struct Stats {
 
 /// A running session.
 pub struct Session {
-    st: SessionState,
+    pub(crate) st: SessionState,
     /// O-152: the boot preload ran (or was skipped) for the session entered last.
     preloaded: bool,
 }
@@ -368,10 +368,53 @@ impl Session {
         result.and(triggered).and(boundary).map(|_| ())
     }
 
+    /// Run one literal user message without expanding application commands or templates.
+    /// Build the prefix from this Session's tool selection before using its normal input queue.
+    pub fn prompt_literal(
+        &mut self,
+        text: String,
+        sink: &mut dyn EventSink,
+        ui: &mut dyn Ui,
+    ) -> Result<Option<RunEnd>, OxaError> {
+        crate::open_epoch(&mut self.st, "literal_prompt", false, sink)?;
+        self.handle().follow_up(text);
+        self.run_queued(sink, ui)
+    }
+
+    /// Run one literal prompt with request-only evidence and a shared output limit.
+    /// Evidence goes to chat requests for this turn and is never appended to the wire.
+    /// The limit covers generation across the turn, including follow-up provider requests.
+    pub fn prompt_literal_bounded(
+        &mut self,
+        text: String,
+        evidence_context: String,
+        max_output_tokens: std::num::NonZeroU32,
+        sink: &mut dyn EventSink,
+        ui: &mut dyn Ui,
+    ) -> Result<Option<RunEnd>, OxaError> {
+        let context = (!evidence_context.is_empty()).then(|| WireMsg::user(evidence_context));
+        let _turn = self.st.shared.begin_literal_turn(context, max_output_tokens)?;
+        self.prompt_literal(text, sink, ui)
+    }
+
     pub fn handle(&self) -> Handle {
         Handle {
             shared: self.st.shared.clone(),
         }
+    }
+
+    /// Install the existing assignment guard for recovery of this exact mounted session.
+    pub fn bind_lead_steering_authority(&mut self, authority: Arc<crate::goal::SteeringAuthority>) {
+        *self
+            .st
+            .shared
+            .gate
+            .lead_steering_authority
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(crate::goal::BoundLeadAuthority {
+            session: self.st.sref.clone(),
+            authority,
+        });
     }
 
     /// Install a progress observer for this session and subsequent in-process switches.
@@ -754,11 +797,21 @@ impl Session {
     /// Replace the session goal while idle, persisting before exposing controls.
     pub fn set_goal(
         &mut self,
-        goal: Option<oxa_session::Goal>,
+        mut goal: Option<oxa_session::Goal>,
         sink: &mut dyn EventSink,
     ) -> Result<(), OxaError> {
         if self.st.shared.busy.load(Ordering::SeqCst) {
             return Err(OxaError::new(codes::BUSY, "Cannot change a goal during a run."));
+        }
+        if goal.is_some() && self.st.hooks.iter().any(|hook| !hook.allows_goals()) {
+            return Err(OxaError::new(
+                codes::USAGE,
+                "The active session preset does not support goal mode",
+            ));
+        }
+        if let Some(goal) = &mut goal {
+            goal.validate()?;
+            crate::goal::reanchor_resumed(&self.st, goal);
         }
         let body = goal
             .as_ref()
@@ -1030,6 +1083,7 @@ impl Session {
             _ => {}
         }
 
+        crate::settings_refresh::refresh_at_run_start(st, sink);
         // L5 (`oxa.compaction.turnStart`): an aborted turn left its tool result uncounted; the
         // prompt is compacted first when the context is already above the soft limit.
         let can_run = compact_before_run(st, sink, ui)?;
@@ -1091,7 +1145,7 @@ impl Session {
             _ => {}
         }
 
-        run_from_wire(st, sink, ui).map(Some)
+        run_with_current_settings(st, sink, ui).map(Some)
     }
 }
 
@@ -1250,6 +1304,16 @@ pub(crate) fn run_from_wire(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<RunEnd, OxaError> {
+    // L1: one stat per settings file; a changed file is applied before the first request.
+    crate::settings_refresh::refresh_at_run_start(st, sink);
+    run_with_current_settings(st, sink, ui)
+}
+
+fn run_with_current_settings(
+    st: &mut SessionState,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+) -> Result<RunEnd, OxaError> {
     // X3: while the engine has not yet published metadata for the selected model (a switch
     // to a model that is not loaded, a resumed session), re-read it before the run and
     // again before the after-reply compaction decision.
@@ -1280,7 +1344,8 @@ fn settle_runs(
         if end == RunEnd::Stopped && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
             return run_loop(st, sink, ui);
         }
-        while end == RunEnd::Stopped {
+        while end == RunEnd::Stopped && st.shared.has_follow_up() {
+            crate::settings_refresh::refresh_at_run_start(st, sink);
             let follow = st.shared.take_follow_up();
             if follow.is_empty() {
                 break;
@@ -1318,9 +1383,18 @@ fn queued_run(
     ui: &mut dyn Ui,
     turn_start: bool,
 ) -> Result<Option<RunEnd>, OxaError> {
+    let goal_pending = st
+        .goal
+        .as_ref()
+        .is_some_and(|goal| goal.pursuing() && goal.has_pending_steer());
+    if !st.shared.has_input() && !goal_pending {
+        return Ok(None);
+    }
+    // Apply delivery modes before taking messages for this run.
+    crate::settings_refresh::refresh_at_run_start(st, sink);
     let mut taken = st.shared.take_steering();
     taken.extend(st.shared.take_follow_up());
-    if taken.is_empty() {
+    if taken.is_empty() && !goal_pending {
         return Ok(None);
     }
     let can_run = !turn_start || compact_before_run(st, sink, ui)?;
@@ -1466,6 +1540,12 @@ fn restore_locked(
     }
     let tree = Tree::new(st.store.load(&sref)?);
     let goal = oxa_session::Goal::latest(tree.entries())?.map(|g| Arc::new(crate::goal::GoalRuntime::new(g)));
+    if goal.is_some() && st.hooks.iter().any(|hook| !hook.allows_goals()) {
+        return Err(OxaError::new(
+            codes::USAGE,
+            "The active session preset does not support goal mode",
+        ));
+    }
     let branch: Vec<Entry> = tree.branch(tree.leaf()).into_iter().cloned().collect();
     let replayed = {
         let refs: Vec<&Entry> = branch.iter().collect();
@@ -1517,6 +1597,9 @@ fn restore_locked(
     crate::resume::close_interrupted(st, sink)?; // R1
                                                  // pi fires `session_start` (and `resources_discover`) for a resumed session too.
     crate::fire::session_start(st, start, sink, ui);
+    if st.hooks.iter().any(|hook| hook.owns_resources()) {
+        crate::open_epoch(st, "preset_resume", false, sink)?;
+    }
     Ok(())
 }
 
@@ -2100,6 +2183,10 @@ pub(crate) fn refresh_budget(st: &mut SessionState, prev_enabled: Option<bool>, 
             format!("could not re-read the engine limits ({e}); keeping the previous ones"),
         ),
     }
+    apply_budget_settings(st, prev_enabled);
+}
+
+pub(crate) fn apply_budget_settings(st: &mut SessionState, prev_enabled: Option<bool>) {
     st.compact = policy_for_model(&st.info, &st.settings, &st.model);
     if prev_enabled.is_some_and(|p| p != st.compact.enabled) {
         st.auto_compaction = st.compact.enabled;

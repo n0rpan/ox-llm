@@ -421,6 +421,15 @@ pub trait Hooks: Send + Sync {
     fn prompt_sections(&self) -> Vec<(String, String)>;
 
     // ---- optional surface ----
+    /// A host preset owns the supplied resources: keep them on reload and
+    /// rebuild restored prefixes from its current hooks and tool selection.
+    fn owns_resources(&self) -> bool {
+        false
+    }
+    /// Whether this preset supports session-local goal controls.
+    fn allows_goals(&self) -> bool {
+        true
+    }
     /// A stable name for logs and error events.
     fn name(&self) -> &str {
         "hooks"
@@ -465,6 +474,19 @@ pub trait Hooks: Send + Sync {
     /// `AgentEvent::ExtensionError` (pi's `extension_error`).
     fn take_errors(&self) -> Vec<HookError> {
         Vec::new()
+    }
+    /// Answer one wait condition: the `wait` tool's `until` object (W2). `None` = not this
+    /// set's kind; `Ok(None)` = still pending; `Ok(Some(text))` = done, `text` is the probe
+    /// evidence; `Err` = the probe failed. The first set that answers `Some` decides.
+    /// `budget` is what the wait has left: a probe must not run past it, and may return
+    /// `Ok(None)` without work when it is zero.
+    fn poll_event(
+        &self,
+        _kind: &str,
+        _args: &Value,
+        _budget: std::time::Duration,
+    ) -> Option<Result<Option<String>, String>> {
+        None
     }
 }
 

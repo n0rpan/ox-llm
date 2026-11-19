@@ -1,8 +1,10 @@
-//! File-based session follow-ups. Only `.msg` files are published messages; writers rename
-//! a private temporary file into place. A single owner watches with inotify, scans once on
-//! startup and after notifications, and removes a message only after its callback accepts it.
+//! File-based session inbox. Writers rename a private temporary file into place. A single
+//! owner watches with inotify, scans once on startup and after notifications, and removes
+//! a message only after its callback accepts it. Plain follow-ups use `.msg` files.
 //! Acceptance means admission to the owner's in-memory queue, not durable execution.
 //! A crash can lose an admitted message or replay one whose file wasn't removed yet.
+use crate::SessionRef;
+use sha2::{Digest, Sha256};
 use std::ffi::CString;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -15,6 +17,14 @@ use std::thread::{self, JoinHandle};
 
 /// Maximum admitted message size. Larger externally published files stay on disk.
 pub const INBOX_MESSAGE_BYTES: usize = 256 * 1024;
+const CONTROL_BYTES: usize = 32 * 1024;
+
+/// Typed inbox delivery keeps the control payload out of the model's follow-up queue.
+#[derive(Debug, PartialEq, Eq)]
+pub enum InboxItem {
+    FollowUp(String),
+    Control(String),
+}
 
 /// The session-id alphabet is deliberately not a path syntax.
 pub fn valid_inbox_id(id: &str) -> bool {
@@ -114,6 +124,30 @@ pub fn send_inbox(agent_dir: &Path, id: &str, text: &str) -> io::Result<()> {
             "inbox message exceeds 256 KiB",
         ));
     }
+    publish(agent_dir, id, "msg", text)
+}
+
+/// Publish a control packet for a trusted, already resolved session reference.
+/// The path digest routes delivery within the ID directory. Authorization and receipt
+/// claims belong to the frontend and session owner.
+pub fn send_inbox_control(agent_dir: &Path, session: &SessionRef, packet: &str) -> io::Result<()> {
+    if packet.len() > CONTROL_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "inbox control packet exceeds 32 KiB",
+        ));
+    }
+    publish(agent_dir, &session.id, &control_extension(session), packet)
+}
+
+fn control_extension(session: &SessionRef) -> String {
+    format!(
+        "control-{:x}",
+        Sha256::digest(session.path.as_os_str().as_encoded_bytes())
+    )
+}
+
+fn publish(agent_dir: &Path, id: &str, extension: &str, text: &str) -> io::Result<()> {
     let dir = directory(agent_dir, id)?;
     let name = format!(
         "{:032}-{}",
@@ -124,7 +158,7 @@ pub fn send_inbox(agent_dir: &Path, id: &str, text: &str) -> io::Result<()> {
         crate::new_entry_id(&|_| false)
     );
     let temp = dir.path().join(format!(".{name}.tmp"));
-    let ready = dir.path().join(format!("{name}.msg"));
+    let ready = dir.path().join(format!("{name}.{extension}"));
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -164,6 +198,53 @@ impl Inbox {
         id: &str,
         mut deliver: impl FnMut(String) -> bool + Send + 'static,
     ) -> io::Result<Self> {
+        Self::watch_inner(agent_dir, id, None, true, move |item| match item {
+            InboxItem::FollowUp(text) => deliver(text),
+            InboxItem::Control(_) => false,
+        })
+    }
+
+    /// Watch the same inbox for follow-ups and control packets routed to this full
+    /// session reference. The watcher retains the existing single-consumer lock.
+    pub fn watch_bound(
+        agent_dir: &Path,
+        session: &SessionRef,
+        deliver: impl FnMut(InboxItem) -> bool + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::watch_inner(
+            agent_dir,
+            &session.id,
+            Some(control_extension(session)),
+            true,
+            deliver,
+        )
+    }
+
+    /// Watch only typed controls for a managed session using the existing inbox lock.
+    pub fn watch_control(
+        agent_dir: &Path,
+        session: &SessionRef,
+        mut deliver: impl FnMut(String) -> bool + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::watch_inner(
+            agent_dir,
+            &session.id,
+            Some(control_extension(session)),
+            false,
+            move |item| match item {
+                InboxItem::Control(packet) => deliver(packet),
+                InboxItem::FollowUp(_) => false,
+            },
+        )
+    }
+
+    fn watch_inner(
+        agent_dir: &Path,
+        id: &str,
+        control_extension: Option<String>,
+        follow_ups: bool,
+        mut deliver: impl FnMut(InboxItem) -> bool + Send + 'static,
+    ) -> io::Result<Self> {
         let dir = directory(agent_dir, id)?;
         dir.lock()?;
         // SAFETY: inotify_init1 has no pointer arguments; the returned fd is owned below.
@@ -192,7 +273,8 @@ impl Inbox {
         let stopping = Arc::new(AtomicBool::new(false));
         let stopped = stopping.clone();
         let thread = thread::Builder::new().name("oxa-inbox".into()).spawn(move || {
-            scan(&dir, &mut deliver, &stopped);
+            let extension = control_extension.as_deref();
+            scan(&dir, extension, follow_ups, &mut deliver, &stopped);
             let mut fds = [
                 libc::pollfd {
                     fd: notify.as_raw_fd(),
@@ -232,7 +314,7 @@ impl Inbox {
                     unsafe { libc::read(retry_read.as_raw_fd(), (&mut value as *mut u64).cast(), 8) };
                 }
                 // Capacity notifications and inotify overflow both trigger a rescan.
-                scan(&dir, &mut deliver, &stopped);
+                scan(&dir, extension, follow_ups, &mut deliver, &stopped);
             }
         })?;
         Ok(Self {
@@ -253,14 +335,22 @@ impl Drop for Inbox {
     }
 }
 
-fn scan(dir: &Directory, deliver: &mut impl FnMut(String) -> bool, stopped: &AtomicBool) {
+fn scan(
+    dir: &Directory,
+    control_extension: Option<&str>,
+    follow_ups: bool,
+    deliver: &mut impl FnMut(InboxItem) -> bool,
+    stopped: &AtomicBool,
+) {
     let mut after = None;
-    while scan_batch(dir, deliver, stopped, &mut after) {}
+    while scan_batch(dir, control_extension, follow_ups, deliver, stopped, &mut after) {}
 }
 
 fn scan_batch(
     dir: &Directory,
-    deliver: &mut impl FnMut(String) -> bool,
+    control_extension: Option<&str>,
+    follow_ups: bool,
+    deliver: &mut impl FnMut(InboxItem) -> bool,
     stopped: &AtomicBool,
     after: &mut Option<PathBuf>,
 ) -> bool {
@@ -268,7 +358,7 @@ fn scan_batch(
         return false;
     };
     // Keep only a bounded sorted batch, not one PathBuf per file in a stopped inbox.
-    let mut paths = std::collections::BTreeSet::new();
+    let mut paths = std::collections::BTreeMap::new();
     let mut retry = false;
     for entry in entries.filter_map(Result::ok) {
         if stopped.load(Ordering::Relaxed) {
@@ -278,24 +368,31 @@ fn scan_batch(
         if after.as_ref().is_some_and(|last| &path <= last) {
             continue;
         }
-        if !path.extension().is_some_and(|s| s == "msg") {
+        let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
             continue;
-        }
+        };
+        let (limit, item): (usize, fn(String) -> InboxItem) = if follow_ups && extension == "msg" {
+            (INBOX_MESSAGE_BYTES, InboxItem::FollowUp)
+        } else if Some(extension) == control_extension {
+            (CONTROL_BYTES, InboxItem::Control)
+        } else {
+            continue;
+        };
         let Ok(meta) = fs::symlink_metadata(&path) else {
             continue;
         };
-        if !meta.is_file() || meta.nlink() != 1 || meta.len() > INBOX_MESSAGE_BYTES as u64 {
+        if !meta.is_file() || meta.nlink() != 1 || meta.len() > limit as u64 {
             continue;
         }
-        paths.insert(path);
+        paths.insert(path, (limit, item));
         if paths.len() > 64 {
             paths.pop_last();
             retry = true;
         }
     }
     // Advance even past unreadable/invalid UTF-8 files, without deleting those files.
-    *after = paths.last().cloned();
-    for path in paths {
+    *after = paths.last_key_value().map(|(path, _)| path.clone());
+    for (path, (limit, item)) in paths {
         if stopped.load(Ordering::Relaxed) {
             return false;
         }
@@ -308,20 +405,15 @@ fn scan_batch(
         };
         // Don't follow symlinks, read devices/FIFOs, or consume hardlinks to other files.
         let Ok(meta) = file.metadata() else { continue };
-        if !meta.is_file() || meta.nlink() != 1 || meta.len() > INBOX_MESSAGE_BYTES as u64 {
+        if !meta.is_file() || meta.nlink() != 1 || meta.len() > limit as u64 {
             continue;
         }
         let mut text = String::new();
         // Bound the actual read too: the file can grow after metadata was checked.
-        if file
-            .take(INBOX_MESSAGE_BYTES as u64 + 1)
-            .read_to_string(&mut text)
-            .is_err()
-            || text.len() > INBOX_MESSAGE_BYTES
-        {
+        if file.take(limit as u64 + 1).read_to_string(&mut text).is_err() || text.len() > limit {
             continue;
         }
-        if !deliver(text) {
+        if !deliver(item(text)) {
             return false;
         }
         let _ = fs::remove_file(path);

@@ -3,6 +3,10 @@ use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+#[path = "work_cmd/native_queue.rs"]
+mod native_queue;
+pub(crate) use native_queue::authenticate_native_claim;
+
 pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs) -> Result<bool, String> {
     crate::dispatch::project_trusted(
         &crate::Args::default(),
@@ -14,6 +18,70 @@ pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs) -> Result<bool, String
         &mut vec![],
     )
     .map_err(|e| e.to_string())
+}
+
+/// Decode the registration from the already-verified owner config.
+pub(crate) fn registered_native_worker(
+    value: &serde_json::Value,
+) -> Result<(oxa_work::board::assignment::Worker, &str), String> {
+    use oxa_work::board::assignment::{valid_worker_id, Worker};
+    let worker: Worker =
+        serde_json::from_value(value["worker"].clone()).map_err(|_| "invalid authenticated worker export")?;
+    if !valid_worker_id(&worker.id) {
+        return Err("invalid native worker identity".into());
+    }
+    let host = value["host_id"]
+        .as_str()
+        .filter(|host| valid_worker_id(host))
+        .ok_or("native work requires an authenticated host_id")?;
+    Ok((worker, host))
+}
+
+// Keep owner state outside every worker Git bind.
+pub(crate) fn protected_storage(storage: &Path, repo: &Path, common: &Path) -> Result<(), String> {
+    if !storage.is_absolute()
+        || storage
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("runner storage must have an absolute canonical path".into());
+    }
+    let existing = storage
+        .ancestors()
+        .find(|path| path.exists())
+        .ok_or("runner storage has no existing parent")?;
+    let resolved = existing
+        .canonicalize()
+        .map_err(|_| "cannot resolve runner storage")?
+        .join(
+            storage
+                .strip_prefix(existing)
+                .map_err(|_| "cannot resolve runner storage")?,
+        );
+    let git_repo = if common.file_name().is_some_and(|name| name == ".git") {
+        common.parent().ok_or("Git directory has no parent")?
+    } else {
+        common
+    };
+    let trees = git_repo
+        .parent()
+        .ok_or("repository has no worktree parent")?
+        .join(".oxa-worktrees")
+        .join(git_repo.file_name().ok_or("repository has no name")?);
+    if resolved.starts_with(repo) || resolved.starts_with(common) || resolved.starts_with(trees) {
+        return Err("runner storage must be outside repositories and task worktrees".into());
+    }
+    for parent in resolved.ancestors() {
+        if parent.join(".git").exists()
+            || (parent.join("HEAD").is_file()
+                && parent.join("config").is_file()
+                && parent.join("objects").is_dir()
+                && parent.join("refs").is_dir())
+        {
+            return Err("runner storage must be outside Git metadata and worktrees".into());
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn run(
@@ -100,16 +168,24 @@ pub(crate) fn run(
             host_path,
             terminate_binary,
             offline: oxa_proto::offline(),
+            runner_owns_github: false,
             storage: dirs.agent_dir.join("work").join(key),
         };
+        protected_storage(&policy.storage, &root, &common)?;
         if args.first().is_some_and(|arg| arg == "board") {
-            return crate::work_board::run(&args[1..], &root, env, dirs, &policy);
+            return crate::work_board::run(&args[1..], &root, &common, env, dirs, &policy);
         }
         if matches!(args.first().map(String::as_str), Some("status" | "--status")) {
             let json = match args {
                 [_] => false,
                 [_, flag] if flag == "--json" => true,
-                _ => return Err("usage: oxa work status [--json]".into()),
+                [_, flag, id] if flag == "--usage" => {
+                    let usage = oxa_work::task_usage(&policy, id)?;
+                    serde_json::to_writer(&mut *out, &usage).map_err(|error| error.to_string())?;
+                    writeln!(out).map_err(|error| error.to_string())?;
+                    return Ok(0);
+                }
+                _ => return Err("usage: oxa work status [--json | --usage TASK]".into()),
             };
             let rows = oxa_work::status(&policy.storage, &binary)?;
             if json {
@@ -133,9 +209,108 @@ pub(crate) fn run(
             }
             return Ok(0);
         }
-        let rerun = args.last().is_some_and(|arg| arg == "--rerun");
-        let task_args = if rerun { &args[..args.len() - 1] } else { args };
+        if let [command, id] = args {
+            if command == "verify" {
+                if !trusted(&root, env, dirs)? {
+                    return Err(
+                        "source project is not trusted; approve it before running saved checks".into(),
+                    );
+                }
+                let verified = oxa_work::verify_saved_task(&root, &binary, &policy, id)?;
+                let record = verified.record();
+                serde_json::to_writer(
+                    &mut *out,
+                    &serde_json::json!({
+                        "type":"oxa_committed_acceptance", "version":1, "task":record.id,
+                        "head_sha":record.head_sha, "tree_sha":record.tree_sha, "base_sha":record.base_sha,
+                        "checked_at_ms":verified.checked_at_ms(),
+                    }),
+                )
+                .map_err(|error| error.to_string())?;
+                writeln!(out).map_err(|error| error.to_string())?;
+                return Ok(0);
+            }
+        }
+        let (mut rerun, mut publish, mut reports) = (false, false, false);
+        let mut end = args.len();
+        while let Some(flag) = args.get(end.wrapping_sub(1)) {
+            match flag.as_str() {
+                "--rerun" => rerun = true,
+                "--publish" => publish = true,
+                "--report-problems" => reports = true,
+                _ => break,
+            }
+            end -= 1;
+        }
+        if (publish || reports)
+            && env.pairs().iter().any(|(name, _)| {
+                matches!(
+                    name.as_str(),
+                    "OXA_CODING_AGENT" | "AI_AGENT" | "OXA_SUBAGENT_DEPTH"
+                )
+            })
+        {
+            return Err("publishing and problem reporting require the owner outside an agent tool".into());
+        }
+        let task_args = &args[..end];
         let is_trusted = trusted(&root, env, dirs)?;
+        let context = Context {
+            cwd: root.clone(),
+            binary: binary.clone(),
+            policy: policy.clone(),
+            dirs: dirs.clone(),
+            env: env.clone(),
+            rerun,
+            publish,
+            reports,
+        };
+        if task_args.first().is_some_and(|word| word == "--native-queue") {
+            if !is_trusted {
+                return Err("source project is not trusted; approve it before unattended work".into());
+            }
+            let [_, flag, config] = task_args else {
+                return Err("usage: oxa work --native-queue --config PATH".into());
+            };
+            if flag != "--config" || rerun || publish {
+                return Err("invalid native queue options".into());
+            }
+            return native_queue::run(context, &common, &cwd.join(config), out);
+        }
+        if task_args.first().is_some_and(|word| word == "--queue") {
+            if !is_trusted {
+                return Err("source project is not trusted; approve it before unattended work".into());
+            }
+            let (directory, options) = queue_options(task_args, cwd)?;
+            let df = crate::netguard::trusted_executable_for(
+                "df",
+                Some(policy.host_path.as_os_str()),
+                Some(&root),
+                Some(&dirs.home),
+            )
+            .ok_or("no trusted disk-space executable outside the source project")?;
+            let worker = std::sync::Arc::new(move |task: &oxa_work::Task| {
+                let plan = if context.publish || context.reports {
+                    oxa_work::plan_task_for_actions(
+                        &context.cwd,
+                        task.clone(),
+                        &context.policy,
+                        context.rerun,
+                    )
+                } else {
+                    oxa_work::plan_task_for_run(&context.cwd, task.clone(), &context.policy, context.rerun)
+                };
+                match plan {
+                    Ok(plan) => context.planned(&plan),
+                    Err(error) => Ok(oxa_work::blocked_record(task, error)),
+                }
+            });
+            let summary =
+                oxa_work::run_queue(&root, &directory, &options, &policy, &df, worker, &mut |event| {
+                    serde_json::to_writer(&mut *out, &event).map_err(|e| e.to_string())?;
+                    writeln!(out).and_then(|_| out.flush()).map_err(|e| e.to_string())
+                })?;
+            return Ok(i32::from(summary.failed > 0 || summary.pending > 0));
+        }
         let tasks = match task_args {
             [file] if !file.starts_with('-') => oxa_work::read_tasks(&cwd.join(file))?,
             [flag, number, model_flag, model] if flag == "--issue" && model_flag == "--model" => {
@@ -145,6 +320,30 @@ pub(crate) fn run(
                 if !is_trusted {
                     return Err("source project is not trusted; approve it before issue lookup".into());
                 }
+                let number = number.parse().map_err(|_| "invalid issue number")?;
+                if let Some(task) = oxa_work::saved_issue_task(&policy, number, model)? {
+                    vec![task]
+                } else {
+                    let gh = crate::netguard::trusted_executable_for(
+                        "gh",
+                        Some(policy.host_path.as_os_str()),
+                        Some(&root),
+                        Some(&dirs.home),
+                    )
+                    .ok_or("no trusted gh executable outside the source project")?;
+                    let mut task =
+                        oxa_work::issue_task(&root, &gh, &policy.host_path, number, model.clone())?;
+                    task.prompt.insert_str(0, &oxa_work::github_runner_guidance("issue"));
+                    vec![task]
+                }
+            }
+            [flag, number, model_flag, model] if flag == "--pr" && model_flag == "--model" => {
+                if oxa_proto::offline() {
+                    return Err("GitHub pull request lookup is unavailable in offline mode".into());
+                }
+                if !is_trusted {
+                    return Err("source project is not trusted; approve it before pull request lookup".into());
+                }
                 let gh = crate::netguard::trusted_executable_for(
                     "gh",
                     Some(policy.host_path.as_os_str()),
@@ -152,62 +351,45 @@ pub(crate) fn run(
                     Some(&dirs.home),
                 )
                 .ok_or("no trusted gh executable outside the source project")?;
-                vec![oxa_work::issue_task(
-                    &root,
-                    &gh,
-                    &policy.host_path,
-                    number.parse().map_err(|_| "invalid issue number")?,
-                    model.clone(),
-                )?]
+                let number = number.parse().map_err(|_| "invalid pull request number")?;
+                vec![oxa_work::pull_request_task(&root, &gh, &policy, number, model.clone())?]
             }
             _ => return Err(
-                "usage: oxa work <taskfile> [--rerun] | --issue N --model MODEL [--rerun] | status [--json]"
+                "usage: oxa work <taskfile> [--rerun] | --issue N --model MODEL [--rerun] | --pr N --model MODEL [--rerun] | status [--json | --usage TASK]"
                     .into(),
             ),
         };
         // Freeze every task before checkout hooks or a first worker can change
         // shared refs. A bad plan remains a per-task error, not a batch abort.
+        let plans = if is_trusted {
+            let planner = if publish || reports {
+                oxa_work::plan_tasks_for_actions
+            } else {
+                oxa_work::plan_tasks_for_run
+            };
+            planner(&root, &tasks, &policy, rerun)
+        } else {
+            tasks
+                .iter()
+                .map(|_| Err("source project is not trusted; approve it before unattended work".into()))
+                .collect()
+        };
         let planned: Vec<_> = tasks
             .into_iter()
-            .map(|task| {
-                if is_trusted {
-                    oxa_work::plan_task_for_run(&root, task.clone(), &policy, rerun)
-                        .map_err(|detail| Box::new(oxa_work::blocked_record(&task, detail)))
-                } else {
-                    Err(Box::new(oxa_work::blocked_record(
-                        &task,
-                        "source project is not trusted; approve it before unattended work".into(),
-                    )))
-                }
-            })
+            .zip(plans)
+            .map(|(task, plan)| plan.map_err(|detail| Box::new(oxa_work::blocked_record(&task, detail))))
             .collect();
         let mut code = 0;
         for task in planned {
             let record = match task {
-                Ok(plan) => {
-                    match oxa_work::run_task_with_observer(
-                        &root,
-                        &binary,
-                        &plan,
-                        &policy,
-                        rerun,
-                        &|_: &oxa_work::Record| Ok(()),
-                    ) {
-                        Ok(record) => record,
-                        Err(oxa_work::RunError::Blocked(detail)) => {
-                            let mut record = oxa_work::blocked_record(plan.task(), detail);
-                            record.base_sha = Some(plan.base_sha().to_owned());
-                            record
-                        }
-                        Err(oxa_work::RunError::Checkpoint(error)) => return Err(error),
-                    }
-                }
+                Ok(plan) => context.planned(&plan)?,
                 Err(record) => *record,
             };
             if matches!(
                 record.outcome,
                 oxa_work::Outcome::Red | oxa_work::Outcome::Blocked | oxa_work::Outcome::Interrupted
-            ) {
+            ) || record.reports.iter().any(|report| report.disposition == "failed")
+            {
                 code = 1;
             }
             serde_json::to_writer(&mut *out, &record).map_err(|e| e.to_string())?;
@@ -220,6 +402,204 @@ pub(crate) fn run(
         Err(e) => {
             let _ = writeln!(err, "oxa work: {e}");
             2
+        }
+    }
+}
+
+struct Context {
+    cwd: PathBuf,
+    binary: PathBuf,
+    policy: oxa_work::RunPolicy,
+    dirs: Dirs,
+    env: Env,
+    rerun: bool,
+    publish: bool,
+    reports: bool,
+}
+impl Context {
+    fn planned(&self, plan: &oxa_work::PlannedTask) -> Result<oxa_work::Record, String> {
+        let mut locked = match oxa_work::LockedTask::acquire(plan.task(), &self.policy) {
+            Ok(locked) => locked,
+            Err(error) => return Ok(blocked_plan(plan, error)),
+        };
+        self.planned_locked(plan, &mut locked, &|_: &oxa_work::Record| Ok(()))
+    }
+
+    fn planned_locked(
+        &self,
+        plan: &oxa_work::PlannedTask,
+        locked: &mut oxa_work::LockedTask<'_>,
+        observer: &dyn oxa_work::CheckpointObserver,
+    ) -> Result<oxa_work::Record, String> {
+        let root = &self.cwd;
+        let binary = &self.binary;
+        let policy = &self.policy;
+        let dirs = &self.dirs;
+        let env = &self.env;
+        let (rerun, publish, reports) = (self.rerun, self.publish, self.reports);
+        let cached = if (publish || reports) && !rerun {
+            oxa_work::action_record(policy, plan.task())?
+        } else {
+            None
+        };
+        let mut record = if let Some(record) = cached {
+            record
+        } else {
+            let ctx = crate::report_cmd::ScrubCtx::from_env(env, dirs);
+            match locked.run_with_notes(root, binary, plan, rerun, observer, &|note| {
+                crate::work_reports::scrub_note(note, &ctx)
+            }) {
+                Ok(record) => record,
+                Err(oxa_work::RunError::Blocked(detail)) => blocked_plan(plan, detail),
+                Err(oxa_work::RunError::Checkpoint(error)) => return Err(error),
+            }
+        };
+        if publish && !record.worktree.as_os_str().is_empty() {
+            let gh = crate::netguard::trusted_executable_for(
+                "gh",
+                Some(policy.host_path.as_os_str()),
+                Some(root),
+                Some(&dirs.home),
+            )
+            .unwrap_or_else(|| PathBuf::from("/unavailable/gh"));
+            record = locked.publish(
+                root,
+                binary,
+                &gh,
+                &|_: &oxa_work::Record| Ok(()),
+                &mut crate::report_cmd::tty_confirm(env),
+            )?;
+        }
+        if reports && !record.worktree.as_os_str().is_empty() {
+            let settings = oxa_config::Settings::load(dirs, root, false);
+            let ctx = crate::report_cmd::ScrubCtx::from_env(env, dirs);
+            let semantic = crate::report_cmd::semantic_reporting(&settings);
+            record = locked.report_notes(
+                &|_: &oxa_work::Record| Ok(()),
+                &mut |note, saved, lock, offline| {
+                    let runner = |program: &str, args: &[String], gate: &std::fs::File| {
+                        if offline {
+                            return None;
+                        }
+                        if semantic && program == "oxa" {
+                            return crate::report_cmd::judge_report(args.first()?, dirs, &settings, env)
+                                .map(|reply| (0, reply));
+                        }
+                        let semantic_github = semantic && program == "gh";
+                        let executable = crate::netguard::trusted_executable_for(
+                            program,
+                            Some(policy.host_path.as_os_str()),
+                            Some(root),
+                            Some(&dirs.home),
+                        )?;
+                        crate::work_reports::process(
+                            &executable.to_string_lossy(),
+                            args,
+                            if semantic_github { &dirs.home } else { root },
+                            lock,
+                            gate,
+                            semantic_github,
+                        )
+                    };
+                    let mut confirm = crate::report_cmd::tty_confirm(env);
+                    if semantic && !offline {
+                        return crate::work_reports::report_semantic(
+                            note,
+                            (saved, &policy.storage),
+                            dirs,
+                            &settings,
+                            &ctx,
+                            &mut confirm,
+                            runner,
+                        );
+                    }
+                    crate::work_reports::report(note, dirs, &settings, &ctx, offline, &mut confirm, runner)
+                },
+            )?;
+        }
+        Ok(record)
+    }
+}
+fn blocked_plan(plan: &oxa_work::PlannedTask, detail: String) -> oxa_work::Record {
+    let mut record = oxa_work::blocked_record(plan.task(), detail);
+    record.base_sha = Some(plan.base_sha().to_owned());
+    record
+}
+
+fn queue_options(args: &[String], cwd: &Path) -> Result<(PathBuf, oxa_work::QueueOptions), String> {
+    let directory = cwd.join(args.get(1).ok_or("--queue needs a directory")?);
+    let mut options = oxa_work::QueueOptions::default();
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--max" => {
+                i += 1;
+                options.max = args
+                    .get(i)
+                    .ok_or("--max needs a value")?
+                    .parse()
+                    .map_err(|_| "invalid --max")?;
+            }
+            "--min-free-mib" => {
+                i += 1;
+                let mib: u64 = args
+                    .get(i)
+                    .ok_or("--min-free-mib needs a value")?
+                    .parse()
+                    .map_err(|_| "invalid free-space minimum")?;
+                options.min_free_bytes = mib
+                    .checked_mul(1024 * 1024)
+                    .ok_or("free-space minimum is too large")?;
+            }
+            "--once" => options.once = true,
+            word => return Err(format!("unknown queue option: {word}")),
+        }
+        i += 1;
+    }
+    if options.max == 0 {
+        return Err("--max must be positive".into());
+    }
+    Ok((directory, options))
+}
+
+#[cfg(test)]
+mod registration_tests {
+    use super::registered_native_worker;
+    use serde_json::json;
+
+    #[test]
+    fn protected_registration_preserves_the_explicit_worker_and_adjacent_host() {
+        let value = json!({
+            "worker":{"id":"worker-a","kind":"oxa","roles":["builder"],"skills":["rust"]},
+            "host_id":"host-b"
+        });
+        let (worker, host) = registered_native_worker(&value).unwrap();
+        assert_eq!(worker.id, "worker-a");
+        assert_eq!(host, "host-b");
+        assert!(worker.roles.contains(&oxa_work::board::assignment::Role::Builder));
+        assert!(worker.skills.contains("rust"));
+    }
+
+    #[test]
+    fn protected_registration_refuses_missing_or_invalid_identities_without_fallback() {
+        let value = json!({
+            "worker":{"id":"worker-a","kind":"oxa","roles":["builder"],"skills":[]},
+            "host_id":"host-b"
+        });
+        for field in ["worker", "host_id"] {
+            let mut missing = value.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(registered_native_worker(&missing).is_err(), "missing {field}");
+        }
+        for host in [json!(null), json!(42), json!(""), json!("invalid host")] {
+            let mut invalid = value.clone();
+            invalid["host_id"] = host;
+            assert!(registered_native_worker(&invalid).is_err());
+        }
+        for id in [json!(null), json!(42), json!(""), json!("invalid worker")] {
+            let mut invalid = value.clone();
+            invalid["worker"]["id"] = id;
+            assert!(registered_native_worker(&invalid).is_err());
         }
     }
 }

@@ -217,11 +217,11 @@ fn native_go_records_bounded_plan_labels_in_usage_and_status() {
     }
 }
 #[test]
-fn native_go_paid_balance_settles_cost_and_caps_new_process() {
+fn native_go_paid_balance_settles_cost_and_admission_continues() {
     check_go_billing(json!("balance"), "balance", 0.01, true);
 }
 #[test]
-fn native_go_subcent_paid_cost_reaches_exact_cap_after_restart() {
+fn native_go_subcent_paid_cost_is_recorded_and_admission_continues() {
     check_go_billing(json!("balance"), "balance", 4e-9, true);
 }
 #[test]
@@ -238,7 +238,7 @@ fn capped_go(env: &TestEnv, base: &str) {
 }
 
 #[test]
-fn native_go_unknown_price_reserves_usd_before_another_process_forwards() {
+fn native_go_processes_forward_concurrently_without_local_usd_holds() {
     let env = TestEnv::new();
     let (held, release) = stream(json!({"content":"Synthetic held reply"}), "stop").gated();
     let mock = MockOpenAi::start_with(|base| {
@@ -246,7 +246,7 @@ fn native_go_unknown_price_reserves_usd_before_another_process_forwards() {
             Reply::json(discovery(base)),
             held,
             Reply::json(discovery(base)),
-            stream(json!({"content":"Unexpected concurrent forwarding"}), "stop"),
+            stream(json!({"content":"Synthetic concurrent reply"}), "stop"),
         ]
     });
     capped_go(&env, &format!("http://{}", mock.address()));
@@ -261,9 +261,16 @@ fn native_go_unknown_price_reserves_usd_before_another_process_forwards() {
         .spawn()
         .unwrap();
     mock.wait_for_requests(2);
+    // The second process forwards and settles while the first still holds its
+    // reply open. A tiny or fully held cap must never refuse either process.
     let second = run(
         &env,
         &["--no-session", "--no-tools", "-p", "Synthetic second request"],
+    );
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
     );
     release.send(()).unwrap();
     let first = first.wait_with_output().unwrap();
@@ -272,20 +279,32 @@ fn native_go_unknown_price_reserves_usd_before_another_process_forwards() {
         "{}",
         String::from_utf8_lossy(&first.stderr)
     );
-    assert_eq!(terminal(&second)["error_class"], "budget_exhausted");
-    assert_eq!(
-        mock.requests().len(),
-        3,
-        "only discovery may follow the held request"
-    );
-    assert!(rows(&env).iter().any(|row| row["settled"] == "usage"));
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 2);
+    for row in &ledger {
+        assert_eq!(row["settled"], "usage");
+        assert_eq!(row["billing"], "subscription");
+        assert_eq!(row["cost_usd"], 0.0);
+        assert!(row.get("go_reserved_usd").is_none());
+    }
+    assert_eq!(mock.requests().len(), 4);
+    for output in [&first, &second] {
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(CREDENTIAL));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
+    }
     mock.assert_healthy();
 }
 
 #[test]
-fn native_go_unknown_cost_keeps_usd_reserved_after_process_restart() {
+fn native_go_unknown_cost_stays_unknown_and_admission_continues() {
     let env = TestEnv::new();
     let mock = MockOpenAi::start_with(|base| {
+        let finish = json!({"choices":[{"index":0,"delta":{"content":"Synthetic next process reply"},"finish_reason":"stop"}]});
+        let mut paid = usage();
+        paid["opencode"]["billing_source"] = json!("balance");
+        paid["cost"] = json!(0.02);
+        let mut estimated = paid.clone();
+        estimated["opencode"]["estimated"] = json!(true);
         vec![
             Reply::json(discovery(base)),
             terminal_frames(
@@ -293,10 +312,9 @@ fn native_go_unknown_cost_keeps_usd_reserved_after_process_restart() {
                 true,
             ),
             Reply::json(discovery(base)),
-            stream(
-                json!({"content":"Unexpected forwarding after unknown usage"}),
-                "stop",
-            ),
+            terminal_frames(&[finish.clone(), json!({"choices":[],"usage":estimated})], true),
+            Reply::json(discovery(base)),
+            terminal_frames(&[finish, json!({"choices":[],"usage":paid})], true),
         ]
     });
     capped_go(&env, &format!("http://{}", mock.address()));
@@ -305,17 +323,30 @@ fn native_go_unknown_cost_keeps_usd_reserved_after_process_restart() {
         &["--no-session", "--no-tools", "-p", "Synthetic unknown usage"],
     );
     assert!(!first.status.success());
-    let second = run(
-        &env,
-        &["--no-session", "--no-tools", "-p", "Synthetic next process"],
-    );
-    assert_eq!(terminal(&second)["error_class"], "budget_exhausted");
-    assert_eq!(mock.requests().len(), 3);
+    // Each new process must read earlier unknown rows and still forward.
+    for prompt in ["Synthetic estimated usage", "Synthetic paid usage"] {
+        let output = run(&env, &["--no-session", "--no-tools", "-p", prompt]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert_eq!(mock.requests().len(), 6);
     let ledger = rows(&env);
-    let unknown = ledger.iter().find(|row| row["settled"] == "reserved").unwrap();
-    assert_eq!(unknown["cost_usd"], 0.01);
-    assert_eq!(unknown["billing"], "metered");
-    assert_eq!(unknown["usage_missing"], true);
+    assert_eq!(ledger.len(), 3);
+    for row in &ledger[..2] {
+        assert_eq!(row["settled"], "reserved");
+        assert_eq!(row["usage_missing"], true);
+        assert_eq!(row["billing"], "subscription");
+        assert!(row.get("cost_usd").is_none(), "{row}");
+        assert!(row.get("reported_cost_usd").is_none(), "{row}");
+        assert!(row.get("estimated_cost_usd").is_none(), "{row}");
+        assert!(row.get("go_reserved_usd").is_none(), "{row}");
+    }
+    assert_eq!(ledger[2]["settled"], "usage");
+    assert_eq!(ledger[2]["cost_usd"], 0.02);
+    assert_eq!(ledger[2]["reported_cost_usd"], 0.02);
     mock.assert_healthy();
 }
 
@@ -424,25 +455,15 @@ fn check_go_billing(source: Value, expected: &str, cost: f64, cap: bool) {
         ledger[0]["billing"],
         if cost > 0.0 { "metered" } else { "subscription" }
     );
-    if cost > 0.0 && cap {
+    if cost > 0.0 {
+        // The recorded charge consumes or exceeds the configured day cap, yet
+        // a new process keeps admitting Go: the charge is recorded, never a
+        // local stop. The `cap` flag only makes the day cap exact.
         let next = run(
             &env,
             &["--no-session", "--no-tools", "-p", "Synthetic next request"],
         );
-        assert_eq!(terminal(&next)["error_class"], "budget_exhausted");
-        assert_eq!(mock.requests().len(), 3);
-        assert_eq!(rows(&env)[0]["cost_usd"], cost);
-    } else if cost > 0.0 {
-        let next = run(
-            &env,
-            &["--no-session", "--no-tools", "-p", "Synthetic next request"],
-        );
-        assert_eq!(
-            next.status.code(),
-            Some(0),
-            "{}",
-            String::from_utf8_lossy(&next.stderr)
-        );
+        assert!(next.status.success(), "{}", String::from_utf8_lossy(&next.stderr));
         assert_eq!(mock.requests().len(), 4);
         let ledger = rows(&env);
         assert_eq!(ledger.len(), 2);
@@ -586,7 +607,7 @@ fn native_go_rate_limit_uses_existing_bounded_retry_then_completes() {
                 429,
                 "application/json",
                 b"not JSON".to_vec(),
-                vec![("Retry-After", "7".into())],
+                vec![("Retry-After", "0".into())],
             ),
             stream(json!({"content":"Synthetic after rate wait"}), "stop"),
         ]
@@ -620,11 +641,11 @@ fn native_go_rate_limit_uses_existing_bounded_retry_then_completes() {
         .filter(|event| event["type"] == "auto_retry_start")
         .collect();
     assert_eq!(retries.len(), 1);
-    assert_eq!(retries[0]["delayMs"], 1);
+    assert_eq!(retries[0]["delayMs"], 0);
     assert!(retries[0]["errorMessage"]
         .as_str()
         .unwrap()
-        .contains("retry after 7 s"));
+        .contains("retry after 0 s"));
     assert_eq!(mock.requests().len(), 3);
     let ledger = rows(&env);
     assert_eq!(ledger.len(), 2);
@@ -634,6 +655,33 @@ fn native_go_rate_limit_uses_existing_bounded_retry_then_completes() {
     assert!(ledger
         .iter()
         .any(|row| row["status"] == 200 && row["settled"] == "usage"));
+    mock.assert_healthy();
+}
+
+#[test]
+fn native_go_rate_limit_defers_instead_of_retrying_before_provider_wait() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::raw(
+                429,
+                "application/json",
+                b"{}".to_vec(),
+                vec![("Retry-After", "7".into())],
+            ),
+            stream(json!({"content":"Retry attempted too early"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    enable_one_fast_retry(&env);
+    let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+    assert_eq!(terminal(&output)["error_class"], "cloud_rate_limited");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("retry after 7 s"));
+    assert_eq!(mock.requests().len(), 2, "only discovery and the refused request");
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["settled"], "refused");
     mock.assert_healthy();
 }
 
@@ -767,7 +815,9 @@ fn native_go_text_deltas_allow_null_or_empty_tool_calls_and_keep_final_usage() {
         assert_eq!(ledger[0]["subscription_tokens"], 105);
         assert!(ledger[0].get("usage_missing").is_none());
         assert_eq!(mock.requests().len(), 2);
-        mock.assert_healthy();
+        // The client returned at [DONE]; draining peers before the verdict keeps
+        // the late transfer-end write out of the health check (#514 lane).
+        mock.finish();
     }
 }
 
@@ -805,7 +855,7 @@ fn native_go_wrong_tool_call_shapes_still_fail_closed_with_unknown_usage() {
         assert_eq!(ledger[0]["usage_missing"], true);
         assert_eq!(mock.requests().len(), 2);
         eprintln!("synthetic_tool_shape_case={case}");
-        mock.assert_healthy();
+        mock.finish();
     }
 }
 
@@ -1821,5 +1871,44 @@ fn go_private_terminal_valid_usage_has_no_diagnostic_and_settles_exactly() {
     assert_eq!(ledger[0]["settled"], "usage");
     assert!(ledger[0].get("usage_missing").is_none());
     assert_eq!(mock.requests().len(), 2);
+    mock.assert_healthy();
+}
+
+#[test]
+fn a_fresh_go_catalog_cache_serves_the_next_start_without_discovery() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| vec![Reply::json(discovery(base))]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let settings = env.home().join(".oxa/agent/settings.json");
+    let mut doc: Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
+    doc["oxa"]["cloud"]["discover_models"] = json!(true);
+    fs::write(settings, doc.to_string()).unwrap();
+    let first = run(&env, &["--list-models"]);
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(String::from_utf8_lossy(&first.stdout).contains(MODEL));
+    assert_eq!(mock.requests().len(), 1, "the first start discovers live");
+    assert!(
+        env.agent_dir().join("go-catalog-cache.json").is_file(),
+        "live discovery publishes an entry"
+    );
+    let second = run(&env, &["--list-models"]);
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert!(String::from_utf8_lossy(&second.stdout).contains(MODEL));
+    assert_eq!(
+        mock.requests().len(),
+        1,
+        "a fresh entry is consumed without a network call"
+    );
+    assert!(!String::from_utf8_lossy(&second.stderr).contains("Using a stale OpenCode model catalog."));
     mock.assert_healthy();
 }

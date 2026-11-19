@@ -27,7 +27,7 @@ Settings that older files may contain but oxa does not implement are not listed 
 
 Where the user file alone counts, the table says so:
 
-- user settings only: `defaultProjectTrust`, `httpProxy`, `oxa.allowHomeCwd`, `oxa.offline`, `oxa.engine.allowRemote`, `oxa.engine.inProcessCloud`, `oxa.cloud`, `oxa.engine.inProcessLocal`, `oxa.local`, `oxa.lead.serve`, and every `oxa.sandbox.*` key. A project file cannot set them, because a project file cannot widen what the model can reach.
+- user settings only: `defaultProjectTrust`, `httpProxy`, `oxa.allowHomeCwd`, `oxa.offline`, `oxa.engine.allowRemote`, `oxa.engine.inProcessCloud`, `oxa.cloud`, `oxa.engine.inProcessLocal`, `oxa.local`, `oxa.lead.shadow`, `oxa.lead.serve`, `oxa.lead.sessionId`, `oxa.lead.model`, and every `oxa.sandbox.*` key. A project file cannot set them, because a project file cannot widen what the model can reach.
 - project settings are trust-gated. In an untrusted project they are not read. Project files that run or load code (`hooks`, `shellPath`, `shellCommandPrefix`, `packages`, `extensions`, `skills`, `prompts`) also need the content approval described in [security.md](security.md#project-trust).
 
 Interactive selectors (`/settings`, `/thinking` and `/model` with Ctrl+S) write the user file.
@@ -100,10 +100,13 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `oxa.bash.defaultTimeout` | number (seconds) | unset | timeout of a bash call that names none; unset is 120; `0` is no timeout |
 | `oxa.diet.output` | bool | unset | the system prompt's "be concise" rule is replaced by rules on tool use and a final answer of at most 6 lines. Unset is on |
 | `oxa.diet.tools` | bool | unset | shorter `grep` and `bash` output: `grep` prints each path once, and runs of three or more blank lines in bash output become two. Unset is on |
+| `oxa.liveSettings` | bool | `true` | on by default; `false` opts out. When on, a changed settings file is applied at the start of the next run without `/reload` (one `stat` per file; keys that feed the prompt rebuild it). Read from the settings the session holds, so turning it on takes effect at the next `/reload` or start. A file that no longer parses keeps the previous settings |
 | `oxa.maxTurns` | number | unset | end a run after this many model replies with a `turn_limit` error (a cap against loops the repeat guard cannot see, such as alternating calls). Unset or `0` is no limit |
 | `oxa.toolOutputCap` | number (bytes) | `16384` | cap on one tool output sent to the model. When `oxa.compaction.softTokens` is set or the engine publishes a compaction point, one tool result is at most a quarter of it (never below 2048 bytes), unless this is set; `grep`, `find`, `ls` and a `read` with `offset` or `limit` are cut at that cap, the first page of `read` at 8 KiB within it; see [tools-context.md](tools-context.md) |
 | `oxa.toolRepair` | bool | `true` | repair a malformed tool call with one extra turn ([tools.md](tools.md#repair-turn)) |
-| `oxa.toolRepeatGuard` | bool | `true` | answer a tool call that returned the same result three times in a row with a short note, and stop the run if it goes on ([tools.md](tools.md#repeated-calls)) |
+| `oxa.toolRepeatGuard` | bool | `true` | answer a tool call that returned the same result three times in a row with a short note, and warn once (shown and kept in the session) if it goes on; the run continues ([tools.md](tools.md#repeated-calls)) |
+| `oxa.wait.maxSeconds` | number (seconds) | `3600` | cap on one `wait` call's `seconds` (schema maximum 86400); a longer request is cut to it |
+| `oxa.wait.pollSeconds` | number (seconds) | `30` | how often a `wait` with an `until` condition asks the hook sets for its state; no model request is made meanwhile |
 | `oxa.subagent.enabled` | bool | unset | the `subagent` tool; unset is on unless the model is Flash or its window is below 32K |
 | `oxa.subagent.smallContext` | bool | `false` | declare `subagent` on a model with a window below 32K |
 | `oxa.subagent.softTokens` | number | `24000` | compaction point of a child agent |
@@ -151,11 +154,11 @@ The compaction rules are in [compaction.md](compaction.md).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `retry.enabled` | bool | `true` | retry a failed request in the agent loop |
+| `retry.enabled` | bool | `true` | retry a failed request; off sends each request once, with no provider retry |
 | `retry.maxRetries` | number | `3` | retries of an agent request |
 | `retry.baseDelayMs` | number | `2000` | first delay, doubled each retry |
 | `retry.maxAgentDelayMs` | number | `60000` | longest delay the agent loop waits |
-| `retry.provider.maxRetries` | number | `0` | silent retries of one HTTP request, before the first byte of the reply |
+| `retry.provider.maxRetries` | number | `0` | silent retries of one HTTP request, before the first byte of the reply; `retry.enabled` false disables them |
 | `retry.provider.maxRetryDelayMs` | number | `60000` | longest wait of one HTTP retry |
 | `retry.provider.timeoutMs` | number | `null` | silence limit of the engine stream; unset uses `httpIdleTimeoutMs` |
 
@@ -170,9 +173,12 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.engine.allowRemote` | bool | `false` | allow an engine on another host; user settings only |
 | `oxa.engine.inProcessLocal` | bool | `false` | select the in-process owned local engine, including offline; user settings only |
 | `oxa.local` | object | `{}` | literal native binary/model/arguments/environment and model limits; user settings only; see [native local configuration](../../oxc-local/CONFIGURATION.md) |
+| `oxa.lead.shadow` | bool | `false` | enable the read-only `oxa lead --shadow` proposal preset; user settings only; no live runner actions |
 | `oxa.engine.inProcessCloud` | bool | `false` | select the in-process Rust cloud gateway for sessions and model discovery; user settings only |
 | `oxa.cloud` | object | `{}` | native cloud models, prices, USD budget and subscription caps; user settings only; see below |
 | `oxa.lead.serve` | object | `{}` | the lead web access scaffold: `enabled`, `identity` (`local` or `tailscale`), `bind` (a loopback address), `port`, `allowed_identities`. Off by default and no listener is installed yet; user settings only. See [lead-web.md](lead-web.md) |
+| `oxa.lead.sessionId` | string | unset | exact ID of the dedicated Lead Session created by the native owner operation, from owner-private user settings. Free text is disabled when unset. |
+| `oxa.lead.model` | string | unset | exact model id the Lead conversation resolves through the normal `--model` selector and gateway; user settings only, read from the owner-private settings file. Unset keeps the ordinary startup model; a route that does not resolve is reported, never silently replaced. A metered model still needs its daily USD cap, so choose a subscription route while the cap is absent. |
 | `oxa.envNote` | bool | unset | append the environment note to each prompt you send: the first one in a session (and the first of a new day, or after a compaction) gets a short `<env>` block with the date, time, time zone, locale, kernel, model, context size, thinking level and permission mode; later ones get `[local time HH:MM ZONE]`. It is never put in the system prompt, so the prompt cache stays exact. Unset is on; `OXA_ENV_NOTE=0` or `=1` overrides it for one run |
 | `oxa.sandbox.net` | `on` / `off` | `on` | network for bash in workspace and ask modes |
 | `oxa.sandbox.allowHomeWrite` | bool | `false` | make the home directory the bash workspace when oxa starts in it, in every mode (its folders and files writable; dotfiles, dot-folders, `~/bin` and the home folder itself stay read-only; never `/` or a parent of home). In interactive mode confirming the start question does the same. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
@@ -188,6 +194,31 @@ Set `oxa.engine.inProcessCloud` in the user settings file to select the Rust
 gateway for sessions and `--list-models`. The default is `false`. Offline mode
 refuses before opening the gateway; configuration or gateway failures are returned
 directly. Project settings cannot enable this transport or change its cloud policy.
+
+Set `oxa.cloud.discover_models` to `true` to discover models at startup for the
+configured OpenRouter, OpenAI and Anthropic API keys. It also enables the
+OpenCode model cache when that provider is configured. A fresh cached catalog
+avoids a discovery request. A stale OpenRouter catalog is refreshed at startup
+before its prices can be used to reserve spend. Other stale catalogs can be
+shown while a bounded refresh updates the cache for later starts. A failed live
+lookup uses the configured catalog and reports the failure. Discovery stays
+off in offline mode.
+
+OpenRouter supplies model limits and token prices. For a discovered model with
+no known rates, the owner can opt in by adding its exact public alias to
+`oxa.cloud.unpriced_discovered_pricing` in user settings. Each entry needs
+positive `input_per_million` and `output_per_million` USD rates. Choose rates
+that bound the expected provider charge. The gateway uses them for the normal
+budget reservation and records the settlement as `estimated_cost_usd`. Missing
+final usage retains the reservation. Estimates count against the daily cap and
+are recorded separately from actual costs. The setting is empty by default and
+is only read when discovery is enabled. The model still needs known token limits.
+Known provider or configured prices take precedence over this setting.
+When the same provider has several configured base URLs, select the discovery
+endpoint with `oxa.cloud.discovery.<provider>.base_url`.
+
+The merged catalog is available through the model picker and `--list-models`.
+The LAN guest catalog lists only guest-allowlisted models.
 
 Configure `anthropic`, `openai` (Responses API) or `chatgpt` (subscription) routes
 under `oxa.cloud.models`, keyed by the model name used
@@ -223,9 +254,13 @@ The key is read for each request from the existing private
 `~/.config/oxc/llm/cloud-secrets.json` (owner-only, mode `0600`, outside a checkout).
 Keep keys out of settings. The file uses the existing provider-key JSON format.
 Private settlement rows live in `<agent directory>/cloud-ledger/`. Listing models
-reads neither the key nor the ledger and contacts no provider. A missing price or
-daily budget refuses a request before credentials or provider I/O. Requests retain
-their budget reservation until the private row is durable.
+reads neither the key nor the ledger and contacts no provider. A missing price
+refuses a request before credentials or provider I/O. `daily_budget_usd` is
+optional: without it there is no budget check, requests are admitted and their
+cost is still recorded in the ledger (a request whose cost cannot be bounded is
+recorded with `cost_unknown`). When set it must be a positive number, and a
+request that would exceed it is refused with `budget_exceeded` (HTTP 429). Requests
+retain their budget reservation until the private row is durable.
 
 An `openai` route uses the same model/price fields, reads the `openai` key from
 that key file, and defaults to `https://api.openai.com/v1`. Both native providers
@@ -253,13 +288,30 @@ token usage and settle zero USD. Unknown paid work retains its full token bound;
 the cap includes concurrent and crashed-process reservations. It never falls back
 to a paid API balance. Missing metered pricing still refuses metered requests.
 
+OpenCode Go and every other subscription request reserve tokens only. Their cost
+is unknown to oxa, so no daily USD headroom is held for them and no local USD
+cap or request bound pauses their admission: a tiny or fully consumed
+`oxa.cloud.daily_budget_usd` never returns a local refusal for them, and the
+former `oxa.cloud.opencode.daily_budget_usd` and
+`oxa.cloud.opencode.max_request_usd` settings are no longer read. OpenCode's
+reported paid charges settle into the ledger and count in the shared daily
+total. Missing or estimated Go costs stay unknown, with no actual USD amount.
+Historical Go estimates remain readable and do not count toward the daily total.
+Holds written by older versions — including stored `reserved_usd` and `go_usd`
+amounts — stay readable with their tokens counted toward the subscription caps,
+while their recorded USD reserves nothing. OpenCode controls whether a call falls
+back to its paid balance; if it reports a higher charge than expected, the
+ledger records the full amount and admission continues.
+
 ### Other
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `externalEditor` | string | `null` | editor for Ctrl+G; wins over `VISUAL` and `EDITOR` |
 | `oxa.reportIssue.repo` | string | `null` | repository for `oxa report-issue submit`, as `OWNER/NAME` |
+| `oxa.reportIssue.semanticDedupe` | bool | `false` | verify dogfood reports against current main and search open and recently closed issues before posting. Matching reports become comments. New issues are limited to one per task and three per worker per UTC day |
 | `oxa.builtinSkills` | bool | `true` | include the skills built into oxa |
+| `oxa.share.remoteModels` | string list | `[]` | user-only allowlist of metered cloud aliases eligible for explicit LAN sharing; personal subscriptions are excluded |
 | `oxa.skills.includeSynced` | bool | `false` | also list the skills another product synced into `~/.agents/skills` (a `synced/` folder, or a folder whose `manifest.json` lists `skillId`s); they are written for that product's tools, so oxa skips them by default |
 
 ## Example

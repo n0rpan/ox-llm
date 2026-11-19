@@ -16,6 +16,8 @@
 //! * Keys and precedence are pi's (settings.md); oxa's own keys live under `oxa.*`.
 #![forbid(unsafe_code)]
 
+mod descriptor;
+mod descriptor_value;
 mod dirs;
 mod env;
 mod keybindings;
@@ -24,13 +26,23 @@ mod profile;
 mod schema;
 mod settings;
 
+pub use descriptor::{
+    descriptor, descriptors, fields_of, in_group, Apply, Control, Descriptor, Group, Item, MapKind, Options,
+    Range, Unit, WebEdit,
+};
+pub use descriptor_value::{check, current, display_value, parse_input, search, Shown};
 pub use dirs::dirs_from_env;
 pub use env::{env_flag, Env, EnvFlag, EnvVar, ENV_TABLE, FALSE_WORDS, TRUE_WORDS};
 pub use keybindings::{ActionDef, Keymap};
-pub use models::{resolve_model, resolve_scoped, Endpoint, ModelRef, ModelsConfig};
+pub use models::{
+    resolve_model, resolve_scoped, valid_cloud_name, CloudApi, CloudModel, CloudPrice, CloudProvider,
+    Endpoint, ModelRef, ModelsConfig,
+};
 pub use profile::{ThinkingPolicy, BASH_TIMEOUT_DEFAULT, SUMMARY_TARGET_DEFAULT};
 pub use schema::{apply_list_patch, merge_settings, schema, validate, KeyDef, Kind};
-pub use settings::{CompactionSettings, ProviderRetrySettings, QueueMode, RetrySettings, Settings};
+pub use settings::{
+    CompactionSettings, ProviderRetrySettings, QueueMode, RetrySettings, Settings, SettingsFiles, Source,
+};
 
 use oxa_proto::Level;
 use std::path::{Path, PathBuf};
@@ -92,6 +104,10 @@ impl Dirs {
     }
     pub fn trust_file(&self) -> PathBuf {
         self.agent_dir.join("trust.json")
+    }
+    /// `<agent_dir>/memory`: the memory store (one Markdown file per entry, plus `MEMORY.md`).
+    pub fn memory_dir(&self) -> PathBuf {
+        self.agent_dir.join("memory")
     }
     /// `<cwd>/.oxa`.
     pub fn project_dir(&self, cwd: &Path) -> PathBuf {

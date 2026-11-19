@@ -1,5 +1,6 @@
 //! F5: OAuth for HTTP servers (PKCE, discovery, dynamic registration, callback server, token store).
 // ported from pi packages/mcp/src/oauth/*
+use crate::private_file::{read_private, PrivateFileError};
 use crate::{ClientRegistration, HttpConfig, OAuthSettings, TokenSource, PROTOCOL_VERSION};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -26,7 +27,11 @@ pub struct StoredAuth {
     pub token_endpoint: Option<String>,
 }
 
-/// `<agent dir>/mcp-auth.json`: mode 0600, written atomically, never through a symlink.
+/// The largest token file read. A few servers' tokens fit in a few KiB.
+const TOKEN_FILE_LIMIT: u64 = 1024 * 1024;
+
+/// `<agent dir>/mcp-auth.json`: mode 0600, written atomically, never through a symlink. It is
+/// read through one checked handle: owned by this user, no group or other bits, at most 1 MiB.
 /// Credentials belong to a server name *and* URL.
 pub struct TokenStore {
     pub(crate) path: PathBuf,
@@ -90,22 +95,38 @@ impl TokenStore {
 
     /// The whole file as a JSON object; a missing or empty file is an empty object.
     fn read_doc(&self) -> Result<Map<String, Value>, OxaError> {
-        match std::fs::symlink_metadata(&self.path) {
-            Ok(meta) if meta.file_type().is_symlink() => {
+        let unsafe_path = |why: &str| {
+            Err(OxaError::new(
+                codes::UNSAFE_PATH,
+                format!(
+                    "{} {why}; refusing to read credentials through it",
+                    self.path.display()
+                ),
+            ))
+        };
+        let bytes = match read_private(&self.path, TOKEN_FILE_LIMIT) {
+            Ok(bytes) => bytes,
+            Err(PrivateFileError::Missing) => return Ok(Map::new()),
+            Err(PrivateFileError::SymbolicLink) => return unsafe_path("is a symbolic link"),
+            Err(PrivateFileError::NotRegular) => return unsafe_path("is not a regular file"),
+            Err(PrivateFileError::WrongOwner) => return unsafe_path("is owned by another user"),
+            Err(PrivateFileError::Permissions(mode)) => {
+                return unsafe_path(&format!("is readable by group or others (mode {mode:04o})"))
+            }
+            Err(PrivateFileError::TooLarge(limit)) => {
                 return Err(OxaError::new(
-                    codes::UNSAFE_PATH,
-                    format!(
-                        "{} is a symbolic link; refusing to read credentials through it",
-                        self.path.display()
-                    ),
+                    codes::INVALID,
+                    format!("{} is larger than {limit} bytes", self.path.display()),
                 ))
             }
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
-            Err(e) => return Err(OxaError::io("cannot read the MCP token file", &e)),
-        }
-        let text = std::fs::read_to_string(&self.path)
-            .map_err(|e| OxaError::io("cannot read the MCP token file", &e))?;
+            Err(PrivateFileError::Io(e)) => return Err(OxaError::io("cannot read the MCP token file", &e)),
+        };
+        let text = String::from_utf8(bytes).map_err(|e| {
+            OxaError::io(
+                "cannot read the MCP token file",
+                &std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+            )
+        })?;
         if text.trim().is_empty() {
             return Ok(Map::new());
         }
@@ -141,6 +162,18 @@ impl TokenStore {
         let mut bytes = serde_json::to_vec_pretty(&Value::Object(doc.clone()))
             .map_err(|e| OxaError::new(codes::INTERNAL, format!("cannot encode the MCP token file: {e}")))?;
         bytes.push(b'\n');
+        // The read side refuses a file larger than the limit, so never replace a usable store
+        // with one it could not read back.
+        if bytes.len() as u64 > TOKEN_FILE_LIMIT {
+            return Err(OxaError::new(
+                codes::INVALID,
+                format!(
+                    "the MCP token file would be {} bytes, more than the {TOKEN_FILE_LIMIT}-byte limit; \
+                     the stored credentials were left unchanged",
+                    bytes.len()
+                ),
+            ));
+        }
         write_private(&self.path, &bytes)
     }
 }
@@ -528,7 +561,8 @@ pub trait LoginIo {
 /// (configured `clientId`, a client stored earlier, or dynamic registration under
 /// `clientName`, default `oxa`), open the authorization page, wait for the callback or a
 /// pasted redirect URL, check `state`, exchange the code. `timeout` bounds the whole sign-in.
-/// `ClientRegistration::Cimd` is `Err(unsupported_in_oxa)`.
+/// `ClientRegistration::Cimd` is `Err(unsupported_in_oxa)`. A `!command` value (`clientSecret`)
+/// runs through `run`, the caller's `crate::run_value_command` with its gate, home and cwd.
 pub fn login(
     server: &str,
     cfg: &HttpConfig,
@@ -536,6 +570,7 @@ pub fn login(
     io: &mut dyn LoginIo,
     timeout: Duration,
     cancel: &CancelToken,
+    run: &dyn Fn(&str) -> Result<String, OxaError>,
 ) -> Result<(), OxaError> {
     let deadline = Instant::now() + timeout;
     let default_settings = OAuthSettings::default();
@@ -558,7 +593,7 @@ pub fn login(
     // client is bound to the redirect URI it was registered with.
     let stored_client = stored.as_ref().and_then(|a| a.client_id.clone());
     let (client_id, client_secret) = if let Some(id) = settings.client_id.clone() {
-        (id, expand_secret(settings.client_secret.as_deref())?)
+        (id, expand_secret(settings.client_secret.as_deref(), run)?)
     } else if let (ClientRegistration::Auto, Some(_), Some(id)) =
         (settings.client_registration, fixed_port, stored_client)
     {
@@ -1290,32 +1325,18 @@ fn parse_as_metadata(body: &str) -> Result<AuthServerMeta, OxaError> {
     })
 }
 
-/// Client secrets and other OAuth values may be `${VAR}` or `!command`, as elsewhere in `mcp.json`.
-fn expand_secret(raw: Option<&str>) -> Result<Option<String>, OxaError> {
+/// Client secrets and other OAuth values may be `${VAR}` or `!command`, as elsewhere in `mcp.json`;
+/// a `!command` runs through `run` (`crate::run_value_command` behind the caller's gate).
+fn expand_secret(
+    raw: Option<&str>,
+    run: &dyn Fn(&str) -> Result<String, OxaError>,
+) -> Result<Option<String>, OxaError> {
     let Some(raw) = raw else {
         return Ok(None);
     };
     let lookup = |key: &str| std::env::var(key).ok();
-    let run = |command: &str| run_value_command(command);
-    let value = crate::expand_value(raw, &lookup, &run)?;
+    let value = crate::expand_value(raw, &lookup, run)?;
     Ok(Some(value).filter(|v| !v.is_empty()))
-}
-
-fn run_value_command(command: &str) -> Result<String, OxaError> {
-    let out = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .map_err(|e| OxaError::io("cannot run a !command value", &e))?;
-    if !out.status.success() {
-        return Err(OxaError::new(
-            codes::INVALID,
-            format!("the !command value `{command}` failed"),
-        ));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// The port a sign-in must listen on, when the configuration fixes one.
@@ -1444,4 +1465,74 @@ fn apply_grant(auth: &mut StoredAuth, obj: &Map<String, Value>) -> Result<String
         auth.scope = Some(scope);
     }
     Ok(access)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxa_fake::TestEnv;
+    use std::os::unix::fs::PermissionsExt;
+
+    const DOC: &str = r#"{"svc":{"https://mcp.example/mcp":{"access_token":"fixture-token"}}}"#;
+
+    fn token_file(env: &TestEnv, rel: &str, mode: u32) -> PathBuf {
+        let p = env.write(rel, DOC);
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+        p
+    }
+
+    #[test]
+    fn a_private_token_file_is_read() {
+        let env = TestEnv::new();
+        let p = token_file(&env, "home/.oxa/agent/mcp-auth.json", 0o600);
+        let doc = TokenStore::open(&p).read_doc().expect("read");
+        assert_eq!(
+            doc["svc"]["https://mcp.example/mcp"]["access_token"],
+            "fixture-token"
+        );
+    }
+
+    #[test]
+    fn a_missing_token_file_is_empty() {
+        let env = TestEnv::new();
+        let doc = TokenStore::open(&env.agent_dir().join("mcp-auth.json"))
+            .read_doc()
+            .expect("read");
+        assert!(doc.is_empty());
+    }
+
+    #[test]
+    fn a_link_to_a_private_token_file_is_refused() {
+        let env = TestEnv::new();
+        let target = token_file(&env, "elsewhere/tokens.json", 0o600);
+        std::fs::create_dir_all(env.agent_dir()).unwrap();
+        let link = env.agent_dir().join("mcp-auth.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let err = TokenStore::open(&link).read_doc().expect_err("refused");
+        assert_eq!(err.code, codes::UNSAFE_PATH);
+        assert!(err.message.contains("symbolic link"), "{}", err.message);
+    }
+
+    #[test]
+    fn a_group_or_world_readable_token_file_is_refused() {
+        for mode in [0o640, 0o604] {
+            let env = TestEnv::new();
+            let p = token_file(&env, "home/.oxa/agent/mcp-auth.json", mode);
+            let store = TokenStore::open(&p);
+            let err = store.read_doc().expect_err("refused");
+            assert_eq!(err.code, codes::UNSAFE_PATH);
+            assert!(err.message.contains("group or others"), "{}", err.message);
+            assert_eq!(store.get("svc", "https://mcp.example/mcp"), None);
+        }
+    }
+
+    #[test]
+    fn an_oversized_token_file_is_refused() {
+        let env = TestEnv::new();
+        let big = format!("{{\"pad\":\"{}\"}}", "x".repeat(TOKEN_FILE_LIMIT as usize));
+        let p = env.write("home/.oxa/agent/mcp-auth.json", &big);
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let err = TokenStore::open(&p).read_doc().expect_err("refused");
+        assert_eq!(err.code, codes::INVALID);
+    }
 }

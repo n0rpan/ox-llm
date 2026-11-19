@@ -22,6 +22,12 @@ impl Key {
     pub fn expose(&self) -> &str {
         &self.0
     }
+
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn account_scope(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(self.0.as_bytes()).into()
+    }
 }
 impl fmt::Debug for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

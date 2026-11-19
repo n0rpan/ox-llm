@@ -10,7 +10,8 @@ fn discovery() -> Value {
         "capabilities":{"tools":true},"modalities":{"input":["text"],"output":["text"]}}]})
 }
 fn usage() -> Value {
-    json!({"prompt_tokens":100,"completion_tokens":25,"cost":0,"opencode":{"billing_source":"go","allowance":0.00012,"list_cost":0.00015,
+    json!({"prompt_tokens":100,"completion_tokens":25,"cost":0,"opencode":{"billing_source":"go","estimated":false,
+        "allowance":0.00012,"list_cost":0.00015,
         "tokens":{"input":20,"output":25,"reasoning":5,"cache_read":80,"cache_write_5m":0,"cache_write_1h":0}}})
 }
 #[test]
@@ -112,6 +113,34 @@ fn chat_payload_preserves_tools_reasoning_and_history_but_uses_discovered_route_
     }
 }
 #[test]
+fn chat_only_sends_explicit_reasoning_effort_supported_by_discovery() {
+    let mut model = opencode::models(&discovery(), "https://example.invalid/inference/go")
+        .unwrap()
+        .remove(0);
+    let request = |effort: &str| json!({"messages":[],"reasoning_effort":effort});
+    assert!(model
+        .request(&request("medium"))
+        .unwrap()
+        .get("reasoning_effort")
+        .is_none());
+    model.capabilities["reasoning"] = json!({"supported":true,"effort":["max","none"]});
+    assert_eq!(model.request(&request("max")).unwrap()["reasoning_effort"], "max");
+    for unsupported in ["medium", "none"] {
+        assert!(model
+            .request(&request(unsupported))
+            .unwrap()
+            .get("reasoning_effort")
+            .is_none());
+    }
+    model.capabilities["reasoning"]["supported"] = json!(false);
+    assert!(model
+        .request(&request("max"))
+        .unwrap()
+        .get("reasoning_effort")
+        .is_none());
+}
+
+#[test]
 fn subscription_usage_keeps_token_categories_and_exact_allowance_without_paid_fallback() {
     let parsed = Usage::parse(&usage()).unwrap();
     assert_eq!((parsed.prompt, parsed.completion), (100, 25));
@@ -119,9 +148,14 @@ fn subscription_usage_keeps_token_categories_and_exact_allowance_without_paid_fa
     assert_eq!(parsed.tokens["reasoning"], 5);
     assert_eq!(parsed.allowance, json!(0.00012));
     assert_eq!(parsed.list_cost, json!(0.00015));
+    assert!(!parsed.estimated);
+    let mut estimated = usage();
+    estimated["opencode"]["estimated"] = json!(true);
+    assert!(Usage::parse(&estimated).unwrap().estimated);
     for (pointer, replacement) in [
         ("/cost", json!(-0.001)),
         ("/opencode/allowance", json!(-1)),
+        ("/opencode/estimated", json!("true")),
         ("/opencode/list_cost", Value::Null),
         ("/opencode/tokens/reasoning", json!(-1)),
     ] {

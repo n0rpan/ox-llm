@@ -1,5 +1,11 @@
 # Code-scanning triage (issues #477 and #679)
 
+## Python source retirement status (#951)
+
+The [verified #1198 artifacts](https://github.com/oxstack/ox-llm/issues/951#issuecomment-6970132625) omit both legacy runtime files, `oxc/src/oxc/runtime/ctl_http.py` and `oxc/src/oxc/runtime/studio`, and both developer tools, `oxc/tools/interim/recording_proxy.py` and `oxc/tools/session_replay.py`. The [Python port ledger](../PYTHON-PORT-LEDGER.md#python-alert-file-retirement-audit) tracks a separate source decision for each file.
+
+All four paths remain tracked at `e50655f9`. The controller and Studio still have legacy callers, and the two developer tools retain their harness consumers and tests. This artifact and source check leaves the recorded alert dispositions as historical findings.
+
 ## Remaining-alert revalidation (#679, 2026-11-16)
 
 Read all eleven open alert records individually and rechecked their sources, guards and sinks
@@ -28,31 +34,30 @@ changed. The historical #477 analysis below is retained for its full traces.
 
 ### Frozen Python (owner scope change on #679)
 
-The Python runtime is still staged in the current v0.2.0 packaging: `oxc/src/oxc/bootstrap.py`'s
-`RUNTIME` includes Studio and `ctl_http.py`, and `packaging/release/stage.py` copies the runtime.
-Do not claim those files have already been removed. The same staging script explicitly excludes
-`tools`, so the two developer proxies below are not installed runtime entry points. No files
-under `oxc/` were changed.
+At the inspected v0.2.0 revision, `oxc/src/oxc/bootstrap.py`'s `RUNTIME` included Studio and
+`ctl_http.py`, and `packaging/release/stage.py` copied the runtime. The staging script excluded
+`tools`, leaving the two developer proxies outside the installed runtime. This revalidation
+changed no files under `oxc/`.
 
 Each alert has its own two-line disposition:
 
 - **#5 — already fixed by #479 (`5d0f5e8d`), not an outstanding installed flaw.** Request Origin reaches `cors_origin` before the CORS response sink; `_HEADER_SAFE.fullmatch` rejects CR/LF, including folded values.
   Requested header names pass `_HEADER_NAME_LIST.fullmatch` or use a fixed fallback; `KeyAndCors.test_cors_never_echoes_a_line_break_into_a_header` covers both paths. CodeQL does not model these guards.
-- **#6 — legacy, removed with the Python controller; developer tool, not installed.** `recording_proxy.py` sends upstream header names from `r.getheaders()`, not raw client header names, to `send_header`.
+- **#6 — retained legacy developer tool outside the installed payload.** `recording_proxy.py` sends upstream header names from `r.getheaders()`, not raw client header names, to `send_header`.
   The upstream is the operator's loopback server (`HTTPConnection('127.0.0.1', rec.up)`); it already controls the response. This is not a reachable installed v0.2.0 sink.
-- **#7 — legacy, removed with the Python controller; developer tool, not installed.** The same proxy sends upstream header values from `r.getheaders()` to `send_header`; folded values can retain CR/LF, so parser sanitisation is not the justification.
+- **#7 — retained legacy developer tool outside the installed payload.** The same proxy sends upstream header values from `r.getheaders()` to `send_header`; folded values can retain CR/LF, so parser sanitisation is not the justification.
   Those values come from the operator's loopback upstream, which already controls the response, not a direct client-header echo. This is not a reachable installed v0.2.0 sink.
-- **#8 — legacy, removed with the Python controller; developer tool, not installed.** `session_replay.py` forwards upstream response header names from `resp.getheaders()` after its hop-by-hop/framing exclusions.
+- **#8 — retained legacy developer tool outside the installed payload.** `session_replay.py` forwards upstream response header names from `resp.getheaders()` after its hop-by-hop/framing exclusions.
   The operator selects the upstream with required `--upstream`; the client's path selects a resource there, not a new upstream authority. This is not a reachable installed v0.2.0 sink.
-- **#9 — legacy, removed with the Python controller; developer tool, not installed.** The same replay proxy forwards upstream response header values; these are not raw client request headers, though upstream folded values can contain CR/LF.
+- **#9 — retained legacy developer tool outside the installed payload.** The same replay proxy forwards upstream response header values; these are not raw client request headers, though upstream folded values can contain CR/LF.
   This trusts the operator-selected upstream to supply the response; it is not a promise that an arbitrary malicious upstream is sanitised. This is not a reachable installed v0.2.0 sink.
-- **#10 — legacy, removed with the Python controller; developer tool, not installed.** The Content-Length sink uses `resp.getheader('Content-Length')`, from that same operator-selected upstream, not a client-supplied response length.
+- **#10 — retained legacy developer tool outside the installed payload.** The Content-Length sink uses `resp.getheader('Content-Length')`, from that same operator-selected upstream, not a client-supplied response length.
   This is another upstream-response trust boundary in the uninstalled replay tool, not a reachable installed v0.2.0 sink; no claim that `http.client` strips folded CR/LF is needed.
-- **#11 — legacy, removed with the Python controller; installed path guard, not an escape.** Studio's GET `/file?path=…` passes the query path to `p.exists()` as part of its rejection condition.
+- **#11 — legacy Studio runtime; installed path guard, not an escape.** Studio's GET `/file?path=…` passes the query path to `p.exists()` as part of its rejection condition.
   Missing and outside-root paths both return 404; only paths resolving beneath `OUT` or `UPLOADS` can reach the read. Studio binds loopback and checks Host; existence is not authorisation for the later read.
-- **#12 — legacy, removed with the Python controller; installed path guard, not an escape.** The other flagged operation on the same guard line resolves the user-selected path and checks `is_relative_to` against resolved `OUT`/`UPLOADS` roots.
+- **#12 — legacy Studio runtime; installed path guard, not an escape.** The other flagged operation on the same guard line resolves the user-selected path and checks `is_relative_to` against resolved `OUT`/`UPLOADS` roots.
   This rejects `..` and existing symlink escapes before file contents are read; it is the containment check itself, not an unchecked file read.
-- **#13 — legacy, removed with the Python controller; no remote-only path escape established.** `p.read_bytes()` is reachable only after that containment guard; reusing `p` leaves a local symlink-swap race, not an atomic confinement guarantee.
+- **#13 — legacy Studio runtime; no remote-only path escape established.** `p.read_bytes()` is reachable only after that containment guard; reusing `p` leaves a local symlink-swap race, not an atomic confinement guarantee.
   Exploiting that race requires local write access under the allowed roots; HTTP uploads instead create UUID-named regular files with allow-listed image suffixes, not caller-selected paths or symlinks. Do not describe this as protection against a malicious local filesystem writer.
 
 No new failing test is appropriate: no new reachable flaw or behaviour change was identified.

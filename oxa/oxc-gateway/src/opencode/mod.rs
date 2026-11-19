@@ -9,7 +9,10 @@ use reqwest::{
 use serde_json::Value;
 use std::{collections::BTreeMap, str::FromStr};
 
+pub mod cache;
 pub mod client;
+mod plan_usage;
+pub use plan_usage::{PlanUsage, PlanUsageObservation, PlanWindow, PlanWindowStatus};
 
 pub const GO_BASE: &str = "https://opencode.ai/inference/go";
 const MAX_MODELS: usize = 1024;
@@ -256,6 +259,20 @@ impl Model {
             }
         }
         body.insert("max_tokens".into(), output.into());
+        let reasoning = &self.capabilities["reasoning"];
+        let supported_effort = body
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            .is_some_and(|effort| {
+                effort != "none"
+                    && reasoning["supported"] == true
+                    && reasoning["effort"]
+                        .as_array()
+                        .is_some_and(|levels| levels.iter().any(|level| level.as_str() == Some(effort)))
+            });
+        if !supported_effort {
+            body.remove("reasoning_effort");
+        }
         // Local-engine hints and paid/provider-routing overrides have no meaning
         // on the Go subscription endpoint and must not select another balance.
         for field in [
@@ -338,6 +355,7 @@ impl PlanName {
 pub struct Usage {
     pub billing_source: PlanName,
     pub cost: f64,
+    pub estimated: bool,
     pub prompt: u64,
     pub completion: u64,
     pub cache_read: Option<u64>,
@@ -366,6 +384,10 @@ impl Usage {
             .filter(|n| n.is_finite() && *n >= 0.0)
             .filter(|n| *n != 0.0 || amount.is_zero())
             .ok_or(Error::Usage)?;
+        let estimated = match go.get("estimated") {
+            Some(value) => value.as_bool().ok_or(Error::Usage)?,
+            None => false,
+        };
         money(&go["allowance"])?;
         money(&go["list_cost"])?;
         let prompt = value["prompt_tokens"].as_u64().ok_or(Error::Usage)?;
@@ -405,6 +427,7 @@ impl Usage {
         Ok(Self {
             billing_source: PlanName::from_value(&go["billing_source"]),
             cost,
+            estimated,
             prompt,
             completion,
             cache_read,

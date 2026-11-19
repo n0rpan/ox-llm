@@ -4,7 +4,7 @@ use crate::exec::{fail_truncated_calls, reply_event, run_calls, RequestOpts};
 use crate::host::observe_hooks;
 use crate::SessionState;
 use oxa_proto::{
-    miss_cause, rebase_why, shown_why, AgentEvent, Entry, EntryBody, EventMessage, EventSink, Finish,
+    codes, miss_cause, rebase_why, shown_why, AgentEvent, Entry, EntryBody, EventMessage, EventSink, Finish,
     HookPoint, Level, OxaError, Part, Role, StopReason, TurnKind, Ui, Usage, Value, WireMsg,
 };
 use oxa_session::new_entry_id;
@@ -27,23 +27,54 @@ pub enum RunEnd {
 pub fn append_entry(st: &mut SessionState, body: EntryBody) -> Result<Entry, OxaError> {
     let id = {
         let tree = &st.tree;
-        new_entry_id(&|candidate: &str| tree.get(candidate).is_some())
+        new_entry_id(&|candidate: &str| {
+            tree.get(candidate).is_some()
+                || st
+                    .goal
+                    .as_ref()
+                    .is_some_and(|goal| goal.reserves_entry_id(candidate))
+        })
     };
+    append_entry_with_id(st, id, body)
+}
+
+pub(crate) fn append_entry_with_id(
+    st: &mut SessionState,
+    id: String,
+    body: EntryBody,
+) -> Result<Entry, OxaError> {
+    if st.tree.get(&id).is_some() {
+        return Err(OxaError::new(
+            oxa_proto::codes::INVALID,
+            "Session entry identity already exists.",
+        ));
+    }
     let leaf = st.tree.leaf();
     let parent = if leaf.is_empty() {
         None
     } else {
         Some(leaf.to_string())
     };
+    let entry = append_to_store(st.store.as_ref(), &st.sref, id, parent, body)?;
+    st.tree.push(entry.clone());
+    st.transcript.apply(&entry);
+    Ok(entry)
+}
+
+pub(crate) fn append_to_store(
+    store: &dyn oxa_session::SessionStore,
+    session: &oxa_session::SessionRef,
+    id: String,
+    parent: Option<String>,
+    body: EntryBody,
+) -> Result<Entry, OxaError> {
     let entry = Entry {
         id,
         parent,
         ts_ms: now_ms(),
         body,
     };
-    st.store.append(&st.sref, &entry)?;
-    st.tree.push(entry.clone());
-    st.transcript.apply(&entry);
+    store.append(session, &entry)?;
     Ok(entry)
 }
 
@@ -67,12 +98,18 @@ pub fn run_loop(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<RunEnd, OxaError> {
+    crate::goal::deliver_saved(st, sink)?;
     crate::goal::ensure_begin(st);
     crate::goal::checkpoint(st, false, sink)?;
     st.shared
         .gate
         .running
         .store(true, std::sync::atomic::Ordering::SeqCst);
+    let steering = st
+        .goal
+        .as_ref()
+        .filter(|goal| goal.pursuing())
+        .and_then(|_| st.shared.open_goal_steering(&st.sref));
     sink.emit(&AgentEvent::AgentStart);
     observe_hooks(st, HookPoint::AgentStart, &Value::Null, sink, ui);
     let mut run_msgs: Vec<EventMessage> = Vec::new();
@@ -81,6 +118,7 @@ pub fn run_loop(
     let opening = crate::fire::opening_messages(st);
     let result = run_inner(st, sink, ui, &mut run_msgs, &opening);
     crate::goal::checkpoint(st, false, sink)?;
+    drop(steering);
     crate::think::end_run(st, ui);
     sink.emit(&AgentEvent::AgentEnd {
         messages: run_msgs.clone(),
@@ -106,6 +144,8 @@ fn run_inner(
     let mut wrapping_up = false;
     let mut wrap_up_failure = None;
     let mut length_recoveries = 0;
+    // The repeat guard warns the user once per run (`repeat.rs`, #1448).
+    let mut repeat_warned = false;
     // `oxa.maxTurns` (default unset: no limit): model replies of this run (#507).
     let max_turns = st.settings.u32(crate::repeat::MAX_TURNS, 0);
     'turns: loop {
@@ -402,6 +442,44 @@ fn run_inner(
             && st.info.caps.remote
             && !wrapping_up
             && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) == 0
+            && st.shared.literal_output_remaining() == Some(0)
+        {
+            // The bounded literal turn has spent its shared output budget: the
+            // recovery request could never reserve a token, so it is neither
+            // scheduled nor described with its internal instruction, and the
+            // partial answer is never presented as a valid reply. The cut stays
+            // as the audit entry; the typed local bound reaches the caller.
+            account_discarded(st, &turn);
+            let text = turn
+                .msg
+                .content
+                .clone()
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| "The reply reached its output limit before answering.".to_string());
+            persist(
+                st,
+                EntryBody::Shown {
+                    text,
+                    why: shown_why::CUT,
+                },
+                sink,
+            )?;
+            let e = OxaError::new(
+                codes::LITERAL_OUTPUT_EXHAUSTED,
+                "The literal turn's output limit is exhausted.",
+            )
+            .with_hint("Ask for a shorter answer.");
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Error,
+                text: e.to_string(),
+            });
+            return Ok(RunEnd::Failed(e));
+        }
+        if turn.finish == Finish::Length
+            && turn.msg.tool_calls.is_empty()
+            && st.info.caps.remote
+            && !wrapping_up
+            && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) == 0
             && length_recoverable(st, length_recoveries)
         {
             account_discarded(st, &turn);
@@ -567,6 +645,7 @@ fn run_inner(
             crate::goal::account(st, false)?;
             if crate::goal::terminal(st) {
                 let _ = crate::done::check(st, &mut done, sink, ui);
+                crate::advice::observe_done(st, done.observation.take(), false, sink)?;
                 if st.stats.done_failed {
                     if let Some(goal) = &st.goal {
                         goal.reject_completion();
@@ -598,29 +677,81 @@ fn run_inner(
             if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
                 continue;
             }
-            // The repeat guard gave up: the same call after its notices ends the run.
-            if let Some(r) = results.iter().find(|r| r.stop) {
-                let text = crate::repeat::stop_text(&r.tool_name);
-                persist(
-                    st,
-                    EntryBody::Shown {
+            // The repeat guard's give-up point: the same call again after its notices (#1448).
+            // The run no longer ends here. The advisor keeps its authority: a delivered
+            // suggestion continues the run, an escalation still ends it. Either way the user
+            // is warned once — shown and persisted with the remedy — and the next model reply
+            // proceeds (steering and compaction run as on any turn).
+            if let Some(r) = results.iter().find(|r| r.warn) {
+                let mut text = crate::repeat::warning_text(&r.tool_name);
+                let mut escalate = false;
+                if let Some(call) = calls
+                    .iter()
+                    .find(|call| Some(&call.id) == r.msg.tool_call_id.as_ref())
+                {
+                    match crate::advice::on_repeat(st, call, &text, sink)? {
+                        // The advisor delivered: the run continues through the warning below.
+                        crate::advice::AdviceResult::Continue => {}
+                        // No advisor, or none delivered: same warning path.
+                        crate::advice::AdviceResult::Refused => {}
+                        crate::advice::AdviceResult::Escalate => {
+                            text = "Advice did not resolve the failure. The worker needs a stronger tier."
+                                .into();
+                            escalate = true;
+                        }
+                    }
+                }
+                if st.shared.cancel.is_cancelled() {
+                    return Ok(RunEnd::Aborted);
+                }
+                if escalate {
+                    persist(
+                        st,
+                        EntryBody::Shown {
+                            text: text.clone(),
+                            why: shown_why::NOTICE,
+                        },
+                        sink,
+                    )?;
+                    sink.emit(&AgentEvent::Notice {
+                        level: Level::Error,
                         text: text.clone(),
-                        why: shown_why::NOTICE,
-                    },
-                    sink,
-                )?;
-                sink.emit(&AgentEvent::Notice {
-                    level: Level::Error,
-                    text: text.clone(),
-                });
-                // The files edited so far are still checked and the result shown; the run is
-                // over, so a failure is not sent back to the model.
-                let _ = crate::done::check(st, &mut done, sink, ui);
-                // Giving up is not a finished task: a caller must not read it as success.
-                return Ok(RunEnd::Failed(OxaError::new(crate::repeat::ERROR_CODE, text)));
+                    });
+                    // The files edited so far are still checked and the result shown; the run
+                    // is over, so a failure is not sent back to the model.
+                    let _ = crate::done::check(st, &mut done, sink, ui);
+                    crate::advice::observe_done(st, done.observation.take(), false, sink)?;
+                    // Not a finished task: a caller must not read it as success.
+                    return Ok(RunEnd::Failed(OxaError::new("advisor_escalation_required", text)));
+                }
+                // One warning per run; later repeats keep their model-facing notice.
+                if !repeat_warned {
+                    repeat_warned = true;
+                    persist(
+                        st,
+                        EntryBody::Shown {
+                            text: text.clone(),
+                            why: shown_why::NOTICE,
+                        },
+                        sink,
+                    )?;
+                    sink.emit(&AgentEvent::Notice {
+                        level: Level::Warning,
+                        text,
+                    });
+                }
             }
             // Steering drains after the tool batch, each message as a user message.
             deliver_steering(st, sink, ui, run_msgs)?;
+            // A wait that input woke hands that input to the model now: a follow-up is
+            // otherwise only drained when the run stops, after the model has answered
+            // the wait result without it.
+            if calls.iter().any(|call| call.name == "wait") && st.shared.wait_wake.is_cancelled() {
+                st.shared.wait_wake.reset();
+                for text in drain_follow_ups(st, sink) {
+                    push_user(st, text, sink, ui, run_msgs)?;
+                }
+            }
             // L5 mid-run (`oxa.compaction.midRun`): past the soft limit, compact before the next
             // request, keeping this unanswered batch verbatim. A failed or cancelled attempt
             // leaves the wire unchanged and the run goes on (the hard-limit check below still
@@ -676,8 +807,19 @@ fn run_inner(
         if deliver_steering(st, sink, ui, run_msgs)? {
             continue;
         }
-        if let Some(text) = crate::done::check(st, &mut done, sink, ui) {
+        let failed_check = crate::done::check(st, &mut done, sink, ui);
+        let advised = crate::advice::observe_done(st, done.observation.take(), true, sink)?;
+        if matches!(advised, crate::advice::AdviceResult::Escalate) {
+            return Ok(RunEnd::Failed(OxaError::new(
+                "advisor_escalation_required",
+                "Advice did not resolve the failure. The worker needs a stronger tier.",
+            )));
+        }
+        if let Some(text) = failed_check {
             crate::done::inject(st, text, sink, ui, run_msgs)?;
+            continue;
+        }
+        if matches!(advised, crate::advice::AdviceResult::Continue) {
             continue;
         }
         if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
@@ -696,8 +838,13 @@ fn run_inner(
                 return Ok(RunEnd::Stopped);
             }
             let snapshot = goal.stopped();
-            persist(st, snapshot.body(), sink)?;
+            crate::goal::save_checkpoint(st, &snapshot, sink)?;
             if goal.pursuing() {
+                // Queued input (a follow-up that woke a wait) is the next user message:
+                // stop so `settle_runs` delivers it instead of the continuation prompt.
+                if st.shared.has_input() {
+                    return Ok(RunEnd::Stopped);
+                }
                 push_user(st, crate::prompt::GOAL_CONTINUE.into(), sink, ui, run_msgs)?;
                 continue;
             }
@@ -750,13 +897,18 @@ fn deliver_steering(
     run_msgs: &mut Vec<EventMessage>,
 ) -> Result<bool, OxaError> {
     let taken = drain_steering(st, sink);
-    if taken.is_empty() {
-        return Ok(false);
-    }
+    let mut appended = !taken.is_empty();
     for text in taken {
         push_user(st, text, sink, ui, run_msgs)?;
     }
-    Ok(true)
+    if let Some(request) = st.shared.take_goal_steering() {
+        // The assignment guard covers the write, then releases before events or hooks.
+        if let Some(entry) = request.deliver(st, append_user_entry)? {
+            announce_user_entry(st, entry, sink, ui, run_msgs);
+            appended = true;
+        }
+    }
+    Ok(appended)
 }
 
 /// Append one user message to the transcript and announce it.
@@ -767,10 +919,35 @@ pub(crate) fn push_user(
     ui: &mut dyn Ui,
     run_msgs: &mut Vec<EventMessage>,
 ) -> Result<(), OxaError> {
-    let wire = WireMsg::user(text.clone());
+    let entry = append_user_entry(st, text)?;
+    announce_user_entry(st, entry, sink, ui, run_msgs);
+    Ok(())
+}
+
+fn append_user_entry(st: &mut SessionState, text: String) -> Result<Entry, OxaError> {
+    append_entry(
+        st,
+        EntryBody::Msg {
+            wire: WireMsg::user(text.clone()),
+            parts: vec![Part::Text(text)],
+            tool: None,
+        },
+    )
+}
+
+fn announce_user_entry(
+    st: &mut SessionState,
+    entry: Entry,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+    run_msgs: &mut Vec<EventMessage>,
+) {
+    let EntryBody::Msg { wire, .. } = &entry.body else {
+        unreachable!("the user append only creates messages");
+    };
     let msg = EventMessage {
         msg: wire.clone(),
-        ts_ms: now_ms(),
+        ts_ms: entry.ts_ms,
         stop: None,
         usage: None,
         model: None,
@@ -779,18 +956,9 @@ pub(crate) fn push_user(
         error_message: None,
     };
     run_msgs.push(msg.clone());
-    persist(
-        st,
-        EntryBody::Msg {
-            wire,
-            parts: vec![Part::Text(text)],
-            tool: None,
-        },
-        sink,
-    )?;
+    sink.emit(&AgentEvent::EntryAppended { entry });
     crate::fire::message(st, HookPoint::MessageStart, &msg, sink, ui);
     crate::fire::message(st, HookPoint::MessageEnd, &msg, sink, ui);
-    Ok(())
 }
 
 /// Take steering messages from the shared queue (`Shared::take_steering` applies the mode)
@@ -803,6 +971,20 @@ fn drain_steering(st: &SessionState, sink: &mut dyn EventSink) -> Vec<String> {
         sink.emit(&AgentEvent::QueueUpdate { steering, follow_up });
     }
     let taken = st.shared.take_steering();
+    if !taken.is_empty() {
+        let (steering, follow_up) = st.shared.snapshot();
+        sink.emit(&AgentEvent::QueueUpdate { steering, follow_up });
+    }
+    taken
+}
+
+/// Take follow-ups from the shared queue (same announcements as [`drain_steering`]).
+fn drain_follow_ups(st: &SessionState, sink: &mut dyn EventSink) -> Vec<String> {
+    if st.shared.dirty.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        let (steering, follow_up) = st.shared.snapshot();
+        sink.emit(&AgentEvent::QueueUpdate { steering, follow_up });
+    }
+    let taken = st.shared.take_follow_up();
     if !taken.is_empty() {
         let (steering, follow_up) = st.shared.snapshot();
         sink.emit(&AgentEvent::QueueUpdate { steering, follow_up });

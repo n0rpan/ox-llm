@@ -2,7 +2,7 @@
 //! session the process opens (`/new`, `/resume`, fork).
 //!
 //! Order (it is the order in which the core fires them): JavaScript extensions, exec hooks,
-//! MCP, web_search, `builtin:subagent`, codemode.
+//! MCP, web_search, wait probes (`wait_probe.rs`), `builtin:subagent`, codemode.
 //!
 //! * **Extensions** (`oxa-ext`): the paths `oxa_resources::discover` found
 //!   (`Resources::extension_paths`: agent dir, trusted project, packages, settings, `-e`; `-ne`
@@ -80,6 +80,12 @@ pub struct HookInputs<'a> {
 /// Build the hook sets. Problems that do not stop the start (a failed extension, a bad hook
 /// entry, an `mcp.json` diagnostic) are pushed to `notices`.
 pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Result<HookSets, OxaError> {
+    if i.args.lead {
+        return Ok(HookSets {
+            hooks: vec![Arc::new(crate::lead_preset::LeadHooks)],
+            ..HookSets::default()
+        });
+    }
     let mut sets = HookSets::default();
 
     // ---- extensions ----
@@ -195,6 +201,11 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
         }
         sets.hooks.push(Arc::new(web));
     }
+
+    // ---- wait probes (W3) ----
+    // `wait` with `until` kind `ci` / `pr_merged`: answered through `gh`, no tools or prompt text.
+    sets.hooks
+        .push(Arc::new(crate::wait_probe::ProbeHooks::new(i.cwd, &i.dirs.home)));
 
     // ---- builtin:subagent ----
     // O-146: built unless switched off; the hook set itself declares the tool per epoch (on by

@@ -64,7 +64,7 @@ For multiple prompts, the first unsuccessful outcome is retained even if a later
 
 These results cover orderly returns, including startup refusals. A process killed before it can return cannot emit a terminal result. Help, version, export, model listing and standalone subcommands keep their existing output and status conventions (0 success, 1 runtime failure, 2 usage error).
 
-Retries use the `retry` settings: transient gateway credentials/ledger refusals, upstream 429/5xx and connection failures retry with capped exponential backoff before output starts. Budget exhaustion, missing SDKs and other 4xx refusals are final. A transport break after output can replay the same logical request with the same idempotency key; the partial reply is shown as progress and excluded from model history. A refusal after output is final. Print mode immediately flushes retry notices to stderr; JSON and RPC modes emit flushed `notice` records. Provider-level retries (`retry.provider.maxRetries`) are visible too. `retry.enabled`, `retry.maxRetries`, `retry.baseDelayMs` and `retry.maxAgentDelayMs` control the agent-level policy; provider retries have their own configured limit.
+Retries use the `retry` settings: transient gateway credentials/ledger refusals, upstream 429/5xx and connection failures retry with capped exponential backoff before output starts. Budget exhaustion, missing SDKs and other 4xx refusals are final. A transport break after output can replay the same logical request with the same idempotency key; the partial reply is shown as progress and excluded from model history. A refusal after output is final. Print mode immediately flushes retry notices to stderr; JSON and RPC modes emit flushed `notice` records. Provider-level retries (`retry.provider.maxRetries`) are visible too. `retry.enabled` switches retrying off at both layers: while it is false a failed request is sent once, with no provider retry either. `retry.maxRetries`, `retry.baseDelayMs` and `retry.maxAgentDelayMs` control the agent-level policy; provider retries have their own configured limit.
 
 A plain reply cut at its output limit also continues under the auto-retry policy. Local models keep the cut reply as context and receive an explicit continuation instruction, with a zero-token prefill when advertised and enabled. Cloud models receive a request for a shorter complete answer, with the cut reply kept only as shown progress. Each length recovery is a new logical request with a fresh idempotency key. `retry.maxRetries` bounds consecutive length recoveries; a completed model step resets the count. Disabling auto-retry leaves the cut reply terminal with `failed/output_limit`. Exhausting the bound does the same. A pending time limit or SIGTERM goes directly to the bounded wrap-up turn.
 
@@ -96,14 +96,16 @@ Commands take the place of the message. They do not start a session.
 | `oxa remove <source> [-l]` | remove a package from the settings (`uninstall` is an alias) |
 | `oxa update [source] [--extensions]` | update installed packages, all of them or the one named |
 | `oxa list` | list the installed packages |
-| `oxa work <taskfile> \| --issue N --model MODEL` | run tasks in separate git worktrees with external acceptance checks; `oxa work status [--json]` reads its checkpoints ([work.md](../work.md)) |
+| `oxa work <taskfile> \| --issue N \| --pr N --model MODEL` | run tasks in separate git worktrees with external acceptance checks; `oxa work status [--json]` reads its checkpoints ([work.md](../work.md)) |
 | `oxa login chatgpt --experimental [--paste] [--replace]` | explicit owner-only native ChatGPT sign-in |
 | `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa status <session-id\|session-file> [--session-dir <dir>]` | read a saved session's progress and stall signal without contacting an engine |
 | `oxa send <session-id> "text"` | queue one follow-up for the session's TUI or RPC owner |
 | `oxa config [-l]` | print every setting with its value and where it comes from |
 | `oxa mcp <command>` | manage MCP servers, see below |
+| `oxa memory <list\|show\|rm>` | list the memory index, show one memory entry, or remove one entry and its index line, see [Memory commands](#memory-commands) |
 | `oxa identity [--refresh] [--offline]` | show the identity text of the system prompt; `--refresh` rewrites it from this machine and the engine, and `--offline` skips the engine |
+| `oxa share serve --model ALIAS` | start the authenticated streaming OpenAI-compatible listener for explicitly selected native local models in a build with the `share` feature |
 | `oxa share key <add\|list\|revoke>` | owner-only guest key and daily limit management, in a build compiled with the `share` feature |
 | `oxa report-issue <draft\|submit>` | draft a scrubbed issue for the ox-llm repository, or post a draft after confirmation |
 | `oxa wipe --session <id> \| --all [--yes] [--engine]` | remove the stored session files and spill files of one session or of all sessions. See [sessions.md](sessions.md#what-oxa-stores-and-how-to-remove-it) |
@@ -116,6 +118,12 @@ Commands take the place of the message. They do not start a session.
 $ oxa share key add guest --daily-requests 100 --daily-tokens 200000
 $ oxa share key list
 ```
+
+`oxa share serve` starts a foreground listener after the owner enables the native local engine and selects one or more local aliases with `--model`. It binds to the Tailscale interface by default and prints its `/v1` base URL. Set `--port` to use a fixed port. Explicit binds accept loopback for Tailscale Serve and addresses assigned by the local Tailscale daemon. `--same-owner` requires the connecting peer to pass the Tailscale owner check. Clients send a guest bearer and can list models or stream text chat. Ctrl+C stops admission and joins active cleanup.
+
+Start an interactive owner session with `oxa --share-model ALIAS` to share that session's native engine. A queued owner request goes before a waiting guest, and an active guest keeps its lease through cleanup. The startup notice gives the guest API address. Use `/engine status` to see live guest activity and per-key usage for the UTC day. Exiting the owner session drains the listener.
+
+Metered cloud aliases need `oxa.engine.inProcessCloud`, a configured price, and an entry in the user-only `oxa.share.remoteModels` allowlist. Choose each guest alias with `--model` for foreground serving or `--share-model` for an owner session. Personal subscription routes are excluded. Without `oxa.cloud.daily_budget_usd` there is no USD limit on guest spending (usage is still recorded, and guest request and token quotas apply); `oxa share` and the session status show a warning while that is the case.
 
 `oxa update --self`, `--all` and `--models` report that they are not supported: oxa does not update itself and does not refresh model catalogues. Update oxa by installing a new build.
 
@@ -162,6 +170,18 @@ $ oxa mcp logout <name>
 - `list` connects to every enabled server and reports its state, transport and tools. `--json` prints the same as JSON.
 - `login` connects to the server and runs the OAuth sign-in. The default timeout is 300 seconds. `logout` deletes the stored credentials.
 
+### Memory commands
+
+```console
+$ oxa memory list
+$ oxa memory show <name>
+$ oxa memory rm <name>
+```
+
+- The store is one Markdown file per entry under the agent directory's `memory/` folder, with a generated `MEMORY.md` index.
+- `list` prints the index. `show` prints an entry's kind, description and body. `rm` deletes the entry file and its index line.
+- A name with no entry exits with 1. A usage error exits with 2.
+
 ## Options
 
 ### Model and output
@@ -175,6 +195,7 @@ $ oxa mcp logout <name>
 | `--list-models [search]` | list the models the engine serves, optionally filtered by a fuzzy search, and exit |
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
 | `--mode <mode>` | output mode: `text` (default), `json` or `rpc` ([rpc.md](rpc.md)) |
+| `--shadow` | required with `oxa lead`; read-only proposal preset, enabled only by user setting `oxa.lead.shadow` (default false) |
 | `--output-schema <file>` | check the final answer against a JSON schema file (a supported subset), retrying once on mismatch |
 | `--print`, `-p` | non-interactive: process the prompts and exit |
 | `--goal <file>` | pursue a stored UTF-8 objective in print/JSON mode; continue the saved pursuing goal after restart |
@@ -232,6 +253,8 @@ See [tools.md](tools.md) for the tool names.
 | `--yolo` | permission mode yolo, full access: no prompts, bash runs without the sandbox, no deny-list or protected paths for file tools ([security.md](security.md#standard-auto-and-yolo)) |
 | `--approve`, `-a` | trust the project's configuration and resources for this run |
 | `--no-approve`, `-na` | ignore the project's configuration and resources for this run |
+| `--share-model <alias>` | share one native local model during the interactive owner session in a build with the `share` feature, repeat to select more aliases |
+| `--share-bind <address>` | set an explicit bind address for `--share-model`. Sharing uses the Tailscale interface by default |
 | `--offline` | offline mode: oxa's own non-local connections are refused, bash has no network, `web_search` is off, and `!cmd` and stdio MCP servers run without network. What it does not cover is in [security.md](security.md#offline-mode) |
 
 See [security.md](security.md).
@@ -273,6 +296,7 @@ Every boolean variable takes the same eight words, in any case: `1`, `true`, `ye
 |---|---|
 | `OXA_ENGINE_URL` | engine endpoint for the default model entry. Default `http://127.0.0.1:8092` |
 | `OXA_AGENT_DIR` | agent directory. Default `~/.oxa/agent`; `~` is expanded |
+| `OXA_LEAD_BOARD_LOG` | owner-selected absolute path to a private local board sample log; missing or refused data stays unavailable |
 | `OXA_SESSION_DIR` | session storage; `--session-dir` wins over it |
 | `OXA_PACKAGE_DIR` | package directory, for Nix or Guix store paths |
 | `OXA_SYSTEM_SKILLS_DIR` | system skills directory, read last. Default `/usr/share/omarchy/default/agents/skills`; empty disables it |

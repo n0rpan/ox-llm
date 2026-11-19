@@ -4,6 +4,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 
 pub const SETTING: &str = "oxa.lead.serve";
+pub mod proxy;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -14,19 +15,25 @@ pub enum Mode {
 /// Identity settings are deliberately not Debug/Display output.
 pub struct Config {
     enabled: bool,
+    fixed_prompts: bool,
+    owner_chat: bool,
     mode: Mode,
     bind: IpAddr,
     port: u16,
     allowed: Vec<String>,
+    proxy: Option<proxy::Trust>,
 }
 impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: false,
+            fixed_prompts: false,
+            owner_chat: false,
             mode: Mode::Local,
             bind: Ipv4Addr::LOCALHOST.into(),
             port: 8743,
             allowed: vec![],
+            proxy: None,
         }
     }
 }
@@ -38,15 +45,30 @@ impl Config {
             return Ok(Self::default());
         };
         let values = value.as_object().ok_or("invalid lead serve settings")?;
-        if values
-            .keys()
-            .any(|key| !["enabled", "identity", "bind", "port", "allowed_identities"].contains(&key.as_str()))
-        {
+        if values.keys().any(|key| {
+            ![
+                "enabled",
+                "fixed_prompts",
+                "owner_chat",
+                "identity",
+                "bind",
+                "port",
+                "allowed_identities",
+                "proxy",
+            ]
+            .contains(&key.as_str())
+        }) {
             return Err("unknown lead serve setting");
         }
         let mut config = Self::default();
         if let Some(value) = values.get("enabled") {
             config.enabled = value.as_bool().ok_or("invalid lead serve enable flag")?;
+        }
+        if let Some(value) = values.get("fixed_prompts") {
+            config.fixed_prompts = value.as_bool().ok_or("invalid fixed prompt flag")?;
+        }
+        if let Some(value) = values.get("owner_chat") {
+            config.owner_chat = value.as_bool().ok_or("invalid owner chat flag")?;
         }
         if let Some(value) = values.get("identity") {
             config.mode = match value.as_str() {
@@ -91,6 +113,10 @@ impl Config {
                 config.allowed.push(login.to_owned());
             }
         }
+        config.proxy = proxy::Trust::parse(values.get("proxy"))?;
+        if config.owner_chat && (config.mode != Mode::Tailscale || config.allowed.len() != 1) {
+            return Err("owner chat requires one verified Tailscale owner");
+        }
         Ok(config)
     }
     /// Pre-bind feature selection only; requests still require `read_only` authorization.
@@ -102,6 +128,13 @@ impl Config {
     }
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+    pub(crate) fn owner_chat(&self) -> bool {
+        self.owner_chat
+    }
+
+    pub(crate) fn fixed_prompts(&self) -> bool {
+        self.fixed_prompts
     }
 }
 
@@ -148,6 +181,41 @@ pub fn read_only<T>(
     if method != "GET" {
         return Err(Refusal::ReadOnly);
     }
+    observe(config, peer, authority, forwarded_login, identity, read)
+}
+
+pub(crate) fn chat_post(
+    config: &Config,
+    peer: IpAddr,
+    request: &crate::lead_http::Request<'_>,
+    identity: &impl IdentityProvider,
+) -> Result<(), Refusal> {
+    if !config.enabled {
+        return Err(Refusal::Disabled);
+    }
+    if !(config.fixed_prompts() || config.owner_chat()) || request.method != "POST" || request.path != "/chat"
+    {
+        return Err(Refusal::ReadOnly);
+    }
+    observe(
+        config,
+        peer,
+        request.authority,
+        request.forwarded_login,
+        identity,
+        || (),
+    )
+    .map(|_| ())
+}
+
+fn observe<T>(
+    config: &Config,
+    peer: IpAddr,
+    authority: &str,
+    forwarded_login: Option<&str>,
+    identity: &impl IdentityProvider,
+    read: impl FnOnce() -> T,
+) -> Result<T, Refusal> {
     if !peer.is_loopback() {
         return Err(Refusal::LocalOnly);
     }

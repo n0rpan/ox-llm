@@ -1,5 +1,8 @@
 use oxa_fake::TestEnv;
-use oxa_work::{board::Policy, helper_queue::publish};
+use oxa_work::{
+    board::Policy,
+    helper_queue::{publish, publish_reserved},
+};
 use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
 const TASK: &str =
@@ -38,19 +41,53 @@ fn complete_private_publication_dedups_started_and_priority_changes() {
     let queue = env.tmp().join("queue");
     fs::create_dir(&queue).unwrap();
     let key = "a".repeat(64);
-    assert!(publish(&queue, &key, TASK, true, &enabled()).unwrap());
     let name = format!("p1-board-{key}.txt");
     let path = queue.join(&name);
+    assert!(!publish_reserved(&queue, &key, TASK, true, &enabled(), || Ok(false)).unwrap());
+    assert!(!path.exists());
+    assert_eq!(fs::read_dir(&queue).unwrap().count(), 1);
+
+    assert!(publish_reserved(&queue, &key, TASK, true, &enabled(), || Ok(true)).unwrap());
     assert_eq!(fs::read_to_string(&path).unwrap(), TASK);
     assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    let unexpected_reserve = || panic!("a duplicate packet must not reserve another attempt");
+    assert!(!publish_reserved(&queue, &key, TASK, false, &enabled(), unexpected_reserve).unwrap());
     fs::rename(path, queue.join("started").join(&name)).unwrap();
-    assert!(!publish(&queue, &key, TASK, false, &enabled()).unwrap());
-    assert!(!publish(&queue, &key, TASK, true, &enabled()).unwrap());
+    assert!(!publish_reserved(&queue, &key, TASK, false, &enabled(), unexpected_reserve).unwrap());
+    assert!(!publish_reserved(&queue, &key, TASK, true, &enabled(), unexpected_reserve).unwrap());
     assert_eq!(fs::read_dir(&queue).unwrap().count(), 1);
     assert_eq!(
         fs::read_to_string(queue.join("started").join(name)).unwrap(),
         TASK
     );
+}
+
+#[test]
+fn native_started_packet_resumes_only_its_original_lease_generation() {
+    use oxa_work::{
+        board::{Lease, NativeBinding},
+        helper_queue::take_native_packet,
+    };
+
+    let env = TestEnv::new();
+    let queue = env.tmp().join("queue");
+    fs::create_dir(&queue).unwrap();
+    let key = "a".repeat(64);
+    let mut lease = Lease {
+        holder: "oxa:fixture".into(),
+        claimed_at: Some(10),
+        expires_at: 20,
+        generation: (0, 1),
+    };
+    let original = NativeBinding::new(42, &key, &lease, "agent/42-fix").unwrap();
+    assert!(publish(&queue, &key, TASK, true, &enabled()).unwrap());
+    assert_eq!(take_native_packet(&queue, &original).unwrap(), TASK);
+
+    lease.generation = (0, 2);
+    let newer = NativeBinding::new(42, &key, &lease, "agent/42-fix").unwrap();
+    assert!(take_native_packet(&queue, &newer).is_err());
+    assert!(!publish(&queue, &key, TASK, false, &enabled()).unwrap());
+    assert_eq!(take_native_packet(&queue, &original).unwrap(), TASK);
 }
 
 #[test]

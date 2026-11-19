@@ -44,7 +44,11 @@ fn gather(st: &SessionState) -> Inputs {
     }
     if let Some(goal) = st.goal.as_ref().filter(|goal| goal.pursuing()) {
         all.retain(|t| !matches!(t.spec().name.as_str(), "goal_done" | "wait"));
-        all.extend(goal.tools(st.shared.cancel_retry.clone()));
+        all.extend(goal.tools(
+            &st.shared,
+            &st.hooks,
+            crate::goal::WaitPolicy::from_settings(&st.settings),
+        ));
         extra.push((
             "goal".into(),
             crate::prompt::goal_start(&goal.snapshot().objective),
@@ -140,6 +144,26 @@ fn open_epoch_at(
     known: Option<EpochCost>,
 ) -> Result<bool, OxaError> {
     ensure_idle(st)?;
+    open_epoch_inner(st, reason, force, sink, known)
+}
+
+/// [`open_epoch`] at the start of a run, before its first request (the run holds `busy`, so
+/// `ensure_idle` would refuse). Used only by the live settings refresh (L1).
+pub(crate) fn open_epoch_at_run_start(
+    st: &mut SessionState,
+    reason: &str,
+    sink: &mut dyn EventSink,
+) -> Result<bool, OxaError> {
+    open_epoch_inner(st, reason, false, sink, None)
+}
+
+fn open_epoch_inner(
+    st: &mut SessionState,
+    reason: &str,
+    force: bool,
+    sink: &mut dyn EventSink,
+    known: Option<EpochCost>,
+) -> Result<bool, OxaError> {
     let Inputs {
         all,
         active,
@@ -206,7 +230,7 @@ fn open_epoch_at(
 
 /// Whether the project at `st.cwd` is trusted, from the saved decision alone. A session that was
 /// started with an approve flag is not known here (the state keeps no trust input).
-fn project_trusted(st: &SessionState) -> bool {
+pub(crate) fn project_trusted(st: &SessionState) -> bool {
     let store = TrustStore::load(&st.dirs.trust_file());
     let inputs = TrustInputs {
         flag: None,
@@ -259,7 +283,11 @@ pub fn reload(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) 
         ..DiscoverOpts::default()
     };
     // Packages, extension and theme paths included (E10).
-    let resources = discover(&st.dirs, &st.cwd, &settings, &opts);
+    let resources = if st.hooks.iter().any(|hook| hook.owns_resources()) {
+        st.resources.clone()
+    } else {
+        discover(&st.dirs, &st.cwd, &settings, &opts)
+    };
     for d in &resources.diagnostics {
         sink.emit(&AgentEvent::Notice {
             level: d.level,
@@ -276,6 +304,7 @@ pub fn reload(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) 
         trusted,
     );
     st.settings = settings;
+    crate::settings_refresh::resync(st);
     st.resources = resources;
     crate::host::observe_hooks(st, HookPoint::SessionShutdown, &Value::Null, sink, ui);
     for h in st.hooks.clone() {

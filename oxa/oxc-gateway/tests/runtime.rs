@@ -66,6 +66,67 @@ fn refusal(error: Refusal, status: u16, code: &str) {
     assert!(!error.message.is_empty());
 }
 #[test]
+fn configured_route_requires_its_named_key_and_binds_replay_to_its_endpoint() {
+    let fixture = skeleton::Fixture::for_endpoint("https://first.example.invalid");
+    let make_runtime = |endpoint| {
+        let model = Model::new(
+            skeleton::MODEL,
+            Provider::Anthropic,
+            skeleton::UPSTREAM,
+            endpoint,
+            1024,
+            16,
+        )
+        .unwrap()
+        .with_configured_route("synthetic-provider", "synthetic-pool", "synthetic-key")
+        .unwrap();
+        let price = Price::from_model(&fixture.config["cloud"]["models"][skeleton::MODEL]).unwrap();
+        Runtime::new(
+            [(model, Some(oxc_gateway::runtime::Billing::Metered(price)))],
+            fixture.key_path.clone(),
+            fixture.ledger_dir.clone(),
+            Options {
+                access: Access::Enabled,
+                daily_budget_usd: Some(1.0),
+                ledger_enabled: true,
+                subscription: None,
+                subscription_limits: None,
+            },
+        )
+        .unwrap()
+    };
+    let payload = json!({"model":skeleton::MODEL});
+    let first = make_runtime("https://first.example.invalid");
+    let second = make_runtime("https://second.example.invalid");
+    let missing = first.begin(&payload, Context::default()).err().unwrap();
+    refusal(missing, 503, "cloud_credentials_unavailable");
+
+    let credential = "synthetic-configured-credential";
+    std::fs::write(
+        &fixture.key_path,
+        json!({"synthetic-key": credential}).to_string(),
+    )
+    .unwrap();
+    let context = || Context {
+        session: Some("synthetic-conversation"),
+        ..Context::default()
+    };
+    let a = first.begin(&payload, context()).unwrap();
+    let b = second.begin(&payload, context()).unwrap();
+    assert_eq!(a.key_handle().unwrap().expose(), credential);
+    assert_eq!(b.key_handle().unwrap().expose(), credential);
+    assert_ne!(a.provider_account_scope(), b.provider_account_scope());
+    assert_ne!(
+        a.provider_session_hint().unwrap(),
+        b.provider_session_hint().unwrap()
+    );
+    let route = a.model().configured_route().unwrap();
+    assert_eq!(route.provider(), "synthetic-provider");
+    assert_eq!(route.pool(), "synthetic-pool");
+    assert!(!format!("{:?}", a.model()).contains("synthetic-key"));
+}
+
+#[test]
 fn discovery_is_borrowed_and_never_reads_a_key_or_initializes_a_ledger() {
     let mock = anthropic::MockAnthropic::start(vec![]);
     let fixture = skeleton::Fixture::new(&mock);
@@ -132,7 +193,7 @@ fn dropped_guards_record_zero_before_forwarding_and_reserve_unknown_paid_work() 
     drop(call);
     assert_eq!(rows(&fixture)[0]["cost_usd"], 0.0);
     let mut paid = rt.begin(&payload, Context::default()).unwrap();
-    paid.mark_forwarded();
+    paid.mark_forwarded().unwrap();
     drop(paid);
     let rows = rows(&fixture);
     assert_eq!(rows.len(), 2);
@@ -203,4 +264,68 @@ fn an_unpaid_append_failure_preserves_its_refusal_and_blocks_a_new_runtime() {
         "cloud_ledger_unavailable",
     );
     assert!(mock.requests().is_empty());
+}
+
+#[test]
+fn native_unknown_cost_survives_reopen_and_closes_capped_admission() {
+    const UNBOUNDED: &str = "synthetic-unbounded";
+    const BOUNDED: &str = "synthetic-bounded";
+    let mock = anthropic::MockAnthropic::start(vec![]);
+    let fixture = skeleton::Fixture::new(&mock);
+    let price = || Price::from_model(&fixture.config["cloud"]["models"][skeleton::MODEL]).unwrap();
+    let open = |cap: Option<f64>| {
+        let endpoint = fixture.config["cloud"]["models"][skeleton::MODEL]["base_url"]
+            .as_str()
+            .unwrap();
+        // The first alias has a context beyond the price-bound ceiling; the second is ordinary.
+        let aliases = [(UNBOUNDED, 200_000_000), (BOUNDED, 4096)].map(|(id, context)| {
+            let model =
+                Model::new(id, Provider::Anthropic, skeleton::UPSTREAM, endpoint, context, 16).unwrap();
+            (model, Some(oxc_gateway::runtime::Billing::Metered(price())))
+        });
+        Runtime::new(
+            aliases,
+            fixture.key_path.clone(),
+            fixture.ledger_dir.clone(),
+            Options {
+                access: Access::Enabled,
+                daily_budget_usd: cap,
+                ledger_enabled: true,
+                subscription: None,
+                subscription_limits: None,
+            },
+        )
+        .unwrap()
+    };
+    let uncapped = open(None);
+    let mut call = uncapped
+        .begin(&json!({"model":UNBOUNDED}), Context::default())
+        .unwrap();
+    call.mark_forwarded().unwrap();
+    // Finished without any final usage: the real settlement path writes the durable row.
+    call.finish(oxc_gateway::accounting::Outcome::Complete, 200, None)
+        .unwrap();
+    let rows = rows(&fixture);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["remote_model"], skeleton::UPSTREAM);
+    assert_eq!(rows[0]["cost_unknown"], true);
+    assert_eq!(rows[0]["usage_missing"], true);
+    assert_eq!(rows[0]["cost_usd"], 0.0);
+    // Uncapped admission keeps working on the ordinary alias.
+    uncapped
+        .begin(&json!({"model":BOUNDED}), Context::default())
+        .unwrap()
+        .finish(oxc_gateway::accounting::Outcome::Complete, 200, None)
+        .unwrap();
+    // Reopened with a cap: the persisted unknown cost closes admission for the bounded
+    // alias, whose own price bound would otherwise fit well under the cap.
+    let capped = open(Some(100.0));
+    refusal(
+        capped
+            .begin(&json!({"model":BOUNDED}), Context::default())
+            .err()
+            .unwrap(),
+        429,
+        "budget_exceeded",
+    );
 }

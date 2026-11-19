@@ -1,4 +1,4 @@
-//! Exercise the shipped binary through loopback; no provider keys or real HOME.
+//! Exercise native goals with mock providers and an isolated home.
 use oxa_fake::{FakeOpts, FakeServer, Fault, ScriptTurn, TestEnv};
 use serde_json::Value;
 use std::io::Write;
@@ -416,4 +416,349 @@ fn explicit_continue_resumes_a_paused_goal_without_resetting_its_budget_or_objec
             .system
             .contains("Keep reviewing synthetic work and wait between sweeps."));
     }
+}
+
+#[test]
+fn lead_goal_resumes_after_a_killed_turn_without_redelivering_a_saved_steer() {
+    for (append_was_saved, paused) in [(false, false), (true, false), (false, true)] {
+        lead_resume_after_kill(append_was_saved, paused);
+    }
+}
+
+fn lead_resume_after_kill(append_was_saved: bool, paused: bool) {
+    use oxa_proto::{Entry, EntryBody, Part, WireMsg};
+    use oxa_session::{FsStore, Goal, SessionStore, GOAL_ENTRY};
+    use serde_json::json;
+    use std::time::{Duration, Instant};
+
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"retry":{"enabled":false},"oxa":{"bootPreload":false,"envNote":false},"cacheWarming":"off"}"#,
+    );
+    let store = FsStore::new(env.agent_dir().join("sessions"));
+    let session = store.create(&env.work(), None, None).unwrap();
+    let objective = "Finish the synthetic lead task.";
+    let steering = "Inspect the synthetic outcome before reporting.";
+    let steering_id = "abcdef02";
+    let state = json!({
+        "open_asks": [{"id":"question-1","revision":4,"question":"Which synthetic result should be used?"}],
+        "standing_refs": ["rule-1"],
+        "held_leases": [{"task":"task-1","holder":"fixture","generation":[1,1],"expires_at":9999999999_u64}],
+        "pending_steer": {"entry_id":steering_id,"revision":1,"text":steering,"lease":null}
+    });
+    let mut goal = Goal::new(objective.into(), Default::default(), 1).unwrap();
+    if paused {
+        goal.pause();
+    }
+    let mut data = goal.value();
+    data["change"] = "control".into();
+    data["lead"] = state.clone();
+    store
+        .append(
+            &session,
+            &Entry {
+                id: "abcdef01".into(),
+                parent: None,
+                ts_ms: 1,
+                body: EntryBody::Custom {
+                    custom_type: GOAL_ENTRY.into(),
+                    data,
+                },
+            },
+        )
+        .unwrap();
+    if append_was_saved {
+        // Model the interruption after the user append and before its pending slot was cleared.
+        store
+            .append(
+                &session,
+                &Entry {
+                    id: steering_id.into(),
+                    parent: Some("abcdef01".into()),
+                    ts_ms: 2,
+                    body: EntryBody::Msg {
+                        wire: WireMsg::user(steering),
+                        parts: vec![Part::Text(steering.into())],
+                        tool: None,
+                    },
+                },
+            )
+            .unwrap();
+    }
+    store.sync(&session).unwrap();
+
+    let held = FakeServer::start(
+        vec![ScriptTurn::text("held")],
+        FakeOpts {
+            hold_headers_ms: 10_000,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .current_dir(env.work())
+        .env_clear()
+        .envs(env.envs(&held.url()))
+        .args(["-p", "--tools", "goal_done,wait", "--continue", &session.id])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while held.requests().is_empty() {
+        if child.try_wait().unwrap().is_some() {
+            let output = child.wait_with_output().unwrap();
+            panic!(
+                "lead did not reach the held turn: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("lead did not reach the mock provider");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    child.kill().unwrap();
+    assert!(!child.wait().unwrap().success());
+
+    let steer_count = |request: &oxa_fake::Recorded| {
+        request
+            .messages
+            .iter()
+            .filter(|message| message.content.as_deref() == Some(steering))
+            .count()
+    };
+    assert_eq!(steer_count(&held.requests()[0]), 1);
+
+    let resumed = FakeServer::start(
+        vec![ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Synthetic resume verified."}"#,
+        )],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let output = run(&env, &resumed, &["--continue", &session.id]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = resumed.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].system.contains(objective));
+    assert_eq!(steer_count(&requests[0]), 1);
+    let entries = store.load(&session).unwrap();
+    assert_eq!(entries.iter().filter(|entry| entry.id == steering_id).count(), 1);
+    let latest = entries
+        .iter()
+        .rev()
+        .find_map(|entry| match &entry.body {
+            EntryBody::Custom { custom_type, data } if custom_type == GOAL_ENTRY => Some(data),
+            _ => None,
+        })
+        .unwrap();
+    for key in ["open_asks", "standing_refs", "held_leases"] {
+        assert_eq!(latest["lead"][key], state[key], "{key}");
+    }
+    assert!(latest["lead"]["pending_steer"].is_null());
+    assert_eq!(latest["status"], "done");
+}
+
+#[test]
+fn compacted_lead_session_resumes_with_its_verbatim_standing_and_leases() {
+    use oxa_config::{Dirs, Settings};
+    use oxa_core::{Deps, Open, Session, ToolSelection};
+    use oxa_fake::ScriptedEngine;
+    use oxa_perm::ModePolicy;
+    use oxa_proto::{EntryBody, HeadlessUi, VecSink};
+    use oxa_resources::Resources;
+    use oxa_sandbox::NoSandbox;
+    use oxa_session::{FsStore, Goal, HeldGoalLease, LeadGoalState, OpenGoalAsk, SteeringLease};
+    use oxa_work::events::Facts;
+    use oxa_work::standing::{
+        Authority, Kind, Question, QuestionOption, Rule, Scope, Source, Standing, Value,
+    };
+    use serde_json::json;
+    use std::sync::Arc;
+
+    let env = TestEnv::new();
+    let facts = Facts::initialize(&env.root().join("facts")).unwrap();
+    let standing_root = env.root().join("standing");
+    let standing = Standing::initialize(&standing_root, Authority::Owner, facts.clone()).unwrap();
+    let source = Source::Command {
+        command: "synthetic owner input".into(),
+    };
+    let add_rule = |revision, kind, said: &str| {
+        standing
+            .rule(
+                revision,
+                Authority::Owner,
+                revision + 1,
+                Rule {
+                    kind,
+                    scope: Scope::Repository,
+                    value: Value::Text(said.into()),
+                    said: said.into(),
+                    source: source.clone(),
+                    supersedes: None,
+                },
+            )
+            .unwrap()
+    };
+    let decision = add_rule(0, Kind::Decided, "Keep the exact result  —  including spacing.");
+    let priority = add_rule(1, Kind::Priority, "Review the synthetic queue first.");
+    let ask = standing
+        .ask(
+            2,
+            3,
+            Question {
+                scope: Scope::Repository,
+                question: "Which result  —  A or B?".into(),
+                options: ["A", "B"]
+                    .into_iter()
+                    .map(|label| QuestionOption {
+                        label: label.into(),
+                        detail: format!("Use result {label}."),
+                    })
+                    .collect(),
+                recommended: "A".into(),
+                meanwhile: None,
+                source,
+            },
+        )
+        .unwrap();
+    let lead = LeadGoalState {
+        open_asks: vec![OpenGoalAsk {
+            id: ask.id.clone(),
+            revision: ask.revision,
+            question: ask.question.clone(),
+        }],
+        standing_refs: vec![decision.id.clone(), priority.id.clone()],
+        held_leases: vec![HeldGoalLease {
+            task: "fixture/task-1".into(),
+            lease: SteeringLease {
+                holder: "fixture/worker-1".into(),
+                generation: (7, 2),
+            },
+            expires_at: 9_999_999_999,
+        }],
+        pending_steer: None,
+    };
+
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("First mock reply."),
+        ScriptTurn::text("Second mock reply."),
+    ]));
+    let sessions_root = env.root().join("sessions");
+    let deps = || Deps {
+        engine: engine.clone(),
+        store: Arc::new(FsStore::new(sessions_root.clone())),
+        tools: Vec::new(),
+        hooks: Vec::new(),
+        policy: Box::new(ModePolicy::new()),
+        sandbox: Arc::new(NoSandbox),
+        settings: Settings::from_values(
+            json!({"compaction":{"keepRecentTokens":1},"oxa":{"envNote":false}}),
+            json!({}),
+        ),
+        dirs: Dirs::under(env.root()),
+        cwd: env.work(),
+        selection: ToolSelection::default(),
+        resources: Resources::default(),
+        model: None,
+        thinking: None,
+        mode: None,
+        session_id: None,
+        jobs: oxa_core::fresh_jobs(),
+    };
+    let mut session = Session::open(deps(), Open::New).unwrap();
+    assert_eq!(session.inner().compact.keep_tokens, 1);
+    session.set_auto_compaction(false);
+    let bound = session.inner().sref.clone();
+    let mut sink = VecSink::default();
+    let mut ui = HeadlessUi::default();
+    let objective = "Continue reviewing the synthetic queue.";
+    session
+        .set_goal(
+            Some(Goal::new(objective.into(), Default::default(), 1000).unwrap()),
+            &mut sink,
+        )
+        .unwrap();
+    session
+        .update_lead_goal(&bound, session.goal_revision(), lead.clone(), &mut sink)
+        .unwrap();
+    let old_prompt = "A synthetic turn old enough to compact.";
+    for prompt in [old_prompt, "A more recent synthetic turn."] {
+        session.prompt(prompt.into(), vec![], &mut sink, &mut ui).unwrap();
+    }
+    assert!(session
+        .inner()
+        .transcript
+        .wire()
+        .iter()
+        .any(|message| message.content.as_deref() == Some(old_prompt)));
+    engine.push(ScriptTurn::text("Mock compaction summary."));
+    session
+        .compact(Some("Summarize the earlier review."), &mut sink, &mut ui)
+        .unwrap();
+    let summary = session
+        .inner()
+        .tree
+        .entries()
+        .iter()
+        .find_map(|entry| match &entry.body {
+            EntryBody::Compaction { summary, .. } => Some(summary.clone()),
+            _ => None,
+        })
+        .expect("manual compaction recorded a new transcript head");
+    let saved = session.goal().unwrap();
+    assert_eq!(saved.lead.as_ref(), Some(&lead));
+    let revision = session.goal_revision();
+    session.shutdown(&mut ui);
+    drop(session);
+    drop(standing);
+
+    let mut resumed = Session::open(deps(), Open::Resume(bound)).unwrap();
+    assert_eq!(resumed.goal(), Some(saved));
+    assert_eq!(resumed.goal_revision(), revision);
+    let requests_before_resume = engine.requests().len();
+    engine.push(ScriptTurn::text("Resumed mock reply."));
+    let resume_prompt = "Resume the synthetic review.";
+    resumed
+        .prompt(resume_prompt.into(), vec![], &mut sink, &mut ui)
+        .unwrap();
+    let goal = resumed.goal().unwrap();
+    assert_eq!(goal.objective, objective);
+    let restored = goal.lead.unwrap();
+    assert_eq!(restored, lead);
+    let standing = Standing::open(&standing_root, facts).unwrap().read().unwrap();
+    for (reference, expected) in restored.standing_refs.iter().zip([decision, priority]) {
+        assert_eq!(
+            standing.live_rules().find(|rule| rule.id == *reference),
+            Some(&expected)
+        );
+    }
+    assert_eq!(standing.open_asks().find(|open| open.id == ask.id), Some(&ask));
+    let requests = engine.requests();
+    let request = requests[requests_before_resume..]
+        .iter()
+        .find(|request| request.kind == "chat")
+        .expect("a new model turn ran after reopening");
+    let messages = &request.messages;
+    assert!(messages
+        .iter()
+        .any(|message| message.content.as_deref() == Some(resume_prompt)));
+    assert!(messages
+        .iter()
+        .any(|message| message.content.as_deref() == Some(summary.as_str())));
+    assert!(!messages
+        .iter()
+        .any(|message| message.content.as_deref() == Some(old_prompt)));
 }

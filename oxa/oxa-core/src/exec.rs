@@ -70,13 +70,26 @@ pub fn request(
     guard_hooks(st, HookPoint::ContextWithSystem, sink, ui)?;
     guard_hooks(st, HookPoint::BeforeProviderRequest, sink, ui)?;
 
-    let msgs = request_messages(&st.transcript.wire_shared(), &opts.extra);
+    let requested = opts.max_tokens.unwrap_or(st.info.max_output);
+    let reservation = st
+        .shared
+        .reserve_literal_output(requested.min(st.info.max_output.max(1)), opts.kind)?;
+    let scoped = reservation.is_some();
+    let (max_tokens, context) = reservation.unwrap_or((requested, None));
+    let wire = st.transcript.wire_shared();
+    let msgs = if let Some(context) = context {
+        let mut extra = Vec::with_capacity(1 + opts.extra.len());
+        extra.push(context);
+        extra.extend_from_slice(&opts.extra);
+        request_messages(&wire, &extra)
+    } else {
+        request_messages(&wire, &opts.extra)
+    };
     let idem = if opts.idem_key.is_empty() {
         new_idem_key(st)
     } else {
         opts.idem_key.clone()
     };
-    let max_tokens = opts.max_tokens.unwrap_or(st.info.max_output);
     let thinking = opts
         .thinking
         .unwrap_or_else(|| crate::think::request_thinking(st, opts.kind));
@@ -184,6 +197,9 @@ pub fn request(
             return Err(error);
         }
     };
+    if scoped {
+        st.shared.settle_literal_output(max_tokens, turn.usage.completion);
+    }
     crate::Handle {
         shared: st.shared.clone(),
     }
@@ -268,8 +284,9 @@ pub(crate) struct CallResult {
     pub is_error: bool,
     /// `ToolOutput::ui`, stored for display on resume.
     pub ui: Value,
-    /// The repeat guard asks to end the run after this batch (`repeat.rs`).
-    pub stop: bool,
+    /// The repeat guard reached its give-up point in this batch (`repeat.rs`): the loop warns
+    /// the user once and continues (#1448).
+    pub warn: bool,
 }
 
 /// What became of a call before anything ran.
@@ -328,7 +345,7 @@ pub(crate) fn fail_truncated_calls(
                 tool_name: call.name.clone(),
                 is_error: true,
                 ui: Value::Null,
-                stop: false,
+                warn: false,
             }
         })
         .collect()
@@ -419,8 +436,10 @@ pub(crate) fn run_calls(
             _ => oxa_tools::shape(output.text.as_bytes(), cap, p.exec, &st.spill_dir),
         };
         // The repeat guard: a call that ran and returned the same result LIMIT times in a row is
-        // answered with a notice (the call ran; only its result text changes).
-        let mut stop = false;
+        // answered with a notice (the call ran; only its result text changes). Past the notice
+        // budget the batch also carries the warn flag: the loop shows one user warning and
+        // continues (#1448).
+        let mut warn = false;
         let ran = matches!(p.plan, Plan::Run { .. });
         // A successful native goal wait deliberately returns the same result on
         // every scheduled wake. Other tools and failed waits keep the guard.
@@ -442,9 +461,9 @@ pub(crate) fn run_calls(
                     });
                     output = ToolOutput::error(text);
                 }
-                crate::repeat::Verdict::Stop(text) => {
+                crate::repeat::Verdict::Warn(text) => {
                     output = ToolOutput::error(text);
-                    stop = true;
+                    warn = true;
                 }
             }
         }
@@ -462,7 +481,7 @@ pub(crate) fn run_calls(
             tool_name: p.name.clone(),
             is_error: output.is_error,
             ui: output.ui.clone(),
-            stop,
+            warn,
         });
     }
     out

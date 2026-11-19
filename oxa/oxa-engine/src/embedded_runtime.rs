@@ -10,11 +10,15 @@ use serde_json::{json, Map, Value};
 use std::sync::{Arc, OnceLock};
 
 struct Backend {
-    gateway: Gateway,
+    gateway: Arc<Gateway>,
     driver: OnceLock<Result<tokio::runtime::Runtime, OxaError>>,
 }
 impl EmbeddedEngine {
     pub fn from_gateway(gateway: Gateway) -> Self {
+        Self::from_shared_gateway(Arc::new(gateway))
+    }
+    /// Use the caller's gateway and its existing HTTP pool.
+    pub fn from_shared_gateway(gateway: Arc<Gateway>) -> Self {
         Self::new(Arc::new(Backend {
             gateway,
             driver: OnceLock::new(),
@@ -22,12 +26,21 @@ impl EmbeddedEngine {
     }
 }
 fn normalize(error: Error) -> OxaError {
-    let mut refusal = error.refusal();
+    let refusal = error.refusal();
     if refusal.status == 499 && refusal.code == "request_cancelled" {
         return OxaError::new(codes::ABORTED, "request cancelled");
     }
     if refusal.code == "cloud_rate_limited" {
         return OxaError::new("cloud_rate_limited", format!("HTTP 429: {error}"));
+    }
+    // Owner/share admission refusals carry their own stable gateway code and a
+    // fixed message: keep both so the journal and the CLI can name the refusal
+    // instead of folding it into a generic HTTP error. Admission is unchanged.
+    if matches!(refusal.code, "cloud_provider_forbidden" | "cloud_not_shared") {
+        return OxaError::new(
+            refusal.code,
+            format!("HTTP {} {}: {}", refusal.status, refusal.code, refusal.message),
+        );
     }
     if refusal.code == "cloud_signed_out" {
         return OxaError::new("cloud_signed_out", "HTTP 401: ChatGPT is signed out.")
@@ -76,7 +89,14 @@ fn normalize(error: Error) -> OxaError {
         return OxaError::new(refusal.code, refusal.message);
     }
     if refusal.code == "budget_not_configured" {
-        refusal.message = "Cloud models need a positive oxa.cloud.daily_budget_usd in oxa user settings.";
+        // The refusal keeps its own stable code so the owner-facing diagnostic and
+        // the lead service journal can name the absent cap instead of a generic
+        // HTTP error. An unset cap is no budget check and never reaches here; only
+        // a configured but unusable cap (zero, negative, non-numeric) does.
+        return OxaError::new(
+            "budget_not_configured",
+            "Cloud models need a positive oxa.cloud.daily_budget_usd in oxa user settings.",
+        );
     }
     let normalized =
         crate::info::http_error_with(refusal.status, refusal.body().to_string().as_bytes(), None);

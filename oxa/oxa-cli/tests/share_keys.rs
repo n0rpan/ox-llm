@@ -334,3 +334,668 @@ fn output_failure_keeps_one_durable_key_without_retrying_or_leaking_diagnostics(
     assert!(!rows[0].revoked);
     assert!(store.revoke(&rows[0].id).unwrap());
 }
+
+#[cfg(feature = "share")]
+#[test]
+fn serving_refuses_agent_and_offline_before_opening_guest_storage() {
+    let home = Home::new();
+    let serve = ["share", "serve", "--model", "synthetic-model"];
+    let agent = home.marked(&serve, "OXA_CODING_AGENT", "");
+    assert!(!agent.status.success());
+    assert!(String::from_utf8_lossy(&agent.stderr).contains("Guest serving requires the owner"));
+
+    let offline = home.run(&["--offline", "share", "serve", "--model", "synthetic-model"]);
+    assert!(!offline.status.success());
+    assert!(String::from_utf8_lossy(&offline.stderr).contains("offline mode is on"));
+
+    let offline_env = home.marked(&serve, "OXA_OFFLINE", "1");
+    assert!(!offline_env.status.success());
+    assert!(String::from_utf8_lossy(&offline_env.stderr).contains("offline mode is on"));
+    assert!(!home.0.join(".oxa/share").exists());
+}
+
+#[cfg(feature = "share")]
+#[test]
+fn serving_requires_an_owner_selected_alias_and_enabled_native_engine() {
+    let home = Home::new();
+    let missing_alias = home.run(&["share", "serve"]);
+    assert!(!missing_alias.status.success());
+    assert!(String::from_utf8_lossy(&missing_alias.stderr).contains("--model ALIAS"));
+
+    let disabled = home.run(&["share", "serve", "--model", "synthetic-model"]);
+    assert!(!disabled.status.success());
+    assert!(String::from_utf8_lossy(&disabled.stderr).contains("Enable the native local engine"));
+    assert!(!home.0.join(".oxa/share").exists());
+}
+
+#[cfg(feature = "share")]
+#[test]
+fn native_cleartext_listener_refuses_wildcard_and_unverified_interfaces() {
+    use oxa_proto::{CancelToken, ChatRequest, StreamEvent};
+    use oxc_gateway::share::{
+        keys::Store,
+        listener::{Access, Binding, Config, Failure, Model, Tailnet},
+        native::{self, Native},
+    };
+    use std::{net::IpAddr, sync::Arc};
+
+    struct TailnetAddresses;
+    impl Tailnet for TailnetAddresses {
+        async fn addresses(&self) -> Result<Vec<IpAddr>, Failure> {
+            Ok(vec!["100.64.0.2".parse().unwrap()])
+        }
+        async fn same_owner(&self, _: IpAddr) -> Result<bool, Failure> {
+            unreachable!("no listener reaches peer authentication")
+        }
+    }
+
+    let home = Home::new();
+    let keys = Arc::new(Store::initialize(&home.0.join(".oxa/share")).unwrap());
+    let answer = Arc::new(
+        Native::new(
+            vec![Model {
+                alias: "synthetic".into(),
+                context_window: 128,
+                max_output: 8,
+                access: Access::Local,
+            }],
+            |_: &ChatRequest<'_>, _: &CancelToken, _: &mut dyn FnMut(StreamEvent)| {
+                unreachable!("the address must refuse before any guest connects")
+            },
+        )
+        .unwrap(),
+    );
+    for address in ["0.0.0.0", "::", "192.0.2.11"] {
+        let result = native::serve(
+            keys.clone(),
+            answer.clone(),
+            Arc::new(TailnetAddresses),
+            Config {
+                binding: Binding::Explicit(address.parse().unwrap()),
+                ..Config::default()
+            },
+            CancelToken::new(),
+            |_, _| Err(Failure::Failed),
+        );
+        assert!(matches!(result, Err(Failure::Forbidden)), "{address}: {result:?}");
+    }
+}
+
+#[cfg(feature = "share")]
+struct ForegroundShare(std::process::Child);
+
+#[cfg(feature = "share")]
+impl Drop for ForegroundShare {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[cfg(feature = "share")]
+impl ForegroundShare {
+    fn spawn(home: &Home, models: &[&str]) -> (Self, String) {
+        use std::io::{BufRead, BufReader};
+        use std::process::Stdio;
+        use std::time::Duration;
+
+        let mut serving = Self(
+            Command::new(env!("CARGO_BIN_EXE_oxa"))
+                .args(["share", "serve", "--bind", "127.0.0.1"])
+                .args(models.iter().flat_map(|model| ["--model", *model]))
+                .env_clear()
+                .env("HOME", &home.0)
+                .env("OXA_TEST_ISOLATION", "1")
+                .current_dir(&home.0)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let stdout = serving.0.stdout.take().unwrap();
+        let (send, recv) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut line = String::new();
+            let result = BufReader::new(stdout).read_line(&mut line).map(|_| line);
+            let _ = send.send(result);
+        });
+        let line = recv.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        reader.join().unwrap();
+        (serving, line)
+    }
+
+    fn start(home: &Home, models: &[&str]) -> (Self, std::net::SocketAddr) {
+        let (serving, line) = Self::spawn(home, models);
+        assert!(
+            !line.is_empty(),
+            "share listener exited before announcing readiness"
+        );
+        let address: std::net::SocketAddr = line
+            .trim()
+            .strip_prefix("Guest OpenAI API listening at http://")
+            .unwrap()
+            .strip_suffix("/v1")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(address.ip().is_loopback());
+
+        (serving, address)
+    }
+}
+
+#[cfg(feature = "share")]
+fn add_test_guest(home: &Home) -> String {
+    let added = home.run(&[
+        "share",
+        "key",
+        "add",
+        "Device",
+        "--daily-requests",
+        "10",
+        "--daily-tokens",
+        "10000",
+    ]);
+    assert!(added.status.success());
+    let key: serde_json::Value = serde_json::from_slice(&added.stdout).unwrap();
+    key["api_key"].as_str().unwrap().to_owned()
+}
+
+#[cfg(feature = "share")]
+fn guest_request(
+    address: std::net::SocketAddr,
+    method: &str,
+    path: &str,
+    bearer: &str,
+    body: &str,
+) -> String {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let mut client = TcpStream::connect_timeout(&address, Duration::from_secs(2)).unwrap();
+    client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    write!(
+        client,
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {bearer}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut reply = String::new();
+    client.read_to_string(&mut reply).unwrap();
+    reply
+}
+
+#[cfg(feature = "share")]
+#[test]
+fn foreground_serve_lists_only_the_owner_selected_local_models_on_loopback() {
+    let home = Home::new();
+    let agent = home.0.join(".oxa/agent");
+    fs::create_dir_all(&agent).unwrap();
+    let limit = serde_json::json!({
+        "context_window":4096,"max_output":64,
+        "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,"mtp_state_bytes":0,"margin_bytes":1044480}
+    });
+    let settings = serde_json::json!({"oxa":{
+        "engine":{"inProcessLocal":true},
+        "local":{"binary":"/synthetic/oxe-server",
+            "models":{
+                "synthetic-visible":{"model":"/synthetic/visible.gguf","arguments":["--engine","stub"]},
+                "synthetic-hidden":{"model":"/synthetic/hidden.gguf","arguments":["--engine","stub"]}
+            },
+            "limits":{"synthetic-visible":limit,"synthetic-hidden":limit}
+        }
+    }});
+    fs::write(agent.join("settings.json"), settings.to_string()).unwrap();
+    let bearer = add_test_guest(&home);
+    let (_serving, address) = ForegroundShare::start(&home, &["synthetic-visible"]);
+    let reply = guest_request(address, "GET", "/v1/models", &bearer, "");
+    assert!(reply.starts_with("HTTP/1.1 200"));
+    assert!(reply.contains("synthetic-visible"));
+    assert!(!reply.contains("synthetic-hidden"));
+    assert!(!reply.contains(&bearer));
+}
+
+#[cfg(feature = "share")]
+#[allow(dead_code)]
+#[path = "../../oxc-gateway/tests/common/anthropic.rs"]
+mod metered_peer;
+
+#[cfg(feature = "share")]
+fn write_mock_provider_key(home: &Home, provider: &str, credential: &str) {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let key_path = home.0.join(".config/oxc/llm/cloud-secrets.json");
+    fs::create_dir_all(key_path.parent().unwrap()).unwrap();
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&key_path)
+        .unwrap();
+    write!(
+        file,
+        "{}",
+        serde_json::json!({ (provider): {"api_key":credential} })
+    )
+    .unwrap();
+}
+
+#[cfg(feature = "share")]
+#[test]
+fn foreground_metered_cloud_requires_owner_allowlist_and_settles_a_guest_request() {
+    use metered_peer::{MockAnthropic, Reply, CREDENTIAL};
+    use serde_json::json;
+
+    let mut events = vec![
+        json!({"type":"message_start","message":{"id":"msg_synthetic","type":"message","role":"assistant",
+            "model":"synthetic-anthropic","content":[],"stop_reason":null,
+            "usage":{"input_tokens":7,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+    ];
+    let parts: Vec<_> = (1..=12)
+        .map(|part| format!("Synthetic metered reply part {part}. "))
+        .collect();
+    events.extend(parts.iter().map(
+        |part| json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":part}}),
+    ));
+    events.extend([
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},
+            "usage":{"output_tokens":24}}),
+        json!({"type":"message_stop"}),
+    ]);
+    let upstream = MockAnthropic::start(vec![Reply::events(events).unfragmented()]);
+    let home = Home::new();
+    let agent = home.0.join(".oxa/agent");
+    fs::create_dir_all(&agent).unwrap();
+    let mut settings = json!({"oxa":{
+        "engine":{"inProcessCloud":true},
+        "cloud":{"daily_budget_usd":1.0,"models":{
+            "synthetic-metered":{"provider":"anthropic","base_url":upstream.base_url(),
+                "upstream_model":"synthetic-anthropic","context_window":4096,"max_output":64,
+                "pricing":{"input_per_million":2,"output_per_million":3}},
+            "synthetic-unselected":{"provider":"anthropic","base_url":upstream.base_url(),
+                "upstream_model":"synthetic-other","context_window":4096,"max_output":16,
+                "pricing":{"input_per_million":2,"output_per_million":3}}
+        }}
+    }});
+    let settings_path = agent.join("settings.json");
+    fs::write(&settings_path, settings.to_string()).unwrap();
+    write_mock_provider_key(&home, "anthropic", CREDENTIAL);
+
+    let bearer = add_test_guest(&home);
+    let (mut disabled, announcement) = ForegroundShare::spawn(&home, &["synthetic-metered"]);
+    assert!(announcement.is_empty());
+    assert!(!disabled.0.wait().unwrap().success());
+    assert!(upstream.requests().is_empty());
+
+    settings["oxa"]["share"]["remoteModels"] = json!(["synthetic-metered"]);
+    fs::write(&settings_path, settings.to_string()).unwrap();
+    let (_serving, address) = ForegroundShare::start(&home, &["synthetic-metered"]);
+    let models = guest_request(address, "GET", "/v1/models", &bearer, "");
+    assert!(models.starts_with("HTTP/1.1 200"), "{models}");
+    assert!(models.contains("synthetic-metered"));
+    assert!(!models.contains("synthetic-unselected"));
+    assert!(upstream.requests().is_empty());
+
+    let completion = guest_request(
+        address,
+        "POST",
+        "/v1/chat/completions",
+        &bearer,
+        r#"{"model":"synthetic-metered","messages":[{"role":"user","content":"Synthetic guest question"}],"max_tokens":32,"stream":true}"#,
+    );
+    assert!(completion.starts_with("HTTP/1.1 200"), "{completion}");
+    assert!(completion.contains("[DONE]"), "{completion}");
+    let text: String = completion
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|data| *data != "[DONE]")
+        .map(|data| serde_json::from_str::<serde_json::Value>(data).unwrap())
+        .filter_map(|chunk| {
+            chunk["choices"][0]["delta"]["content"]
+                .as_str()
+                .map(str::to_owned)
+        })
+        .collect();
+    assert_eq!(text, parts.concat());
+
+    let calls = upstream.requests();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].body["model"], "synthetic-anthropic");
+    assert!(calls[0].body["tools"].is_null());
+    let rows: Vec<serde_json::Value> = fs::read_dir(agent.join("cloud-ledger"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .flat_map(|path| {
+            fs::read_to_string(path)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["origin"], "api");
+    assert_eq!(rows[0]["remote"], true);
+    assert!(rows[0]["cost_usd"].as_f64().unwrap() > 0.0);
+    assert_eq!(rows[0]["guest_key"].as_str().unwrap().len(), 32);
+    for private in [
+        CREDENTIAL,
+        &bearer,
+        "Device",
+        "Synthetic guest question",
+        "Synthetic metered reply",
+    ] {
+        assert!(!rows[0].to_string().contains(private));
+    }
+}
+
+#[cfg(feature = "share")]
+#[test]
+fn foreground_share_without_cap_warns_on_stderr_and_keeps_readiness() {
+    use metered_peer::{MockAnthropic, Reply, CREDENTIAL};
+    use serde_json::json;
+    use std::io::{BufRead, BufReader};
+
+    let events = vec![
+        json!({"type":"message_start","message":{"id":"msg_synthetic","type":"message","role":"assistant",
+            "model":"synthetic-anthropic","content":[],"stop_reason":null,
+            "usage":{"input_tokens":7,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Synthetic uncapped reply."}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},
+            "usage":{"output_tokens":24}}),
+        json!({"type":"message_stop"}),
+    ];
+    let upstream = MockAnthropic::start(vec![Reply::events(events).unfragmented()]);
+    let home = Home::new();
+    let agent = home.0.join(".oxa/agent");
+    fs::create_dir_all(&agent).unwrap();
+    // The settings of the capped foreground loopback, with the USD cap removed.
+    let settings = json!({"oxa":{
+        "engine":{"inProcessCloud":true},
+        "share":{"remoteModels":["synthetic-metered"]},
+        "cloud":{"models":{
+            "synthetic-metered":{"provider":"anthropic","base_url":upstream.base_url(),
+                "upstream_model":"synthetic-anthropic","context_window":4096,"max_output":64,
+                "pricing":{"input_per_million":2,"output_per_million":3}}
+        }}
+    }});
+    fs::write(agent.join("settings.json"), settings.to_string()).unwrap();
+    write_mock_provider_key(&home, "anthropic", CREDENTIAL);
+    let bearer = add_test_guest(&home);
+
+    // `start` parses the first stdout line as the listener address, so it passes only while
+    // the readiness line stays first and parseable.
+    let (mut serving, address) = ForegroundShare::start(&home, &["synthetic-metered"]);
+    let stderr = serving.0.stderr.take().unwrap();
+    let (send, recv) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut line = String::new();
+        let result = BufReader::new(stderr).read_line(&mut line).map(|_| line);
+        let _ = send.send(result);
+    });
+    let warning = recv
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    reader.join().unwrap();
+    assert!(
+        warning.starts_with("WARNING") && warning.contains("without a USD limit"),
+        "{warning}"
+    );
+
+    let completion = guest_request(
+        address,
+        "POST",
+        "/v1/chat/completions",
+        &bearer,
+        r#"{"model":"synthetic-metered","messages":[{"role":"user","content":"Synthetic guest question"}],"max_tokens":32,"stream":true}"#,
+    );
+    assert!(completion.starts_with("HTTP/1.1 200"), "{completion}");
+    assert!(completion.contains("Synthetic uncapped reply."), "{completion}");
+    assert!(completion.contains("[DONE]"), "{completion}");
+    assert_eq!(upstream.requests().len(), 1);
+    let rows: Vec<serde_json::Value> = fs::read_dir(agent.join("cloud-ledger"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .flat_map(|path| {
+            fs::read_to_string(path)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["origin"], "api");
+    assert!(rows[0]["cost_usd"].as_f64().unwrap() > 0.0);
+    assert!(rows[0].get("cost_unknown").is_none());
+}
+
+#[cfg(feature = "share")]
+#[test]
+fn metered_openrouter_forwards_only_supplied_guest_sampling() {
+    use metered_peer::{MockAnthropic, Reply, CREDENTIAL};
+    use serde_json::json;
+
+    const SSE: &[u8] =
+        br#"data: {"choices":[{"index":0,"delta":{"content":"Synthetic reply"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":2}}
+
+data: [DONE]
+
+"#;
+    let cases = [
+        (Some(0.0), None),
+        (None, Some(0.5)),
+        (Some(0.25), Some(0.75)),
+        (None, None),
+    ];
+    let upstream = MockAnthropic::start(
+        cases
+            .iter()
+            .map(|_| Reply::wire("text/event-stream", SSE))
+            .collect(),
+    );
+    let home = Home::new();
+    let agent = home.0.join(".oxa/agent");
+    fs::create_dir_all(&agent).unwrap();
+    fs::write(
+        agent.join("settings.json"),
+        json!({"oxa":{
+            "engine":{"inProcessCloud":true},
+            "cloud":{"daily_budget_usd":1.0,"models":{
+                "synthetic-metered":{"provider":"openrouter","base_url":upstream.base_url(),
+                    "upstream_model":"synthetic-openrouter","context_window":4096,"max_output":16,
+                    "pricing":{"input_per_million":2,"output_per_million":3}}
+            }},
+            "share":{"remoteModels":["synthetic-metered"]}
+        }})
+        .to_string(),
+    )
+    .unwrap();
+    write_mock_provider_key(&home, "openrouter", CREDENTIAL);
+
+    let bearer = add_test_guest(&home);
+    let (_serving, address) = ForegroundShare::start(&home, &["synthetic-metered"]);
+    for (temperature, top_p) in cases {
+        let mut body = json!({"model":"synthetic-metered","stream":true,"max_tokens":8,
+            "messages":[{"role":"user","content":"Synthetic guest question"}]});
+        for (field, value) in [("temperature", temperature), ("top_p", top_p)] {
+            if let Some(value) = value {
+                body[field] = json!(value);
+            }
+        }
+        let reply = guest_request(
+            address,
+            "POST",
+            "/v1/chat/completions",
+            &bearer,
+            &body.to_string(),
+        );
+        assert!(
+            reply.starts_with("HTTP/1.1 200") && reply.contains("[DONE]"),
+            "{reply}"
+        );
+    }
+    let calls = upstream.requests();
+    assert_eq!(calls.len(), cases.len());
+    for (call, (temperature, top_p)) in calls.iter().zip(cases) {
+        for (field, requested) in [("temperature", temperature), ("top_p", top_p)] {
+            match requested {
+                Some(value) => assert_eq!(call.body[field], json!(value), "{field}"),
+                None => assert!(call.body.get(field).is_none(), "{field}"),
+            }
+        }
+    }
+    upstream.finish();
+}
+
+#[cfg(feature = "share")]
+#[test]
+fn owner_session_sharing_flags_refuse_noninteractive_and_agent_invocations() {
+    let home = Home::new();
+    let args = [
+        "--share-model",
+        "synthetic-visible",
+        "--share-bind",
+        "127.0.0.1",
+        "-p",
+        "probe",
+    ];
+    let headless = home.run(&args);
+    assert!(!headless.status.success());
+    assert!(String::from_utf8_lossy(&headless.stderr).contains("requires an interactive owner session"));
+    let agent = home.marked(&args, "OXA_CODING_AGENT", "");
+    assert!(!agent.status.success());
+    assert!(String::from_utf8_lossy(&agent.stderr).contains("requires the owner outside an agent tool"));
+    assert!(!home.0.join(".oxa/share").exists());
+}
+
+#[test]
+fn owner_terminal_reports_share_status_only_when_enabled() {
+    // The same openpty/select harness used for the terminal-loss controls.
+    const PTY_STATUS: &str = r#"
+import fcntl, os, pty, select, struct, subprocess, sys, termios, time
+master, slave = pty.openpty()
+fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 48, 140, 0, 0))
+child = subprocess.Popen([
+    sys.argv[1],
+    *(['--share-model', 'synthetic-model', '--share-bind', '127.0.0.1']
+      if sys.argv[2] == 'enabled' else []),
+    '--model', 'synthetic-model', '--no-session', '--no-mcp', '--no-extensions',
+    '--no-skills', '--no-context-files', '--tui-mode', 'regular',
+], stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+os.close(slave)
+try:
+    output = b''
+    def wait_for(*needles):
+        global output
+        deadline = time.monotonic() + 15
+        while not all(needle in output for needle in needles):
+            missing = [needle for needle in needles if needle not in output]
+            assert child.poll() is None, ('interactive share exited early', missing, output[-4000:])
+            assert time.monotonic() < deadline, ('interactive share status deadline', missing, output[-4000:])
+            if select.select([master], [], [], .1)[0]:
+                output += os.read(master, 65536)
+    wait_for(b'READY')
+    if sys.platform == 'linux':
+        with open(f'/proc/{child.pid}/status', encoding='ascii') as status:
+            resources = dict(line.split(':', 1) for line in status if ':' in line)
+        rss_kib = int(resources['VmRSS'].split()[0])
+        threads = int(resources['Threads'])
+        assert rss_kib > 0 and threads > 0
+    assert b'LAN sharing' not in output and b'Guest usage today' not in output
+    os.write(master, b'/engine status\r')
+    if sys.argv[2] == 'enabled':
+        wait_for(b'LAN sharing', b'0 connections', b'Guest usage today (UTC)',
+                 b'Synthetic Tablet', b'1/10 requests', b'7/100 tokens')
+    else:
+        wait_for(b'Tool call repairs:')
+        assert b'LAN sharing' not in output and b'Guest usage today' not in output
+    os.write(master, b'/quit\r')
+    assert child.wait(timeout=5) == 0, 'owner terminal did not exit normally'
+    if sys.platform == 'linux':
+        print(f'Oxa share footprint {sys.argv[2]}: binary_bytes={os.stat(sys.argv[1]).st_size} '
+              f'idle_rss_kib={rss_kib} idle_threads={threads}')
+finally:
+    os.close(master)
+    if child.poll() is None:
+        child.kill()
+    child.wait(timeout=3)
+"#;
+
+    let env = oxa_fake::TestEnv::new();
+    fs::write(
+        env.agent_dir().join("settings.json"),
+        r#"{"cacheWarming":"off","defaultProjectTrust":"always","oxa":{
+            "engine":{"inProcessLocal":true},
+            "local":{"binary":"/synthetic/oxe-server",
+                "models":{"synthetic-model":{"model":"/synthetic/model.gguf","arguments":["--engine","stub"]}},
+                "limits":{"synthetic-model":{"context_window":4096,"max_output":64,
+                    "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,
+                                         "mtp_state_bytes":0,"margin_bytes":1044480}}}}
+        }}"#,
+    )
+    .unwrap();
+    let measure = |mode: &str| {
+        use std::io::Write as _;
+
+        let output = Command::new("python3")
+            .args(["-I", "-c", PTY_STATUS, env!("CARGO_BIN_EXE_oxa"), mode])
+            .env_clear()
+            .envs(env.envs("http://127.0.0.1:9"))
+            .env("TERM", "xterm-256color")
+            .current_dir(env.work())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{mode}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // Write only the numeric receipt so both existing hosted test lanes expose it.
+        std::io::stdout().write_all(&output.stdout).unwrap();
+    };
+    let share_dir = env.home().join(".oxa/share");
+    measure(if cfg!(feature = "share") {
+        "disabled"
+    } else {
+        "feature-excluded"
+    });
+    assert!(!share_dir.exists());
+    #[cfg(feature = "share")]
+    {
+        use oxc_gateway::share::keys::{Limits, Store};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let keys = Store::initialize(&share_dir).unwrap();
+        let key = keys
+            .create(
+                "Synthetic Tablet",
+                Limits {
+                    daily_requests: 10,
+                    daily_tokens: 100,
+                },
+            )
+            .unwrap();
+        let day = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() / 86400;
+        keys.admit(key.bearer.expose(), day, 10)
+            .unwrap()
+            .unwrap()
+            .settle(7)
+            .unwrap();
+        measure("enabled");
+    }
+}

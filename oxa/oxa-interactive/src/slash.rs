@@ -30,13 +30,14 @@ pub struct SlashCx<'a> {
     pub models: &'a [String],
     /// Requests waiting on the engine, when known.
     pub queue: Option<u32>,
+    pub engine_status: Option<&'a (dyn Fn() -> Vec<String> + Send)>,
 }
 
 /// The built-in commands this module handles, without the slash, in pi's listing order.
 /// Kept in oxa: every command of slash-commands.md that plan sec. 1 keeps, plus `engine`,
 /// `mode` and `mcp`. Omitted pi commands (`login`, `logout`, `share`) are handled too: they
 /// answer the fixed `unsupported_in_oxa` notice.
-pub const INTERACTIVE_COMMANDS: [&str; 32] = [
+pub const INTERACTIVE_COMMANDS: [&str; 33] = [
     "settings",
     "model",
     "scoped-models",
@@ -69,6 +70,7 @@ pub const INTERACTIVE_COMMANDS: [&str; 32] = [
     "share",
     "help",
     "usage",
+    "goal",
 ];
 
 /// pi commands oxa omits (verdict O). A hook command, template or skill with the same name
@@ -263,6 +265,9 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
                 AppAction::Session(SessionCmd::Reload),
             ])
         }),
+        "goal" => idle_or(cx, name, || {
+            AppAction::Session(SessionCmd::Goal(args.to_string()))
+        }),
         "debug" => AppAction::DebugDump,
         "mcp" => AppAction::Open(SelectorKind::Mcp),
         "engine" => engine_action(cx, args),
@@ -437,7 +442,11 @@ fn engine_action(cx: &SlashCx, args: &str) -> AppAction {
             } else {
                 cx.engine_url.to_string()
             };
-            AppAction::ShowLines(engine_lines(&cx.vm.status, &endpoint, cx.queue))
+            let mut lines = engine_lines(&cx.vm.status, &endpoint, cx.queue);
+            if let Some(engine_status) = cx.engine_status {
+                lines.extend(engine_status());
+            }
+            AppAction::ShowLines(lines)
         }
         "load" if !rest.is_empty() => idle_or(cx, "engine load", || switch_model(cx, rest)),
         _ => usage("Usage: /engine [status | load <model>]"),

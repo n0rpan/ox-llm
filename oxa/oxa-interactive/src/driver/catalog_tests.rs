@@ -91,6 +91,7 @@ pub(super) fn with_loop(
         initial_parts: Vec::new(),
         initial_follow_ups: Vec::new(),
         theme: None,
+        theme_paths: Vec::new(),
         notices: Vec::new(),
         env: Vec::new(),
         caps: Some(TermCaps::BASIC),
@@ -98,6 +99,7 @@ pub(super) fn with_loop(
         open_picker: false,
         save_trust: None,
         gated: Vec::new(),
+        engine_status: None,
         yolo: None,
     };
     let mut vm = ViewModel::default();

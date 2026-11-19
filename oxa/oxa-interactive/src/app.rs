@@ -34,14 +34,27 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Sequence: detect capabilities, open the terminal, install the panic hook, load the theme,
 /// spawn the worker thread with `session`, rebuild the view model from the active branch, send
 /// the initial prompt, then [`run_loop`].
-pub fn run(session: Session, mut opts: InteractiveOpts) -> Result<i32, OxaError> {
+pub fn run(session: Session, opts: InteractiveOpts) -> Result<i32, OxaError> {
+    run_terminal(session, opts, None)
+}
+
+/// An owner-controlled terminal attached to one already selected durable Session.
+pub fn run_pinned(session: Session, opts: InteractiveOpts, resume_command: &str) -> Result<i32, OxaError> {
+    run_terminal(session, opts, Some(resume_command))
+}
+
+fn run_terminal(
+    session: Session,
+    mut opts: InteractiveOpts,
+    resume_command: Option<&str>,
+) -> Result<i32, OxaError> {
     let detected = opts.caps.unwrap_or_else(|| detect_caps(&opts.env));
     let mut term = ProcessTerminal::open(TermOpts {
         caps: detected,
         ..TermOpts::default()
     })?;
     opts.caps = Some(term.caps());
-    let (code, last) = run_session(&mut term, session, &mut opts);
+    let (code, last) = run_session_inner(&mut term, session, &mut opts, resume_command.is_some());
     drop(term);
     if let Some(info) = last {
         let talked = info
@@ -50,8 +63,12 @@ pub fn run(session: Session, mut opts: InteractiveOpts) -> Result<i32, OxaError>
             .is_some_and(|f| has_conversation(opts.store.as_ref(), f, &info.id));
         // A vanished terminal cannot receive the resume hint; println! would panic on EIO.
         if talked && code != 129 {
-            for line in exit_lines(info.file.as_deref(), &info.id) {
-                println!("{line}");
+            if let Some(command) = resume_command {
+                println!("\x1b[2mTo resume this session:\x1b[22m {command}");
+            } else {
+                for line in exit_lines(info.file.as_deref(), &info.id) {
+                    println!("{line}");
+                }
             }
         }
     }
@@ -125,6 +142,15 @@ pub fn run_session(
     session: Session,
     opts: &mut InteractiveOpts,
 ) -> (i32, Option<SessionInfo>) {
+    run_session_inner(term, session, opts, false)
+}
+
+fn run_session_inner(
+    term: &mut dyn Terminal,
+    session: Session,
+    opts: &mut InteractiveOpts,
+    pinned: bool,
+) -> (i32, Option<SessionInfo>) {
     let state = session.state();
     let stats = session.stats();
     let inner = session.inner();
@@ -158,6 +184,7 @@ pub fn run_session(
     let (msg_tx, msg_rx) = mpsc::channel::<WorkerMsg>();
     let (ui_tx, ui_rx) = mpsc::channel::<UiRequest>();
     let handle = session.handle();
+    handle.watch_live_settings();
 
     if let Some(text) = opts.initial_prompt.take() {
         let parts = std::mem::take(&mut opts.initial_parts);
@@ -188,7 +215,7 @@ pub fn run_session(
     let wake = Arc::downgrade(&cmd_tx);
     let spawned = thread::Builder::new()
         .name("oxa-worker".to_string())
-        .spawn(move || worker_loop_with(session, reopen, cmd_rx, msg_tx, ui_tx, worker_stop, wake));
+        .spawn(move || worker_loop_inner(session, reopen, cmd_rx, msg_tx, ui_tx, worker_stop, wake, pinned));
     let worker = match spawned {
         Ok(w) => w,
         Err(_) => return (1, None),
@@ -503,12 +530,25 @@ pub fn worker_loop(
 /// [`install_wake`]): the tick is the deadline, not the only wake.
 pub fn worker_loop_with(
     session: Session,
+    reopen: ReopenFn,
+    cmds: Receiver<SessionCmd>,
+    out: Sender<WorkerMsg>,
+    ui: Sender<UiRequest>,
+    stop: WorkerStop,
+    wake: Weak<Sender<SessionCmd>>,
+) -> Option<SessionInfo> {
+    worker_loop_inner(session, reopen, cmds, out, ui, stop, wake, false)
+}
+
+fn worker_loop_inner(
+    session: Session,
     mut reopen: ReopenFn,
     cmds: Receiver<SessionCmd>,
     out: Sender<WorkerMsg>,
     ui: Sender<UiRequest>,
     stop: WorkerStop,
     wake: Weak<Sender<SessionCmd>>,
+    pinned: bool,
 ) -> Option<SessionInfo> {
     let mut ui_proxy = UiProxy::new(ui.clone());
     let mut last = StatusModel::default();
@@ -610,6 +650,18 @@ pub fn worker_loop_with(
         if stop.is_stopped() {
             break;
         }
+        if pinned
+            && matches!(
+                cmd,
+                SessionCmd::Reopen(_) | SessionCmd::ForkAt { .. } | SessionCmd::CloneSession
+            )
+        {
+            let _ = out.send(WorkerMsg::Done(Err(OxaError::new(
+                codes::INVALID,
+                "This terminal is attached to its dedicated session.",
+            ))));
+            continue;
+        }
         match cmd {
             SessionCmd::Shutdown => break,
             // The session's attention waker (see [`install_wake`]): something the worker cannot
@@ -684,7 +736,9 @@ pub fn worker_loop_with(
                     // what the rebinding has to tell the user lands in the new transcript.
                     let msg = reopened(s, &mut last);
                     let _ = out.send(msg);
-                    let _ = out.send(WorkerMsg::Rebind(s.handle()));
+                    let handle = s.handle();
+                    handle.watch_live_settings();
+                    let _ = out.send(WorkerMsg::Rebind(handle));
                     let _ = out.send(WorkerMsg::Session(session_info(s)));
                     if opened {
                         let _ = out.send(WorkerMsg::Event(notice_event(&status)));
@@ -1525,6 +1579,9 @@ pub fn status_from(state: &State, stats: &Stats, prev: &StatusModel) -> StatusMo
         yolo: prev.yolo,
         yolo_approved: prev.yolo_approved,
         autonomy: prev.autonomy,
+        // #873: the budget projection is not part of the session state; a front end that has
+        // one keeps it across settles.
+        budget: prev.budget,
     }
 }
 
@@ -1717,12 +1774,27 @@ fn execute(
         }
         SessionCmd::SetLabel { target, label } => (s.set_label(&target, label.as_deref()), false),
         SessionCmd::Reload => (s.reload(sink, ui).map(|_| ()), false),
+        SessionCmd::Goal(args) => (run_goal(s, &args, sink, ui), false),
         SessionCmd::UserBash { command, excluded } => (s.user_bash(&command, excluded, sink, ui), false),
         SessionCmd::Reopen(_)
         | SessionCmd::Snapshot
         | SessionCmd::Shutdown
         | SessionCmd::Wake
         | SessionCmd::PrefillDraft { .. } => (Ok(()), false),
+    }
+}
+
+/// `/goal`: apply the command on the idle session, show its lines as notices, then run the
+/// prompt it returns (a new objective or a resume), if any.
+fn run_goal(s: &mut Session, args: &str, sink: &mut dyn EventSink, ui: &mut dyn Ui) -> Result<(), OxaError> {
+    let cmd = oxa_core::goal::parse_goal_command(args);
+    let (lines, prompt) = s.apply_goal_command(cmd, now_ms(), sink)?;
+    for line in lines {
+        sink.emit(&notice_event(&line));
+    }
+    match prompt {
+        Some(text) => run_prompt(s, text, Vec::new(), sink, ui),
+        None => Ok(()),
     }
 }
 
@@ -1991,7 +2063,7 @@ pub(crate) fn resolve_ui_theme(
     if skin_of(opts).is_oxa() && crate::skin::env_no_color(&opts.env) {
         return Ok(Theme::plain());
     }
-    let dirs = vec![opts.dirs.agent_dir.join("themes")];
+    let dirs = &opts.theme_paths;
     match name.trim() {
         "oxa" => Ok(oxa_theme(&oxa_builtin_palette(), "oxa", caps.color)),
         "oxa-omarchy" => match load_omarchy_palette(&omarchy_candidates(opts)) {
@@ -2001,9 +2073,9 @@ pub(crate) fn resolve_ui_theme(
                 theme.source = Some(path);
                 Ok(theme)
             }
-            None => resolve_theme("system", &dirs, caps.color, colors),
+            None => resolve_theme("system", dirs, caps.color, colors),
         },
-        other => resolve_theme(other, &dirs, caps.color, colors),
+        other => resolve_theme(other, dirs, caps.color, colors),
     }
 }
 
@@ -2052,11 +2124,12 @@ pub(crate) fn terminal_colors_from(
     (colors != TerminalColors::default()).then_some(colors)
 }
 
-pub(crate) fn load_theme(opts: &InteractiveOpts, caps: TermCaps, colors: Option<&TerminalColors>) -> Theme {
-    let name = theme_name(opts);
-    resolve_ui_theme(opts, &name, caps, colors)
-        .or_else(|_| resolve_ui_theme(opts, "dark", caps, colors))
-        .unwrap_or_else(|_| Theme::plain())
+pub(crate) fn load_theme(
+    opts: &InteractiveOpts,
+    caps: TermCaps,
+    colors: Option<&TerminalColors>,
+) -> Result<Theme, OxaError> {
+    resolve_ui_theme(opts, &theme_name(opts), caps, colors)
 }
 
 pub(crate) fn push_notice(vm: &mut ViewModel, level: Level, text: String) {
@@ -2566,5 +2639,7 @@ mod toolcall_stream_tests {
     }
 }
 
+#[cfg(test)]
+mod goal_tests;
 #[cfg(test)]
 mod steering_tests;

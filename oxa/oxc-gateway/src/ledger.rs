@@ -123,6 +123,13 @@ pub struct Context<'a> {
     /// never raw text or a session/provider identity. None preserves owner calls.
     pub guest_key_name: Option<&'a str>,
 }
+/// Completion of a local guest request. Missing usage retains its quota reservation.
+pub enum LocalGuestOutcome {
+    Completed { tokens: Option<(u64, u64)> },
+    Cancelled,
+    Failed,
+}
+
 pub struct Entry {
     daily: Daily,
     row: Value,
@@ -294,12 +301,18 @@ impl Entry {
         error: Option<&'static str>,
         redact: &dyn Fn(&mut Value),
     ) -> io::Result<Value> {
+        let cost = crate::spend::budget_cost(fields);
         if fields["remote"] != true
-            || !["anthropic", "openai", "openrouter", "chatgpt", "opencode"]
-                .contains(&fields["remote_provider"].as_str().unwrap_or(""))
-            || fields["cost_usd"]
-                .as_f64()
-                .is_none_or(|value| !value.is_finite() || value < 0.0)
+            || ![
+                "anthropic",
+                "openai",
+                "openai-chat",
+                "openrouter",
+                "chatgpt",
+                "opencode",
+            ]
+            .contains(&fields["remote_provider"].as_str().unwrap_or(""))
+            || (cost.is_none() && !crate::spend::unknown_go_cost(fields))
         {
             return Err(io::ErrorKind::InvalidData.into());
         }
@@ -336,7 +349,13 @@ impl Entry {
                 self.row[name] = json!(value.as_u64().ok_or(io::ErrorKind::InvalidData)?);
             }
         }
-        for name in ["cost_usd", "catalog_cost_usd", "reported_cost_usd"] {
+        for name in [
+            "cost_usd",
+            "catalog_cost_usd",
+            "reported_cost_usd",
+            "estimated_cost_usd",
+            "go_reserved_usd",
+        ] {
             if let Some(value) = fields.get(name) {
                 if value
                     .as_f64()
@@ -350,10 +369,25 @@ impl Entry {
         if let Some(value) = fields["usage_missing"].as_bool() {
             self.row["usage_missing"] = json!(value);
         }
+        // Only `true` is meaningful: the settled cost could not be determined. The spend
+        // reader requires this marker to close a later capped admission.
+        match fields.get("cost_unknown") {
+            None => {}
+            Some(Value::Bool(true)) => self.row["cost_unknown"] = json!(true),
+            Some(_) => return Err(io::ErrorKind::InvalidData.into()),
+        }
         let settled = fields["settled"]
             .as_str()
             .filter(|value| ["usage", "reserved", "estimated", "not_forwarded", "refused"].contains(value))
             .ok_or(io::ErrorKind::InvalidData)?;
+        if let Some(bound) = fields.get("go_reserved_usd") {
+            if fields["remote_provider"] != "opencode"
+                || !matches!(settled, "usage" | "reserved")
+                || bound.as_f64().is_none_or(|amount| amount <= 0.0)
+            {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+        }
         if settled == "refused" && (fields["cost_usd"].as_f64() != Some(0.0) || !(400..500).contains(&status))
         {
             return Err(io::ErrorKind::InvalidData.into());
@@ -364,8 +398,8 @@ impl Entry {
                     || value == "metered" && fields["remote_provider"] == "opencode" =>
             {
                 if !matches!(fields["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
-                    || (value == "subscription" && fields["cost_usd"].as_f64() != Some(0.0))
-                    || (value == "metered" && fields["cost_usd"].as_f64().is_none_or(|n| n <= 0.0))
+                    || (value == "subscription" && cost.is_some_and(|n| n != 0.0))
+                    || (value == "metered" && cost.is_none_or(|n| n <= 0.0))
                 {
                     return Err(io::ErrorKind::InvalidData.into());
                 }
@@ -414,6 +448,48 @@ impl Entry {
         }) {
             self.row["finish_reason"] = json!(finish);
         }
+        self.write_row(status, error, |row| {
+            redact(row);
+            #[cfg(feature = "anthropic-client")]
+            if let Some(plan) = row["opencode"].get("billing_source") {
+                let plan = crate::opencode::PlanName::from_value(plan);
+                row["opencode"]["billing_source"] = plan.as_str().into();
+            }
+        })
+    }
+
+    /// Append one typed terminal row for an authenticated local guest. Local
+    /// usage enters the same private file without entering cloud budget totals.
+    pub fn append_local_guest(mut self, outcome: LocalGuestOutcome) -> io::Result<Value> {
+        if self.row["origin"] != "api"
+            || !self.row["guest_key"].is_string()
+            || !self.row["session"].is_null()
+            || self.row.get("idempotency").is_some()
+        {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let (status, error, tokens) = match outcome {
+            LocalGuestOutcome::Completed { tokens } => (200, None, tokens),
+            LocalGuestOutcome::Cancelled => (499, Some("local_guest_cancelled"), None),
+            LocalGuestOutcome::Failed => (502, Some("local_guest_failed"), None),
+        };
+        self.row["remote"] = json!(false);
+        self.row["cost_usd"] = json!(0);
+        self.row["usage_missing"] = json!(tokens.is_none());
+        self.row["settled"] = json!(if tokens.is_some() { "usage" } else { "reserved" });
+        if let Some((input, output)) = tokens {
+            self.row["prompt_tokens"] = json!(input);
+            self.row["completion_tokens"] = json!(output);
+        }
+        self.write_row(status, error, |_| {})
+    }
+
+    fn write_row(
+        mut self,
+        status: u16,
+        error: Option<&'static str>,
+        redact: impl FnOnce(&mut Value),
+    ) -> io::Result<Value> {
         let now = Instant::now();
         self.row["status"] = json!(status);
         self.row["error"] = json!(error);
@@ -429,11 +505,6 @@ impl Entry {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         redact(&mut self.row);
-        #[cfg(feature = "anthropic-client")]
-        if let Some(plan) = self.row["opencode"].get("billing_source") {
-            let plan = crate::opencode::PlanName::from_value(plan);
-            self.row["opencode"]["billing_source"] = plan.as_str().into();
-        }
         append_private(&self.daily.path, &self.row)?;
         Ok(self.row)
     }

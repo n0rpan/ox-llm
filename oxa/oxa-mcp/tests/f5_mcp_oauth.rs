@@ -12,10 +12,11 @@ use base64::Engine;
 use oxa_fake::TestEnv;
 use oxa_mcp::{
     authorization_url, discover, login, parse_redirect, pkce_pair, random_bytes, redirect_uri,
-    AuthServerMeta, CallbackServer, HttpConfig, HttpTransport, LoginIo, OAuthSettings, OAuthTokens,
+    run_value_command, AccessGate, AuthServerMeta, CallbackServer, ConfigScope, HttpConfig, HttpTransport,
+    LoginIo, ManagerOpts, McpConfig, McpManager, OAuthSettings, OAuthTokens, ServerConfig, ServerKind,
     StoredAuth, TokenSource, TokenStore, Transport, AUTH_FILE, CODE_NEEDS_AUTH,
 };
-use oxa_proto::{codes, CancelToken, Value};
+use oxa_proto::{codes, Access, CancelToken, Exposure, OxaError, Value};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -304,6 +305,12 @@ impl LoginIo for TestIo {
     }
 }
 
+/// The `!command` runner of a sign-in whose gate allows everything.
+fn run_allowed(command: &str) -> Result<String, OxaError> {
+    let dir = std::env::temp_dir();
+    run_value_command(&|_: &Access| true, &dir, &dir, command)
+}
+
 fn http_config(url: &str, settings: OAuthSettings) -> HttpConfig {
     HttpConfig {
         url: url.to_string(),
@@ -390,6 +397,7 @@ fn dynamic_registration() {
         &mut io,
         Duration::from_secs(20),
         &CancelToken::new(),
+        &run_allowed,
     )
     .expect("sign-in with dynamic registration");
 
@@ -448,6 +456,7 @@ fn configured_client() {
         &mut io,
         Duration::from_secs(20),
         &CancelToken::new(),
+        &run_allowed,
     )
     .expect("sign-in with the configured client");
 
@@ -461,6 +470,128 @@ fn configured_client() {
     assert_eq!(stored.client_id.as_deref(), Some("configured-id"));
     assert_eq!(stored.client_secret.as_deref(), Some("s3cret"));
     assert_eq!(stored.access_token.as_deref(), Some("at-1"));
+}
+
+/// A `!command` client secret runs through the caller's `run_value_command`: the gate is asked
+/// for `Access::Exec`, and a denied command stops the sign-in before any code exchange.
+#[test]
+fn configured_client_secret_command_asks_the_gate() {
+    let env = TestEnv::new();
+    let challenge = Arc::new(Mutex::new(String::new()));
+    let mock = Mock::start(move |base: String| {
+        move |req: &Seen| match (req.method.as_str(), req.path.as_str()) {
+            ("GET", "/.well-known/oauth-authorization-server") => answer(200, metadata(&base, true)),
+            _ => empty(404),
+        }
+    });
+    let settings = OAuthSettings {
+        client_id: Some("configured-id".to_string()),
+        client_secret: Some("!printf s3cret".to_string()),
+        ..OAuthSettings::default()
+    };
+    let store = TokenStore::open(&env.agent_dir().join(AUTH_FILE));
+    let url = format!("{}/mcp", mock.base);
+    let cfg = http_config(&url, settings);
+    let asked = Arc::new(Mutex::new(Vec::<Access>::new()));
+    let seen = asked.clone();
+    let gate = move |a: &Access| {
+        seen.lock().unwrap().push(a.clone());
+        false
+    };
+    let (home, work) = (env.home(), env.work());
+    let run = |c: &str| run_value_command(&gate, &home, &work, c);
+    let mut io = TestIo::new(true, false, challenge);
+    let err = login(
+        "cfg",
+        &cfg,
+        &store,
+        &mut io,
+        Duration::from_secs(20),
+        &CancelToken::new(),
+        &run,
+    )
+    .expect_err("a denied !command stops the sign-in");
+
+    assert_eq!(err.code, codes::DENIED, "{err:?}");
+    assert_eq!(
+        *asked.lock().unwrap(),
+        vec![Access::Exec {
+            command: "printf s3cret".to_string(),
+            net: true,
+        }]
+    );
+    assert!(io.opened.is_none(), "the browser was not asked");
+    assert!(mock.requests("POST", "/token").is_empty(), "no code exchange");
+    assert!(mock.requests("POST", "/register").is_empty(), "no registration");
+}
+
+/// `McpManager::login` expands a `!command` client secret with the manager's own runner: its
+/// gate is asked, and a denied command never runs and stops the sign-in.
+#[test]
+fn manager_login_secret_command_asks_the_manager_gate() {
+    let env = TestEnv::new();
+    let challenge = Arc::new(Mutex::new(String::new()));
+    let mock = Mock::start(move |base: String| {
+        move |req: &Seen| match (req.method.as_str(), req.path.as_str()) {
+            ("GET", "/.well-known/oauth-authorization-server") => answer(200, metadata(&base, true)),
+            _ => empty(404),
+        }
+    });
+    let marker = env.work().join("secret-command-ran");
+    let command = format!("touch {}", marker.display());
+    let settings = OAuthSettings {
+        client_id: Some("configured-id".to_string()),
+        client_secret: Some(format!("!{command}")),
+        ..OAuthSettings::default()
+    };
+    let url = format!("{}/mcp", mock.base);
+    let server = ServerConfig {
+        name: "cfg".to_string(),
+        kind: ServerKind::Http(http_config(&url, settings)),
+        enabled: false,
+        exposure: Exposure::Codemode,
+        tool_exposure: Vec::new(),
+        description: None,
+        timeout_s: 10,
+        defined_in: ConfigScope::User,
+        project_override: false,
+        trust_annotations: false,
+    };
+    let asked = Arc::new(Mutex::new(Vec::<Access>::new()));
+    let seen = asked.clone();
+    let gate: AccessGate = Arc::new(move |a: &Access| {
+        seen.lock().unwrap().push(a.clone());
+        !matches!(a, Access::Exec { .. })
+    });
+    let manager = McpManager::new(ManagerOpts {
+        config: McpConfig {
+            servers: vec![server],
+            auto_enable_codemode: None,
+            diagnostics: Vec::new(),
+        },
+        cwd: env.work(),
+        agent_dir: env.agent_dir(),
+        home: env.home(),
+        trusted: false,
+        gate,
+        client_version: "0.0.0-test".into(),
+    });
+    let mut io = TestIo::new(true, false, challenge);
+    let err = manager
+        .login("cfg", &mut io, Duration::from_secs(20), &CancelToken::new())
+        .expect_err("a denied !command stops the sign-in");
+
+    assert_eq!(err.code, codes::DENIED, "{err:?}");
+    assert!(
+        asked
+            .lock()
+            .unwrap()
+            .contains(&Access::Exec { command, net: true }),
+        "the gate was asked for the command"
+    );
+    assert!(!marker.exists(), "the denied command did not run");
+    assert!(io.opened.is_none(), "the browser was not asked");
+    assert!(mock.requests("POST", "/token").is_empty(), "no code exchange");
 }
 
 /// loopback redirect
@@ -678,6 +809,7 @@ fn pasted_redirect_url() {
         &mut io,
         Duration::from_secs(20),
         &CancelToken::new(),
+        &run_allowed,
     )
     .expect("sign-in with the pasted redirect");
     assert_eq!(
@@ -695,6 +827,29 @@ fn pasted_redirect_url() {
         .expect_err("refused");
     assert_eq!(err.code, codes::MCP);
     assert!(err.message.contains("no thanks"), "{}", err.message);
+}
+
+/// an oversized update is refused before it replaces readable credentials
+#[test]
+fn an_update_over_the_read_limit_leaves_the_store_readable() {
+    let env = TestEnv::new();
+    let path = env.agent_dir().join(AUTH_FILE);
+    let store = TokenStore::open(&path);
+    store
+        .put("svc", "https://a.example/mcp", &sample_auth("at-a"))
+        .expect("stored");
+    let mut huge = sample_auth("at-huge");
+    huge.access_token = Some("t".repeat(2 * 1024 * 1024));
+    let err = store
+        .put("svc", "https://c.example/mcp", &huge)
+        .expect_err("over the read limit");
+    assert!(err.message.contains("left unchanged"), "{}", err.message);
+    assert!(
+        store.get("svc", "https://a.example/mcp").is_some(),
+        "the previous credentials are still readable"
+    );
+    assert!(store.get("svc", "https://c.example/mcp").is_none());
+    assert!(store.delete("svc", "https://a.example/mcp").expect("deleted"));
 }
 
 /// credentials removed
@@ -966,6 +1121,7 @@ fn authorization_response_issuer_is_checked() {
             &mut io,
             Duration::from_secs(20),
             &CancelToken::new(),
+            &run_allowed,
         );
         assert_eq!(
             result.is_ok(),
@@ -1033,6 +1189,7 @@ fn pasted_redirect_must_match_the_redirect_uri() {
         &mut io,
         Duration::from_secs(20),
         &CancelToken::new(),
+        &run_allowed,
     )
     .expect("the matching paste signs in");
     assert!(
@@ -1110,6 +1267,7 @@ fn insufficient_scope_steps_up_the_next_sign_in() {
         &mut io,
         Duration::from_secs(20),
         &CancelToken::new(),
+        &run_allowed,
     )
     .expect("step-up sign-in");
     let params = query_params(io.opened.as_deref().expect("opened"));

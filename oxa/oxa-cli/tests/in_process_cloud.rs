@@ -61,6 +61,45 @@ fn write_key(env: &TestEnv, text: &str) {
 fn run(env: &TestEnv, args: &[&str], trace: Option<&Path>) -> Output {
     run_to(env, "http://127.0.0.1:9", args, trace)
 }
+
+#[test]
+fn live_anthropic_discovery_keeps_the_priced_overlay_and_uses_the_cache() {
+    let env = cloud_env();
+    let document = json!({
+        "has_more": false,
+        "data": [
+            {"id": UPSTREAM, "display_name": "Synthetic configured model"},
+            {"id": "synthetic-without-price", "display_name": "Synthetic unknown model",
+                "max_input_tokens": 4096, "max_tokens": 64}
+        ]
+    });
+    let mock = MockAnthropic::start(vec![Reply::wire(
+        "application/json",
+        document.to_string().as_bytes(),
+    )]);
+    settings(&env, &mock.base_url(), true);
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings["oxa"]["cloud"]["discover_models"] = json!(true);
+    fs::write(path, settings.to_string()).unwrap();
+    write_key(&env, &json!({"anthropic": CREDENTIAL}).to_string());
+
+    for _ in 0..2 {
+        let output = run(&env, &["--list-models"], None);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        assert!(stdout.contains(MODEL));
+        assert!(!stdout.contains("synthetic-without-price"));
+        assert!(stderr.contains("1 offers with unknown pricing"), "{stderr}");
+        assert!(!stdout.contains(CREDENTIAL) && !stderr.contains(CREDENTIAL));
+    }
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].target, "/v1/models?limit=100");
+    mock.finish();
+}
 fn run_to(env: &TestEnv, url: &str, args: &[&str], trace: Option<&Path>) -> Output {
     let mut cmd = if let Some(path) = trace {
         let mut cmd = Command::new(strace::executable());
@@ -670,9 +709,9 @@ fn native_silence_timeout_honors_effective_settings_and_provider_override() {
 }
 
 #[test]
-fn missing_native_budget_names_oxa_settings_before_reading_an_invalid_key() {
+fn missing_native_budget_is_no_budget_check_and_the_call_is_recorded() {
     let env = cloud_env();
-    let mock = MockAnthropic::start(vec![]);
+    let mock = MockAnthropic::start(vec![Reply::text("Synthetic answer", 11, 0, 0, 5)]);
     settings(&env, &mock.base_url(), true);
     let path = env.home().join(".oxa/agent/settings.json");
     let mut value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
@@ -681,22 +720,20 @@ fn missing_native_budget_names_oxa_settings_before_reading_an_invalid_key() {
         .unwrap()
         .remove("daily_budget_usd");
     fs::write(path, value.to_string()).unwrap();
-    write_key(&env, "invalid synthetic JSON");
+    write_key(&env, r#"{"anthropic":{"api_key":"TEST"}}"#);
     let output = run(
         &env,
         &["--no-session", "--no-tools", "-p", "Synthetic budget setup"],
         None,
     );
-    assert!(!output.status.success());
-    let diagnostic = String::from_utf8_lossy(&output.stderr);
-    assert!(diagnostic.contains("oxa.cloud.daily_budget_usd"), "{diagnostic}");
-    assert!(!diagnostic.contains(" in oxc"), "{diagnostic}");
-    assert!(mock.requests().is_empty());
+    success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Synthetic answer"));
+    assert_eq!(mock.requests().len(), 1);
     let rows = rows(&env);
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["status"], 403);
-    assert_eq!(rows[0]["error"], "budget_not_configured");
-    assert_eq!(rows[0]["cost_usd"], 0.0);
+    assert_eq!(rows[0]["status"], 200);
+    assert_ne!(rows[0]["error"], "budget_not_configured");
+    assert_eq!(rows[0]["settled"], "usage");
 }
 
 #[test]
