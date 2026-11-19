@@ -166,14 +166,14 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
+    // K3: a headless print or JSON run of a persisted session with a pursuing goal takes
+    // `oxa send` follow-ups from the session inbox for the run; false = off.
+    key("oxa.inbox.headless", Kind::Bool, "true"),
     // W4: a finished background bash job (not one stopped) queues one follow-up message with its
     // exit code and last lines; true (the default, owner decision); false (opt-out) = the job's output
     // waits for a read. User
     // settings only: a project file cannot enable it.
     key("oxa.jobs.wakeOnFinish", Kind::Bool, "true"),
-    // K3: a headless print or JSON run of a persisted session with a pursuing goal takes
-    // `oxa send` follow-ups from the session inbox for the run; false = off.
-    key("oxa.inbox.headless", Kind::Bool, "true"),
     // The owner's explicit route for the Lead conversation: an exact model id for
     // the normal `--model` selector and the normal gateway. User settings only;
     // unset keeps the ordinary startup model.
