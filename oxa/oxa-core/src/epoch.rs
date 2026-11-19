@@ -79,6 +79,7 @@ pub(crate) fn prefix_opts(st: &SessionState) -> PrefixOpts {
     PrefixOpts {
         diet_output: st.settings.diet_output(),
         child: crate::subagent::is_child_process(),
+        headless: crate::prefix::is_headless(),
     }
 }
 
@@ -304,6 +305,7 @@ pub fn reload(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) 
         trusted,
     );
     st.settings = settings;
+    crate::session::sync_job_wake(st);
     crate::settings_refresh::resync(st);
     st.resources = resources;
     crate::host::observe_hooks(st, HookPoint::SessionShutdown, &Value::Null, sink, ui);

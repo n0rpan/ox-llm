@@ -1535,6 +1535,33 @@ fn tui_026() {
     );
 }
 
+/// #1512 S2: a dangerous command stops at the four-choice dialog in the real TUI. Deny has the
+/// focus, so Enter refuses it, nothing runs and the model hears the refusal.
+#[test]
+fn dangerous_command_asks_in_the_real_tui() {
+    let env = TestEnv::new();
+    let script = vec![
+        ScriptTurn::tool("c1", "bash", r#"{"command":"git push --force origin main"}"#),
+        ScriptTurn::text("refused as expected"),
+    ];
+    let rig = Rig::start_in(env, script, RigOpts::default());
+    rig.pty.wait_for_text("ctrl+d exit").unwrap();
+    rig.type_text("push the branch");
+    rig.pty.send_key("enter");
+    let s = rig.pty.wait_for_text("Dangerous command").unwrap();
+    for label in [
+        "Allow once",
+        "Allow for this session",
+        "Always allow (saved to your user settings)",
+        "Deny",
+    ] {
+        assert!(s.contains(label), "{label}\n{s:?}");
+    }
+    rig.pty.send_key("enter");
+    rig.pty.wait_for_text("the user declined this action").unwrap();
+    rig.pty.wait_for_text("refused as expected").unwrap();
+}
+
 /// Permission prompt Once / Session / Deny; mode cycle; timed dialogs
 #[test]
 fn tui_027() {

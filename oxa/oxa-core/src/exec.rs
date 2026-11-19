@@ -5,9 +5,9 @@ use crate::host::{fire_hook, pumped, serve_level, Serve};
 use crate::SessionState;
 use oxa_proto::{
     codes, rebase_why, tool_errors, wire_is_prefix, Access, AgentEvent, Answer, AssistantTurn, ChatRequest,
-    Decision, EntryBody, EventMessage, EventSink, Hints, HookPoint, HookReply, Level, MessageDelta, OxaError,
-    StopReason, StreamEvent, Tool, ToolCall, ToolClass, ToolCtx, ToolOutput, TurnKind, Ui, Usage, Value,
-    WireMsg,
+    DangerAnswer, Decision, EntryBody, EventMessage, EventSink, Hints, HookPoint, HookReply, Level,
+    MessageDelta, OxaError, StopReason, StreamEvent, Tool, ToolCall, ToolClass, ToolCtx, ToolOutput,
+    TurnKind, Ui, Usage, Value, WireMsg,
 };
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -180,7 +180,7 @@ pub fn request(
         progress.notify(
             &session,
             crate::Progress::RequestEnd {
-                usage: turn.as_ref().ok().map(|turn| turn.usage),
+                usage: turn.as_ref().ok().and_then(|turn| turn.usage.reported()),
                 remote: st.info.caps.remote,
             },
         );
@@ -188,7 +188,7 @@ pub fn request(
     let turn = match turn {
         Ok(turn) => turn,
         Err(error) => {
-            if crate::goal::uncertain(&error, generated, pre_cancelled) {
+            if crate::goal::uncertain_on(st.info.caps.remote, &error, generated, pre_cancelled) {
                 if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
                     goal.uncertain_request()?;
                     crate::goal::checkpoint(st, false, sink)?;
@@ -203,9 +203,14 @@ pub fn request(
     crate::Handle {
         shared: st.shared.clone(),
     }
-    .account_tokens(
-        u64::from(turn.usage.prompt.saturating_sub(turn.usage.cached)) + u64::from(turn.usage.completion),
-    );
+    .account_usage(turn.usage);
+    if turn.usage.unreported {
+        // The reply carried no usage: its spend is unknown, not zero. The goal records an
+        // uncertain request so its token cap still applies (the answer itself is kept).
+        if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
+            goal.uncertain_request()?;
+        }
+    }
     if opts.events {
         // The closing `*_end` records go through the same sink, so `message_update` sees them.
         stream.finish(&turn, &mut hooks.sink(st, sink, ui));
@@ -409,8 +414,8 @@ pub(crate) fn run_calls(
             }
             i = j;
         } else {
-            let warming = !prefilled
-                && !(st.goal.is_some() && matches!(prepared[i].name.as_str(), "goal_done" | "wait"))
+            let warming = !(prefilled
+                || st.goal.is_some() && matches!(prepared[i].name.as_str(), "goal_done" | "wait"))
                 && start_tool_prefill(st, &prepared, &outputs, i, &mut early);
             // Held while the call runs: an unwind ends the prefill too.
             let guard = warming.then(|| PrefillGuard(st.shared.clone()));
@@ -840,16 +845,13 @@ fn start_tool_prefill(
                     progress.notify(
                         &session,
                         crate::Progress::RequestEnd {
-                            usage: res.as_ref().ok().map(|turn| turn.usage),
+                            usage: res.as_ref().ok().and_then(|turn| turn.usage.reported()),
                             remote: false,
                         },
                     );
                 }
                 if let Ok(turn) = &res {
-                    budget.account_tokens(
-                        u64::from(turn.usage.prompt.saturating_sub(turn.usage.cached))
-                            + u64::from(turn.usage.completion),
-                    );
+                    budget.account_usage(turn.usage);
                 }
                 if let Err(error) = &res {
                     if crate::goal::uncertain(error, false, pre_cancelled) {
@@ -857,6 +859,15 @@ fn start_tool_prefill(
                             if let Err(error) = goal.uncertain_request() {
                                 res = Err(error);
                             }
+                        }
+                    }
+                }
+                // A reply without usage has no measured spend: the prefill is charged to the
+                // goal as an uncertain request, exactly like a failed one.
+                if res.as_ref().is_ok_and(|turn| turn.usage.unreported) {
+                    if let Some(goal) = &goal {
+                        if let Err(error) = goal.uncertain_request() {
+                            res = Err(error);
                         }
                     }
                 }
@@ -954,19 +965,41 @@ fn prepare(st: &mut SessionState, call: &ToolCall, sink: &mut dyn EventSink, ui:
                 let text = format!("{}{}", tool_errors::DENIED_PREFIX, reason);
                 return mk(args, exec, Plan::Done(ToolOutput::error(text)));
             }
-            Decision::Ask => match crate::fire::ask_access(st, a, sink, ui) {
-                Answer::Once => {}
-                Answer::Session => st.policy.remember(a),
-                Answer::Deny => {
-                    // #554: with no one to ask, nobody declined; say what was refused and why.
-                    let text = if ui.interactive() {
-                        tool_errors::DENIED_BY_USER.to_string()
-                    } else {
-                        tool_errors::DENIED_UNATTENDED.replace("{what}", &crate::fire::access_title(a))
-                    };
-                    return mk(args, exec, Plan::Done(ToolOutput::error(text)));
+            Decision::Ask => {
+                // #1512 S2: a dangerous command asks first; its answer covers only its rule keys.
+                let danger = st.policy.danger_ask(a, &st.cwd);
+                if !danger.is_empty() {
+                    let (keys, reasons): (Vec<String>, Vec<String>) = danger.into_iter().unzip();
+                    match crate::fire::ask_dangerous(st, a, &keys, &reasons, sink, ui) {
+                        DangerAnswer::Once => continue,
+                        DangerAnswer::Session | DangerAnswer::Always => {
+                            st.policy.grant_danger(&keys);
+                            continue;
+                        }
+                        DangerAnswer::Deny => {
+                            let text = if ui.interactive() {
+                                tool_errors::DENIED_BY_USER.to_string()
+                            } else {
+                                tool_errors::DANGEROUS_UNATTENDED.replace("{why}", &reasons.join("; "))
+                            };
+                            return mk(args, exec, Plan::Done(ToolOutput::error(text)));
+                        }
+                    }
                 }
-            },
+                match crate::fire::ask_access(st, a, sink, ui) {
+                    Answer::Once => {}
+                    Answer::Session => st.policy.remember(a),
+                    Answer::Deny => {
+                        // #554: with no one to ask, nobody declined; say what was refused and why.
+                        let text = if ui.interactive() {
+                            tool_errors::DENIED_BY_USER.to_string()
+                        } else {
+                            tool_errors::DENIED_UNATTENDED.replace("{what}", &crate::fire::access_title(a))
+                        };
+                        return mk(args, exec, Plan::Done(ToolOutput::error(text)));
+                    }
+                }
+            }
         }
     }
     // X4: canonicalise BEFORE sorting and deduplicating, so the lock order is the order of the
@@ -1351,6 +1384,10 @@ impl StreamState {
 
     fn handle(&mut self, ev: StreamEvent, sink: &mut dyn EventSink, events: bool) {
         match ev {
+            StreamEvent::Warning(text) => sink.emit(&AgentEvent::Notice {
+                level: Level::Warning,
+                text: text.into(),
+            }),
             StreamEvent::Prefill { done, total, secs } => {
                 sink.emit(&AgentEvent::Prefill { done, total, secs });
             }
@@ -1644,7 +1681,7 @@ pub(crate) fn reply_event(turn: &AssistantTurn, ts_ms: u64) -> EventMessage {
         msg: turn.msg.clone(),
         ts_ms,
         stop: Some(StopReason::from(turn.finish)),
-        usage: Some(turn.usage),
+        usage: turn.usage.reported(),
         model: Some(turn.model.clone()),
         tool_name: None,
         is_error: false,

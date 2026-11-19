@@ -1,7 +1,7 @@
 //! Wave H: the network decisions of the front end (O-167(b), P3, P4). Every
 //! decision is here; `dispatch.rs` only calls in.
 use oxa_config::{dirs_from_env, Env, Settings};
-use oxa_proto::{Level, OxaError, Sandbox};
+use oxa_proto::{Level, OxaError, PermissionMode, Sandbox};
 use oxa_sandbox::{sandbox_net_setting, NetSandbox, SETTING_SANDBOX_NET};
 use std::path::Path;
 use std::sync::Arc;
@@ -10,6 +10,14 @@ use std::sync::Arc;
 /// on; always off while offline). Read once at startup.
 pub(crate) fn with_net(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<dyn Sandbox> {
     with_policy(sandbox, settings, true)
+}
+
+/// S11: yolo gives bash the network whatever `oxa.sandbox.net` says; the setting still applies to
+/// auto and standard. Say so at the start instead of ignoring the setting silently. Enforcement
+/// does not change, and an offline session has no bash network in any mode, so it is not noted.
+pub(crate) fn yolo_net_notice(level: PermissionMode, net: Option<&str>, offline: bool) -> Option<String> {
+    (level == PermissionMode::Yolo && !offline && !sandbox_net_setting(net))
+        .then(|| format!("yolo: bash has the network; {SETTING_SANDBOX_NET}=off applies to auto/standard"))
 }
 
 /// Acceptance commands keep the user's network policy without GitHub authentication.
@@ -83,7 +91,7 @@ pub(crate) fn trusted_executable_for(
     let Some(h) = home.map(canon) else {
         return trusted_executable(program, path, cwd);
     };
-    if !cwd.is_some_and(|c| canon(c) == h) {
+    if cwd.is_none_or(|c| canon(c) != h) {
         return trusted_executable(program, path, cwd);
     }
     let allowed: Vec<std::path::PathBuf> = USER_BIN.iter().map(|d| h.join(d)).collect();
@@ -272,6 +280,29 @@ mod tests {
         d
     }
 
+    /// #1449: an unusable user settings file keeps the process offline policy and the bash
+    /// network decision restricted, separately; a missing file keeps the normal defaults.
+    #[test]
+    fn unusable_user_settings_keep_process_and_bash_network_restricted() {
+        let env = Env::from_pairs(&[]);
+        for (tag, content) in [("badjson", Some("{ \"oxa\": {\"offline\": ")), ("absent", None)] {
+            let home = tmp(tag);
+            let dirs = oxa_config::Dirs::under(&home);
+            if let Some(text) = content {
+                std::fs::create_dir_all(dirs.settings_file().parent().unwrap()).unwrap();
+                std::fs::write(dirs.settings_file(), text).unwrap();
+            }
+            let user = Settings::load(&dirs, &home, false);
+            let (offline, allow_remote) = policy_from(false, &env, &user);
+            let bash_net = sandbox_net_setting(user.string(SETTING_SANDBOX_NET).as_deref());
+            let restricted = content.is_some();
+            assert_eq!(offline, restricted, "{tag}: process offline policy");
+            assert!(!allow_remote, "{tag}");
+            assert_eq!(!bash_net, restricted, "{tag}: bash network decision");
+            assert_eq!(user.diagnostics().is_empty(), !restricted, "{tag}");
+        }
+    }
+
     #[test]
     fn a_helper_that_leaves_the_pipe_open_cannot_stall_startup() {
         let d = tmp("pipe");
@@ -420,5 +451,22 @@ mod tests {
         // Only untrusted entries: nothing.
         let only = sep(&[proj.to_str().unwrap(), "rel"]);
         assert_eq!(trusted_executable("gh", Some(&only), Some(&proj)), None);
+    }
+
+    #[test]
+    fn yolo_start_notes_net_off() {
+        // S11: yolo ignores `oxa.sandbox.net=off`; the start says so, and enforcement is unchanged.
+        let note = yolo_net_notice(PermissionMode::Yolo, Some("off"), false).expect("a notice");
+        assert!(
+            note.contains("oxa.sandbox.net=off applies to auto/standard"),
+            "{note}"
+        );
+        assert!(!note.contains('\n'));
+        // Nothing to say when the network is on, when the setting is unset, in other modes, or
+        // when offline already removes the bash network.
+        assert_eq!(yolo_net_notice(PermissionMode::Yolo, None, false), None);
+        assert_eq!(yolo_net_notice(PermissionMode::Yolo, Some("on"), false), None);
+        assert_eq!(yolo_net_notice(PermissionMode::Auto, Some("off"), false), None);
+        assert_eq!(yolo_net_notice(PermissionMode::Yolo, Some("off"), true), None);
     }
 }

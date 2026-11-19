@@ -1,6 +1,4 @@
 //! B1 acceptance tests: Compaction policy and summary shapes.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 //!
 //! The tests are pure: they build transcripts in memory (`Transcript::push`) and never touch the
@@ -41,6 +39,7 @@ fn transcript(msgs: Vec<WireMsg>) -> Transcript {
 /// An assistant message with tool calls `(name, args_raw)`; ids are `call_0`, `call_1`, ...
 fn assistant_calls(text: Option<&str>, calls: &[(&str, &str)]) -> WireMsg {
     WireMsg {
+        images: Vec::new(),
         role: Role::Assistant,
         content: text.map(str::to_owned),
         reasoning: None,

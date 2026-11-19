@@ -1,6 +1,4 @@
 //! F8 acceptance tests: RPC extension UI and Rust client.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 //!
 //! The client tests drive a real `oxa --mode rpc` process. This binary is that process: a test
@@ -12,8 +10,8 @@ use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_proto::{
-    codes, Access, Answer, CancelToken, Decision, Engine, ExecResult, ExecSpec, Level, Mode, OxaError,
-    Placement, Policy, Sandbox, Ui, Value,
+    codes, Access, Answer, CancelToken, DangerAnswer, Decision, Engine, ExecResult, ExecSpec, Level, Mode,
+    OxaError, Placement, Policy, Sandbox, Ui, Value,
 };
 use oxa_rpc::{parse_command, serve, Out, RpcClient, RpcUi, UiRouter};
 use oxa_session::{FsStore, SessionStore};
@@ -390,6 +388,59 @@ fn permission_ask_relayed_as_confirm() {
         assert!(rec["title"].as_str().unwrap().contains("example.org"));
         h.answer(&rec, reply);
         assert!(matches!(t.join().unwrap(), Answer::Deny));
+    }
+}
+
+/// Answer mapping
+#[test]
+fn dangerous_command_ask_relayed_as_confirm() {
+    let h = harness();
+    let access = Access::Write(PathBuf::from("/work/notes.md"));
+    let reasons = vec!["matches rm -rf outside the workspace".to_string()];
+    let keys = vec!["rm-recursive-outside".to_string()];
+    let ui = RpcUi {
+        out: h.ui.out.clone(),
+        router: h.router.clone(),
+    };
+    let t = dialog(ui, move |ui| ui.ask_dangerous(&access, &reasons, &keys));
+    let rec = h.request("confirm");
+    let title = rec["title"].as_str().unwrap();
+    assert!(
+        title.contains("write /work/notes.md"),
+        "the title names the command: {title}"
+    );
+    assert_eq!(rec["message"], "matches rm -rf outside the workspace");
+    h.answer(&rec, json!({"confirmed": true}));
+    // A yes runs the command this once; a session or always grant stays with the surfaces that
+    // can write the owner's approval file.
+    assert!(matches!(t.join().unwrap(), DangerAnswer::Once));
+
+    for reply in [json!({"confirmed": false}), json!({"cancelled": true})] {
+        let ui = RpcUi {
+            out: h.ui.out.clone(),
+            router: h.router.clone(),
+        };
+        let before = h.records().len();
+        let t = dialog(ui, move |ui| {
+            ui.ask_dangerous(
+                &Access::Net {
+                    host: "example.org".into(),
+                },
+                &[],
+                &[],
+            )
+        });
+        let rec = loop {
+            let all = h.records();
+            if let Some(r) = all[before..].iter().find(|r| r["method"] == "confirm") {
+                break r.clone();
+            }
+            thread::sleep(Duration::from_millis(2));
+        };
+        assert!(rec["title"].as_str().unwrap().contains("example.org"));
+        assert_eq!(rec["message"], "The command matches a dangerous rule.");
+        h.answer(&rec, reply);
+        assert!(matches!(t.join().unwrap(), DangerAnswer::Deny));
     }
 }
 

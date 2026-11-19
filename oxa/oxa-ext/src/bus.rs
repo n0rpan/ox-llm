@@ -334,6 +334,7 @@ fn wire_from_json(v: &Value) -> Option<WireMsg> {
         }
     }
     Some(WireMsg {
+        images: Vec::new(),
         role,
         content,
         reasoning,
@@ -405,6 +406,7 @@ pub fn reply_from_js(point: HookPoint, returned: &Value) -> HookReply {
                 return HookReply::Continue;
             };
             HookReply::ReplaceResult(ToolOutput {
+                images: Vec::new(),
                 text,
                 is_error: obj.get("isError").and_then(Value::as_bool).unwrap_or(false),
                 ui: obj.get("details").cloned().unwrap_or(Value::Null),

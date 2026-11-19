@@ -76,11 +76,14 @@ impl std::fmt::Debug for RegistryArgs {
 
 pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -> bool {
     use oxa_interactive::command_registry::CommandId;
+    // Admission belongs exclusively to the oxe binary.
     // Declared in the registry for discovery, help and surfaces, but parsed and handled by the
     // legacy path below; the registry route must not take them over.
     !matches!(
         id,
-        CommandId::Help
+        CommandId::Admission
+            | CommandId::Help
+            | CommandId::Status
             | CommandId::WorkStatus
             | CommandId::WorkBoard
             | CommandId::Memory
@@ -127,12 +130,14 @@ pub struct Args {
     pub output_schema: Option<String>,
     /// Stored goal objective from a UTF-8 file (print/JSON).
     pub goal: Option<String>,
-    /// Soft runtime limit for print, JSON and RPC modes (`--max-time`, seconds).
+    /// Soft runtime limit for a run in any mode (`--max-time`, seconds).
     pub max_time: Option<std::time::Duration>,
     /// Flag a saved active session after this long without progress.
     pub stall_timeout: Option<std::time::Duration>,
     /// Soft run budget: uncached prompt plus output tokens (`--max-tokens`).
     pub max_tokens: Option<u64>,
+    /// `--usage-log FILE`: one JSONL record per model call (owner-only file, no message text).
+    pub usage_log: Option<PathBuf>,
     /// `--mode text|json|rpc`.
     pub mode: Option<ModeArg>,
     /// `--export <input> [output]`.
@@ -283,8 +288,8 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     ("oxa logout chatgpt", "Remove the owner ChatGPT token record"),
     (
-        "oxa send <session-id> \"text\"",
-        "Queue a session follow-up, waking its TUI or RPC owner",
+        "oxa send <session-id> <text|->",
+        "Queue a session follow-up; use - to read the text from stdin",
     ),
     ("oxa config [-l]", "Print every setting with its value and source"),
     (
@@ -356,7 +361,7 @@ const OPTIONS: &[(&str, &str)] = &[
     ("--goal <file>", "Pursue and persist this goal until complete, blocked, stalled or interrupted"),
     (
         "--max-time <seconds>",
-        "Gracefully wrap up a headless run after this time (fractional seconds allowed)",
+        "Gracefully wrap up a run after this time (fractional seconds allowed)",
     ),
     (
         "--stall-timeout <seconds>",
@@ -364,7 +369,11 @@ const OPTIONS: &[(&str, &str)] = &[
     ),
     (
         "--max-tokens <N>",
-        "Gracefully wrap up a headless run after N new prompt + output tokens (cached tokens are free)",
+        "Gracefully wrap up a run after N new prompt + output tokens (cached tokens are free)",
+    ),
+    (
+        "--usage-log <file>",
+        "Write one JSONL record per model call (tokens, duration, model, turn) to FILE; owner-only, no message text",
     ),
     ("--resume, -r", "Pick a session to resume"),
     (
@@ -794,6 +803,9 @@ fn parse_flag(
                     .filter(|n| *n > 0)
                     .ok_or_else(|| usage("--max-tokens requires a positive integer"))?,
             );
+        }
+        "--usage-log" => {
+            a.usage_log = Some(PathBuf::from(value(argv, i, inline, flag, "a file path")?));
         }
         "--provider" => a.provider = Some(value(argv, i, inline, flag, "a provider name")?),
         "--model" => a.model = Some(value(argv, i, inline, flag, "a model pattern")?),

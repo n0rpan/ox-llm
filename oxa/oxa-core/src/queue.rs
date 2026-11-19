@@ -4,7 +4,7 @@ use crate::goal::GoalSteering;
 use oxa_config::QueueMode;
 use oxa_proto::CancelToken;
 use oxa_session::SessionRef;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -15,24 +15,54 @@ pub struct Queue {
     pub follow_up: Vec<String>,
     session_id: String,
     /// Inbox messages stay with their destination, including across switches and clones.
-    session_follow_up: BTreeMap<String, Vec<String>>,
+    session_follow_up: BTreeMap<String, Vec<BoundFollowUp>>,
     /// One private steering request per active native run.
     steering_session: Option<SessionRef>,
     goal_steering: Option<GoalSteering>,
 }
 
+#[derive(Debug)]
+struct BoundFollowUp {
+    text: String,
+    job_wake: bool,
+}
+
 impl Queue {
+    /// Whether one more inbox message of `len` bytes fits: at most 64 messages and 1 MiB over all
+    /// destinations, and no message longer than `INBOX_MESSAGE_BYTES`.
+    fn has_inbox_capacity(&self, len: usize) -> bool {
+        let (count, bytes) = self
+            .session_follow_up
+            .values()
+            .flatten()
+            .fold((0usize, 0usize), |(count, bytes), message| {
+                (count + 1, bytes + message.text.len())
+            });
+        len <= oxa_session::INBOX_MESSAGE_BYTES
+            && count < 64
+            && len <= (1024 * 1024usize).saturating_sub(bytes)
+    }
+
     fn follow_ups(&self) -> impl Iterator<Item = &String> {
-        self.follow_up
-            .iter()
-            .chain(self.session_follow_up.get(&self.session_id).into_iter().flatten())
+        self.follow_up.iter().chain(
+            self.session_follow_up
+                .get(&self.session_id)
+                .into_iter()
+                .flatten()
+                .map(|message| &message.text),
+        )
     }
 
     fn take_follow_up(&mut self, mode: QueueMode) -> Vec<String> {
         let mut taken = take_by_mode(&mut self.follow_up, mode);
         if mode == QueueMode::All || taken.is_empty() {
             if let Some(messages) = self.session_follow_up.get_mut(&self.session_id) {
-                taken.extend(take_by_mode(messages, mode));
+                let bound = match mode {
+                    QueueMode::All => std::mem::take(messages),
+                    QueueMode::OneAtATime if messages.is_empty() => Vec::new(),
+                    QueueMode::OneAtATime => vec![messages.remove(0)],
+                };
+                taken.extend(bound.into_iter().map(|message| message.text));
             }
         }
         taken
@@ -56,6 +86,18 @@ pub struct Shared {
     pub dirty: std::sync::atomic::AtomicBool,
     /// S1 / ENG-001 / ENG-002: the request gate and the background cancel (see [`Gate`]).
     pub gate: Gate,
+    /// W4: the frontend's hook told when a background job wakes its session (see
+    /// [`Handle::set_wake_notifier`]); `None` for a headless host.
+    pub wake: Mutex<Option<WakeNotify>>,
+}
+
+/// W4: the frontend's wake for a session. Called with the session id that has queued input.
+pub struct WakeNotify(pub Arc<dyn Fn(&str) + Send + Sync>);
+
+impl std::fmt::Debug for WakeNotify {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WakeNotify")
+    }
 }
 
 /// What an extension asked for: a new session, or another one (a path or an id).
@@ -107,6 +149,9 @@ impl WrapUpReason {
 ///   the session and has not armed `bg_cancel` yet would otherwise miss the cancel).
 #[derive(Debug, Default)]
 pub struct Gate {
+    /// Set when an in-request retry wait consumed `cancel_retry`, so an outer goal recovery
+    /// does not restart the request the owner just stopped.
+    pub(crate) retry_stopped: std::sync::atomic::AtomicBool,
     /// L1: the settings files as last seen (`settings_refresh`).
     pub(crate) settings_watch: Mutex<crate::settings_refresh::Watch>,
     live_settings: Mutex<LiveSettings>,
@@ -115,9 +160,24 @@ pub struct Gate {
     pub(crate) advisor: Mutex<Option<Arc<crate::advice::BoundAdvisor>>>,
     /// Coalesce frontend inbox wakes while a model run drains follow-ups internally.
     pub inbox_wake_pending: std::sync::atomic::AtomicBool,
+    /// Coalesce finished-background-job wakes, independently of inbox wakes: the two kinds
+    /// have different run conditions, so one must not swallow the other. Coalesced per
+    /// destination: an extension fork keeps the parent's running jobs, so a parent and a child
+    /// job can finish before the front end takes the first wake, and a wake for one session must
+    /// never suppress the other's.
+    pub job_wake_pending: Mutex<BTreeSet<String>>,
+    /// Set when `oxa.jobs.wakeOnFinish` is off (applied by `session::sync_job_wake` at open and
+    /// on every settings refresh). Left unset, finished jobs wake the session (the default).
+    pub job_wake_off: std::sync::atomic::AtomicBool,
+    /// Foreground work, excluding settlement after a dropped reply.
+    pub running: std::sync::atomic::AtomicBool,
+    /// Serializes abort publication with foreground reservation claims and releases.
+    pub(crate) foreground_transition: Mutex<()>,
     /// Coalesce worker wakes for ordinary editor queues, independently of bound inbox wakes.
     pub queued_wake_pending: std::sync::atomic::AtomicBool,
     pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
+    /// The owner confirm broker of this session (`Session::enable_owner_confirm`).
+    pub(crate) owner_confirm: Mutex<Option<Arc<crate::owner_confirm::OwnerConfirm>>>,
     pub in_flight: std::sync::atomic::AtomicBool,
     /// Sticky headless interruption: abort now, without a final wrap-up turn.
     pub interrupted: std::sync::atomic::AtomicBool,
@@ -128,6 +188,8 @@ pub struct Gate {
     literal_turn: Mutex<Option<LiteralTurn>>,
     /// Total charged usage, including non-chat requests and final-turn overspend.
     pub run_tokens_used: Mutex<u64>,
+    /// A request under an explicit token budget finished without usage: the tally is a lower bound.
+    pub usage_unreported: std::sync::atomic::AtomicBool,
     pub bg_cancel: CancelToken,
     pub reread_info: std::sync::atomic::AtomicBool,
     pub info_rechecked: std::sync::atomic::AtomicBool,
@@ -140,6 +202,39 @@ pub struct Gate {
     /// `true` once a front end polls `Session::take_swap_request`; without it the two
     /// extension calls answer `unsupported_in_oxa`.
     pub swap_enabled: std::sync::atomic::AtomicBool,
+    /// The wake a front end registered for state it cannot poll (see
+    /// [`Handle::set_attention_waker`]).
+    pub attention: Attention,
+}
+
+/// The wake a front end registered for state it cannot see through its own channels: a host
+/// request posted while its worker waits ([`CoreHost::post`]) and a wrap-up or interruption
+/// request. A front end that would otherwise poll a channel waits with a deadline and is
+/// woken here instead. One waker per session; the closure must be cheap and must not block.
+#[derive(Default)]
+pub struct Attention(Mutex<Option<Arc<dyn Fn() + Send + Sync>>>);
+
+impl std::fmt::Debug for Attention {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The closure is not printable; its presence is enough for a `{:?}` of the state.
+        f.write_str("Attention(..)")
+    }
+}
+
+impl Attention {
+    fn set(&self, waker: Arc<dyn Fn() + Send + Sync>) {
+        *lock(&self.0) = Some(waker);
+    }
+
+    /// Wake the front end, if one registered. Called after the state the front end will look
+    /// at is in place (the host request is in its channel, the wrap-up flag is set), so a
+    /// woken front end that re-checks sees it. A panic in the waker is contained here.
+    pub(crate) fn notify(&self) {
+        let waker = lock(&self.0).clone();
+        if let Some(waker) = waker {
+            let _ = oxa_proto::panic::contain(|| waker());
+        }
+    }
 }
 
 #[derive(Default)]
@@ -217,7 +312,7 @@ fn take_by_mode(list: &mut Vec<String>, mode: QueueMode) -> Vec<String> {
     }
 }
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     match m.lock() {
         Ok(g) => g,
         Err(p) => p.into_inner(),
@@ -225,6 +320,15 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Shared {
+    /// W4: whether a finished background job may wake its session (`oxa.jobs.wakeOnFinish`).
+    pub(crate) fn set_job_wake_enabled(&self, on: bool) {
+        self.gate.job_wake_off.store(!on, Ordering::SeqCst);
+    }
+
+    pub(crate) fn job_wake_enabled(&self) -> bool {
+        !self.gate.job_wake_off.load(Ordering::SeqCst)
+    }
+
     pub(crate) fn publish_live_settings(&self, settings: &oxa_config::Settings) {
         let mut live = lock(&self.gate.live_settings);
         if live.subscribed {
@@ -303,6 +407,19 @@ impl Shared {
             modes: Mutex::new((steering, follow_up)),
             dirty: std::sync::atomic::AtomicBool::new(false),
             gate: Gate::default(),
+            wake: Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn owner_confirm(&self) -> Option<Arc<crate::owner_confirm::OwnerConfirm>> {
+        lock(&self.gate.owner_confirm).clone()
+    }
+
+    /// The owner typed `text`: it answers a waiting owner confirmation. Only the handle's
+    /// steer and follow-up (the owner's typed messages) call this, never the inbox path.
+    fn owner_typed(&self, text: &str) {
+        if let Some(broker) = self.owner_confirm() {
+            broker.resolve_typed(text);
         }
     }
 
@@ -461,6 +578,7 @@ impl Handle {
     /// It also cancels this instance's own background request (ENG-002); a foreground request
     /// is not touched.
     pub fn steer(&self, text: String) {
+        self.shared.owner_typed(&text);
         lock(&self.shared.queue).steering.push(text);
         self.shared.dirty.store(true, Ordering::SeqCst);
         self.shared.gate.bg_cancel.cancel();
@@ -469,11 +587,49 @@ impl Handle {
     /// Queue a follow-up (delivered when the agent would otherwise stop). Cancels this
     /// instance's own background request like [`Handle::steer`].
     pub fn follow_up(&self, text: String) {
+        self.shared.owner_typed(&text);
         lock(&self.shared.queue).follow_up.push(text);
         self.shared.dirty.store(true, Ordering::SeqCst);
         self.shared.gate.bg_cancel.cancel();
         self.shared.wait_wake.cancel();
     }
+    /// W4: install the frontend's wake. A finished background job queues its message and then
+    /// calls this with the session id, so an idle frontend runs the queued input.
+    pub fn set_wake_notifier(&self, notify: Arc<dyn Fn(&str) + Send + Sync>) {
+        *lock(&self.shared.wake) = Some(WakeNotify(notify));
+    }
+
+    /// W4: queue a finished background job's wake for the session the job started under
+    /// (`JobDone::session`), never for whichever session is active when it exits: a job that
+    /// ends during `/fork`, `/clone` or a switch, after the identity changed but before the jobs
+    /// were reset, must not write into the new conversation. A job with no recorded owner falls
+    /// back to the active session. Without a frontend wake the message waits for the next run,
+    /// as a normal follow-up does. The wake carries the destination so the frontend runs it
+    /// only when that session is current.
+    pub fn wake_job(&self, job: &oxa_tools::JobDone) -> bool {
+        if !self.shared.job_wake_enabled() {
+            return false;
+        }
+        let session_id = if job.session.is_empty() {
+            lock(&self.shared.queue).session_id.clone()
+        } else {
+            job.session.clone()
+        };
+        // Admitted past the inbox cap: that cap makes the inbox watcher keep its file and retry,
+        // and a finished job has nothing to retry from. The text is bounded by the wake tail.
+        {
+            let mut q = lock(&self.shared.queue);
+            self.admit(&mut q, &session_id, job.wake_text(), true);
+        }
+        let notify = lock(&self.shared.wake).as_ref().map(|w| w.0.clone());
+        if let Some(notify) = notify {
+            if self.request_job_wake(&session_id) {
+                notify(&session_id);
+            }
+        }
+        true
+    }
+
     /// Whether these handles control the same ordinary input queues. Reopening creates
     /// another instance; a fork within the same instance retains its existing queue semantics.
     pub fn same_instance(&self, other: &Handle) -> bool {
@@ -506,6 +662,17 @@ impl Handle {
         self.shared.gate.inbox_wake_pending.store(false, Ordering::SeqCst);
     }
 
+    /// Claim the pending job wake of one destination (separate from the inbox wake, see
+    /// `Gate`). `false` when that session already has one waiting: the front end takes it once.
+    pub fn request_job_wake(&self, session_id: &str) -> bool {
+        lock(&self.shared.gate.job_wake_pending).insert(session_id.to_string())
+    }
+
+    /// The frontend has taken that destination's job wake job, before running its input.
+    pub fn clear_job_wake(&self, session_id: &str) {
+        lock(&self.shared.gate.job_wake_pending).remove(session_id);
+    }
+
     /// Whether the active session has admitted inbox input (including after switching back).
     pub fn has_inbox_input(&self) -> bool {
         let q = lock(&self.shared.queue);
@@ -514,29 +681,47 @@ impl Handle {
             .is_some_and(|messages| !messages.is_empty())
     }
 
+    /// Whether the active session has input admitted by the external inbox rather than a job.
+    pub fn has_external_inbox_input(&self) -> bool {
+        let q = lock(&self.shared.queue);
+        q.session_follow_up
+            .get(&q.session_id)
+            .is_some_and(|messages| messages.iter().any(|message| !message.job_wake))
+    }
+
+    /// Whether the active session has a retained background-job completion. This provenance
+    /// survives a UI rebind so reopening cannot reclassify a stopped run's wake as an inbox wake.
+    pub fn has_job_wake_input(&self) -> bool {
+        let q = lock(&self.shared.queue);
+        q.session_follow_up
+            .get(&q.session_id)
+            .is_some_and(|messages| messages.iter().any(|message| message.job_wake))
+    }
+
     /// Queue an inbox follow-up bound to its destination, not to whichever session is
     /// active when the watcher runs. Inactive messages remain available on switching back.
     /// Returns false under backpressure; the watcher must retain the file and retry.
     pub fn follow_up_for(&self, session_id: &str, text: String) -> bool {
         let mut q = lock(&self.shared.queue);
-        let messages = q.session_follow_up.values().flatten();
-        let (count, bytes) = messages.fold((0, 0), |(count, bytes), text| (count + 1, bytes + text.len()));
-        if text.len() > oxa_session::INBOX_MESSAGE_BYTES
-            || count >= 64
-            || text.len() > (1024 * 1024usize).saturating_sub(bytes)
-        {
+        if !q.has_inbox_capacity(text.len()) {
             return false;
         }
+        self.admit(&mut q, session_id, text, false);
+        true
+    }
+
+    /// Append `text` to `session_id`'s destination-bound queue and wake a run of the active
+    /// session. The caller decides on capacity.
+    fn admit(&self, q: &mut Queue, session_id: &str, text: String, job_wake: bool) {
         q.session_follow_up
             .entry(session_id.to_string())
             .or_default()
-            .push(text);
+            .push(BoundFollowUp { text, job_wake });
         if q.session_id == session_id {
             self.shared.dirty.store(true, Ordering::SeqCst);
             self.shared.gate.bg_cancel.cancel();
             self.shared.wait_wake.cancel();
         }
-        true
     }
 
     /// Move all destination-bound inbox messages to a replacement session's handle.
@@ -573,19 +758,81 @@ impl Handle {
         }
         steering
     }
+    /// Remove the inbox messages bound to sessions other than the active one, grouped by
+    /// destination. [`Handle::dequeue`] leaves them, so a headless owner that switched sessions
+    /// can return each message to the inbox it came from instead of dropping it at exit.
+    pub fn take_inactive_inbox(&self) -> Vec<(String, Vec<String>)> {
+        let mut q = lock(&self.shared.queue);
+        let active = q.session_id.clone();
+        let inactive: Vec<String> = q
+            .session_follow_up
+            .keys()
+            .filter(|id| **id != active)
+            .cloned()
+            .collect();
+        inactive
+            .into_iter()
+            .filter_map(|id| {
+                q.session_follow_up
+                    .remove(&id)
+                    .map(|messages| (id, messages.into_iter().map(|message| message.text).collect()))
+            })
+            .collect()
+    }
+
     /// Set an invocation-wide soft budget before accepting prompts (not restored from a session).
     pub fn set_token_budget(&self, tokens: Option<u64>) {
         *lock(&self.shared.gate.token_budget) = tokens;
+    }
+
+    /// Remove startup-only limits after their watcher has stopped, preserving
+    /// any wrap-up already requested by a process signal.
+    pub fn clear_startup_limits(&self) {
+        self.set_token_budget(None);
+        for reason in [WrapUpReason::TimeLimit, WrapUpReason::TokenLimit] {
+            let _ = self.shared.gate.wrap_up.compare_exchange(
+                reason as u8,
+                0,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+        }
     }
 
     pub(crate) fn remaining_tokens(&self) -> Option<u64> {
         *lock(&self.shared.gate.token_budget)
     }
 
+    /// Whether a budgeted request finished without usage, so `run_tokens_used` undercounts.
+    pub fn run_usage_unreported(&self) -> bool {
+        self.shared.gate.usage_unreported.load(Ordering::SeqCst)
+    }
+
     /// Invocation-wide uncached prompt + completion usage, not capped at the budget.
     /// Includes compaction and tool prefill, which emit no assistant message events.
     pub fn run_tokens_used(&self) -> u64 {
         *lock(&self.shared.gate.run_tokens_used)
+    }
+
+    pub(crate) fn account_usage(&self, usage: oxa_proto::Usage) {
+        if usage.unreported {
+            // An explicit budget can no longer establish headroom. Finish the active work
+            // through the usual wrap-up without adding an invented token count to the tally.
+            // The remaining allowance drops to zero so tools and children started in the
+            // current batch cannot spend headroom that no longer has a known size.
+            let capped = {
+                let mut budget = lock(&self.shared.gate.token_budget);
+                budget.as_mut().map(|left| *left = 0).is_some()
+            };
+            if capped {
+                self.shared.gate.usage_unreported.store(true, Ordering::SeqCst);
+                self.request_wrap_up(WrapUpReason::TokenLimit);
+            }
+        } else {
+            self.account_tokens(
+                u64::from(usage.prompt.saturating_sub(usage.cached)) + u64::from(usage.completion),
+            );
+        }
     }
 
     pub(crate) fn account_tokens(&self, tokens: u64) {
@@ -616,6 +863,9 @@ impl Handle {
                 .compare_exchange(0, reason as u8, Ordering::SeqCst, Ordering::SeqCst);
         self.cancel_background();
         self.shared.cancel_retry.cancel();
+        // The flag is set: a front end that waits instead of polling (see
+        // [`Handle::set_attention_waker`]) must re-check it now.
+        self.notify_attention();
     }
 
     pub fn wrap_up_reason(&self) -> Option<WrapUpReason> {
@@ -639,6 +889,21 @@ impl Handle {
         self.abort();
         self.abort_retry();
         self.cancel_background();
+        // Set before the wake, so a woken front end sees it (see `set_attention_waker`).
+        self.notify_attention();
+    }
+
+    /// Register the wake this session gives a front end that waits instead of polling: a host
+    /// request posted while the front end waits ([`CoreHost::post`]) and a wrap-up or
+    /// interruption request ([`Handle::request_wrap_up`], [`Handle::interrupt`]). One waker
+    /// per session; the closure must be cheap and must not block.
+    pub fn set_attention_waker(&self, waker: Arc<dyn Fn() + Send + Sync>) {
+        self.shared.gate.attention.set(waker);
+    }
+
+    /// Wake the registered front end, if any (see [`Handle::set_attention_waker`]).
+    pub(crate) fn notify_attention(&self) {
+        self.shared.gate.attention.notify();
     }
 
     pub fn interrupted(&self) -> bool {
@@ -647,11 +912,21 @@ impl Handle {
 
     /// Abort the current run. The partial reply is shown, never sent (W2). Queued messages stay
     /// queued; the front end restores them with `dequeue`. A no-op when no run is in progress
-    /// (a stale cancel must not abort the next prompt; `Session` also resets the token).
+    /// (a stale cancel must not abort the next prompt; `Session` also resets the token). A
+    /// foreground reservation counts as the current run: preserve an abort until its claim.
     pub fn abort(&self) {
+        let _transition = lock(&self.shared.gate.foreground_transition);
         if self.shared.busy.load(Ordering::SeqCst) {
             self.shared.cancel.cancel();
             self.shared.gate.bg_cancel.cancel();
+        } else if self.shared.gate.running.load(Ordering::SeqCst) {
+            self.shared.gate.abort_next.store(true, Ordering::SeqCst);
+            // The reservation may have become a claim after the first busy check. Cancel it
+            // directly too; its guard clears the sticky bit if `begin` already passed it.
+            if self.shared.busy.load(Ordering::SeqCst) {
+                self.shared.cancel.cancel();
+                self.shared.gate.bg_cancel.cancel();
+            }
         }
     }
     /// Cancel only this instance's BACKGROUND work (a boot preload, a draft prefill, an idle
@@ -678,8 +953,20 @@ impl Handle {
     pub fn abort_retry(&self) {
         self.shared.cancel_retry.cancel();
     }
+    /// A foreground operation still accepts input, even before its start event is consumed.
+    pub fn is_running(&self) -> bool {
+        self.shared.gate.running.load(Ordering::SeqCst)
+    }
     pub fn is_busy(&self) -> bool {
         self.shared.busy.load(Ordering::SeqCst)
+    }
+    /// Whether the run that holds the session is winding down: an abort ([`Handle::abort`]) or
+    /// the run's own loop guard set `cancel`, so the run takes no further tool batch and leaves
+    /// the queue undrained. A front end must send input typed now as a new prompt, never as a
+    /// steering message ([`Handle::steer`]) that nothing would deliver. `false` while the
+    /// session is idle: the next claim resets the token.
+    pub fn is_aborting(&self) -> bool {
+        self.shared.busy.load(Ordering::SeqCst) && self.shared.cancel.is_cancelled()
     }
     /// The queues (steering, follow-up) when they changed since the last report, and clear the
     /// change mark. A front end that changed the queue from another thread reports the change
@@ -702,11 +989,27 @@ impl Handle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     fn handle(steer: QueueMode, follow: QueueMode) -> Handle {
         Handle {
             shared: Arc::new(Shared::new(steer, follow)),
         }
+    }
+
+    #[test]
+    fn only_unreported_usage_under_an_explicit_token_cap_requests_wrap_up() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.account_usage(oxa_proto::Usage::unreported());
+        assert_eq!(h.wrap_up_reason(), None);
+        h.set_token_budget(Some(10));
+        h.account_usage(oxa_proto::Usage::default());
+        assert_eq!(h.wrap_up_reason(), None);
+        h.account_usage(oxa_proto::Usage::unreported());
+        assert_eq!(h.wrap_up_reason(), Some(WrapUpReason::TokenLimit));
+        assert_eq!(h.run_tokens_used(), 0);
+        assert_eq!(h.remaining_tokens(), Some(0));
+        assert!(h.run_usage_unreported());
     }
 
     #[test]
@@ -726,6 +1029,56 @@ mod tests {
         assert_eq!(h.queued().1, vec!["retained instruction"]);
         h.request_wrap_up(WrapUpReason::Signal);
         assert_eq!(h.wrap_up_reason(), Some(WrapUpReason::TimeLimit));
+    }
+
+    /// O-386: a front end that waits instead of polling is woken when the state it cannot see
+    /// through its own channels changes: a wrap-up request and an interruption.
+    #[test]
+    fn the_attention_waker_fires_on_wrap_up_and_interrupt() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        let fired = Arc::new(AtomicUsize::new(0));
+        let count = fired.clone();
+        h.set_attention_waker(Arc::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        }));
+        h.request_wrap_up(WrapUpReason::TimeLimit);
+        assert_eq!(fired.load(Ordering::SeqCst), 1, "the wrap-up wakes the front end");
+        h.interrupt();
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            2,
+            "the interruption wakes the front end"
+        );
+        // The state is set before the wake, so a woken front end that re-checks sees it.
+        assert!(h.interrupted());
+        assert_eq!(h.wrap_up_reason(), Some(WrapUpReason::TimeLimit));
+    }
+
+    /// A waker is front-end code: a panic in it must not unwind into the session that set the
+    /// state (the state is already in place and the front end re-checks it).
+    #[test]
+    fn a_panicking_attention_waker_is_contained() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.set_attention_waker(Arc::new(|| panic!("injected waker panic")));
+        h.request_wrap_up(WrapUpReason::Signal);
+        assert_eq!(h.wrap_up_reason(), Some(WrapUpReason::Signal));
+        h.interrupt();
+        assert!(h.interrupted());
+    }
+
+    #[test]
+    fn clearing_startup_limits_releases_the_token_budget_but_preserves_signal_wrap_up() {
+        let handle = handle(QueueMode::All, QueueMode::All);
+        handle.set_token_budget(Some(10));
+        handle.account_tokens(10);
+        assert_eq!(handle.wrap_up_reason(), Some(WrapUpReason::TokenLimit));
+        handle.clear_startup_limits();
+        assert_eq!(handle.remaining_tokens(), None);
+        assert_eq!(handle.wrap_up_reason(), None);
+
+        handle.request_wrap_up(WrapUpReason::Signal);
+        handle.clear_startup_limits();
+        assert_eq!(handle.wrap_up_reason(), Some(WrapUpReason::Signal));
     }
 
     #[test]
@@ -820,6 +1173,24 @@ mod tests {
         assert_eq!(h.dequeue(), vec!["s1"]);
     }
 
+    /// `is_aborting` is the run the front end must not steer: a claimed session whose run was
+    /// cancelled. Idle, or busy with a clear token, is a run that still takes input.
+    #[test]
+    fn is_aborting_needs_a_claimed_cancelled_run() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        assert!(!h.is_aborting(), "idle");
+        h.shared.busy.store(true, Ordering::SeqCst);
+        assert!(!h.is_aborting(), "a run that was not cancelled takes input");
+        h.abort();
+        assert!(h.is_aborting());
+        // The run ends and the next claim resets the token (`Session::begin`).
+        h.shared.busy.store(false, Ordering::SeqCst);
+        assert!(!h.is_aborting(), "a stale abort is not the next run");
+        h.shared.busy.store(true, Ordering::SeqCst);
+        h.shared.cancel.reset();
+        assert!(!h.is_aborting());
+    }
+
     /// A background cancel never reaches the user's run: `cancel` stays clear, and a run
     /// claimed after it (`Session::begin` resets `bg_cancel` and `bg_abort`) starts clean.
     /// A background request that has claimed but not armed yet sees it.
@@ -899,6 +1270,21 @@ mod tests {
     }
 
     #[test]
+    fn inactive_inbox_messages_are_taken_for_their_own_session() {
+        let h = handle(QueueMode::All, QueueMode::OneAtATime);
+        h.shared.bind_session("old");
+        h.follow_up_for("old", "admitted before switch".into());
+        h.shared.bind_session("new");
+        h.follow_up_for("new", "new inbox".into());
+        assert_eq!(
+            h.take_inactive_inbox(),
+            vec![("old".to_string(), vec!["admitted before switch".to_string()])]
+        );
+        assert!(h.take_inactive_inbox().is_empty());
+        assert_eq!(h.dequeue(), ["new inbox"]);
+    }
+
+    #[test]
     fn set_modes_applies_to_later_takes() {
         let h = handle(QueueMode::OneAtATime, QueueMode::All);
         h.steer("s1".to_string());
@@ -906,5 +1292,314 @@ mod tests {
         assert_eq!(h.shared.take_steering(), vec!["s1"]);
         h.set_modes(QueueMode::All, QueueMode::All);
         assert_eq!(h.shared.take_steering(), vec!["s2"]);
+    }
+
+    /// W4: a fake sandbox for the wake tests. Prints 25 numbered lines and exits 3, or (when
+    /// `block`) waits until cancelled and then reports no exit code.
+    struct WakeSandbox {
+        block: bool,
+    }
+
+    impl oxa_proto::Sandbox for WakeSandbox {
+        fn check(&self) -> Result<(), oxa_proto::OxaError> {
+            Ok(())
+        }
+        fn bwrap_args(&self, _s: &oxa_proto::ExecSpec) -> Vec<String> {
+            Vec::new()
+        }
+        fn run(
+            &self,
+            _s: &oxa_proto::ExecSpec,
+            c: &oxa_proto::CancelToken,
+            live: &mut dyn FnMut(&[u8]),
+        ) -> oxa_proto::ExecResult {
+            if self.block {
+                live(b"waiting\n");
+                while !c.is_cancelled() {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                return oxa_proto::ExecResult {
+                    output: Vec::new(),
+                    exit: None,
+                    timed_out: false,
+                    unsandboxed: false,
+                };
+            }
+            for i in 1..=25 {
+                live(format!("line {i}\n").as_bytes());
+            }
+            oxa_proto::ExecResult {
+                output: Vec::new(),
+                exit: Some(3),
+                timed_out: false,
+                unsandboxed: false,
+            }
+        }
+    }
+
+    fn wake_spec(command: &str) -> oxa_proto::ExecSpec {
+        oxa_proto::ExecSpec {
+            command: command.to_string(),
+            cwd: std::path::Path::new("/work").to_path_buf(),
+            writable: true,
+            net: false,
+            timeout_s: None,
+            env: Vec::new(),
+        }
+    }
+
+    fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn finished_job_queues_one_follow_up_with_exit_and_tail() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.shared.bind_session("active");
+        let jobs = oxa_tools::JobRegistry::new();
+        jobs.set_sandbox(Arc::new(WakeSandbox { block: false }));
+        let hook = h.clone();
+        jobs.set_on_finish(Arc::new(move |job: oxa_tools::JobDone| {
+            hook.wake_job(&job);
+        }));
+        let id = jobs
+            .spawn_labeled(
+                wake_spec("gh run watch 1 --exit-status"),
+                "gh run watch 1 --exit-status",
+            )
+            .unwrap();
+        wait_until("the wake is queued", || h.has_inbox_input());
+        let msgs = h.shared.take_follow_up();
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        let msg = &msgs[0];
+        assert!(
+            msg.starts_with(&format!(
+                "[background job {id} finished: exit 3; gh run watch 1 --exit-status; last lines:]\n"
+            )),
+            "{msg}"
+        );
+        // The header plus the last 20 of the 25 lines, and nothing before them.
+        assert_eq!(msg.lines().count(), 1 + 20, "{msg}");
+        assert!(msg.ends_with("line 25"), "{msg}");
+        assert!(!msg.contains("line 5\n"), "{msg}");
+        // One exit, one wake: nothing more is queued afterwards.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(h.shared.take_follow_up().is_empty());
+    }
+
+    #[test]
+    fn job_finishing_after_a_rebind_wakes_its_originating_session_only() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.shared.bind_session("old");
+        // /fork rebinds the identity before the jobs are reset; the old job exits in between.
+        h.shared.bind_session("new");
+        let job = oxa_tools::JobDone {
+            id: "job-1".into(),
+            status: oxa_tools::JobStatus::Exited(0),
+            command: "make".into(),
+            session: "old".into(),
+            tail: "done".into(),
+        };
+        assert!(h.wake_job(&job));
+        assert!(
+            !h.shared.has_input(),
+            "the new session must not see the old job's output"
+        );
+        assert!(h.shared.take_follow_up().is_empty());
+        h.shared.bind_session("old");
+        let msgs = h.shared.take_follow_up();
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        assert!(msgs[0].contains("job-1 finished: exit 0"), "{}", msgs[0]);
+    }
+
+    #[test]
+    fn inbox_message_during_pending_job_wake_is_delivered() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.shared.bind_session("s");
+        let woken = Arc::new(Mutex::new(0usize));
+        let seen = woken.clone();
+        h.set_wake_notifier(Arc::new(move |_| *lock(&seen) += 1));
+        let job = oxa_tools::JobDone {
+            id: "job-1".into(),
+            status: oxa_tools::JobStatus::Exited(0),
+            command: "make".into(),
+            session: "s".into(),
+            tail: "done".into(),
+        };
+        assert!(h.wake_job(&job));
+        assert_eq!(*lock(&woken), 1);
+        // The JobWake is still pending: an inbox message must still get its own wake.
+        assert!(h.follow_up_for("s", "from inbox".into()));
+        assert!(
+            h.request_inbox_wake(),
+            "a pending job wake must not swallow the inbox wake"
+        );
+        // And the reverse: a pending inbox wake does not swallow a job wake.
+        h.clear_job_wake("s");
+        assert!(h.wake_job(&job));
+        assert_eq!(*lock(&woken), 2);
+    }
+
+    #[test]
+    fn transferred_job_completion_keeps_its_wake_provenance() {
+        let old = handle(QueueMode::All, QueueMode::All);
+        old.shared.bind_session("session");
+        let job = oxa_tools::JobDone {
+            id: "job-1".into(),
+            status: oxa_tools::JobStatus::Exited(0),
+            command: "make".into(),
+            session: "session".into(),
+            tail: "done".into(),
+        };
+        assert!(old.wake_job(&job));
+
+        let reopened = handle(QueueMode::All, QueueMode::All);
+        reopened.shared.bind_session("session");
+        old.transfer_inbox_to(&reopened);
+
+        assert!(reopened.has_inbox_input());
+        assert!(reopened.has_job_wake_input());
+        assert!(!reopened.has_external_inbox_input());
+    }
+
+    /// An extension fork keeps the parent's running jobs: both can finish before the front end
+    /// takes the first wake, and the child's completion must not be swallowed.
+    #[test]
+    fn a_job_wake_for_one_session_does_not_suppress_another() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.shared.bind_session("parent");
+        let woken = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen = woken.clone();
+        h.set_wake_notifier(Arc::new(move |session: &str| {
+            lock(&seen).push(session.to_string())
+        }));
+        let job = |session: &str| oxa_tools::JobDone {
+            id: "job-1".into(),
+            status: oxa_tools::JobStatus::Exited(0),
+            command: "make".into(),
+            session: session.into(),
+            tail: "done".into(),
+        };
+        assert!(h.wake_job(&job("parent")));
+        assert!(h.wake_job(&job("child")));
+        assert_eq!(
+            *lock(&woken),
+            vec!["parent".to_string(), "child".to_string()],
+            "each destination gets its own wake"
+        );
+        // One destination taking its wake leaves the other's pending.
+        h.clear_job_wake("parent");
+        assert!(
+            h.request_job_wake("parent"),
+            "a destination that took its wake can be woken again"
+        );
+        assert!(!h.request_job_wake("child"), "the child's wake is still waiting");
+    }
+
+    #[test]
+    fn stopped_job_does_not_wake() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.shared.bind_session("active");
+        let jobs = oxa_tools::JobRegistry::new();
+        jobs.set_sandbox(Arc::new(WakeSandbox { block: true }));
+        let hook = h.clone();
+        jobs.set_on_finish(Arc::new(move |job: oxa_tools::JobDone| {
+            hook.wake_job(&job);
+        }));
+        let id = jobs
+            .spawn_labeled(
+                wake_spec("gh run watch 1 --exit-status"),
+                "gh run watch 1 --exit-status",
+            )
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let killed = jobs.kill(&id).unwrap();
+        assert_eq!(killed.status, oxa_tools::JobStatus::Killed);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!h.has_inbox_input());
+        assert!(h.shared.take_follow_up().is_empty());
+    }
+
+    #[test]
+    fn job_completion_is_kept_when_the_inbox_is_full() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.shared.bind_session("s");
+        for _ in 0..64 {
+            assert!(h.follow_up_for("s", "inbox".into()));
+        }
+        assert!(
+            !h.follow_up_for("s", "refused".into()),
+            "the inbox cap still refuses inbox input"
+        );
+        let woken = Arc::new(Mutex::new(0usize));
+        let seen = woken.clone();
+        h.set_wake_notifier(Arc::new(move |_| *lock(&seen) += 1));
+        let job = oxa_tools::JobDone {
+            id: "job-1".into(),
+            status: oxa_tools::JobStatus::Exited(0),
+            command: "make".into(),
+            session: "s".into(),
+            tail: "done".into(),
+        };
+        assert!(h.wake_job(&job), "a finished job is not refused for capacity");
+        assert_eq!(*lock(&woken), 1);
+        let taken = h.shared.take_follow_up();
+        assert_eq!(
+            taken.len(),
+            65,
+            "the completion waits behind the 64 inbox messages"
+        );
+        assert!(
+            taken[64].starts_with("[background job job-1 finished: exit 0;"),
+            "{}",
+            taken[64]
+        );
+    }
+
+    #[test]
+    fn job_wake_follows_the_live_setting() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.shared.bind_session("s");
+        let job = oxa_tools::JobDone {
+            id: "job-1".into(),
+            status: oxa_tools::JobStatus::Exited(0),
+            command: "make".into(),
+            session: "s".into(),
+            tail: "done".into(),
+        };
+        // A reload that turns `oxa.jobs.wakeOnFinish` off stops the wake without a restart.
+        h.shared.set_job_wake_enabled(false);
+        assert!(!h.wake_job(&job));
+        assert!(!h.has_inbox_input());
+        h.shared.set_job_wake_enabled(true);
+        assert!(h.wake_job(&job));
+        assert!(h.has_inbox_input());
+    }
+
+    #[test]
+    fn wake_on_finish_false_keeps_old_behaviour() {
+        // With `oxa.jobs.wakeOnFinish` false, Session::open installs no hook.
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.shared.bind_session("active");
+        let jobs = oxa_tools::JobRegistry::new();
+        jobs.set_sandbox(Arc::new(WakeSandbox { block: false }));
+        let id = jobs
+            .spawn_labeled(
+                wake_spec("gh run watch 1 --exit-status"),
+                "gh run watch 1 --exit-status",
+            )
+            .unwrap();
+        wait_until("the job exits", || {
+            jobs.read(&id).unwrap().status == oxa_tools::JobStatus::Exited(3)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!h.has_inbox_input());
+        assert!(h.shared.take_follow_up().is_empty());
+        // The output still waits for a read.
+        assert!(jobs.read(&id).unwrap().output.ends_with("line 25\n"));
     }
 }

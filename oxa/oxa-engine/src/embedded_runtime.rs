@@ -81,6 +81,7 @@ fn normalize(error: Error) -> OxaError {
     if matches!(
         refusal.code,
         "region_blocked"
+            | "cost_unknown_history"
             | "subscription_limit_reached"
             | "subscription_limit_exceeded"
             | "subscription_limits_not_configured"
@@ -95,7 +96,7 @@ fn normalize(error: Error) -> OxaError {
         // a configured but unusable cap (zero, negative, non-numeric) does.
         return OxaError::new(
             "budget_not_configured",
-            "Cloud models need a positive oxa.cloud.daily_budget_usd in oxa user settings.",
+            "oxa.cloud.daily_budget_usd must be a positive number in oxa user settings, or unset for no USD limit.",
         );
     }
     let normalized =
@@ -159,6 +160,7 @@ impl EmbeddedGateway for Backend {
         let mut deliver = |event| {
             let event = match event {
                 Event::Chunk(chunk) => GatewayEvent::Chunk(chunk),
+                Event::Warning(text) => GatewayEvent::Warning(text),
                 // Publish the committed completion with its private binder only
                 // after Gateway::chat returns its settled completion record.
                 Event::Done => return Control::Continue,

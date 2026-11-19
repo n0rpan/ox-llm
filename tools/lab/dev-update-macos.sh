@@ -80,7 +80,7 @@ fetch "https://api.github.com/repos/$repo/releases/tags/dev" "$work/release.json
 sha=$(jq -er 'select(.tag_name=="dev" and .prerelease and (.draft|not)) | .target_commitish | select(test("^[0-9a-f]{40}$"))' "$work/release.json")
 suffix="-dev.${sha:0:7}-macos-arm64.tar.gz"
 archive=$(jq -er --arg suffix "$suffix" \
-  '[.assets[]|select(.state=="uploaded" and (.name|startswith("ox-llm-v")) and (.name|endswith($suffix)))|.name] | select(length==1) | .[0]' "$work/release.json") || {
+  '[.assets[]|select(.state=="uploaded" and (.name|startswith("ox-llm-v")) and (.name|endswith($suffix)))|.name] | select(length>0) | sort_by(sub("^ox-llm-v";"")|split("-")[0]|split(".")|map(tonumber)) | .[-1]' "$work/release.json") || {
   echo "The dev release for commit $sha has no macos-arm64 asset; keeping the current install unchanged" >&2
   exit 1
 }

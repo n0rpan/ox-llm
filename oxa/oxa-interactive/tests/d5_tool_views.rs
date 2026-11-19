@@ -1,6 +1,4 @@
 //! D5 acceptance tests: Tool views.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_interactive::views::{collapse_lines, render_diff, render_tool, tool_header, tool_result_lines};
@@ -133,6 +131,7 @@ fn per_tool_call_renderers() {
     // A whole bash block: header, output, no footer for exit 0.
     let mut t = block("bash", json!({"command": "echo hi"}), ToolState::Done);
     t.result = Some(ToolOutput {
+        images: Vec::new(),
         text: "hi".into(),
         is_error: false,
         ui: json!({"exit": 0, "timedOut": false}),
@@ -320,6 +319,7 @@ fn error_state() {
     // A failed bash exit is shown.
     let mut b = block("bash", json!({"command": "false"}), ToolState::Done);
     b.result = Some(ToolOutput {
+        images: Vec::new(),
         text: String::new(),
         is_error: false,
         ui: json!({"exit": 3, "timedOut": false}),

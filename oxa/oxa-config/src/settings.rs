@@ -143,7 +143,20 @@ impl Settings {
 
     fn read_files(files: SettingsFiles, keep_project: Option<&Value>) -> Settings {
         let mut diagnostics = Vec::new();
-        let user = read_layer(&files.user, &mut diagnostics);
+        let mut user = read_layer(&files.user, &mut diagnostics);
+        // A present user file that cannot be used must not drop the owner's security
+        // settings (#1449): keep the most restrictive reading of them and say so.
+        if !diagnostics.is_empty() {
+            user = fail_safe_user_layer();
+            // One warning: the read problem plus what oxa kept and how to recover.
+            for d in &mut diagnostics {
+                d.message.push_str(
+                    "; oxa keeps the most restrictive security settings (offline on, bash network \
+                     off, new projects not trusted) and uses defaults for the rest. Fix or restore \
+                     this file and restart to recover",
+                );
+            }
+        }
         let (project, project_src) = match (files.project.as_deref(), keep_project) {
             (Some(path), Some(layer)) => (layer.clone(), path.display().to_string()),
             (Some(path), None) => (read_layer(path, &mut diagnostics), path.display().to_string()),
@@ -200,6 +213,11 @@ impl Settings {
     pub fn bool(&self, key: &str, default: bool) -> bool {
         self.get(key).and_then(Value::as_bool).unwrap_or(default)
     }
+    /// A bool read from the user layer only; a project file never changes it (use for settings
+    /// that start unattended model work). A missing or mistyped value yields `default`.
+    pub fn user_bool(&self, key: &str, default: bool) -> bool {
+        self.user_value(key).and_then(Value::as_bool).unwrap_or(default)
+    }
     pub fn u32(&self, key: &str, default: u32) -> u32 {
         self.get(key)
             .and_then(Value::as_u64)
@@ -228,6 +246,27 @@ impl Settings {
             Some(p) if p.rank() <= user.rank() => p,
             _ => user,
         }
+    }
+    /// The raw entries of a list setting as the user layer wrote them, before the merge applies
+    /// its `+x` / `-x` edits to the (empty) default. `[]` when the user layer does not set it.
+    /// A caller that patches its own built-in list (`oxa.approval.dangerous`) reads this, so an
+    /// edit list is not turned into a plain list that replaces the built-ins.
+    pub fn user_list(&self, key: &str) -> Vec<String> {
+        let mut cur = &self.user;
+        for part in key.split('.') {
+            match cur.as_object().and_then(|o| o.get(part)) {
+                Some(v) => cur = v,
+                None => return Vec::new(),
+            }
+        }
+        cur.as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
     /// A string list; `+x` / `-x` patch entries are already applied over the lower layer.
     pub fn list(&self, key: &str) -> Vec<String> {
@@ -421,9 +460,27 @@ impl Settings {
             Source::Default
         }
     }
+    /// True when a layer or an in-memory override sets `key`. A built-in default does not count.
+    pub(crate) fn is_explicit(&self, key: &str) -> bool {
+        self.source(key) != Source::Default || self.overrides.iter().any(|(k, _)| k == key)
+    }
     /// The value `key` has in the user file, if any (not the merged value).
     pub fn user_value(&self, key: &str) -> Option<&Value> {
         lookup(&self.user, key)
+    }
+    /// Whether the local agent channel (control lane) is on: `oxa.a2a.enabled`, default true.
+    /// Read from the user file only; a project file cannot change it.
+    pub fn a2a_enabled(&self) -> bool {
+        self.user_value("oxa.a2a.enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    }
+    /// Read a numeric setting from the user file with no project override.
+    pub fn user_u32(&self, key: &str, default: u32) -> u32 {
+        self.user_value(key)
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(default)
     }
     /// Set a key in memory and persist it to the user file (`project = false`) or the project
     /// file, keeping unrelated content and key order of that file. A field of a descriptor with
@@ -437,6 +494,12 @@ impl Settings {
         project: bool,
     ) -> Result<(), OxaError> {
         check_key_shape(key)?;
+        if project && crate::descriptor(key).is_some_and(|d| d.user_only) {
+            return Err(OxaError::new(
+                codes::INVALID,
+                format!("setting `{key}` is user-only; it cannot be set in a project file"),
+            ));
+        }
         if let Some(def) = find_key(key) {
             if !kind_matches(def.kind, &value) {
                 return Err(OxaError::new(
@@ -498,8 +561,12 @@ impl Settings {
     }
     /// Make `root` the layer for `project` in memory and recompose the merged settings.
     fn adopt(&mut self, path: &Path, root: Map<String, Value>, project: bool) {
-        let (checked, _) = check_root(&Value::Object(root), &path.display().to_string());
+        let source = path.display().to_string();
+        let (mut checked, _) = check_root(&Value::Object(root), &source);
         if project {
+            // A set/unset rereads the complete file before adopting the edited layer. Apply the
+            // same trust boundary as load so an unrelated edit cannot restore rejected keys.
+            strip_user_only(&mut checked, &source);
             self.project = checked;
         } else {
             self.user = checked;
@@ -606,6 +673,36 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn a2a_enabled_defaults_true_and_ignores_the_project_layer() {
+        assert!(Settings::from_values(json!({}), json!({})).a2a_enabled());
+        let project_off = Settings::from_values(json!({}), json!({"oxa": {"a2a": {"enabled": false}}}));
+        assert!(project_off.a2a_enabled());
+        let user_off = Settings::from_values(json!({"oxa": {"a2a": {"enabled": false}}}), json!({}));
+        assert!(!user_off.a2a_enabled());
+        let user_on_project_off = Settings::from_values(
+            json!({"oxa": {"a2a": {"enabled": true}}}),
+            json!({"oxa": {"a2a": {"enabled": false}}}),
+        );
+        assert!(user_on_project_off.a2a_enabled());
+    }
+
+    #[test]
+    fn headless_inbox_setting_is_user_only() {
+        let user_off = Settings::from_values(json!({"oxa": {"inbox": {"headless": false}}}), json!({}));
+        assert!(!user_off.user_bool("oxa.inbox.headless", true));
+        let project_on = Settings::from_values(
+            json!({"oxa": {"inbox": {"headless": false}}}),
+            json!({"oxa": {"inbox": {"headless": true}}}),
+        );
+        assert!(
+            !project_on.user_bool("oxa.inbox.headless", true),
+            "a project file cannot re-enable the headless inbox the user turned off"
+        );
+        let project_off = Settings::from_values(json!({}), json!({"oxa": {"inbox": {"headless": false}}}));
+        assert!(project_off.user_bool("oxa.inbox.headless", true));
+    }
+
+    #[test]
     fn set_rejects_field_outside_hard_range() {
         let range = crate::Range {
             min: 1,
@@ -654,6 +751,39 @@ mod tests {
         let keys: Vec<&str> = map.keys().map(String::as_str).collect();
         assert_eq!(keys, ["q", "r"], "pruned empty parent keeps order");
     }
+
+    #[test]
+    fn project_cannot_set_sandbox_net() {
+        let user = json!({"oxa": {"sandbox": {"net": "off"}}});
+        let project = json!({"oxa": {"sandbox": {"net": "on"}}});
+        let s = build(user, project, Vec::new(), "user", "project");
+        assert_eq!(s.merged["oxa"]["sandbox"]["net"], json!("off"));
+        assert!(s.project.get("oxa").is_none(), "pruned from the project layer");
+    }
+
+    #[test]
+    fn project_user_only_key_diagnostic() {
+        let project = json!({"oxa": {"sandbox": {"net": "on"}}, "theme": "dark"});
+        let s = build(json!({}), project, Vec::new(), "user", "project");
+        let hits: Vec<_> = s
+            .diagnostics
+            .iter()
+            .filter(|d| d.source == "project" && d.message.contains("oxa.sandbox.net"))
+            .collect();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(s.merged["theme"], json!("dark"), "other project keys still apply");
+    }
+
+    #[test]
+    fn project_set_of_user_only_key_is_refused() {
+        let root = Path::new("/nonexistent-oxa-test");
+        let dirs = Dirs::under(root);
+        let mut s = build(json!({}), json!({}), Vec::new(), "user", "project");
+        let err = s
+            .set(&dirs, root, "oxa.sandbox.net", json!("on"), true)
+            .expect_err("refused");
+        assert!(err.to_string().contains("user-only"));
+    }
 }
 
 /// Merge the layers over the built-in defaults and validate each layer. Wrongly typed values
@@ -666,9 +796,10 @@ fn build(
     project_src: &str,
 ) -> Settings {
     let (user, user_diags) = check_root(&user, user_src);
-    let (project, project_diags) = check_root(&project, project_src);
+    let (mut project, project_diags) = check_root(&project, project_src);
     diagnostics.extend(user_diags);
     diagnostics.extend(project_diags);
+    diagnostics.extend(strip_user_only(&mut project, project_src));
     let merged = compose(&user, &project);
     Settings {
         merged,
@@ -679,6 +810,28 @@ fn build(
         overrides: Vec::new(),
         files: None,
     }
+}
+
+/// Drop every key whose descriptor is `user_only` from the project layer, with one warning
+/// per key. A cloned repository must not widen the sandbox, the network or the home-folder
+/// rules; those keys count only from the user file (SECURITY.md, "Refusals that stay in yolo").
+fn strip_user_only(project: &mut Value, source: &str) -> Vec<Diagnostic> {
+    let Some(map) = project.as_object_mut() else {
+        return Vec::new();
+    };
+    let mut diags = Vec::new();
+    for d in crate::descriptors().iter().filter(|d| d.user_only) {
+        if remove_nested(map, d.key) {
+            diags.push(warn(
+                source,
+                format!(
+                    "setting `{}` is user-only and is ignored in a project file; set it in your user settings",
+                    d.key
+                ),
+            ));
+        }
+    }
+    diags
 }
 
 /// defaults < user < project. The defaults layer carries oxa's default tool list so that a
@@ -703,6 +856,16 @@ fn queue_mode(value: Option<&str>) -> QueueMode {
         Some("all") => QueueMode::All,
         _ => QueueMode::OneAtATime,
     }
+}
+
+/// The user layer used when the user's settings file exists but cannot be read, parsed or is
+/// not an object: every network and trust setting at its most restrictive value. Other
+/// settings are absent, so they take their defaults.
+fn fail_safe_user_layer() -> Value {
+    serde_json::json!({
+        "oxa": {"offline": true, "sandbox": {"net": "off"}, "engine": {"allowRemote": false}},
+        "defaultProjectTrust": "never"
+    })
 }
 
 /// Read one settings file. A missing file is an empty object; an unreadable or unparsable file

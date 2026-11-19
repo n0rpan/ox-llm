@@ -130,6 +130,18 @@ fn cloud_routes(user: &Settings) -> Option<Cloud> {
     if let Some(models) = user.get("oxa.cloud.models").filter(|v| !v.is_null()) {
         for route in models.as_object()?.values() {
             let provider = route.get("provider")?.as_str()?;
+            // Keep readiness aligned with the fields `open_gateway` requires before it can
+            // construct a route. Credentials remain stat-only below.
+            route
+                .get("upstream_model")
+                .and_then(Value::as_str)
+                .filter(|model| !model.is_empty())?;
+            for field in ["context_window", "max_output"] {
+                route
+                    .get(field)
+                    .and_then(Value::as_u64)
+                    .and_then(|limit| u32::try_from(limit).ok())?;
+            }
             cloud
                 .providers
                 .insert(PROVIDERS.into_iter().find(|p| *p == provider)?);
@@ -235,7 +247,12 @@ mod tests {
             "defaultModel": "openai/gpt-6.2-sol",
             "oxa": {
                 "engine": {"inProcessCloud": true},
-                "cloud": {"models": {"gpt-sol": {"provider": "openai"}}}
+                "cloud": {"models": {"gpt-sol": {
+                    "provider": "openai",
+                    "upstream_model": "gpt-6.2-sol",
+                    "context_window": 128000,
+                    "max_output": 16384
+                }}}
             }
         })
     }
@@ -308,6 +325,27 @@ mod tests {
         assert_eq!(code, 0);
         let printed: Value = serde_json::from_slice(&out).expect("one JSON object");
         assert_eq!(printed["type"], "oxa_suite_status");
+    }
+
+    #[test]
+    fn incomplete_cloud_route_reports_config_error() {
+        let env = TestEnv::new();
+        let dirs = Dirs::under(env.root());
+        write_key(&dirs, 0o600);
+        let user = Settings::from_values(
+            json!({
+                "oxa": {
+                    "engine": {"inProcessCloud": true},
+                    "cloud": {"models": {"gpt-sol": {"provider": "openai"}}}
+                }
+            }),
+            json!({}),
+        );
+
+        let value = suite_value(&user, &dirs, true, 1);
+        assert_eq!(value["cloud"]["state"], "error");
+        assert_eq!(value["cloud"]["fix"], "fix_config");
+        assert_eq!(value["cloud"]["routes"], 0);
     }
 
     #[test]

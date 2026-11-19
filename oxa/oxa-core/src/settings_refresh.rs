@@ -31,6 +31,7 @@ pub(crate) fn resync(st: &SessionState) {
 // allocation to every successful refresh solely to reduce this short-lived enum's stack size.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Refresh {
     /// Same stamps: nothing was read.
     Unchanged,
@@ -179,6 +180,7 @@ pub(crate) fn refresh_at_run_start(st: &mut SessionState, sink: &mut dyn EventSi
         } => {
             if changed.is_empty() {
                 st.settings = settings;
+                crate::session::sync_job_wake(st);
                 return;
             }
             let prev_enabled = st.settings.compaction().enabled;
@@ -202,6 +204,7 @@ pub(crate) fn refresh_at_run_start(st: &mut SessionState, sink: &mut dyn EventSi
                 let _ = write!(message, "\n{}: {}", diagnostic.source, diagnostic.message);
             }
             st.settings = settings;
+            crate::session::sync_job_wake(st);
             st.shared.publish_live_settings(&st.settings);
             notice(sink, level, message);
             if prompt {
