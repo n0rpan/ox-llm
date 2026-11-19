@@ -235,6 +235,18 @@ fn git_fingerprint(cwd: &Path) -> Option<u64> {
 }
 
 impl DoneState {
+    fn observe_tree(&mut self, now: Option<u64>, file_edit: bool) {
+        // In a mixed batch, note_proof has already used call order to decide whether a check
+        // followed the edit. Keep that decision and only synchronize the observed tree here.
+        if file_edit {
+            self.tree = now;
+        } else if now != self.tree {
+            self.dirty = true;
+            self.proof.changed();
+            self.tree = now;
+        }
+    }
+
     pub(crate) fn note_edits(&mut self, results: &[CallResult]) {
         if results
             .iter()
@@ -278,19 +290,24 @@ impl DoneState {
     /// tools; not the read-only built-ins): a changed work folder counts as an edit.
     pub(crate) fn note_bash(&mut self, st: &SessionState, results: &[CallResult]) {
         const READ_ONLY: [&str; 4] = ["read", "grep", "find", "ls"];
+        let file_edit = results
+            .iter()
+            .any(|r| !r.is_error && (r.tool_name == "edit" || r.tool_name == "write"));
         // Already dirty and unproven: a look at the tree cannot change the answer.
         if (self.dirty && !self.proof.checked)
             || self.tree.is_none()
             || results.iter().all(|r| READ_ONLY.contains(&r.tool_name.as_str()))
         {
+            // File tools mark the proof directly, but their successful edit must also advance
+            // the fingerprint. Otherwise a passing check in the next batch compares with the
+            // pre-edit tree and incorrectly treats the already-observed edit as a later change.
+            if file_edit && self.tree.is_some() {
+                self.observe_tree(tree_fingerprint(&st.cwd), true);
+            }
             return;
         }
         let now = tree_fingerprint(&st.cwd);
-        if now != self.tree {
-            self.dirty = true;
-            self.proof.changed();
-            self.tree = now;
-        }
+        self.observe_tree(now, file_edit);
     }
 }
 
@@ -726,6 +743,23 @@ mod tests {
         proof.passed();
         proof.changed();
         assert!(proof.unproven());
+    }
+
+    #[test]
+    fn observed_edit_fingerprint_does_not_undo_a_later_passing_check() {
+        let mut state = DoneState {
+            tree: Some(1),
+            ..DoneState::default()
+        };
+        state.dirty = true;
+        state.proof.changed();
+
+        // This is the file-edit branch of note_bash: synchronize the edit while it is known.
+        state.observe_tree(Some(2), true);
+        state.proof.passed();
+        state.observe_tree(Some(2), false);
+
+        assert!(!state.proof.unproven());
     }
 
     #[test]
