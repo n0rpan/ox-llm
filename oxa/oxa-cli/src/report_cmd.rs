@@ -422,12 +422,17 @@ pub(crate) fn submit_record(
     } else {
         vec!["issue", "create", "--repo", &repo, "--title", &title]
     };
-    // Keep the bytes that were displayed and approved in this process. A draft lives in a
-    // model-writable directory, so handing `gh` a pathname would let another process replace
-    // the file between confirmation and the time `gh` opens it.
-    args.extend(["--body", body]);
+    // Hand `gh` exactly the bytes that were displayed and approved. The draft lives in a
+    // model-writable directory, so its pathname could be swapped between the owner's yes and
+    // `gh` opening it; the body as an argument fails past the kernel's argument size. The
+    // approved bytes go into a staged descriptor nothing else can name or change.
+    let staged =
+        ApprovedBody::stage(body).map_err(|e| OxaError::io("cannot stage the approved issue body", &e))?;
+    let body_path = staged.path();
+    args.extend(["--body-file", &body_path]);
     let args: Vec<String> = args.into_iter().map(str::to_string).collect();
     let result = runner("gh", &args);
+    drop(staged);
     match result {
         Some((0, stdout)) => {
             if let Some(plan) = &mut publication {
@@ -459,6 +464,77 @@ pub(crate) fn submit_record(
             Ok(Submission::Local("GitHub CLI could not run".into()))
         }
     }
+}
+
+/// The approved issue body, staged for `gh --body-file /dev/fd/N`. The descriptor has no
+/// close-on-exec flag, so the `gh` child inherits it; it is closed when this value drops.
+///
+/// On Linux it is a memfd: it has no pathname a model-run process could replace, and it is
+/// sealed against writes, growth and shrinking before `gh` starts, so nobody (not even a
+/// process that reopens it through `/proc`) can change the bytes after the owner's yes. Other
+/// platforms have no OS sandbox (commands run with the owner's full rights); there it is a
+/// private file unlinked as soon as it is created.
+pub(crate) struct ApprovedBody {
+    file: std::fs::File,
+}
+
+impl ApprovedBody {
+    pub(crate) fn stage(body: &str) -> std::io::Result<Self> {
+        Ok(Self {
+            file: stage_bytes(body.as_bytes())?,
+        })
+    }
+
+    /// The path `gh` opens: the inherited descriptor, never a file in the draft directory.
+    pub(crate) fn path(&self) -> String {
+        use std::os::fd::AsRawFd;
+        format!("/dev/fd/{}", self.file.as_raw_fd())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn stage_bytes(bytes: &[u8]) -> std::io::Result<std::fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    // No MFD_CLOEXEC: the `gh` child inherits the descriptor.
+    // SAFETY: a NUL-terminated name and valid flags; the returned descriptor is owned below.
+    let fd = unsafe { libc::memfd_create(b"oxa-approved-body\0".as_ptr().cast(), libc::MFD_ALLOW_SEALING) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is a fresh descriptor that nothing else owns.
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    file.write_all(bytes)?;
+    let seals = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
+    // SAFETY: fcntl on a descriptor this function owns.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, seals) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(file)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn stage_bytes(bytes: &[u8]) -> std::io::Result<std::fs::File> {
+    use std::io::{Seek, SeekFrom};
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let path = std::env::temp_dir().join(format!("oxa-approved-body-{}-{nanos}", std::process::id()));
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
+    std::fs::remove_file(&path)?;
+    file.write_all(bytes)?;
+    file.seek(SeekFrom::Start(0))?;
+    // SAFETY: fcntl on a descriptor this function owns; clears close-on-exec for `gh`.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFD, 0) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(file)
 }
 
 /// The real confirmation. Under oxa's own tools the session exports `OXA_CONFIRM_SOCK`: the
@@ -553,6 +629,27 @@ mod confirm_tests {
         let path = sock.to_string_lossy().into_owned();
         let env = Env::from_pairs(&[("OXA_CONFIRM_SOCK", &path)]);
         assert_eq!(tty_confirm(&env)("q"), None);
+    }
+
+    #[test]
+    fn approved_body_is_staged_unchangeable_and_unbounded_by_argv() {
+        // Far past the ~128 KiB a single argument may hold.
+        let body = "\u{2603}".repeat(60_000);
+        let staged = ApprovedBody::stage(&body).expect("stage");
+        let path = staged.path();
+        assert!(path.starts_with("/dev/fd/"), "{path}");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), body);
+        #[cfg(target_os = "linux")]
+        {
+            // Sealed: neither writing through a reopened descriptor nor truncating it can
+            // change the approved bytes.
+            if let Ok(mut file) = std::fs::OpenOptions::new().write(true).open(&path) {
+                assert!(file.write_all(b"unapproved").is_err());
+            }
+            let _ = std::fs::OpenOptions::new().write(true).truncate(true).open(&path);
+            assert_eq!(std::fs::read_to_string(&path).expect("read"), body);
+        }
+        drop(staged);
     }
 
     #[test]

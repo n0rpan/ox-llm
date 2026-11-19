@@ -246,7 +246,10 @@ impl Bwrap {
         live: &mut dyn FnMut(&[u8]),
         capture: bool,
     ) -> ExecResult {
-        let (public, secret) = split_secrets(s);
+        let (mut public, secret) = split_secrets(s);
+        if public.env.iter().any(|(key, _)| key == OWNER_CONFIRM_SOCK_ENV) {
+            bwrap::keep_broker_only_if(&mut public, bwrap::denies_nested_userns(&self.bwrap));
+        }
         use std::os::fd::AsRawFd;
         let pinned: Vec<(&Path, std::fs::File)> = Vec::new();
         #[cfg(target_os = "linux")]

@@ -98,7 +98,7 @@ pub fn ask(sock: &Path, question: &str) -> Option<bool> {
     let mut stream = UnixStream::connect(sock).ok()?;
     writeln!(stream, "{}", json!({"question": question, "preview_sha256": sha})).ok()?;
     let mut line = String::new();
-    BufReader::new(&stream).read_line(&mut line).ok()?;
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).ok()?;
     let reply: Value = serde_json::from_str(&line).ok()?;
     match reply.get("answer").and_then(Value::as_str)? {
         "yes" => Some(true),

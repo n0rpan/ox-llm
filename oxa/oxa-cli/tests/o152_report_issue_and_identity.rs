@@ -310,15 +310,21 @@ fn submit_posts_the_exact_text_after_yes() {
             Some(true)
         },
         &mut |p: &str, args: &[String]| {
-            let posted = args
+            let file = args
                 .iter()
-                .position(|a| a == "--body")
+                .position(|a| a == "--body-file")
                 .map(|i| args[i + 1].clone())
                 .unwrap();
             // Replacing the model-writable draft after approval cannot change the bytes passed
-            // to `gh`: the approved body is an owned argument, not a pathname that `gh` reopens.
+            // to `gh`: the approved body is a staged descriptor, not a file in the draft directory.
+            assert!(file.starts_with("/dev/fd/"), "{file}");
             std::fs::write(&draft, "Title: Replaced\n\nunapproved body\n").unwrap();
-            calls.push((p.to_string(), args.to_vec(), posted));
+            let _ = std::fs::write(draft.with_extension("body.md"), "unapproved body");
+            calls.push((
+                p.to_string(),
+                args.to_vec(),
+                std::fs::read_to_string(&file).unwrap(),
+            ));
             Some((0, "https://github.com/owner/ox-llm/issues/1\n".to_string()))
         },
         &mut out,
@@ -340,7 +346,10 @@ fn submit_posts_the_exact_text_after_yes() {
         ]
     );
     assert_eq!(posted, body, "the body posted is the body shown");
-    assert!(!args.iter().any(|arg| arg == "--body-file"));
+    assert!(
+        !args.iter().any(|arg| arg == "--body"),
+        "never the body as an argument"
+    );
     assert_eq!(
         confirmation,
         format!(

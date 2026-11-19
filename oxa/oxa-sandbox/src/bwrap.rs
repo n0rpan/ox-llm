@@ -96,8 +96,25 @@ pub(crate) fn bwrap_args_pinned(
     let cwd_c = canon(&s.cwd);
     let cwd_path = cwd_c.as_path();
     let cwd = cwd_c.to_string_lossy().into_owned();
+    // The broker lives below the private agent directory, which the home tmpfs below hides.
+    // Pin that exact socket at a fixed, read-only mount point (`/run`, below). A command can
+    // replace its environment, but it cannot replace this mount or make the client trust
+    // another listener.
+    let owner_confirm = s
+        .env
+        .iter()
+        .rev()
+        .find(|(key, _)| key == crate::OWNER_CONFIRM_SOCK_ENV)
+        .map(|(_, value)| value);
     let mut a: Vec<String> = Vec::new();
     push(&mut a, &["--unshare-all"]);
+    if owner_confirm.is_some() {
+        // `--cap-drop ALL` does not survive `unshare -Urm`: in a nested user namespace a
+        // command regains mount rights and could stack a fake listener over the trusted mount
+        // point. With the broker mounted, nested user namespaces are denied. The launcher only
+        // keeps the broker for a bwrap that supports this ([`denies_nested_userns`]).
+        push(&mut a, &["--unshare-user", "--disable-userns"]);
+    }
     if s.net {
         push(&mut a, &["--share-net"]);
     }
@@ -109,16 +126,6 @@ pub(crate) fn bwrap_args_pinned(
         &mut a,
         &["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"],
     );
-    // The broker lives below the private agent directory, which the home tmpfs below hides.
-    // Pin that exact socket at a fixed, read-only mount point (below, inside the sandbox's
-    // `/tmp`). A command can replace its environment, but it cannot replace this mount or make
-    // the client trust another listener.
-    let owner_confirm = s
-        .env
-        .iter()
-        .rev()
-        .find(|(key, _)| key == crate::OWNER_CONFIRM_SOCK_ENV)
-        .map(|(_, value)| value);
     // #457: the session directory, or a fresh tmpfs. Before the home and every mask (N28).
     match &layout.scratch {
         Some(sc) => push(&mut a, &["--bind", &sc.path().to_string_lossy(), "/tmp"]),
@@ -533,6 +540,41 @@ fn confirm_socket(s: &ExecSpec) -> Option<&Path> {
 
 #[cfg(test)]
 mod confirm_socket_tests {
+    #[test]
+    fn broker_mount_denies_nested_user_namespaces() {
+        let mut spec = ExecSpec {
+            command: "true".into(),
+            cwd: std::env::temp_dir(),
+            env: vec![(
+                crate::OWNER_CONFIRM_SOCK_ENV.to_string(),
+                "/nonexistent/confirm.sock".into(),
+            )],
+            writable: true,
+            net: false,
+            timeout_s: None,
+        };
+        let home = Path::new("/nonexistent-home");
+        let argv = bwrap_args(&spec, home);
+        let deny = argv
+            .windows(2)
+            .position(|w| w == ["--unshare-user", "--disable-userns"])
+            .expect("nested user namespaces are denied with the broker mounted");
+        let mount = argv
+            .iter()
+            .position(|x| x == crate::OWNER_CONFIRM_SOCK)
+            .expect("broker mounted");
+        assert!(deny < mount);
+        // Without a broker nothing changes: nested namespaces stay available to commands.
+        let mut plain = spec.clone();
+        keep_broker_only_if(&mut plain, false);
+        assert!(plain.env.is_empty(), "no denial support, no broker");
+        let argv = bwrap_args(&plain, home);
+        assert!(!argv.iter().any(|x| x == "--disable-userns"));
+        assert!(!argv.iter().any(|x| x == crate::OWNER_CONFIRM_SOCK));
+        keep_broker_only_if(&mut spec, true);
+        assert_eq!(spec.env.len(), 1, "with denial support the broker stays");
+    }
+
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
@@ -1327,6 +1369,53 @@ fn is_executable(p: &Path) -> bool {
     std::fs::metadata(p)
         .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
+}
+
+/// Whether `bwrap` can deny nested user namespaces (`--unshare-user --disable-userns`,
+/// bubblewrap 0.8 and later, with user namespaces available). Probed once per binary.
+pub(crate) fn denies_nested_userns(bwrap: &Path) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashMap<PathBuf, bool>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(known) = seen.lock().unwrap_or_else(|p| p.into_inner()).get(bwrap) {
+        return *known;
+    }
+    let argv: Vec<String> = [
+        bwrap.to_string_lossy().as_ref(),
+        "--unshare-all",
+        "--unshare-user",
+        "--disable-userns",
+        "--ro-bind",
+        "/",
+        "/",
+        "true",
+    ]
+    .iter()
+    .map(|x| (*x).to_string())
+    .collect();
+    let r = run_argv(
+        &argv,
+        &[],
+        Some(PROBE_TIMEOUT_S),
+        &CancelToken::new(),
+        &mut |_| {},
+    );
+    let ok = r.exit == Some(0);
+    seen.lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(bwrap.to_path_buf(), ok);
+    ok
+}
+
+/// Keep the owner confirm broker in `s` only when `denied` (nested user namespaces are denied
+/// in the sandbox). Without that denial a command could mount a fake listener over the trusted
+/// socket path and forge the owner's yes, so the command gets no broker: its confirmation is
+/// then "none" and nothing is published (fail closed).
+pub(crate) fn keep_broker_only_if(s: &mut ExecSpec, denied: bool) {
+    if !denied {
+        s.env.retain(|(key, _)| key != crate::OWNER_CONFIRM_SOCK_ENV);
+    }
 }
 
 /// Run `bwrap --unshare-all --ro-bind / / true`; anything but a clean exit is `no_sandbox`.
