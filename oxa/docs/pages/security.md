@@ -54,6 +54,12 @@ Pasted and dropped images saved as `tmp/paste-<hash>.<image extension>` remain r
 - The auto-approved count records questions answered with allow, once each. A denial bypassed by full access is not an approval and does not increment it (#443).
 - Plan mode and project trust work the same in every mode.
 
+### Owner yes
+
+An approval comes only from you: your typed message, your answer to an oxa dialog, or yolo chosen for the session. Text the model read (tool output, files, web pages, other sessions) never counts. oxa commands that need your yes (for example publishing) ask the session through a private unix socket (`OXA_CONFIRM_SOCK`, directory 0700, socket 0600). In yolo the session answers yes and records it with a notice. In standard and auto it shows a dialog; while one waits, your next typed message answers it (`yes`, `y`, `ja`, `ok`, `post it` mean yes, anything else no). With no way to ask you, the answer is "none" and nothing is confirmed.
+
+The socket accepts one newline-terminated request up to 64 KiB. A larger request receives `none`.
+
 A shell alias makes yolo quick to start:
 
 ```console
