@@ -660,6 +660,39 @@ mod tests {
         let keys: Vec<&str> = map.keys().map(String::as_str).collect();
         assert_eq!(keys, ["q", "r"], "pruned empty parent keeps order");
     }
+
+    #[test]
+    fn project_cannot_set_sandbox_net() {
+        let user = json!({"oxa": {"sandbox": {"net": "off"}}});
+        let project = json!({"oxa": {"sandbox": {"net": "on"}}});
+        let s = build(user, project, Vec::new(), "user", "project");
+        assert_eq!(s.merged["oxa"]["sandbox"]["net"], json!("off"));
+        assert!(s.project.get("oxa").is_none(), "pruned from the project layer");
+    }
+
+    #[test]
+    fn project_user_only_key_diagnostic() {
+        let project = json!({"oxa": {"sandbox": {"net": "on"}}, "theme": "dark"});
+        let s = build(json!({}), project, Vec::new(), "user", "project");
+        let hits: Vec<_> = s
+            .diagnostics
+            .iter()
+            .filter(|d| d.source == "project" && d.message.contains("oxa.sandbox.net"))
+            .collect();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(s.merged["theme"], json!("dark"), "other project keys still apply");
+    }
+
+    #[test]
+    fn project_set_of_user_only_key_is_refused() {
+        let root = Path::new("/nonexistent-oxa-test");
+        let dirs = Dirs::under(root);
+        let mut s = build(json!({}), json!({}), Vec::new(), "user", "project");
+        let err = s
+            .set(&dirs, root, "oxa.sandbox.net", json!("on"), true)
+            .expect_err("refused");
+        assert!(err.to_string().contains("user-only"));
+    }
 }
 
 /// Merge the layers over the built-in defaults and validate each layer. Wrongly typed values
@@ -861,37 +894,4 @@ fn set_nested(root: &mut Map<String, Value>, key: &str, value: Value) {
         };
     }
     cur.insert((*last).to_string(), value);
-
-    #[test]
-    fn project_cannot_set_sandbox_net() {
-        let user = json!({"oxa": {"sandbox": {"net": "off"}}});
-        let project = json!({"oxa": {"sandbox": {"net": "on"}}});
-        let s = build(user, project, Vec::new(), "user", "project");
-        assert_eq!(s.merged["oxa"]["sandbox"]["net"], json!("off"));
-        assert!(s.project.get("oxa").is_none(), "pruned from the project layer");
-    }
-
-    #[test]
-    fn project_user_only_key_diagnostic() {
-        let project = json!({"oxa": {"sandbox": {"net": "on"}}, "theme": "dark"});
-        let s = build(json!({}), project, Vec::new(), "user", "project");
-        let hits: Vec<_> = s
-            .diagnostics
-            .iter()
-            .filter(|d| d.source == "project" && d.message.contains("oxa.sandbox.net"))
-            .collect();
-        assert_eq!(hits.len(), 1);
-        assert_eq!(s.merged["theme"], json!("dark"), "other project keys still apply");
-    }
-
-    #[test]
-    fn project_set_of_user_only_key_is_refused() {
-        let root = Path::new("/nonexistent-oxa-test");
-        let dirs = Dirs::under(root);
-        let mut s = build(json!({}), json!({}), Vec::new(), "user", "project");
-        let err = s
-            .set(&dirs, root, "oxa.sandbox.net", json!("on"), true)
-            .expect_err("refused");
-        assert!(err.to_string().contains("user-only"));
-    }
 }
