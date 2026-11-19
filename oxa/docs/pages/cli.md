@@ -335,6 +335,7 @@ Every boolean variable takes the same eight words, in any case: `1`, `true`, `ye
 | `OXA_SESSION_ID`, `OXA_SESSION_FILE` | *set*: the current session id, and the session file (unset when the session is ephemeral) |
 | `OXA_PROVIDER`, `OXA_MODEL`, `OXA_REASONING_LEVEL` | *set*: the provider (always `oxe`), the model id and the effective thinking level |
 | `OXA_CODING_AGENT`, `AI_AGENT` | *set*: process markers; `OXA_CODING_AGENT` is `true` and `AI_AGENT` is `oxa` in child processes |
+| `OXA_CONFIRM_SOCK` | *set*: the path of the session's private owner confirm socket (directory 0700, socket 0600), through which oxa commands ask you for a yes |
 | `OXA_TOOL_CALL_ID` | *set*: the id of the running tool call, in the environment of an extension tool |
 | `OXA_WORK_OWNER_CONFIRMED` | `1` from a surface that holds the owner's own confirmation: confirms the lane push of `oxa work` without the terminal question. Ignored while a coding-agent marker (`OXA_CODING_AGENT`, `AI_AGENT`, `OXA_SUBAGENT_DEPTH`) is set |
 | `OXA_WORK_OUTPUT_DIR` | *set*: `oxa work` sets it for done-check commands to the task's private output directory, when it has one |

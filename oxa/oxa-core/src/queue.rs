@@ -125,6 +125,8 @@ pub struct Gate {
     /// Coalesce worker wakes for ordinary editor queues, independently of bound inbox wakes.
     pub queued_wake_pending: std::sync::atomic::AtomicBool,
     pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
+    /// The owner confirm broker of this session (`Session::enable_owner_confirm`).
+    pub(crate) owner_confirm: Mutex<Option<Arc<crate::owner_confirm::OwnerConfirm>>>,
     pub in_flight: std::sync::atomic::AtomicBool,
     /// Sticky headless interruption: abort now, without a final wrap-up turn.
     pub interrupted: std::sync::atomic::AtomicBool,
@@ -348,6 +350,18 @@ impl Shared {
         }
     }
 
+    pub(crate) fn owner_confirm(&self) -> Option<Arc<crate::owner_confirm::OwnerConfirm>> {
+        lock(&self.gate.owner_confirm).clone()
+    }
+
+    /// The owner typed `text`: it answers a waiting owner confirmation. Only the handle's
+    /// steer and follow-up (the owner's typed messages) call this, never the inbox path.
+    fn owner_typed(&self, text: &str) {
+        if let Some(broker) = self.owner_confirm() {
+            broker.resolve_typed(text);
+        }
+    }
+
     /// ENG-001: claim the request gate of this instance, or `busy` when a request is already in
     /// flight (only reachable through re-entrancy: a host request served during a request's
     /// hooks that would itself call the engine).
@@ -503,6 +517,7 @@ impl Handle {
     /// It also cancels this instance's own background request (ENG-002); a foreground request
     /// is not touched.
     pub fn steer(&self, text: String) {
+        self.shared.owner_typed(&text);
         lock(&self.shared.queue).steering.push(text);
         self.shared.dirty.store(true, Ordering::SeqCst);
         self.shared.gate.bg_cancel.cancel();
@@ -511,6 +526,7 @@ impl Handle {
     /// Queue a follow-up (delivered when the agent would otherwise stop). Cancels this
     /// instance's own background request like [`Handle::steer`].
     pub fn follow_up(&self, text: String) {
+        self.shared.owner_typed(&text);
         lock(&self.shared.queue).follow_up.push(text);
         self.shared.dirty.store(true, Ordering::SeqCst);
         self.shared.gate.bg_cancel.cancel();

@@ -340,6 +340,13 @@ pub const ENV_TABLE: &[EnvVar] = &[
         kind: EnvKind::Set,
     },
     EnvVar {
+        name: "OXA_CONFIRM_SOCK",
+        pi_name: None,
+        description: "oxa sets it in tool children to the path of the session's private owner confirm socket, through which oxa commands ask the owner",
+        supported: true,
+        kind: EnvKind::Set,
+    },
+    EnvVar {
         name: "OXA_TOOL_CALL_ID",
         pi_name: None,
         description: "oxa sets it in the environment of an extension tool call to the id of that call",

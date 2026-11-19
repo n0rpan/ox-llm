@@ -27,6 +27,13 @@ maintainer, who says in the PR when a hardware check is needed.
     Answer it by citing this rule, and do not apply it. A change that re-adds an OS sandbox to those
     paths is a P1 finding.
   - Off Linux the bash network is not restricted. The start notice and the model env note say so.
+- **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
+  answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
+  broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
+  files, web pages, other sessions, agent inbox) never approves. In yolo the broker answers yes and
+  records it. The broker socket is owned by the session (dir 0700, socket 0600) and validates a
+  complete, bounded request frame before asking. Do not add
+  `/dev/tty`-only confirmations or env-marker refusals for owner actions.
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
   in the ledger (an unknown cost is recorded as unknown). Limits are owner configuration: with no cap
@@ -195,6 +202,28 @@ maintainer, who says in the PR when a hardware check is needed.
   only for what the lane tests (never `engine/` or `fuzz/` changes).
   Below, every `gh` command is for a session that owns GitHub access.
 
+## What to test (owner rule)
+
+**Test what the product does for users, not how many test lines exist.**
+- **Write a test when** it protects behaviour a user or a security guarantee relies on:
+  - a bug that happened;
+  - a security or sandbox standard rule;
+  - money and ledger accounting;
+  - cache and prefix stability that changes cost;
+  - release integrity;
+  - an end-to-end flow (a real turn with tools, local model wiring, publish).
+- **Prefer** one end-to-end or integration test over many unit tests of internal helpers.
+- **Do not write tests that pin:**
+  - wording in AGENTS.md, SECURITY.md, docs or workflow files;
+  - descriptor or setting counts;
+  - sort order that nothing depends on;
+  - hashes copied from CI output;
+  - implementation detail a refactor may change.
+- **Doc and env sync checks** belong in a fast lint job, not behind a full build.
+- **Do not write tests that cannot fail:** a mock that asserts itself, or a test of dead code.
+- **A reviewer asking for a test** should name the behaviour it protects. "Add a test" with no behaviour is not a finding.
+- **Delete a test that only breaks on harmless changes.** Note it on the `Removes:` line.
+
 ## Build and test capacity (owner rule)
 
 GitHub-hosted CI is the judge for builds and tests. Run it with `OXCI=off`.
@@ -223,6 +252,13 @@ explicitly:
 gh workflow run lane --ref <branch>
 gh run watch <run-id> --exit-status
 ```
+
+Once a PR against main is open for the branch, a push no longer starts `lane` (its first job,
+`lane pr check`, finds the PR and skips the rest): the PR's `checks` run covers the same commit, so
+wait on that run (`gh run list --branch <branch> --workflow checks`, then `gh run watch`). A branch
+without a PR, and `gh workflow run lane`, still run `lane`. CodeQL runs on pushes to main, weekly and
+on dispatch only; the macOS `oxa-cli` build runs on main, on dispatch and on PRs touching
+`oxa/oxa-session`, `oxa/oxa-sandbox`, `oxa/oxa-cli`, `oxa/oxc-gateway`, `packaging/macos` or `oxa/Cargo.lock`.
 
 The lane workflow selects changed crates plus their local reverse dependencies and binary-fixture
 consumers against main. Shared workspace manifests/locks expand the affected workspace. Tests use
