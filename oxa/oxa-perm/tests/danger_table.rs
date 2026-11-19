@@ -874,6 +874,30 @@ const ROWS: &[Row] = &[
         cwd: ".",
         expect: CRED,
     },
+    Row {
+        name: "line_continuation_is_whitespace",
+        cmd: "FOO=1 \\\nrm -rf /var/tmp/victim",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
+        name: "timeout_long_signal_option",
+        cmd: "timeout --signal TERM 5 rm -rf /var/tmp/victim",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
+        name: "sql_truncate_after_a_statement",
+        cmd: "psql -c 'BEGIN; TRUNCATE TABLE t; COMMIT;'",
+        cwd: ".",
+        expect: SQL,
+    },
+    Row {
+        name: "oxa_global_flag_before_send",
+        cmd: "oxa --offline send session-000 'follow up'",
+        cwd: ".",
+        expect: OXA,
+    },
 ];
 
 fn setup() -> (TestEnv, PathGuard) {
