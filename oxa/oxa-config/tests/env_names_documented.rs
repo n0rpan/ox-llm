@@ -17,6 +17,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "XDG_RUNTIME_DIR",
         "OS: runtime directory, bound into the bash sandbox",
     ),
+    (
+        "XDG_CONFIG_HOME",
+        "OS: config directory, to find the GitHub CLI's hosts.yml for host-output redaction",
+    ),
     ("CARGO", "build tool: cargo path in the parity harness"),
     ("OXA_BIN", "parity harness: path of the oxa binary under test"),
     (
