@@ -4,12 +4,18 @@
 //! `chatgpt-auth.json`. Its persistent sibling `chatgpt-auth.lock` is also used by Python.
 //! Never unlink the lock: independent opens of that inode serialize threads and processes.
 //! Available with `upstream-openai` + `secrets`; unused code adds no default-binary code.
+#[cfg(target_os = "linux")]
+use nix::fcntl::{renameat2, RenameFlags};
+#[cfg(not(target_os = "linux"))]
+use nix::unistd::linkat;
 use nix::{
-    fcntl::{openat, renameat, renameat2, Flock, FlockArg, OFlag, RenameFlags},
+    fcntl::{openat, renameat, AtFlags, Flock, FlockArg, OFlag},
     sys::stat::{mkdirat, Mode},
     unistd::{getuid, unlinkat, UnlinkatFlags},
 };
 use serde_json::{json, Value};
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     ffi::{OsStr, OsString},
     fmt,
@@ -17,12 +23,13 @@ use std::{
     io::{Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 const MAX_BYTES: u64 = 64 * 1024;
 const LOCK: &str = "chatgpt-auth.lock";
+#[cfg(any(not(target_os = "linux"), test))]
+const STAGING: &str = ".chatgpt-auth.tmp";
 const FLAGS: OFlag = OFlag::O_NOFOLLOW.union(OFlag::O_CLOEXEC).union(OFlag::O_NONBLOCK);
 
 /// Only fixed diagnostics: paths, input JSON and refresher errors are never retained.
@@ -384,12 +391,18 @@ impl Directory {
         if !create_only {
             self.read()?;
         }
+        #[cfg(target_os = "linux")]
         static NEXT: AtomicU64 = AtomicU64::new(0);
+        #[cfg(target_os = "linux")]
         let name = OsString::from(format!(
             ".chatgpt-auth-{}-{}.tmp",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
+        // A fixed name lets the next lock holder identify and finish the only
+        // interrupted state left by off-Linux hard-link publication.
+        #[cfg(not(target_os = "linux"))]
+        let name = OsString::from(STAGING);
         let mut file = self.open_file(&name, OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL)?;
         let result = (|| {
             file.set_permissions(Permissions::from_mode(0o600))
@@ -397,6 +410,29 @@ impl Directory {
             file.write_all(&bytes).map_err(|_| Error::Unavailable)?;
             sync(&file).map_err(|_| Error::Unavailable)?;
             if create_only {
+                // Off Linux there is no safe dirfd-relative no-replace rename without `unsafe`:
+                // link the staging inode to the final name (EEXIST, never replaces), then drop
+                // the staging name. Between the two a reader sees nlink 2 and fails closed.
+                #[cfg(not(target_os = "linux"))]
+                {
+                    linkat(
+                        &self.file,
+                        name.as_os_str(),
+                        &self.file,
+                        self.name.as_os_str(),
+                        AtFlags::empty(),
+                    )
+                    .map_err(|e| {
+                        if e == nix::errno::Errno::EEXIST {
+                            Error::Exists
+                        } else {
+                            Error::Unavailable
+                        }
+                    })?;
+                    unlinkat(&self.file, name.as_os_str(), UnlinkatFlags::NoRemoveDir)
+                        .map_err(|_| Error::Unavailable)?;
+                }
+                #[cfg(target_os = "linux")]
                 renameat2(
                     &self.file,
                     name.as_os_str(),
@@ -426,6 +462,45 @@ impl Directory {
         result
     }
 }
+
+#[cfg(all(target_os = "linux", not(test)))]
+fn recover_interrupted_publish(_: &Directory) -> Result<(), Error> {
+    Ok(())
+}
+
+#[cfg(any(not(target_os = "linux"), test))]
+fn recover_interrupted_publish(dir: &Directory) -> Result<(), Error> {
+    use nix::sys::stat::SFlag;
+
+    let stat = |name: &OsStr| nix::sys::stat::fstatat(&dir.file, name, AtFlags::AT_SYMLINK_NOFOLLOW);
+    let target = match stat(&dir.name) {
+        Ok(meta) => Some(meta),
+        Err(nix::errno::Errno::ENOENT) => None,
+        Err(_) => return Err(Error::Unavailable),
+    };
+    let staging = match stat(OsStr::new(STAGING)) {
+        Ok(meta) => meta,
+        Err(nix::errno::Errno::ENOENT) => return Ok(()),
+        Err(_) => return Err(Error::Unavailable),
+    };
+    let expected_link = target.is_some_and(|target| {
+        target.st_dev == staging.st_dev && target.st_ino == staging.st_ino && staging.st_nlink == 2
+    });
+    let mode = SFlag::from_bits_truncate(staging.st_mode);
+    if mode.intersection(SFlag::S_IFMT) != SFlag::S_IFREG
+        || staging.st_uid != getuid().as_raw()
+        || staging.st_mode & 0o077 != 0
+        || (staging.st_nlink != 1 && !expected_link)
+    {
+        return Err(Error::UnsafeFile);
+    }
+    // Under the publication lock, this reserved name is an interrupted private stage
+    // or the extra link to the exact installed record.
+    unlinkat(&dir.file, OsStr::new(STAGING), UnlinkatFlags::NoRemoveDir).map_err(|_| Error::Unavailable)?;
+    dir.file.sync_all().map_err(|_| Error::Unavailable)?;
+    Ok(())
+}
+
 fn check_file(meta: &Metadata) -> Result<(), Error> {
     if !meta.is_file() || meta.uid() != getuid().as_raw() || meta.mode() & 0o077 != 0 || meta.nlink() != 1 {
         return Err(Error::UnsafeFile);
@@ -524,13 +599,11 @@ fn install_sync(
     let Some(_lock) = try_lock(&dir)? else {
         return Ok(None);
     };
+    recover_interrupted_publish(&dir)?;
     // Inspect the entry without following links; do not mistake an unsafe or
     // malformed existing record for an absent record.
-    let present = match nix::sys::stat::fstatat(
-        &dir.file,
-        dir.name.as_os_str(),
-        nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
-    ) {
+    let present = match nix::sys::stat::fstatat(&dir.file, dir.name.as_os_str(), AtFlags::AT_SYMLINK_NOFOLLOW)
+    {
         Ok(_) => true,
         Err(nix::errno::Errno::ENOENT) => false,
         Err(_) => return Err(Error::Unavailable),
@@ -567,11 +640,8 @@ pub fn try_logout(path: &Path) -> Result<Option<()>, Error> {
     let Some(_lock) = try_lock(&dir)? else {
         return Ok(None);
     };
-    match nix::sys::stat::fstatat(
-        &dir.file,
-        dir.name.as_os_str(),
-        nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
-    ) {
+    recover_interrupted_publish(&dir)?;
+    match nix::sys::stat::fstatat(&dir.file, dir.name.as_os_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
         Err(nix::errno::Errno::ENOENT) => return Ok(Some(())),
         Err(_) => return Err(Error::Unavailable),
         Ok(_) => {}
@@ -620,9 +690,12 @@ fn credentials_locked<E>(
     rejected_access: Option<&str>,
 ) -> Result<Option<TokenRecord>, Error> {
     let dir = Directory::open(path)?;
-    let record = dir.read()?;
-    if record.fresh()? && rejected_access != Some(record.access_token()) {
-        return Ok(Some(record));
+    match dir.read() {
+        Ok(record) if record.fresh()? && rejected_access != Some(record.access_token()) => {
+            return Ok(Some(record));
+        }
+        Ok(_) | Err(Error::UnsafeFile) => {}
+        Err(error) => return Err(error),
     }
     let lock = dir.open_file(OsStr::new(LOCK), OFlag::O_RDWR | OFlag::O_CREAT)?;
     check_file(&lock.metadata().map_err(|_| Error::Unavailable)?)?;
@@ -636,6 +709,7 @@ fn credentials_locked<E>(
         Err((_, error)) if !blocking && error == nix::errno::Errno::EWOULDBLOCK => return Ok(None),
         Err(_) => return Err(Error::Unavailable),
     };
+    recover_interrupted_publish(&dir)?;
     let record = dir.read()?;
     if record.fresh()? && rejected_access != Some(record.access_token()) {
         return Ok(Some(record));
@@ -838,6 +912,109 @@ mod conversion_tests {
 #[cfg(test)]
 mod publication_tests {
     use super::*;
+
+    #[test]
+    fn interrupted_unlinked_stage_does_not_block_install() {
+        let root = std::env::temp_dir().join(format!("recover-staging-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, Permissions::from_mode(0o700)).unwrap();
+        let path = root.join("chatgpt-auth.json");
+        let staging = root.join(STAGING);
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&staging)
+            .unwrap();
+        let record = TokenRecord::new(
+            "synthetic-access".into(),
+            "synthetic-refresh".into(),
+            "synthetic-account".into(),
+            4_000_000_000.0,
+        )
+        .unwrap();
+        assert_eq!(try_install(&path, &record, false, &[]).unwrap(), Some(()));
+        assert!(!staging.exists());
+        assert_eq!(read(&path).unwrap().account_id(), record.account_id());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn interrupted_hard_link_is_recovered_before_reading() {
+        let root = std::env::temp_dir().join(format!("recover-publication-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, Permissions::from_mode(0o700)).unwrap();
+        let path = root.join("chatgpt-auth.json");
+        let record = TokenRecord::new(
+            "synthetic-access".into(),
+            "synthetic-refresh".into(),
+            "synthetic-account".into(),
+            4_000_000_000.0,
+        )
+        .unwrap();
+        let directory = Directory::open(&path).unwrap();
+        directory.publish(&record, true).unwrap();
+        std::fs::hard_link(&path, root.join(STAGING)).unwrap();
+        assert_eq!(std::fs::symlink_metadata(&path).unwrap().nlink(), 2);
+
+        let recovered = credentials(&path, |_: &TokenRecord| -> Result<TokenRecord, ()> {
+            panic!("fresh recovered credentials must not refresh")
+        })
+        .unwrap();
+        assert_eq!(recovered.account_id(), record.account_id());
+        assert!(!root.join(STAGING).exists());
+        assert_eq!(std::fs::symlink_metadata(&path).unwrap().nlink(), 1);
+        drop(directory);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn create_only_refuses_existing_target() {
+        let root = std::env::temp_dir().join(format!("create-only-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, Permissions::from_mode(0o700)).unwrap();
+        let path = root.join("chatgpt-auth.json");
+        let record = TokenRecord::new(
+            "synthetic-access".into(),
+            "synthetic-refresh".into(),
+            "synthetic-account".into(),
+            2_000_000_000.0,
+        )
+        .unwrap();
+        let directory = Directory::open(&path).unwrap();
+        directory.publish(&record, true).unwrap();
+        let first = std::fs::read(&path).unwrap();
+        assert_eq!(directory.publish(&record, true), Err(Error::Exists));
+        assert_eq!(std::fs::read(&path).unwrap(), first);
+        assert!(std::fs::read_dir(&root).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".tmp")));
+        drop(directory);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn published_file_is_0600() {
+        let root = std::env::temp_dir().join(format!("publish-mode-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, Permissions::from_mode(0o700)).unwrap();
+        let path = root.join("chatgpt-auth.json");
+        let record = TokenRecord::new(
+            "synthetic-access".into(),
+            "synthetic-refresh".into(),
+            "synthetic-account".into(),
+            2_000_000_000.0,
+        )
+        .unwrap();
+        let directory = Directory::open(&path).unwrap();
+        directory.publish(&record, true).unwrap();
+        let meta = std::fs::symlink_metadata(&path).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        assert_eq!(meta.nlink(), 1);
+        drop(directory);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn failed_file_sync_or_noreplace_publication_preserves_original_and_cleans_staging() {
         let root = std::env::temp_dir().join(format!("login-publication-{}", std::process::id()));
