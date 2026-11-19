@@ -1721,27 +1721,32 @@ echo '\''a'\'''"#
     }
 
     #[test]
-    fn fifth_job_is_refused() {
+    fn job_beyond_default_limit_is_refused() {
+        let limit = crate::jobs::MAX_JOBS;
         let jobs = Arc::new(JobRegistry::new());
         let sb = Arc::new(Blocking {
             seen: Mutex::new(None),
         });
         jobs.set_sandbox(sb.clone());
         let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone());
-        for _ in 0..4 {
+        for _ in 0..limit {
             let out = run_job_tool(&tool, &*sb, json!({"command": "sleep 100", "background": true}));
             assert!(!out.is_error, "{:?}", out.text);
         }
         let out = run_job_tool(&tool, &*sb, json!({"command": "sleep 100", "background": true}));
         assert!(out.is_error);
-        assert!(out.text.contains("At most 4 background jobs"), "{:?}", out.text);
+        assert!(
+            out.text.contains(&format!("At most {limit} background jobs")),
+            "{:?}",
+            out.text
+        );
         jobs.kill_all();
     }
 
     /// #519: `bash {job, kill: true}` stops one job and frees its slot; the others keep running.
     #[test]
     fn kill_stops_one_job_and_frees_its_slot() {
-        let jobs = Arc::new(JobRegistry::new());
+        let jobs = Arc::new(JobRegistry::with_max_jobs(4));
         let sb = Arc::new(Blocking {
             seen: Mutex::new(None),
         });
