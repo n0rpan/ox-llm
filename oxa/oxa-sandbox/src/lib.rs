@@ -347,8 +347,8 @@ fn offline_socket_mask_can_drift(
     home: &Path,
     layout: &Layout,
 ) -> bool {
-    socket.starts_with(cwd)
-        || socket.starts_with(home)
+    canonical_root_contains(cwd, socket)
+        || canonical_root_contains(home, socket)
         || socket.starts_with(Path::new("/tmp"))
         || layout
             .write
@@ -453,6 +453,24 @@ mod secret_tests {
         let alias = env.home().join("write-alias");
         symlink(&writable, &alias).unwrap();
         assert!(canonical_root_contains(&alias, &socket));
+    }
+
+    #[test]
+    fn aliased_cwd_is_canonicalized_for_offline_socket_check() {
+        let env = oxa_fake::TestEnv::new();
+        let sub = env.work().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let socket = env.work().join("socket");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let aliased_cwd = sub.join("..");
+
+        assert!(offline_socket_mask_can_drift(
+            &socket.canonicalize().unwrap(),
+            &aliased_cwd,
+            true,
+            &env.home(),
+            &Layout::default(),
+        ));
     }
 
     #[test]
