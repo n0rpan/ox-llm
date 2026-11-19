@@ -148,6 +148,7 @@ mod tests {
             session_dir: Some("/work/sessions".into()),
             narrowing: super::super::launch::Narrowing {
                 offline: true,
+                no_context_files: true,
                 tools: Some(vec!["read".into()]),
                 no_tools: true,
                 no_builtin_tools: true,
@@ -162,6 +163,7 @@ mod tests {
             "--exclude-tools=bash",
             "--session-dir=/work/sessions",
             "--offline",
+            "--no-context-files",
             "--tools=read",
             "--no-tools",
             "--no-builtin-tools",
