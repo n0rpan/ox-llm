@@ -247,6 +247,30 @@ fn has_internal_id(line: &str) -> bool {
 
 // ----- tests ---------------------------------------------------------------------------------
 
+/// The default headless inbox policy changes which persisted runs accept external input, so its
+/// security documentation must retain the default, the owner-only opt-out, and every exclusion.
+#[test]
+fn security_documents_headless_inbox_policy() {
+    let repository = repo_root();
+    let repository = repository.parent().expect("repository root");
+    let security = fs::read_to_string(repository.join("SECURITY.md")).expect("read SECURITY.md");
+    let security = security.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    for required in [
+        "`oxa.inbox.headless` set to `true` by default",
+        "This user-only setting can opt out",
+        "project settings cannot enable or disable it",
+        "Non-persisted sessions",
+        "sessions without a pursuing goal",
+        "managed-steering path do not mount the plain inbox watcher",
+    ] {
+        assert!(
+            security.contains(required),
+            "SECURITY.md must document the headless inbox policy: missing {required:?}"
+        );
+    }
+}
+
 /// fenced `oxa ..` lines extracted and run
 #[test]
 fn every_doc_command_line_runs_against_fake() {

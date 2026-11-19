@@ -118,7 +118,6 @@ run the test with `env -u TMPDIR cargo test ...` to use the system temporary dir
 `CARGO_TARGET_DIR` may still point inside the checkout for build output.
 
 ```sh
-cd oxc && ./tools/run_lab_tests.sh                       # lab
 cd engine && cargo test --release --locked --workspace --exclude qwen4exp   # engine (Flash: see engine/CONTRIBUTING.md)
 cd oxa && cargo test --locked                            # oxa
 python3 -I -m unittest discover -s tools/release/tests   # release tooling (repository root)

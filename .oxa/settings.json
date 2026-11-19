@@ -1,6 +1,5 @@
 {
   "done": [
-    "in oxa: ../tools/ci/fmt_check.sh",
-    "in oxc: sh tools/run_lab_tests.sh test_doc_links"
+    "in oxa: ../tools/ci/fmt_check.sh"
   ]
 }

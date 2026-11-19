@@ -1,0 +1,22 @@
+[package]
+name = "oxa-http"
+description = "Shared HTTP pieces of oxa: one SSE framer and the framing helpers of the hand-written servers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# The reqwest builder profiles and the sync facade (`oxa_http::client`). Off: `sse` and `server` stay std-only.
+client = ["dep:reqwest", "dep:tokio", "dep:futures-util"]
+
+[dependencies]
+oxa-proto.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"], optional = true }
+futures-util = { version = "0.3", optional = true }
+
+[lints]
+workspace = true

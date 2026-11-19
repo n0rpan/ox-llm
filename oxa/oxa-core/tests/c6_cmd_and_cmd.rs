@@ -341,6 +341,7 @@ fn hook_user_bash_block_and_replace() {
             (
                 "echo original".to_string(),
                 HookReply::ReplaceResult(ToolOutput {
+                    images: Vec::new(),
                     text: "replaced output".to_string(),
                     is_error: false,
                     ui: json!({ "exit": 3 }),

@@ -356,6 +356,8 @@ mod tests {
                 terminate_binary: None,
                 offline: true,
                 runner_owns_github: false,
+                autonomy: Default::default(),
+                autonomy_now: None,
                 storage: fixture.0.path().to_path_buf(),
             };
             for rerun in [false, true] {

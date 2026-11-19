@@ -184,7 +184,7 @@ impl Hooks for TestHooks {
 }
 
 struct Worker {
-    cmds: Sender<SessionCmd>,
+    cmds: Arc<Sender<SessionCmd>>,
     msgs: Receiver<WorkerMsg>,
     _ui: Receiver<UiRequest>,
     done: Receiver<Option<SessionInfo>>,
@@ -202,8 +202,10 @@ fn spawn_worker(session: Session, reopen: ReopenFn) -> Worker {
     let (done_tx, done_rx) = mpsc::channel();
     let stop = WorkerStop::new();
     let worker_stop = stop.clone();
+    let cmd_tx = Arc::new(cmd_tx);
+    let wake = Arc::downgrade(&cmd_tx);
     std::thread::spawn(move || {
-        let last = worker_loop_with(session, reopen, cmd_rx, msg_tx, ui_tx, worker_stop);
+        let last = worker_loop_with(session, reopen, cmd_rx, msg_tx, ui_tx, worker_stop, wake);
         let _ = done_tx.send(last);
     });
     Worker {
@@ -213,6 +215,36 @@ fn spawn_worker(session: Session, reopen: ReopenFn) -> Worker {
         done: done_rx,
         stop,
     }
+}
+
+#[test]
+fn dropping_front_end_senders_disconnects_the_idle_worker() {
+    let env = TestEnv::new();
+    let session = Session::open(
+        deps(
+            &env,
+            Arc::new(MemStore::new()),
+            Arc::new(ScriptedEngine::new(Vec::new())),
+            Vec::new(),
+        ),
+        Open::Ephemeral,
+    )
+    .expect("open");
+    let w = spawn_worker(session, no_reopen());
+    assert!(matches!(
+        w.msgs.recv_timeout(Duration::from_secs(3)),
+        Ok(WorkerMsg::Session(_))
+    ));
+    drop(w.cmds);
+    let ended = w.done.recv_timeout(Duration::from_secs(3));
+    if ended.is_err() {
+        w.stop.stop();
+        let _ = w.done.recv_timeout(Duration::from_secs(3));
+    }
+    assert!(
+        ended.is_ok(),
+        "the worker must not retain its own command channel"
+    );
 }
 
 /// Collect worker messages until `until` holds for an event (or 10 s pass).
@@ -282,6 +314,95 @@ fn idle_tick_runs_a_triggered_turn() {
             .filter(|r| r.kind != "prefill")
             .collect();
         assert_eq!(turns.len(), 1);
+        let _ = w.cmds.send(SessionCmd::Shutdown);
+        w.done
+            .recv_timeout(Duration::from_secs(10))
+            .expect("worker ended");
+    });
+}
+
+/// O-386: the worker's idle wait is the tick (250 ms), not a busy poll. A host request posted
+/// before the worker installs its wake can only be served by the tick, so the time to the
+/// triggered turn's settlement is the tick. Before O-386 the tick was 50 ms and this fails.
+#[test]
+fn an_idle_worker_waits_the_tick_before_it_serves_the_host() {
+    bounded(30, || {
+        let env = TestEnv::new();
+        let hooks = Arc::new(TestHooks::default());
+        let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("pong")]));
+        let session = Session::open(
+            deps(
+                &env,
+                Arc::new(MemStore::new()),
+                engine.clone(),
+                vec![hooks.clone()],
+            ),
+            Open::New,
+        )
+        .expect("open");
+        // Posted before the worker exists: no waker is registered yet, so only the tick can
+        // serve it.
+        let host = hooks.host.lock().unwrap().clone().expect("attached");
+        host.call(trigger("ping")).expect("accepted");
+        let w = spawn_worker(session, no_reopen());
+        let start = Instant::now();
+        let events = events_until(&w, |e| matches!(e, AgentEvent::AgentSettled { .. }));
+        let waited = start.elapsed();
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::AgentStart)));
+        assert!(
+            waited >= Duration::from_millis(100),
+            "the idle wait is the tick, not a busy poll: served after {waited:?}"
+        );
+        assert!(
+            waited <= Duration::from_secs(1),
+            "the tick is the deadline: served after {waited:?}"
+        );
+        let _ = w.cmds.send(SessionCmd::Shutdown);
+        w.done
+            .recv_timeout(Duration::from_secs(10))
+            .expect("worker ended");
+    });
+}
+
+/// O-386: a host request posted while the worker waits is served at once by the session's
+/// attention waker, not at the next idle tick. With the tick at 250 ms this can only pass
+/// through the wake; before O-386 it passed on the 50 ms tick, so it is the regression guard
+/// for the wake, not a failing-before test.
+#[test]
+fn a_host_request_posted_while_the_worker_waits_is_served_at_once() {
+    bounded(30, || {
+        let env = TestEnv::new();
+        let hooks = Arc::new(TestHooks::default());
+        let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("pong")]));
+        let session = Session::open(
+            deps(
+                &env,
+                Arc::new(MemStore::new()),
+                engine.clone(),
+                vec![hooks.clone()],
+            ),
+            Open::New,
+        )
+        .expect("open");
+        let w = spawn_worker(session, no_reopen());
+        // The worker announced its session: it is in its wait now.
+        assert!(
+            matches!(
+                w.msgs.recv_timeout(Duration::from_secs(10)),
+                Ok(WorkerMsg::Session(_))
+            ),
+            "the worker announces its session before it waits"
+        );
+        let host = hooks.host.lock().unwrap().clone().expect("attached");
+        let start = Instant::now();
+        host.call(trigger("ping")).expect("accepted");
+        let events = events_until(&w, |e| matches!(e, AgentEvent::AgentSettled { .. }));
+        let waited = start.elapsed();
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::AgentStart)));
+        assert!(
+            waited < Duration::from_millis(100),
+            "the wake serves the host before the tick: served after {waited:?}"
+        );
         let _ = w.cmds.send(SessionCmd::Shutdown);
         w.done
             .recv_timeout(Duration::from_secs(10))
