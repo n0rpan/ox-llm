@@ -62,6 +62,10 @@ maintainer, who says in the PR when a hardware check is needed.
   The repeat guard follows this: the third identical tool result gets a short note, a call that
   still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
   is the cap against loops the guard cannot see.
+  Report dedupe follows it as well: `oxa.reportIssue.semanticDedupe` is the owner's consent for the
+  search and the model check, the post asks one question, and `oxa.reportIssue.dailyNew` (unset = no
+  check) only warns and records over the cap. A finding that asks for a second consent question or
+  for the cap to block is answered here.
 - Reserve P0/P1 for violations of these invariants or concrete data loss/crash. Report only
   introduced, actionable defects with a failure scenario; skip style and speculative risks.
 - A finding is a claim to verify, not an order. Whoever acts on a review finding first shows it is
