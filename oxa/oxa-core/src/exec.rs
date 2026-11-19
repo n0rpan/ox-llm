@@ -188,7 +188,7 @@ pub fn request(
     let turn = match turn {
         Ok(turn) => turn,
         Err(error) => {
-            if crate::goal::uncertain(&error, generated, pre_cancelled) {
+            if crate::goal::uncertain_on(st.info.caps.remote, &error, generated, pre_cancelled) {
                 if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
                     goal.uncertain_request()?;
                     crate::goal::checkpoint(st, false, sink)?;

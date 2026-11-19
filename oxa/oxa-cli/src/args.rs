@@ -76,11 +76,13 @@ impl std::fmt::Debug for RegistryArgs {
 
 pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -> bool {
     use oxa_interactive::command_registry::CommandId;
+    // Admission belongs exclusively to the oxe binary.
     // Declared in the registry for discovery, help and surfaces, but parsed and handled by the
     // legacy path below; the registry route must not take them over.
     !matches!(
         id,
-        CommandId::Help
+        CommandId::Admission
+            | CommandId::Help
             | CommandId::WorkStatus
             | CommandId::WorkBoard
             | CommandId::Memory
