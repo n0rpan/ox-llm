@@ -701,6 +701,20 @@ impl Built {
     }
 }
 
+/// `--goal` runs in print, JSON and the interactive terminal; RPC has no goal path.
+fn goal_flag_accepted(mode: RunMode) -> bool {
+    matches!(mode, RunMode::Interactive | RunMode::Print | RunMode::Json)
+}
+
+/// The first queued message of a `--goal` run: the goal start, then the first prompt when there
+/// is one, so the first request carries the objective before any continuation.
+fn goal_first_prompt(start: String, first: Option<String>) -> String {
+    match first {
+        Some(text) => format!("{start}\n\n{text}"),
+        None => start,
+    }
+}
+
 /// The sandbox bash and the exec hooks use, plus a start notice when it had to be replaced. A
 /// refused bash network (`oxa.sandbox.net: off`, offline) that this platform cannot enforce must
 /// not run: without an OS sandbox the command would keep the network the owner turned off, so
@@ -732,10 +746,10 @@ fn prepare(
     owner_open: Option<(&oxa_session::SessionRef, Arc<dyn SessionStore>)>,
 ) -> Result<Prep, OxaError> {
     let owner_chat = owner_open.is_some();
-    if a.goal.is_some() && !matches!(mode, RunMode::Print | RunMode::Json) {
+    if a.goal.is_some() && !goal_flag_accepted(mode) {
         return Err(OxaError::new(
             codes::USAGE,
-            "--goal currently requires print or JSON mode.",
+            "--goal currently requires print, JSON or interactive mode.",
         ));
     }
     let goal = crate::goal_cmd::load(a, cwd)?;
@@ -1742,7 +1756,7 @@ fn run_tui(
         Err(e) => return report(stderr, &e),
     };
     let mut prompts = prompts.into_iter();
-    let (initial_prompt, initial_parts) = match prompts.next() {
+    let (mut initial_prompt, initial_parts) = match prompts.next() {
         Some((text, parts)) => ((!text.is_empty()).then_some(text), parts),
         None => (None, Vec::new()),
     };
@@ -1766,6 +1780,12 @@ fn run_tui(
             Err(e) => return report(stderr, &e),
         },
     };
+    // `--goal` in the terminal: the objective is set at open (`open_named`) and its start leads
+    // the first queued prompt (with the attachments of that prompt), as in print mode.
+    if let Some(goal) = &built.goal {
+        let start = oxa_core::prompt::goal_start(&goal.objective);
+        initial_prompt = Some(goal_first_prompt(start, initial_prompt.take()));
+    }
     #[cfg(feature = "share")]
     let guest_listener = match sharing.map(crate::share_cmd::Prepared::start).transpose() {
         Ok(Some((running, address))) => {
@@ -2897,6 +2917,36 @@ mod session_scratch_tests {
         assert!(b.is_dir(), "ending one session removed another's scratch");
         drop(second);
         assert!(!b.exists(), "the second session's scratch outlived it");
+    }
+}
+
+#[cfg(test)]
+mod goal_flag_tests {
+    use super::*;
+
+    /// G3: `--goal` with no print flag and a terminal on both ends opens the interactive
+    /// session, and the mode guard in `prepare` accepts it (RPC still refuses it).
+    #[test]
+    fn interactive_goal_flag_is_accepted() {
+        let argv: Vec<String> = ["--goal", "goal.txt"].iter().map(|s| s.to_string()).collect();
+        let a = parse_args(&argv, &[]).expect("--goal parses");
+        assert_eq!(a.goal.as_deref(), Some("goal.txt"));
+        let mode = choose_mode(&a, true, true);
+        assert_eq!(mode, RunMode::Interactive);
+        assert!(goal_flag_accepted(mode));
+        assert!(goal_flag_accepted(RunMode::Print));
+        assert!(!goal_flag_accepted(RunMode::Rpc));
+    }
+
+    /// G3 fix: the goal start leads the first prompt, so the first request carries the
+    /// objective; with no first prompt the start alone is sent.
+    #[test]
+    fn goal_start_leads_first_prompt() {
+        assert_eq!(
+            goal_first_prompt("START".into(), Some("hello".into())),
+            "START\n\nhello"
+        );
+        assert_eq!(goal_first_prompt("START".into(), None), "START");
     }
 }
 

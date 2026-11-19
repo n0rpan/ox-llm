@@ -115,6 +115,7 @@ impl Tool for TestTool {
                 return ToolOutput::error(tool_errors::ABORTED);
             }
             return ToolOutput {
+                images: Vec::new(),
                 text: "slow done".into(),
                 is_error: false,
                 ui: Value::Null,
@@ -123,6 +124,7 @@ impl Tool for TestTool {
         let tag = args.get("tag").and_then(Value::as_str).unwrap_or("x");
         let line = format!("{tag}: fn main() {{ println!(\"hello\"); }}\n");
         ToolOutput {
+            images: Vec::new(),
             text: line.repeat(self.bytes / line.len() + 1)[..self.bytes].to_string(),
             is_error: false,
             ui: Value::Null,

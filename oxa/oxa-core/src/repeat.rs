@@ -260,6 +260,7 @@ mod job_poll_tests {
 
     fn poll_call(i: usize) -> WireMsg {
         WireMsg {
+            images: Vec::new(),
             role: Role::Assistant,
             content: None,
             reasoning: None,
