@@ -171,6 +171,7 @@ fn five_filters() {
             Some("a1"),
             EntryBody::Msg {
                 wire: WireMsg {
+                    images: Vec::new(),
                     tool_calls: vec![ToolCall {
                         id: "call1".to_string(),
                         name: "bash".to_string(),
@@ -453,6 +454,7 @@ fn tool_calls_render_as_names() {
             Some("u1"),
             EntryBody::Msg {
                 wire: WireMsg {
+                    images: Vec::new(),
                     tool_calls: vec![ToolCall {
                         id: "call9".to_string(),
                         name: "read".to_string(),
