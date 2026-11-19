@@ -93,7 +93,7 @@ const BASE: &[Entry] = &[
     },
     Entry {
         path: &["send"],
-        summary: "Queue a session follow-up, waking its TUI or RPC owner",
+        summary: "Queue a session follow-up for its TUI, RPC owner or headless goal run",
         usage: &["oxa send <session-id> \"text\""],
         example: "oxa send 20260101-120000-abcd \"task finished\"",
     },

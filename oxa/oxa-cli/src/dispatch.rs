@@ -24,7 +24,7 @@ use oxa_perm::{
 };
 use oxa_proto::{codes, Engine, EntryBody, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
 use oxa_resources::{discover, DiscoverOpts, Resources};
-use oxa_rpc::{run_json_outcome, run_print_outcome, serve_outcome, Out};
+use oxa_rpc::{run_json_outcome_with_inbox, run_print_outcome_with_inbox, serve_outcome, Out};
 use oxa_sandbox::Bwrap;
 #[cfg(target_os = "linux")]
 use oxa_sandbox::NoSandbox;
@@ -1757,8 +1757,22 @@ fn run_headless(
                 authority,
             )
         }
-        RunMode::Json => run_json_outcome(&mut session, prompts, stdout.as_deref_mut().unwrap(), stderr),
-        _ => run_print_outcome(&mut session, prompts, stdout.as_deref_mut().unwrap(), stderr),
+        RunMode::Json => run_json_outcome_with_inbox(
+            &mut session,
+            prompts,
+            stdout.as_deref_mut().unwrap(),
+            stderr,
+            &built.dirs.agent_dir,
+            built.settings.user_bool("oxa.inbox.headless", true),
+        ),
+        _ => run_print_outcome_with_inbox(
+            &mut session,
+            prompts,
+            stdout.as_deref_mut().unwrap(),
+            stderr,
+            &built.dirs.agent_dir,
+            built.settings.user_bool("oxa.inbox.headless", true),
+        ),
     };
     built.result_facts.goal(session.goal());
     // `session_shutdown` for the hook sets, then their script contexts and MCP servers stop.
