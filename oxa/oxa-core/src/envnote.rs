@@ -80,7 +80,9 @@ pub fn full_block(t: &LocalTime, f: &EnvFacts) -> String {
         },
         if f.offline { "yes" } else { "no" }
     ));
-    if f.no_os_sandbox {
+    // A network the platform cannot restrict is itself a missing OS sandbox: say it even when
+    // bash networking is enabled, so the model is not told only "bash network on".
+    if f.no_os_sandbox || f.network_unenforced {
         lines.push(
             "Sandbox: none. There is no OS sandbox on this platform: commands run with your user rights, and bash is disabled while the bash network is off."
                 .to_string(),
@@ -331,7 +333,10 @@ mod tests {
         );
         assert!(!block.contains("bash network off"), "{block}");
         facts.bash_network = true;
-        assert!(full_block(&t("2026-11-14", "13:42"), &facts).contains("bash network on"));
+        let block = full_block(&t("2026-11-14", "13:42"), &facts);
+        assert!(block.contains("bash network on"), "{block}");
+        // Networking on does not hide the missing OS sandbox.
+        assert!(block.contains("Sandbox: none."), "{block}");
     }
 
     #[test]
