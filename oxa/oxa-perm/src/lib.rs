@@ -34,8 +34,8 @@
 
 mod danger;
 mod paths;
-mod publish;
 mod policy;
+mod publish;
 mod trust;
 
 pub use danger::{DangerHit, DangerRules, BUILTIN_RULES, SETTING_DANGEROUS};
