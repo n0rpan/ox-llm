@@ -37,6 +37,8 @@ impl ThinkingPolicy {
 pub const SUMMARY_TARGET_DEFAULT: u32 = 700;
 /// `bash` timeout in seconds when the call sets none.
 pub const BASH_TIMEOUT_DEFAULT: u32 = 120;
+/// `oxa.bash.waitCap` default: the longest a job read blocks, in seconds.
+pub const BASH_WAIT_CAP_DEFAULT: u32 = 300;
 /// The default of `oxa.bash.maxJobs`: background jobs that may run at once.
 pub const BASH_MAX_JOBS_DEFAULT: u32 = 16;
 
@@ -103,9 +105,113 @@ impl Settings {
         self.u32("oxa.bash.defaultTimeout", BASH_TIMEOUT_DEFAULT)
     }
 
+    /// `oxa.bash.waitCap` in seconds: the longest a bash job read blocks. Unset = 300; at least 1.
+    pub fn bash_wait_cap(&self) -> u32 {
+        self.user_u32("oxa.bash.waitCap", BASH_WAIT_CAP_DEFAULT).max(1)
+    }
+
     /// `oxa.bash.maxJobs`: how many background jobs may run at once. Unset = 16; at least 1.
     pub fn bash_max_jobs(&self) -> usize {
         (self.user_u32("oxa.bash.maxJobs", BASH_MAX_JOBS_DEFAULT) as usize).max(1)
+    }
+}
+
+/// `compaction.profile`: which compaction values a model runs with (issue #1594).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompactionProfile {
+    /// `cloud` for a cloud model, `local` otherwise. The default.
+    #[default]
+    Auto,
+    /// The values oxa has always used.
+    Local,
+    /// A larger verbatim tail and a later compaction point, for a model with a large window.
+    Cloud,
+}
+
+impl CompactionProfile {
+    pub const SETTING: &'static str = "compaction.profile";
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CompactionProfile::Auto => "auto",
+            CompactionProfile::Local => "local",
+            CompactionProfile::Cloud => "cloud",
+        }
+    }
+    pub fn parse(s: &str) -> Option<CompactionProfile> {
+        match s {
+            "auto" => Some(CompactionProfile::Auto),
+            "local" => Some(CompactionProfile::Local),
+            "cloud" => Some(CompactionProfile::Cloud),
+            _ => None,
+        }
+    }
+}
+
+/// Share of the context window that starts a compaction under the cloud profile.
+pub const CLOUD_COMPACTION_THRESHOLD: f32 = 0.90;
+/// Recent context kept word for word under the cloud profile, in tokens.
+pub const CLOUD_KEEP_RECENT_TOKENS: u32 = 20_000;
+/// Soft length target of a summary under the cloud profile, in tokens.
+pub const CLOUD_SUMMARY_TARGET: u32 = 2_000;
+
+/// The compaction values one model runs with, after the profile and the explicit keys are resolved.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CompactionTuning {
+    /// The profile in force. Never `Auto`.
+    pub profile: CompactionProfile,
+    /// `oxa.compaction.softTokens` when set: an absolute compaction point. It wins over `threshold`.
+    pub soft_tokens: Option<u32>,
+    /// Share of the window that starts a compaction when `soft_tokens` is unset. `None` = the
+    /// engine's own point.
+    pub threshold: Option<f32>,
+    /// `compaction.keepRecentTokens` in force.
+    pub keep_recent_tokens: u32,
+    /// `oxa.compaction.summaryTarget` in force, in tokens; 0 = no target.
+    pub summary_target: u32,
+}
+
+impl Settings {
+    /// `compaction.profile` as set by a layer; `None` = unset or not a profile name.
+    pub fn compaction_profile_setting(&self) -> Option<CompactionProfile> {
+        self.string(CompactionProfile::SETTING)
+            .as_deref()
+            .and_then(CompactionProfile::parse)
+    }
+
+    /// The values a model runs with. `cloud_model` says whether the model is a cloud one; `auto`
+    /// follows it. Under the cloud profile a key set explicitly in any layer wins over the profile.
+    pub fn compaction_tuning(&self, cloud_model: bool) -> CompactionTuning {
+        let cloud = match self.compaction_profile_setting().unwrap_or_default() {
+            CompactionProfile::Auto => cloud_model,
+            CompactionProfile::Local => false,
+            CompactionProfile::Cloud => true,
+        };
+        let soft_tokens = self.compaction().soft_tokens;
+        if !cloud {
+            return CompactionTuning {
+                profile: CompactionProfile::Local,
+                soft_tokens,
+                threshold: None,
+                keep_recent_tokens: self.compaction().keep_recent_tokens,
+                summary_target: self.summary_target(),
+            };
+        }
+        CompactionTuning {
+            profile: CompactionProfile::Cloud,
+            soft_tokens,
+            threshold: soft_tokens.is_none().then_some(CLOUD_COMPACTION_THRESHOLD),
+            keep_recent_tokens: self.explicit_u32("compaction.keepRecentTokens", CLOUD_KEEP_RECENT_TOKENS),
+            summary_target: self.explicit_u32("oxa.compaction.summaryTarget", CLOUD_SUMMARY_TARGET),
+        }
+    }
+
+    /// `key` as a layer or an override sets it, else `default`.
+    fn explicit_u32(&self, key: &str, default: u32) -> u32 {
+        if self.is_explicit(key) {
+            self.u32(key, default)
+        } else {
+            default
+        }
     }
 }
 
@@ -114,6 +220,64 @@ mod tests {
     use super::*;
     use crate::schema;
     use serde_json::json;
+
+    #[test]
+    fn cloud_profile_keys_have_defaults() {
+        let def = schema::find_key(CompactionProfile::SETTING).expect("compaction.profile in schema");
+        assert_eq!(def.default, "\"auto\"");
+        let none = Settings::from_values(json!({}), json!({}));
+        assert_eq!(none.compaction_profile_setting(), None);
+        let cloud = none.compaction_tuning(true);
+        assert_eq!(cloud.profile, CompactionProfile::Cloud);
+        assert_eq!(cloud.threshold, Some(CLOUD_COMPACTION_THRESHOLD));
+        assert_eq!(cloud.keep_recent_tokens, 20_000);
+        assert_eq!(cloud.summary_target, 2_000);
+        assert_eq!(cloud.soft_tokens, None);
+        let local = none.compaction_tuning(false);
+        assert_eq!(local.profile, CompactionProfile::Local);
+        assert_eq!(local.threshold, None);
+        assert_eq!(local.keep_recent_tokens, 4_000);
+        assert_eq!(local.summary_target, SUMMARY_TARGET_DEFAULT);
+    }
+
+    #[test]
+    fn auto_picks_cloud_for_a_cloud_model() {
+        let none = Settings::from_values(json!({}), json!({}));
+        assert_eq!(none.compaction_tuning(true).profile, CompactionProfile::Cloud);
+        assert_eq!(none.compaction_tuning(false).profile, CompactionProfile::Local);
+        let local = Settings::from_values(json!({"compaction": {"profile": "local"}}), json!({}));
+        assert_eq!(local.compaction_tuning(true).profile, CompactionProfile::Local);
+        let cloud = Settings::from_values(json!({"compaction": {"profile": "cloud"}}), json!({}));
+        assert_eq!(cloud.compaction_tuning(false).profile, CompactionProfile::Cloud);
+        assert_eq!(cloud.compaction_profile_setting(), Some(CompactionProfile::Cloud));
+    }
+
+    #[test]
+    fn explicit_keys_win_over_the_profile() {
+        let user = Settings::from_values(
+            json!({
+                "compaction": {"profile": "cloud", "keepRecentTokens": 500},
+                "oxa": {"compaction": {"summaryTarget": 0, "softTokens": 90000}}
+            }),
+            json!({}),
+        );
+        let tuning = user.compaction_tuning(true);
+        assert_eq!(tuning.keep_recent_tokens, 500);
+        assert_eq!(tuning.summary_target, 0);
+        assert_eq!(tuning.soft_tokens, Some(90000));
+        assert_eq!(tuning.threshold, None);
+
+        // A project layer counts as explicit too.
+        let project = Settings::from_values(
+            json!({"compaction": {"profile": "cloud"}}),
+            json!({"compaction": {"keepRecentTokens": 7}}),
+        );
+        assert_eq!(project.compaction_tuning(false).keep_recent_tokens, 7);
+        assert_eq!(
+            project.compaction_tuning(false).summary_target,
+            CLOUD_SUMMARY_TARGET
+        );
+    }
 
     #[test]
     fn thinking_policy_defaults_to_auto_and_the_setting_wins() {
@@ -198,6 +362,12 @@ mod tests {
     /// The background-job cap comes from the owner. Zero is treated as one job.
     #[test]
     fn jobs_limit_from_setting() {
+        let wait = Settings::from_values(json!({"oxa": {"bash": {"waitCap": 90}}}), json!({}));
+        assert_eq!(wait.bash_wait_cap(), 90);
+        assert_eq!(
+            Settings::from_values(json!({}), json!({})).bash_wait_cap(),
+            BASH_WAIT_CAP_DEFAULT
+        );
         let project = json!({"oxa": {"bash": {"maxJobs": 32}}});
         let set = Settings::from_values(json!({"oxa": {"bash": {"maxJobs": 3}}}), project.clone());
         assert_eq!(set.bash_max_jobs(), 3);

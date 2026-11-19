@@ -20,15 +20,16 @@ use oxa_interactive::{
     TrustChoice,
 };
 use oxa_perm::{
-    gated_resources, resolve_trust, DefaultTrust, ModePolicy, TrustInputs, TrustOutcome, TrustStore,
+    gated_resources, resolve_trust, DangerRules, DefaultTrust, ModePolicy, TrustInputs, TrustOutcome,
+    TrustStore,
 };
-use oxa_proto::{codes, Engine, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
+use oxa_proto::{codes, Engine, EntryBody, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
 use oxa_resources::{discover, DiscoverOpts, Resources};
-use oxa_rpc::{run_json_outcome, run_print_outcome, serve_outcome, Out};
+use oxa_rpc::{run_json_outcome_with_inbox, run_print_outcome_with_inbox, serve_outcome, Out};
 use oxa_sandbox::Bwrap;
 #[cfg(target_os = "linux")]
 use oxa_sandbox::NoSandbox;
-use oxa_session::{decode_entry, decode_header, FsStore, MemStore, SessionStore};
+use oxa_session::{decode_entry, decode_header, FsStore, MemStore, SessionStore, Tree};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -242,6 +243,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::LeadAsks
                     | CommandId::LeadChat
                     | CommandId::Goal
+                    | CommandId::Admission
                     | CommandId::Help
                     | CommandId::WorkStatus
                     | CommandId::WorkBoard
@@ -362,18 +364,11 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let user = Settings::load(&dirs, &cwd, false);
-        let (engine, catalog_notices) = match crate::in_process::select_observed(
-            &user,
-            &user,
-            &dirs,
-            None,
-            None,
-            crate::in_process::SharedEngines::default(),
-            || engine_for(&endpoint),
-        ) {
-            Ok(e) => e,
-            Err(e) => return report(&mut *stderr, &e),
-        };
+        let (engine, catalog_notices) =
+            match crate::in_process::select_catalog(&user, &dirs, || engine_for(&endpoint)) {
+                Ok(e) => e,
+                Err(e) => return report(&mut *stderr, &e),
+            };
         write_diagnostics(
             &mut *stderr,
             catalog_notices.into_iter().map(|text| (Level::Info, text)),
@@ -594,6 +589,8 @@ fn open_named(
     name: Option<&str>,
 ) -> Result<Session, OxaError> {
     let mut session = Session::open(built.deps(session_id), open)?;
+    // S1: the owner confirm broker. No broker (a bind failure) means no confirmation is possible.
+    let _ = session.enable_owner_confirm(built.yolo.clone());
     session.set_output_schema(built.output_schema.clone());
     if let Some(goal) = &built.goal {
         session.set_goal(Some(goal.clone()), &mut oxa_proto::VecSink::default())?;
@@ -638,6 +635,8 @@ struct Built {
     /// #202: the sandbox of the bash tool and its background jobs: the session's sandbox,
     /// bypassed while the switch is at yolo (full access).
     bash_sandbox: Arc<oxa_sandbox::FullAccess>,
+    /// #1512 S2: the dangerous-command rules of the user settings, shared by every session.
+    danger: Arc<DangerRules>,
 }
 
 /// #597: `guard` plus the session's scratch directory (`/tmp` in its sandbox), which the file
@@ -691,6 +690,8 @@ impl Built {
             hooks: self.hook_sets.hooks.clone(),
             // B3: the file tools keep the deny-list and protected paths in standard/auto.
             // #202/#314: only user-selected yolo outside plan mode bypasses that floor.
+            // #1512 S2: dangerous commands ask in standard and auto; the keys of "always allow"
+            // are read from the user settings now, so a save covers the next session too.
             policy: Box::new(
                 ModePolicy::new()
                     .with_guard(session_guard(
@@ -702,7 +703,11 @@ impl Built {
                         ),
                         sandbox.as_ref(),
                     ))
-                    .with_yolo(self.yolo.clone()),
+                    .with_yolo(self.yolo.clone())
+                    .with_danger(
+                        self.danger.clone(),
+                        Settings::load(&self.dirs, &self.cwd, false).list("oxa.approval.always"),
+                    ),
             ),
             // File names follow bash's current view, without giving hooks/extensions the
             // bash-only execution bypass. The shared switch also handles live /yolo changes.
@@ -719,6 +724,24 @@ impl Built {
             jobs,
         }
     }
+}
+
+/// #1512 S2: the dangerous-command rules of the user settings. `[]` (the default) is every
+/// built-in rule; a plain entry replaces the built-ins and `+id` / `-id` patch them. The raw
+/// user entries are read: the merged value has already applied a `+x` / `-x` list to the empty
+/// default, which would turn `["+cmd:x"]` into a plain list that drops every built-in rule.
+fn dangerous_rules(user_settings: &Settings) -> (DangerRules, Vec<String>) {
+    let builtin_ids: Vec<String> = oxa_perm::BUILTIN_RULES
+        .iter()
+        .map(|row| row.0.to_string())
+        .collect();
+    let patch = user_settings.user_list(oxa_perm::SETTING_DANGEROUS);
+    let entries = if patch.is_empty() {
+        builtin_ids
+    } else {
+        oxa_config::apply_list_patch(&builtin_ids, &patch)
+    };
+    DangerRules::from_list(&entries)
 }
 
 /// `--goal` runs in print, JSON and the interactive terminal; RPC has no goal path.
@@ -790,6 +813,9 @@ fn prepare(
     };
     let mut notices: Vec<(Level, String)> = Vec::new();
     let user_settings = Settings::load(dirs, cwd, false);
+    // #1512 S2: the dangerous-command rules come from the user settings only.
+    let (danger, danger_warnings) = dangerous_rules(&user_settings);
+    notices.extend(danger_warnings.into_iter().map(|w| (Level::Warning, w)));
     // Only user settings may enable this default-off proposal session.
     if a.lead && !user_settings.bool(crate::lead_preset::SETTING, false) {
         return Err(OxaError::new(
@@ -891,6 +917,20 @@ fn prepare(
     if let Some(resolved) = resolve_continue_word(a, dirs) {
         *a = resolved;
     }
+    let store: Arc<dyn SessionStore> = match &owner_open {
+        Some((_, store)) => store.clone(),
+        None if a.no_session => Arc::new(MemStore::new()),
+        None => Arc::new(FsStore::new(dirs.sessions_dir.clone())),
+    };
+    let (mut open, session_id) = match owner_open {
+        Some((bound, _)) => (Open::Resume(bound.clone()), None),
+        None => choose_open(a, store.as_ref(), cwd, mode, &mut notices, confirm)?,
+    };
+    let continued_go = if a.model.is_none() && a.continue_ && !owner_chat && !child.nested() {
+        continued_go_model(dirs, cwd, &user_settings, store.as_ref(), &mut open)?
+    } else {
+        None
+    };
     // The engine client with the settings' silence limit (`httpIdleTimeoutMs`,
     // `retry.provider.timeoutMs`; SET-051, SET-054).
     let has_model_scope = a.models.as_ref().map_or_else(
@@ -898,7 +938,16 @@ fn prepare(
         |patterns| !patterns.is_empty(),
     );
     let resuming = owner_chat || a.continue_ || a.session.is_some() || a.fork.is_some() || a.resume;
-    let requested_model = a.model.clone().or_else(|| {
+    // The scope is the owner's: `--models` or the user settings' `enabledModels`. A project
+    // file setting it is not the owner choosing a transport (never used for that here).
+    let owner_scope: Vec<String> = if a.model.is_none() && !resuming && !child.nested() {
+        a.models
+            .clone()
+            .unwrap_or_else(|| user_settings.list("enabledModels"))
+    } else {
+        Vec::new()
+    };
+    let requested_model = a.model.clone().or_else(|| continued_go.clone()).or_else(|| {
         // The core chooses a restored/scoped model instead of an unused default.
         if resuming || has_model_scope {
             None
@@ -930,7 +979,29 @@ fn prepare(
         &user_settings,
         &settings,
         dirs,
-        requested_model.as_deref(),
+        crate::in_process::ModelSelection {
+            pattern: requested_model.as_deref(),
+            scope: &owner_scope,
+            endpoint: &endpoint.name,
+            // An actual `--model` argument is the owner's choice of that model, also when a
+            // launcher (`oxa work`, a supervised child) passed it: the protected user key is
+            // what authorizes the Go transport. A coding-agent tool process is not the owner
+            // (it carries `AI_AGENT`/`OXA_CODING_AGENT`), a restored session model is
+            // provenance-less (it counts only when the owner enabled Go), and a project
+            // `defaultModel` or `enabledModels` never counts.
+            owner_selected: (a.model.is_some()
+                && env.get("AI_AGENT").is_none()
+                && env.get("OXA_CODING_AGENT").is_none())
+                || (!child.nested()
+                    && !is_agent(env)
+                    && env.get(oxa_work::PlannedTask::DELEGATED_MODEL_ENV).is_none()
+                    && ((continued_go.is_some()
+                        && user_settings.bool(crate::in_process::GO_SETTING, false))
+                        || !owner_scope.is_empty()
+                        || requested_model.as_ref().is_some_and(|model| {
+                            user_settings.string("defaultModel").as_ref() == Some(model)
+                        }))),
+        },
         (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
         shared,
         || engine_with_settings(&endpoint, &settings),
@@ -957,7 +1028,11 @@ fn prepare(
     if !owner_chat && env.get(oxa_proto::names::ENV_TEST_ISOLATION) != Some("1") && !child.nested() {
         let probe = (!oxa_proto::offline()).then_some(engine.as_ref());
         let facts = crate::identity_cmd::identity_facts(Path::new("/"), probe);
-        let keep_known_models = facts.models.is_empty() && oxa_resources::read_identity(dirs).is_some();
+        // An old file is kept only when it is in the current format; one written by an older
+        // oxa (old head, cloud model lines) is rewritten with `Models: not known`.
+        let keep_known_models = facts.models.is_empty()
+            && oxa_resources::read_identity(dirs)
+                .is_some_and(|t| t.starts_with(oxa_core::prompt::IDENTITY_HEAD));
         if !keep_known_models {
             if let Err(e) = crate::identity_cmd::write_identity(dirs, &facts) {
                 notices.push((Level::Warning, e.message));
@@ -1048,7 +1123,7 @@ fn prepare(
 
     // `--model` resolves against the engine's models; its `:level` suffix sets thinking unless
     // `--thinking` is given.
-    let mut model = None;
+    let mut model = continued_go;
     let mut thinking = a.thinking;
     // `defaultModel` (SET-004) is applied by the core when no model was chosen here
     // (`Session::open`), so a resumed session keeps its own model and `--models` scopes it.
@@ -1137,15 +1212,6 @@ fn prepare(
         });
     }
 
-    let store: Arc<dyn SessionStore> = match &owner_open {
-        Some((_, store)) => store.clone(),
-        None if a.no_session => Arc::new(MemStore::new()),
-        None => Arc::new(FsStore::new(dirs.sessions_dir.clone())),
-    };
-    let (open, session_id) = match owner_open {
-        Some((bound, _)) => (Open::Resume(bound.clone()), None),
-        None => choose_open(a, store.as_ref(), cwd, mode, &mut notices, confirm)?,
-    };
     let name = match a.name.as_deref().map(str::trim) {
         Some("") => {
             return Err(OxaError::new(codes::INVALID, "--name requires a non-empty value"));
@@ -1168,8 +1234,15 @@ fn prepare(
                 .with_engine(&engine),
         )
     });
+    let usage_log = a
+        .usage_log
+        .as_deref()
+        .map(crate::usage_log::UsageLog::create)
+        .transpose()?;
     let result_facts = Arc::new(
-        crate::result_facts::ResultFacts::new(status.clone()).with_billing(cloud_diagnostics.clone()),
+        crate::result_facts::ResultFacts::new(status.clone())
+            .with_billing(cloud_diagnostics.clone())
+            .with_usage_log(usage_log),
     );
     let built = Built {
         lead: a.lead,
@@ -1195,6 +1268,7 @@ fn prepare(
         hook_sets,
         yolo,
         bash_sandbox,
+        danger: Arc::new(danger),
     };
     Ok(Prep {
         built,
@@ -1440,6 +1514,57 @@ fn resolve_continue_word(a: &Args, dirs: &Dirs) -> Option<Args> {
     Some(out)
 }
 
+/// Use the active branch of the same protected session that startup will open.
+/// A project-configured session directory cannot authorize a new cloud route.
+fn continued_go_model(
+    dirs: &Dirs,
+    cwd: &Path,
+    user: &Settings,
+    store: &dyn SessionStore,
+    open: &mut Open,
+) -> Result<Option<String>, OxaError> {
+    let owner_sessions = dirs.agent_dir.join("sessions");
+    if dirs.sessions_dir != owner_sessions {
+        return Ok(None);
+    }
+    let session = match open {
+        Open::Continue => store
+            .list(Some(cwd))
+            .into_iter()
+            .max_by_key(|meta| meta.modified_ms)
+            .map(|meta| meta.sref),
+        Open::Resume(session) => Some(session.clone()),
+        _ => None,
+    };
+    let Some(session) = session.filter(|session| {
+        store.lists_path(&session.path)
+            && session
+                .path
+                .canonicalize()
+                .as_ref()
+                .is_ok_and(|path| path == &session.path)
+    }) else {
+        return Ok(None);
+    };
+    // Keep the route and restored model bound to the same writer and session.
+    store.acquire(&session)?;
+    let tree = Tree::new(store.load(&session)?);
+    let model = tree.branch(tree.leaf()).into_iter().rev().find_map(|entry| {
+        if let EntryBody::ModelChange(model) = &entry.body {
+            Some(model.clone())
+        } else {
+            None
+        }
+    });
+    let go = model.filter(|model| crate::in_process::restores_go_model(user, model));
+    if go.is_some() {
+        *open = Open::Resume(session);
+    } else {
+        store.abort_lock();
+    }
+    Ok(go)
+}
+
 /// The open mode of the flags: `--no-session`, `--fork`, `--session`, `--session-id`,
 /// `--continue`, `--resume` (interactive only, through the picker) or a new session.
 fn choose_open(
@@ -1528,6 +1653,7 @@ fn run_headless(
         continue_goal,
         ..
     } = prep;
+    oxa_core::set_headless(true);
     let mut session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
         Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),
@@ -1673,8 +1799,22 @@ fn run_headless(
                 authority,
             )
         }
-        RunMode::Json => run_json_outcome(&mut session, prompts, stdout.as_deref_mut().unwrap(), stderr),
-        _ => run_print_outcome(&mut session, prompts, stdout.as_deref_mut().unwrap(), stderr),
+        RunMode::Json => run_json_outcome_with_inbox(
+            &mut session,
+            prompts,
+            stdout.as_deref_mut().unwrap(),
+            stderr,
+            &built.dirs.agent_dir,
+            built.settings.user_bool("oxa.inbox.headless", true),
+        ),
+        _ => run_print_outcome_with_inbox(
+            &mut session,
+            prompts,
+            stdout.as_deref_mut().unwrap(),
+            stderr,
+            &built.dirs.agent_dir,
+            built.settings.user_bool("oxa.inbox.headless", true),
+        ),
     };
     built.result_facts.goal(session.goal());
     // `session_shutdown` for the hook sets, then their script contexts and MCP servers stop.
@@ -1691,6 +1831,7 @@ fn run_headless(
         let usage = serde_json::json!({
             "type": "run_usage",
             "tokens": session.handle().run_tokens_used(),
+            "complete": !session.handle().run_usage_unreported(),
         });
         if let Some(stdout) = stdout.as_deref_mut() {
             let _ = writeln!(stdout, "{usage}");
@@ -1870,6 +2011,9 @@ fn run_tui(
             Reopen::Fork(sref) => Open::Fork(sref),
         };
         let mut session = Session::open(deps, how)?;
+        // Replacement interactive sessions need the same per-session confirmation broker as
+        // the initially opened session.
+        let _ = session.enable_owner_confirm(base.yolo.clone());
         if let Some(binding) = &owner {
             binding.recheck()?;
             if &session.inner().sref != binding.session_ref() {
@@ -2829,6 +2973,7 @@ mod session_scratch_tests {
                 false,
             )),
             yolo,
+            danger: Arc::new(oxa_perm::DangerRules::builtin()),
         };
         let first = built.deps(None);
         let second = built.deps(None);
@@ -2872,6 +3017,110 @@ mod session_scratch_tests {
         assert!(b.is_dir(), "ending one session removed another's scratch");
         drop(second);
         assert!(!b.exists(), "the second session's scratch outlived it");
+    }
+
+    /// #1512 S7: an edit list in `oxa.approval.dangerous` edits the built-in rules. Adding a
+    /// custom rule keeps every built-in rule, `-id` removes only that rule, and only a plain
+    /// list replaces the built-in set (the merged value must not turn `+x` into a plain list).
+    #[test]
+    fn dangerous_rules_edit_list_keeps_the_builtin_rules() {
+        let env = oxa_fake::TestEnv::new();
+        let guard = oxa_perm::PathGuard::new(&env.home(), &env.agent_dir(), &env.tmp());
+        let cwd = env.work();
+        let rules = |list: serde_json::Value| {
+            let user = serde_json::json!({"oxa": {"approval": {"dangerous": list}}});
+            dangerous_rules(&Settings::from_values(user, serde_json::json!({}))).0
+        };
+        let hits = |r: &DangerRules, cmd: &str| -> Vec<String> {
+            r.classify(cmd, &cwd, &guard)
+                .into_iter()
+                .map(|h| h.rule)
+                .collect()
+        };
+        let has = |r: &DangerRules, cmd: &str, rule: &str| hits(r, cmd).iter().any(|h| h == rule);
+        let force = "git push --force origin main";
+        let added = rules(serde_json::json!(["+cmd:terraform destroy"]));
+        assert!(has(&added, "terraform destroy", "cmd:terraform destroy"));
+        assert!(has(&added, force, "git-push-force"));
+        assert!(has(&added, "sudo ls", "sudo"));
+        let edited = rules(serde_json::json!(["-sudo", "+cmd:terraform destroy"]));
+        assert!(!has(&edited, "sudo ls", "sudo"));
+        assert!(has(&edited, force, "git-push-force"));
+        assert!(has(&edited, "terraform destroy", "cmd:terraform destroy"));
+        let removed = rules(serde_json::json!(["-sudo"]));
+        assert!(!has(&removed, "sudo ls", "sudo"));
+        assert!(has(&removed, force, "git-push-force"));
+        let replaced = rules(serde_json::json!(["cmd:terraform destroy"]));
+        assert!(hits(&replaced, force).is_empty());
+        assert!(has(&replaced, "terraform destroy", "cmd:terraform destroy"));
+    }
+    /// #1512 S2: the dangerous-command rules and the always keys come from the user settings
+    /// only. A project file that replaces the rules and lists the key changes nothing; the same
+    /// key in the user file allows the command.
+    #[test]
+    fn approval_keys_are_read_from_user_layer_only() {
+        use oxa_proto::{Access, Decision, Mode, Policy};
+        let env = oxa_fake::TestEnv::new();
+        let dirs = Dirs::under(env.root());
+        let cwd = env.work();
+        let key = "git-push-force git push --force origin main";
+        // The default list is every built-in rule (an empty list never means "no rules").
+        assert_eq!(dangerous_rules(&Settings::default()).0, DangerRules::builtin());
+        let dangerous = Access::Exec {
+            command: "git push --force origin main".into(),
+            net: false,
+        };
+        env.write(
+            "work/.oxa/settings.json",
+            &serde_json::json!({"oxa": {"approval": {"dangerous": [], "always": [key]}}}).to_string(),
+        );
+        let build = || {
+            let base: Arc<dyn Sandbox> = Arc::new(NoSandbox);
+            let yolo = oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard);
+            Built {
+                lead: false,
+                status: None,
+                result_facts: Arc::new(crate::result_facts::ResultFacts::default()),
+                output_schema: None,
+                goal: None,
+                engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
+                cloud_diagnostics: oxc_gateway::diagnostics::Diagnostics::default(),
+                store: Arc::new(MemStore::new()),
+                sandbox: base.clone(),
+                settings: Settings::default(),
+                dirs: dirs.clone(),
+                cwd: cwd.clone(),
+                resources: Resources::default(),
+                theme_paths: Vec::new(),
+                selection: ToolSelection::default(),
+                model: None,
+                thinking: None,
+                mode: None,
+                supervised_child: false,
+                ask_owner_present: true,
+                hook_sets: HookSets::default(),
+                bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
+                    base.clone(),
+                    yolo.clone(),
+                    "",
+                    env.home(),
+                    false,
+                )),
+                yolo,
+                danger: Arc::new(oxa_perm::DangerRules::builtin()),
+            }
+        };
+        let policy = build().deps(None).policy;
+        assert_eq!(policy.decide(Mode::Workspace, &dangerous, &cwd), Decision::Ask);
+        // The user layer, the same key: allowed.
+        std::fs::create_dir_all(dirs.settings_file().parent().unwrap()).unwrap();
+        std::fs::write(
+            dirs.settings_file(),
+            serde_json::json!({"oxa": {"approval": {"always": [key]}}}).to_string(),
+        )
+        .unwrap();
+        let policy = build().deps(None).policy;
+        assert_eq!(policy.decide(Mode::Workspace, &dangerous, &cwd), Decision::Allow);
     }
 }
 

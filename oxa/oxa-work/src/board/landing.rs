@@ -172,7 +172,10 @@ impl Board {
         }
         self.entries
             .iter()
-            .filter(|entry| !matches!(entry.action, Action::BuildIssue | Action::WaitIssue))
+            .filter(|entry| {
+                entry.evidence_incomplete.is_none()
+                    && !matches!(entry.action, Action::BuildIssue | Action::WaitIssue)
+            })
             .map(|entry| {
                 let (reviews, queue) = observations
                     .get(&entry.number)

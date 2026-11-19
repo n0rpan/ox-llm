@@ -29,6 +29,7 @@ fn write_board(path: &Path, observed_at: u64, rows: &[(u64, Action, bool, Option
                 }),
                 attempts_today: 0,
                 eligible,
+                evidence_incomplete: None,
             })
             .collect(),
     };
