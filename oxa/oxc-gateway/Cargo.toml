@@ -23,6 +23,7 @@ anthropic-gateway = ["cloud-only", "ledger", "anthropic-client", "dep:oxa-config
 transport = ["dep:reqwest", "dep:tokio", "dep:futures-util", "dep:url"]
 
 [dependencies]
+oxa-http.workspace = true
 oxa-config = { workspace = true, optional = true }
 oxa-proto = { workspace = true, optional = true }
 bigdecimal = { version = "0.4", optional = true }

@@ -12,7 +12,7 @@ maintainer, who says in the PR when a hardware check is needed.
 - Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests;
   use synthetic fixtures. Do not open real credential files during review.
 - Keep engine transport selection, native binary/launch configuration, `allowRemote`, share
-  authority and login/token paths user-only. A project file must never override these decisions.
+  authority, login/token paths and `oxa.inbox.headless` user-only. A project file must never override these decisions.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
 - Preserve sandbox/bwrap enforcement and file-tool denials for private paths. Only explicit
   owner-selected yolo deliberately disables the permission floor. Off Linux there is no OS sandbox
@@ -41,15 +41,23 @@ maintainer, who says in the PR when a hardware check is needed.
 - v0.2.1 has no Python in the product/runtime path; build/test tooling is separate.
 - Never expose secrets to fork PRs or execute PR code with review credentials. Never use
   `pull_request_target`; unknown authors need `ok-to-review` before token-spending review.
+- Go review quota and same-diff checks read at most 200 GitHub comment pages (20,000 comments).
+  If either history exceeds that bound, the review defers before reserving quota or requesting a
+  provider token; an incomplete history must never authorize another review.
 - **Intent:** the change must do what its linked issue and PR description say, and nothing else.
   Flag as P1: missing or contradicted acceptance criteria from the linked issue; unrelated changes
   mixed in; a default that contradicts the owner decision stated in the linked issue or PR body
   (on-by-default with an opt-out setting is normal and is not itself a finding); deleted or
   disabled existing behaviour, tests or checks without a `Removes: <what> — <why>` line in the PR
   body; a test weakened, skipped or rewritten to pass instead of fixing the code.
-- **Policy changes carry their rules:** a change to a default, limit, budget, approval, sandbox or
-  other security behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and
-  the user docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A review finding
+- **Security policy changes carry their rules:** a change to approval, sandbox, credential, secret or
+  publish behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and the user
+  docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A change to an ordinary
+  default, limit or budget updates the user docs; a missing docs update is P3 and is fixed forward.
+- **Early-stage process (owner decision, until v0.3):**
+  - Only P0/P1 findings, security findings and an open security review block a merge. P2/P3 findings are filed as follow-ups and fixed forward on main.
+  - Prefer one PR per feature, up to about 800 changed lines, over stacks of small PRs.
+  - A merge that breaks required checks on main is reverted at once, then fixed forward. A review finding
   that contradicts an owner decision stated in the linked issue or PR is answered by updating these
   rules in that PR, not by changing the behaviour.
 - **Bash and subagent limits.** The two caps are user-only. `oxa.bash.maxJobs` defaults to 16

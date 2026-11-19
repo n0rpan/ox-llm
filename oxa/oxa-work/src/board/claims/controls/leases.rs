@@ -10,7 +10,8 @@ pub struct ReleaseRecord {
 }
 
 impl Claims {
-    /// Manual assignment cannot bypass a pin, role requirement, live lease or attempt cap.
+    /// Manual assignment cannot bypass a pin, role requirement or live lease; the
+    /// daily attempt threshold is advisory and never fences admission.
     pub fn assign(
         &self,
         entry: &Entry,

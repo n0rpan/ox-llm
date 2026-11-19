@@ -32,7 +32,7 @@ pub use descriptor::{
 };
 pub use descriptor_value::{check, current, display_value, parse_input, search, Shown};
 pub use dirs::dirs_from_env;
-pub use env::{env_flag, Env, EnvFlag, EnvVar, ENV_TABLE, FALSE_WORDS, TRUE_WORDS};
+pub use env::{env_flag, Env, EnvFlag, EnvKind, EnvVar, ENV_TABLE, FALSE_WORDS, TRUE_WORDS};
 pub use keybindings::{ActionDef, Keymap};
 pub use models::{
     resolve_model, resolve_scoped, valid_cloud_name, CloudApi, CloudModel, CloudPrice, CloudProvider,

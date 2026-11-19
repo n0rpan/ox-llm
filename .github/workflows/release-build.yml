@@ -71,7 +71,10 @@ jobs:
           echo "SOURCE_DATE_EPOCH=$epoch" >> "$GITHUB_ENV"
           mkdir -p /build/first /build/second dist
           source_archive="dist/ox-llm-$commit.tar.gz"
-          git archive --format=tar --prefix="ox-llm-$commit/" HEAD -- . | gzip -n -9 > "$source_archive"
+          git archive --format=tar --prefix="ox-llm-$commit/" HEAD -- . \
+            ':(exclude)oxc/src' ':(exclude)oxc/tools' \
+            ':(exclude)oxc/packaging/flash-qos/oxc-flash-qos' \
+            ':(exclude,glob)oxc/**/*.py' | gzip -n -9 > "$source_archive"
           for build in first second; do
             tar -xzf "$source_archive" --strip-components=1 -C "/build/$build"
           done
@@ -80,7 +83,7 @@ jobs:
           for build in first second; do
             cd "/build/$build"
             packaging/release/build.sh
-            python3 -B packaging/release/stage.py /build/payload
+            packaging/release/stage.sh /build/payload
             packaging/release/archive.sh /build/payload "/build/$build.tar.gz"
             rm -rf /build/payload
           done

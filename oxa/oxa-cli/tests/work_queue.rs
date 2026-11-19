@@ -755,6 +755,7 @@ fn a_monitor_error_drains_admitted_workers_before_returning() {
             max: 1,
             min_free_bytes: 0,
             once: true,
+            ..oxa_work::QueueOptions::default()
         },
         &policy,
         std::path::Path::new("/usr/bin/df"),
