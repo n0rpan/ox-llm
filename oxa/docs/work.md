@@ -433,7 +433,9 @@ the wait resumes the saved `lane` step instead of rerunning the worker.
 Rust work that passed its local checks but needs hosted tests enters the lane
 anyway: the exact-head lane run is that hosted evidence. The task stays `unverified`
 while the run is pending and becomes `done` only when it is green; the push still
-passes the structural checks, owner confirmation and content scan first.
+passes the structural checks, owner confirmation and content scan first. The run's
+plan and at least one lane test job must actually succeed: an overall-success run
+whose test jobs were skipped is not evidence.
 
 The lane run only counts for what it actually ran. The workflow selects the crates
 the branch diff touches (and their reverse dependencies), so a declared acceptance
@@ -466,10 +468,13 @@ what the lane tests: a change under `engine/`, or under `fuzz/`, stays on the ho
 A branch whose open pull request is already in the merge queue is refused too;
 use a new task branch for follow-up work.
 
-The push is gated. The owner confirms it at the controlling terminal before the
-run starts, or a web/runner surface that already holds the owner's confirmation
-sets `OXA_WORK_OWNER_CONFIRMED=1` (ignored when a coding-agent marker such as
-`OXA_CODING_AGENT`, `AI_AGENT` or `OXA_SUBAGENT_DEPTH` is set, as for `--publish`). Without that confirmation a lane task ends
+The push is gated. Inside an oxa session, `oxa work` asks through the session's
+owner-confirm broker, so the session dialog or yolo choice is recorded even when
+an agent child launched the command. Outside a session, the owner can confirm at
+the controlling terminal, or an owner-controlled web/runner surface can set
+`OXA_WORK_OWNER_CONFIRMED=1`; those compatibility paths are ignored when a
+coding-agent marker such as `OXA_CODING_AGENT`, `AI_AGENT` or
+`OXA_SUBAGENT_DEPTH` is set. Without that confirmation a lane task ends
 `blocked` before any worker starts and pushes nothing. Offline mode, an untrusted
 project, a missing trusted `gh`, or a missing sandbox refuse it later.
 

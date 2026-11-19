@@ -43,7 +43,15 @@ case "$1 $2" in
         exit 0
       fi
     done
-    printf '%s' '{"jobs":[{"name":"lane (oxa, ubuntu-24.04)","conclusion":"failure","steps":[{"name":"Affected crates","conclusion":"failure"}]}]}' ;;
+    if test -f "$HOME/lane-pass"; then
+      if test -f "$HOME/lane-skipped"; then
+        printf '%s' '{"jobs":[{"name":"lane pr check","conclusion":"success"},{"name":"lane plan","conclusion":"skipped"},{"name":"lane (oxa, ubuntu-24.04)","conclusion":"skipped"}]}'
+      else
+        printf '%s' '{"jobs":[{"name":"lane pr check","conclusion":"success"},{"name":"lane plan","conclusion":"success"},{"name":"lane (oxa, ubuntu-24.04)","conclusion":"success"}]}'
+      fi
+    else
+      printf '%s' '{"jobs":[{"name":"lane (oxa, ubuntu-24.04)","conclusion":"failure","steps":[{"name":"Affected crates","conclusion":"failure"}]}]}'
+    fi ;;
   *) exit 7 ;;
 esac
 "##,
@@ -150,6 +158,25 @@ fn a_green_lane_run_at_the_pushed_head_is_done() {
     );
     let state = fs::read_to_string(state_path(&env)).unwrap();
     assert!(state.contains("\"lane\""), "{state}");
+}
+
+#[test]
+fn a_green_workflow_with_skipped_test_jobs_is_not_lane_evidence() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    lane_task(&env);
+    let path = configure(&env);
+    env.write("home/lane-pass", "");
+    env.write("home/lane-skipped", "");
+    let record = run_lane(&env, edits(), path);
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(
+        record["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("plan or test jobs were skipped"),
+        "{record}"
+    );
 }
 
 #[test]
@@ -350,6 +377,38 @@ fn an_agent_marker_voids_the_ambient_owner_confirmation() {
 }
 
 #[test]
+fn an_agent_process_can_use_the_owner_confirm_broker() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    lane_task(&env);
+    let path = configure(&env);
+    env.write("home/lane-pass", "");
+    let broker_dir = env.home().join("confirm-broker");
+    let broker = oxa_core::owner_confirm::OwnerConfirm::start(
+        &broker_dir,
+        oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Yolo),
+    )
+    .unwrap();
+    let server = oxa_fake::FakeServer::start(edits(), oxa_fake::FakeOpts::default()).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "../tasks.json"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .env("PATH", path)
+        .env("OXA_CODING_AGENT", "1")
+        .env(oxa_core::owner_confirm::SOCK_ENV, broker.sock_path())
+        .output()
+        .unwrap();
+    let record: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(&out.stderr)));
+    assert_eq!(record["outcome"], "done", "{record}");
+    let approvals = broker.take_records();
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(approvals[0].verdict, oxa_core::owner_confirm::Verdict::Yes);
+}
+
+#[test]
 fn a_lane_task_without_owner_push_approval_runs_its_local_checks_but_is_never_done() {
     let env = TestEnv::new();
     setup(&env, r#"["true"]"#);
@@ -432,7 +491,7 @@ fn lane_task_with_a_fake_token_is_refused_before_push_and_no_lane_run_is_awaited
             ScriptTurn::tool(
                 "write",
                 "write",
-                &format!(r#"{{"path":"src/client.rs","content":"{content}"}}"#),
+                &format!(r#"{{"path":"oxa/src/client.rs","content":"{content}"}}"#),
             ),
             ScriptTurn::text("done"),
         ],
@@ -475,7 +534,7 @@ fn rust_unverified_work_collects_lane_evidence_and_becomes_done_on_green() {
             ScriptTurn::tool(
                 "write",
                 "write",
-                r#"{"path":"src/client.rs","content":"fn main() {}\n"}"#,
+                r#"{"path":"oxa/src/client.rs","content":"fn main() {}\n"}"#,
             ),
             ScriptTurn::text("done"),
         ],

@@ -205,6 +205,24 @@ fn failed_steps(value: &Value, names: &mut Vec<String>) {
     }
 }
 
+/// A successful workflow is evidence only when its plan and a test job really
+/// ran. Pushes to branches with open PRs skip both but still conclude success.
+fn successful_test_jobs(value: &Value) -> bool {
+    let Some(jobs) = value["jobs"].as_array() else {
+        return false;
+    };
+    let plan = jobs.iter().any(|job| {
+        job["name"].as_str() == Some("lane plan") && job["conclusion"].as_str() == Some("success")
+    });
+    let test = jobs.iter().any(|job| {
+        job["name"]
+            .as_str()
+            .is_some_and(|name| name.starts_with("lane (") && name.ends_with(')'))
+            && job["conclusion"].as_str() == Some("success")
+    });
+    plan && test
+}
+
 /// The lane result is only a gate while the gate's own definition stays fixed.
 /// A head that edits the lane workflow or its runner could report itself green.
 const PROTECTED_LANE_CONTROLS: &[&str] = &[".github/workflows/", "tools/ci/"];
@@ -435,29 +453,32 @@ pub(crate) fn accept(
             completed_run(&value, head)
         },
         || started.elapsed(),
-        |wait| std::thread::sleep(wait),
+        std::thread::sleep,
     )?;
     let conclusion = run.conclusion.clone().unwrap_or_else(|| "unknown".into());
-    let disposition = disposition(&conclusion);
+    let mut disposition = disposition(&conclusion);
     let mut failed = Vec::new();
+    let jobs = crate::publish::gh(
+        gh,
+        policy,
+        repo,
+        lock,
+        &[
+            "run",
+            "view",
+            &run.id.to_string(),
+            "--repo",
+            &repository.qualified,
+            "--json",
+            "jobs",
+        ],
+    )
+    .and_then(|text| serde_json::from_str::<Value>(&text).map_err(|e| e.to_string()));
+    if disposition == Disposition::Pass && !jobs.as_ref().is_ok_and(successful_test_jobs) {
+        disposition = Disposition::Blocked;
+    }
     if disposition == Disposition::Repair {
-        if let Ok(jobs) = crate::publish::gh(
-            gh,
-            policy,
-            repo,
-            lock,
-            &[
-                "run",
-                "view",
-                &run.id.to_string(),
-                "--repo",
-                &repository.qualified,
-                "--json",
-                "jobs",
-            ],
-        )
-        .and_then(|text| serde_json::from_str::<Value>(&text).map_err(|e| e.to_string()))
-        {
+        if let Ok(jobs) = jobs {
             failed_steps(&jobs, &mut failed);
         }
         if let Some(log) = log_failed(gh, policy, repo, lock, &repository.qualified, run.id) {
@@ -477,10 +498,17 @@ pub(crate) fn accept(
             Ok(LaneAcceptance::Fail { verdict, failures })
         }
         Disposition::Blocked => Ok(LaneAcceptance::Blocked {
-            detail: format!(
-                "lane CI run {} concluded {}; an infrastructure result is not a repair",
-                run.id, verdict.conclusion
-            ),
+            detail: if verdict.conclusion == "success" {
+                format!(
+                    "lane CI run {} was successful but its plan or test jobs were skipped at the accepted commit",
+                    run.id
+                )
+            } else {
+                format!(
+                    "lane CI run {} concluded {}; an infrastructure result is not a repair",
+                    run.id, verdict.conclusion
+                )
+            },
             verdict,
         }),
     }

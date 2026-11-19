@@ -211,8 +211,9 @@ maintainer, who says in the PR when a hardware check is needed.
   Every runner-owned publication, including lane acceptance, scans the exact commits added to
   the destination before pushing. Lane work also refuses changes to workflows or its CI runner;
   land CI-control changes separately under normal review, checked on every commit the destination lacks, not
-  only the saved base. A lane push needs the owner's own confirmation (controlling terminal, or
-  `OXA_WORK_OWNER_CONFIRMED=1` outside an agent tool; an agent marker voids it), and a green lane run is evidence
+  only the saved base. A lane push needs the owner's own confirmation through the session broker
+  (including from an agent child), or the compatibility terminal/`OXA_WORK_OWNER_CONFIRMED=1` path
+  outside an agent tool. A green lane run is evidence
   only for what the lane tests (never `engine/` or `fuzz/` changes).
   Below, every `gh` command is for a session that owns GitHub access.
 

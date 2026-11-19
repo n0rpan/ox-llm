@@ -22,6 +22,27 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 /// The environment variable a tool child finds the broker socket in.
 pub const SOCK_ENV: &str = "OXA_CONFIRM_SOCK";
 
+/// Ask the session-owned confirmation broker and return its authenticated answer.
+/// A malformed reply or an unavailable broker is not approval.
+pub fn ask(socket: &Path, question: &str, preview_sha256: &str) -> std::io::Result<Verdict> {
+    let mut stream = UnixStream::connect(socket)?;
+    writeln!(
+        stream,
+        "{}",
+        json!({"question": question, "preview_sha256": preview_sha256})
+    )?;
+    let mut reply = String::new();
+    BufReader::new(stream)
+        .take(MAX_REQUEST_BYTES as u64 + 1)
+        .read_line(&mut reply)?;
+    let value: Value = serde_json::from_str(&reply).unwrap_or(Value::Null);
+    Ok(match value.get("answer").and_then(Value::as_str) {
+        Some("yes") => Verdict::Yes,
+        Some("no") => Verdict::No,
+        _ => Verdict::None,
+    })
+}
+
 /// Maximum complete request frame, including its terminating newline.
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 

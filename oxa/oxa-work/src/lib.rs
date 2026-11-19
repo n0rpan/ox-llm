@@ -845,6 +845,7 @@ pub struct RunPolicy {
     /// The owner confirmed that a lane task may push its accepted commit.
     pub push_approved: bool,
     /// The publication content scan every push must pass first; lane pushes refuse without it.
+    #[allow(clippy::type_complexity)]
     pub content_scan:
         Option<std::sync::Arc<dyn Fn(&PushedContent<'_>) -> Option<ContentFinding> + Send + Sync>>,
     pub offline: bool,
