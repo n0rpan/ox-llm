@@ -23,6 +23,10 @@ const LOCK_NAME: &str = ".lock";
 /// The answers the owner can give (`oxa send --approve <id> <answer>`).
 const ANSWERS: &[&str] = &["once", "session", "always", "deny"];
 
+// This rule includes shell source read from files, processes or the network. A command
+// string alone cannot identify the bytes an unattended retry will execute.
+pub(crate) const OPAQUE_SHELL_INPUT: &str = "pipe-to-shell";
+
 /// How an unattended run answers a dangerous command: the setting `oxa.approval.unattended`.
 /// `Auto` refuses under the OS sandbox and files a request without it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -252,6 +256,16 @@ impl ApprovalDesk {
                 rec.status
             )));
         }
+        if status != "deny"
+            && rec.keys.iter().any(|key| {
+                key.split_once(' ')
+                    .is_some_and(|(rule, _)| rule == OPAQUE_SHELL_INPUT)
+            })
+        {
+            return Err(invalid_input(
+                "shell input cannot be approved for unattended replay",
+            ));
+        }
         rec.status = status.to_string();
         rec.answered_ms = Some(now_ms());
         self.write(&rec)?;
@@ -282,9 +296,7 @@ impl ApprovalDesk {
         })
     }
 
-    /// Spend the `once` grant that covers every key: the command it approved is going to run.
-    /// `session` and `always` grants stay. Returns whether a `once` grant was spent.
-    pub fn consume(&self, session: &str, cwd: &Path, keys: &[String]) -> bool {
+    fn claim(&self, session: &str, cwd: &Path, keys: &[String], reusable: bool) -> bool {
         if keys.is_empty() {
             return false;
         }
@@ -296,24 +308,29 @@ impl ApprovalDesk {
         };
         let dir = cwd.display().to_string();
         for mut rec in records {
-            if rec.session != session || rec.cwd != dir || rec.status != "once" || rec.used {
+            if rec.session != session || rec.cwd != dir || !keys.iter().all(|k| rec.keys.contains(k)) {
                 continue;
             }
-            if keys.iter().all(|k| rec.keys.contains(k)) {
-                rec.used = true;
-                return self.write(&rec).is_ok();
+            match rec.status.as_str() {
+                "session" | "always" if reusable => return true,
+                "once" if !rec.used => {
+                    rec.used = true;
+                    return self.write(&rec).is_ok();
+                }
+                _ => {}
             }
         }
         false
     }
 
-    /// `covers` and spend the `once` grant, in one step. `false` on no cover.
+    /// Spend a matching unused `once` grant. Reusable grants stay untouched.
+    pub fn consume(&self, session: &str, cwd: &Path, keys: &[String]) -> bool {
+        self.claim(session, cwd, keys, false)
+    }
+
+    /// Check and claim authorization under one lock, requiring a successful write for `once`.
     pub fn granted(&self, session: &str, cwd: &Path, keys: &[String]) -> bool {
-        if !self.covers(session, cwd, keys) {
-            return false;
-        }
-        self.consume(session, cwd, keys);
-        true
+        self.claim(session, cwd, keys, true)
     }
 
     /// Remove the records of `session` (all of them when `None`) from the desk under

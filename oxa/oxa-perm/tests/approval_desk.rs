@@ -356,6 +356,57 @@ fn unattended_request_setting_overrides_auto() {
 }
 
 #[test]
+fn unattended_approval_cannot_replay_opaque_shell_input() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
+    let command = "cat example.txt | sh";
+    let cmd = exec(command);
+    let refusal = p.danger_unattended(&cmd, &cwd).expect("refusal");
+    assert!(refusal.contains("cannot be verified for unattended replay"));
+    assert!(desk.pending().expect("pending").is_empty());
+    let old_request = desk
+        .record(
+            "s1",
+            &cwd,
+            command,
+            &[DangerHit {
+                rule: "pipe-to-shell".into(),
+                reason: "shell input".into(),
+                segment: "sh".into(),
+            }],
+            "pending",
+        )
+        .expect("existing request");
+    assert!(desk.answer(&old_request, "once").is_err());
+    assert!(desk.answer(&old_request, "always").is_err());
+    assert!(desk.answer(&old_request, "deny").is_ok());
+    assert_eq!(p.decide(Mode::Workspace, &cmd, &cwd), Decision::Ask);
+}
+
+#[test]
+fn a_once_approval_requires_a_successful_claim() {
+    let env = TestEnv::new();
+    let (desk, agent) = open_desk(&env);
+    let cwd = env.work();
+    let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
+    let cmd = exec(DANGEROUS);
+    let request = p.danger_unattended(&cmd, &cwd).expect("request");
+    desk.answer(&request_id(&request), "once").expect("owner answer");
+
+    let lock = agent.join("approvals/.lock");
+    std::fs::remove_file(&lock).expect("remove idle lock");
+    std::fs::create_dir(&lock).expect("make lock unavailable");
+    assert!(desk.covers("s1", &cwd, &[KEY.to_string()]));
+    assert!(matches!(p.decide(Mode::Workspace, &cmd, &cwd), Decision::Deny(_)));
+
+    std::fs::remove_dir(&lock).expect("make lock available");
+    assert_eq!(p.decide(Mode::Workspace, &cmd, &cwd), Decision::Allow);
+    assert_eq!(p.decide(Mode::Workspace, &cmd, &cwd), Decision::Ask);
+}
+
+#[test]
 fn retry_after_once_approval_runs_then_asks_again() {
     let env = TestEnv::new();
     let (desk, _) = open_desk(&env);
