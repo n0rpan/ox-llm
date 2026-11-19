@@ -35,28 +35,17 @@ impl SubscriptionLimits {
             message: "Subscription models need positive daily request and token limits.",
         }
     }
-    pub(crate) fn check(self, used: Counts, held: Counts, required: Counts) -> Result<(), Refusal> {
-        let total = used.add(held)?.add(required)?;
-        if total.requests > self.requests || total.tokens > self.tokens {
-            return Err(Refusal {
-                status: 429,
-                code: "subscription_limit_exceeded",
-                param: "model",
-                message: "The daily subscription request or token limit would be exceeded.",
-            });
-        }
-        Ok(())
-    }
-
-    pub(crate) fn go_warning(self, total: Counts) -> Option<&'static str> {
-        if total.requests >= self.requests || total.tokens >= self.tokens {
-            Some("OpenCode Go: projected usage reached 100% of oxa.cloud.subscription_limits; continuing.")
-        } else if u128::from(total.requests) * 5 >= u128::from(self.requests) * 4
-            || u128::from(total.tokens) * 5 >= u128::from(self.tokens) * 4
-        {
-            Some("OpenCode Go: projected usage reached 80% of oxa.cloud.subscription_limits; continuing.")
-        } else {
-            None
+    /// The owner's limits warn at 80% and 100% of a projected day and never refuse.
+    pub(crate) fn advisory_warning(self, total: Counts, go: bool) -> Option<&'static str> {
+        let full = total.requests >= self.requests || total.tokens >= self.tokens;
+        let near = u128::from(total.requests) * 5 >= u128::from(self.requests) * 4
+            || u128::from(total.tokens) * 5 >= u128::from(self.tokens) * 4;
+        match (go, full, near) {
+            (true, true, _) => Some("OpenCode Go: projected usage reached 100% of oxa.cloud.subscription_limits; continuing."),
+            (true, false, true) => Some("OpenCode Go: projected usage reached 80% of oxa.cloud.subscription_limits; continuing."),
+            (false, true, _) => Some("ChatGPT plan: projected usage reached 100% of oxa.cloud.subscription_limits; continuing."),
+            (false, false, true) => Some("ChatGPT plan: projected usage reached 80% of oxa.cloud.subscription_limits; continuing."),
+            _ => None,
         }
     }
 }
@@ -86,7 +75,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn subscription_limits_are_positive_and_both_dimensions_include_live_holds() {
+    fn subscription_limits_are_positive_and_only_ever_warn() {
         for (requests, tokens) in [(0, 1), (1, 0), (0, 0)] {
             let error = SubscriptionLimits::new(requests, tokens).unwrap_err();
             assert_eq!(
@@ -103,34 +92,19 @@ mod tests {
             requests: 1,
             tokens: 40,
         };
-        limits
-            .check(
-                used,
-                held,
-                Counts {
-                    requests: 1,
-                    tokens: 40,
-                },
-            )
-            .unwrap();
-        for required in [
-            Counts {
-                requests: 2,
-                tokens: 1,
-            },
-            Counts {
-                requests: 1,
-                tokens: 41,
-            },
-        ] {
-            let error = limits.check(used, held, required).unwrap_err();
-            assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
-        }
+        let total = used.add(held).unwrap();
+        // 2 of 3 requests and 60 of 100 tokens is below the first warning.
+        let warn = |extra: Counts, go| limits.advisory_warning(total.add(extra).unwrap(), go);
+        assert_eq!(warn(Counts { requests: 0, tokens: 0 }, true), None);
+        // The projected day reaches 80% of the tokens: advisory, naming the route.
+        assert!(warn(Counts { requests: 0, tokens: 20 }, true).unwrap().contains("80%"));
+        assert!(warn(Counts { requests: 1, tokens: 0 }, false).unwrap().starts_with("ChatGPT plan"));
+        // Past 100% still only warns; there is no refusal path.
+        assert!(warn(Counts { requests: 5, tokens: 500 }, false).unwrap().contains("100%"));
     }
 
     #[test]
     fn overflow_closes_accounting_instead_of_wrapping_to_a_fresh_allowance() {
-        let limits = SubscriptionLimits::new(u64::MAX, u64::MAX).unwrap();
         for (used, required) in [
             (
                 Counts {
@@ -153,7 +127,7 @@ mod tests {
                 },
             ),
         ] {
-            let error = limits.check(used, Counts::default(), required).unwrap_err();
+            let error = used.add(required).unwrap_err();
             assert_eq!((error.status, error.code), (503, "cloud_ledger_unavailable"));
         }
     }

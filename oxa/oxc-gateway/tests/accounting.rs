@@ -195,19 +195,10 @@ fn unknown_subscription_outcomes_never_refund_the_token_reservation() {
 }
 
 #[test]
-fn subscription_requires_caps_and_cannot_make_an_api_provider_free() {
+fn subscription_limits_are_advisory_and_cannot_make_an_api_provider_free() {
     let home = Home::new();
     let path = home.ledger();
     let budget = Budget::new(path.clone());
-    let error = budget
-        .reserve_subscription(None, true, &subscription(), 20)
-        .err()
-        .unwrap();
-    assert_eq!(
-        (error.status, error.code),
-        (403, "subscription_limits_not_configured")
-    );
-    assert_eq!(fs::read_dir(&home.0).unwrap().count(), 0);
     let limits = Some(SubscriptionLimits::new(3, 1000).unwrap());
     let mut wrong = subscription();
     wrong.provider = "openai".into();
@@ -228,6 +219,11 @@ fn subscription_requires_caps_and_cannot_make_an_api_provider_free() {
         assert_eq!((error.status, error.code), (400, "invalid_billing"));
     }
     assert!(!path.exists());
+    // Without limits a subscription request is admitted and recorded, never refused.
+    budget
+        .reserve_subscription(None, true, &subscription(), 20)
+        .unwrap();
+    assert!(path.exists());
 }
 
 #[test]
