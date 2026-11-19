@@ -70,6 +70,9 @@ maintainer, who says in the PR when a hardware check is needed.
   `oxa.sandbox.writePaths` entry. Review environment forwarding and writable mounts independently.
 - **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
   registry with its surfaces and help (P1 if added outside it or without an exception reason).
+  `oxe admission` is an engine CLI exception. It reports allocation bounds directly from a GGUF
+  header and accepts `oxe-server` launch arguments without opening an oxa session. Its command and
+  flag help live in `oxe admission --help`. It has no oxa slash, menu, or web surface.
 - **Worker mode.** An `oxa work` worker is started with `--yolo` only when the owner's user-layer
   `permissions.defaultMode` is `yolo`; otherwise it keeps the sandboxed default. Project settings
   cannot raise it. See `oxa/docs/work.md`.
