@@ -745,6 +745,7 @@ fn a_monitor_error_drains_admitted_workers_before_returning() {
         offline: true,
         gh_binary: None,
         push_approved: false,
+        content_scan: None,
         runner_owns_github: false,
         storage: env.agent_dir().join("work/monitor-fixture"),
     };

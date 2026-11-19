@@ -169,6 +169,7 @@ pub(crate) fn run(
             terminate_binary,
             gh_binary: None,
             push_approved: false,
+            content_scan: None,
             offline: oxa_proto::offline(),
             runner_owns_github: false,
             storage: dirs.agent_dir.join("work").join(key),
@@ -433,6 +434,11 @@ fn configure_lane(policy: &mut oxa_work::RunPolicy, root: &Path, env: &Env, dirs
             Some(&dirs.home),
         );
     }
+    if policy.content_scan.is_none() {
+        // Lane pushes go through exactly the scan `--publish` runs.
+        let scan = crate::report_cmd::PushScan::new(env, &oxa_config::Settings::load(dirs, root, true));
+        policy.content_scan = Some(std::sync::Arc::new(move |item| scan.check(item)));
+    }
     if env.get("OXA_WORK_OWNER_CONFIRMED") == Some("1") {
         policy.push_approved = true;
     }
@@ -500,11 +506,13 @@ impl Context {
                 Some(&dirs.home),
             )
             .unwrap_or_else(|| PathBuf::from("/unavailable/gh"));
+            let scan = crate::report_cmd::PushScan::new(env, &oxa_config::Settings::load(dirs, root, true));
             record = locked.publish(
                 root,
                 binary,
                 &gh,
                 &|_: &oxa_work::Record| Ok(()),
+                &|item| scan.check(item),
                 &mut crate::report_cmd::tty_confirm(env),
             )?;
         }

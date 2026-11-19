@@ -121,6 +121,7 @@ fn review_git_evidence_keeps_an_unchanged_main_merge_and_rejects_a_changed_patch
         offline: true,
         gh_binary: None,
         push_approved: false,
+        content_scan: None,
         runner_owns_github: false,
         terminate_binary: None,
         storage: env.tmp(),

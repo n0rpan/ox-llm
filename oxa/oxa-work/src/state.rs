@@ -362,6 +362,7 @@ mod tests {
                 offline: true,
                 gh_binary: None,
                 push_approved: false,
+                content_scan: None,
                 runner_owns_github: false,
                 storage: fixture.0.path().to_path_buf(),
             };

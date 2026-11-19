@@ -28,6 +28,321 @@ fn action_context(
 }
 const MAX_PUBLICATION_RESPONSE_BYTES: usize = 1024 * 1024;
 
+/// One part of the commits a publication would push: the name of a file that a
+/// commit adds (`line` is `None`, `text` is empty) or one added line.
+pub struct PushedContent<'a> {
+    pub path: &'a str,
+    pub line: Option<usize>,
+    pub text: &'a str,
+}
+
+/// Why pushed content must not be published. `label` never contains the content;
+/// `secret_path` withholds a path that itself contains secret text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContentFinding {
+    pub label: &'static str,
+    pub secret_path: bool,
+}
+
+/// Classifies pushed content before publication.
+pub type ContentScan<'a> = &'a dyn Fn(&PushedContent<'_>) -> Option<ContentFinding>;
+
+/// Decode a path Git printed in C-style quotes (`"b/a\"b\\c\303\251"`).
+fn unquote(quoted: &str) -> Option<String> {
+    let inner = quoted.strip_prefix('"')?.strip_suffix('"')?;
+    let mut bytes = Vec::with_capacity(inner.len());
+    let mut chars = inner.bytes();
+    while let Some(byte) = chars.next() {
+        if byte != b'\\' {
+            bytes.push(byte);
+            continue;
+        }
+        let escaped = chars.next()?;
+        bytes.push(match escaped {
+            b'a' => 0x07,
+            b'b' => 0x08,
+            b'f' => 0x0c,
+            b'n' => b'\n',
+            b'r' => b'\r',
+            b't' => b'\t',
+            b'v' => 0x0b,
+            b'0'..=b'7' => {
+                let mut value = u32::from(escaped - b'0');
+                for _ in 0..2 {
+                    let digit = chars.next().filter(|digit| (b'0'..=b'7').contains(digit))?;
+                    value = value * 8 + u32::from(digit - b'0');
+                }
+                u8::try_from(value).ok()?
+            }
+            other => other,
+        });
+    }
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn diff_path(header: &str) -> Option<String> {
+    let path = header.trim_end_matches(['\r', '\n']);
+    if path == "/dev/null" {
+        return None;
+    }
+    let path = if path.starts_with('"') {
+        unquote(path)?
+    } else {
+        // Git ends an unquoted `+++` path that contains a space with a tab. A tab in
+        // a real name would make Git quote the path, so one trailing tab is never part of it.
+        path.strip_suffix('\t').unwrap_or(path).to_string()
+    };
+    Some(path.strip_prefix("b/").map(str::to_string).unwrap_or(path))
+}
+
+fn refusal(path: &str, line: Option<usize>, finding: ContentFinding) -> String {
+    let path: String = if finding.secret_path {
+        "a file whose path".into()
+    } else {
+        path.chars()
+            .map(|ch| if ch.is_control() { '?' } else { ch })
+            .take(200)
+            .collect()
+    };
+    let at = line.map_or(String::new(), |line| format!(":{line}"));
+    format!(
+        "publishing refused: {path}{at} adds {}; remove it from the task branch history before publishing",
+        finding.label
+    )
+}
+
+/// The commits a push can add: reachable from `head` and from none of `known`.
+fn pushed_revisions<'a>(head: &'a str, known: &'a [String]) -> Vec<&'a str> {
+    let mut revisions = vec!["--ignore-missing", head, "--not"];
+    revisions.extend(known.iter().map(String::as_str));
+    revisions
+}
+
+/// The branch and tag tips the publication destination itself advertises. Local
+/// remote-tracking refs are writable by the task and may describe a different
+/// fetch URL, so only the destination's own answer may exclude history.
+fn destination_tips(policy: &RunPolicy, repo: &Path, url: &str) -> Result<Vec<String>> {
+    if url.starts_with('-') {
+        return Err("publishing refused: invalid publication destination".into());
+    }
+    let mut command = super::git(
+        policy,
+        repo,
+        &[
+            "-c",
+            "protocol.https.allow=always",
+            "-c",
+            "protocol.ssh.allow=always",
+            "-c",
+            "protocol.file.allow=always",
+            "ls-remote",
+            "--heads",
+            "--tags",
+            "--refs",
+            url,
+        ],
+    );
+    isolate_github_environment(&mut command);
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GIT_ALLOW_PROTOCOL", "https:ssh:file");
+    let text = checked(command)
+        .map_err(|_| "publishing refused: cannot read the publication destination's branches".to_string())?;
+    let mut tips: Vec<String> = text
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(oid, _)| oid)
+        .filter(|oid| matches!(oid.len(), 40 | 64) && oid.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(str::to_string)
+        .collect();
+    tips.sort();
+    tips.dedup();
+    Ok(tips)
+}
+
+/// Scan the commits `revisions` select: each raw commit object, its own changes and
+/// the lines a merge commit introduces itself. Any failure refuses publication.
+fn scan_pushed(policy: &RunPolicy, tree: &Path, revisions: &[&str], scan: ContentScan<'_>) -> Result<()> {
+    let unreadable = |_: String| "publishing refused: cannot scan the commits to publish".to_string();
+    let log = |options: &[&str]| {
+        // No user or repository preference may change what the scan sees.
+        let mut args = vec![
+            "-c",
+            "core.quotePath=false",
+            "-c",
+            "log.showRoot=true",
+            "-c",
+            "log.showSignature=false",
+            "-c",
+            "diff.noprefix=false",
+            "-c",
+            "diff.mnemonicPrefix=false",
+            "-c",
+            "diff.relative=false",
+            "-c",
+            "color.ui=false",
+            "-c",
+            "color.diff=false",
+            "log",
+            "--root",
+        ];
+        args.extend_from_slice(options);
+        args.extend_from_slice(revisions);
+        args.push("--");
+        checked(super::git(policy, tree, &args)).map_err(unreadable)
+    };
+    // Every byte of each commit object is pushed: identities, the message and any
+    // extra header (gpgsig, mergetag, encoding, unknown ones), so the raw object is
+    // scanned rather than a formatted subset of it.
+    let mut listing = vec!["rev-list", "--reverse"];
+    listing.extend_from_slice(revisions);
+    listing.push("--");
+    let commits = checked(super::git(policy, tree, &listing)).map_err(unreadable)?;
+    for commit in commits.lines().filter(|line| !line.is_empty()) {
+        if !valid_object_id(commit) {
+            return Err(unreadable(String::new()));
+        }
+        let raw = checked(super::git(policy, tree, &["cat-file", "commit", commit])).map_err(unreadable)?;
+        scan_commit_object(commit, &raw, scan)?;
+    }
+    let text = log(&[
+        "--reverse",
+        "--format=%x00%H",
+        "--patch",
+        "--cc",
+        "--text",
+        "--unified=0",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "--no-relative",
+        "--no-show-signature",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+    ])?;
+    scan_patch(&text, scan)?;
+    // An empty added file has no content header in the patch, so the names of all
+    // added files are listed separately and checked as well.
+    let names = log(&[
+        "--format=",
+        "--name-only",
+        "-z",
+        "--diff-filter=A",
+        "--cc",
+        "--no-renames",
+        "--no-relative",
+    ])?;
+    for name in names.split('\0').filter(|name| !name.is_empty()) {
+        let item = PushedContent {
+            path: name,
+            line: None,
+            text: "",
+        };
+        if let Some(finding) = scan(&item) {
+            return Err(refusal(name, None, finding));
+        }
+    }
+    Ok(())
+}
+
+/// A full lowercase hexadecimal object id (SHA-1 or SHA-256).
+fn valid_object_id(id: &str) -> bool {
+    matches!(id.len(), 40 | 64) && id.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Pass each line of one raw commit object (`git cat-file commit`: all headers,
+/// signature blocks and the message) to `scan`.
+fn scan_commit_object(commit: &str, raw: &str, scan: ContentScan<'_>) -> Result<()> {
+    let place = format!("commit {}", commit.get(..12).unwrap_or(commit));
+    for (index, text) in raw.lines().enumerate() {
+        let item = PushedContent {
+            path: &place,
+            line: Some(index + 1),
+            text,
+        };
+        if let Some(finding) = scan(&item) {
+            return Err(refusal(&place, Some(index + 1), finding));
+        }
+    }
+    Ok(())
+}
+
+/// Pass every added file name and added line of `git log --patch --cc -U0` output to `scan`.
+fn scan_patch(text: &str, scan: ContentScan<'_>) -> Result<()> {
+    let (mut path, mut added, mut hunk, mut parents, mut line) = (None::<String>, false, false, 1, 0);
+    for row in text.lines() {
+        if row.starts_with('\0') || row.starts_with("diff --") {
+            parents = if row.starts_with("diff --cc ") || row.starts_with("diff --combined ") {
+                2
+            } else {
+                1
+            };
+            (path, added, hunk) = (None, false, false);
+            continue;
+        }
+        if row.starts_with("@@") {
+            let marks = row.bytes().take_while(|byte| *byte == b'@').count();
+            parents = marks.saturating_sub(1).max(1);
+            line = row[marks..]
+                .split_ascii_whitespace()
+                .find_map(|range| range.strip_prefix('+'))
+                .and_then(|range| range.split(',').next())
+                .and_then(|start| start.parse().ok())
+                .ok_or("publishing refused: cannot scan the commits to publish")?;
+            hunk = true;
+            continue;
+        }
+        if !hunk {
+            if row.starts_with("new file mode ") {
+                added = true;
+            } else if let Some(header) = row.strip_prefix("+++ ") {
+                path = diff_path(header);
+                if let Some(name) = path.as_deref().filter(|_| added) {
+                    let item = PushedContent {
+                        path: name,
+                        line: None,
+                        text: "",
+                    };
+                    if let Some(finding) = scan(&item) {
+                        return Err(refusal(name, None, finding));
+                    }
+                }
+            }
+            continue;
+        }
+        let Some(name) = path.as_deref() else {
+            continue;
+        };
+        let Some((marks, rest)) = row.split_at_checked(parents) else {
+            continue;
+        };
+        if marks.contains('-') || row.starts_with('\\') {
+            continue;
+        }
+        if marks.contains('+') {
+            // `--text` passes UTF-16/UTF-32 files through as NUL-interleaved bytes, in
+            // which no pattern matches; the line is also checked with its NULs removed,
+            // which is the ASCII text those encodings carry.
+            let stripped = rest.replace('\0', "");
+            let decoded = (stripped.len() != rest.len()).then_some(stripped.as_str());
+            for text in std::iter::once(rest).chain(decoded) {
+                let item = PushedContent {
+                    path: name,
+                    line: Some(line),
+                    text,
+                };
+                if let Some(finding) = scan(&item) {
+                    return Err(refusal(name, Some(line), finding));
+                }
+            }
+        }
+        line += 1;
+    }
+    Ok(())
+}
+
 pub(crate) fn isolate_github_environment(command: &mut Command) {
     // The destination comes from origin. Let the CLI choose its stored
     // login for that host, independently of host-agnostic shell overrides.
@@ -214,6 +529,23 @@ pub(crate) fn origin_repository(
     )?)?)
 }
 
+/// The publication content scan for a push `head` would make to `origin`: every
+/// commit the push URL's own advertised tips lack, the same scan `--publish` runs.
+/// Nothing is sent; any failure, or a missing scan, refuses the push.
+pub(crate) fn scan_push(policy: &RunPolicy, repo: &Path, head: &str) -> Result<()> {
+    let scan = policy
+        .content_scan
+        .as_deref()
+        .ok_or("publishing refused: the publication content scan is unavailable")?;
+    let remote = checked(super::git(
+        policy,
+        repo,
+        &["remote", "get-url", "--push", "--all", "origin"],
+    ))?;
+    let known = destination_tips(policy, repo, &remote)?;
+    scan_pushed(policy, repo, &pushed_revisions(head, &known), scan)
+}
+
 /// Push one exact accepted commit. Metadata probes deny every transport;
 /// only this explicit, confirmed publication may use normal GitHub/file transports.
 pub(crate) fn push_head(
@@ -235,7 +567,14 @@ pub(crate) fn push_head(
             "protocol.ssh.allow=always",
             "-c",
             "protocol.file.allow=always",
+            // Only the scanned commit is sent: no implicit tags or submodule pushes.
+            "-c",
+            "push.followTags=false",
+            "-c",
+            "push.recurseSubmodules=no",
             "push",
+            "--no-follow-tags",
+            "--recurse-submodules=no",
             "origin",
             &format!("{head}:refs/heads/{branch}"),
         ],
@@ -320,9 +659,10 @@ pub fn publish(
     policy: &RunPolicy,
     gh_binary: &Path,
     observer: &dyn CheckpointObserver,
+    scan: ContentScan<'_>,
     confirm: &mut dyn FnMut(&str) -> Option<bool>,
 ) -> Result<Record> {
-    LockedTask::open(task, policy, false)?.publish(repo, binary, gh_binary, observer, confirm)
+    LockedTask::open(task, policy, false)?.publish(repo, binary, gh_binary, observer, scan, confirm)
 }
 
 fn publish_locked(
@@ -331,6 +671,7 @@ fn publish_locked(
     locked: &LockedTask<'_>,
     gh_binary: &Path,
     observer: &dyn CheckpointObserver,
+    scan: ContentScan<'_>,
     confirm: &mut dyn FnMut(&str) -> Option<bool>,
 ) -> Result<Record> {
     let (mut writer, mut value) = action_context(locked, observer)?;
@@ -375,6 +716,10 @@ fn publish_locked(
         if task.branch == base {
             return Err("task branch must differ from its base branch".into());
         }
+        // The owner confirmation shows only metadata, so content is checked here,
+        // before any remote request, against what the local origin refs record.
+        // The destination's own tips are checked again after confirmation.
+        scan_pushed(policy, tree, &[head.as_str(), "--not", "--remotes=origin"], scan)?;
         let remote = checked(git(repo, &["remote", "get-url", "--push", "--all", "origin"]))?;
         let repository = origin_repository(tree, gh_binary, policy, lock)?;
         let name = repository.qualified.as_str();
@@ -409,6 +754,10 @@ fn publish_locked(
             return Err("publication destination or task head changed during confirmation".into());
         }
         proof.verify(policy, &head, accepted_base)?;
+        // Every commit the destination lacks is pushed, so the exclusions come from
+        // the push URL's own advertised tips rather than from local refs.
+        let known = destination_tips(policy, repo, &remote)?;
+        scan_pushed(policy, tree, &pushed_revisions(&head, &known), scan)?;
         // Confirmation may remain open indefinitely: queue admission is checked
         // only after it returns, immediately before the push.
         if let Some(number) = queued_pull_request(tree, gh_binary, policy, lock, &repository, &task.branch)? {
@@ -574,9 +923,10 @@ impl LockedTask<'_> {
         binary: &Path,
         gh_binary: &Path,
         observer: &dyn CheckpointObserver,
+        scan: ContentScan<'_>,
         confirm: &mut dyn FnMut(&str) -> Option<bool>,
     ) -> Result<Record> {
-        publish_locked(repo, binary, self, gh_binary, observer, confirm)
+        publish_locked(repo, binary, self, gh_binary, observer, scan, confirm)
     }
 
     pub fn report_notes(
@@ -585,5 +935,248 @@ impl LockedTask<'_> {
         reporter: &mut impl FnMut(&super::ProblemNote, &Record, &File, bool) -> Result<super::ReportRecord>,
     ) -> Result<Record> {
         report_locked(self, observer, reporter)
+    }
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+
+    fn repo() -> (crate::test_dir::PrivateDir, RunPolicy) {
+        let dir = crate::test_dir::PrivateDir::new("publish-scan");
+        let policy = RunPolicy {
+            git_binary: "/usr/bin/git".into(),
+            host_path: std::env::var_os("PATH").unwrap(),
+            terminate_binary: None,
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
+            offline: false,
+            runner_owns_github: false,
+            storage: dir.path().join("storage"),
+        };
+        git_ok(dir.path(), &["init", "-q", "-b", "main"]);
+        (dir, policy)
+    }
+
+    fn git_ok(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("/usr/bin/git")
+            .current_dir(dir)
+            .args(["-c", "user.name=Test", "-c", "user.email=test@example.invalid"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn containing(needle: &'static str) -> impl Fn(&PushedContent<'_>) -> Option<ContentFinding> {
+        move |item| {
+            (item.path.contains(needle) || item.text.contains(needle)).then_some(ContentFinding {
+                label: "a test secret",
+                secret_path: item.path.contains(needle),
+            })
+        }
+    }
+
+    #[test]
+    fn quoted_paths_are_decoded_before_the_secret_check() {
+        assert_eq!(
+            diff_path("\"b/a\\\"q\\\\z\\303\\251\""),
+            Some("a\"q\\z\u{e9}".to_string())
+        );
+        let (dir, policy) = repo();
+        let secret = "sy\"nth\\etic-value";
+        std::fs::write(dir.path().join(format!("{secret}.txt")), "plain\n").unwrap();
+        git_ok(dir.path(), &["add", "-A"]);
+        git_ok(dir.path(), &["commit", "-q", "-m", "fixture"]);
+        let head = git_ok(dir.path(), &["rev-parse", "HEAD"]);
+        let error = scan_pushed(&policy, dir.path(), &[head.as_str()], &containing(secret)).unwrap_err();
+        assert!(!error.contains("etic-value"), "{error}");
+        assert!(!error.contains("nth"), "{error}");
+    }
+
+    #[test]
+    fn a_tab_after_an_unquoted_patch_path_is_not_part_of_the_name() {
+        assert_eq!(
+            diff_path("b/app config/.env\t"),
+            Some("app config/.env".to_string())
+        );
+        assert_eq!(diff_path("b/plain/.env"), Some("plain/.env".to_string()));
+        let (dir, policy) = repo();
+        std::fs::create_dir(dir.path().join("app config")).unwrap();
+        std::fs::write(dir.path().join("app config/.env"), "PLACEHOLDER=1\n").unwrap();
+        git_ok(dir.path(), &["add", "-A"]);
+        git_ok(dir.path(), &["commit", "-q", "-m", "base"]);
+        let base = git_ok(dir.path(), &["rev-parse", "HEAD"]);
+        std::fs::write(dir.path().join("app config/.env"), "PLACEHOLDER=opaque\n").unwrap();
+        git_ok(dir.path(), &["commit", "-q", "-am", "edit"]);
+        let head = git_ok(dir.path(), &["rev-parse", "HEAD"]);
+        let revisions = [head.as_str(), "--not", base.as_str()];
+        let error = scan_pushed(&policy, dir.path(), &revisions, &|item| {
+            (item.line.is_some() && item.path.ends_with("/.env")).then_some(ContentFinding {
+                label: "content to a file name used for secrets",
+                secret_path: false,
+            })
+        })
+        .unwrap_err();
+        assert!(error.contains("app config/.env:1"), "{error}");
+    }
+
+    #[test]
+    fn the_root_commit_is_scanned_whatever_log_show_root_says() {
+        let (dir, policy) = repo();
+        git_ok(dir.path(), &["config", "log.showRoot", "false"]);
+        std::fs::write(dir.path().join("root.txt"), "synthetic-root-secret\n").unwrap();
+        git_ok(dir.path(), &["add", "root.txt"]);
+        git_ok(dir.path(), &["commit", "-q", "-m", "root"]);
+        let head = git_ok(dir.path(), &["rev-parse", "HEAD"]);
+        let error = scan_pushed(
+            &policy,
+            dir.path(),
+            &[head.as_str()],
+            &containing("synthetic-root-secret"),
+        )
+        .unwrap_err();
+        assert!(error.contains("root.txt:1"), "{error}");
+    }
+
+    #[test]
+    fn utf16_additions_are_scanned_as_decoded_text() {
+        let secret = format!("synthetic-{}-secret", "utf16");
+        for (name, big_endian) in [("le.txt", false), ("be.txt", true)] {
+            let (dir, policy) = repo();
+            let text = format!("first line\n{secret}\nlast line\n");
+            let mut bytes = if big_endian {
+                vec![0xfe, 0xff]
+            } else {
+                vec![0xff, 0xfe]
+            };
+            for unit in text.encode_utf16() {
+                bytes.extend(if big_endian {
+                    unit.to_be_bytes()
+                } else {
+                    unit.to_le_bytes()
+                });
+            }
+            std::fs::write(dir.path().join(name), bytes).unwrap();
+            git_ok(dir.path(), &["add", name]);
+            git_ok(dir.path(), &["commit", "-q", "-m", name]);
+            let head = git_ok(dir.path(), &["rev-parse", "HEAD"]);
+            let error = scan_pushed(
+                &policy,
+                dir.path(),
+                &[head.as_str()],
+                &containing("synthetic-utf16-secret"),
+            )
+            .unwrap_err();
+            assert!(error.contains(name), "{error}");
+            assert!(!error.contains(secret.as_str()), "{error}");
+        }
+    }
+
+    fn items(text: &str) -> Vec<(String, Option<usize>, String)> {
+        let seen = std::cell::RefCell::new(vec![]);
+        scan_patch(text, &|item| {
+            seen.borrow_mut()
+                .push((item.path.to_string(), item.line, item.text.to_string()));
+            None
+        })
+        .unwrap();
+        seen.into_inner()
+    }
+
+    #[test]
+    fn added_names_and_lines_are_scanned_in_ordinary_and_merge_commits() {
+        let patch = "\0aaaa\n\ndiff --git a/new.txt b/new.txt\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,2 @@\n+first\n+++ looks like a header\ndiff --git a/old.txt b/old.txt\nindex 1111111..2222222 100644\n--- a/old.txt\n+++ b/old.txt\n@@ -3 +3 @@\n-before\n+after\n\0bbbb\n\ndiff --cc merged.txt\nindex 1111111,2222222..3333333\n--- a/merged.txt\n+++ b/merged.txt\n@@@ -4,1 -4,1 +4,2 @@@\n- ours\n -theirs\n++introduced by the merge\n+ kept from the first parent\n";
+        let seen = items(patch);
+        let expected = [
+            ("new.txt", None, ""),
+            ("new.txt", Some(1), "first"),
+            ("new.txt", Some(2), "++ looks like a header"),
+            ("old.txt", Some(3), "after"),
+            ("merged.txt", Some(4), "introduced by the merge"),
+            ("merged.txt", Some(5), "kept from the first parent"),
+        ];
+        let expected: Vec<_> = expected
+            .iter()
+            .map(|(p, l, t)| (p.to_string(), *l, t.to_string()))
+            .collect();
+        assert_eq!(seen, expected);
+    }
+
+    #[test]
+    fn a_secret_path_is_withheld_from_the_refusal() {
+        let patch =
+            "\0aaaa\n\ndiff --git a/hidden b/hidden\nnew file mode 100644\n--- /dev/null\n+++ b/hidden\n";
+        let error = scan_patch(patch, &|_| {
+            Some(ContentFinding {
+                label: "a known access token format",
+                secret_path: true,
+            })
+        })
+        .unwrap_err();
+        assert!(!error.contains("hidden"), "{error}");
+    }
+
+    fn craft_commit(dir: &Path, header: &str) -> String {
+        let raw = git_ok(dir, &["cat-file", "commit", "HEAD"]);
+        let (head, message) = raw.split_once("\n\n").unwrap();
+        let file = dir.join("crafted-commit");
+        std::fs::write(&file, format!("{head}\n{header}\n\n{message}\n")).unwrap();
+        git_ok(
+            dir,
+            &[
+                "hash-object",
+                "-t",
+                "commit",
+                "-w",
+                "--literally",
+                "crafted-commit",
+            ],
+        )
+    }
+
+    #[test]
+    fn an_extra_commit_header_is_scanned() {
+        let (dir, policy) = repo();
+        git_ok(dir.path(), &["commit", "-q", "--allow-empty", "-m", "base"]);
+        let value = ["synthetic", "-header-", "value"].concat();
+        let crafted = craft_commit(dir.path(), &format!("x-note {value}"));
+        let error = scan_pushed(
+            &policy,
+            dir.path(),
+            &[crafted.as_str()],
+            &containing("header-value"),
+        )
+        .unwrap_err();
+        assert!(error.contains("commit "), "{error}");
+        assert!(!error.contains("header-value"), "{error}");
+    }
+
+    #[test]
+    fn a_multi_line_signature_header_is_scanned() {
+        let (dir, policy) = repo();
+        git_ok(dir.path(), &["commit", "-q", "--allow-empty", "-m", "base"]);
+        let value = ["synthetic", "-signature-", "value"].concat();
+        let header =
+            format!("gpgsig -----BEGIN PGP SIGNATURE-----\n \n {value}\n -----END PGP SIGNATURE-----");
+        let crafted = craft_commit(dir.path(), &header);
+        let error = scan_pushed(
+            &policy,
+            dir.path(),
+            &[crafted.as_str()],
+            &containing("signature-value"),
+        )
+        .unwrap_err();
+        assert!(error.contains("commit "), "{error}");
+    }
+
+    #[test]
+    fn only_full_object_ids_reach_cat_file() {
+        assert!(valid_object_id(&"a".repeat(40)));
+        assert!(valid_object_id(&"0".repeat(64)));
+        assert!(!valid_object_id("--output=x"));
+        assert!(!valid_object_id(&"A".repeat(40)));
     }
 }

@@ -234,6 +234,7 @@ mod tests {
             offline: true,
             gh_binary: None,
             push_approved: false,
+            content_scan: None,
             runner_owns_github: true,
             storage: directory.path().into(),
         };

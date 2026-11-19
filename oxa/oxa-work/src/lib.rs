@@ -28,7 +28,7 @@ mod notes;
 mod publish;
 mod queue;
 pub use notes::{ProblemNote, ReportRecord};
-pub use publish::{inherit_report_lease, publish, report_notes};
+pub use publish::{inherit_report_lease, publish, report_notes, ContentFinding, ContentScan, PushedContent};
 pub use queue::{
     native_task, run_queue, NativeQueueOwner, NativeQueueTarget, QueueEvent, QueueOptions, QueueRun,
     QueueStatus,
@@ -831,6 +831,9 @@ pub struct RunPolicy {
     pub gh_binary: Option<PathBuf>,
     /// The owner confirmed that a lane task may push its accepted commit.
     pub push_approved: bool,
+    /// The publication content scan every push must pass first; lane pushes refuse without it.
+    pub content_scan:
+        Option<std::sync::Arc<dyn Fn(&PushedContent<'_>) -> Option<ContentFinding> + Send + Sync>>,
     pub offline: bool,
     /// Set by the runner from the immutable packet before launching its children.
     pub runner_owns_github: bool,

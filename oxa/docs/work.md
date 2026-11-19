@@ -407,6 +407,12 @@ sets `OXA_WORK_OWNER_CONFIRMED=1`. Without that confirmation a lane task ends
 `blocked` before any worker starts and pushes nothing. Offline mode, an untrusted
 project, a missing trusted `gh`, or a missing sandbox refuse it later.
 
+The lane push goes through the same publication content scan as `--publish`,
+immediately before anything is sent: every commit the push would add (the head
+minus the tips `origin` itself advertises) is scanned, including commit objects,
+added lines and file names, with tags and submodules off. A finding refuses the
+push, the task ends `blocked` and no lane run is awaited.
+
 `--publish` refuses a `lane_ci` task unless its saved record has a passing lane
 run at the saved head, so a pull request is opened only after CI passed at that
 head. `oxa work verify` uses the same saved record and therefore the same rule.

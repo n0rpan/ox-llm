@@ -7,7 +7,9 @@
 //! the identity facts (version, machine, OS, models) and the controller's `status --json`
 //! scalars and `digest --json` (numbers only). Never prompts, transcripts, file contents,
 //! emails, home paths, user or host names, IP addresses or secrets.
+mod pushed;
 mod semantic;
+pub(crate) use pushed::PushScan;
 
 use oxa_config::{Dirs, Env, Settings};
 use oxa_proto::{codes, OxaError};
@@ -77,6 +79,7 @@ pub fn advisor_scrubber(ctx: ScrubCtx) -> oxa_core::advice::AdviceScrubber {
 
 struct Patterns {
     pem: Regex,
+    pem_begin: Regex,
     url_cred: Regex,
     known: Regex,
     bearer: Regex,
@@ -94,6 +97,7 @@ fn patterns() -> &'static Patterns {
         let re = |s: &str| Regex::new(s).expect("scrub pattern");
         Patterns {
             pem: re(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"),
+            pem_begin: re(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----"),
             url_cred: re(r"://[^/\s:@]+:[^/\s@]+@"),
             known: re(concat!(
                 r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}",

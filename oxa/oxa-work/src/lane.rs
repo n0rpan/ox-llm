@@ -400,6 +400,8 @@ pub(crate) fn accept(
             "PR #{number} is in the merge queue; use a new task branch for follow-up lane work"
         ));
     }
+    // The same content scan `--publish` runs, before anything is sent.
+    crate::publish::scan_push(policy, repo, head)?;
     crate::publish::push_head(policy, repo, head, &task.branch, lock)?;
     let started = Instant::now();
     let run = wait_with(

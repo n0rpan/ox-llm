@@ -381,3 +381,49 @@ fn a_lane_task_only_accepts_lane_triggering_branches() {
     assert!(stderr.contains("lane workflow runs on"), "{stderr}");
     assert!(!env.work().join(".oxa-worktrees").exists());
 }
+
+#[test]
+fn lane_task_with_a_fake_token_is_refused_before_push_and_no_lane_run_is_awaited() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    lane_task(&env);
+    let path = configure(&env);
+    env.write("home/lane-pass", "");
+    // Built at run time so this source never carries a token-shaped literal.
+    let token = format!("ghp_{}", "x".repeat(36));
+    let content = format!("fn main() {{}}\\nconst T: &str = \\\"{token}\\\";\\n");
+    let record = run_lane(
+        &env,
+        vec![
+            ScriptTurn::tool(
+                "write",
+                "write",
+                &format!(r#"{{"path":"src/client.rs","content":"{content}"}}"#),
+            ),
+            ScriptTurn::text("done"),
+        ],
+        path,
+    );
+    assert_ne!(record["outcome"], "done", "{record}");
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    let detail = record["detail"].as_str().unwrap_or_default();
+    assert!(detail.contains("publishing refused"), "{record}");
+    assert!(
+        !record.to_string().contains(&token),
+        "the refusal echoed the secret"
+    );
+    assert!(
+        !env.home().join("push-calls").exists(),
+        "a commit with a token was pushed"
+    );
+    let remote = env.work().join("remote.git");
+    let refs = git(&env, &remote, &["for-each-ref", "refs/heads/agent"]);
+    assert!(refs.trim().is_empty(), "origin received the branch: {refs}");
+    let gh_calls = fs::read_to_string(env.home().join("gh-calls")).unwrap_or_default();
+    assert!(
+        !gh_calls
+            .lines()
+            .any(|line| line.starts_with("run list") || line.starts_with("run view")),
+        "a lane run was awaited: {gh_calls}"
+    );
+}
