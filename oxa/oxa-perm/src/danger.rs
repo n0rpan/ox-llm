@@ -604,7 +604,17 @@ impl DangerRules {
             }
             "pkill" | "killall" => self.push(hits, "kill-foreign", seg),
             "oxa" => {
-                if matches!(argv.get(1).map(String::as_str), Some("send") | Some("approve")) {
+                // Global flags (`--offline`, `--model x`, `-q`) come before the verb.
+                let mut k = 1usize;
+                while k < argv.len() && argv[k].starts_with('-') {
+                    let takes_value = !argv[k].contains('=')
+                        && matches!(
+                            argv[k].as_str(),
+                            "--model" | "--provider" | "--session-dir" | "--permission-mode" | "-m"
+                        );
+                    k += if takes_value { 2 } else { 1 };
+                }
+                if matches!(argv.get(k).map(String::as_str), Some("send") | Some("approve")) {
                     self.push(hits, "oxa-self-approve", seg);
                 }
             }
@@ -960,6 +970,8 @@ fn parse_depth(src: &str, depth: usize) -> Option<Vec<Stage>> {
                 end_stage(&mut out, &mut cur, true);
                 p += 1;
             }
+            // A line continuation outside a word is whitespace, not an empty argument.
+            '\\' if next == Some('\n') => p += 2,
             '#' => {
                 while p < n && chars[p] != '\n' {
                     p += 1;
@@ -1341,7 +1353,7 @@ fn peel(words: &[String], unknown_in: bool) -> Peeled {
             "exec" => i = skip_flags(words, i + 1, &["-a"]),
             "stdbuf" => i = skip_flags(words, i + 1, &["-i", "-o", "-e"]),
             "ionice" => i = skip_flags(words, i + 1, &["-c", "-n", "-p", "-P", "-u"]),
-            "timeout" => i = skip_positional(words, i + 1, &["-s", "-k"]),
+            "timeout" => i = skip_positional(words, i + 1, &["-s", "-k", "--signal", "--kill-after"]),
             "chrt" | "taskset" => i = skip_positional(words, i + 1, &[]),
             // `watch` hands its words, joined, to `sh -c` unless `-x`/`--exec` is given.
             "watch" => {
@@ -1639,7 +1651,8 @@ fn sql_drop(words: &[String]) -> bool {
         l.contains("drop table")
             || l.contains("drop database")
             || l.contains("drop schema")
-            || l.starts_with("truncate ")
+            || l.split(';')
+                .any(|statement| statement.trim_start().starts_with("truncate "))
     })
 }
 
