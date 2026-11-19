@@ -207,7 +207,7 @@ fn failed_steps(value: &Value, names: &mut Vec<String>) {
 
 /// The lane result is only a gate while the gate's own definition stays fixed.
 /// A head that edits the lane workflow or its runner could report itself green.
-const PROTECTED_LANE_CONTROLS: &[&str] = &[".github/workflows/lane.yml", "tools/ci/"];
+const PROTECTED_LANE_CONTROLS: &[&str] = &[".github/workflows/", "tools/ci/"];
 
 fn protected_controls_unchanged(policy: &RunPolicy, repo: &Path, base: &str, head: &str) -> Result<()> {
     let changed = crate::checked(crate::git(
@@ -227,7 +227,7 @@ fn protected_controls_unchanged(policy: &RunPolicy, repo: &Path, base: &str, hea
         Ok(())
     } else {
         Err(
-            "lane acceptance refuses a head that changes the lane workflow or its runner; land those separately"
+            "lane acceptance refuses a head that changes GitHub workflows or the lane runner; land those separately"
                 .into(),
         )
     }
@@ -393,6 +393,10 @@ pub(crate) fn accept(
     proof.verify(policy, head, base)?;
     protected_controls_unchanged(policy, repo, base, head)?;
     let repository = crate::publish::origin_repository(repo, gh, policy, lock)?;
+    // The same content scan `--publish` runs, before anything is sent.
+    crate::publish::scan_push(policy, repo, head)?;
+    // Queue membership is the final remote decision before the push, avoiding
+    // a scan-sized race in which an open PR can enter the merge queue.
     if let Some(number) =
         crate::publish::queued_pull_request(repo, gh, policy, lock, &repository, &task.branch)?
     {
@@ -400,8 +404,6 @@ pub(crate) fn accept(
             "PR #{number} is in the merge queue; use a new task branch for follow-up lane work"
         ));
     }
-    // The same content scan `--publish` runs, before anything is sent.
-    crate::publish::scan_push(policy, repo, head)?;
     crate::publish::push_head(policy, repo, head, &task.branch, lock)?;
     let started = Instant::now();
     let run = wait_with(

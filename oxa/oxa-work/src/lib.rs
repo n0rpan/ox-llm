@@ -422,7 +422,8 @@ impl Task {
     // Derive the subprocess restriction from the frozen task on every launch. This
     // also covers old issue checkpoints resumed through an identical task file.
     fn runner_owns_github(&self) -> bool {
-        self.prompt.starts_with(GITHUB_RUNNER_LEAD)
+        self.lane_ci
+            || self.prompt.starts_with(GITHUB_RUNNER_LEAD)
             || self
                 .id
                 .strip_prefix("issue-")
@@ -1370,6 +1371,7 @@ fn run_locked(
             base: planned.base_sha.clone(),
             prompt: task.prompt.clone(),
             commands: planned.commands.clone(),
+            derived_commands: Vec::new(),
             declared: None,
             worker_error: None,
             merge_error: None,
@@ -1646,6 +1648,21 @@ fn run_locked(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn every_lane_worker_leaves_github_credentials_with_the_runner() {
+        let task = Task {
+            id: "test".into(),
+            branch: "agent/test".into(),
+            base: default_base(),
+            model: "fake".into(),
+            prompt: "ordinary task file".into(),
+            max_time: default_max_time(),
+            reviewed_pull_request: None,
+            lane_ci: true,
+        };
+        assert!(task.runner_owns_github());
+    }
 
     #[test]
     fn bounded_command_output_preserves_binary_stdout_and_exit_status() {

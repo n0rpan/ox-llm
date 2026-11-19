@@ -281,6 +281,7 @@ impl Runner<'_> {
                         .map(|command| (CheckOrigin::Settings, command.clone()))
                         .collect();
                     let mut could_not_run = Vec::new();
+                    let mut saved_derived_commands = Vec::new();
                     let plan = supervise(
                         self.binary,
                         &tree,
@@ -307,6 +308,7 @@ impl Runner<'_> {
                     match plan {
                         Ok(derived) => {
                             requires_hosted |= derived.requires_hosted;
+                            saved_derived_commands = derived.commands.clone();
                             commands.extend(
                                 derived
                                     .commands
@@ -356,6 +358,11 @@ impl Runner<'_> {
                             .map(|error| format!("merge verification: {error}")),
                     );
                     errors.dedup();
+                    state
+                        .execution
+                        .as_mut()
+                        .ok_or("missing task execution checkpoint")?
+                        .derived_commands = saved_derived_commands;
                     let round = match checks {
                         Ok(round) => round,
                         Err(error) => {

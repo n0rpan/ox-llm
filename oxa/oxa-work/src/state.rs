@@ -68,6 +68,8 @@ pub(crate) struct Execution {
     pub base: String,
     pub prompt: String,
     pub commands: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub derived_commands: Vec<String>,
     /// Crates the worker declared as requiring hosted acceptance tests.
     /// `None` until a worker declares any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -346,6 +348,7 @@ mod tests {
                 base: base.clone(),
                 prompt: "saved prompt".into(),
                 commands: vec!["saved command".into()],
+                derived_commands: Vec::new(),
                 declared: None,
                 worker_error: None,
                 merge_error: None,

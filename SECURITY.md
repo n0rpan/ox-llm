@@ -27,6 +27,11 @@ acceptance receipt. Project files and worker replies cannot change the owner-onl
 requires hosted test evidence for the exact head, including for changed inputs outside packages
 in a tree with Cargo manifests. A worker declaration can add requirements to that evidence.
 
+Before `oxa work` publishes or pushes a lane candidate, the runner scans the exact commits added
+to the destination for credential-like content and refuses the push on a finding. Lane workers do
+not receive GitHub credentials, and a lane candidate may not modify GitHub workflows or the lane
+runner itself; those controls must land separately through the normal review path.
+
 The repeat guard warns and continues by owner decision (#1448): the third identical tool result gets a notice, a call that still repeats gets one persisted warning, and the run is not stopped. A finding that asks for the old stopping behaviour is not a finding; `oxa.maxTurns` is the configured cap.
 
 Intentional removals must be stated in the PR body with a `Removes:` line; flag silent deletion of security checks as high.

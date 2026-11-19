@@ -179,12 +179,15 @@ fn a_local_pass_with_a_failed_lane_run_is_red_after_one_repair() {
 }
 
 #[test]
-fn a_head_that_changes_the_lane_workflow_is_refused_before_any_push() {
+fn a_head_that_changes_any_push_workflow_is_refused_before_any_push() {
     let env = TestEnv::new();
     setup(&env, r#"["true"]"#);
     // The base already carries the lane runner, so the worker edits a tracked
     // control rather than creating a new path the write tool may not create.
-    env.write("work/project/tools/ci/lane_run.py", "print('trusted')\n");
+    env.write(
+        "work/project/.github/workflows/macos.yml",
+        "name: trusted\non: push\n",
+    );
     git(&env, &env.work().join("project"), &["add", "."]);
     git(
         &env,
@@ -200,7 +203,7 @@ fn a_head_that_changes_the_lane_workflow_is_refused_before_any_push() {
             ScriptTurn::tool(
                 "write",
                 "write",
-                r#"{"path":"tools/ci/lane_run.py","content":"print('tampered')\n"}"#,
+                r#"{"path":".github/workflows/macos.yml","content":"name: tampered\non: push\n"}"#,
             ),
             ScriptTurn::text("done"),
         ],
@@ -212,7 +215,7 @@ fn a_head_that_changes_the_lane_workflow_is_refused_before_any_push() {
         record["detail"]
             .as_str()
             .unwrap_or_default()
-            .contains("refuses a head that changes the lane workflow"),
+            .contains("refuses a head that changes GitHub workflows"),
         "{record}"
     );
     assert!(

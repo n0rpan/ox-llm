@@ -126,6 +126,9 @@ maintainer, who says in the PR when a hardware check is needed.
   the base and the exact head commit, the selected crates, the action needed and which fact is missing.
   The session that owns GitHub writes the pull request body and its CI result. It also owns pushes
   and workflow dispatch when the worker session refuses them; do not work around that refusal.
+  Every runner-owned publication, including lane acceptance, scans the exact commits added to
+  the destination before pushing. Lane work also refuses changes to workflows or its CI runner;
+  land CI-control changes separately under normal review.
   Below, every `gh` command is for a session that owns GitHub access.
 
 ## Build and test capacity (owner rule)

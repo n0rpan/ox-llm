@@ -192,11 +192,18 @@ pub(crate) fn verify_commit_with(
         return Err("clean acceptance checkout is dirty".into());
     }
     // A local compile plan cannot verify saved Rust work for publication.
-    let commands: Vec<(CheckOrigin, String)> = execution
+    let mut commands: Vec<(CheckOrigin, String)> = execution
         .commands
         .iter()
         .map(|command| (CheckOrigin::Settings, command.clone()))
         .collect();
+    commands.extend(
+        execution
+            .derived_commands
+            .iter()
+            .cloned()
+            .map(|command| (CheckOrigin::Derived, command)),
+    );
     let requires_hosted = derived::committed_requires_hosted(policy, &export.tree, base, head)
         .map_err(|reason| format!("clean committed acceptance could not run: {reason}"))?;
     let declared = execution.declared.as_deref().unwrap_or_default();
