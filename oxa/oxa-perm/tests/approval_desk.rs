@@ -147,6 +147,25 @@ fn desk_once_grant_is_consumed() {
     assert!(!desk.granted("s1", &keys), "and is spent by it");
 }
 
+/// A probe must not spend the owner's single approval: `covers` only looks, `consume` spends it
+/// once the command is going to run.
+#[test]
+fn desk_covers_does_not_spend_a_once_grant() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let keys = vec![KEY.to_string()];
+    let id = desk
+        .record("s1", &cwd, DANGEROUS, &[hit()], "pending")
+        .expect("pending");
+    desk.answer(&id, "once").expect("answer");
+    assert!(desk.covers("s1", &keys));
+    assert!(desk.covers("s1", &keys), "a probe leaves it available");
+    assert!(desk.consume("s1", &keys), "the final decision spends it");
+    assert!(!desk.covers("s1", &keys));
+    assert!(!desk.consume("s1", &keys), "and never twice");
+}
+
 #[test]
 fn desk_session_grant_is_scoped_to_session() {
     let env = TestEnv::new();
@@ -330,6 +349,34 @@ fn retry_after_once_approval_runs_then_asks_again() {
     let second = p.danger_unattended(&cmd, &cwd).expect("asks again");
     assert!(second.starts_with("Needs owner approval (request "), "{second}");
     assert_ne!(request_id(&second), id);
+}
+
+/// A probe that only inspects a covered request must not spend the owner's `once` approval: the
+/// retry still runs, and the final decision is what spends it.
+#[test]
+fn a_probe_does_not_spend_a_once_approval() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
+    let cmd = exec(DANGEROUS);
+    let first = p.danger_unattended(&cmd, &cwd).expect("request");
+    desk.answer(&request_id(&first), "once")
+        .expect("owner answers once");
+    assert!(
+        p.danger_ask(&cmd, &cwd).is_empty(),
+        "the once grant covers the retry"
+    );
+    assert_eq!(
+        p.decide(Mode::Workspace, &cmd, &cwd),
+        Decision::Allow,
+        "the retry still runs after the probe"
+    );
+    assert_eq!(
+        p.decide(Mode::Workspace, &cmd, &cwd),
+        Decision::Ask,
+        "then asks again"
+    );
 }
 
 /// The CLI accepts `--offline` before `send`, so the self-approve rule must look past leading

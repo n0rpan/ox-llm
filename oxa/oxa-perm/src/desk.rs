@@ -227,10 +227,31 @@ impl ApprovalDesk {
         Ok(rec)
     }
 
-    /// `true` when a grant for `session` covers every key. `session` and `always` grants stay;
-    /// a `once` grant is consumed here (marked used), so the next run asks again. Consumes
-    /// nothing on `false`.
-    pub fn granted(&self, session: &str, keys: &[String]) -> bool {
+    /// `true` when a grant for `session` covers every key, spending nothing. A policy asks this
+    /// while it is still deciding (a verdict, a `danger_ask` the caller may yet turn into a
+    /// prompt), so a `once` grant stays available until [`ApprovalDesk::consume`] confirms that
+    /// the command it approved is the one about to run.
+    pub fn covers(&self, session: &str, keys: &[String]) -> bool {
+        if keys.is_empty() {
+            return false;
+        }
+        let Ok(records) = self.all() else {
+            return false;
+        };
+        records.iter().any(|rec| {
+            rec.session == session
+                && keys.iter().all(|k| rec.keys.contains(k))
+                && match rec.status.as_str() {
+                    "session" | "always" => true,
+                    "once" => !rec.used,
+                    _ => false,
+                }
+        })
+    }
+
+    /// Spend the `once` grant that covers every key: the command it approved is going to run.
+    /// `session` and `always` grants stay. Returns whether a `once` grant was spent.
+    pub fn consume(&self, session: &str, keys: &[String]) -> bool {
         if keys.is_empty() {
             return false;
         }
@@ -238,19 +259,24 @@ impl ApprovalDesk {
             return false;
         };
         for mut rec in records {
-            if rec.session != session || !keys.iter().all(|k| rec.keys.contains(k)) {
+            if rec.session != session || rec.status != "once" || rec.used {
                 continue;
             }
-            match rec.status.as_str() {
-                "session" | "always" => return true,
-                "once" if !rec.used => {
-                    rec.used = true;
-                    return self.write(&rec).is_ok();
-                }
-                _ => {}
+            if keys.iter().all(|k| rec.keys.contains(k)) {
+                rec.used = true;
+                return self.write(&rec).is_ok();
             }
         }
         false
+    }
+
+    /// `covers` and spend the `once` grant, in one step. `false` on no cover.
+    pub fn granted(&self, session: &str, keys: &[String]) -> bool {
+        if !self.covers(session, keys) {
+            return false;
+        }
+        self.consume(session, keys);
+        true
     }
 
     /// Every request still waiting for the owner, oldest first.

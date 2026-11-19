@@ -426,16 +426,28 @@ impl ModePolicy {
         &self.grants
     }
 
-    /// #1512 S2: the dangerous-command hits of `a`, minus the keys a session or always grant
-    /// covers. Only an exec is classified; the generic grants never cover these hits.
-    /// A segment the shell computes at run time (`$VAR`, `$(..)`, backticks) is never covered
-    /// either: the same text names another target next time (`D=$HOME; rm -rf "$D"` after
-    /// `rm -rf "$D"` was granted), so it asks every time.
+    /// #1512 S2: the dangerous-command hits of `a` that no session or always grant covers, and
+    /// that the desk's grants do not cover either. Only an exec is classified; the generic grants
+    /// never cover these hits. Nothing is spent here: the caller may still turn this into a
+    /// prompt, so a `once` grant is consumed by [`ModePolicy::consume_danger`] instead.
     fn danger_hits(&self, a: &Access, cwd: &Path) -> Vec<DangerHit> {
+        let open = self.danger_open(a, cwd);
+        if self.desk_covers(a, &open) {
+            Vec::new()
+        } else {
+            open
+        }
+    }
+
+    /// The classified hits of `a` minus the keys a session or always grant covers, before the
+    /// desk is consulted. A segment the shell computes at run time (`$VAR`, `$(..)`, backticks)
+    /// is never covered by any reusable grant: the same text names another target next time
+    /// (`D=$HOME; rm -rf "$D"` after `rm -rf "$D"` was granted), so it asks every time.
+    fn danger_open(&self, a: &Access, cwd: &Path) -> Vec<DangerHit> {
         let (Access::Exec { command, .. }, Some(rules)) = (a, &self.danger) else {
             return Vec::new();
         };
-        let open: Vec<DangerHit> = rules
+        rules
             .classify(command, cwd, &self.guard)
             .into_iter()
             .filter(|h| {
@@ -445,26 +457,41 @@ impl ModePolicy {
                 let key = danger_key(h, command);
                 !self.danger_grants.contains(&key) && !self.always.contains(&key)
             })
-            .collect();
-        // #1512 S5: the desk's session or once grant covers the rest together, all or nothing.
-        // A `once` grant is consumed here, so call this only where the verdict is final. The key
-        // is the complete command line, exactly like the policy grants: an approval for
-        // `true || git push --force origin main` never covers a standalone push. A segment the
-        // shell computes at run time is never covered by a reusable grant at all.
-        let computed = open
-            .iter()
-            .any(|h| h.segment.contains('$') || h.segment.contains('`'));
-        match &self.desk {
-            Some(desk) if !open.is_empty() && !computed => {
-                let keys: Vec<String> = open.iter().map(|h| danger_key(h, command)).collect();
-                if desk.granted(&self.session_id, &keys) {
-                    Vec::new()
-                } else {
-                    open
-                }
-            }
-            _ => open,
+            .collect()
+    }
+
+    /// #1512 S5: the desk's session or once grant covers `open` together, all or nothing. The
+    /// key is the complete command line, exactly like the policy grants: an approval for
+    /// `true || git push --force origin main` never covers a standalone push. A segment the
+    /// shell computes at run time is never covered by a reusable grant at all.
+    fn desk_covers(&self, a: &Access, open: &[DangerHit]) -> bool {
+        let (Access::Exec { command, .. }, Some(desk)) = (a, &self.desk) else {
+            return false;
+        };
+        if open.is_empty()
+            || open
+                .iter()
+                .any(|h| h.segment.contains('$') || h.segment.contains('`'))
+        {
+            return false;
         }
+        let keys: Vec<String> = open.iter().map(|h| danger_key(h, command)).collect();
+        desk.covers(&self.session_id, &keys)
+    }
+
+    /// Spend the `once` grant that let this exec through, once the decision is final and the
+    /// command is going to run. Nothing is spent for a hit the desk does not cover, or for a
+    /// command whose targets the shell computes at run time.
+    fn consume_danger(&self, a: &Access, cwd: &Path) {
+        let (Access::Exec { command, .. }, Some(desk)) = (a, &self.desk) else {
+            return;
+        };
+        let open = self.danger_open(a, cwd);
+        if !self.desk_covers(a, &open) {
+            return;
+        }
+        let keys: Vec<String> = open.iter().map(|h| danger_key(h, command)).collect();
+        desk.consume(&self.session_id, &keys);
     }
 
     /// `true` when a remembered grant covers `a`.
@@ -674,6 +701,12 @@ impl Policy for ModePolicy {
             },
             Verdict::Is(d) => d,
         };
+        // #1512 S5: a `once` grant is spent here and nowhere else: the decision above is final
+        // and an `Allow` means this is the command that runs. A probe (the verdict, a
+        // `danger_ask` the caller may turn into a prompt) leaves it available.
+        if decision == Decision::Allow {
+            self.consume_danger(a, cwd);
+        }
         (decision, pin)
     }
 
