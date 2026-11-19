@@ -143,6 +143,7 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `compaction.reserveTokens` | number | `16384` | room kept free for the summary and the next reply |
 | `compaction.keepRecentTokens` | number | `4000` | recent context kept verbatim after a compaction |
 | `compaction.modelOverrides` | object | `null` | per-model `reserveTokens` and `keepRecentTokens` |
+| `compaction.profile` | `auto`, `local` or `cloud` | `auto` | `auto` takes `cloud` for a cloud model and `local` otherwise. `cloud` compacts at 90 % of the window, keeps 20000 tokens verbatim and writes a summary of about 2000 tokens. A `compaction.keepRecentTokens`, `oxa.compaction.summaryTarget` or `oxa.compaction.softTokens` set in any layer wins over the profile. `local` keeps the values above |
 | `oxa.compaction.idleSummary` | bool | unset | after a run that leaves the context between 80 % and 100 % of the soft limit, the summary of the next compaction is written in idle time, and that compaction reuses it with no model request if nothing it covers has changed. Unset is on |
 | `oxa.compaction.midRun` | bool | unset | compact between tool steps of a run when the context passes the compaction point; unset is on |
 | `oxa.compaction.summaryTarget` | number (tokens) | unset | soft length target of a compaction summary: the model is asked for about three quarters of it in words; `0` is no target. Unset is 700 |
@@ -175,6 +176,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.offline` | bool | `false` | same as `--offline`; user settings only |
 | `oxa.engine.allowRemote` | bool | `false` | allow an engine on another host; user settings only |
 | `oxa.engine.inProcessLocal` | bool | `false` | select the in-process owned local engine, including offline; user settings only |
+| `oxa.inbox.headless` | bool | `true` | a headless print or JSON run (`--mode json`) of a persisted session whose goal is pursuing takes `oxa send` follow-ups from that session's inbox for the length of the run. Each message is an ordinary follow-up user message, at most 256 KiB and 64 queued; a larger file stays on disk. Runs without a pursuing goal never watch the inbox, and `false` turns this off. Read from the user settings file only; a project file cannot change it |
 | `oxa.local` | object | `{}` | literal native binary/model/arguments/environment and model limits; user settings only; `oxa local add` writes it from the engine's admission report ([Local models](cli.md#local-models)); see [native local configuration](../../oxc-local/CONFIGURATION.md) |
 | `oxa.lead.shadow` | bool | `false` | enable the read-only `oxa lead --shadow` proposal preset; user settings only; no live runner actions |
 | `oxa.engine.inProcessCloud` | bool | `false` | select the in-process Rust cloud gateway for sessions and model discovery; user settings only |
@@ -197,6 +199,17 @@ Set `oxa.engine.inProcessCloud` in the user settings file to select the Rust
 gateway for sessions and `--list-models`. The default is `false`. Offline mode
 refuses before opening the gateway; configuration or gateway failures are returned
 directly. Project settings cannot enable this transport or change its cloud policy.
+
+The OpenCode Go subscription is the exception to that switch: a Go key in the
+owner's secrets file (`~/.config/oxc/llm/cloud-secrets.json`, the `opencode`
+entry) already enables the Go transport for the owner's own model choice, without
+`inProcessCloud`. `oxa.cloud.opencode.enabled: false` in the user settings opts
+out again, and `true` enables Go even for a delegated or restored model. Transport
+selection stays user-only: a project settings file, a model a launcher delegated
+through `oxa work`'s task file, and a model restored by `--continue` never turn
+the transport on by themselves. A configured local alias keeps a request local
+only when the alias owns the asked model exactly; a fuzzy local match does not
+hide the Go model of that name.
 
 Set `oxa.cloud.discover_models` to `true` to discover models at startup for the
 configured OpenRouter, OpenAI and Anthropic API keys. It also enables the
@@ -257,12 +270,15 @@ The key is read for each request from the existing private
 `~/.config/oxc/llm/cloud-secrets.json` (owner-only, mode `0600`, outside a checkout).
 Keep keys out of settings. The file uses the existing provider-key JSON format.
 Private settlement rows live in `<agent directory>/cloud-ledger/`. Listing models
-reads neither the key nor the ledger and contacts no provider. A missing price
-refuses a request before credentials or provider I/O. `daily_budget_usd` is
-optional: without it there is no budget check, requests are admitted and their
-cost is still recorded in the ledger (a request whose cost cannot be bounded is
-recorded with `cost_unknown`). When set it must be a positive number, and a
-request that would exceed it is refused with `budget_exceeded` (HTTP 429). Requests
+reads neither the key nor the ledger and contacts no provider. `daily_budget_usd` is
+optional: without it there is no budget check, requests are admitted (including a
+model with no price) and their cost is still recorded in the ledger (a request whose
+cost cannot be bounded is recorded with `cost_unknown`). When set it must be a
+positive number, a missing price refuses a request before credentials or provider I/O
+(`cloud_pricing_unavailable`), and a request that would exceed it is refused with
+`budget_exceeded` (HTTP 429). A cap set after earlier uncapped requests of unknown
+cost the same day is refused with `cost_unknown_history`, which says so, instead of
+claiming the budget is exhausted. Requests
 retain their budget reservation until the private row is durable.
 
 An `openai` route uses the same model/price fields, reads the `openai` key from
@@ -289,7 +305,14 @@ configuration never supplies one.
 Subscription calls require their own positive request/token caps, retain actual
 token usage and settle zero USD. Unknown paid work retains its full token bound;
 the cap includes concurrent and crashed-process reservations. It never falls back
-to a paid API balance. Missing metered pricing still refuses metered requests.
+to a paid API balance. Missing metered pricing still refuses metered requests when a daily budget is set.
+ChatGPT requires positive request and token caps. For OpenCode Go,
+`oxa.cloud.subscription_limits` is optional and has no default. If configured,
+oxa warns when projected usage reaches 80% or 100% of either limit, including
+concurrent reservations, and continues the request. Both providers keep
+recording requests and tokens, including conservative reservations for unknown
+outcomes. Provider limits and credential, offline, and LAN access checks still
+apply. Missing metered pricing still refuses metered requests.
 
 OpenCode Go and every other subscription request reserve tokens only. Their cost
 is unknown to oxa, so no daily USD headroom is held for them and no local USD
@@ -306,6 +329,11 @@ while their recorded USD reserves nothing. OpenCode controls whether a call fall
 back to its paid balance; if it reports a higher charge than expected, the
 ledger records the full amount and admission continues.
 
+The repository's automated Go pull-request review checks at most 200 GitHub comment pages (20,000
+comments) for the configured daily quota and prior same-diff receipts. If GitHub history exceeds
+that bound, review is deferred before a quota reservation or provider access; incomplete history
+never permits an additional review.
+
 ### Other
 
 | Key | Type | Default | Meaning |
@@ -317,6 +345,7 @@ ledger records the full amount and admission continues.
 | `oxa.builtinSkills` | bool | `true` | include the skills built into oxa |
 | `oxa.share.remoteModels` | string list | `[]` | user-only allowlist of metered cloud aliases eligible for explicit LAN sharing; personal subscriptions are excluded |
 | `oxa.skills.includeSynced` | bool | `false` | also list the skills another product synced into `~/.agents/skills` (a `synced/` folder, or a folder whose `manifest.json` lists `skillId`s); they are written for that product's tools, so oxa skips them by default |
+| `oxa.workers.stopGraceSeconds` | number (seconds) | `10` | how long a stopped worker gets after SIGINT before its whole process group gets SIGTERM; SIGKILL follows 2 seconds later if the group is still alive |
 
 ## Example
 

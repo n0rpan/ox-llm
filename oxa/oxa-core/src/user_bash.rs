@@ -42,7 +42,7 @@ pub fn user_bash(
     ui: &mut dyn Ui,
 ) -> Result<(), OxaError> {
     let shared = st.shared.clone();
-    let _claim = Claim::take(&shared.busy)?;
+    let _claim = Claim::take(&shared)?;
     // We own the run now: clear a cancel left over from an idle `abort`.
     shared.cancel.reset();
     // A headless SIGINT is sticky, including when it arrived before this claim.
@@ -74,13 +74,27 @@ pub fn user_bash(
     Ok(())
 }
 
-/// Holds the `busy` flag for the duration of one `!cmd`; releases it on every path.
-struct Claim<'a>(&'a AtomicBool);
+/// Holds the `busy` flag for the duration of one `!cmd` and marks the session as foreground
+/// work, exactly like a prompt run; releases both on every path. Without the marks the front end
+/// reads a long `!cmd` as idle and takes input typed during it for a new run.
+struct Claim<'a> {
+    busy: &'a AtomicBool,
+    running: &'a AtomicBool,
+}
 
 impl<'a> Claim<'a> {
-    fn take(flag: &'a AtomicBool) -> Result<Claim<'a>, OxaError> {
-        match flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst) {
-            Ok(_) => Ok(Claim(flag)),
+    fn take(shared: &'a crate::queue::Shared) -> Result<Claim<'a>, OxaError> {
+        match shared
+            .busy
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        {
+            Ok(_) => {
+                shared.gate.running.store(true, Ordering::SeqCst);
+                Ok(Claim {
+                    busy: &shared.busy,
+                    running: &shared.gate.running,
+                })
+            }
             Err(_) => Err(OxaError::new(codes::BUSY, "cannot run !cmd during a run")
                 .with_hint("wait until the agent has settled")),
         }
@@ -89,7 +103,8 @@ impl<'a> Claim<'a> {
 
 impl Drop for Claim<'_> {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
+        self.busy.store(false, Ordering::SeqCst);
+        self.running.store(false, Ordering::SeqCst);
     }
 }
 
