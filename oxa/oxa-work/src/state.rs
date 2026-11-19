@@ -66,6 +66,10 @@ pub(crate) struct Execution {
     pub base: String,
     pub prompt: String,
     pub commands: Vec<String>,
+    /// Crates the worker declared as requiring hosted acceptance tests.
+    /// `None` until a worker declares any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared: Option<Vec<String>>,
     pub worker_error: Option<String>,
     pub merge_error: Option<String>,
     pub failures: String,
@@ -165,6 +169,7 @@ pub(crate) fn load(path: &Path) -> Result<State> {
         "acceptance_outcome",
         "task_tokens",
         "worker_launch_revision",
+        "checks",
     ];
     if keys.iter().any(|key| !record.contains_key(*key))
         || record
@@ -336,6 +341,7 @@ mod tests {
                 base: base.clone(),
                 prompt: "saved prompt".into(),
                 commands: vec!["saved command".into()],
+                declared: None,
                 worker_error: None,
                 merge_error: None,
                 failures: String::new(),

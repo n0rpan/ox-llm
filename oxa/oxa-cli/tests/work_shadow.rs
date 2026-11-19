@@ -71,7 +71,7 @@ case "$*" in
 esac
 "#);
     fs::set_permissions(gh, fs::Permissions::from_mode(0o700)).unwrap();
-    let detail: serde_json::Value = serde_json::from_str(r#"{"data":{"repository":{"pullRequests":{"totalCount":1,"nodes":[{"number":42}]},"mergeQueue":null,"p42":{"number":42,"headRefOid":"synthetic-head","baseRefName":"main","state":"OPEN","body":"","isDraft":false,"reviewDecision":null,"mergeable":"CONFLICTING","mergeStateStatus":"CLEAN","labels":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[]},"reviewThreads":{"totalCount":0,"nodes":[]},"latestOpinionatedReviews":{"totalCount":0,"nodes":[]},"commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}}"#).unwrap();
+    let detail: serde_json::Value = serde_json::from_str(r#"{"data":{"repository":{"pullRequests":{"totalCount":1,"nodes":[{"number":42}]},"mergeQueue":null,"p42":{"number":42,"headRefOid":"synthetic-head","baseRefName":"main","state":"OPEN","body":"","isDraft":false,"reviewDecision":null,"mergeable":"CONFLICTING","mergeStateStatus":"CLEAN","labels":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}},"reviewThreads":{"totalCount":0,"nodes":[]},"latestOpinionatedReviews":{"totalCount":0,"nodes":[]},"commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}}"#).unwrap();
     let mut detail = detail;
     detail["data"]["repository"]["pullRequests"]["nodes"][0]["headRefOid"] = "synthetic-head".into();
     detail["data"]["repository"]["pullRequests"]["pageInfo"] =
@@ -179,9 +179,11 @@ fn real_cli_requires_opt_in_and_offline_never_reads_github() {
             serde_json::json!({"totalCount":1,"nodes":[{"state":"APPROVED","commit":{"oid":head}}]});
         row["commits"] = serde_json::json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":1,"nodes":[{"name":"ci","isRequired":true,"status":status,"conclusion":conclusion}]}}}}]});
         row["files"] = if source.is_empty() {
-            serde_json::json!({"totalCount":0,"nodes":[]})
+            serde_json::json!({"totalCount":0,"nodes":[],
+                "pageInfo":{"hasNextPage":false,"endCursor":null}})
         } else {
-            serde_json::json!({"totalCount":1,"nodes":[{"path":source,"deletions":1}]})
+            serde_json::json!({"totalCount":1,"nodes":[{"path":source,"deletions":1}],
+                "pageInfo":{"hasNextPage":false,"endCursor":null}})
         };
         fs::write(env.work().join("detail.json"), detail.to_string()).unwrap();
         assert!(invoke(&env, "work board --shadow --repo example/repo --once")

@@ -528,6 +528,7 @@ fn host_call(api: &Api, action: HostAction) -> Result<Value, OxaError> {
 /// `details` the display-only value.
 fn tool_output(v: &Value) -> ToolOutput {
     ToolOutput {
+        images: Vec::new(),
         text: v.get("content").and_then(content_text).unwrap_or_default(),
         is_error: v.get("isError").and_then(Value::as_bool).unwrap_or(false),
         ui: v.get("details").cloned().unwrap_or(Value::Null),
