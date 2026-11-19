@@ -160,9 +160,11 @@ OpenAI Responses API and explicit ChatGPT subscription routes.
 
 ### OpenCode Go chat models
 
-The native factory enables Go when the `opencode` key exists, for every run that
-names a Go model (workers and nested children included); user-only
-`oxa.cloud.opencode.enabled: false` opts out and `true` enables it explicitly.
+The native factory enables Go when the `opencode` key exists, for the owner's own
+run that names a Go model with `--model` (or a model scope that is not a local
+alias); a worker, a delegated `oxa work` model or a nested child needs the
+user-only `oxa.cloud.opencode.enabled: true`, which is also the explicit opt-in
+beside `false` to opt out.
 Project settings never enable it. This applies unless `oxa.engine.inProcessCloud`
 is set to something other than true. The provider base defaults to
 `https://opencode.ai/inference/go`; a user-only `base_url` overrides it for owned
