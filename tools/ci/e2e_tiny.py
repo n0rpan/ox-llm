@@ -98,15 +98,19 @@ def probe(port, messages, max_tokens):
     return {'ttft_ms': (t_first - t0) * 1e3, 'total_ms': total * 1e3, 'usage': usage, 'timings': timings, 'text': text}
 
 
-def run_oxa(oxa, prompt, cwd, env, usage_log, timeout, max_time, name, out):
+def run_oxa(oxa, prompt, cwd, env, usage_log, timeout, max_time, max_tokens, name, out):
     cmd = [oxa, '-p', '--thinking', 'off', '--no-mcp', '--no-web-search', '--session-id', 'e2e-tiny',
-           '--usage-log', str(usage_log), '--max-time', str(max_time), prompt]
+           '--usage-log', str(usage_log), '--max-time', str(max_time), '--max-tokens', str(max_tokens), prompt]
     t0 = time.monotonic()
     p = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
     wall = (time.monotonic() - t0) * 1e3
     (out / f'{name}.stdout.txt').write_text(p.stdout)
     (out / f'{name}.stderr.txt').write_text(p.stderr)
-    return p.returncode, wall
+    result = {}
+    for line in p.stderr.splitlines():
+        if line.startswith('{"type":"oxa_result"'):
+            result = json.loads(line)
+    return p.returncode, wall, result
 
 
 def records(path):
@@ -219,11 +223,13 @@ def main():
         runs = []
         for name, text in (('turn1', o['first_prompt']), ('turn2', o['second_prompt'])):
             before = len(records(usage_log))
-            code, wall = run_oxa(a.oxa, text, work, oenv, usage_log, o['run_timeout_s'], o['max_time_s'], name, out)
+            code, wall, result = run_oxa(a.oxa, text, work, oenv, usage_log, o['run_timeout_s'], o['max_time_s'], o['max_tokens'], name, out)
             recs = records(usage_log)[before:]
-            runs.append({'name': name, 'exit': code, 'wall_ms': wall, 'requests': recs})
-            if code != 0:
-                fail(f'{name}: oxa -p exited {code} (see {name}.stderr.txt)')
+            runs.append({'name': name, 'exit': code, 'error_class': result.get('error_class'), 'wall_ms': wall, 'requests': recs})
+            # the synthetic model has filler weights and never stops: a turn that ends on the output
+            # limit or on the token budget still went through the whole oxa -> oxe path
+            if code != 0 and result.get('error_class') not in o['accept_error_classes']:
+                fail(f"{name}: oxa -p exited {code} ({result.get('error_class')}; see {name}.stderr.txt)")
         report['oxa'] = runs
 
         # (a) it works: both runs reached the engine and got tokens back
@@ -236,15 +242,15 @@ def main():
         # (b) the cache stays: the second run reuses the prefix of the first
         second = runs[1]['requests']
         cached = second[0].get('cached') if second else None
+        prev_prompt = next((q.get('prompt') for q in reversed(runs[0]['requests']) if q.get('prompt')), None)
         report['second_run_first_request_cached'] = cached
-        first_prompt = next((q.get('prompt') for q in runs[0]['requests'] if q.get('prompt')), None)
         if not cached or cached <= 0:
             fail(f'turn2: the first request of the second run reused no cached prompt tokens (cached={cached})')
         elif second[0].get('prompt') and cached > second[0]['prompt']:
             fail(f"turn2: cached {cached} exceeds the prompt {second[0]['prompt']}")
-        elif first_prompt:
-            # the cached prefix must cover the whole context of run 1 (the new turn is the rest)
-            check_ratio('oxa turn2', cached / first_prompt, cfg, report)
+        elif prev_prompt:
+            # the cached prefix must cover the whole context the previous run ended with
+            check_ratio('oxa turn2', cached / prev_prompt, cfg, report)
         # (c) latency
         for r in runs:
             check_budget(f"{r['name']} total time", r['wall_ms'], b['turn_warn_ms'], b['turn_fail_ms'])
