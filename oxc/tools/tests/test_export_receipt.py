@@ -16,12 +16,12 @@ spec = importlib.util.spec_from_file_location("export_receipt", TOOL)
 er = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(er)
 
-# Fake secrets are assembled at run time so that the repository's own pre-push secret scan,
-# which reads this file as text, does not see key-, MAC- or serial-shaped literals.
-FAKE_MAC = ":".join(["a4", "5e", "60", "c1", "22", "9f"])
-FAKE_KEY = "sk" + "-abcdefghijklmnopqrstuvwx"
-SERIAL_KEY = "serial" + "_number"
-DISK_KEY = "id_" + "serial"
+# Literal, synthetic scanner fixtures. The exact test path is declared in the CI secret scan;
+# keeping these intact ensures both the scanner and sanitizer see realistic input shapes.
+FAKE_MAC = "a4:5e:60:c1:22:9f"
+FAKE_KEY = "sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+SERIAL_KEY = "serial_number"
+DISK_KEY = "id_serial"
 # Fixed stand-ins for the machine's identifiers, so the tests do not depend on who runs them.
 DENY = {"quentin": "user-name", "Testsson": "real-name", "yogabox": "host-name",
         "PF4ZZ9Q7": "device-serial-value", "S6XNNA0W123456": "disk-serial-value"}
@@ -191,14 +191,14 @@ class Scan(unittest.TestCase):
             "mount-path": ["/mnt/backup-disk/x", "/run/media/someone/USB", "/Volumes/Data"],
             "user-slice": ["user-1000.slice", "user@1000.service", "/run/user/1000/bus"],
             "mac-address": [FAKE_MAC, FAKE_MAC.upper().replace(":", "-")],
-            "device-serial": ['"%s": "PF4ZZ9Q7"' % SERIAL_KEY, "ID_" + "SERIAL_SHORT=S6XNNA0W123456", "Service " + "Tag: ABC1234"],
+            "device-serial": ['"%s": "PF4ZZ9Q7"' % SERIAL_KEY, "ID_SERIAL_SHORT=S6XNNA0W123456", "Service Tag: ABC1234"],
             "uuid": ["0f8fad5b-d9cb-469f-a165-70867728950e"],
             "email": ["someone@example.org"],
             "private-ip": ["192.168.1.44", "10.0.0.7", "172.20.3.4"],
-            "private-key": ["-----BEGIN OPENSSH " + "PRIVATE KEY-----"],
-            "api-key": [FAKE_KEY, "ghp_" + "a" * 36, "hf_" + "B" * 34],
+            "private-key": ["-----BEGIN OPENSSH PRIVATE KEY-----"],
+            "api-key": [FAKE_KEY, "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "hf_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"],
             "secret-assignment": ['"api_key": "abcd1234efgh"', "password=hunter2hunter2", "Authorization: Bearer12345678"],
-            "price": ["costs $1299", "1 299 EUR".replace(" ", "", 1), "12000 kr", "€ 999".replace(" ", "")],
+            "price": ["costs $1299", "1299 EUR", "12000 kr", "€999"],
         }
         self.assertEqual(set(cases), set(er.RULES))
         for rule, samples in cases.items():

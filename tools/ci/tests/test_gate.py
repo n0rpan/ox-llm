@@ -5,6 +5,7 @@ Parsed line by line (no YAML library) so it runs with a bare `python3 -I`.
 import importlib.util
 from pathlib import Path
 import re
+import subprocess
 import tomllib
 import unittest
 
@@ -67,6 +68,19 @@ class Gate(unittest.TestCase):
         needs = set(re.search(r'^    needs: \[(.*)\]', block, re.M).group(1).replace(' ', '').split(','))
         self.assertIn('if: always()', block)
         self.assertEqual(needs, set(jobs(self.checks)) - set(UNGATED))
+
+    def test_openai_contract_runner_is_valid_shell_without_merge_markers(self):
+        runner = WORKFLOWS.parents[1] / 'tools' / 'openai-contract' / 'run.sh'
+        text = runner.read_text()
+        self.assertNotRegex(text, r'(?m)^(<<<<<<<|=======|>>>>>>>)')
+        subprocess.run(['bash', '-n', str(runner)], check=True)
+
+    def test_secret_scan_declares_literal_receipt_sanitizer_fixtures(self):
+        fixture = WORKFLOWS.parents[1] / 'oxc' / 'tools' / 'tests' / 'test_export_receipt.py'
+        self.assertIn(":!oxc/tools/tests/test_export_receipt.py", self.checks)
+        text = fixture.read_text()
+        self.assertIn('sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', text)
+        self.assertIn('-----BEGIN OPENSSH PRIVATE KEY-----', text)
 
     def test_merge_group_always_selects_complete_oxa_workspace(self):
         build = job_block(self.checks, 'build')
