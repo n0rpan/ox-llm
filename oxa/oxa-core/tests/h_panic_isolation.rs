@@ -53,6 +53,7 @@ impl Tool for TestTool {
             panic!("injected tool panic");
         }
         ToolOutput {
+            images: Vec::new(),
             text: "fine".into(),
             is_error: false,
             ui: Value::Null,
