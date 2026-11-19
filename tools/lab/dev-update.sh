@@ -69,7 +69,7 @@ if test "$mode" = promote; then
   test -n "$unit" && test -n "$board_unit" && test -n "$binary" && test -n "$manifest" &&
     test -n "$install_lock" && test -n "$session" && test -n "$rollout" || usage
 fi
-for tool in curl jq gh sha256sum tar flock diff getent; do command -v "$tool" >/dev/null; done
+for tool in curl jq gh sha256sum tar flock diff getent mktemp; do command -v "$tool" >/dev/null; done
 test "$mode" = install || command -v systemctl >/dev/null
 case $(uname -m) in aarch64 | x86_64) arch=$(uname -m) ;; *) echo 'Unsupported architecture' >&2; exit 1 ;; esac
 # Match the sandbox's denied .local/state/oxc path under the real account home.
@@ -295,8 +295,18 @@ manifest_matches() {
 # and never an attestation parser of its own.
 compare_status() {
   local body=$work/compare.json
-  fetch "https://api.github.com/repos/$repo/compare/$1...$2" "$body" 5242880
+  fetch "https://api.github.com/repos/$repo/compare/$1...$2" "$body" 5242880 || return 1
   jq -er '.status | select(test("^(ahead|behind|diverged|identical)$"))' "$body"
+}
+
+# Make replacement files on the target filesystem with an exclusive,
+# unpredictable name.  In particular, never redirect to a name another user
+# could have planted as a symlink in an accepted sticky directory.
+replacement_temp() {
+  local target=$1 parent name
+  parent=${target%/*}
+  name=${target##*/}
+  mktemp --tmpdir="$parent" ".$name.new.XXXXXXXX"
 }
 
 # The native dedicated-session sidecar lock, taken exactly like oxa does
@@ -398,9 +408,11 @@ stage_previous() {
     echo 'Refusing an unsafe promotion staging directory' >&2
     exit 1
   }
-  jq -n --arg sha "$old_sha" --arg digest "$old_binary" --arg binary_mode "$binary_mode" \
+  jq -n --arg sha "$old_sha" --arg digest "$old_binary" --arg archive "$old_archive" \
+    --arg binary_mode "$binary_mode" \
     --arg manifest_mode "$manifest_mode" \
-    '{previous_source_sha:$sha,previous_binary_sha256:$digest,binary_mode:$binary_mode,manifest_mode:$manifest_mode}' \
+    '{previous_source_sha:$sha,previous_archive_sha256:$archive,
+      previous_binary_sha256:$digest,binary_mode:$binary_mode,manifest_mode:$manifest_mode}' \
     >"$stage/state.json"
 }
 
@@ -416,6 +428,8 @@ promote_gate() {
   }
   old_binary=$running
   old_sha=
+  old_archive=
+  rollout_baseline=0
   if test -e "$rollout" || test -L "$rollout"; then
     trusted_file "$rollout" || {
       echo 'Refusing an unsafe rollout receipt path' >&2
@@ -424,6 +438,8 @@ promote_gate() {
     # Only digest-bound rollout metadata may name the source of what runs.
     if test "$(jq -er '.binary_sha256 | select(test("^[0-9a-f]{64}$"))' "$rollout")" = "$running"; then
       old_sha=$(jq -er '.source_sha | select(test("^[0-9a-f]{40}$"))' "$rollout") || no_baseline
+      old_archive=$(jq -er '.archive_sha256 | select(test("^[0-9a-f]{64}$"))' "$rollout") || no_baseline
+      rollout_baseline=1
     fi
   fi
   if test -z "$old_sha"; then
@@ -434,6 +450,7 @@ promote_gate() {
     read_manifest "$prefix/$stock_release/binary.sha256" || no_baseline
     test "$manifest_digest" = "$running" || no_baseline
     old_sha=$(jq -er 'select(.channel=="dev") | .source_sha | select(test("^[0-9a-f]{40}$"))' "$receipt") || no_baseline
+    old_archive=$(jq -er '.sha256 | select(test("^[0-9a-f]{64}$"))' "$receipt") || no_baseline
   fi
   test -e "$manifest" || test -L "$manifest" || {
     echo 'No deploy: the binary manifest is unavailable' >&2
@@ -480,7 +497,7 @@ promote_gate() {
 denied_get() {
   local status
   status=$(curl -q --silent --show-error --output /dev/null --write-out '%{http_code}' \
-    --proto '=http' --connect-timeout 5 --max-time 10 "$lead_url") || return 1
+    --noproxy '*' --proto '=http' --connect-timeout 5 --max-time 10 "$lead_url") || return 1
   [[ $status == 403 ]]
 }
 
@@ -488,9 +505,10 @@ denied_get() {
 # receipt always describes the build that is activated, and is replaced
 # atomically beside itself.
 write_receipt() {
-  local tmp=$rollout.new.$$
-  jq -n --arg action "$1" --arg verification "$2" --arg source "$3" --arg archive "$digest" \
-    --arg binary "$4" --arg previous_source "$5" --arg previous_binary "$6" \
+  local tmp
+  tmp=$(replacement_temp "$rollout") || return 1
+  jq -n --arg action "$1" --arg verification "$2" --arg source "$3" --arg archive "$4" \
+    --arg binary "$5" --arg previous_source "$6" --arg previous_binary "$7" \
     --arg time "$(date -u +%FT%TZ)" \
     '{channel:"dev",action:$action,verification:$verification,source_sha:$source,
       archive_sha256:$archive,binary_sha256:$binary,previous_source_sha:$previous_source,
@@ -511,33 +529,36 @@ prune_stage() {
 # The exact verified pair goes back, executable and manifest together, and the
 # running digest decides whether the rollback itself is verified.
 rollback() {
-  local previous_binary binary_mode manifest_mode state
+  local previous_archive previous_binary binary_mode manifest_mode state binary_tmp manifest_tmp
   state=$stage/state.json
   previous_binary=$(jq -er '.previous_binary_sha256 | select(test("^[0-9a-f]{64}$"))' "$state") || previous_binary=
+  previous_archive=$(jq -er '.previous_archive_sha256 | select(test("^[0-9a-f]{64}$"))' "$state") || previous_archive=
   binary_mode=$(jq -er '.binary_mode | select(test("^[0-7]{3,4}$"))' "$state") || binary_mode=700
   manifest_mode=$(jq -er '.manifest_mode | select(test("^[0-7]{3,4}$"))' "$state") || manifest_mode=600
   test "$(digest_of "$stage/previous/oxa")" = "$previous_binary" || {
-    write_receipt failed unavailable "$old_sha" "$new_digest" "$sha" "$old_binary"
+    write_receipt failed unavailable "$old_sha" "$old_archive" "$new_digest" "$sha" "$old_binary"
     echo 'Deploy failed; the staged previous binary does not match its checksum' >&2
     exit 1
   }
-  { cp -- "$stage/previous/oxa" "$binary.new.$$" &&
-    chmod "$binary_mode" -- "$binary.new.$$" &&
-    cp -- "$stage/previous/manifest" "$manifest.new.$$" &&
-    chmod "$manifest_mode" -- "$manifest.new.$$" &&
-    mv -Tf -- "$binary.new.$$" "$binary" &&
-    mv -Tf -- "$manifest.new.$$" "$manifest"; } || {
-    write_receipt failed unavailable "$old_sha" "$previous_binary" "$sha" "$new_digest"
+  binary_tmp=$(replacement_temp "$binary") && manifest_tmp=$(replacement_temp "$manifest") &&
+  { cp -- "$stage/previous/oxa" "$binary_tmp" &&
+    chmod "$binary_mode" -- "$binary_tmp" &&
+    cp -- "$stage/previous/manifest" "$manifest_tmp" &&
+    chmod "$manifest_mode" -- "$manifest_tmp" &&
+    mv -Tf -- "$binary_tmp" "$binary" &&
+    mv -Tf -- "$manifest_tmp" "$manifest"; } || {
+    rm -f -- "${binary_tmp:-}" "${manifest_tmp:-}"
+    write_receipt failed unavailable "$old_sha" "${previous_archive:-$old_archive}" "$previous_binary" "$sha" "$new_digest"
     echo 'Deploy failed; the previous pair could not be restored' >&2
     exit 1
   }
   if systemctl --user restart "$unit" 2>/dev/null && verify_running "$previous_binary" &&
     manifest_matches "$previous_binary"; then
     session_release
-    write_receipt failed verified "$old_sha" "$previous_binary" "$sha" "$new_digest"
+    write_receipt failed verified "$old_sha" "$previous_archive" "$previous_binary" "$sha" "$new_digest"
     echo "Deploy failed; rolled back to the previous binary ($previous_binary)" >&2
   else
-    write_receipt failed unverified "$old_sha" "$previous_binary" "$sha" "$new_digest"
+    write_receipt failed unverified "$old_sha" "$previous_archive" "$previous_binary" "$sha" "$new_digest"
     echo 'Deploy failed; the previous binary did not come back verified' >&2
   fi
   exit 1
@@ -547,7 +568,7 @@ rollback() {
 # holds the operator install lock and the Session lock only for its own short
 # window: swap the pair, restart the configured unit, verify, or roll back.
 activate() {
-  local receipt=$prefix/current/receipt.json new_sha sampler
+  local receipt=$prefix/current/receipt.json new_sha sampler binary_tmp manifest_tmp
   { test -f "$receipt" && test ! -L "$receipt"; } || no_baseline
   new_sha=$(jq -er 'select(.channel=="dev") | .source_sha | select(test("^[0-9a-f]{40}$"))' "$receipt") || no_baseline
   if [[ $new_sha != "$sha" ]]; then
@@ -583,20 +604,22 @@ activate() {
   printf '%s\n' "$new_digest" >"$stage/next.sha256"
   # Both files are prepared beside their targets, so each rename is atomic and
   # the pair is only ever promoted or restored together.
-  cp -- "$prefix/releases/$id/usr/bin/oxa" "$binary.new.$$"
-  chmod "$binary_mode" -- "$binary.new.$$"
+  binary_tmp=$(replacement_temp "$binary")
+  manifest_tmp=$(replacement_temp "$manifest")
+  cp -- "$prefix/releases/$id/usr/bin/oxa" "$binary_tmp"
+  chmod "$binary_mode" -- "$binary_tmp"
   if test -n "$manifest_name"; then
-    printf '%s  %s\n' "$new_digest" "$manifest_name" >"$manifest.new.$$"
+    printf '%s  %s\n' "$new_digest" "$manifest_name" >"$manifest_tmp"
   else
-    printf '%s\n' "$new_digest" >"$manifest.new.$$"
+    printf '%s\n' "$new_digest" >"$manifest_tmp"
   fi
-  chmod "$manifest_mode" -- "$manifest.new.$$"
-  if { mv -Tf -- "$binary.new.$$" "$binary" && mv -Tf -- "$manifest.new.$$" "$manifest"; } &&
+  chmod "$manifest_mode" -- "$manifest_tmp"
+  if { mv -Tf -- "$binary_tmp" "$binary" && mv -Tf -- "$manifest_tmp" "$manifest"; } &&
     systemctl --user restart "$unit" && verify_running "$new_digest" &&
     manifest_matches "$new_digest" && denied_get; then
     sampler=$(unit_state "$board_unit") || sampler=unknown
     session_release
-    write_receipt promoted verified "$sha" "$new_digest" "$old_sha" "$old_binary"
+    write_receipt promoted verified "$sha" "$digest" "$new_digest" "$old_sha" "$old_binary"
     prune_stage
     printf 'Promoted dev %s (%s); binary %s; previous %s preserved; running digest verified; direct GET refused\n' \
       "$version" "$sha" "$new_digest" "$old_binary"
@@ -656,11 +679,28 @@ jq -n --arg sha "$sha" --arg version "$version" --arg digest "$digest" \
 cp "$work/$bundle" "$work/payload/provenance.jsonl"
 if test -e "$prefix/releases/$id"; then
   diff --no-dereference -qr "$work/payload/usr" "$prefix/releases/$id/usr"
+  installed_manifest=$prefix/releases/$id/binary.sha256
+  if test -e "$installed_manifest" || test -L "$installed_manifest"; then
+    read_manifest "$installed_manifest" && test "$manifest_digest" = "$binary_digest"
+  else
+    installed_manifest_tmp=$(replacement_temp "$installed_manifest")
+    cp -- "$work/payload/binary.sha256" "$installed_manifest_tmp"
+    chmod 600 -- "$installed_manifest_tmp"
+    mv -Tf -- "$installed_manifest_tmp" "$installed_manifest"
+  fi
 else
   mv "$work/payload" "$prefix/releases/$id"
 fi
 old=$(readlink "$prefix/current" || true)
 test ! -e "$prefix/current" || test -L "$prefix/current"
+# On a first promotion, retain digest-bound provenance for the executable that
+# is still live before current moves to the downloaded candidate.  A busy
+# activation lock can then defer safely and the next invocation still has a
+# source baseline for the unchanged running binary.
+if test "$mode" = promote && test "$rollout_baseline" = 0; then
+  write_receipt retained verified "$old_sha" "$old_archive" "$old_binary" "$old_sha" "$old_binary"
+  rollout_baseline=1
+fi
 if test -e "$prefix/bin" || test -L "$prefix/bin"; then
   { test -L "$prefix/bin" && test "$(readlink "$prefix/bin")" = current/usr/bin; } || exit 1
 else

@@ -52,6 +52,7 @@ with pathlib.Path(os.environ['FIXTURES'], 'requests.log').open('a') as log:
 if url.startswith('http://'):
     # The promotion canary: a loopback denial probe, never a real request.
     assert url == os.environ['FIXTURE_CANARY']
+    assert args[args.index('--noproxy') + 1] == '*'
     with pathlib.Path(os.environ['FIXTURES'], 'canary.log').open('a') as log:
         log.write(url + '\\n')
     sys.stdout.write(os.environ.get('FIXTURE_DENY', '403'))
@@ -60,6 +61,8 @@ assert url.startswith(('https://api.github.com/repos/oxstack/ox-llm/',
                        'https://github.com/oxstack/ox-llm/releases/download/dev/'))
 target = pathlib.Path(args[args.index('-o')+1])
 if '/compare/' in url:
+    if url.rsplit('/', 1)[1] == os.environ.get('FIXTURE_COMPARE_FAIL'):
+        sys.exit(22)
     statuses = json.loads(pathlib.Path(os.environ['FIXTURES'], 'compare.json').read_text())
     target.write_text(json.dumps({'status': statuses[url.rsplit('/', 1)[1]]}))
 elif url.endswith('/tags/dev'):
@@ -174,6 +177,19 @@ class DevUpdate(Fixture):
         self.assertEqual((self.remote / 'verified').read_text(), sha)
         self.assertEqual(self.run_update().returncode, 0)
         self.assertEqual(self.stable.read_bytes(), b'stable sentinel')
+
+    def test_reusing_a_legacy_release_adds_its_executable_manifest(self):
+        sha, _, payload = self.build()
+        first = self.run_update()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        release = self.prefix / os.readlink(self.prefix / 'current')
+        (release / 'binary.sha256').unlink()
+
+        repeated = self.run_update()
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        expected = hashlib.sha256(payload).hexdigest() + '  usr/bin/oxa\n'
+        self.assertEqual((release / 'binary.sha256').read_text(), expected)
+        self.assertEqual((release / 'binary.sha256').stat().st_mode & 0o777, 0o600)
 
     def test_checksum_or_provenance_refusal_preserves_previous_activation(self):
         self.build()
@@ -481,6 +497,16 @@ class DevPromote(Fixture):
         self.assertEqual(self.assets(), previous_downloads)
         self.assertEqual(hashlib.sha256(self.binary.read_bytes()).hexdigest(), old_digest)
 
+    def test_failed_second_comparison_cannot_reuse_the_first_response(self):
+        old, old_digest = self.prepare()
+        new = 'b' * 40
+        self.env['FIXTURE_COMPARE_FAIL'] = f'{new}...main'
+        result = self.promote()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('source ancestry could not be checked', result.stderr)
+        self.assertEqual(self.restarts(), [])
+        self.assertEqual(hashlib.sha256(self.binary.read_bytes()).hexdigest(), old_digest)
+
     def test_busy_session_defers_without_replacing_the_pair(self):
         _, old_digest = self.prepare()
         previous_downloads = self.assets()
@@ -527,6 +553,12 @@ class DevPromote(Fixture):
         # The verified bytes were downloaded and imported; only activation waited.
         self.assertEqual(len(self.assets()), downloads + 1)
 
+        holder.terminate()
+        holder.wait(timeout=5)
+        retried = self.promote()
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertEqual(self.running_digest(), hashlib.sha256(self.elf('b' * 40)).hexdigest())
+
     def test_shared_sampler_lock_defers_the_activation(self):
         _, old_digest = self.prepare()
         holder = subprocess.Popen(['flock', '--shared', str(self.install_lock), 'sleep', '60'])
@@ -569,6 +601,10 @@ class DevPromote(Fixture):
         self.assertEqual((receipt['action'], receipt['verification']), ('failed', 'verified'))
         self.assertEqual(receipt['source_sha'], old)
         self.assertEqual(receipt['binary_sha256'], old_digest)
+        stock = json.loads((self.prefix / 'releases' /
+                            next(path.name for path in (self.prefix / 'releases').iterdir()
+                                 if path.name.startswith(old))).joinpath('receipt.json').read_text())
+        self.assertEqual(receipt['archive_sha256'], stock['sha256'])
 
     def test_denied_direct_get_failure_also_rolls_back(self):
         old, old_digest = self.prepare()
