@@ -78,6 +78,11 @@ maintainer, who says in the PR when a hardware check is needed.
   - A merge that breaks required checks on main is reverted at once, then fixed forward. A review finding
   that contradicts an owner decision stated in the linked issue or PR is answered by updating these
   rules in that PR, not by changing the behaviour.
+- **Publication scan:** `oxa work --publish` and lane pushes refuse secrets in the commits they push (keys,
+  known tokens also after a word character, opaque credential assignments and quoted literals, secret-store
+  content, configured secret values). A file is refused for its content, never its name alone: an empty
+  secret-store file and `.env.example` publish unless the content holds a secret. Flag as P1 a change that
+  weakens these refusals or adds a name-only or blanket long-value block (P2 without a doc update).
 - **Bash and subagent limits.** The two caps are user-only. `oxa.bash.maxJobs` defaults to 16
   running background jobs.
   `oxa.subagent.maxChildren` defaults to 8 running or queued children per parent and 8 steps
@@ -109,6 +114,9 @@ maintainer, who says in the PR when a hardware check is needed.
   sandbox, user-only settings, offline, fork safety). Limits, budgets, retries and guards are owner
   settings with generous defaults that warn and record; a hard block exists only when the owner
   configures it. Do not ask for a new default block or for a feature to be default-off.
+  Owner messages sent with `oxa send` are not refused for size: text over the 256 KiB inline
+  inbox limit is stored in the receiving session's private, tool-readable spill directory and
+  only a short pointer is queued. The agent directory remains denied.
   The repeat guard follows this: the third identical tool result gets a short note, a call that
   still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
   is the cap against loops the guard cannot see. A pursuing goal whose request fails transiently
@@ -191,6 +199,28 @@ maintainer, who says in the PR when a hardware check is needed.
   and workflow dispatch when the worker session refuses them; do not work around that refusal.
   Below, every `gh` command is for a session that owns GitHub access.
 
+## What to test (owner rule)
+
+**Test what the product does for users, not how many test lines exist.**
+- **Write a test when** it protects behaviour a user or a security guarantee relies on:
+  - a bug that happened;
+  - a security or sandbox standard rule;
+  - money and ledger accounting;
+  - cache and prefix stability that changes cost;
+  - release integrity;
+  - an end-to-end flow (a real turn with tools, local model wiring, publish).
+- **Prefer** one end-to-end or integration test over many unit tests of internal helpers.
+- **Do not write tests that pin:**
+  - wording in AGENTS.md, SECURITY.md, docs or workflow files;
+  - descriptor or setting counts;
+  - sort order that nothing depends on;
+  - hashes copied from CI output;
+  - implementation detail a refactor may change.
+- **Doc and env sync checks** belong in a fast lint job, not behind a full build.
+- **Do not write tests that cannot fail:** a mock that asserts itself, or a test of dead code.
+- **A reviewer asking for a test** should name the behaviour it protects. "Add a test" with no behaviour is not a finding.
+- **Delete a test that only breaks on harmless changes.** Note it on the `Removes:` line.
+
 ## Build and test capacity (owner rule)
 
 GitHub-hosted CI is the judge for builds and tests. Run it with `OXCI=off`.
@@ -219,6 +249,13 @@ explicitly:
 gh workflow run lane --ref <branch>
 gh run watch <run-id> --exit-status
 ```
+
+Once a PR against main is open for the branch, a push no longer starts `lane` (its first job,
+`lane pr check`, finds the PR and skips the rest): the PR's `checks` run covers the same commit, so
+wait on that run (`gh run list --branch <branch> --workflow checks`, then `gh run watch`). A branch
+without a PR, and `gh workflow run lane`, still run `lane`. CodeQL runs on pushes to main, weekly and
+on dispatch only; the macOS `oxa-cli` build runs on main, on dispatch and on PRs touching
+`oxa/oxa-session`, `oxa/oxa-sandbox`, `oxa/oxa-cli`, `oxa/oxc-gateway`, `packaging/macos` or `oxa/Cargo.lock`.
 
 The lane workflow selects changed crates plus their local reverse dependencies and binary-fixture
 consumers against main. Shared workspace manifests/locks expand the affected workspace. Tests use

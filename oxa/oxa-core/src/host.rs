@@ -22,9 +22,9 @@
 use crate::agent_loop::persist;
 use crate::{SessionState, Shared, ToolSelection};
 use oxa_proto::{
-    codes, tool_errors, Access, AgentEvent, Answer, CompactReason, Decision, Delivery, Entry, EntryBody,
-    EventSink, ExecSpec, Exposure, HookPoint, HookReply, Hooks, Host, HostAction, Level, OxaError, Tool,
-    ToolCtx, Ui, Value, WireMsg,
+    codes, tool_errors, Access, AgentEvent, Answer, CompactReason, DangerAnswer, Decision, Delivery, Entry,
+    EntryBody, EventSink, ExecSpec, Exposure, HookPoint, HookReply, Hooks, Host, HostAction, Level, OxaError,
+    Tool, ToolCtx, Ui, Value, WireMsg,
 };
 use serde_json::json;
 use std::sync::atomic::Ordering;
@@ -459,6 +459,9 @@ impl Ui for LockedUi<'_, '_> {
     }
     fn ask_access(&mut self, a: &Access) -> Answer {
         self.with(|u| u.ask_access(a))
+    }
+    fn ask_dangerous(&mut self, a: &Access, reasons: &[String], keys: &[String]) -> DangerAnswer {
+        self.with(|u| u.ask_dangerous(a, reasons, keys))
     }
     fn editor_text(&mut self) -> String {
         self.with(|u| u.editor_text())
@@ -1031,28 +1034,70 @@ fn gate(st: &mut SessionState, a: &Access, ui: &mut dyn Ui) -> Result<(), OxaErr
     gate_pinned(st, a, ui).map(|_| ())
 }
 
+/// [`gate`] for a command that runs in `cwd` rather than in the session's directory: an
+/// extension may pass its own `cwd` to `oxa.exec`, and a relative operand is classified against
+/// the directory the sandbox actually runs it in.
+fn gate_at(
+    st: &mut SessionState,
+    a: &Access,
+    cwd: &std::path::Path,
+    ui: &mut dyn Ui,
+) -> Result<(), OxaError> {
+    gate_pinned_in(st, a, cwd, ui).map(|_| ())
+}
+
 /// [`gate`], returning the real location the verdict covers (#518, `Policy::decide_pinned`).
 fn gate_pinned(
     st: &mut SessionState,
     a: &Access,
     ui: &mut dyn Ui,
 ) -> Result<Option<std::path::PathBuf>, OxaError> {
-    let (decision, pin) = st.policy.decide_pinned(st.mode, a, &st.cwd);
+    let cwd = st.cwd.clone();
+    gate_pinned_in(st, a, &cwd, ui)
+}
+
+/// [`gate_pinned`] in an explicit directory.
+fn gate_pinned_in(
+    st: &mut SessionState,
+    a: &Access,
+    cwd: &std::path::Path,
+    ui: &mut dyn Ui,
+) -> Result<Option<std::path::PathBuf>, OxaError> {
+    let (decision, pin) = st.policy.decide_pinned(st.mode, a, cwd);
     match decision {
         Decision::Allow => Ok(pin),
         Decision::Deny(reason) => Err(OxaError::new(codes::DENIED, reason)),
-        Decision::Ask => match ui.ask_access(a) {
-            Answer::Once => Ok(pin),
-            Answer::Session => {
-                st.policy.remember(a);
-                Ok(pin)
+        Decision::Ask => {
+            // #1512 S2: a dangerous command asks first; its answer covers only its rule keys.
+            let danger = st.policy.danger_ask(a, cwd);
+            if !danger.is_empty() {
+                let (keys, reasons): (Vec<String>, Vec<String>) = danger.into_iter().unzip();
+                return match ui.ask_dangerous(a, &reasons, &keys) {
+                    DangerAnswer::Once => Ok(pin),
+                    DangerAnswer::Session | DangerAnswer::Always => {
+                        st.policy.grant_danger(&keys);
+                        Ok(pin)
+                    }
+                    DangerAnswer::Deny if !ui.interactive() => Err(OxaError::new(
+                        codes::DENIED,
+                        tool_errors::DANGEROUS_UNATTENDED.replace("{why}", &reasons.join("; ")),
+                    )),
+                    DangerAnswer::Deny => Err(OxaError::new(codes::DENIED, tool_errors::DENIED_BY_USER)),
+                };
             }
-            Answer::Deny if !ui.interactive() => Err(OxaError::new(
-                codes::DENIED,
-                tool_errors::DENIED_UNATTENDED.replace("{what}", &crate::fire::access_title(a)),
-            )),
-            Answer::Deny => Err(OxaError::new(codes::DENIED, tool_errors::DENIED_BY_USER)),
-        },
+            match ui.ask_access(a) {
+                Answer::Once => Ok(pin),
+                Answer::Session => {
+                    st.policy.remember(a);
+                    Ok(pin)
+                }
+                Answer::Deny if !ui.interactive() => Err(OxaError::new(
+                    codes::DENIED,
+                    tool_errors::DENIED_UNATTENDED.replace("{what}", &crate::fire::access_title(a)),
+                )),
+                Answer::Deny => Err(OxaError::new(codes::DENIED, tool_errors::DENIED_BY_USER)),
+            }
+        }
     }
 }
 
@@ -1061,12 +1106,13 @@ fn exec_gated(st: &mut SessionState, spec: ExecSpec, ui: &mut dyn Ui) -> Result<
     if spec.net {
         oxa_proto::check_online("a command with network access")?; // P4: no network grant offline
     }
-    gate(
+    gate_at(
         st,
         &Access::Exec {
             command: spec.command.clone(),
             net: spec.net,
         },
+        &spec.cwd,
         ui,
     )?;
     st.sandbox.check()?;
@@ -1455,6 +1501,76 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         handle.join().expect("caller thread")
+    }
+
+    /// #1512 S2: answers the dangerous-command prompt with `answer` and counts the questions.
+    struct DangerUi {
+        answer: DangerAnswer,
+        asked: usize,
+    }
+
+    impl Ui for DangerUi {
+        fn select(&mut self, _: &str, _: &[String], _: Option<u32>) -> Option<usize> {
+            None
+        }
+        fn confirm(&mut self, _: &str, _: &str, _: Option<u32>) -> Option<bool> {
+            None
+        }
+        fn input(&mut self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+        fn editor(&mut self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+        fn notify(&mut self, _: &str, _: Level) {}
+        fn set_status(&mut self, _: &str, _: Option<&str>) {}
+        fn set_widget(&mut self, _: &str, _: Option<&[String]>, _: oxa_proto::Placement) {}
+        fn set_title(&mut self, _: &str) {}
+        fn set_editor_text(&mut self, _: &str) {}
+        fn ask_access(&mut self, _: &Access) -> Answer {
+            Answer::Deny
+        }
+        fn ask_dangerous(&mut self, _: &Access, _: &[String], _: &[String]) -> DangerAnswer {
+            self.asked += 1;
+            self.answer
+        }
+        fn interactive(&self) -> bool {
+            true
+        }
+    }
+
+    /// #1512 S2: a dangerous exec in a host gate asks through `ask_dangerous`. `Once` runs it;
+    /// with no one to ask the refusal names the rule, and a generic exec still runs.
+    #[test]
+    fn extension_exec_gate_asks_dangerous() {
+        let mut f = fixture();
+        f.st.policy = Box::new(
+            oxa_perm::ModePolicy::new().with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new()),
+        );
+        let dangerous = Access::Exec {
+            command: "git push --force origin main".into(),
+            net: false,
+        };
+        let mut ui = DangerUi {
+            answer: DangerAnswer::Once,
+            asked: 0,
+        };
+        assert!(gate_pinned(&mut f.st, &dangerous, &mut ui).is_ok());
+        assert_eq!(ui.asked, 1);
+        let mut headless = HeadlessUi::default();
+        let err = gate_pinned(&mut f.st, &dangerous, &mut headless).expect_err("no one to ask");
+        assert_eq!(err.code, codes::DENIED);
+        assert!(
+            err.message
+                .starts_with("Refused: dangerous command (git-push-force: "),
+            "{}",
+            err.message
+        );
+        let plain = Access::Exec {
+            command: "cargo build".into(),
+            net: false,
+        };
+        assert!(gate_pinned(&mut f.st, &plain, &mut headless).is_ok());
     }
 
     /// O-386: a host request posted while the front end waits (instead of polling) wakes it, so

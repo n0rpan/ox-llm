@@ -1,17 +1,15 @@
 //! D10 acceptance tests: Dialogs and the TUI Ui.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
-use oxa_config::Keymap;
+use oxa_config::{Dirs, Keymap, Settings};
 use oxa_fake::TestEnv;
 use oxa_interactive::{
-    access_prompt, ask_missing_cwd, ask_trust, cycle_mode, Block, DialogHost, DialogKey, MissingCwdChoice,
-    TrustChoice, UiProxy, UiRequest, ViewModel,
+    access_prompt, append_always, ask_missing_cwd, ask_trust, cycle_mode, Block, DialogHost, DialogKey,
+    MissingCwdChoice, TrustChoice, UiProxy, UiRequest, ViewModel, DANGER_LABELS,
 };
 use oxa_proto::{
-    Access, Answer, ComponentAction, CustomOpts, KeyId, Level, Mode, Placement, ToolClass, Ui, UiComponent,
-    Value,
+    Access, Answer, ComponentAction, CustomOpts, DangerAnswer, KeyId, Level, Mode, Placement, ToolClass, Ui,
+    UiComponent, Value,
 };
 use oxa_tui::{Key, Theme};
 use std::collections::VecDeque;
@@ -632,4 +630,105 @@ fn ui_proxy_round_trip_and_no_consent_without_ui() {
     );
     assert_eq!(proxy.confirm("t", "b", None), None);
     assert_eq!(proxy.select("t", &["a".to_string()], None), None);
+}
+
+// ---------------------------------------------------------------- #1512 S2: dangerous commands
+
+const DANGER_KEY: &str = "git-push-force git push --force origin main";
+
+/// A dangerous-command request for `git push --force origin main`, with its reply channel.
+fn danger_request(reply: std::sync::mpsc::Sender<DangerAnswer>) -> UiRequest {
+    UiRequest::AskDangerous {
+        access: Access::Exec {
+            command: "git push --force origin main".into(),
+            net: false,
+        },
+        reasons: vec!["git-push-force: git push with a force flag".into()],
+        keys: vec![DANGER_KEY.into()],
+        reply,
+    }
+}
+
+/// The dialog shows the four choices, the command and the reason; Deny has the focus, so a
+/// stray Enter never runs a dangerous command.
+#[test]
+fn dangerous_dialog_has_four_choices_deny_focused() {
+    let keymap = Keymap::defaults();
+    let mut host = DialogHost::new();
+    let mut vm = ViewModel::default();
+    let theme = Theme::plain();
+    let (tx, rx) = channel();
+    assert!(host.handle(danger_request(tx), &mut vm, 0).is_none());
+    let text = host.render(100, &theme).join("\n");
+    assert!(text.contains("Dangerous command"), "{text}");
+    assert!(text.contains("git push --force origin main"), "{text}");
+    assert!(
+        text.contains("git-push-force: git push with a force flag"),
+        "{text}"
+    );
+    assert_eq!(DANGER_LABELS.len(), 4, "{DANGER_LABELS:?}");
+    for label in DANGER_LABELS {
+        assert!(text.contains(label), "{label}\n{text}");
+    }
+    assert_eq!(press(&mut host, &keymap, "enter"), DialogKey::Closed);
+    assert_eq!(rx.recv().unwrap(), DangerAnswer::Deny);
+}
+
+/// "Always allow" is the third choice. Its keys are handed to the driver first: nothing is
+/// answered until they are saved to the user file, and the project file is never copied.
+#[test]
+fn dangerous_dialog_always_writes_user_settings_never_project() {
+    let keymap = Keymap::defaults();
+    let env = TestEnv::new();
+    let dirs = Dirs::under(env.root());
+    let cwd = env.work();
+    env.write(
+        "work/.oxa/settings.json",
+        r#"{"oxa":{"approval":{"always":["project-only"]}}}"#,
+    );
+    let mut host = DialogHost::new();
+    let mut vm = ViewModel::default();
+    let (tx, rx) = channel();
+    host.handle(danger_request(tx), &mut vm, 0);
+    // Deny is focused: one step up is "Always allow".
+    press(&mut host, &keymap, "up");
+    assert_eq!(press(&mut host, &keymap, "enter"), DialogKey::Closed);
+    assert!(rx.try_recv().is_err(), "the worker waits for the save");
+    let (keys, reply) = host.take_danger_always().expect("always is pending");
+    assert_eq!(keys, vec![DANGER_KEY.to_string()]);
+    let mut settings = Settings::load(&dirs, &cwd, false);
+    append_always(&mut settings, &dirs, &cwd, &keys).expect("the user settings are writable");
+    reply.send(DangerAnswer::Always).unwrap();
+    assert_eq!(rx.recv().unwrap(), DangerAnswer::Always);
+    let user = std::fs::read_to_string(dirs.settings_file()).unwrap();
+    assert!(user.contains(DANGER_KEY), "{user}");
+    assert!(!user.contains("project-only"), "{user}");
+    let project = std::fs::read_to_string(dirs.project_settings_file(&cwd)).unwrap();
+    assert!(
+        project.contains("project-only") && !project.contains(DANGER_KEY),
+        "{project}"
+    );
+}
+
+/// A failed save is an error for the driver, which then answers `Session`: the command still
+/// runs this session, and the user file is not written.
+#[test]
+fn dangerous_dialog_always_write_failure_still_grants_session() {
+    let keymap = Keymap::defaults();
+    let env = TestEnv::new();
+    let dirs = Dirs::under(env.root());
+    let cwd = env.work();
+    // The user settings path is a directory, so the write cannot succeed.
+    std::fs::create_dir_all(dirs.settings_file()).unwrap();
+    let mut host = DialogHost::new();
+    let mut vm = ViewModel::default();
+    let (tx, rx) = channel();
+    host.handle(danger_request(tx), &mut vm, 0);
+    press(&mut host, &keymap, "up");
+    press(&mut host, &keymap, "enter");
+    let (keys, reply) = host.take_danger_always().expect("always is pending");
+    let mut settings = Settings::load(&dirs, &cwd, false);
+    assert!(append_always(&mut settings, &dirs, &cwd, &keys).is_err());
+    reply.send(DangerAnswer::Session).unwrap();
+    assert_eq!(rx.recv().unwrap(), DangerAnswer::Session);
 }
