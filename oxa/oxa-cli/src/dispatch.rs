@@ -26,7 +26,6 @@ use oxa_proto::{codes, Engine, EntryBody, Level, Mode, OxaError, Part, Sandbox, 
 use oxa_resources::{discover, DiscoverOpts, Resources};
 use oxa_rpc::{run_json_outcome, run_print_outcome, serve_outcome, Out};
 use oxa_sandbox::Bwrap;
-#[cfg(target_os = "linux")]
 use oxa_sandbox::NoSandbox;
 use oxa_session::{decode_entry, decode_header, FsStore, MemStore, SessionStore, Tree};
 use std::io::{BufReader, Read, Write};
