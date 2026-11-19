@@ -14,6 +14,7 @@ use std::{
     path::Path,
 };
 
+mod ci_packet;
 mod junit;
 
 struct AttemptRead {

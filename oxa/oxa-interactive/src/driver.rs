@@ -733,12 +733,24 @@ impl<'a> Loop<'a> {
         }
     }
 
-    /// A run is active: the worker reported a non-idle activity or the handle says busy. The
-    /// boot preload (O-152) claims the session too, but is not a run: input is a prompt.
-    /// V020-OPTIMIZE #13: so is a draft prefill.
+    /// Foreground activity, including the interval before its start event reaches the UI.
+    /// Background prefix/draft claims are excluded. The shared foreground signal ends when
+    /// a failed, aborted or cut reply is persisted, so settlement's remaining busy claim does
+    /// not turn later input into steering for a finished turn.
     fn running(&self) -> bool {
         self.vm.status.activity != Activity::Idle
-            || (self.handle.is_busy() && !self.worker.is_preloading() && !self.worker.is_drafting())
+            || (self.handle.is_running() && !self.worker.is_preloading() && !self.worker.is_drafting())
+    }
+
+    /// Whether Enter / Alt+Enter queue the text (steering / follow-up) rather than start a run:
+    /// a run is active, the user has not aborted it, and it still takes a tool batch. A run
+    /// that is winding down after an abort (#906) takes no further batch, so a queued message
+    /// would never be delivered; input typed in that window starts a new run instead. The
+    /// abort the user asked for is the same window seen before the worker reports it
+    /// ([`Self::abort_requested`]), so both are checked. Only what Enter does changes: Ctrl+C
+    /// still aborts, and the footer hint still reads "steer" for that moment.
+    fn accepts_steering(&self) -> bool {
+        self.running() && !self.abort_requested && !self.handle.is_aborting()
     }
 
     pub(crate) fn animating(&self) -> bool {
@@ -760,6 +772,12 @@ impl<'a> Loop<'a> {
         }
         if self.cmds.send(cmd).is_err() {
             self.quit = Some(1);
+        }
+        // A background claim may have reset its tokens between the first cancellation
+        // and publication. Once the command is visible, cancel any still-armed background
+        // work again; this never cancels the foreground command itself.
+        if self.worker.is_preloading() || self.worker.is_drafting() {
+            self.handle.cancel_background();
         }
     }
 
@@ -792,6 +810,10 @@ impl<'a> Loop<'a> {
                 }
             }
             WorkerMsg::Event(e) => {
+                // A turn started: the run goes on, so input is steering again.
+                if matches!(e, AgentEvent::AgentStart) {
+                    self.abort_requested = false;
+                }
                 // AgentEnd can occur between tool/follow-up turns; only settled ends a run.
                 if matches!(e, AgentEvent::AgentSettled { .. }) {
                     if let Some(inbox) = &self.inbox {
@@ -1493,7 +1515,7 @@ impl<'a> Loop<'a> {
             }
             self.editor.set_text("");
             self.editor.add_history(&text);
-            if self.running() && !self.abort_requested {
+            if self.accepts_steering() {
                 self.handle.follow_up(text);
                 self.wake_queued();
                 self.sync_queue();
@@ -1768,7 +1790,7 @@ impl<'a> Loop<'a> {
         // Explicit input after a cancel key (Ctrl+C or Escape) is a new prompt, not steering
         // for the canceled run. The worker channel runs it after that operation releases the
         // session. Ordinary queued input still uses the existing unsuccessful-outcome guard.
-        if self.running() && !self.abort_requested {
+        if self.accepts_steering() {
             self.handle.steer(trimmed);
             self.wake_queued();
             self.sync_queue();

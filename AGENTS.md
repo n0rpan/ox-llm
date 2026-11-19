@@ -28,7 +28,14 @@ maintainer, who says in the PR when a hardware check is needed.
 - OpenCode Go reserves subscription tokens only, including when the provider falls back to its
   paid balance. `oxa.cloud.daily_budget_usd` applies to metered API admission. Record actual Go
   charges reported by the provider in the ledger and include them in the shared daily spend.
-  Preserve subscription token accounting and provider-side limits.
+  Preserve subscription token accounting and provider-side limits. A configured
+  `oxa.cloud.subscription_limits` is advisory: it warns at 80% and 100% and is recorded, it is
+  not a local refusal (#1443/#1444).
+- Keyed Go: a Go key in the owner's own secrets file enables the Go subscription transport for
+  the owner's own model choice, with `oxa.cloud.opencode.enabled: false` as the opt-out. Engine
+  transport selection stays user-only: no project setting, no delegated `oxa work` model and no
+  model restored by `--continue` enables it, and a local alias owns a request only on an exact
+  match.
 - Go/OpenRouter parsing should tolerate compatible optional fields and stream variations,
   while validating numeric type, sign, range and finiteness before accounting or execution.
 - Publishing a drafted issue or comment (`oxa report-issue`, the `report_publish` tool): in yolo it posts
@@ -47,9 +54,14 @@ maintainer, who says in the PR when a hardware check is needed.
   (on-by-default with an opt-out setting is normal and is not itself a finding); deleted or
   disabled existing behaviour, tests or checks without a `Removes: <what> — <why>` line in the PR
   body; a test weakened, skipped or rewritten to pass instead of fixing the code.
-- **Policy changes carry their rules:** a change to a default, limit, budget, approval, sandbox or
-  other security behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and
-  the user docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A review finding
+- **Security policy changes carry their rules:** a change to approval, sandbox, credential, secret or
+  publish behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and the user
+  docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A change to an ordinary
+  default, limit or budget updates the user docs; a missing docs update is P3 and is fixed forward.
+- **Early-stage process (owner decision, until v0.3):**
+  - Only P0/P1 findings, security findings and an open security review block a merge. P2/P3 findings are filed as follow-ups and fixed forward on main.
+  - Prefer one PR per feature, up to about 800 changed lines, over stacks of small PRs.
+  - A merge that breaks required checks on main is reverted at once, then fixed forward. A review finding
   that contradicts an owner decision stated in the linked issue or PR is answered by updating these
   rules in that PR, not by changing the behaviour.
 - **Bash and subagent limits.** The two caps are user-only. `oxa.bash.maxJobs` defaults to 16
@@ -62,6 +74,9 @@ maintainer, who says in the PR when a hardware check is needed.
   `oxa.sandbox.writePaths` entry. Review environment forwarding and writable mounts independently.
 - **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
   registry with its surfaces and help (P1 if added outside it or without an exception reason).
+- **Worker mode.** An `oxa work` worker is started with `--yolo` only when the owner's user-layer
+  `permissions.defaultMode` is `yolo`; otherwise it keeps the sandboxed default. Project settings
+  cannot raise it. See `oxa/docs/work.md`.
 - **Work acceptance.** In `oxa work`, zero or skipped checks leave the task `Unverified`. The
   owner-only `oxa.work.localChecks` defaults to a per-package `cargo check`. A verified Rust
   acceptance receipt requires hosted test evidence at the exact head, including for changed
