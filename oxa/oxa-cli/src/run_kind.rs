@@ -250,13 +250,13 @@ mod tests {
     }
 
     #[test]
-    fn yolo_keeps_attended_opt_in_and_unattended_sandbox() {
+    fn os_sandbox_wanted_yolo_is_off_for_every_run() {
         let a = Args {
             sandbox: true,
             ..Args::default()
         };
-        assert!(os_sandbox_wanted(RunKind::Attended, &a, &user(json!({})), true));
-        assert!(os_sandbox_wanted(
+        assert!(!os_sandbox_wanted(RunKind::Attended, &a, &user(json!({})), true));
+        assert!(!os_sandbox_wanted(
             RunKind::Unattended,
             &args(),
             &user(json!({})),

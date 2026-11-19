@@ -242,21 +242,6 @@ fn no_os_sandbox_hooks_run_unsandboxed() {
     let _ = std::fs::remove_file(&target);
 }
 
-#[test]
-fn launch_sandbox_stays_wrapped_across_yolo_toggles() {
-    let env = TestEnv::new();
-    let switch = YoloSwitch::new(Autonomy::Standard);
-    let inner = Arc::new(Wrapped { persistence: None });
-    let sandbox = FullAccess::new(inner, switch.clone(), "", env.home(), false, false).with_os_sandbox(true);
-    let command = spec(&env, "printf 'hello'".to_string(), true);
-    for level in [Autonomy::Standard, Autonomy::Yolo, Autonomy::Standard] {
-        switch.set_level(level);
-        assert_eq!(sandbox.launch_argv(&command).unwrap()[0], "bwrap");
-        let result = sandbox.run(&command, &CancelToken::new(), &mut |_| {});
-        assert_eq!(result.exit, Some(42));
-    }
-}
-
 /// #1512 S3: with the OS sandbox on, exec hooks stay wrapped even under yolo.
 #[test]
 fn os_sandbox_on_hooks_stay_sandboxed_under_yolo() {

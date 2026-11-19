@@ -916,12 +916,12 @@ mod guard_tests {
             ..off.clone()
         };
         assert_eq!(plan.guard_label(), None);
-        // Turning off prompts cannot change the OS sandbox configured at launch.
+        // A yolo run never reads as a sandbox, whatever the flag says.
         let yolo_on = StatusModel {
             os_sandbox: true,
             ..yolo.clone()
         };
-        assert_eq!(yolo_on.guard_label(), Some("sandbox · no prompts"));
+        assert_eq!(yolo_on.guard_label(), Some("no sandbox · no prompts"));
     }
 }
 

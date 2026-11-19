@@ -517,8 +517,8 @@ fn yolo_description_says_prompts_only() {
     let text = PermissionMode::Yolo.describe();
     assert_eq!(
         text,
-        "no approval prompts: dangerous commands and protected-configuration changes need no \
-         confirmation; private-path denials still apply to file tools"
+        "no prompts: dangerous commands run without asking and bash has no OS sandbox; \
+         the deny-list and protected paths stay on"
     );
 }
 
