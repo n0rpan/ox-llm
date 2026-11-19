@@ -22,6 +22,7 @@
 mod brave;
 mod hooks;
 mod key;
+mod private_file;
 mod shape;
 mod tool;
 

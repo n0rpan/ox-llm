@@ -209,6 +209,7 @@ impl Runtime {
             token_path,
         })
     }
+
     pub fn discovery(&self) -> impl Iterator<Item = ModelInfo<'_>> {
         self.catalog.models().filter(|model| supported(model.provider))
     }
@@ -628,15 +629,9 @@ impl Runtime {
             let hold = match &billing.billing {
                 Billing::Metered(_) => daily.budget().reserve(&self.cap, true, &billing, output)?,
                 Billing::Subscription => {
-                    let cap = (model.info().provider == Provider::OpenCode && !self.cap.is_null())
-                        .then_some(&self.cap);
-                    daily.budget().reserve_subscription_with_budget(
-                        self.subscription_limits,
-                        true,
-                        &billing,
-                        output,
-                        cap,
-                    )?
+                    daily
+                        .budget()
+                        .reserve_subscription(self.subscription_limits, true, &billing, output)?
                 }
             };
             let (_, mut entry) = audit.take().expect("known model")?;
@@ -787,12 +782,13 @@ impl<'a> Call<'a> {
             if let Ok(usage) = crate::opencode::Usage::parse(&chunk["usage"]) {
                 self.metered_go(Some(&usage));
             }
+        } else {
+            self.usage.observe(chunk);
         }
-        self.usage.observe(chunk);
         self.entry.as_mut().expect("unsettled call").observe();
     }
     pub(crate) fn metered_go(&mut self, usage: Option<&crate::opencode::Usage>) {
-        self.usage.reported_cost = usage.map(|usage| usage.cost);
+        self.usage.reported_cost = usage.filter(|usage| !usage.estimated).map(|usage| usage.cost);
         self.go_usage = usage.map(|usage| {
             self.usage.prompt = Some(usage.prompt);
             self.usage.output = Some(usage.completion);
