@@ -53,8 +53,15 @@ if url.startswith('http://'):
     # The promotion canary: a loopback denial probe, never a real request.
     assert url == os.environ['FIXTURE_CANARY']
     assert args[args.index('--noproxy') + 1] == '*'
+    refused = int(os.environ.get('FIXTURE_CANARY_REFUSED', '0'))
+    if refused:
+        # Model curl's built-in connection-refused retries without delaying the
+        # test. Without the readiness options this remains the initial refusal.
+        required = {'--retry-connrefused', '--retry-max-time', '--retry-delay'}
+        if not required.issubset(args) or int(args[args.index('--retry') + 1]) < refused:
+            sys.exit(7)
     with pathlib.Path(os.environ['FIXTURES'], 'canary.log').open('a') as log:
-        log.write(url + '\\n')
+        log.write((url + '\\n') * (refused + 1))
     sys.stdout.write(os.environ.get('FIXTURE_DENY', '403'))
     sys.exit(0)
 assert url.startswith(('https://api.github.com/repos/oxstack/ox-llm/',
@@ -617,6 +624,14 @@ class DevPromote(Fixture):
         self.assertEqual(self.binary.read_bytes(), self.elf(old))
         self.assertEqual(self.running_digest(), old_digest)
         self.assertEqual(json.loads(self.rollout.read_text())['action'], 'failed')
+
+    def test_connection_refusal_is_retried_while_listener_becomes_ready(self):
+        self.prepare()
+        self.env['FIXTURE_CANARY_REFUSED'] = '2'
+        result = self.promote()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.canary(), ['http://127.0.0.1:8743/chat'] * 3)
+        self.assertEqual(json.loads(self.rollout.read_text())['action'], 'promoted')
 
     def test_replaced_executable_is_not_taken_for_the_running_binary(self):
         self.install('a' * 40)
