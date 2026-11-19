@@ -460,6 +460,7 @@ dependencies = [
 name = "oxa-engine"
 version = "0.2.0"
 dependencies = [
+ "oxa-http",
  "oxa-proto",
  "serde_json",
 ]
@@ -489,12 +490,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxa-http"
+version = "0.2.0"
+dependencies = [
+ "oxa-proto",
+]
+
+[[package]]
 name = "oxa-mcp"
 version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "libc",
  "oxa-config",
+ "oxa-http",
  "oxa-proto",
  "oxa-sandbox",
  "serde_json",

@@ -73,16 +73,18 @@ fn probe_reads_at_most_the_listed_paths() {
     let stats = fs.stats.borrow();
     let reads = fs.reads.borrow();
     assert!(stats.len() <= 12, "too many existence checks: {}", stats.len());
-    assert!(reads.len() <= 4, "too many reads: {}", reads.len());
+    assert!(reads.len() <= 5, "too many reads: {}", reads.len());
     for path in stats.iter() {
         assert!(
-            STAT_PATHS.iter().any(|listed| *listed == path.as_str()),
+            STAT_PATHS.iter().any(|listed| *listed == path.as_str())
+                || path.ends_with("/MERGE_HEAD")
+                || path.ends_with("/rebase-merge"),
             "unlisted existence check: {path}"
         );
     }
     for path in reads.iter() {
         assert!(
-            READ_PATHS.iter().any(|listed| *listed == path.as_str()),
+            READ_PATHS.iter().any(|listed| *listed == path.as_str()) || path.ends_with("/HEAD"),
             "unlisted read: {path}"
         );
     }
@@ -137,6 +139,26 @@ fn merge_and_rebase_are_read_from_the_git_dir() {
 }
 
 #[test]
+fn git_file_points_to_the_per_worktree_git_dir() {
+    let fs = FakeFs::with(
+        &[
+            "../repo/.git/worktrees/linked/MERGE_HEAD",
+            "../repo/.git/worktrees/linked/rebase-merge",
+        ],
+        &[
+            (".git", "gitdir: ../repo/.git/worktrees/linked\n"),
+            ("../repo/.git/worktrees/linked/HEAD", "0123abcd\n"),
+        ],
+    );
+
+    let probe = run_probe(&fs, &no_env);
+
+    assert!(probe.detached);
+    assert!(probe.merge_in_progress);
+    assert!(probe.rebase_in_progress);
+}
+
+#[test]
 fn host_and_battery_come_from_env_and_system_files() {
     let fs = FakeFs::with(
         &[],
@@ -160,4 +182,36 @@ fn host_and_battery_come_from_env_and_system_files() {
         }
     );
     assert_eq!(probe.battery_percent, Some(42));
+}
+
+#[cfg(unix)]
+#[test]
+fn disk_probe_rejects_fifo_head_without_blocking() {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use oxa_interactive::skin::stage::probe::DiskFs;
+
+    let root = std::env::temp_dir().join(format!("oxa-stage-probe-fifo-{}", std::process::id()));
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    let fifo = root.join("fifo");
+    let fifo_c = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);
+    std::os::unix::fs::symlink(&fifo, root.join(".git/HEAD")).unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let probe_root = root.clone();
+    std::thread::spawn(move || {
+        let result = run_probe(&DiskFs { root: probe_root }, &no_env);
+        tx.send(result).ok();
+    });
+    let result = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("probing a FIFO through a symlink must not block");
+    assert!(!result.on_default_branch);
+    assert!(!result.detached);
+
+    std::fs::remove_dir_all(root).unwrap();
 }

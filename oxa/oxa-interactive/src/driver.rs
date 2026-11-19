@@ -855,9 +855,7 @@ impl<'a> Loop<'a> {
                 // manual `/compact`: its idle prefill reports progress after `CompactionEnd` and
                 // the core sends no `AgentSettled` for it) leaves the activity at its last
                 // progress event; close it here so the session is idle again.
-                if self.vm.status.activity != Activity::Idle {
-                    apply_event(&mut self.vm, &AgentEvent::AgentSettled { aborted: false });
-                }
+                settle_worker_done(&mut self.vm, result.is_err());
                 self.model_answered = self.model_pending.is_some();
                 if let Err(e) = result {
                     self.push_notice(Level::Error, e.to_string());
@@ -3258,6 +3256,20 @@ fn foreground_running(vm: &ViewModel, handle_running: bool, preloading: bool, dr
         || (handle_running && !preloading && !drafting)
 }
 
+fn settle_worker_done(vm: &mut ViewModel, failed: bool) {
+    if vm.status.activity != Activity::Idle {
+        apply_event(vm, &AgentEvent::AgentSettled { aborted: false });
+    }
+    // A failed `user_bash` command has no stored entry to replace its live block.
+    if failed {
+        for block in &mut vm.blocks {
+            if let Block::Bash { running, .. } = block {
+                *running = false;
+            }
+        }
+    }
+}
+
 /// The search with its matches moved up by `first` lines (for highlighting a visible slice).
 fn shift_search(search: &TranscriptSearch, first: usize) -> TranscriptSearch {
     let current = search.current.and_then(|i| search.matches.get(i).copied());
@@ -3366,6 +3378,20 @@ mod running_tests {
 
         vm.blocks[0] = bash(false);
         assert!(!foreground_running(&vm, false, false, false));
+    }
+
+    /// A worker error can precede the stored bash entry, but it still completes the command.
+    #[test]
+    fn failed_user_bash_closes_live_block() {
+        let mut vm = ViewModel {
+            blocks: vec![bash(true)],
+            ..Default::default()
+        };
+
+        settle_worker_done(&mut vm, true);
+
+        assert!(!foreground_running(&vm, false, false, false));
+        assert!(matches!(vm.blocks[0], Block::Bash { running: false, .. }));
     }
 }
 
