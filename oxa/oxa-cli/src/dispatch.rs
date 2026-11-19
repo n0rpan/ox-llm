@@ -244,7 +244,11 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::WorkStatus
                     | CommandId::WorkBoard
                     | CommandId::Send
-                    | CommandId::SendApprovals => Err(OxaError::new(
+                    | CommandId::SendApprovals
+                    | CommandId::Memory
+                    | CommandId::MemoryList
+                    | CommandId::MemoryShow
+                    | CommandId::MemoryRm => Err(OxaError::new(
                         codes::USAGE,
                         "registered command handler or arguments are unavailable",
                     )),
@@ -297,6 +301,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 return crate::work_cmd::run(&words, &cwd, env, &dirs, &mut *stdout, &mut *stderr)
             }
             Subcommand::Mcp(words) => run_mcp(&words, &dirs, &cwd, &mut *stdout, &mut *stderr),
+            Subcommand::Memory(words) => crate::run_memory(&words, &dirs, &mut *stdout, &mut *stderr),
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
             // #1512 S5: a follow-up, an owner answer to an approval request, or the request list.
@@ -1087,6 +1092,9 @@ fn prepare(
         (None, oxa_proto::PermissionMode::Plan) => Some(Mode::Plan),
         (m, _) => m,
     };
+    if let Some(text) = oxa_proto::no_os_sandbox_notice() {
+        notices.push((Level::Warning, text.to_string()));
+    }
     if !matches!(mode, RunMode::Interactive) {
         notices.push((
             Level::Info,
