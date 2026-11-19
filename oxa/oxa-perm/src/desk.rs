@@ -118,14 +118,12 @@ pub struct ApprovalDesk {
     dir: PathBuf,
 }
 
-/// The held desk lock; dropping it closes the descriptor and releases the kernel lock.
-struct DeskLock(#[allow(dead_code)] File);
+/// The held desk lock; dropping it releases the lock and closes the descriptor.
+struct DeskLock(File);
 
 impl Drop for DeskLock {
     fn drop(&mut self) {
-        // Closing the descriptor releases the lock; the explicit unlock just makes that plain.
-        // SAFETY: the descriptor is still open here.
-        unsafe { libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(&self.0), libc::LOCK_UN) };
+        let _ = self.0.unlock();
     }
 }
 
@@ -179,10 +177,10 @@ impl ApprovalDesk {
         Ok(ApprovalDesk { dir })
     }
 
-    /// Hold the desk's exclusive advisory lock for one read-modify-write transition. `flock`
-    /// lives in the kernel, so a process that dies holding it (or is killed) releases it: a
-    /// crashed answer can never lock the desk forever. A lock file is not a record, so `all`
-    /// ignores it.
+    /// Hold the desk's exclusive advisory lock for one read-modify-write transition. The lock
+    /// lives in the kernel (`flock(2)` through `std`), so a process that dies holding it releases
+    /// it: a crashed answer can never lock the desk forever. The lock file is not a record, so
+    /// `all` ignores it.
     fn lock(&self) -> io::Result<DeskLock> {
         let file = OpenOptions::new()
             .read(true)
@@ -190,17 +188,8 @@ impl ApprovalDesk {
             .create(true)
             .mode(0o600)
             .open(self.dir.join(LOCK_NAME))?;
-        loop {
-            // SAFETY: `as_raw_fd` is a live descriptor of this process for the call's duration.
-            let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-            if rc == 0 {
-                return Ok(DeskLock(file));
-            }
-            let e = io::Error::last_os_error();
-            if e.kind() != io::ErrorKind::Interrupted {
-                return Err(e);
-            }
-        }
+        file.lock()?;
+        Ok(DeskLock(file))
     }
 
     /// File a request for `hits` of `command` in `session`. A `pending` request reuses the open

@@ -1372,7 +1372,6 @@ dependencies = [
 name = "oxa-perm"
 version = "0.2.0"
 dependencies = [
- "libc",
  "oxa-fake",
  "oxa-proto",
  "serde_json",
