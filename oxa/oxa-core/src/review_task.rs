@@ -555,10 +555,7 @@ mod tests {
         assert!(out.ends_with("...]\n"), "the marker closes the text");
         let kept = out.split("[... oxa:").next().unwrap();
         assert!(kept.len() <= PER_FILE_CAP + "diff --git a/u.rs b/u.rs\n+".len());
-        assert!(
-            !kept.ends_with('é') || kept.len().is_multiple_of(2),
-            "no half character"
-        );
+        assert!(!kept.ends_with('é') || kept.len() % 2 == 0, "no half character");
     }
 
     #[test]

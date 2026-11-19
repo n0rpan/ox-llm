@@ -277,7 +277,7 @@ fn go_runtime(fixture: &skeleton::Fixture, limits: Option<SubscriptionLimits>) -
 }
 
 #[test]
-fn go_persists_usage_with_advisory_subscription_limits() {
+fn go_uses_only_its_api_key_and_persists_zero_usd_with_shared_subscription_caps() {
     let fixture = skeleton::Fixture::for_endpoint("https://example.invalid");
     fs::write(
         &fixture.key_path,
@@ -309,35 +309,28 @@ fn go_persists_usage_with_advisory_subscription_limits() {
     assert_eq!(row["subscription_requests"], 1);
     assert_eq!(row["subscription_tokens"], 15);
     drop(runtime);
-    for limits in [limits, None] {
-        let runtime = go_runtime(&fixture, limits);
-        let mut call = runtime.begin(&payload(), Context::default()).unwrap();
-        call.mark_forwarded().unwrap();
-        call.metered_usage(Usage {
-            prompt: Some(10),
-            output: Some(5),
-            reported_cost: Some(0.0),
-            ..Usage::default()
-        });
-        let row = call.finish(Outcome::Complete, 200, None).unwrap();
-        assert_eq!(row["subscription_requests"], 1);
-        assert_eq!(row["subscription_tokens"], 15);
-    }
-    assert_eq!(rows(&fixture).len(), 3);
+    let error = go_runtime(&fixture, limits)
+        .begin(&payload(), Context::default())
+        .err()
+        .unwrap();
+    assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
 }
 
 #[test]
-fn a_malformed_go_key_is_refused_without_subscription_limits() {
+fn go_requires_explicit_limits_before_reading_a_malformed_key() {
     let fixture = skeleton::Fixture::for_endpoint("https://example.invalid");
     fs::write(&fixture.key_path, "invalid synthetic JSON").unwrap();
     let error = go_runtime(&fixture, None)
         .begin(&payload(), Context::default())
         .err()
         .unwrap();
-    assert_eq!((error.status, error.code), (503, "cloud_credentials_unavailable"));
+    assert_eq!(
+        (error.status, error.code),
+        (403, "subscription_limits_not_configured")
+    );
     let row = rows(&fixture).pop().unwrap();
-    assert_eq!(row["status"], 503);
-    assert_eq!(row["error"], "cloud_credentials_unavailable");
+    assert_eq!(row["status"], 403);
+    assert_eq!(row["error"], "subscription_limits_not_configured");
     assert_eq!(row["subscription_requests"], 0);
     assert_eq!(row["subscription_tokens"], 0);
 }

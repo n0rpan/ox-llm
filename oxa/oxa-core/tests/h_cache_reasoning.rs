@@ -37,7 +37,6 @@ impl Tool for Fine {
     }
     fn run(&self, _args: &Value, _cx: &ToolCtx, _live: &mut dyn FnMut(&str)) -> ToolOutput {
         ToolOutput {
-            images: Vec::new(),
             text: "fine".into(),
             is_error: false,
             ui: Value::Null,

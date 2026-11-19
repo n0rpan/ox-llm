@@ -120,8 +120,6 @@ fn review_git_evidence_keeps_an_unchanged_main_merge_and_rejects_a_changed_patch
         host_path,
         offline: true,
         runner_owns_github: false,
-        autonomy: Default::default(),
-        autonomy_now: None,
         terminate_binary: None,
         storage: env.tmp(),
     };

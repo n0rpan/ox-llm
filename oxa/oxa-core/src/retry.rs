@@ -490,10 +490,7 @@ impl Engine for ProbeEngine {
     ) -> Result<AssistantTurn, OxaError> {
         let data = Arc::clone(&self.data);
         let mut probe = |ev: StreamEvent| {
-            if !matches!(
-                ev,
-                StreamEvent::Prefill { .. } | StreamEvent::Queued { .. } | StreamEvent::Warning(_)
-            ) {
+            if !matches!(ev, StreamEvent::Prefill { .. } | StreamEvent::Queued { .. }) {
                 data.store(true, Ordering::SeqCst);
             }
             on(ev);

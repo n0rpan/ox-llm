@@ -1,6 +1,5 @@
 //! Bounded, deterministic cards for the lead commands. Callers fetch the situation
 //! through the runner API; this module never reads files or reconstructs logs.
-use super::stuck::Signal;
 use oxa_proto::work::{Snapshot, Subject};
 
 /// A successfully decoded snapshot is still an observation at its sequence, not a
@@ -148,29 +147,6 @@ pub fn command<E>(
             Err(reason) => unavailable(reason).to_owned(),
         },
     )
-}
-
-/// Stuck signals from `stuck::derive`, at most six physical lines. Task ids go through the
-/// same escaping and length bound as every other field.
-pub fn stuck(signals: &[Signal]) -> String {
-    if signals.is_empty() {
-        return "Stuck: none in this observation".into();
-    }
-    let mut lines = vec![format!("Stuck: {} signal(s)", signals.len())];
-    for signal in signals.iter().take(4) {
-        lines.push(match signal {
-            Signal::PublishPending { task } => format!("Publish pending: task {}", field(task)),
-            Signal::AuthFailure { task } => format!("Authentication failure (401): task {}", field(task)),
-            Signal::IdleWithWork { task } => format!("Idle with work left: task {}", field(task)),
-            Signal::MergeStalled { green_prs, minutes } => {
-                format!("No merge for {minutes} min with {green_prs} green PR(s)")
-            }
-        });
-    }
-    if signals.len() > 4 {
-        lines.push(format!("{} more stuck signals", signals.len() - 4));
-    }
-    lines.join("\n")
 }
 
 /// No raw error or rejected input is reflected into the terminal.

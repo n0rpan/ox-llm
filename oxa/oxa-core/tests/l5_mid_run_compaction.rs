@@ -46,7 +46,6 @@ impl Tool for Read {
         let mut text = format!("{path}\n");
         text.push_str(&fill.to_string().repeat(FILE - text.len()));
         ToolOutput {
-            images: Vec::new(),
             text,
             is_error: false,
             ui: Value::Null,

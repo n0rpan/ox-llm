@@ -43,7 +43,6 @@ fn msg(wire: WireMsg) -> EntryBody {
 /// A small session: user, assistant with a built-in and a custom tool call, their results.
 fn fixture() -> Vec<Entry> {
     let assistant = WireMsg {
-        images: Vec::new(),
         role: Role::Assistant,
         content: Some("Let me look.".to_string()),
         reasoning: None,
@@ -56,7 +55,6 @@ fn fixture() -> Vec<Entry> {
         tool_call_id: None,
     };
     let custom = WireMsg {
-        images: Vec::new(),
         role: Role::Assistant,
         content: Some("Running mytool.".to_string()),
         reasoning: None,

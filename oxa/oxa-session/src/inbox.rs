@@ -176,18 +176,6 @@ fn publish(agent_dir: &Path, id: &str, extension: &str, text: &str) -> io::Resul
     result
 }
 
-/// The retry signal of a running [`Inbox`]: cheap to clone and to call from any thread.
-#[derive(Clone)]
-pub struct InboxRetry(Arc<File>);
-impl InboxRetry {
-    /// Same effect as [`Inbox::retry`]; calls after the watcher stopped are harmless.
-    pub fn retry(&self) {
-        let value = 1u64;
-        // SAFETY: the eventfd stays open while this clone exists, and value points to eight initialized bytes.
-        unsafe { libc::write(self.0.as_raw_fd(), (&value as *const u64).cast(), 8) };
-    }
-}
-
 /// Owns the event-driven receiver. Dropping it wakes and joins its thread, so an old
 /// session's callback cannot enqueue anything after a frontend has rebound to a new one.
 pub struct Inbox {
@@ -203,12 +191,6 @@ impl Inbox {
         let value = 1u64;
         // SAFETY: retry is live and value points to eight initialized bytes.
         unsafe { libc::write(self.retry.as_raw_fd(), (&value as *const u64).cast(), 8) };
-    }
-
-    /// A clone of this watcher's retry signal, for an owner that learns of a queue drain
-    /// somewhere other than its own run loop (a headless event sink).
-    pub fn retry_handle(&self) -> InboxRetry {
-        InboxRetry(self.retry.clone())
     }
 
     pub fn watch(

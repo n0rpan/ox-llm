@@ -203,7 +203,7 @@ pub fn scene_cells(width: u16) -> usize {
 }
 
 /// The most cells a scene has.
-pub(super) const MAX_CELLS: usize = 12;
+const MAX_CELLS: usize = 12;
 
 /// The label on a tool's crate: one character per kind of tool (ASCII when `ascii`).
 pub fn tool_icon(name: &str, ascii: bool) -> char {
@@ -242,7 +242,7 @@ pub fn tool_icon(name: &str, ascii: bool) -> char {
 
 /// Colour roles of a scene's cells; mapped to theme tokens by [`Canvas::paint`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Ink {
+enum Ink {
     /// The hero (the ox, the ship, the stack): the activity's own colour.
     Hero,
     /// Ground, dust, far stars.
@@ -255,24 +255,22 @@ pub(super) enum Ink {
     Good,
     /// Lives, failure.
     Bad,
-    /// The current tool's icon (the `I` ink of a data scene): the tool colour.
-    Icon,
 }
 
-pub(super) struct Canvas {
+struct Canvas {
     cells: [(char, Ink); MAX_CELLS],
     len: usize,
 }
 
 impl Canvas {
-    pub(super) fn new(len: usize) -> Canvas {
+    fn new(len: usize) -> Canvas {
         Canvas {
             cells: [(' ', Ink::Dim); MAX_CELLS],
             len: len.min(MAX_CELLS),
         }
     }
 
-    pub(super) fn put(&mut self, x: usize, ch: char, ink: Ink) {
+    fn put(&mut self, x: usize, ch: char, ink: Ink) {
         if x < self.len {
             self.cells[x] = (ch, ink);
         }
@@ -285,7 +283,7 @@ impl Canvas {
     }
 
     /// The row as styled text: runs of one colour share one escape pair; blanks carry none.
-    pub(super) fn paint(&self, hero: &str, hot: bool, theme: &Theme) -> String {
+    fn paint(&self, hero: &str, hot: bool, theme: &Theme) -> String {
         let mut out = String::with_capacity(self.len * 4 + 48);
         let mut i = 0;
         while i < self.len {
@@ -310,7 +308,6 @@ impl Canvas {
                 Ink::Crate => "accent",
                 Ink::Good => "success",
                 Ink::Bad => "error",
-                Ink::Icon => "warning",
             };
             out.push_str(&theme.fg(token, &run));
             i = j;

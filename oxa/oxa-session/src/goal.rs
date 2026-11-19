@@ -10,8 +10,6 @@ pub use lead::{HeldGoalLease, LeadGoalState, OpenGoalAsk, PendingGoalSteer, Stee
 pub const GOAL_ENTRY: &str = "oxa.goal.v1";
 const MAX_OBJECTIVE: usize = 64 * 1024;
 const MAX_EVIDENCE: usize = 8 * 1024;
-const MAX_PAUSE_REASON: usize = 1024;
-const IDLE_PAUSE_REASON: &str = "two replies without an action";
 const CONTROL_FIELDS: [&str; 6] = ["objective", "status", "started_ms", "budget", "evidence", "plan"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,8 +47,6 @@ pub struct Goal {
     pub turns: u64,
     pub budget: GoalBudget,
     pub evidence: Option<String>,
-    /// Why the goal is paused, when the pause was made by the idle stop rule.
-    pub pause_reason: Option<String>,
     pub idle_stops: u8,
     pub unknown_requests: u64,
     pub lead: Option<LeadGoalState>,
@@ -70,7 +66,6 @@ impl Goal {
             turns: 0,
             budget,
             evidence: None,
-            pause_reason: None,
             idle_stops: 0,
             unknown_requests: 0,
             lead: None,
@@ -101,10 +96,6 @@ impl Goal {
                 self.budget.max_turns,
             ]
             .contains(&Some(0))
-            || self
-                .pause_reason
-                .as_ref()
-                .is_some_and(|s| s.trim().is_empty() || s.len() > MAX_PAUSE_REASON)
             || self.idle_stops > 2
             || matches!(self.status, GoalStatus::Done | GoalStatus::Blocked) && self.evidence.is_none()
         {
@@ -168,7 +159,6 @@ impl Goal {
         };
         if self.idle_stops == 2 {
             self.status = GoalStatus::Paused;
-            self.pause_reason = Some(IDLE_PAUSE_REASON.into());
             return false;
         }
         true
@@ -176,7 +166,6 @@ impl Goal {
     pub fn pause(&mut self) {
         if self.status == GoalStatus::Pursuing {
             self.status = GoalStatus::Paused;
-            self.pause_reason = None;
         }
     }
     pub fn resume(&mut self) -> Result<(), OxaError> {
@@ -186,7 +175,6 @@ impl Goal {
         self.status = GoalStatus::Pursuing;
         self.idle_stops = 0;
         self.evidence = None;
-        self.pause_reason = None;
         Ok(())
     }
     pub fn cancel(&mut self) -> Result<(), OxaError> {
@@ -194,7 +182,6 @@ impl Goal {
             return Err(invalid());
         }
         self.status = GoalStatus::Canceled;
-        self.pause_reason = None;
         Ok(())
     }
     fn is_terminal(&self) -> bool {
@@ -210,9 +197,6 @@ impl Goal {
         }
         if let Some(plan) = &self.plan {
             data["plan"] = plan.value();
-        }
-        if let Some(reason) = &self.pause_reason {
-            data["pause_reason"] = reason.as_str().into();
         }
         data
     }
@@ -249,9 +233,7 @@ impl Goal {
             Some(Some("control" | "accounting")) => 12,
             _ => return Err(invalid()),
         };
-        let optional = usize::from(fields.contains_key("lead"))
-            + usize::from(fields.contains_key("plan"))
-            + usize::from(fields.contains_key("pause_reason"));
+        let optional = usize::from(fields.contains_key("lead")) + usize::from(fields.contains_key("plan"));
         if fields.len() != field_count + optional || v["version"] != 1 {
             return Err(invalid());
         }
@@ -291,11 +273,6 @@ impl Goal {
                 max_turns: limit("max_turns")?,
             },
             evidence,
-            pause_reason: match fields.get("pause_reason") {
-                None => None,
-                Some(Value::String(s)) => Some(s.clone()),
-                Some(_) => return Err(invalid()),
-            },
             idle_stops: u8::try_from(number("idle_stops")?).map_err(|_| invalid())?,
             unknown_requests: number("unknown_requests")?,
             lead: fields.get("lead").map(LeadGoalState::decode).transpose()?,

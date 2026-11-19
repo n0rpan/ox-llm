@@ -27,11 +27,6 @@ pub enum Progress<'a> {
     GoalControlCommitted {
         revision: u64,
     },
-    /// The saved goal's status changed; `none` once it is cleared. A pause carries its stored reason.
-    GoalStatus {
-        status: &'static str,
-        reason: Option<&'a str>,
-    },
     /// An operation returned, including an empty queue or a command without an agent turn.
     /// This observation does not imply an AgentSettled event or hook was emitted.
     Settled(RunOutcome),

@@ -75,7 +75,7 @@ pub use wire::*;
 pub use serde_json::Value;
 
 /// Version of this frozen interface. Bumped only by the architect.
-pub const PROTO_VERSION: u32 = 4;
+pub const PROTO_VERSION: u32 = 3;
 
 /// Product names (plan sec. 0). Never spell these literally elsewhere.
 pub mod names {

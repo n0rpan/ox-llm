@@ -297,9 +297,6 @@ impl StreamHooks {
         sink: &mut dyn EventSink,
         ui: &mut dyn Ui,
     ) {
-        if matches!(ev, StreamEvent::Warning(_)) {
-            return;
-        }
         self.respond(st, sink, ui);
         if !self.raw {
             return;
@@ -317,7 +314,6 @@ impl StreamHooks {
                 name,
                 delta,
             } => json!({"type": "tool_args", "index": index, "id": id, "name": name, "delta": delta}),
-            StreamEvent::Warning(_) => return,
         };
         let payload = json!({
             "provider": "oxe",

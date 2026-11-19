@@ -597,7 +597,6 @@ fn events_in_order_and_request_headers() {
             StreamEvent::ToolArgs { .. } => "tool",
             StreamEvent::Prefill { .. } => "prefill",
             StreamEvent::Queued { .. } => "queued",
-            StreamEvent::Warning(_) => "warning",
         })
         .collect();
     assert_eq!(kinds, vec!["reasoning", "text", "tool"]);

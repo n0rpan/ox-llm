@@ -318,7 +318,6 @@ fn the_session_file_is_synced_once_per_turn_and_fs_sync_works() {
 struct GoalCommits {
     store: Arc<CountingStore>,
     seen: Mutex<Vec<(SessionRef, u64, u64)>>,
-    statuses: Mutex<Vec<String>>,
 }
 
 impl oxa_core::ProgressObserver for GoalCommits {
@@ -329,9 +328,6 @@ impl oxa_core::ProgressObserver for GoalCommits {
                 .lock()
                 .unwrap()
                 .push((session.clone(), revision, confirmed));
-        }
-        if let oxa_core::Progress::GoalStatus { status, .. } = progress {
-            self.statuses.lock().unwrap().push(status.into());
         }
     }
 }
@@ -356,10 +352,8 @@ fn goal_control_syncs_before_ack_and_distinguishes_partial_failures() {
         let commits = Arc::new(GoalCommits {
             store: store.clone(),
             seen: Mutex::new(Vec::new()),
-            statuses: Mutex::new(Vec::new()),
         });
         session.set_progress_observer(commits.clone());
-        commits.statuses.lock().unwrap().clear();
         store.fail_sync.store(fail_sync, Ordering::SeqCst);
         store.fail_prefix.store(fail_prefix, Ordering::SeqCst);
 
@@ -383,12 +377,6 @@ fn goal_control_syncs_before_ack_and_distinguishes_partial_failures() {
             vec![(bound, after, after)]
         };
         assert_eq!(*commits.seen.lock().unwrap(), expected);
-        let expected_statuses: Vec<String> = if fail_sync {
-            vec![]
-        } else {
-            vec!["canceled".into()]
-        };
-        assert_eq!(*commits.statuses.lock().unwrap(), expected_statuses);
         session.shutdown(&mut HeadlessUi::default());
     }
 }

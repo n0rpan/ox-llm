@@ -17,13 +17,6 @@ fn settings() -> Settings {
     )
 }
 
-fn settings_with_cap(limit: u64) -> Settings {
-    Settings::from_values(
-        json!({"oxa":{"reportIssue":{"repo":"example/project","semanticDedupe":true,"dailyNew":limit}}}),
-        json!({}),
-    )
-}
-
 fn file_report(
     env: &TestEnv,
     index: usize,
@@ -31,20 +24,6 @@ fn file_report(
     task: usize,
     run: &mut Fixture,
     out: &mut dyn Write,
-) -> i32 {
-    let mut confirm_all = |_: &str| Some(true);
-    file_report_with(env, index, title, task, run, out, &settings(), &mut confirm_all)
-}
-
-fn file_report_with(
-    env: &TestEnv,
-    index: usize,
-    title: &str,
-    task: usize,
-    run: &mut Fixture,
-    out: &mut dyn Write,
-    settings: &Settings,
-    confirm: &mut dyn FnMut(&str) -> Option<bool>,
 ) -> i32 {
     let evidence = run.evidence.unwrap_or("oxa/oxa-work/src/worker.rs");
     let draft = env.write(
@@ -57,9 +36,9 @@ fn file_report_with(
     );
     let result = submit(
         &draft,
-        settings,
+        &settings(),
         &ScrubCtx::default(),
-        confirm,
+        &mut |_| Some(true),
         &mut |program, args| run.invoke(program, args),
         out,
     )
@@ -202,7 +181,7 @@ fn five_reworded_occurrences_create_once_then_comment_on_the_same_root() {
 }
 
 #[test]
-fn new_issues_are_one_per_task_and_unverified_observations_stay_local() {
+fn new_issues_are_capped_by_task_and_worker_and_unverified_observations_stay_local() {
     let env = TestEnv::new();
     let mut run = Fixture {
         unverified: true,
@@ -219,65 +198,7 @@ fn new_issues_are_one_per_task_and_unverified_observations_stay_local() {
     assert!(report(2, 0, &mut run).1.contains("already used"));
     assert_eq!(report(3, 1, &mut run).0, 0);
     assert_eq!(report(4, 2, &mut run).0, 0);
-    // No daily cap unless the owner sets `oxa.reportIssue.dailyNew`.
-    assert_eq!(report(5, 3, &mut run).0, 0);
-    assert_eq!((run.creates, run.comments), (4, 0));
-}
-
-#[test]
-fn semantic_no_cap_by_default() {
-    let env = TestEnv::new();
-    let mut run = Fixture::default();
-    for task in 0..5 {
-        let mut out = Vec::new();
-        let mut questions = Vec::new();
-        let code = file_report_with(
-            &env,
-            task,
-            TITLE,
-            task,
-            &mut run,
-            &mut out,
-            &settings(),
-            &mut |question: &str| {
-                questions.push(question.to_string());
-                Some(true)
-            },
-        );
-        assert_eq!(code, 0, "{}", String::from_utf8_lossy(&out));
-        assert!(!questions.iter().any(|question| question.contains("Warning")));
-    }
-    assert_eq!((run.creates, run.comments), (5, 0));
-}
-
-#[test]
-fn semantic_cap_warns_when_set() {
-    let env = TestEnv::new();
-    let mut run = Fixture::default();
-    let mut warned = Vec::new();
-    for task in 0..3 {
-        let mut out = Vec::new();
-        let mut questions = Vec::new();
-        let code = file_report_with(
-            &env,
-            task,
-            TITLE,
-            task,
-            &mut run,
-            &mut out,
-            &settings_with_cap(2),
-            &mut |question: &str| {
-                questions.push(question.to_string());
-                Some(true)
-            },
-        );
-        // Over the cap the post still goes through on the owner's yes, with one warning.
-        assert_eq!(code, 0, "{}", String::from_utf8_lossy(&out));
-        warned.push(questions.iter().any(|question| {
-            question.contains("Warning") && question.contains("oxa.reportIssue.dailyNew = 2")
-        }));
-    }
-    assert_eq!(warned, vec![false, false, true]);
+    assert!(report(5, 3, &mut run).1.contains("daily cap"));
     assert_eq!((run.creates, run.comments), (3, 0));
 }
 

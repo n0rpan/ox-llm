@@ -117,8 +117,6 @@ fn exercise_save_recovery(test_name: &str, case: SaveRecovery) {
             host_path: std::env::var_os("PATH").unwrap(),
             terminate_binary: Some("/usr/bin/kill".into()),
             runner_owns_github: false,
-            autonomy: Default::default(),
-            autonomy_now: None,
             offline: false,
             storage: root.join("home/.oxa/agent/work/save-recovery"),
         };

@@ -26,7 +26,6 @@ fn msg(id: &str, wire: WireMsg) -> Entry {
 
 fn assistant() -> WireMsg {
     WireMsg {
-        images: Vec::new(),
         role: oxa_proto::Role::Assistant,
         content: Some(String::new()),
         reasoning: Some("think".into()),

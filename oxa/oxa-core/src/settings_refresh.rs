@@ -28,7 +28,6 @@ pub(crate) fn resync(st: &SessionState) {
 }
 
 #[derive(Debug, PartialEq)]
-#[allow(clippy::large_enum_variant)]
 pub(crate) enum Refresh {
     /// Same stamps: nothing was read.
     Unchanged,
@@ -84,7 +83,6 @@ pub(crate) fn check(
 }
 
 /// Everything that feeds the prefix from the settings (see `epoch::gather`, `prefix_opts`).
-#[allow(clippy::type_complexity)]
 fn prompt_inputs(s: &Settings) -> (bool, Option<Vec<String>>, Option<Vec<String>>, Option<String>) {
     (
         s.diet_output(),

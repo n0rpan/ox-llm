@@ -325,7 +325,6 @@ impl Tool for CodemodeTool {
         }
         let text = format_outcome(&outcome, &opts, &self.shared.spill_dir, &estimate_tokens);
         ToolOutput {
-            images: Vec::new(),
             text,
             is_error: !outcome.ok,
             ui: Value::Null,

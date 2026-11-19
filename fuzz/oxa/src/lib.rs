@@ -53,7 +53,6 @@ pub fn repair(data: &[u8]) {
     }
     let turn = AssistantTurn {
         msg: WireMsg {
-            images: Vec::new(),
             provider_history: None,
             role: oxa_proto::Role::Assistant,
             content: Some(text.to_string()),

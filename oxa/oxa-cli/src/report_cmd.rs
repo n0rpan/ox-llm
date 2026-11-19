@@ -415,8 +415,7 @@ pub(crate) fn submit_record(
     };
     let mut publication = if semantic_reporting(settings) {
         writeln!(out, "Repository: {repo}\nTitle: {title}\n\n{body}\n").map_err(w)?;
-        let daily_limit = semantic::daily_new(settings);
-        match semantic::plan(storage, &repo, (&title, &body), ctx, daily_limit, confirm, runner) {
+        match semantic::plan(storage, &repo, (&title, &body), ctx, confirm, runner) {
             Ok(publication) => Some(publication),
             Err(reason) => {
                 writeln!(out, "Kept locally at {} ({reason}).", draft.display()).map_err(w)?;

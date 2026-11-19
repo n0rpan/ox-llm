@@ -1422,7 +1422,6 @@ impl Tool for McpToolAdapter {
         }
         match call_on(&self.shared, &self.server, &self.tool, args, cx.cancel, live) {
             Ok(r) => ToolOutput {
-                images: Vec::new(),
                 text: tool_result_text(&self.server, &r),
                 is_error: r.is_error,
                 ui: result_json(&r),
@@ -1552,7 +1551,6 @@ impl ResourceTool {
         }
         let out = Value::Object(out);
         ToolOutput {
-            images: Vec::new(),
             text: serde_json::to_string_pretty(&out).unwrap_or_default(),
             is_error: false,
             ui: out,
@@ -1627,7 +1625,6 @@ impl ResourceTool {
             }
         }
         ToolOutput {
-            images: Vec::new(),
             text: parts.join("\n"),
             is_error: false,
             ui: json!({ "server": server, "uri": uri, "contents": contents.len() }),

@@ -90,33 +90,6 @@ impl Ledger {
         mac
     }
 }
-/// Today's ledger file in `directory` and the next local midnight. Names the file only: it
-/// opens nothing, creates nothing and reads no salt, so the owner usage report can use it
-/// without touching key material. The name matches [`Ledger::day`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Today {
-    /// ISO calendar day, `YYYY-MM-DD`.
-    pub day: String,
-    pub path: PathBuf,
-    /// Next local midnight in Unix milliseconds, when the clock can express it.
-    pub resets_ms: Option<u64>,
-}
-
-pub fn today(directory: &Path) -> Today {
-    let now = Local::now();
-    let resets_ms = now
-        .date_naive()
-        .succ_opt()
-        .and_then(|day| day.and_hms_opt(0, 0, 0))
-        .and_then(|midnight| midnight.and_local_timezone(Local).earliest())
-        .and_then(|at| u64::try_from(at.timestamp_millis()).ok());
-    Today {
-        day: now.format("%Y-%m-%d").to_string(),
-        path: directory.join(format!("requests-{}.jsonl", now.format("%Y%m%d"))),
-        resets_ms,
-    }
-}
-
 #[derive(Clone)]
 pub struct Ledger(Arc<Inner>);
 #[derive(Clone)]

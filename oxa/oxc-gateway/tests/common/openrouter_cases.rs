@@ -171,7 +171,6 @@ async fn openrouter_privacy_redaction_and_settlement_before_done() {
                 &Cancellation::default(),
                 &mut |event| {
                     match event {
-                        Event::Warning(text) => panic!("unexpected OpenRouter warning: {text}"),
                         Event::Chunk(value) => output.push(value),
                         Event::Done => {
                             done += 1;
@@ -291,7 +290,6 @@ async fn openrouter_cancel_on_final_chunk_preserves_private_usage() {
             Context::default(),
             &Cancellation::default(),
             &mut |event| match event {
-                Event::Warning(text) => panic!("unexpected OpenRouter warning: {text}"),
                 Event::Done => panic!("cancelled delivery cannot signal done"),
                 Event::Chunk(chunk) if !chunk["choices"][0]["finish_reason"].is_null() => Control::Stop,
                 _ => Control::Continue,
@@ -352,7 +350,6 @@ async fn openrouter_decoded_tool_arguments_refuse_held_key_and_preserve_clean_by
                 &Cancellation::default(),
                 &mut |event| {
                     match event {
-                        Event::Warning(text) => panic!("unexpected OpenRouter warning: {text}"),
                         Event::Chunk(chunk) => output.push(chunk),
                         Event::Done => done = true,
                     }
@@ -496,7 +493,6 @@ async fn openrouter_reported_cost_reaches_ledger_and_budget_with_or_without_publ
                     &Cancellation::default(),
                     &mut |event| {
                         match event {
-                            Event::Warning(text) => panic!("unexpected OpenRouter warning: {text}"),
                             Event::Chunk(value) => {
                                 if value.get("usage").is_some() {
                                     public_usage = Some(value["usage"].clone());
@@ -638,7 +634,6 @@ async fn openrouter_length_discards_tools_and_preserves_terminal_metering() {
                     &Cancellation::default(),
                     &mut |event| {
                         match event {
-                            Event::Warning(text) => panic!("unexpected OpenRouter warning: {text}"),
                             Event::Chunk(value) => output.push(value),
                             Event::Done => {
                                 done += 1;
@@ -744,7 +739,6 @@ async fn normalized_tool_reply(calls: Value) -> (Completed, Vec<Value>, Vec<Valu
             &Cancellation::default(),
             &mut |event| {
                 match event {
-                    Event::Warning(text) => panic!("unexpected OpenRouter warning: {text}"),
                     Event::Chunk(value) => output.push(value),
                     Event::Done => assert_eq!(rows(&fixture)[0]["cost_usd"], 0.25),
                 }
@@ -848,7 +842,6 @@ async fn openrouter_identity_support_keeps_required_typed_and_held_key_guards() 
                 &Cancellation::default(),
                 &mut |event| {
                     match event {
-                        Event::Warning(text) => panic!("unexpected OpenRouter warning: {text}"),
                         Event::Chunk(value) => {
                             assert!(value.pointer("/choices/0/delta/tool_calls").is_none())
                         }
@@ -993,7 +986,6 @@ async fn openrouter_normalized_tool_objects_still_refuse_held_key_atomically() {
                 &Cancellation::default(),
                 &mut |event| {
                     match event {
-                        Event::Warning(text) => panic!("unexpected OpenRouter warning: {text}"),
                         Event::Chunk(value) => output.push(value),
                         Event::Done => panic!("unsafe normalized tools cannot complete"),
                     }

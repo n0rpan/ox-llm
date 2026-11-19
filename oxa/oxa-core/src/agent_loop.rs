@@ -101,10 +101,6 @@ pub fn run_loop(
     crate::goal::deliver_saved(st, sink)?;
     crate::goal::ensure_begin(st);
     crate::goal::checkpoint(st, false, sink)?;
-    st.shared
-        .gate
-        .running
-        .store(true, std::sync::atomic::Ordering::SeqCst);
     let steering = st
         .goal
         .as_ref()
@@ -235,13 +231,6 @@ fn run_inner(
         let mut retried = false;
         let mut replays: u32 = 0;
         let turn = loop {
-            // A run that continues after a persisted cut, failure or wrap-up is still foreground
-            // work: re-arm the signal that `persist` cleared, so input during the replay or the
-            // next turn is steering, not a new run. The run's guard clears it at the end.
-            st.shared
-                .gate
-                .running
-                .store(true, std::sync::atomic::Ordering::SeqCst);
             if !wrapping_up && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
                 let text = "Request skipped for wrap-up.".to_string();
                 let progress = persist(
@@ -315,7 +304,7 @@ fn run_inner(
                     } else {
                         partial
                     };
-                    persist_continuing(
+                    persist(
                         st,
                         EntryBody::Shown {
                             text,
@@ -381,7 +370,7 @@ fn run_inner(
                 if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
                     // The normal fallback is a new request. A pending stop instead
                     // gets the bounded final instruction from the outer turn loop.
-                    let progress = persist_continuing(
+                    let progress = persist(
                         st,
                         EntryBody::Shown {
                             text: "Thinking reached its output limit; wrapping up.".to_string(),
@@ -496,7 +485,7 @@ fn run_inner(
                 .clone()
                 .filter(|t| !t.is_empty())
                 .unwrap_or_else(|| "The reply reached its output limit before answering.".to_string());
-            let progress = persist_continuing(
+            let progress = persist(
                 st,
                 EntryBody::Shown {
                     text,
@@ -632,7 +621,6 @@ fn run_inner(
                 tool_msgs.push(msg);
             }
             done.note_edits(&results);
-            done.note_proof(&calls, &results);
             done.note_bash(st, &results);
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
             crate::think::observe(st, &calls, &results, sink, ui);
@@ -845,14 +833,8 @@ fn run_inner(
                 crate::goal::checkpoint(st, false, sink)?;
                 return Ok(RunEnd::Stopped);
             }
-            let was_pursuing = goal.pursuing();
             let snapshot = goal.stopped();
             crate::goal::save_checkpoint(st, &snapshot, sink)?;
-            if was_pursuing && snapshot.status == oxa_session::GoalStatus::Paused {
-                if let Some(reason) = snapshot.pause_reason.as_deref() {
-                    crate::goal::announce_pause(reason, sink);
-                }
-            }
             if goal.pursuing() {
                 // Queued input (a follow-up that woke a wait) is the next user message:
                 // stop so `settle_runs` delivers it instead of the continuation prompt.
@@ -1006,44 +988,13 @@ fn drain_follow_ups(st: &SessionState, sink: &mut dyn EventSink) -> Vec<String> 
     taken
 }
 
-/// Persist a body and announce the entry. A dropped reply (aborted, failed, cut) ends the
-/// foreground signal (`Gate::running`) before the entry is announced, so settlement's remaining
-/// busy claim does not turn input typed after it into steering for a finished turn. A dropped
-/// reply the same run replaces with another request uses [`persist_continuing`].
+/// Persist a body and announce the entry.
 pub(crate) fn persist(
     st: &mut SessionState,
     body: EntryBody,
     sink: &mut dyn EventSink,
 ) -> Result<Entry, OxaError> {
-    persist_with(st, body, false, sink)
-}
-
-/// [`persist`] for a cut reply the run goes on from (a replay after a cut stream, a length
-/// recovery, a wrap-up turn): the run still takes input, so the foreground signal stays set
-/// through the events emitted before the next request (the request loop also re-arms it).
-fn persist_continuing(
-    st: &mut SessionState,
-    body: EntryBody,
-    sink: &mut dyn EventSink,
-) -> Result<Entry, OxaError> {
-    persist_with(st, body, true, sink)
-}
-
-fn persist_with(
-    st: &mut SessionState,
-    body: EntryBody,
-    continues: bool,
-    sink: &mut dyn EventSink,
-) -> Result<Entry, OxaError> {
     let entry = append_entry(st, body)?;
-    if !continues
-        && matches!(&entry.body, EntryBody::Shown { why, .. } if [shown_why::ABORTED, shown_why::FAILED, shown_why::CUT].contains(why))
-    {
-        st.shared
-            .gate
-            .running
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-    }
     sink.emit(&AgentEvent::EntryAppended { entry: entry.clone() });
     Ok(entry)
 }

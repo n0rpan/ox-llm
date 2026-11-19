@@ -273,7 +273,6 @@ impl Engine for ScriptedEngine {
             g.cache.push((session, prompt_bytes.clone()));
             return Ok(AssistantTurn {
                 msg: WireMsg {
-                    images: Vec::new(),
                     role: oxa_proto::Role::Assistant,
                     content: None,
                     reasoning: None,

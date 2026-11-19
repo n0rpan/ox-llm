@@ -420,19 +420,3 @@ fn goal_plan_reopens_failed_checks_and_requires_verified_acceptance() {
     inconsistent["plan"]["acceptance"][1]["result"] = serde_json::Value::Null;
     assert!(Goal::decode(&inconsistent).is_err());
 }
-
-#[test]
-fn idle_pause_reason_round_trips_and_clears_on_resume() {
-    let mut goal = objective();
-    assert!(goal.stopped(false));
-    assert!(!goal.stopped(false));
-    assert_eq!(goal.status, GoalStatus::Paused);
-    assert_eq!(
-        goal.pause_reason.as_deref(),
-        Some("two replies without an action")
-    );
-    assert_eq!(Goal::decode(&goal.value()).unwrap(), goal);
-    goal.resume().unwrap();
-    assert_eq!(goal.pause_reason, None);
-    assert_eq!(Goal::decode(&goal.value()).unwrap(), goal);
-}

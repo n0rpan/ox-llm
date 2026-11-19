@@ -1170,7 +1170,6 @@ pub(crate) fn generate(turn: &ScriptTurn, limit: u32) -> (oxa_proto::WireMsg, Fi
     let reasoning = cut(&msg.reasoning);
     let text = cut(&msg.content);
     let out = oxa_proto::WireMsg {
-        images: Vec::new(),
         role: oxa_proto::Role::Assistant,
         content: text,
         reasoning,

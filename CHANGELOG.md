@@ -57,11 +57,6 @@ from two repositories.
 - Engine: a GGUF whose MoE routes every token to all experts (`expert_used_count == expert_count`)
   runs (it panicked); `expert_used_count > expert_count` is refused at load.
 
-- **Limits are owner settings.** `oxa.bash.maxJobs` (default 16, was 4) sets how many background
-  jobs run at once, and `oxa.subagent.maxChildren` (default 8) sets the children per session and the
-  tasks or steps per call. A refusal names the setting. `bash` with `timeout: 0` names no timeout
-  and beats `oxa.bash.defaultTimeout`; negative values are still refused.
-
 ## v0.1.3
 
 Correctness and agentic release. The engine sends an SSE keepalive during long appends, and the

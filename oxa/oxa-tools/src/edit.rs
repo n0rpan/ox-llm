@@ -253,7 +253,6 @@ impl Tool for EditTool {
         }
 
         ToolOutput {
-            images: Vec::new(),
             text: errors::edit_ok(edits.len(), &path),
             is_error: false,
             ui: json!({"diff": outcome.diff, "firstChangedLine": outcome.first_changed_line}),

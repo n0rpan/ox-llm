@@ -72,7 +72,6 @@ fn tool(name: &str, args: Value, state: ToolState) -> ToolBlock {
 
 fn done_with(mut t: ToolBlock, text: &str, is_error: bool, ui: Value, ms: Option<u64>) -> ToolBlock {
     t.result = Some(ToolOutput {
-        images: Vec::new(),
         text: text.to_string(),
         is_error,
         ui,

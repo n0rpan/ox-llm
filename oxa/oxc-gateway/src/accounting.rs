@@ -38,7 +38,6 @@ pub struct Hold {
     model: Model,
     reserved: f64,
     reserved_tokens: u64,
-    budget_warning: Option<&'static str>,
     output: u64,
     forwarded: bool,
     settled: bool,
@@ -224,7 +223,6 @@ impl Budget {
             model: model.clone(),
             reserved: required,
             reserved_tokens: 0,
-            budget_warning: None,
             output,
             forwarded: false,
             settled: false,
@@ -239,10 +237,7 @@ impl Budget {
         model: &Model,
         output: u64,
     ) -> Result<Hold, Refusal> {
-        let go = model.provider == "opencode";
-        if !go && limits.is_none() {
-            return Err(SubscriptionLimits::missing());
-        }
+        let limits = limits.ok_or_else(SubscriptionLimits::missing)?;
         if !ledger_enabled {
             return Err(Refusal::ledger());
         }
@@ -275,16 +270,7 @@ impl Budget {
         // here: subscription and Go admission never stop on local budget.
         state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
         let held = shared.subscription_reserved().map_err(|_| Refusal::ledger())?;
-        let used = state.reader.subscription();
-        let budget_warning = if go {
-            let total = used.add(held)?.add(required)?;
-            limits.and_then(|limits| limits.go_warning(total))
-        } else {
-            limits
-                .ok_or_else(SubscriptionLimits::missing)?
-                .check(used, held, required)?;
-            None
-        };
+        limits.check(state.reader.subscription(), held, required)?;
         let id = shared
             .insert_subscription(tokens)
             .map_err(|_| Refusal::ledger())?;
@@ -294,7 +280,6 @@ impl Budget {
             model: model.clone(),
             reserved: 0.0,
             reserved_tokens: tokens,
-            budget_warning,
             output,
             forwarded: false,
             settled: false,
@@ -312,10 +297,6 @@ fn invalid_billing() -> Refusal {
     }
 }
 impl Hold {
-    pub(crate) fn budget_warning(&self) -> Option<&'static str> {
-        self.budget_warning
-    }
-
     pub fn reserved(&self) -> f64 {
         self.reserved
     }

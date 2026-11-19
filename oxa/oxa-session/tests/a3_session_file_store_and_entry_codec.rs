@@ -47,7 +47,6 @@ fn assistant_entry(id: &str, parent: Option<&str>, ts_ms: u64, text: &str) -> En
         ts_ms,
         body: EntryBody::Msg {
             wire: WireMsg {
-                images: Vec::new(),
                 role: Role::Assistant,
                 content: Some(text.to_string()),
                 reasoning: None,
@@ -104,7 +103,6 @@ fn every_body() -> Vec<EntryBody> {
         },
         EntryBody::Msg {
             wire: WireMsg {
-                images: Vec::new(),
                 role: Role::Assistant,
                 content: Some(ODD.to_string()),
                 reasoning: Some(ODD.to_string()),
@@ -121,7 +119,6 @@ fn every_body() -> Vec<EntryBody> {
         },
         EntryBody::Msg {
             wire: WireMsg {
-                images: Vec::new(),
                 role: Role::Assistant,
                 content: None,
                 reasoning: None,
@@ -134,7 +131,6 @@ fn every_body() -> Vec<EntryBody> {
         },
         EntryBody::Msg {
             wire: WireMsg {
-                images: Vec::new(),
                 role: Role::Assistant,
                 content: Some(String::new()),
                 reasoning: Some(String::new()),
@@ -272,7 +268,6 @@ fn assistant_wire_strings_exact() {
         ts_ms: 1_733_234_400_000,
         body: EntryBody::Msg {
             wire: WireMsg {
-                images: Vec::new(),
                 role: Role::Assistant,
                 content: Some(content.into()),
                 reasoning: Some(reasoning.into()),

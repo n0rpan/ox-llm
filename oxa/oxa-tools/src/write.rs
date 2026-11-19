@@ -49,7 +49,6 @@ impl Tool for WriteTool {
         };
         match write_file(args, cx) {
             Ok((bytes, created)) => ToolOutput {
-                images: Vec::new(),
                 text: errors::write_ok(path),
                 is_error: false,
                 ui: serde_json::json!({ "bytes": bytes, "created": created }),
