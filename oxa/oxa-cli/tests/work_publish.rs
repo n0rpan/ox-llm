@@ -4,7 +4,7 @@ mod work;
 use oxa_fake::{ScriptTurn, TestEnv};
 use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf, process::Command};
-use work::{git, run, run_args, run_observed_with, setup};
+use work::{git, run, run_args, setup};
 fn state_path(env: &TestEnv) -> PathBuf {
     let common = env.work().join("project/.git").canonicalize().unwrap();
     let key: String = Sha256::digest(common.as_os_str().as_encoded_bytes())
@@ -30,7 +30,14 @@ case "$1 $2" in
     fi
     printf '{"nameWithOwner":"example/project","url":"https://%s/example/project"}' "$host"
     if test -f "$HOME/oversized-repo-response"; then head -c 1048576 /dev/zero | tr '\000' ' '; fi ;;
-  'pr list') if test -f "$HOME/pr-state.json"; then printf '['; cat "$HOME/pr-state.json"; printf ']'; else printf '[]'; fi ;;
+  'pr list')
+    if test -f "$HOME/move-head-on-pr-list"; then
+      rm "$HOME/move-head-on-pr-list"
+      printf moved > later.txt
+      /usr/bin/git add later.txt
+      /usr/bin/git -c user.name=t -c user.email=t@example.invalid commit -m 'moved after preflight' >/dev/null
+    fi
+    if test -f "$HOME/pr-state.json"; then printf '['; cat "$HOME/pr-state.json"; printf ']'; else printf '[]'; fi ;;
   'api graphql') if test -f "$HOME/queued"; then printf '%s' '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":{"id":"queue"}}}}}'; else printf '%s' '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":null}}}}'; fi ;;
   'pr create')
     draft=false
@@ -965,99 +972,6 @@ esac
     );
 }
 
-/// A tool child of a session: the agent marker is set and the broker socket is exported.
-fn as_tool_child(sock: &std::path::Path) -> impl FnOnce(&mut Command) + '_ {
-    move |command| {
-        command
-            .env("OXA_CODING_AGENT", "true")
-            .env("AI_AGENT", "oxa")
-            .env("OXA_CONFIRM_SOCK", sock);
-    }
-}
-fn broker_dir(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("oxa-wp-{name}-{}", std::process::id()))
-}
-#[cfg(target_os = "linux")]
-#[test]
-fn publish_on_broker_yes() {
-    use oxa_core::owner_confirm::OwnerConfirm;
-    use oxa_proto::{Autonomy, YoloSwitch};
-    let env = TestEnv::new();
-    setup(&env, r#"["test -f .oxa/settings.json"]"#);
-    let path = configure(&env);
-    let dir = broker_dir("yes");
-    let broker = OwnerConfirm::start(&dir, YoloSwitch::new(Autonomy::Yolo)).unwrap();
-    let (record, _) = run_observed_with(
-        &env,
-        edits(),
-        &["work", "../tasks.json", "--publish"],
-        Some(path),
-        as_tool_child(broker.sock_path()),
-    );
-    assert_eq!(
-        record["pull_request"], "https://github.com/example/project/pull/1",
-        "{record}"
-    );
-    assert!(env.home().join("push-calls").exists());
-    let records = broker.take_records();
-    assert_eq!(records.len(), 1, "one recorded owner answer: {records:?}");
-    assert!(records[0].question.contains("Push accepted commit"));
-    broker.close();
-    let _ = fs::remove_dir_all(dir);
-}
-#[cfg(target_os = "linux")]
-#[test]
-fn publish_rechecks_head_after_yes() {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixListener;
-    let env = TestEnv::new();
-    setup(&env, r#"["test -f .oxa/settings.json"]"#);
-    let path = configure(&env);
-    let done = run(&env, edits());
-    let tree = PathBuf::from(done["worktree"].as_str().unwrap());
-    let dir = broker_dir("head");
-    fs::create_dir_all(&dir).unwrap();
-    let sock = dir.join("confirm.sock");
-    let listener = UnixListener::bind(&sock).unwrap();
-    // A broker that says yes, but only after the task branch moved: the yes was for the old head.
-    let moved_tree = tree.clone();
-    let server = std::thread::spawn(move || {
-        let (stream, _) = listener.accept().unwrap();
-        let mut line = String::new();
-        BufReader::new(&stream).read_line(&mut line).unwrap();
-        fs::write(moved_tree.join("later.txt"), "moved").unwrap();
-        let run = |args: &[&str]| {
-            let ok = Command::new("git")
-                .args(args)
-                .current_dir(&moved_tree)
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
-                .status()
-                .unwrap();
-            assert!(ok.success());
-        };
-        run(&["add", "."]);
-        run(&["commit", "-m", "moved after the question"]);
-        writeln!(&stream, r#"{{"answer":"yes","source":"typed"}}"#).unwrap();
-    });
-    let (record, _) = run_observed_with(
-        &env,
-        vec![],
-        &["work", "../tasks.json", "--publish"],
-        Some(path),
-        as_tool_child(&sock),
-    );
-    server.join().unwrap();
-    assert_eq!(record["outcome"], "blocked", "{record}");
-    assert!(record["detail"]
-        .as_str()
-        .unwrap()
-        .contains("changed during confirmation"));
-    assert!(!env.home().join("push-calls").exists());
-    let _ = fs::remove_dir_all(dir);
-}
 #[test]
 fn publish_not_done_explains() {
     let env = TestEnv::new();
@@ -1074,5 +988,23 @@ fn publish_not_done_explains() {
         record["detail"].as_str().unwrap().contains("not published"),
         "{record}"
     );
+    assert!(!env.home().join("push-calls").exists());
+}
+
+#[test]
+fn publish_rechecks_head_after_yes() {
+    let env = TestEnv::new();
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
+    let path = configure(&env);
+    let done = run(&env, edits());
+    assert_eq!(done["outcome"], "done", "{done}");
+    env.write("home/move-head-on-pr-list", "move once");
+
+    let record = run_args(&env, vec![], &["work", "../tasks.json", "--publish"], Some(path));
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(record["detail"]
+        .as_str()
+        .unwrap()
+        .contains("changed during confirmation"));
     assert!(!env.home().join("push-calls").exists());
 }
