@@ -1406,3 +1406,59 @@ fn goal_command_clear_fails_when_store_sync_fails() {
     store.fail_sync.store(false, Ordering::SeqCst);
     session.shutdown(&mut HeadlessUi::default());
 }
+
+#[test]
+fn idle_pause_records_reason() {
+    use oxa_core::goal::parse_goal_command;
+    use oxa_proto::AgentEvent;
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("Idle"),
+        ScriptTurn::text("Still idle"),
+    ]));
+    let store = Arc::new(MemStore::new());
+    let mut session = Session::open(deps(&env, store, engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    session
+        .prompt(
+            "Start the stored goal".into(),
+            vec![],
+            &mut sink,
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert_eq!(session.stats().outcome, RunOutcome::Stalled);
+    let goal = session.goal().unwrap();
+    assert_eq!(goal.status, GoalStatus::Paused);
+    assert_eq!(
+        goal.pause_reason.as_deref(),
+        Some("two replies without an action")
+    );
+    let notices: Vec<String> = sink
+        .0
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::Notice { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        notices
+            .iter()
+            .filter(|text| text.as_str() == "Goal paused: two replies without an action; /goal resume")
+            .count(),
+        1,
+        "the pause is announced exactly once: {notices:?}"
+    );
+
+    let (lines, prompt) = session
+        .apply_goal_command(parse_goal_command("resume"), 2000, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["Goal resumed.".to_string()]);
+    assert_eq!(prompt, Some(oxa_core::prompt::GOAL_CONTINUE.to_string()));
+    assert_eq!(session.goal().unwrap().pause_reason, None);
+    session.shutdown(&mut HeadlessUi::default());
+}

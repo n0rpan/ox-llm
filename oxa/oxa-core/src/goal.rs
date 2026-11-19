@@ -184,7 +184,17 @@ impl crate::Session {
                 ))
             }
         }
+        let status = goal.status;
         let result = self.set_goal(Some(goal), sink);
+        if result.is_ok() {
+            crate::progress::notify(
+                self.inner(),
+                crate::Progress::GoalStatus {
+                    status: status.as_str(),
+                    reason: None,
+                },
+            );
+        }
         let applied_revision = self.goal_revision();
         if applied_revision == revision {
             return result.map(|()| applied_revision);
@@ -222,11 +232,15 @@ impl crate::Session {
         sink: &mut dyn oxa_proto::EventSink,
     ) -> Result<(), oxa_proto::OxaError> {
         let before = self.goal_revision();
+        let status = goal.as_ref().map_or("none", |goal| goal.status.as_str());
         let result = self.set_goal(goal, sink);
         if result.is_err() && self.goal_revision() == before {
             return result;
         }
         self.sync_goal_transition()?;
+        if result.is_ok() {
+            crate::progress::notify(self.inner(), crate::Progress::GoalStatus { status, reason: None });
+        }
         result
     }
 }
@@ -646,6 +660,21 @@ pub(crate) fn save_checkpoint(
     let body = goal.checkpoint_body(st.tree.entries());
     crate::agent_loop::persist(st, body, sink)?;
     Ok(())
+}
+/// The visible half of an idle pause: a warning notice in the transcript and a status observation.
+/// The reason itself is already saved in the goal entry.
+pub(crate) fn announce_pause(st: &crate::SessionState, reason: &str, sink: &mut dyn oxa_proto::EventSink) {
+    sink.emit(&oxa_proto::AgentEvent::Notice {
+        level: oxa_proto::Level::Warning,
+        text: format!("Goal paused: {reason}; /goal resume"),
+    });
+    crate::progress::notify(
+        st,
+        crate::Progress::GoalStatus {
+            status: "paused",
+            reason: Some(reason),
+        },
+    );
 }
 pub(crate) fn terminal(st: &crate::SessionState) -> bool {
     st.goal.as_ref().is_some_and(|g| g.engaged() && !g.pursuing())
