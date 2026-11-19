@@ -1310,7 +1310,10 @@ dependencies = [
 name = "oxa-http"
 version = "0.2.0"
 dependencies = [
+ "futures-util",
  "oxa-proto",
+ "reqwest",
+ "tokio",
 ]
 
 [[package]]
