@@ -177,14 +177,14 @@ class AdapterTests(unittest.TestCase):
         opts.update(kwargs)
         return module.OxaAgent(self.logs, **opts)
 
-    def _run(self, module, exit_code=0, **kwargs):
+    def _run(self, module, exit_code=0, instruction="fix the bug", **kwargs):
         agent, ctx = self._agent(module, **kwargs), self.Context()
         env = FakeEnvironment(self.root, dict(self.env, FAKE_OXA_EXIT=str(exit_code)))
         install = agent.install if module is self.harbor else agent.setup
 
         async def go():
             await install(env)
-            await agent.run("fix the bug", env, ctx)
+            await agent.run(instruction, env, ctx)
 
         asyncio.run(go())
         return agent, ctx, env
@@ -203,6 +203,13 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual(argv[argv.index("--model") + 1], "opencode/kimi-k3")
                 self.assertEqual(argv[argv.index("--usage-log") + 1], core.REMOTE_USAGE_LOG)
                 self.assertEqual(argv[-1], "fix the bug")
+
+    def test_adapter_ends_option_parsing_before_a_leading_dash_instruction(self):
+        instruction = "- Implement the requested change"
+        for module in (self.harbor, self.pier):
+            with self.subTest(module=module.__name__):
+                self._run(module, instruction=instruction)
+                self.assertEqual(self.argv()[-2:], ["--", instruction])
 
     def test_adapter_passes_max_time_below_the_task_timeout(self):
         for module in (self.harbor, self.pier):
