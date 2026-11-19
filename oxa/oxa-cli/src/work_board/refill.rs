@@ -187,7 +187,6 @@ pub(super) fn run(
     let policy = Policy {
         enabled: true,
         max_attempts_per_day: attempt_limit(&value)?,
-        ..Policy::default()
     };
     let consumer = Consumer {
         repository: repo,

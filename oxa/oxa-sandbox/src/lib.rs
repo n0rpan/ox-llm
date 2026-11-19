@@ -21,13 +21,15 @@ mod net;
 mod offline;
 mod run;
 mod scratch;
+mod unsandboxed;
 
 pub use bwrap::{account_home, bwrap_args, bwrap_args_with, without_account_home};
 pub use full::FullAccess;
 pub use gitdirs::{resolve as resolve_git_binds, GitBinds, MAX_ALTERNATES_DEPTH};
 pub use layout::{
     expand_home, home_protected_paths, is_home_itself, is_home_or_above, is_secret_name, protected_paths,
-    sensitive_paths, Layout, LayoutInputs, SETTING_ALLOW_HOME_WRITE, SETTING_READ_PATHS, SETTING_WRITE_PATHS,
+    sensitive_paths, toolchain_env, Layout, LayoutInputs, SETTING_ALLOW_HOME_WRITE, SETTING_READ_PATHS,
+    SETTING_WRITE_PATHS,
 };
 pub use net::{sandbox_net_setting, NetSandbox, SETTING_SANDBOX_NET};
 pub use offline::{no_network_argv, offline_argv};
@@ -36,6 +38,12 @@ pub use run::{
     die_with_parent, run_argv, run_argv_capture, run_argv_stdin, run_unsandboxed, run_unsandboxed_capture,
 };
 pub use scratch::{scratch_root, user_cache_home, Scratch};
+pub use unsandboxed::Unsandboxed;
+
+/// The plain statement shown wherever commands run without an OS sandbox (platforms without
+/// bubblewrap). It must never be replaced by wording that suggests isolation.
+pub const NO_OS_SANDBOX_NOTICE: &str =
+    "no OS sandbox on this platform: commands run with your full user rights";
 
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox};
 use std::path::{Path, PathBuf};
@@ -134,14 +142,14 @@ impl Sandbox for Bwrap {
         bwrap_args_with(s, &self.home, &self.layout)
     }
     fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
-        if let Some(why) = bwrap::refusal(s, &self.home, &self.layout) {
+        if let Some(why) = platform_refusal().or_else(|| bwrap::refusal(s, &self.home, &self.layout)) {
             return refused(why);
         }
         bwrap::create_missing_git_files(s, &self.home, &self.layout);
         self.launch(s, None, c, live, true)
     }
     fn run_streaming(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
-        if let Some(why) = bwrap::refusal(s, &self.home, &self.layout) {
+        if let Some(why) = platform_refusal().or_else(|| bwrap::refusal(s, &self.home, &self.layout)) {
             // The job reader sees only what went to `live`: give it the reason too.
             live(why.as_bytes());
             let mut r = refused(why);
@@ -158,7 +166,7 @@ impl Sandbox for Bwrap {
         c: &CancelToken,
         live: &mut dyn FnMut(&[u8]),
     ) -> ExecResult {
-        if let Some(why) = bwrap::refusal(s, &self.home, &self.layout) {
+        if let Some(why) = platform_refusal().or_else(|| bwrap::refusal(s, &self.home, &self.layout)) {
             return refused(why);
         }
         bwrap::create_missing_git_files(s, &self.home, &self.layout);
@@ -194,6 +202,7 @@ fn insert_args_fd(argv: &mut Vec<String>, fd: i32) {
 
 /// A pipe holding `data` (closed write end); returns the read end with `O_CLOEXEC` set, so
 /// no other child spawned meanwhile inherits it. Only the bwrap child clears the flag.
+#[cfg(target_os = "linux")]
 fn args_pipe(data: &[u8]) -> Result<i32, String> {
     let mut fds = [-1i32; 2];
     // SAFETY: `fds` is a valid array of two ints; the fds are closed below or by the caller.
@@ -211,6 +220,11 @@ fn args_pipe(data: &[u8]) -> Result<i32, String> {
         return Err("cannot pass the sandbox environment".to_string());
     }
     Ok(fds[0])
+}
+
+#[cfg(not(target_os = "linux"))]
+fn args_pipe(_data: &[u8]) -> Result<i32, String> {
+    Err(NO_OS_SANDBOX_NOTICE.into())
 }
 
 impl Bwrap {
@@ -266,7 +280,7 @@ impl Bwrap {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod secret_tests {
     use super::*;
 
@@ -407,12 +421,18 @@ mod secret_tests {
     }
 }
 
+// A `Bwrap` value built by hand off Linux must still never launch: bwrap is Linux only.
+fn platform_refusal() -> Option<String> {
+    (!cfg!(target_os = "linux")).then(|| NO_OS_SANDBOX_NOTICE.to_string())
+}
+
 /// sbx-gitsym: a command the sandbox refuses to run (`bwrap::refusal`): nothing ran.
 fn refused(why: String) -> ExecResult {
     ExecResult {
         output: why.into_bytes(),
         exit: None,
         timed_out: false,
+        unsandboxed: false,
     }
 }
 
@@ -437,6 +457,7 @@ impl Sandbox for NoSandbox {
             output: b"bwrap is not available; bash is disabled".to_vec(),
             exit: None,
             timed_out: false,
+            unsandboxed: false,
         }
     }
 }

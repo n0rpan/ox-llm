@@ -209,7 +209,7 @@ fn exercise_save_recovery(test_name: &str, case: SaveRecovery) {
     let checks = if case == SaveRecovery::Edited {
         r#"["grep -Fx published answer.txt"]"#
     } else {
-        "[]"
+        r#"["test -f .oxa/settings.json"]"#
     };
     setup(&env, checks);
     let server = oxa_fake::FakeServer::start(edits(), oxa_fake::FakeOpts::default()).unwrap();
@@ -227,6 +227,34 @@ fn exercise_save_recovery(test_name: &str, case: SaveRecovery) {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(server.requests().len(), 2, "save retry must not call a model");
+}
+
+#[test]
+fn a_legacy_done_without_checks_cannot_publish() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let record = run(&env, edits());
+    assert_eq!(record["outcome"], "unverified", "{record}");
+    let state_path = state_path(&env);
+    let mut state: serde_json::Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    state["record"]["outcome"] = "done".into();
+    fs::write(state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+
+    let (records, requests, code) = work::run_with_exit(
+        &env,
+        vec![],
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_eq!(code, 1, "{records:?}");
+    assert_eq!(records[0]["outcome"], "blocked", "{records:?}");
+    assert!(records[0]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("no acceptance checks"));
+    assert!(requests.is_empty());
+    assert!(!env.home().join("push-calls").exists());
+    assert!(!env.home().join("gh-calls").exists());
 }
 
 #[test]
@@ -259,7 +287,7 @@ fn publishing_requires_acceptance_without_ignored_helpers() {
 #[test]
 fn publication_refuses_oversized_repository_metadata_before_push() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     env.write("home/oversized-repo-response", "");
     let record = run_args(
         &env,
@@ -275,7 +303,7 @@ fn publication_refuses_oversized_repository_metadata_before_push() {
 #[test]
 fn publication_does_not_forward_ambient_enterprise_credentials_to_origin() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     env.write("home/enterprise-host", "");
     let (record, _) = work::run_observed_with(
         &env,
@@ -295,7 +323,7 @@ fn publication_does_not_forward_ambient_enterprise_credentials_to_origin() {
 #[test]
 fn publication_refuses_a_same_owner_fork_before_push() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     env.write(
         "home/pr-state.json",
         r#"{"number":1,"url":"https://github.com/example/project/pull/1","isDraft":false,"headRepositoryOwner":{"login":"example"},"isCrossRepository":true}"#,
@@ -317,7 +345,7 @@ fn publication_refuses_a_same_owner_fork_before_push() {
 fn publishes_local_branch_and_updates_same_pr_on_restart() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);
     let hook = env.write(
         "work/project/.git/hooks/pre-push",
@@ -358,7 +386,7 @@ fn publishes_local_branch_and_updates_same_pr_on_restart() {
 #[test]
 fn publication_keeps_the_origin_host_for_prs_and_graphql() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);
     env.write("home/enterprise-host", "synthetic");
     let first = run_args(
@@ -388,7 +416,7 @@ fn publication_keeps_the_origin_host_for_prs_and_graphql() {
 #[test]
 fn rerun_updates_managed_metadata_without_erasing_owner_body() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);
     let first = run_args(
         &env,
@@ -437,7 +465,7 @@ fn red_checks_never_push_or_create_a_pr() {
 #[test]
 fn queued_pr_is_never_pushed_and_publication_retries_without_agent_replay() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);
     run_args(
         &env,
@@ -471,7 +499,7 @@ fn queued_pr_is_never_pushed_and_publication_retries_without_agent_replay() {
 #[test]
 fn offline_publication_never_starts_gh_or_push() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);
     let record = run_args(
         &env,
@@ -523,7 +551,7 @@ fn publication_drift_requires_fresh_checks_on_explicit_rerun() {
 #[test]
 fn ordinary_run_cannot_reseal_a_failed_publication_checkpoint() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);
     let done = run(&env, edits());
     let tree = PathBuf::from(done["worktree"].as_str().unwrap());
@@ -551,7 +579,7 @@ fn ordinary_run_cannot_reseal_a_failed_publication_checkpoint() {
 #[test]
 fn branch_drift_after_acceptance_cannot_publish_unchecked_commits() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);
     let done = run(&env, edits());
     let tree = PathBuf::from(done["worktree"].as_str().unwrap());
@@ -805,7 +833,7 @@ fn a_local_report_retries_without_replaying_the_completed_task() {
 #[test]
 fn later_publication_and_reporting_do_not_erase_execution_policy() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);
     let mut turns = edits();
     turns[1] = ScriptTurn::text(concat!(
@@ -837,7 +865,7 @@ fn later_publication_and_reporting_do_not_erase_execution_policy() {
 #[test]
 fn optional_publication_metadata_defaults_to_inactive() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     run(&env, vec![ScriptTurn::text("done")]);
     let state_path = state_path(&env);
     let mut state: serde_json::Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
@@ -859,7 +887,7 @@ fn optional_publication_metadata_defaults_to_inactive() {
 #[test]
 fn failed_draft_creation_does_not_strand_reporting_checkpoint() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);
     env.write(
         "home/.oxa/agent/issue-drafts",
@@ -894,7 +922,7 @@ fn unsetting_the_agent_marker_and_piping_yes_cannot_authorize_public_writes() {
     let mut unauthorized = vec![];
     for flag in ["--publish", "--report-problems"] {
         let env = TestEnv::new();
-        setup(&env, "[]");
+        setup(&env, r#"["test -f .oxa/settings.json"]"#);
         let path = configure(&env);
         env.write("tmp/gh", r##"#!/bin/sh
 case "$1 $2" in
@@ -958,7 +986,7 @@ fn assert_refused(env: &TestEnv, record: &serde_json::Value, place: &str, secret
 #[test]
 fn publication_refuses_an_added_env_file() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let secret = format!("SERVICE_PASSWORD={}", "q".repeat(20));
     let record = run_args(
         &env,
@@ -972,24 +1000,24 @@ fn publication_refuses_an_added_env_file() {
 #[test]
 fn publication_refuses_a_github_token_in_source() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let token = format!("ghp_{}", "x".repeat(36));
     let record = run_args(
         &env,
         write_turns(
-            "src/client.rs",
+            "src/client.txt",
             &format!("fn main() {{}}\nconst T: &str = \"{token}\";\n"),
         ),
         &["work", "../tasks.json", "--publish"],
         Some(configure(&env)),
     );
-    assert_refused(&env, &record, "src/client.rs:2", &token);
+    assert_refused(&env, &record, "src/client.txt:2", &token);
 }
 
 #[test]
 fn publication_refuses_a_private_key() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let body = "x".repeat(64);
     let key = format!(
         "-----BEGIN {kind}-----\n{body}\n-----END {kind}-----\n",
@@ -1007,7 +1035,7 @@ fn publication_refuses_a_private_key() {
 #[test]
 fn publication_refuses_the_value_of_a_secret_environment_variable() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let value = format!("synthetic{}", "Q".repeat(12));
     let (record, _) = work::run_observed_with(
         &env,
@@ -1024,7 +1052,7 @@ fn publication_refuses_the_value_of_a_secret_environment_variable() {
 #[test]
 fn publication_refuses_a_secret_that_a_later_commit_removed() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     let token = format!("ghp_{}", "x".repeat(36));
     let first = run_args(
@@ -1047,7 +1075,7 @@ fn publication_refuses_a_secret_that_a_later_commit_removed() {
 #[test]
 fn publication_refuses_an_empty_file_named_with_a_token() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let token = format!("ghp_{}", "x".repeat(36));
     let record = run_args(
         &env,
@@ -1061,7 +1089,7 @@ fn publication_refuses_an_empty_file_named_with_a_token() {
 #[test]
 fn publication_refuses_a_secret_in_a_local_base_commit_origin_lacks() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let repo = env.work().join("project");
     let token = format!("ghp_{}", "x".repeat(36));
     env.write("work/project/local.txt", &format!("{token}\n"));
@@ -1096,7 +1124,7 @@ fn local_secret_commit(env: &TestEnv, token: &str) {
 #[test]
 fn publication_refuses_a_secret_in_a_local_commit_message() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let repo = env.work().join("project");
     let token = format!("ghp_{}", "x".repeat(36));
     git(
@@ -1147,7 +1175,7 @@ fn assert_origin_lacks(env: &TestEnv, sha: &str) {
 #[test]
 fn publication_refuses_a_secret_in_an_extra_commit_header() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let repo = env.work().join("project");
     let token = format!("ghp_{}", "x".repeat(36));
     let sha = craft_header_commit(&env, &repo, &format!("x-note {token}"));
@@ -1164,7 +1192,7 @@ fn publication_refuses_a_secret_in_an_extra_commit_header() {
 #[test]
 fn publication_refuses_a_secret_in_a_multi_line_signature_header() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let repo = env.work().join("project");
     let token = format!("ghp_{}", "x".repeat(36));
     let header = format!("gpgsig -----BEGIN PGP SIGNATURE-----\n \n {token}\n -----END PGP SIGNATURE-----");
@@ -1182,7 +1210,7 @@ fn publication_refuses_a_secret_in_a_multi_line_signature_header() {
 #[test]
 fn publication_ignores_forged_remote_tracking_refs() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let repo = env.work().join("project");
     let token = format!("ghp_{}", "x".repeat(36));
     local_secret_commit(&env, &token);
@@ -1200,7 +1228,7 @@ fn publication_ignores_forged_remote_tracking_refs() {
 #[test]
 fn publication_checks_the_push_url_not_the_fetch_url() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let repo = env.work().join("project");
     let token = format!("ghp_{}", "x".repeat(36));
     local_secret_commit(&env, &token);
@@ -1226,7 +1254,7 @@ fn publication_checks_the_push_url_not_the_fetch_url() {
 #[test]
 fn publication_never_pushes_tags_implicitly() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let repo = env.work().join("project");
     let token = format!("ghp_{}", "x".repeat(36));
     git(&env, &repo, &["config", "push.followTags", "true"]);
