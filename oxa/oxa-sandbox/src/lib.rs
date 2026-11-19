@@ -285,6 +285,52 @@ mod secret_tests {
     use super::*;
 
     #[test]
+    fn masking_no_sandbox_keeps_the_replaced_sandboxes_secret() {
+        struct Secret;
+        impl Sandbox for Secret {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+            fn run(&self, _s: &ExecSpec, _c: &CancelToken, _l: &mut dyn FnMut(&[u8])) -> ExecResult {
+                ExecResult {
+                    output: Vec::new(),
+                    exit: Some(0),
+                    timed_out: false,
+                    unsandboxed: true,
+                }
+            }
+            fn output_secret(&self) -> Option<String> {
+                Some("ghp_KEPT_OFFLINE".into())
+            }
+        }
+        // Off Linux, bash_sandbox swaps a network sandbox it cannot enforce for this.
+        let swapped = MaskingNoSandbox::new(Arc::new(Secret));
+        assert_eq!(
+            swapped.output_secret().as_deref(),
+            Some("ghp_KEPT_OFFLINE"),
+            "the output mask survives the platform-sandbox swap"
+        );
+        // Execution behaves as NoSandbox: the refused check and run.
+        assert!(swapped.check().is_err());
+        let spec = ExecSpec {
+            command: "true".into(),
+            cwd: "/".into(),
+            writable: true,
+            net: false,
+            timeout_s: Some(10),
+            env: Vec::new(),
+        };
+        let r = swapped.run(&spec, &CancelToken::new(), &mut |_| {});
+        assert!(
+            String::from_utf8_lossy(&r.output).contains("bwrap is not available"),
+            "execution stays the NoSandbox refusal"
+        );
+    }
+
+    #[test]
     fn args_pipe_is_cloexec_and_readable() {
         let fd = args_pipe(b"abc\0").unwrap();
         // SAFETY: querying flags of a descriptor we own.
@@ -459,5 +505,35 @@ impl Sandbox for NoSandbox {
             timed_out: false,
             unsandboxed: false,
         }
+    }
+}
+
+/// A caller that cannot enforce a refused network swaps its sandbox for [`NoSandbox`] (off
+/// Linux, `dispatch::bash_sandbox` does exactly that). Yolo's output mask must not depend on
+/// that enforcement: this keeps the replaced sandbox's [`Sandbox::output_secret`] — the
+/// GitHub token, discovered lazily as on every other path — while behaving as `NoSandbox`
+/// for execution, so unsandboxed commands still never print the credential.
+pub struct MaskingNoSandbox {
+    source: Arc<dyn Sandbox>,
+}
+
+impl MaskingNoSandbox {
+    pub fn new(source: Arc<dyn Sandbox>) -> Self {
+        Self { source }
+    }
+}
+
+impl Sandbox for MaskingNoSandbox {
+    fn check(&self) -> Result<(), OxaError> {
+        NoSandbox.check()
+    }
+    fn bwrap_args(&self, s: &ExecSpec) -> Vec<String> {
+        NoSandbox.bwrap_args(s)
+    }
+    fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+        NoSandbox.run(s, c, live)
+    }
+    fn output_secret(&self) -> Option<String> {
+        self.source.output_secret()
     }
 }

@@ -738,7 +738,13 @@ fn bash_sandbox(sandbox: Arc<dyn Sandbox>) -> (Arc<dyn Sandbox>, Option<String>)
             "{}; bash is disabled while the bash network is off",
             oxa_proto::NET_NOT_RESTRICTED_NOTICE
         );
-        return (Arc::new(NoSandbox), Some(notice));
+        // The mask must survive the swap: yolo still never prints the GitHub token
+        // (`gh auth token` reads its config locally), so the replacement keeps the
+        // replaced sandbox's output secret while execution stays unsandboxed.
+        return (
+            Arc::new(oxa_sandbox::MaskingNoSandbox::new(sandbox)),
+            Some(notice),
+        );
     }
     (sandbox, None)
 }
