@@ -544,6 +544,12 @@ pub enum SessionCmd {
     Inbox {
         session_id: String,
     },
+    /// A finished background job's wake (W4). Unlike `Inbox` it honours the stop boundary: a
+    /// run that ended failed, blocked or interrupted (`oxa.maxTurns` among them) keeps the
+    /// message queued instead of starting a fresh run with a fresh turn budget.
+    JobWake {
+        session_id: String,
+    },
     /// The worker's own wake, sent by the session's attention waker
     /// (`Handle::set_attention_waker`): a host request was posted while the worker waited, or
     /// a wrap-up was requested. No command runs; the worker serves the host now instead of at

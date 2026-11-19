@@ -121,6 +121,13 @@ maintainer, who says in the PR when a hardware check is needed.
   only a short pointer is queued. The agent directory remains denied.
   The repeat guard follows this: the third identical tool result gets a short note, a call that
   still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
+  is the cap against loops the guard cannot see.
+  The finish wake follows it too: a background bash job that finishes on its own queues one
+  follow-up message and, when the session is idle after a normal outcome, starts a turn;
+  `oxa.jobs.wakeOnFinish` (`true` by default, `false` opts out, user settings only) is the control,
+  it wakes only the session the job started in, and a job the model or the user stopped wakes
+  nothing; a completion retained behind a failed or interrupted turn stays queued (also across a session
+  reopen) until the next prompt. A finding that asks for a default-off switch or a cross-session wake is answered here.
   is the cap against loops the guard cannot see. A pursuing goal whose request fails transiently
   (stream cut, engine down or busy, timeout, 429, 5xx) waits without tokens and sends it again:
   `oxa.goal.failureBackoffSeconds` (default 60, doubling, capped at 900 unless set higher, `0` opts
