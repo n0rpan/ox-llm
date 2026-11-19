@@ -46,6 +46,54 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
         .sum::<f64>() as f32
 }
 
+/// `x` through the activation quantisation the GEMV kernels apply to their input (Q8_K: f32
+/// scale + 256 int8 per block; Q8_0: the weight block layout), back to f32.
+fn act_roundtrip(at: kernels_sys::ActType, x: &[f32]) -> Vec<f32> {
+    let mut q = vec![0u8; at.bytes(x.len())];
+    kernels_sys::quantize_act(at, x, &mut q);
+    let mut out = vec![0f32; x.len()];
+    match at {
+        kernels_sys::ActType::Q8K => {
+            let qk = kernels_sys::QK_K;
+            let bb = q.len() / (x.len() / qk);
+            for (b, o) in q.chunks_exact(bb).zip(out.chunks_exact_mut(qk)) {
+                let d = f32::from_le_bytes(b[0..4].try_into().unwrap());
+                for (v, &c) in o.iter_mut().zip(&b[4..4 + qk]) {
+                    *v = d * (c as i8) as f32;
+                }
+            }
+        }
+        kernels_sys::ActType::Q8_0 => kernels_sys::dequantize_row(QType::Q8_0, &q, &mut out),
+    }
+    out
+}
+
+fn act_of(g: &gguf::Gguf, name: &str) -> kernels_sys::ActType {
+    crate::desc::qtype(g.header.tensor(name).unwrap().ty)
+        .unwrap()
+        .act()
+}
+
+/// down(silu(gate . x) * (up . x)) in f32 (f64 sums), with `hq` applied to h before the down rows.
+fn ffn_ref(
+    gate: &[Vec<f32>],
+    up: &[Vec<f32>],
+    down: &[Vec<f32>],
+    x: &[f32],
+    hq: &dyn Fn(&[f32]) -> Vec<f32>,
+) -> Vec<f32> {
+    let h: Vec<f32> = gate
+        .iter()
+        .zip(up)
+        .map(|(gr, ur)| {
+            let (a, b) = (dot(gr, x), dot(ur, x));
+            a / (1.0 + (-a).exp()) * b
+        })
+        .collect();
+    let h = hq(&h);
+    down.iter().map(|r| dot(r, &h)).collect()
+}
+
 /// max |a - b| / max |b|
 fn rel_gap(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len());
@@ -103,7 +151,9 @@ fn mini_dense_descriptor_tied_head_and_no_mtp() {
 
 /// The dense FFN of every layer and the tied head against f32 math on the original GGUF rows
 /// (down(silu(gate . xn) * (up . xn)), embedding rows . result_norm), from the engine's own
-/// intermediates: the only differences are the activation quantisation of the GEMVs.
+/// intermediates. Pure f32 differs by the activation quantisation of the GEMVs (a few percent on
+/// these random weights); with the GEMV inputs passed through that quantisation only summation
+/// order is left. A wrong row, block, gate or head tensor is off by O(1).
 #[test]
 fn mini_dense_ffn_and_tied_head_match_f32_reference() {
     let (dir, path) = dense_paths("f32");
@@ -112,46 +162,58 @@ fn mini_dense_ffn_and_tied_head_match_f32_reference() {
     let (plan, ws, pool) = mini_engine_parts(&path, &opt, 2);
     let g = gguf::Gguf::open(&path).unwrap();
     let embd = rows_f32(&g, "token_embd.weight");
+    let head_at = act_of(&g, "output.weight");
     let layers: Vec<_> = (0..plan.desc.n_layer)
         .map(|l| {
-            let r = |s: &str| rows_f32(&g, &format!("blk.{l}.{s}"));
+            let n = |s: &str| format!("blk.{l}.{s}");
+            let r = |s: &str| rows_f32(&g, &n(s));
+            let ats = (
+                act_of(&g, &n("ffn_gate.weight")),
+                act_of(&g, &n("ffn_down.weight")),
+            );
             (
                 r("ffn_gate.weight"),
                 r("ffn_up.weight"),
                 r("ffn_down.weight"),
+                ats,
             )
         })
         .collect();
     let eng = Engine::new(&plan, &ws, cfg(true)).unwrap();
-    let (mut worst_ffn, mut worst_head) = (0f32, 0f32);
+    let (mut ffn, mut ffn_q, mut head, mut head_q) = (0f32, 0f32, 0f32, 0f32);
     for t in [5u32, 17, 33, 2, 60, 9, 41, 23] {
         eng.step(&pool, t);
         let m = eng.trace.as_ref().unwrap().take();
-        for (l, (gate, up, down)) in layers.iter().enumerate() {
+        for (l, (gate, up, down, (gu_at, dn_at))) in layers.iter().enumerate() {
             let xn = &m[&format!("attn_post_norm-{l}")];
-            let h: Vec<f32> = gate
-                .iter()
-                .zip(up)
-                .map(|(gr, ur)| {
-                    let (a, b) = (dot(gr, xn), dot(ur, xn));
-                    a / (1.0 + (-a).exp()) * b
-                })
-                .collect();
-            let want: Vec<f32> = down.iter().map(|r| dot(r, &h)).collect();
             let got = &m[&format!("ffn_out-{l}")];
             assert!(got.iter().all(|v| v.is_finite()));
-            worst_ffn = worst_ffn.max(rel_gap(got, &want));
+            let want = ffn_ref(gate, up, down, xn, &|h| h.to_vec());
+            ffn = ffn.max(rel_gap(got, &want));
+            let xq = act_roundtrip(*gu_at, xn);
+            let want = ffn_ref(gate, up, down, &xq, &|h| act_roundtrip(*dn_at, h));
+            ffn_q = ffn_q.max(rel_gap(got, &want));
         }
         let hn = &m["result_norm"];
         let want: Vec<f32> = embd.iter().map(|r| dot(r, hn)).collect();
-        worst_head = worst_head.max(rel_gap(eng.logits(), &want));
+        head = head.max(rel_gap(eng.logits(), &want));
+        let hq = act_roundtrip(head_at, hn);
+        let want: Vec<f32> = embd.iter().map(|r| dot(r, &hq)).collect();
+        head_q = head_q.max(rel_gap(eng.logits(), &want));
     }
     eprintln!(
-        "dense mini: max relative gap to f32, FFN {worst_ffn:.2e}, tied head {worst_head:.2e}"
+        "dense mini, max relative gap: FFN {ffn:.2e} to f32, {ffn_q:.2e} with quantised GEMV \
+         inputs; tied head {head:.2e}, {head_q:.2e}"
     );
-    // Q8_K / Q8_0 activations are ~0.4% per element; a wrong row, block or gate is O(1)
-    assert!(worst_ffn < 0.03, "dense FFN vs f32: {worst_ffn}");
-    assert!(worst_head < 0.03, "tied head vs f32: {worst_head}");
+    assert!(ffn < 0.2 && head < 0.2, "vs f32: FFN {ffn}, head {head}");
+    assert!(
+        ffn_q < 5e-3,
+        "dense FFN vs the quantised-input reference: {ffn_q}"
+    );
+    assert!(
+        head_q < 5e-3,
+        "tied head vs the quantised-input reference: {head_q}"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
