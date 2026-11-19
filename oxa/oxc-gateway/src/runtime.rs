@@ -565,7 +565,13 @@ impl Runtime {
             }
             let billing = self.billings.get(alias);
             let guest_allowed = allow_guest && matches!(billing, Some(Billing::Metered(_)));
-            policy::before_credentials(payload, shared && !guest_allowed, false, billing.is_some())?;
+            policy::before_credentials(
+                payload,
+                shared && !guest_allowed,
+                false,
+                billing.is_some(),
+                !self.cap.is_null(),
+            )?;
             if model.info().provider == Provider::OpenCode && !owner_origin {
                 return Err(Refusal {
                     status: 403,
@@ -574,7 +580,10 @@ impl Runtime {
                     message: "This subscription provider is available only to the owner agent.",
                 });
             }
-            let billing = billing.expect("policy validated billing");
+            // An unpriced model reaches here only with no cap (policy above). It is metered with
+            // no rates, so admission records its usage as unknown cost.
+            let unpriced = Billing::Metered(crate::pricing::Price::unpriced());
+            let billing = billing.unwrap_or(&unpriced);
             let mut output = u64::from(model.info().max_output);
             for field in ["max_tokens", "max_completion_tokens", "n_predict"] {
                 if let Some(value) = payload.get(field) {

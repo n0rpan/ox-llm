@@ -255,12 +255,15 @@ The key is read for each request from the existing private
 `~/.config/oxc/llm/cloud-secrets.json` (owner-only, mode `0600`, outside a checkout).
 Keep keys out of settings. The file uses the existing provider-key JSON format.
 Private settlement rows live in `<agent directory>/cloud-ledger/`. Listing models
-reads neither the key nor the ledger and contacts no provider. A missing price
-refuses a request before credentials or provider I/O. `daily_budget_usd` is
-optional: without it there is no budget check, requests are admitted and their
-cost is still recorded in the ledger (a request whose cost cannot be bounded is
-recorded with `cost_unknown`). When set it must be a positive number, and a
-request that would exceed it is refused with `budget_exceeded` (HTTP 429). Requests
+reads neither the key nor the ledger and contacts no provider. `daily_budget_usd` is
+optional: without it there is no budget check, requests are admitted (including a
+model with no price) and their cost is still recorded in the ledger (a request whose
+cost cannot be bounded is recorded with `cost_unknown`). When set it must be a
+positive number, a missing price refuses a request before credentials or provider I/O
+(`cloud_pricing_unavailable`), and a request that would exceed it is refused with
+`budget_exceeded` (HTTP 429). A cap set after earlier uncapped requests of unknown
+cost the same day is refused with `cost_unknown_history`, which says so, instead of
+claiming the budget is exhausted. Requests
 retain their budget reservation until the private row is durable.
 
 An `openai` route uses the same model/price fields, reads the `openai` key from
@@ -287,7 +290,7 @@ configuration never supplies one.
 Subscription calls require their own positive request/token caps, retain actual
 token usage and settle zero USD. Unknown paid work retains its full token bound;
 the cap includes concurrent and crashed-process reservations. It never falls back
-to a paid API balance. Missing metered pricing still refuses metered requests.
+to a paid API balance. Missing metered pricing still refuses metered requests when a daily budget is set.
 
 OpenCode Go and every other subscription request reserve tokens only. Their cost
 is unknown to oxa, so no daily USD headroom is held for them and no local USD

@@ -88,6 +88,11 @@ impl Price {
         }
         (raw["free"] == true).then(|| Self(json!({"input_per_million":0.0,"output_per_million":0.0}), false))
     }
+    /// A price with no rates, for a model the catalog does not price. It bounds nothing, so only an
+    /// uncapped request can use it, and its settled usage is recorded with unknown cost.
+    pub fn unpriced() -> Self {
+        Self(json!({}), false)
+    }
     #[cfg(feature = "anthropic-gateway")]
     pub(crate) fn conservative(raw: &Value) -> Option<Self> {
         let price = rates(raw)?;

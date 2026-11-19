@@ -948,7 +948,7 @@ fn pending_unknown_cost_hold_closes_later_capped_admission() {
             .reserve(&json!(1), true, &model(), 32)
             .err()
             .map(|error| (error.status, error.code)),
-        Some((429, "budget_exceeded"))
+        Some((429, "cost_unknown_history"))
     );
     // Uncapped requests keep working, before and after the pending hold is released.
     assert!(reopened.reserve(&json!(null), true, &model(), 32).is_ok());
@@ -1064,7 +1064,7 @@ fn unknown_cost_row_closes_later_capped_admission() {
             .reserve(&json!(1), true, &model(), 32)
             .err()
             .map(|error| (error.status, error.code)),
-        Some((429, "budget_exceeded"))
+        Some((429, "cost_unknown_history"))
     );
     // Uncapped requests keep working.
     assert!(reopened.reserve(&json!(null), true, &model(), 32).is_ok());
@@ -1081,4 +1081,22 @@ fn budget_reserve_with_null_cap_still_refuses_when_ledger_disabled() {
             .map(|error| (error.status, error.code)),
         Some((503, "cloud_ledger_unavailable"))
     );
+}
+
+#[test]
+fn unknown_history_reason_not_exhausted() {
+    let home = Home::new();
+    let path = home.ledger();
+    let mut unknown = model();
+    unknown.context = 200_000_000;
+    let budget = Budget::new(path.clone());
+    let hold = budget.reserve(&json!(null), true, &unknown, 32).unwrap();
+    let error = Budget::new(path)
+        .reserve(&json!(1), true, &model(), 32)
+        .err()
+        .unwrap();
+    assert_eq!(error.code, "cost_unknown_history");
+    assert_ne!(error.code, "budget_exceeded");
+    assert!(error.message.contains("unknown cost"));
+    drop(hold);
 }
