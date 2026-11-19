@@ -103,6 +103,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa send <session-id> "text"` | queue one follow-up for the session's TUI or RPC owner |
 | `oxa config [-l]` | print every setting with its value and where it comes from |
 | `oxa mcp <command>` | manage MCP servers, see below |
+| `oxa memory <list\|show\|rm>` | list the memory index, show one memory entry, or remove one entry and its index line, see [Memory commands](#memory-commands) |
 | `oxa identity [--refresh] [--offline]` | show the identity text of the system prompt; `--refresh` rewrites it from this machine and the engine, and `--offline` skips the engine |
 | `oxa share serve --model ALIAS` | start the authenticated streaming OpenAI-compatible listener for explicitly selected native local models in a build with the `share` feature |
 | `oxa share key <add\|list\|revoke>` | owner-only guest key and daily limit management, in a build compiled with the `share` feature |
@@ -168,6 +169,18 @@ $ oxa mcp logout <name>
 - `--exposure` takes `codemode` (default), `deferred`, `direct` or `hidden`. See [mcp.md](mcp.md).
 - `list` connects to every enabled server and reports its state, transport and tools. `--json` prints the same as JSON.
 - `login` connects to the server and runs the OAuth sign-in. The default timeout is 300 seconds. `logout` deletes the stored credentials.
+
+### Memory commands
+
+```console
+$ oxa memory list
+$ oxa memory show <name>
+$ oxa memory rm <name>
+```
+
+- The store is one Markdown file per entry under the agent directory's `memory/` folder, with a generated `MEMORY.md` index.
+- `list` prints the index. `show` prints an entry's kind, description and body. `rm` deletes the entry file and its index line.
+- A name with no entry exits with 1. A usage error exits with 2.
 
 ## Options
 

@@ -183,6 +183,7 @@ fn run_session_inner(
     let (msg_tx, msg_rx) = mpsc::channel::<WorkerMsg>();
     let (ui_tx, ui_rx) = mpsc::channel::<UiRequest>();
     let handle = session.handle();
+    handle.watch_live_settings();
 
     if let Some(text) = opts.initial_prompt.take() {
         let parts = std::mem::take(&mut opts.initial_parts);
@@ -665,7 +666,9 @@ fn worker_loop_inner(
                     // what the rebinding has to tell the user lands in the new transcript.
                     let msg = reopened(s, &mut last);
                     let _ = out.send(msg);
-                    let _ = out.send(WorkerMsg::Rebind(s.handle()));
+                    let handle = s.handle();
+                    handle.watch_live_settings();
+                    let _ = out.send(WorkerMsg::Rebind(handle));
                     let _ = out.send(WorkerMsg::Session(session_info(s)));
                     if opened {
                         let _ = out.send(WorkerMsg::Event(notice_event(&status)));
