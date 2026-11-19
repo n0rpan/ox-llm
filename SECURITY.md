@@ -21,6 +21,10 @@ paths are writable only through an explicit owner `oxa.sandbox.writePaths` mount
 private spill directory and queues a short pointer. The sandbox exposes that spill directory only
 to the receiving session and sessions inheriting its history; the private agent directory remains
 denied to model tools.
+Persisted headless print and JSON runs with a pursuing goal consume plain `oxa send` inbox
+messages by default. The user-only `oxa.inbox.headless` setting can opt out; project settings
+cannot enable or disable it. Non-persisted sessions, sessions without a pursuing goal, and the
+managed-steering path do not mount the plain inbox watcher.
 
 The background-job and per-parent child limits are configurable through `oxa.bash.maxJobs`
 (default 16) and `oxa.subagent.maxChildren` (default 8). Read both caps from the user file.
