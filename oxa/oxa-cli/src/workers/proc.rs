@@ -235,7 +235,13 @@ impl Table {
         let mut finished = Vec::new();
         for (pgid, child) in self.live.iter_mut() {
             if let Ok(false) = group_alive(*pgid) {
-                if let Ok(Some(status)) = child.try_wait() {
+                // The probe skips zombies, so a member whose thread-group leader exited while other
+                // threads still run reads as gone. The leader is unreaped, so `pgid` is still ours:
+                // sweep the group before the worker is retired, as `sweep` does on stop. "No such
+                // process" is the usual outcome here, so the sweep's result is not read; the probe
+                // after it decides.
+                let _ = signal(&self.kill, &format!("-{pgid}"), "KILL");
+                if let (Ok(false), Ok(Some(status))) = (group_alive(*pgid), child.try_wait()) {
                     finished.push((*pgid, status));
                 }
             }
@@ -961,6 +967,49 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_secs(20),
             "stop waited for the surviving thread instead of killing the group"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Whether any thread of `pid` still runs (a task whose state is neither `Z` nor `X`).
+    fn thread_survives(pid: u32) -> bool {
+        let Ok(tasks) = fs::read_dir(format!("/proc/{pid}/task")) else {
+            return false;
+        };
+        tasks.flatten().any(|task| {
+            matches!(
+                fs::read(task.path().join("stat")).map(|bytes| parse_stat(&bytes)),
+                Ok(Ok((state, _))) if state != 'Z' && state != 'X'
+            )
+        })
+    }
+
+    #[test]
+    fn a_descendant_thread_outliving_its_exited_leader_is_swept() {
+        let python = Path::new("/usr/bin/python3");
+        if !python.exists() {
+            return;
+        }
+        let dir = scratch("descendant");
+        let sup = Supervisor::new(GRACE, real_kill()).expect("supervisor");
+        let pidfile = dir.join("bg.pid");
+        // The leader shell exits at once. Its background python keeps one thread running after
+        // its main thread called pthread_exit, so the group probe reads as empty while a thread
+        // still executes. Without the reap sweep that thread would outlive the supervisor's
+        // ownership of the worker.
+        let code = "import ctypes,threading,time\nthreading.Thread(target=lambda: time.sleep(60)).start()\nctypes.CDLL(None).pthread_exit(None)";
+        let script = format!("/usr/bin/python3 -c '{code}' & echo $! > {}", pidfile.display());
+        let _pgid = sup
+            .spawn(&["/bin/sh", "-c", &script], &host_env(), &dir.join("worker.log"))
+            .expect("spawn");
+        let descendant = background_pid(&pidfile);
+        let until = Instant::now() + Duration::from_secs(10);
+        while thread_survives(descendant) && Instant::now() < until {
+            thread::sleep(POLL);
+        }
+        assert!(
+            !thread_survives(descendant),
+            "a thread of a retired worker kept running: the reaper did not sweep its group"
         );
         let _ = fs::remove_dir_all(&dir);
     }
