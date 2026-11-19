@@ -141,7 +141,11 @@ const SCHEMA: &[KeyDef] = &[
     ),
     key("modelThinkingLevels", Kind::Object, "{}"),
     key("outputPad", Kind::Number, "1"),
+    key("oxa.a2a.enabled", Kind::Bool, "true"),
     key("oxa.allowHomeCwd", Kind::Bool, "false"),
+    // #1512 S2: exact rule keys saved by "always allow" in a dangerous-command prompt; user
+    // settings only (a project value is never read).
+    key("oxa.approval.always", Kind::StringList, "[]"),
     // #1512: dangerous-command rules (+id/-id/cmd:..); user settings only.
     key("oxa.approval.dangerous", Kind::StringList, "[]"),
     // F5: seconds; unset = 120; 0 = none.
@@ -175,6 +179,11 @@ const SCHEMA: &[KeyDef] = &[
     // K3: a headless print or JSON run of a persisted session with a pursuing goal takes
     // `oxa send` follow-ups from the session inbox for the run; false = off.
     key("oxa.inbox.headless", Kind::Bool, "true"),
+    // W4: a finished background bash job (not one stopped) queues one follow-up message with its
+    // exit code and last lines; true (the default, owner decision); false (opt-out) = the job's output
+    // waits for a read. User
+    // settings only: a project file cannot enable it.
+    key("oxa.jobs.wakeOnFinish", Kind::Bool, "true"),
     // The owner's explicit route for the Lead conversation: an exact model id for
     // the normal `--model` selector and the normal gateway. User settings only;
     // unset keeps the ordinary startup model.
@@ -260,6 +269,9 @@ const SCHEMA: &[KeyDef] = &[
     ),
     // The worker runner reads this list from owner settings only.
     key("oxa.work.localChecks", Kind::StringList, "[\"cargo check\"]"),
+    // K5a: the `worker` tool (never in a worker child) and the most live workers a session runs.
+    key("oxa.workers.enabled", Kind::Bool, "true"),
+    key("oxa.workers.max", Kind::Number, "4"),
     // K4: seconds a worker gets after SIGINT before its process group gets SIGTERM.
     key("oxa.workers.stopGraceSeconds", Kind::Number, "10"),
     key("packages", Kind::Any, "[]"),

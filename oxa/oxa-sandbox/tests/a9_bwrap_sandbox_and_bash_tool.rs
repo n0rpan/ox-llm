@@ -1,6 +1,4 @@
 //! A9 acceptance tests: bwrap sandbox and bash tool.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 //!
 //! Tests that need bwrap skip with a printed notice when `bwrap` is missing or cannot create a
