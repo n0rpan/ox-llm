@@ -273,8 +273,16 @@ impl DangerRules {
                     ) {
                         Some(Some(next)) => {
                             is_cd = true;
-                            if !changed.contains(&next) {
+                            // An existing non-directory cannot become the shell's cwd.  For a
+                            // missing path retain both outcomes: an earlier command may create it,
+                            // but a failed `cd` leaves the shell in its previous directory.
+                            let exists = next.exists();
+                            let is_dir = next.is_dir();
+                            if (is_dir || !exists) && !changed.contains(&next) {
                                 changed.push(next);
+                            }
+                            if !is_dir && !changed.contains(dir) {
+                                changed.push(dir.clone());
                             }
                         }
                         Some(None) => {
@@ -751,13 +759,44 @@ impl DangerRules {
                 continue;
             }
             if matches!(args[k].as_str(), "-exec" | "-execdir" | "-ok" | "-okdir") {
+                let in_matched_dir = matches!(args[k].as_str(), "-execdir" | "-okdir");
                 let end = args[k + 1..]
                     .iter()
                     .position(|a| a == ";" || a == "+")
                     .map_or(args.len(), |e| k + 1 + e);
                 let cmd = &args[k + 1..end];
                 if !cmd.is_empty() {
-                    self.check_words(cmd, &[], false, &[], outside, ctx, depth + 1, hits);
+                    if in_matched_dir {
+                        let roots = if roots.is_empty() {
+                            vec!["."]
+                        } else {
+                            roots.clone()
+                        };
+                        for root in roots {
+                            let Some(path) = ctx.resolve(root) else {
+                                continue;
+                            };
+                            // A root itself can be matched (so its parent is an execution
+                            // directory), while directory roots may also contain later matches.
+                            let mut dirs = Vec::new();
+                            if let Some(parent) = path.parent() {
+                                dirs.push(parent.to_path_buf());
+                            }
+                            if path.is_dir() {
+                                dirs.push(path);
+                            }
+                            for dir in dirs {
+                                let nested = Ctx {
+                                    cwd: &dir,
+                                    root: ctx.root,
+                                    guard: ctx.guard,
+                                };
+                                self.check_words(cmd, &[], false, &[], outside, &nested, depth + 1, hits);
+                            }
+                        }
+                    } else {
+                        self.check_words(cmd, &[], false, &[], outside, ctx, depth + 1, hits);
+                    }
                 }
                 k = end + 1;
             } else {

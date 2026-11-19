@@ -1075,6 +1075,28 @@ fn a_write_through_a_symlink_and_parent_component_is_classified() {
 }
 
 #[test]
+fn a_failed_cd_preserves_the_previous_directory() {
+    let (env, guard) = setup();
+    let workspace = env.work();
+    let not_a_directory = workspace.join("plain-file");
+    std::fs::write(&not_a_directory, b"fixture").unwrap();
+    let command = format!("cd /; cd {}; rm -rf var/tmp/victim", not_a_directory.display());
+    let got = ids(&DangerRules::builtin().classify(&command, &workspace, &guard));
+    assert_eq!(got, vec!["rm-recursive-outside".to_string()], "{got:?}");
+}
+
+#[test]
+fn find_execdir_uses_the_matched_files_directory() {
+    let (env, guard) = setup();
+    let workspace = env.work();
+    let marker = env.home().join("marker");
+    std::fs::write(&marker, b"fixture").unwrap();
+    let command = format!("find {} -maxdepth 0 -execdir touch .npmrc \\;", marker.display());
+    let got = ids(&DangerRules::builtin().classify(&command, &workspace, &guard));
+    assert_eq!(got, vec!["credential-write".to_string()], "{got:?}");
+}
+
+#[test]
 fn danger_rules_from_list_add_remove_replace() {
     let (env, guard) = setup();
     let cwd = env.work();
