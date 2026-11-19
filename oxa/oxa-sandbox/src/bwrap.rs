@@ -113,12 +113,6 @@ pub(crate) fn bwrap_args_homes(
         Some(sc) => push(&mut a, &["--bind", &sc.path().to_string_lossy(), "/tmp"]),
         None => push(&mut a, &["--tmpfs", "/tmp"]),
     }
-    // The pinned socket above the sandbox's `/tmp`, which is writable, so bwrap can create the
-    // mount point: `/` is bound read-only and `/run` belongs to root, so a mount point there
-    // cannot be created by a user. The mount itself is read-only, so no command can replace it.
-    if let Some(sock) = owner_confirm {
-        push(&mut a, &["--ro-bind", sock, crate::OWNER_CONFIRM_SOCK]);
-    }
     // #53: a `$HOME` that is not the account's real home leaves the real one visible. Hide it
     // like `$HOME` (an empty tmpfs; the cwd and the binds below are mounted on top), so its
     // credentials are absent, not merely emptied by a mask. Never `/` or the sandbox's `$HOME`.
@@ -440,6 +434,16 @@ pub(crate) fn bwrap_args_homes(
         if cwd_path.starts_with(h) || !h.starts_with(cwd_path) {
             push(&mut a, &["--remount-ro", &h.to_string_lossy()]);
         }
+    }
+    // The confirmation socket is pinned where the client looks for it: under the sandbox's
+    // `/tmp`, whose host directory is writable, so bwrap can create the mount point (`/run`
+    // belongs to root and `/` is bound read-only, so a mount point there cannot be created by a
+    // user). It is the last filesystem operation: a cwd of `/tmp` or `/` binds over the earlier
+    // mounts, and a socket mounted before that bind would be replaced by the host tree, letting
+    // a command put its own listener at the trusted path. The mount is read-only, so a command
+    // can never replace it afterwards.
+    if let Some(sock) = owner_confirm {
+        push(&mut a, &["--ro-bind", sock, crate::OWNER_CONFIRM_SOCK]);
     }
     push(&mut a, &["--chdir", &cwd, "--clearenv"]);
     for (k, mut v) in base_env(s, &home_s, layout) {
@@ -1284,6 +1288,43 @@ mod tests {
                 && window[1] == crate::OWNER_CONFIRM_SOCK_ENV
                 && window[2] == host_sock.to_string_lossy()
         }));
+    }
+
+    /// A cwd of `/tmp` or `/` binds the host tree over the earlier mounts, so the confirmation
+    /// socket must be mounted after every filesystem operation (bwrap applies them in order).
+    /// Otherwise a command could create its own listener at the trusted path.
+    #[test]
+    fn owner_confirm_socket_mount_is_last_for_a_cwd_that_covers_tmp() {
+        let env = TestEnv::new();
+        let host_sock = env.home().join(".oxa/agent/tmp/confirm/socket");
+        let host_sock_s = host_sock.to_string_lossy().into_owned();
+        for cwd in ["/tmp", "/", "/tmp/deep"] {
+            let mut sp = spec(Path::new(cwd), false);
+            sp.env
+                .push((crate::OWNER_CONFIRM_SOCK_ENV.to_string(), host_sock_s.clone()));
+            let argv = bwrap_args_homes(&sp, &env.home(), &Layout::default(), None);
+            let mount = ["--ro-bind", host_sock_s.as_str(), crate::OWNER_CONFIRM_SOCK];
+            let at = argv
+                .windows(3)
+                .position(|w| w == mount)
+                .unwrap_or_else(|| panic!("socket not mounted for cwd {cwd}"));
+            // Every mount after it must leave `/tmp` and `/` alone, and nothing may be mounted
+            // below the socket's own path.
+            let dest = |i: usize| -> Option<&str> {
+                match argv[i].as_str() {
+                    "--bind" | "--ro-bind" => argv.get(i + 2).map(String::as_str),
+                    "--tmpfs" | "--dev" | "--proc" => argv.get(i + 1).map(String::as_str),
+                    _ => None,
+                }
+            };
+            for i in at + 3..argv.len() {
+                let Some(dest) = dest(i) else { continue };
+                assert!(
+                    dest != "/" && dest != "/tmp" && !dest.starts_with("/tmp/"),
+                    "cwd {cwd}: {dest} is mounted after the confirmation socket"
+                );
+            }
+        }
     }
 
     /// #528: a refused check and the argv of a home workspace list `$HOME` once, not once per
