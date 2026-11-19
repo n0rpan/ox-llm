@@ -23,8 +23,9 @@ run_timeout_s = 240
 max_time_s = 180
 # stops a run after this many new prompt+output tokens (cached ones are free); keeps a filler-weight model short
 max_tokens = 20000
-# TEMPORARY (synthetic filler-weight model): a run may end on these without a stop token
-accept_error_classes = ["output_limit", "aborted"]
+# TEMPORARY (synthetic filler-weight model): a run may end on these without a stop token. context_overflow: the
+# filler model rambles to the end of its window; any prefix change moves where it ends (2026-11-19, wait tool).
+accept_error_classes = ["output_limit", "aborted", "context_overflow"]
 first_prompt = "Create a file named hello.txt containing the word hi."
 second_prompt = "Now say which file you were asked to create."
 

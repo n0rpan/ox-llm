@@ -476,6 +476,10 @@ impl Tool for Control {
     fn spec(&self) -> &ToolSpec {
         &self.spec
     }
+    /// `wait` is in the default selection of every session; `-wait` in `defaultTools` removes it.
+    fn default_selected(&self) -> bool {
+        self.spec.name == "wait"
+    }
     fn access(&self, args: &Value, _: &ToolCtx) -> Result<Vec<Access>, String> {
         validate(&self.spec.name, args)?;
         Ok(vec![])
