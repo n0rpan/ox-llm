@@ -460,9 +460,10 @@ fn drive(
         } else {
             250
         };
-        let events = term.poll(wait_ms);
-        for ev in events {
-            lp.input(term, ev);
+        if lp.quit.is_none() {
+            for ev in term.poll(wait_ms) {
+                lp.input(term, ev);
+            }
         }
         lp.tick(animating);
         if lp.dirty {
@@ -530,6 +531,9 @@ fn worker_loop_inner(
     // must not begin after it).
     let mut backlog: VecDeque<SessionCmd> = VecDeque::new();
     loop {
+        if limit_exit_if_requested(session.as_ref(), &out) {
+            break;
+        }
         // An extension's `ctx.newSession()` / `ctx.switchSession()` is applied as a reopen
         // before the next command (the commands queued behind it run in the new session).
         if let Some(s) = session.as_mut() {
@@ -582,6 +586,9 @@ fn worker_loop_inner(
             None => match cmds.recv_timeout(WORKER_IDLE_TICK) {
                 Ok(cmd) => cmd,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if limit_exit_if_requested(session.as_ref(), &out) {
+                        break;
+                    }
                     if let Some(s) = session.as_mut() {
                         idle_tick(s, &out, &mut ui_proxy, &mut last, &stop);
                     }
@@ -591,7 +598,7 @@ fn worker_loop_inner(
             },
         };
         // A command taken in the same instant as the stop does not start.
-        if stop.is_stopped() {
+        if stop.is_stopped() || limit_exit_if_requested(session.as_ref(), &out) {
             break;
         }
         if pinned
@@ -732,9 +739,25 @@ fn worker_loop_inner(
                 if swapped || reload {
                     let _ = out.send(WorkerMsg::Session(session_info(s)));
                 }
+                let limit_exit = s.handle().wrap_up_requested().then(|| {
+                    let outcome = result
+                        .as_ref()
+                        .err()
+                        .map_or(*s.outcome(), oxa_core::RunOutcome::from_error);
+                    match outcome {
+                        oxa_core::RunOutcome::Done | oxa_core::RunOutcome::NothingToDo => {
+                            oxa_core::RunOutcome::Interrupted.exit_code()
+                        }
+                        other => other.exit_code(),
+                    }
+                });
                 let _ = out.send(WorkerMsg::Done(result));
                 let fresh = fresh_status(s, &mut last);
                 let _ = out.send(WorkerMsg::Status(fresh));
+                if let Some(code) = limit_exit {
+                    let _ = out.send(WorkerMsg::LimitExit(code));
+                    break;
+                }
             }
         }
     }
@@ -743,6 +766,18 @@ fn worker_loop_inner(
         s.shutdown(&mut ui_proxy);
     }
     ended
+}
+
+// A limit on the current Session does not follow a session swap. When no command is
+// active, acknowledge it without starting a prompt or another background request.
+fn limit_exit_if_requested(session: Option<&Session>, out: &Sender<WorkerMsg>) -> bool {
+    let requested = session.is_some_and(|s| s.handle().wrap_up_requested());
+    if requested {
+        let _ = out.send(WorkerMsg::LimitExit(
+            oxa_core::RunOutcome::Interrupted.exit_code(),
+        ));
+    }
+    requested
 }
 
 /// The worker's idle tick: serve what hook sets asked for while the session was idle. A turn

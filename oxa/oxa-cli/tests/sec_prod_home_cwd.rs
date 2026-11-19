@@ -53,7 +53,7 @@ fn go(
     (code, text(&out), text(&err))
 }
 
-const REFUSED: &str = "oxa was started in";
+const REFUSED: &str = "cd into a project directory first";
 const UNREACHABLE: &str = "http://127.0.0.1:9";
 
 fn refused_in(env: &TestEnv, cwd: &Path) {

@@ -17,6 +17,11 @@ Treat as **high** severity:
 The sandbox can forward the owner's `CARGO_TARGET_DIR` to worker shells. External cache
 paths are writable only through an explicit owner `oxa.sandbox.writePaths` mount.
 
+An explicit owner CLI `--auto` or `--yolo` is sufficient startup consent for home, root, or a
+parent of home, with a warning. Project settings and model output cannot supply that CLI consent.
+An interactive time or token limit ends the watched startup session after its bounded wrap-up,
+and an idle expiry starts no model request.
+
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 
 Do not report: style, pre-existing issues outside the diff, test-only code that never runs in production, or hypothetical risks without a concrete path.

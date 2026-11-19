@@ -50,6 +50,10 @@ maintainer, who says in the PR when a hardware check is needed.
   `oxa.sandbox.writePaths` entry. Review environment forwarding and writable mounts independently.
 - **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
   registry with its surfaces and help (P1 if added outside it or without an exception reason).
+- An explicit owner CLI `--auto` or `--yolo` permits starting at home, root, or a parent of home
+  with a warning. Settings and environment opt-ins retain their own rules. Interactive `--max-time`
+  and `--max-tokens` stop the watched startup session at its wrap-up boundary, before later prompts.
+  An idle expiry starts no model request.
 - **Work acceptance.** In `oxa work`, zero or skipped checks leave the task `Unverified`. The
   owner-only `oxa.work.localChecks` defaults to a per-package `cargo check`. A verified Rust
   acceptance receipt requires hosted test evidence at the exact head, including for changed

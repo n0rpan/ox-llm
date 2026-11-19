@@ -821,6 +821,10 @@ impl<'a> Loop<'a> {
                         .to_string(),
                 );
             }
+            WorkerMsg::LimitExit(code) => {
+                self.push_notice(Level::Info, "Session limit or stop signal reached.".to_string());
+                self.quit = Some(code);
+            }
             WorkerMsg::Done(result) => {
                 // The wire may have changed: the same draft is a new prefill.
                 self.draft.wire_changed();
