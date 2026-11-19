@@ -523,6 +523,40 @@ fn live_clone_and_fork_rebind_spill_policy_and_walk_filter() {
     assert_readable_spill(&s, &old.join("inherited.txt"));
 }
 
+/// #877: a `!cmd` is foreground work while it holds the session. Without the foreground signal
+/// the front end reads a long command as idle and takes input typed during it for a new run.
+#[test]
+fn a_user_bash_command_is_foreground_work_until_it_ends() {
+    use oxa_proto::EventSink;
+    use std::sync::atomic::AtomicBool;
+    struct RunningAtAppend(oxa_core::Handle, Arc<AtomicBool>);
+    impl EventSink for RunningAtAppend {
+        fn emit(&mut self, event: &AgentEvent) {
+            if matches!(event, AgentEvent::EntryAppended { .. }) {
+                self.1.store(self.0.is_running(), Ordering::SeqCst);
+            }
+        }
+    }
+    let env = TestEnv::new();
+    let mut session = Session::open(deps(&env, Arc::new(MemStore::new())), Open::New).unwrap();
+    let handle = session.handle();
+    let seen = Arc::new(AtomicBool::new(false));
+    session
+        .user_bash(
+            "printf expected > bash-started",
+            false,
+            &mut RunningAtAppend(handle.clone(), seen.clone()),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert!(
+        seen.load(Ordering::SeqCst),
+        "the session is foreground work while the command holds it"
+    );
+    assert!(!handle.is_running(), "the signal ends with the command");
+    assert!(!handle.is_busy());
+}
+
 /// #744: queued RPC bash jobs must not run after a headless SIGINT, even on a later claim.
 #[test]
 fn interrupt_before_user_bash_claim_is_sticky_and_does_not_execute() {

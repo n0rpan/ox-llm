@@ -235,6 +235,13 @@ fn run_inner(
         let mut retried = false;
         let mut replays: u32 = 0;
         let turn = loop {
+            // A run that continues after a persisted cut, failure or wrap-up is still foreground
+            // work: re-arm the signal that `persist` cleared, so input during the replay or the
+            // next turn is steering, not a new run. The run's guard clears it at the end.
+            st.shared
+                .gate
+                .running
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             if !wrapping_up && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
                 let text = "Request skipped for wrap-up.".to_string();
                 let progress = persist(
