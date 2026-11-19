@@ -55,6 +55,9 @@ maintainer, who says in the PR when a hardware check is needed.
   `oxa.sandbox.writePaths` entry. Review environment forwarding and writable mounts independently.
 - **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
   registry with its surfaces and help (P1 if added outside it or without an exception reason).
+- **Worker mode.** An `oxa work` worker is started with `--yolo` only when the owner's user-layer
+  `permissions.defaultMode` is `yolo`; otherwise it keeps the sandboxed default. Project settings
+  cannot raise it. See `oxa/docs/work.md`.
 - **Work acceptance.** In `oxa work`, zero or skipped checks leave the task `Unverified`. The
   owner-only `oxa.work.localChecks` defaults to a per-package `cargo check`. A verified Rust
   acceptance receipt requires hosted test evidence at the exact head, including for changed
