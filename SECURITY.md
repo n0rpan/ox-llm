@@ -17,6 +17,11 @@ Treat as **high** severity:
 The sandbox can forward the owner's `CARGO_TARGET_DIR` to worker shells. External cache
 paths are writable only through an explicit owner `oxa.sandbox.writePaths` mount.
 
+Owner-selected `yolo` deliberately removes the bash sandbox and permission floor. Its bash
+output still masks an exact copy of the GitHub token oxa discovered, including when `--offline`
+or `oxa.sandbox.net: "off"` prevents that token from being injected into commands. This is an
+output-only guard: it does not block or alter the command.
+
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 
 Do not report: style, pre-existing issues outside the diff, test-only code that never runs in production, or hypothetical risks without a concrete path.

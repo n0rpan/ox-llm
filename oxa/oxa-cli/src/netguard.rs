@@ -21,22 +21,28 @@ fn with_policy(sandbox: Arc<dyn Sandbox>, settings: &Settings, github_auth: bool
     let runner_owns_github = std::env::var_os(oxa_work::RUNNER_GITHUB_ENV).is_some_and(|value| value == "1");
     let on = !runner_owns_github && sandbox_net_setting(settings.string(SETTING_SANDBOX_NET).as_deref());
     let offline = oxa_proto::offline();
-    // The `gh` lookup can stall (a mise shim may try to install gh): run it lazily, at the
-    // first bash command, never at startup — with or without the network, because
-    // `gh auth token` reads its config locally, so the output mask must know the secret in
-    // every mode; only the `GH_TOKEN` injection is network-gated (in `token_for`).
-    let lookup = github_auth
-        && !test_isolated(
+    // The `gh` lookup can stall (a mise shim may try to install gh): run it lazily, at the first
+    // bash command that needs injection or output masking, never at startup. Keep the source
+    // installed while network is off: yolo can still read the user's gh login from the host.
+    let lookup = github_lookup_allowed(
+        github_auth,
+        runner_owns_github,
+        test_isolated(
             std::env::var(oxa_proto::names::ENV_TEST_ISOLATION)
                 .ok()
                 .as_deref(),
-        );
+        ),
+    );
     let ns = NetSandbox::new(sandbox, on, offline);
     Arc::new(if lookup {
         ns.with_gh_token_lazy(gh_token)
     } else {
         ns
     })
+}
+
+fn github_lookup_allowed(github_auth: bool, runner_owns_github: bool, test_isolated: bool) -> bool {
+    github_auth && !runner_owns_github && !test_isolated
 }
 
 /// Under test isolation (`OXA_TEST_ISOLATION=1`) the host's `gh` login is never consulted: a
@@ -256,6 +262,19 @@ mod tests {
         assert!(test_isolated(Some("1")));
         assert!(!test_isolated(None));
         assert!(!test_isolated(Some("0")));
+    }
+
+    #[test]
+    fn github_token_source_is_independent_of_network_policy() {
+        for (on, offline) in [(true, false), (false, false), (true, true)] {
+            assert!(
+                github_lookup_allowed(true, false, false),
+                "on={on} offline={offline}"
+            );
+        }
+        assert!(!github_lookup_allowed(false, false, false));
+        assert!(!github_lookup_allowed(true, true, false));
+        assert!(!github_lookup_allowed(true, false, true));
     }
 
     fn script(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
