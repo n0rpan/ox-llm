@@ -421,6 +421,9 @@ fn unattended_approval_cannot_replay_file_fed_input() {
         "xargs rm -rf < targets",
         "cat targets | xargs rm -rf",
         "rm -rf --files-from=targets",
+        "cat targets | x'a'rgs rm -rf",
+        "cat targets | \"xargs\" rm -rf",
+        "cat targets | xa\\rgs rm -rf",
     ] {
         let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
         let cmd = exec(command);
