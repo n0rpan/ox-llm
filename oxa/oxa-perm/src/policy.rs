@@ -1,5 +1,5 @@
 //! A10: the mode x access policy table.
-use crate::danger::{DangerHit, DangerRules};
+use crate::danger::{has_dynamic, DangerHit, DangerRules};
 use crate::desk::{ApprovalDesk, UnattendedMode};
 use crate::paths::{is_inside, is_read_only_command, resolve_real};
 use oxa_proto::guard::{
@@ -439,21 +439,18 @@ impl ModePolicy {
         }
     }
 
-    /// The classified hits of `a` minus the keys a session or always grant covers, before the
-    /// desk is consulted. A segment the shell computes at run time (`$VAR`, `$(..)`, backticks)
-    /// is never covered by any reusable grant: the same text names another target next time
-    /// (`D=$HOME; rm -rf "$D"` after `rm -rf "$D"` was granted), so it asks every time.
+    /// The classified hits of `a` minus the keys a session or always grant covers. Inspect
+    /// the whole command for dynamic input because an earlier stage can affect a later hit.
     fn danger_open(&self, a: &Access, cwd: &Path) -> Vec<DangerHit> {
         let (Access::Exec { command, .. }, Some(rules)) = (a, &self.danger) else {
             return Vec::new();
         };
-        rules
-            .classify(command, cwd, &self.guard)
-            .into_iter()
+        let hits = rules.classify(command, cwd, &self.guard);
+        if has_dynamic(command) {
+            return hits;
+        }
+        hits.into_iter()
             .filter(|h| {
-                if h.segment.contains('$') || h.segment.contains('`') {
-                    return true;
-                }
                 let key = danger_key(h, command);
                 !self.danger_grants.contains(&key) && !self.always.contains(&key)
             })
@@ -462,18 +459,15 @@ impl ModePolicy {
 
     /// #1512 S5: the desk's session or once grant covers `open` together, all or nothing. The
     /// key is the complete command line, exactly like the policy grants: an approval for
-    /// `true || git push --force origin main` never covers a standalone push. A segment the
-    /// shell computes at run time is never covered by a reusable grant at all.
+    /// `true || git push --force origin main` never covers a standalone push. Shell expansion
+    /// markers anywhere in the command make a saved grant inapplicable.
     fn desk_grant(&self, a: &Access, cwd: &Path, open: &[DangerHit]) -> Option<(&ApprovalDesk, Vec<String>)> {
         let (Access::Exec { command, .. }, Some(desk)) = (a, &self.desk) else {
             return None;
         };
         if open.is_empty()
-            || open.iter().any(|h| {
-                h.rule == crate::desk::OPAQUE_SHELL_INPUT
-                    || h.segment.contains('$')
-                    || h.segment.contains('`')
-            })
+            || has_dynamic(command)
+            || open.iter().any(|h| h.rule == crate::desk::OPAQUE_SHELL_INPUT)
         {
             return None;
         }

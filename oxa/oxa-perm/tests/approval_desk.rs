@@ -356,6 +356,30 @@ fn unattended_request_setting_overrides_auto() {
 }
 
 #[test]
+fn a_dynamic_stage_prevents_replay_of_a_saved_approval() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let (rules, warnings) = DangerRules::from_list(&["cmd:printf".into()]);
+    assert!(warnings.is_empty());
+    let rules = Arc::new(rules);
+    let cmd = exec(r#"echo "$SYNTHETIC_VALUE"; printf ok"#);
+
+    for answer in ["once", "session", "always"] {
+        let mut p = ModePolicy::new()
+            .with_danger(rules.clone(), Vec::new())
+            .with_desk(desk.clone(), answer.into(), UnattendedMode::Request, false);
+        let hits = p.danger_ask(&cmd, &cwd);
+        assert_eq!(hits.len(), 1, "only the literal stage matched the rule");
+        let request = p.danger_unattended(&cmd, &cwd).expect("request");
+        desk.answer(&request_id(&request), answer).expect("save approval");
+        assert_eq!(p.decide(Mode::Workspace, &cmd, &cwd), Decision::Ask);
+        p.grant_danger(std::slice::from_ref(&hits[0].0));
+        assert_eq!(p.decide(Mode::Workspace, &cmd, &cwd), Decision::Ask);
+    }
+}
+
+#[test]
 fn unattended_approval_cannot_replay_opaque_shell_input() {
     let env = TestEnv::new();
     let (desk, _) = open_desk(&env);

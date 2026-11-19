@@ -56,8 +56,9 @@ maintainer, who says in the PR when a hardware check is needed.
   `oxa.approval.unattended` (`auto` by default, `refuse`, `request`; user settings only) refuses or
   files an owner request, answered only through `oxa send --approve` or the lead web page. Grants are
   owner-scoped (`once` is consumed by the retrying run; `session`/`always` persist) and a project file
-  or model output cannot grant one. A finding that asks for a default-off switch or for an unattended
-  run to wait is answered here.
+  or model output cannot grant one. Shell parameter or command substitution markers anywhere in
+  the command prevent reuse of a saved grant. A finding that asks for a default-off switch or for
+  an unattended run to wait is answered here.
 - Reserve P0/P1 for violations of these invariants or concrete data loss/crash. Report only
   introduced, actionable defects with a failure scenario; skip style and speculative risks.
 - A finding is a claim to verify, not an order. Whoever acts on a review finding first shows it is

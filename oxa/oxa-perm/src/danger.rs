@@ -1672,7 +1672,7 @@ fn is_find_expr(a: &str) -> bool {
 }
 
 /// `true` when the text has a `$` or a backtick: a value the shell computes.
-fn has_dynamic(text: &str) -> bool {
+pub(crate) fn has_dynamic(text: &str) -> bool {
     text.contains('$') || text.contains('`')
 }
 
