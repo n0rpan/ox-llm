@@ -253,6 +253,12 @@ fn control_extension(session: &SessionRef) -> String {
 
 fn publish(agent_dir: &Path, id: &str, extension: &str, text: &str) -> io::Result<()> {
     let dir = directory(agent_dir, id)?;
+    publish_into(&dir, extension, text)
+}
+
+/// The write, rename and cleanup run through the pinned directory descriptor, never
+/// through the saved pathname, so a replaced or renamed path cannot redirect them.
+fn publish_into(dir: &Directory, extension: &str, text: &str) -> io::Result<()> {
     let name = format!(
         "{:032}-{}",
         std::time::SystemTime::now()
@@ -261,21 +267,44 @@ fn publish(agent_dir: &Path, id: &str, extension: &str, text: &str) -> io::Resul
             .as_nanos(),
         crate::new_entry_id(&|_| false)
     );
-    let temp = dir.path().join(format!(".{name}.tmp"));
-    let ready = dir.path().join(format!("{name}.{extension}"));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(&temp)?;
+    let temp = CString::new(format!(".{name}.tmp"))?;
+    let ready = CString::new(format!("{name}.{extension}"))?;
+    // Publication stays on the pinned, private directory inode: a renamed or replaced
+    // path can never redirect the write, and O_NOFOLLOW keeps a symlink out of it.
+    // SAFETY: both names are single components relative to the live pinned descriptor.
+    let fd = unsafe {
+        libc::openat(
+            dir.file.as_raw_fd(),
+            temp.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: openat returned a new owned descriptor.
+    let mut file = unsafe { File::from_raw_fd(fd) };
     let result = (|| {
         file.write_all(text.as_bytes())?;
         file.sync_data()?;
-        fs::rename(&temp, ready)
+        // SAFETY: a rename between two single components of the same live descriptor.
+        if unsafe {
+            libc::renameat(
+                dir.file.as_raw_fd(),
+                temp.as_ptr(),
+                dir.file.as_raw_fd(),
+                ready.as_ptr(),
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     })();
     if result.is_err() {
-        let _ = fs::remove_file(temp);
+        // SAFETY: one component of the live pinned descriptor.
+        unsafe { libc::unlinkat(dir.file.as_raw_fd(), temp.as_ptr(), 0) };
     }
     result
 }
@@ -684,6 +713,38 @@ fn remove_entry(dir: &Directory, name: &OsStr) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publish_keeps_writing_the_pinned_directory_after_a_rename() {
+        use std::os::unix::fs::symlink;
+        let env = oxa_fake::TestEnv::new();
+        let agent = env.root().join("agent");
+        send_inbox(&agent, "session-pin", "first").unwrap();
+        let pinned = directory(&agent, "session-pin").unwrap();
+        let dir = agent.join("inbox/session-pin");
+        let moved = env.root().join("moved");
+        fs::rename(&dir, &moved).unwrap();
+        let attacker = env.root().join("attacker");
+        fs::create_dir_all(&attacker).unwrap();
+        symlink(&attacker, &dir).unwrap();
+
+        publish_into(&pinned, "msg", "second").unwrap();
+
+        assert!(
+            fs::read_dir(&attacker).unwrap().next().is_none(),
+            "the replacement directory receives nothing"
+        );
+        let names: Vec<String> = fs::read_dir(&moved)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 2, "the pinned directory keeps both: {names:?}");
+        let texts: Vec<String> = names
+            .iter()
+            .map(|n| fs::read_to_string(moved.join(n)).unwrap())
+            .collect();
+        assert!(texts.contains(&"first".to_string()) && texts.contains(&"second".to_string()));
+    }
 
     #[test]
     fn inbox_wipe_keeps_the_open_parent_after_a_rename() {
