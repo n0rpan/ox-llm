@@ -41,6 +41,18 @@ pub struct ToolCall {
     pub args_raw: String,
 }
 
+/// An image part of a message (B2a): the media type and the file bytes as standard base64.
+///
+/// On the wire it is an `image_url` part with a `data:` URL. It is never counted as text
+/// ([`WireMsg::text_json_len`]). Nothing creates one until a tool or the user attaches an image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireImage {
+    /// `image/png`, `image/jpeg`, `image/gif` or `image/webp`.
+    pub mime: String,
+    /// Standard base64 (RFC 4648, padded, no line breaks).
+    pub base64: String,
+}
+
 /// One message of the wire (`messages` of `/v1/chat/completions`).
 ///
 /// The system message is *not* a `WireMsg` in a request: it comes from the
@@ -50,6 +62,9 @@ pub struct ToolCall {
 pub struct WireMsg {
     pub role: Role,
     pub content: Option<String>,
+    /// Image parts, after `content`, in order. User and tool messages only; empty otherwise.
+    /// With images the `content` is an array of parts (see [`WireMsg::write_json`]).
+    pub images: Vec<WireImage>,
     /// `reasoning_content` on the wire. Assistant only.
     pub reasoning: Option<String>,
     /// Assistant only; empty otherwise.
@@ -75,6 +90,7 @@ impl WireMsg {
     }
     pub fn tool_result(tool_call_id: impl Into<String>, text: impl Into<String>) -> Self {
         WireMsg {
+            images: Vec::new(),
             role: Role::Tool,
             content: Some(text.into()),
             reasoning: None,
@@ -85,6 +101,7 @@ impl WireMsg {
     }
     fn plain(role: Role, text: String) -> Self {
         WireMsg {
+            images: Vec::new(),
             role,
             content: Some(text),
             reasoning: None,
@@ -108,7 +125,24 @@ impl WireMsg {
     ///
     /// `content: None` is written as `null`. Strings are escaped by `serde_json` (non-ASCII is
     /// written raw as UTF-8).
+    ///
+    /// With `images` the content is an array: `[{"type":"text","text":C}` (when `content` is
+    /// `Some`), then one `{"type":"image_url","image_url":{"url":"data:M;base64,D"}}` per image.
+    /// Without images the bytes are exactly the shapes above.
     pub fn write_json(&self, out: &mut Vec<u8>) {
+        self.write_json_with(out, true);
+    }
+
+    /// The length of the canonical bytes with the images left out: what counts as text for the
+    /// token estimate (`image_part_is_not_counted_as_text_tokens`). Equal to `to_json().len()`
+    /// for a message without images.
+    pub fn text_json_len(&self) -> usize {
+        let mut v = Vec::new();
+        self.write_json_with(&mut v, false);
+        v.len()
+    }
+
+    fn write_json_with(&self, out: &mut Vec<u8>, with_images: bool) {
         out.extend_from_slice(b"{\"role\":\"");
         out.extend_from_slice(self.role.as_str().as_bytes());
         out.push(b'"');
@@ -117,9 +151,29 @@ impl WireMsg {
             write_json_str(self.tool_call_id.as_deref().unwrap_or(""), out);
         }
         out.extend_from_slice(b",\"content\":");
-        match &self.content {
-            Some(c) => write_json_str(c, out),
-            None => out.extend_from_slice(b"null"),
+        let images: &[WireImage] = if with_images { &self.images[..] } else { &[] };
+        if images.is_empty() {
+            match &self.content {
+                Some(c) => write_json_str(c, out),
+                None => out.extend_from_slice(b"null"),
+            }
+        } else {
+            out.push(b'[');
+            if let Some(c) = &self.content {
+                out.extend_from_slice(b"{\"type\":\"text\",\"text\":");
+                write_json_str(c, out);
+                out.push(b'}');
+            }
+            for (i, img) in images.iter().enumerate() {
+                if i > 0 || self.content.is_some() {
+                    out.push(b',');
+                }
+                let url = format!("data:{};base64,{}", img.mime, img.base64);
+                out.extend_from_slice(b"{\"type\":\"image_url\",\"image_url\":{\"url\":");
+                write_json_str(&url, out);
+                out.extend_from_slice(b"}}");
+            }
+            out.push(b']');
         }
         if self.role == Role::Assistant {
             if let Some(r) = &self.reasoning {

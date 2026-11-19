@@ -97,16 +97,22 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `defaultTools` | list | `["read","bash","edit","write","grep","find","ls"]` | tools on by default; names may include `subagent`, `web_search`, `codemode` and `tool_search` |
-| `oxa.bash.defaultTimeout` | number (seconds) | unset | timeout of a bash call that names none; unset is 120; `0` is no timeout |
+| `oxa.bash.defaultTimeout` | number (seconds) | unset | timeout of a bash call that names none; unset is 120; `0` is no timeout. A call's own `timeout: 0` is no timeout too, and beats this default |
+| `oxa.bash.maxJobs` | number | `16` | background jobs (`bash` with `background: true`) that may run at once; a further start is refused and names the oldest running job to stop with `kill`. User settings only. At least 1 |
 | `oxa.diet.output` | bool | unset | the system prompt's "be concise" rule is replaced by rules on tool use and a final answer of at most 6 lines. Unset is on |
 | `oxa.diet.tools` | bool | unset | shorter `grep` and `bash` output: `grep` prints each path once, and runs of three or more blank lines in bash output become two. Unset is on |
+| `oxa.liveSettings` | bool | `true` | on by default; `false` opts out. When on, a changed settings file is applied at the start of the next run without `/reload` (one `stat` per file; keys that feed the prompt rebuild it). Read from the settings the session holds, so turning it on takes effect at the next `/reload` or start. A file that no longer parses keeps the previous settings |
 | `oxa.maxTurns` | number | unset | end a run after this many model replies with a `turn_limit` error (a cap against loops the repeat guard cannot see, such as alternating calls). Unset or `0` is no limit |
 | `oxa.toolOutputCap` | number (bytes) | `16384` | cap on one tool output sent to the model. When `oxa.compaction.softTokens` is set or the engine publishes a compaction point, one tool result is at most a quarter of it (never below 2048 bytes), unless this is set; `grep`, `find`, `ls` and a `read` with `offset` or `limit` are cut at that cap, the first page of `read` at 8 KiB within it; see [tools-context.md](tools-context.md) |
 | `oxa.toolRepair` | bool | `true` | repair a malformed tool call with one extra turn ([tools.md](tools.md#repair-turn)) |
-| `oxa.toolRepeatGuard` | bool | `true` | answer a tool call that returned the same result three times in a row with a short note, and stop the run if it goes on ([tools.md](tools.md#repeated-calls)) |
+| `oxa.work.localChecks` | list of strings | `["cargo check"]` | owner-only local compile commands for `oxa work`. The runner adds `-p <crate>` for a touched crate. The hosted lane supplies the test verdict. |
+| `oxa.toolRepeatGuard` | bool | `true` | answer a tool call that returned the same result three times in a row with a short note, and warn once (shown and kept in the session) if it goes on; the run continues ([tools.md](tools.md#repeated-calls)) |
+| `oxa.wait.maxSeconds` | number (seconds) | `3600` | cap on one `wait` call's `seconds` (schema maximum 86400); a longer request is cut to it |
+| `oxa.wait.pollSeconds` | number (seconds) | `30` | how often a `wait` with an `until` condition asks the hook sets for its state; no model request is made meanwhile |
 | `oxa.subagent.enabled` | bool | unset | the `subagent` tool; unset is on unless the model is Flash or its window is below 32K |
 | `oxa.subagent.smallContext` | bool | `false` | declare `subagent` on a model with a window below 32K |
 | `oxa.subagent.softTokens` | number | `24000` | compaction point of a child agent |
+| `oxa.subagent.maxChildren` | number | `8` | children one parent session runs or queues over every call in flight, and the most `tasks` or `chain` steps one call takes. User settings only. At least 1 |
 | `oxa.subagent.remoteConcurrency` | number | `4` | children of one `tasks` call that run at once when some run on a cloud model (local children run one at a time) |
 | `oxa.subagent.resultCap` | number (bytes) | `6144` | cap on the text a child returns |
 | `oxa.webSearch.enabled` | bool | `true` | the `web_search` tool, when a key exists |
@@ -251,9 +257,13 @@ The key is read for each request from the existing private
 `~/.config/oxc/llm/cloud-secrets.json` (owner-only, mode `0600`, outside a checkout).
 Keep keys out of settings. The file uses the existing provider-key JSON format.
 Private settlement rows live in `<agent directory>/cloud-ledger/`. Listing models
-reads neither the key nor the ledger and contacts no provider. A missing price or
-daily budget refuses a request before credentials or provider I/O. Requests retain
-their budget reservation until the private row is durable.
+reads neither the key nor the ledger and contacts no provider. A missing price
+refuses a request before credentials or provider I/O. `daily_budget_usd` is
+optional: without it there is no budget check, requests are admitted and their
+cost is still recorded in the ledger (a request whose cost cannot be bounded is
+recorded with `cost_unknown`). When set it must be a positive number, and a
+request that would exceed it is refused with `budget_exceeded` (HTTP 429). Requests
+retain their budget reservation until the private row is durable.
 
 An `openai` route uses the same model/price fields, reads the `openai` key from
 that key file, and defaults to `https://api.openai.com/v1`. Both native providers
@@ -281,13 +291,29 @@ token usage and settle zero USD. Unknown paid work retains its full token bound;
 the cap includes concurrent and crashed-process reservations. It never falls back
 to a paid API balance. Missing metered pricing still refuses metered requests.
 
+OpenCode Go and every other subscription request reserve tokens only. Their cost
+is unknown to oxa, so no daily USD headroom is held for them and no local USD
+cap or request bound pauses their admission: a tiny or fully consumed
+`oxa.cloud.daily_budget_usd` never returns a local refusal for them, and the
+former `oxa.cloud.opencode.daily_budget_usd` and
+`oxa.cloud.opencode.max_request_usd` settings are no longer read. OpenCode's
+reported paid charges settle into the ledger and count in the shared daily
+total. Missing or estimated Go costs stay unknown, with no actual USD amount.
+Historical Go estimates remain readable and do not count toward the daily total.
+Holds written by older versions — including stored `reserved_usd` and `go_usd`
+amounts — stay readable with their tokens counted toward the subscription caps,
+while their recorded USD reserves nothing. OpenCode controls whether a call falls
+back to its paid balance; if it reports a higher charge than expected, the
+ledger records the full amount and admission continues.
+
 ### Other
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `externalEditor` | string | `null` | editor for Ctrl+G; wins over `VISUAL` and `EDITOR` |
 | `oxa.reportIssue.repo` | string | `null` | repository for `oxa report-issue submit`, as `OWNER/NAME` |
-| `oxa.reportIssue.semanticDedupe` | bool | `false` | verify dogfood reports against current main and search open and recently closed issues before posting. Matching reports become comments. New issues are limited to one per task and three per worker per UTC day |
+| `oxa.reportIssue.dailyNew` | number | `null` | owner cap on new issues per worker per UTC day for semantic dedupe. Unset means no check. Over the cap the post preview warns and records it; the owner's yes still posts |
+| `oxa.reportIssue.semanticDedupe` | bool | `false` | verify dogfood reports against current main and search open and recently closed issues before posting. Matching reports become comments, and the one preview question covers the post. New issues are limited to one per task; the per-worker daily count is `oxa.reportIssue.dailyNew` |
 | `oxa.builtinSkills` | bool | `true` | include the skills built into oxa |
 | `oxa.share.remoteModels` | string list | `[]` | user-only allowlist of metered cloud aliases eligible for explicit LAN sharing; personal subscriptions are excluded |
 | `oxa.skills.includeSynced` | bool | `false` | also list the skills another product synced into `~/.agents/skills` (a `synced/` folder, or a folder whose `manifest.json` lists `skillId`s); they are written for that product's tools, so oxa skips them by default |
