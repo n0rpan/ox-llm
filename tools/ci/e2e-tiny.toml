@@ -9,8 +9,7 @@ sha256 = "24b31c9d9ab22ceb033629b721f9df8fb011b3f3e5977ee06e55c50935e7bb79"
 
 [server]
 port = 18080
-# 98304 (was 65536): the second turn already used 64.9K of 65.5K, so any prefix growth overflowed.
-ctx_size = 98304
+ctx_size = 65536
 startup_timeout_s = 120
 
 [probe]
