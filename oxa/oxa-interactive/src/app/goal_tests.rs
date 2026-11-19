@@ -84,6 +84,31 @@ fn resumed_pursuing_goal_shows_notice_and_spends_no_request() {
     );
 }
 
+/// G3 fix: a terminal control in the objective (repository-supplied) never reaches the notice.
+#[test]
+fn resumed_notice_strips_terminal_controls() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("must not run")]));
+    let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(env.root().join("sessions")));
+    let mut session = Session::open(deps(&env, engine, store), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    let goal = Goal::new(
+        "Ship\x1b]52;c;SGVsbG8=\x07 the\x1b[2J parser\u{9b}31m\nsecond line".into(),
+        GoalBudget::default(),
+        0,
+    )
+    .unwrap();
+    session.set_goal(Some(goal), &mut sink).unwrap();
+
+    let notice = resumed_goal_notice(&session, false).expect("a pursuing goal is announced");
+    assert!(!notice.chars().any(char::is_control), "{notice:?}");
+    assert!(
+        notice.starts_with("Goal pursuing: Ship]52;c;SGVsbG8= the[2J parser"),
+        "{notice}"
+    );
+    assert!(!notice.contains("second line"), "{notice}");
+}
+
 #[test]
 fn goal_set_starts_run_with_goal_start_prompt() {
     let env = TestEnv::new();

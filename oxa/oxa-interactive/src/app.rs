@@ -848,7 +848,17 @@ fn resumed_goal_notice(s: &Session, run_queued: bool) -> Option<String> {
     let goal = s
         .goal()
         .filter(|g| g.status == oxa_session::GoalStatus::Pursuing)?;
-    let first = goal.objective.lines().next().unwrap_or_default().trim();
+    // The objective may come from a repository file: drop terminal controls (ESC, BEL, C1) so
+    // the notice cannot clear the screen, retitle the window or write the clipboard.
+    let first: String = goal
+        .objective
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect();
+    let first = first.trim();
     Some(format!(
         "Goal pursuing: {first}; /goal resume continues, /goal clear drops it"
     ))
