@@ -17,6 +17,7 @@
 #![forbid(unsafe_code)]
 
 mod descriptor;
+mod descriptor_value;
 mod dirs;
 mod env;
 mod keybindings;
@@ -29,6 +30,7 @@ pub use descriptor::{
     descriptor, descriptors, fields_of, in_group, Apply, Control, Descriptor, Group, Item, MapKind, Options,
     Range, Unit, WebEdit,
 };
+pub use descriptor_value::{check, current, display_value, parse_input, search, Shown};
 pub use dirs::dirs_from_env;
 pub use env::{env_flag, Env, EnvFlag, EnvVar, ENV_TABLE, FALSE_WORDS, TRUE_WORDS};
 pub use keybindings::{ActionDef, Keymap};
