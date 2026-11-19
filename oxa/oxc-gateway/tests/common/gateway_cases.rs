@@ -342,10 +342,10 @@ fn go_captured_terminal_usage_settles_even_without_public_delivery() {
             let saved = rows(&fixture);
             assert_eq!(saved.len(), 1);
             assert_eq!(saved[0]["subscription_requests"], 1);
-            assert_eq!(saved[0]["cost_usd"], 0.0);
             assert_eq!(saved[0]["subscription_tokens"], if known { 105 } else { 1124 });
             assert_eq!(saved[0]["settled"], if known { "usage" } else { "reserved" });
             if known {
+                assert_eq!(saved[0]["cost_usd"], 0.0);
                 assert_eq!(saved[0]["opencode"]["allowance"], 0.0008);
                 assert_eq!(saved[0]["opencode"]["tokens"]["cache_read"], 80);
                 assert_eq!(saved[0]["cached_tokens"], 80);
@@ -356,6 +356,7 @@ fn go_captured_terminal_usage_settles_even_without_public_delivery() {
                     .expect("actual usage leaves room for next hold");
                 next.finish(Outcome::Complete, 200, None).unwrap();
             } else {
+                assert!(saved[0].get("cost_usd").is_none());
                 assert_eq!(
                     gateway
                         .runtime

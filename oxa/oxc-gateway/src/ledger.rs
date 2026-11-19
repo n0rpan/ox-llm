@@ -90,6 +90,33 @@ impl Ledger {
         mac
     }
 }
+/// Today's ledger file in `directory` and the next local midnight. Names the file only: it
+/// opens nothing, creates nothing and reads no salt, so the owner usage report can use it
+/// without touching key material. The name matches [`Ledger::day`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Today {
+    /// ISO calendar day, `YYYY-MM-DD`.
+    pub day: String,
+    pub path: PathBuf,
+    /// Next local midnight in Unix milliseconds, when the clock can express it.
+    pub resets_ms: Option<u64>,
+}
+
+pub fn today(directory: &Path) -> Today {
+    let now = Local::now();
+    let resets_ms = now
+        .date_naive()
+        .succ_opt()
+        .and_then(|day| day.and_hms_opt(0, 0, 0))
+        .and_then(|midnight| midnight.and_local_timezone(Local).earliest())
+        .and_then(|at| u64::try_from(at.timestamp_millis()).ok());
+    Today {
+        day: now.format("%Y-%m-%d").to_string(),
+        path: directory.join(format!("requests-{}.jsonl", now.format("%Y%m%d"))),
+        resets_ms,
+    }
+}
+
 #[derive(Clone)]
 pub struct Ledger(Arc<Inner>);
 #[derive(Clone)]
@@ -301,6 +328,7 @@ impl Entry {
         error: Option<&'static str>,
         redact: &dyn Fn(&mut Value),
     ) -> io::Result<Value> {
+        let cost = crate::spend::budget_cost(fields);
         if fields["remote"] != true
             || ![
                 "anthropic",
@@ -311,7 +339,7 @@ impl Entry {
                 "opencode",
             ]
             .contains(&fields["remote_provider"].as_str().unwrap_or(""))
-            || crate::spend::budget_cost(fields).is_none()
+            || (cost.is_none() && !crate::spend::unknown_go_cost(fields))
         {
             return Err(io::ErrorKind::InvalidData.into());
         }
@@ -353,6 +381,7 @@ impl Entry {
             "catalog_cost_usd",
             "reported_cost_usd",
             "estimated_cost_usd",
+            "go_reserved_usd",
         ] {
             if let Some(value) = fields.get(name) {
                 if value
@@ -367,10 +396,25 @@ impl Entry {
         if let Some(value) = fields["usage_missing"].as_bool() {
             self.row["usage_missing"] = json!(value);
         }
+        // Only `true` is meaningful: the settled cost could not be determined. The spend
+        // reader requires this marker to close a later capped admission.
+        match fields.get("cost_unknown") {
+            None => {}
+            Some(Value::Bool(true)) => self.row["cost_unknown"] = json!(true),
+            Some(_) => return Err(io::ErrorKind::InvalidData.into()),
+        }
         let settled = fields["settled"]
             .as_str()
             .filter(|value| ["usage", "reserved", "estimated", "not_forwarded", "refused"].contains(value))
             .ok_or(io::ErrorKind::InvalidData)?;
+        if let Some(bound) = fields.get("go_reserved_usd") {
+            if fields["remote_provider"] != "opencode"
+                || !matches!(settled, "usage" | "reserved")
+                || bound.as_f64().is_none_or(|amount| amount <= 0.0)
+            {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+        }
         if settled == "refused" && (fields["cost_usd"].as_f64() != Some(0.0) || !(400..500).contains(&status))
         {
             return Err(io::ErrorKind::InvalidData.into());
@@ -381,8 +425,8 @@ impl Entry {
                     || value == "metered" && fields["remote_provider"] == "opencode" =>
             {
                 if !matches!(fields["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
-                    || (value == "subscription" && fields["cost_usd"].as_f64() != Some(0.0))
-                    || (value == "metered" && fields["cost_usd"].as_f64().is_none_or(|n| n <= 0.0))
+                    || (value == "subscription" && cost.is_some_and(|n| n != 0.0))
+                    || (value == "metered" && cost.is_none_or(|n| n <= 0.0))
                 {
                     return Err(io::ErrorKind::InvalidData.into());
                 }

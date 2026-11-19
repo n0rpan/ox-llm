@@ -50,6 +50,7 @@ impl Sandbox for NoBash {
             output: Vec::new(),
             exit: Some(0),
             timed_out: false,
+            unsandboxed: false,
         }
     }
 }
@@ -818,6 +819,7 @@ fn blocks_from_entries_attach_results_to_calls() {
             ts_ms: 0,
             body: EntryBody::Msg {
                 wire: WireMsg {
+                    images: Vec::new(),
                     role: oxa_proto::Role::Assistant,
                     content: None,
                     reasoning: None,
@@ -876,6 +878,7 @@ fn blocks_from_entries_keep_error_flag_and_ui_of_results() {
         body,
     };
     let call = WireMsg {
+        images: Vec::new(),
         role: oxa_proto::Role::Assistant,
         content: None,
         reasoning: None,
