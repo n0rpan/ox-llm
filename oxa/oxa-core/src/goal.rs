@@ -184,12 +184,13 @@ impl crate::Session {
                 ))
             }
         }
-        let result = self.set_goal(Some(goal), sink);
+        let result = self.replace_goal(Some(goal), sink);
         let applied_revision = self.goal_revision();
         if applied_revision == revision {
             return result.map(|()| applied_revision);
         }
         self.sync_goal_transition()?;
+        publish_status(self.inner());
         crate::progress::notify(
             self.inner(),
             crate::Progress::GoalControlCommitted {
@@ -222,11 +223,14 @@ impl crate::Session {
         sink: &mut dyn oxa_proto::EventSink,
     ) -> Result<(), oxa_proto::OxaError> {
         let before = self.goal_revision();
-        let result = self.set_goal(goal, sink);
+        let result = self.replace_goal(goal, sink);
         if result.is_err() && self.goal_revision() == before {
             return result;
         }
         self.sync_goal_transition()?;
+        if result.is_ok() {
+            publish_status(self.inner());
+        }
         result
     }
 }
@@ -655,7 +659,27 @@ pub(crate) fn save_checkpoint(
 ) -> Result<(), oxa_proto::OxaError> {
     let body = goal.checkpoint_body(st.tree.entries());
     crate::agent_loop::persist(st, body, sink)?;
+    publish_status(st);
     Ok(())
+}
+/// The visible half of an idle pause. The checkpoint publishes the saved status.
+pub(crate) fn announce_pause(reason: &str, sink: &mut dyn oxa_proto::EventSink) {
+    sink.emit(&oxa_proto::AgentEvent::Notice {
+        level: oxa_proto::Level::Warning,
+        text: format!("Goal paused: {reason}; /goal resume"),
+    });
+}
+
+/// Publish the goal currently mounted in the session, including a saved pause reason.
+pub(crate) fn publish_status(st: &crate::SessionState) {
+    let snapshot = st.goal.as_ref().map(|goal| goal.snapshot());
+    crate::progress::notify(
+        st,
+        crate::Progress::GoalStatus {
+            status: snapshot.as_ref().map_or("none", |goal| goal.status.as_str()),
+            reason: snapshot.as_ref().and_then(|goal| goal.pause_reason.as_deref()),
+        },
+    );
 }
 pub(crate) fn terminal(st: &crate::SessionState) -> bool {
     st.goal.as_ref().is_some_and(|g| g.engaged() && !g.pursuing())
@@ -770,9 +794,23 @@ pub(crate) fn uncertain(error: &oxa_proto::OxaError, output: bool, pre_cancelled
             | codes::INVALID
             | codes::USAGE
             | codes::UNSUPPORTED_IN_OXA
+            | "cost_unknown_history"
             | "cloud_credentials_unavailable"
             | "cloud_sdk_unavailable"
     )
+}
+
+#[cfg(test)]
+mod uncertain_tests {
+    use super::uncertain;
+
+    #[test]
+    fn unknown_cost_history_is_known_pre_admission_usage() {
+        let error = oxa_proto::OxaError::new("cost_unknown_history", "prior usage has no known cost");
+
+        assert!(!uncertain(&error, false, false));
+        assert!(uncertain(&error, true, false));
+    }
 }
 
 /// A parsed `/goal` command.
