@@ -20,7 +20,7 @@ oxa does not install a service, start a daemon or change files outside `~/.oxa`.
 
 ## What CI proves
 
-The job `portable_binary_starts_in_three_images` starts the binary in `debian:bullseye-slim`, `ubuntu:22.04` and `python:3.12-slim`. In each image it runs `oxa --version` and one `-p` prompt against the fake engine, and the reply must come back. The build step also fails when the binary needs a glibc symbol newer than 2.31 or links `libstdc++` or `libgcc_s`.
+The job `portable_binary_starts_in_three_images` starts the binary in `debian:bullseye-slim`, `ubuntu:22.04` and `python:3.12-slim`. In each image it runs `oxa --version` and one `-p` prompt against the fake engine, and the reply must come back. The build step also fails when the binary needs a glibc symbol newer than 2.31 or links `libstdc++`.
 
 ## Limits
 

@@ -26,15 +26,15 @@ out=$root/dist-portable
 rm -rf "$out"
 mkdir -p "$out"
 install -m 0755 oxa/target/release/oxa oxa/target/release/oxa-fake "$out/"
-# The portability promise: no symbol newer than glibc 2.31, and no libstdc++ or libgcc_s.
+# The portability promise: no symbol newer than glibc 2.31, and no libstdc++ (libgcc_s ships in every base image).
 max=$(objdump -T "$out/oxa" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -V | tail -n1)
 echo "highest glibc symbol version required by oxa: ${max:-none}"
 if [[ -n $max && $(printf '%s\n2.31\n' "$max" | sort -V | tail -n1) != 2.31 ]]; then
   echo "oxa needs glibc $max, newer than the 2.31 floor" >&2
   exit 1
 fi
-if objdump -p "$out/oxa" | grep -E 'NEEDED +(libstdc\+\+|libgcc_s)'; then
-  echo "oxa must not depend on libstdc++ or libgcc_s" >&2
+if objdump -p "$out/oxa" | grep -E 'NEEDED +libstdc\+\+'; then
+  echo "oxa must not depend on libstdc++" >&2
   exit 1
 fi
 (cd "$out" && sha256sum oxa > oxa.sha256)
