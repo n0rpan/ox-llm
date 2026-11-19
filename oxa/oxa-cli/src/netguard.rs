@@ -33,9 +33,12 @@ fn with_policy(sandbox: Arc<dyn Sandbox>, settings: &Settings, github_auth: bool
         );
     // Host-rights bash can read a file-backed login with the network off too, and `gh auth token
     // --user other` names any account: every credential is scrubbed from its output, so this
-    // lookup does not depend on the network setting.
+    // lookup does not depend on the network setting, nor on who owns GitHub for the run (a
+    // runner-owned task still must not print a file-backed login). Offline, or when the runner
+    // owns GitHub, `gh` itself is never started (a shim could install it over the network, and
+    // the run must not use GitHub authentication): the `hosts.yml` tokens are scrubbed then.
+    let run_gh = !runner_owns_github && !offline;
     let scrub_host = github_auth
-        && !runner_owns_github
         && !test_isolated(
             std::env::var(oxa_proto::names::ENV_TEST_ISOLATION)
                 .ok()
@@ -46,7 +49,7 @@ fn with_policy(sandbox: Arc<dyn Sandbox>, settings: &Settings, github_auth: bool
         ns = ns.with_gh_token_lazy(gh_token);
     }
     if scrub_host {
-        ns = ns.with_host_secrets_lazy(gh_host_secrets);
+        ns = ns.with_host_secrets_lazy(move || gh_host_secrets(run_gh));
     }
     Arc::new(ns)
 }
@@ -56,19 +59,24 @@ fn with_policy(sandbox: Arc<dyn Sandbox>, settings: &Settings, github_auth: bool
 /// every config store `gh` may read ([`gh_config_dirs`]). Host bash runs with a cleared
 /// environment, so its `gh` can read another store than this process: every store is scrubbed.
 /// Runs `gh` outside the sandbox with a short deadline; any failure yields what was found so
-/// far. Reads local state only. Tokens are never logged.
-fn gh_host_secrets() -> Vec<String> {
+/// far. Reads local state only. Tokens are never logged. With `run_gh` false only the
+/// `hosts.yml` files are read and no program is started.
+fn gh_host_secrets(run_gh: bool) -> Vec<String> {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     let configs = gh_config_dirs(
         std::env::var_os("GH_CONFIG_DIR").as_deref(),
         std::env::var_os("XDG_CONFIG_HOME").as_deref(),
         home.as_deref(),
     );
-    let exe = trusted_gh_for(
-        std::env::var_os("PATH").as_deref(),
-        std::env::current_dir().ok().as_deref(),
-        home.as_deref(),
-    );
+    let exe = if run_gh {
+        trusted_gh_for(
+            std::env::var_os("PATH").as_deref(),
+            std::env::current_dir().ok().as_deref(),
+            home.as_deref(),
+        )
+    } else {
+        None
+    };
     let mut found = Vec::new();
     for config in &configs {
         let text = std::fs::read_to_string(config.join("hosts.yml")).unwrap_or_default();
