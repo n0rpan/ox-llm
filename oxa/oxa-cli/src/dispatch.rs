@@ -3244,6 +3244,7 @@ mod session_scratch_tests {
                 )),
                 yolo,
                 danger: Arc::new(oxa_perm::DangerRules::builtin()),
+                report_dialog: None,
             }
         };
         let policy = build().deps(None).policy;
