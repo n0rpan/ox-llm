@@ -1028,8 +1028,7 @@ fn compact_inner(
                 let (read, modified) = file_lists(&summarised);
                 // A `<skill>` tag counts only when this session really has that skill: a prompt
                 // that merely quotes the tag never becomes an active skill.
-                let loaded: Vec<(String, String)> = if st.settings.bool("compaction.reactivateSkills", false)
-                {
+                let loaded: Vec<(String, String)> = if st.settings.compaction_reactivate_skills() {
                     active_skills(&summarised)
                         .into_iter()
                         .filter(|(name, location)| known_skill(st, name, location))

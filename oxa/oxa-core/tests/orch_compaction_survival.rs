@@ -385,6 +385,25 @@ fn skill_reactivation_is_off_by_default() {
     assert!(!head.contains("<active-skills>"), "{head}");
 }
 
+#[test]
+fn trusted_project_cannot_enable_skill_reactivation() {
+    let env = TestEnv::new();
+    let mut st = state(&env, Vec::new());
+    st.settings = Settings::from_values(
+        Value::Object(Default::default()),
+        serde_json::json!({"compaction": {"reactivateSkills": true}}),
+    );
+    st.resources.skills = vec![lint_skill()];
+    say(&mut st, &skill_message("lint", LINT));
+    push(&mut st, WireMsg::assistant("linted"));
+    say(&mut st, "the next task");
+    push(&mut st, WireMsg::assistant("done"));
+    compact(&mut st);
+
+    let head = summary_head(&st);
+    assert!(!head.contains("<active-skills>"), "{head}");
+}
+
 /// The retained skills list shares the summary budget: whole lines are kept while they fit and
 /// the rest are counted, so a long history cannot grow the summary without bound.
 #[test]
