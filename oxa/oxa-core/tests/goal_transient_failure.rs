@@ -83,7 +83,10 @@ fn goal_run_continues_after_transient_failure() {
     let store = Arc::new(MemStore::new());
     let mut dependencies = deps(&env, store, engine.clone(), Some(1));
     dependencies.settings = Settings::from_values(
-        dependencies.settings.merged().clone(),
+        serde_json::json!({
+            "oxa": {"envNote": false, "goal": {"failureBackoffSeconds": 1}},
+            "retry": {"enabled": false}
+        }),
         serde_json::json!({"oxa": {"goal": {"failureBackoffSeconds": 0}}}),
     );
     let mut session = Session::open(dependencies, Open::New).unwrap();
