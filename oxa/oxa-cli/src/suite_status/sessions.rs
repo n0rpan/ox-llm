@@ -124,7 +124,7 @@ fn workers(agent_dir: &Path, now: u64) -> Value {
         let alive = pid_alive(record.pid);
         let status = read_snapshot(&record.status_file)
             .ok()
-            .filter(|status| owns(&record, status));
+            .filter(|status| registry::names_worker(&record, status));
         let state = registry::state(&record, status.as_ref(), alive);
         // `Working` is only reached through a snapshot that names this worker, so the deadline
         // read here is this worker's own.
@@ -173,12 +173,6 @@ fn state_word(state: &WorkerState) -> &'static str {
         WorkerState::Dead => "dead",
         WorkerState::Stopped => "stopped",
     }
-}
-
-/// The snapshot names this worker: the same session and the same process (the registry's rule).
-fn owns(record: &WorkerRecord, status: &Value) -> bool {
-    status["session_id"].as_str() == Some(record.session_id.as_str())
-        && status["pid"].as_u64() == Some(u64::from(record.pid))
 }
 
 /// Every worker record in the registries under `agent_dir/workers`, one file per parent session.
@@ -245,12 +239,37 @@ fn pid_of(status: &Value) -> Option<u32> {
 /// A process is alive when Linux still lists it and it is neither a zombie nor dead. A pid that
 /// has been reused by another process still reads as alive; the status writer's own timestamps
 /// are the only other evidence and are not compared here.
+#[cfg(target_os = "linux")]
 fn pid_alive(pid: u32) -> bool {
     fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
         stat.rsplit_once(") ")
             .and_then(|(_, rest)| rest.chars().next())
             .is_some_and(|state| state != 'Z' && state != 'X')
     })
+}
+
+/// macOS has no procfs. Ask its native `ps` for the process state and apply the same zombie/dead
+/// rule as the Linux implementation. An unavailable or unsuccessful `ps` is not proof of life.
+#[cfg(target_os = "macos")]
+fn pid_alive(pid: u32) -> bool {
+    std::process::Command::new("/bin/ps")
+        .args(["-o", "state=", "-p", &pid.to_string()])
+        .output()
+        .is_ok_and(|output| output.status.success() && ps_state_alive(&output.stdout))
+}
+
+#[cfg(target_os = "macos")]
+fn ps_state_alive(stdout: &[u8]) -> bool {
+    stdout
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_some_and(|state| state != b'Z' && state != b'X')
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn pid_alive(_pid: u32) -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -345,7 +364,7 @@ mod tests {
         assert_eq!(scanned.workers["stalled"], 1);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn dead_pid_is_not_live() {
         let env = TestEnv::new();
@@ -362,6 +381,15 @@ mod tests {
         assert_eq!(scanned.sessions["working"], 1);
         assert!(!pid_alive(DEAD));
         assert!(pid_alive(std::process::id()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_process_state_rejects_zombies_and_dead_processes() {
+        assert!(ps_state_alive(b" S+\n"));
+        assert!(!ps_state_alive(b" Z\n"));
+        assert!(!ps_state_alive(b" X\n"));
+        assert!(!ps_state_alive(b"\n"));
     }
 
     #[cfg(target_os = "linux")]
