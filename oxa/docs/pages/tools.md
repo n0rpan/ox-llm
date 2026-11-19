@@ -38,6 +38,8 @@ Tool names, descriptions and schemas are part of the system prompt. They stay th
 | `--no-mcp` | no MCP servers connect and no MCP tools are offered |
 | `defaultTools` setting | the list of tools on by default. Names may include `subagent`, `web_search`, `codemode` and `tool_search`, and a list can be patched with `+name` and `-name` |
 
+With the output diet on (the default) the rules also tell the model to run the project's own checks before it calls a task done (when `bash` is on), and to use `wait` instead of polling (when a goal is pursued).
+
 Examples:
 
 ```sh
