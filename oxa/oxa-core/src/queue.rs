@@ -149,6 +149,9 @@ impl WrapUpReason {
 ///   the session and has not armed `bg_cancel` yet would otherwise miss the cancel).
 #[derive(Debug, Default)]
 pub struct Gate {
+    /// Set when an in-request retry wait consumed `cancel_retry`, so an outer goal recovery
+    /// does not restart the request the owner just stopped.
+    pub(crate) retry_stopped: std::sync::atomic::AtomicBool,
     /// L1: the settings files as last seen (`settings_refresh`).
     pub(crate) settings_watch: Mutex<crate::settings_refresh::Watch>,
     live_settings: Mutex<LiveSettings>,
@@ -183,6 +186,8 @@ pub struct Gate {
     literal_turn: Mutex<Option<LiteralTurn>>,
     /// Total charged usage, including non-chat requests and final-turn overspend.
     pub run_tokens_used: Mutex<u64>,
+    /// A request under an explicit token budget finished without usage: the tally is a lower bound.
+    pub usage_unreported: std::sync::atomic::AtomicBool,
     pub bg_cancel: CancelToken,
     pub reread_info: std::sync::atomic::AtomicBool,
     pub info_rechecked: std::sync::atomic::AtomicBool,
@@ -768,10 +773,36 @@ impl Handle {
         *lock(&self.shared.gate.token_budget)
     }
 
+    /// Whether a budgeted request finished without usage, so `run_tokens_used` undercounts.
+    pub fn run_usage_unreported(&self) -> bool {
+        self.shared.gate.usage_unreported.load(Ordering::SeqCst)
+    }
+
     /// Invocation-wide uncached prompt + completion usage, not capped at the budget.
     /// Includes compaction and tool prefill, which emit no assistant message events.
     pub fn run_tokens_used(&self) -> u64 {
         *lock(&self.shared.gate.run_tokens_used)
+    }
+
+    pub(crate) fn account_usage(&self, usage: oxa_proto::Usage) {
+        if usage.unreported {
+            // An explicit budget can no longer establish headroom. Finish the active work
+            // through the usual wrap-up without adding an invented token count to the tally.
+            // The remaining allowance drops to zero so tools and children started in the
+            // current batch cannot spend headroom that no longer has a known size.
+            let capped = {
+                let mut budget = lock(&self.shared.gate.token_budget);
+                budget.as_mut().map(|left| *left = 0).is_some()
+            };
+            if capped {
+                self.shared.gate.usage_unreported.store(true, Ordering::SeqCst);
+                self.request_wrap_up(WrapUpReason::TokenLimit);
+            }
+        } else {
+            self.account_tokens(
+                u64::from(usage.prompt.saturating_sub(usage.cached)) + u64::from(usage.completion),
+            );
+        }
     }
 
     pub(crate) fn account_tokens(&self, tokens: u64) {
@@ -934,6 +965,21 @@ mod tests {
         Handle {
             shared: Arc::new(Shared::new(steer, follow)),
         }
+    }
+
+    #[test]
+    fn only_unreported_usage_under_an_explicit_token_cap_requests_wrap_up() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.account_usage(oxa_proto::Usage::unreported());
+        assert_eq!(h.wrap_up_reason(), None);
+        h.set_token_budget(Some(10));
+        h.account_usage(oxa_proto::Usage::default());
+        assert_eq!(h.wrap_up_reason(), None);
+        h.account_usage(oxa_proto::Usage::unreported());
+        assert_eq!(h.wrap_up_reason(), Some(WrapUpReason::TokenLimit));
+        assert_eq!(h.run_tokens_used(), 0);
+        assert_eq!(h.remaining_tokens(), Some(0));
+        assert!(h.run_usage_unreported());
     }
 
     #[test]

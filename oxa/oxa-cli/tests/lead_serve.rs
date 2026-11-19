@@ -102,7 +102,7 @@ fn form_nonce(page: &str) -> &str {
 
 fn with_fixed_chat(run: impl FnOnce(u16, &str, &std::path::Path)) {
     let test = TestEnv::new();
-    std::fs::set_permissions(&test.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(test.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = reservation.local_addr().unwrap().port();
     test.write(

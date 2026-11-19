@@ -242,6 +242,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::LeadAsks
                     | CommandId::LeadChat
                     | CommandId::Goal
+                    | CommandId::Admission
                     | CommandId::Help
                     | CommandId::WorkStatus
                     | CommandId::WorkBoard
@@ -950,21 +951,24 @@ fn prepare(
             pattern: requested_model.as_deref(),
             scope: &owner_scope,
             endpoint: &endpoint.name,
-            // Model arguments delegated by a launcher cannot opt into a
-            // provider without explicit user settings, and a restored session model
-            // is provenance-less: it counts only when the owner enabled Go. A project
-            // `defaultModel` or `enabledModels` never counts, and an agent process is not
-            // the owner: tool subprocesses carry `AI_AGENT`/`OXA_CODING_AGENT`, so the
-            // check they already fail elsewhere applies to the model argument too.
-            owner_selected: !child.nested()
-                && !is_agent(env)
-                && env.get(oxa_work::PlannedTask::DELEGATED_MODEL_ENV).is_none()
-                && (a.model.is_some()
-                    || (continued_go.is_some() && user_settings.bool(crate::in_process::GO_SETTING, false))
-                    || !owner_scope.is_empty()
-                    || requested_model
-                        .as_ref()
-                        .is_some_and(|model| user_settings.string("defaultModel").as_ref() == Some(model))),
+            // An actual `--model` argument is the owner's choice of that model, also when a
+            // launcher (`oxa work`, a supervised child) passed it: the protected user key is
+            // what authorizes the Go transport. A coding-agent tool process is not the owner
+            // (it carries `AI_AGENT`/`OXA_CODING_AGENT`), a restored session model is
+            // provenance-less (it counts only when the owner enabled Go), and a project
+            // `defaultModel` or `enabledModels` never counts.
+            owner_selected: (a.model.is_some()
+                && env.get("AI_AGENT").is_none()
+                && env.get("OXA_CODING_AGENT").is_none())
+                || (!child.nested()
+                    && !is_agent(env)
+                    && env.get(oxa_work::PlannedTask::DELEGATED_MODEL_ENV).is_none()
+                    && ((continued_go.is_some()
+                        && user_settings.bool(crate::in_process::GO_SETTING, false))
+                        || !owner_scope.is_empty()
+                        || requested_model.as_ref().is_some_and(|model| {
+                            user_settings.string("defaultModel").as_ref() == Some(model)
+                        }))),
         },
         (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
         shared,
@@ -1794,6 +1798,7 @@ fn run_headless(
         let usage = serde_json::json!({
             "type": "run_usage",
             "tokens": session.handle().run_tokens_used(),
+            "complete": !session.handle().run_usage_unreported(),
         });
         if let Some(stdout) = stdout.as_deref_mut() {
             let _ = writeln!(stdout, "{usage}");

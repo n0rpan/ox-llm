@@ -127,6 +127,18 @@ struct Job {
     /// W4: set when the model or the user stopped the job (or the session reset it); such a job
     /// never wakes the session.
     stopped: Arc<AtomicBool>,
+    /// The sandbox ran the command with the user's own rights (no OS sandbox).
+    unsandboxed: Arc<AtomicBool>,
+}
+
+/// A finished job taken out of the registry by [`JobRegistry::take_finished`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TakenJob {
+    pub status: JobStatus,
+    /// All the output the job wrote (a job started with `keep_all`), else its last
+    /// [`BUFFER_CAP`] bytes.
+    pub output: Vec<u8>,
+    pub unsandboxed: bool,
 }
 
 /// A snapshot of a job for a read.
@@ -263,6 +275,19 @@ impl JobRegistry {
             .unwrap()
             .clone()
             .ok_or_else(|| "background jobs are unavailable: no sandbox".to_string())?;
+        self.spawn_on(sandbox, spec, false)
+    }
+
+    /// Like [`JobRegistry::spawn`], on `sandbox`. With `keep_all` the job keeps every byte of
+    /// its output (not only the last [`BUFFER_CAP`]): a foreground command that may move to the
+    /// background keeps the whole result it had before, and [`JobRegistry::take_finished`]
+    /// hands it over and forgets the job.
+    pub fn spawn_on(
+        &self,
+        sandbox: Arc<dyn Sandbox>,
+        spec: ExecSpec,
+        keep_all: bool,
+    ) -> Result<String, String> {
         let mut state = self.state.lock().unwrap();
         let running: Vec<String> = state
             .jobs
@@ -302,6 +327,8 @@ impl JobRegistry {
         let output = Arc::new(Mutex::new(Out::default()));
         let status = Arc::new(Mutex::new(JobStatus::Running));
         let stopped = Arc::new(AtomicBool::new(false));
+        let unsandboxed = Arc::new(AtomicBool::new(false));
+        let unsandboxed_job = unsandboxed.clone();
         state.jobs.insert(
             id.clone(),
             Job {
@@ -310,6 +337,7 @@ impl JobRegistry {
                 status: status.clone(),
                 started: Instant::now(),
                 stopped: stopped.clone(),
+                unsandboxed,
             },
         );
         drop(state);
@@ -323,12 +351,19 @@ impl JobRegistry {
                 let mut out = output.lock().unwrap();
                 out.total += chunk.len() as u64;
                 out.buf.extend_from_slice(chunk);
-                if out.buf.len() > BUFFER_CAP {
+                if !keep_all && out.buf.len() > BUFFER_CAP {
                     let keep = out.buf.len() - BUFFER_CAP;
                     out.buf.drain(..keep);
                 }
             };
             let res: ExecResult = sandbox.run_streaming(&spec, &cancel, &mut sink);
+            // Streaming executors normally return an empty `output`, but launch failures can
+            // happen before there is a process whose pipes feed `sink`. Preserve any such
+            // diagnostic in the job buffer so foreground callers following the job receive it.
+            if !res.output.is_empty() {
+                sink(&res.output);
+            }
+            unsandboxed_job.store(res.unsandboxed, Ordering::SeqCst);
             let final_status = match res.exit {
                 Some(code) => JobStatus::Exited(code),
                 None => JobStatus::Killed,
@@ -368,6 +403,27 @@ impl JobRegistry {
             output: text,
             total: out.total,
         })
+    }
+
+    /// Take a finished job out of the registry: its status, all buffered output and whether it
+    /// ran unsandboxed. `Ok(None)` while the job still runs (it stays); `Err` for an unknown id.
+    pub fn take_finished(&self, id: &str) -> Result<Option<TakenJob>, String> {
+        let mut state = self.state.lock().unwrap();
+        let job = state.jobs.get(id).ok_or_else(|| format!("Unknown job: {id}"))?;
+        let status = *job.status.lock().unwrap();
+        if status == JobStatus::Running {
+            return Ok(None);
+        }
+        let output = std::mem::take(&mut job.output.lock().unwrap().buf);
+        let unsandboxed = job.unsandboxed.load(Ordering::SeqCst);
+        // The caller reads the result itself, so the job needs no wake of its own.
+        job.stopped.store(true, Ordering::SeqCst);
+        state.jobs.remove(id);
+        Ok(Some(TakenJob {
+            status,
+            output,
+            unsandboxed,
+        }))
     }
 
     /// #150 (2): block for up to `max` until the job exits, prints output it has not yet shown

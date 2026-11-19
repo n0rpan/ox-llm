@@ -397,6 +397,7 @@ fn mid_run_above_hard() {
         completion: 0,
         cached: 0,
         cached_missing: false,
+        unreported: false,
     });
 
     let mut sink = VecSink::default();

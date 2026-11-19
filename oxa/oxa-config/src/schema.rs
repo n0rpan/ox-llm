@@ -142,10 +142,14 @@ const SCHEMA: &[KeyDef] = &[
     key("modelThinkingLevels", Kind::Object, "{}"),
     key("outputPad", Kind::Number, "1"),
     key("oxa.allowHomeCwd", Kind::Bool, "false"),
+    // #1512: dangerous-command rules (+id/-id/cmd:..); user settings only.
+    key("oxa.approval.dangerous", Kind::StringList, "[]"),
     // F5: seconds; unset = 120; 0 = none.
     key("oxa.bash.defaultTimeout", Kind::Number, "null"),
     // Background jobs that may run at once (`bash {background: true}`); at least 1.
     key("oxa.bash.maxJobs", Kind::Number, "16"),
+    // Longest a bash job read blocks, in seconds (default 300; at least 1).
+    key("oxa.bash.waitCap", Kind::Number, "300"),
     key("oxa.bootPreload", Kind::Bool, "true"),
     key("oxa.builtinSkills", Kind::Bool, "true"),
     key("oxa.cloud", Kind::Object, "{}"),
@@ -166,6 +170,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
+    // R1: the first wait after a transient request failure of a pursuing goal; `0` opts out.
+    key("oxa.goal.failureBackoffSeconds", Kind::Number, "60"),
     // K3: a headless print or JSON run of a persisted session with a pursuing goal takes
     // `oxa send` follow-ups from the session inbox for the run; false = off.
     key("oxa.inbox.headless", Kind::Bool, "true"),
@@ -215,6 +221,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.sandbox.net", Kind::Enum(&["on", "off"]), "\"on\""),
     // B2 (lane harden): extra binds of the bash sandbox; user settings only.
     key("oxa.sandbox.readPaths", Kind::StringList, "[]"),
+    // RP6: host runtime sockets (docker, podman) bound into bash; user settings only.
+    key("oxa.sandbox.sockets", Kind::StringList, "[]"),
     key("oxa.sandbox.writePaths", Kind::StringList, "[]"),
     // Skills another product synced into `~/.agents/skills` (`synced/`); off = skipped.
     key("oxa.share.remoteModels", Kind::StringList, "[]"),
