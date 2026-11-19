@@ -7,7 +7,8 @@
 //! bash and the exec hooks run with the user's rights too; the approval floor of the policy
 //! asks about dangerous commands. The owner's `oxa.sandbox.net = off` then holds: such a
 //! command goes through bwrap without network, and is refused without bwrap.
-use crate::{offline_argv, run_argv_capture, run_argv_stdin, run_unsandboxed_capture, run_unsandboxed_stdin};
+use crate::run::run_unsandboxed_stdin;
+use crate::{offline_argv, run_argv_capture, run_argv_stdin, run_unsandboxed_capture};
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox, YoloSwitch};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -145,6 +146,7 @@ impl FullAccess {
                 },
                 exit: None,
                 timed_out: false,
+                unsandboxed: false,
             },
         }
     }
@@ -162,6 +164,9 @@ impl Sandbox for FullAccess {
             return !self.no_net();
         }
         self.inner.network()
+    }
+    fn network_enforced(&self) -> bool {
+        self.inner.network_enforced()
     }
     fn persistence_notice(&self) -> Option<&str> {
         if self.unsandboxed() {
@@ -202,7 +207,7 @@ impl Sandbox for FullAccess {
             return self.inner.run_with_stdin(s, stdin, c, live);
         }
         if !self.no_net() {
-            return run_unsandboxed_stdin(s, stdin, c, live);
+            return run_unsandboxed_stdin(s, stdin, c, live, &[]);
         }
         let argv = ["bash", "-c", s.command.as_str()].map(str::to_string).to_vec();
         match offline_argv(&self.path_var, &self.home, &s.cwd, &s.env, &argv) {
@@ -211,6 +216,7 @@ impl Sandbox for FullAccess {
                 output: oxa_proto::offline_error("exec hooks").to_string().into_bytes(),
                 exit: None,
                 timed_out: false,
+                unsandboxed: true,
             },
         }
     }
@@ -229,6 +235,9 @@ impl Sandbox for FileView {
     }
     fn network(&self) -> bool {
         self.inner.network()
+    }
+    fn network_enforced(&self) -> bool {
+        self.inner.network_enforced()
     }
     fn persistence_notice(&self) -> Option<&str> {
         self.inner.persistence_notice()

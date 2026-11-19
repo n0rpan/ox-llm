@@ -8,7 +8,7 @@ pub enum Billing {
 }
 
 /// Owner-selected limits, shared by all subscription routes for a calendar day.
-/// Both are mandatory; there is no implicit unlimited or USD-priced subscription.
+/// An explicitly configured pair is positive in both dimensions. Go uses it for warnings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SubscriptionLimits {
     requests: u64,
@@ -46,6 +46,18 @@ impl SubscriptionLimits {
             });
         }
         Ok(())
+    }
+
+    pub(crate) fn go_warning(self, total: Counts) -> Option<&'static str> {
+        if total.requests >= self.requests || total.tokens >= self.tokens {
+            Some("OpenCode Go: projected usage reached 100% of oxa.cloud.subscription_limits; continuing.")
+        } else if u128::from(total.requests) * 5 >= u128::from(self.requests) * 4
+            || u128::from(total.tokens) * 5 >= u128::from(self.tokens) * 4
+        {
+            Some("OpenCode Go: projected usage reached 80% of oxa.cloud.subscription_limits; continuing.")
+        } else {
+            None
+        }
     }
 }
 

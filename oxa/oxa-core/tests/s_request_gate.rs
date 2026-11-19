@@ -2,7 +2,7 @@
 //! the instance's background request (threshold summary, idle prefill) but never a foreground
 //! one. Every wait on another thread has a hard timeout.
 
-use oxa_config::{Dirs, Settings};
+use oxa_config::{Dirs, QueueMode, Settings};
 use oxa_core::{Deps, Open, RunEnd, Session, ToolSelection};
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
@@ -116,6 +116,15 @@ fn open(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Vec<Arc<dyn Hooks>>, sett
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, settings).unwrap();
     let settings = Settings::load(&dirs, &env.work(), false);
+    open_with_settings(env, engine, hooks, settings)
+}
+
+fn open_with_settings(
+    env: &TestEnv,
+    engine: Arc<dyn Engine>,
+    hooks: Vec<Arc<dyn Hooks>>,
+    settings: Settings,
+) -> Session {
     let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
     Session::open(
         Deps {
@@ -126,7 +135,7 @@ fn open(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Vec<Arc<dyn Hooks>>, sett
             policy: Box::new(ModePolicy::new()),
             sandbox: Arc::new(NoSandbox),
             settings,
-            dirs,
+            dirs: Dirs::under(env.root()),
             cwd: env.work(),
             selection: ToolSelection::default(),
             resources: Resources::default(),
@@ -385,4 +394,149 @@ fn gate_refuses_a_reentrant_request() {
         vec![("chat", "ok")],
         "the park was never sent"
     );
+}
+
+/// L1: with `oxa.liveSettings` on, a settings edit made after the session opened is applied by
+/// a queued run (`run_queued`), which does not pass through `run_from_wire`; with the setting
+/// off (opt-out, `false`) the edit waits for `/reload`.
+#[test]
+fn queued_run_applies_changed_settings_only_when_live_settings_is_on() {
+    for (live, expect) in [(true, "light-theme"), (false, "dark")] {
+        let env = TestEnv::new();
+        let (eng, _started) = Holding::new(vec![ScriptTurn::text("answer")]);
+        let first = format!(r#"{{"theme": "dark", "oxa": {{"liveSettings": {live}}}}}"#);
+        let mut s = open(&env, eng.clone(), Vec::new(), &first);
+        let path = Dirs::under(env.root()).settings_file();
+        std::fs::write(
+            path,
+            format!(r#"{{"theme": "light-theme", "oxa": {{"liveSettings": {live}}}}}"#),
+        )
+        .unwrap();
+        s.handle().follow_up("waiting".to_string());
+        let mut sink = VecSink::default();
+        let mut ui = HeadlessUi::default();
+        assert_eq!(
+            s.run_queued(&mut sink, &mut ui).expect("run"),
+            Some(RunEnd::Stopped)
+        );
+        assert_eq!(
+            s.inner().settings.get("theme").and_then(Value::as_str),
+            Some(expect),
+            "live = {live}"
+        );
+    }
+}
+
+#[test]
+fn queued_run_preserves_settings_supplied_by_the_session_caller() {
+    let env = TestEnv::new();
+    let (engine, _started) = Holding::new(vec![ScriptTurn::text("answer")]);
+    let settings = Settings::from_values(serde_json::json!({"theme": "dark"}), Value::Null);
+    let mut session = open_with_settings(&env, engine, Vec::new(), settings);
+    let path = Dirs::under(env.root()).settings_file();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, r#"{"theme": "light-theme"}"#).unwrap();
+    session.handle().follow_up("waiting".to_string());
+    let mut sink = VecSink::default();
+    let mut ui = HeadlessUi::default();
+    assert_eq!(
+        session.run_queued(&mut sink, &mut ui).unwrap(),
+        Some(RunEnd::Stopped)
+    );
+    assert_eq!(session.inner().settings.string("theme").as_deref(), Some("dark"));
+}
+
+#[test]
+fn changed_queue_and_retry_settings_update_runtime_switches() {
+    let env = TestEnv::new();
+    let (engine, _started) = Holding::new(vec![ScriptTurn::text("answer")]);
+    let mut session = open(
+        &env,
+        engine,
+        Vec::new(),
+        r#"{"retry":{"enabled":false},"steeringMode":"all","followUpMode":"one-at-a-time"}"#,
+    );
+    assert!(!session.state().auto_retry);
+    assert_eq!(session.state().steering_mode, QueueMode::All);
+    session.handle().set_modes(QueueMode::All, QueueMode::All);
+    std::fs::write(
+        Dirs::under(env.root()).settings_file(),
+        r#"{"retry":{"enabled":true},"steeringMode":"one-at-a-time","followUpMode":"one-at-a-time"}"#,
+    )
+    .unwrap();
+    session
+        .prompt(
+            "first".into(),
+            Vec::new(),
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    let state = session.state();
+    assert!(state.auto_retry, "the user enabled retry");
+    assert_eq!(state.steering_mode, QueueMode::OneAtATime);
+    assert_eq!(
+        state.follow_up_mode,
+        QueueMode::All,
+        "keep the untouched runtime override"
+    );
+}
+
+#[test]
+fn follow_up_started_during_settle_uses_live_settings() {
+    struct QueueFollowUp {
+        handle: oxa_core::Handle,
+        path: Option<std::path::PathBuf>,
+        events: Vec<AgentEvent>,
+    }
+    impl oxa_proto::EventSink for QueueFollowUp {
+        fn emit(&mut self, event: &AgentEvent) {
+            self.events.push(event.clone());
+            if matches!(
+                event,
+                AgentEvent::AgentEnd {
+                    will_retry: false,
+                    ..
+                }
+            ) {
+                if let Some(path) = self.path.take() {
+                    std::fs::write(path, r#"{"theme":"light-theme"}"#).unwrap();
+                    self.handle.follow_up("waiting".to_string());
+                }
+            }
+        }
+    }
+
+    let env = TestEnv::new();
+    let (engine, _started) = Holding::new(vec![ScriptTurn::text("first"), ScriptTurn::text("next")]);
+    let mut session = open(&env, engine.clone(), Vec::new(), r#"{"theme":"dark"}"#);
+    let mut sink = QueueFollowUp {
+        handle: session.handle(),
+        path: Some(Dirs::under(env.root()).settings_file()),
+        events: Vec::new(),
+    };
+    session
+        .prompt(
+            "first".to_string(),
+            Vec::new(),
+            &mut sink,
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        engine.log().iter().filter(|(kind, _, _)| kind == "chat").count(),
+        2
+    );
+    let mut starts = 0;
+    for event in sink.events {
+        match event {
+            AgentEvent::AgentStart => starts += 1,
+            AgentEvent::Notice { text, .. } if text == "settings changed: theme" => {
+                assert_eq!(starts, 1, "refresh must precede the follow-up");
+                return;
+            }
+            _ => {}
+        }
+    }
+    panic!("the follow-up did not observe the edit");
 }

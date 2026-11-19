@@ -123,8 +123,10 @@ fn a_panicking_command_is_its_error_and_the_worker_goes_on() {
     let (msg_tx, msg_rx) = mpsc::channel();
     let (ui_tx, _ui_rx) = mpsc::channel();
     let reopen: ReopenFn = Box::new(|_, _| Err(OxaError::new("invalid", "no reopen in this test")));
+    let cmd_tx = Arc::new(cmd_tx);
+    let wake = Arc::downgrade(&cmd_tx);
     let worker = std::thread::spawn(move || {
-        worker_loop_with(session, reopen, cmd_rx, msg_tx, ui_tx, WorkerStop::new())
+        worker_loop_with(session, reopen, cmd_rx, msg_tx, ui_tx, WorkerStop::new(), wake)
     });
 
     let prompt = |text: &str| SessionCmd::Prompt {

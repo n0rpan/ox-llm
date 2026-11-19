@@ -1,4 +1,4 @@
-use crate::{Access, CancelToken, Mode, Sandbox, Ui, Value};
+use crate::{Access, CancelToken, Mode, Sandbox, Ui, Value, WireImage};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -75,11 +75,16 @@ pub struct ToolOutput {
     pub is_error: bool,
     /// For display only (diff, exit code, duration). **Never reaches the wire.**
     pub ui: Value,
+    /// Images the tool returns (B2a: the type; `read` fills it in B2b). They belong to the tool
+    /// result message, after `text`, and are the only tool output that may reach the wire as
+    /// an image part. Empty for every other tool.
+    pub images: Vec<WireImage>,
 }
 
 impl ToolOutput {
     pub fn ok(text: impl Into<String>) -> Self {
         ToolOutput {
+            images: Vec::new(),
             text: text.into(),
             is_error: false,
             ui: Value::Null,
@@ -87,6 +92,7 @@ impl ToolOutput {
     }
     pub fn error(text: impl Into<String>) -> Self {
         ToolOutput {
+            images: Vec::new(),
             text: text.into(),
             is_error: true,
             ui: Value::Null,
