@@ -94,6 +94,15 @@ fn parse_add(words: &[String]) -> Result<AddArgs, OxaError> {
             "the context is given twice: --ctx and a launch argument after `--`",
         ));
     }
+    if let Some(flag) = args
+        .launch
+        .iter()
+        .find(|a| matches!(a.as_str(), "--model" | "-m") || a.starts_with("--model="))
+    {
+        return Err(usage(format!(
+            "`{flag}` after `--` would change the model the admission report describes: the model is the file given before `--`"
+        )));
+    }
     Ok(args)
 }
 
@@ -157,7 +166,7 @@ fn sibling(dir: &Path, name: &str) -> Result<PathBuf, OxaError> {
 }
 
 /// Run `oxe admission` and parse its JSON. The engine gets an empty environment.
-fn admission_report(oxe: &Path, args: &AddArgs, gguf: &Path) -> Result<Value, OxaError> {
+fn admission_report(oxe: &Path, args: &AddArgs, launch: &[String], gguf: &Path) -> Result<Value, OxaError> {
     let mut cmd = Command::new(oxe);
     cmd.arg("admission").arg("--model").arg(gguf);
     if let Some(ctx) = args.ctx {
@@ -166,10 +175,7 @@ fn admission_report(oxe: &Path, args: &AddArgs, gguf: &Path) -> Result<Value, Ox
     if let Some(margin) = args.margin {
         cmd.arg("--margin-bytes").arg(margin.to_string());
     }
-    cmd.args(&args.launch)
-        .arg("--json")
-        .env_clear()
-        .stdin(Stdio::null());
+    cmd.args(launch).arg("--json").env_clear().stdin(Stdio::null());
     let output = cmd
         .output()
         .map_err(|e| OxaError::io("cannot run the engine's admission report", &e))?;
@@ -313,6 +319,72 @@ fn object<'a>(value: &'a mut Value, what: &str) -> Result<&'a mut Map<String, Va
     })
 }
 
+/// Merge one alias (model entry and limits) into an `oxa.local` value.
+fn merge_alias(
+    local: &mut Value,
+    name: &str,
+    server: &Path,
+    model_entry: Value,
+    limits: &Value,
+    replace: bool,
+) -> Result<(), OxaError> {
+    let root = object(local, "oxa.local")?;
+    let server_path = server.to_string_lossy().into_owned();
+    match root.get("binary").and_then(Value::as_str) {
+        Some(existing) if existing != server_path => {
+            return Err(invalid(format!(
+                "oxa.local.binary is already {existing}, not {server_path}; remove it from your user settings or pass --engine-dir for that installation."
+            )))
+        }
+        _ => {
+            root.insert("binary".into(), json!(server_path));
+        }
+    }
+    for key in ["models", "limits"] {
+        let map = root.entry(key).or_insert_with(|| json!({}));
+        let map = object(map, &format!("oxa.local.{key}"))?;
+        if map.contains_key(name) && !replace {
+            return Err(invalid(format!(
+                "oxa.local.{key}.{name} already exists; pass --replace to overwrite it."
+            )));
+        }
+    }
+    root["models"][name] = model_entry;
+    root["limits"][name] = limits.clone();
+    Ok(())
+}
+
+/// Resolve every `--mtp-head <path>` / `--mtp-head=<path>` in the launch arguments against `cwd`
+/// and canonicalize it, so the saved alias does not depend on the directory of a later session.
+fn absolute_heads(launch: &[String], cwd: &Path) -> Result<Vec<String>, OxaError> {
+    let resolve = |raw: &str| -> Result<String, OxaError> {
+        std::fs::canonicalize(cwd.join(raw))
+            .ok()
+            .filter(|p| p.is_file())
+            .map(|p| p.to_string_lossy().into_owned())
+            .ok_or_else(|| {
+                invalid(format!(
+                    "--mtp-head {raw} is not a file (relative paths are taken from the current directory)."
+                ))
+            })
+    };
+    let mut out = Vec::with_capacity(launch.len());
+    let mut it = launch.iter();
+    while let Some(word) = it.next() {
+        if word == "--mtp-head" {
+            out.push(word.clone());
+            if let Some(value) = it.next() {
+                out.push(resolve(value)?);
+            }
+        } else if let Some(value) = word.strip_prefix("--mtp-head=") {
+            out.push(format!("--mtp-head={}", resolve(value)?));
+        } else {
+            out.push(word.clone());
+        }
+    }
+    Ok(out)
+}
+
 fn add(args: &AddArgs, dirs: &Dirs, cwd: &Path, out: &mut dyn Write) -> Result<i32, OxaError> {
     let gguf = std::fs::canonicalize(&args.gguf)
         .ok()
@@ -321,57 +393,36 @@ fn add(args: &AddArgs, dirs: &Dirs, cwd: &Path, out: &mut dyn Write) -> Result<i
     let name = alias_for(args, &gguf)?;
     let dir = engine_dir(args.engine_dir.as_deref())?;
     let (oxe, server) = (sibling(&dir, "oxe")?, sibling(&dir, "oxe-server")?);
-    let report = admission_report(&oxe, args, &gguf)?;
+    let launch = absolute_heads(&args.launch, cwd)?;
+    let report = admission_report(&oxe, args, &launch, &gguf)?;
     let (limits, arguments) = from_report(&report, args.max_output)?;
 
-    // USER settings only: the project file is never read or written here.
+    // USER settings only: the project file is never read or written here. The alias is merged
+    // into the `oxa.local` the file holds right now, under the settings write lock, so two
+    // concurrent adds keep both aliases and the duplicate check cannot be raced.
     let mut settings = Settings::load(dirs, cwd, false);
-    let mut local = settings
-        .user_value("oxa.local")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    {
-        let root = object(&mut local, "oxa.local")?;
-        let server_path = server.to_string_lossy().into_owned();
-        match root.get("binary").and_then(Value::as_str) {
-            Some(existing) if existing != server_path => {
-                return Err(invalid(format!(
-                    "oxa.local.binary is already {existing}, not {server_path}; remove it from your user settings or pass --engine-dir for that installation."
-                )))
-            }
-            _ => {
-                root.insert("binary".into(), json!(server_path));
-            }
-        }
-        for key in ["models", "limits"] {
-            let map = root.entry(key).or_insert_with(|| json!({}));
-            let map = object(map, &format!("oxa.local.{key}"))?;
-            if map.contains_key(&name) && !args.replace {
-                return Err(invalid(format!(
-                    "oxa.local.{key}.{name} already exists; pass --replace to overwrite it."
-                )));
-            }
-        }
-        root["models"][&name] = json!({"model": gguf.to_string_lossy(), "arguments": arguments});
-        root["limits"][&name] = limits.clone();
-    }
-    // The real consumer must accept what is written (no process, file or socket is opened).
-    oxc_local::configured_local_engine(
-        Some(&local),
-        dirs.agent_dir.join("local-engine"),
-        oxa_engine::StreamOpts::default(),
-    )
-    .map(drop)
-    .map_err(|e| {
-        invalid(format!(
-            "The generated oxa.local was rejected: {}; nothing was written.",
-            e.message
-        ))
-    })?;
-
     let settings_path = dirs.settings_file();
-    let saved = backup(&settings_path)?;
-    settings.set(dirs, cwd, "oxa.local", local, false)?;
+    let mut saved = None;
+    let model_entry = json!({"model": gguf.to_string_lossy(), "arguments": arguments});
+    settings.update_user(dirs, "oxa.local", |current| {
+        let mut local = current.cloned().unwrap_or_else(|| json!({}));
+        merge_alias(&mut local, &name, &server, model_entry, &limits, args.replace)?;
+        // The real consumer must accept what is written (no process, file or socket is opened).
+        oxc_local::configured_local_engine(
+            Some(&local),
+            dirs.agent_dir.join("local-engine"),
+            oxa_engine::StreamOpts::default(),
+        )
+        .map(drop)
+        .map_err(|e| {
+            invalid(format!(
+                "The generated oxa.local was rejected: {}; nothing was written.",
+                e.message
+            ))
+        })?;
+        saved = backup(&settings_path)?;
+        Ok(local)
+    })?;
     if args.enable {
         settings.set(dirs, cwd, "oxa.engine.inProcessLocal", Value::Bool(true), false)?;
     }
@@ -438,5 +489,71 @@ mod tests {
         assert!(parse_add(&words(&["a.gguf", "b.gguf"])).is_err());
         assert!(parse_add(&words(&["--ctx", "4096", "m.gguf", "--", "-c", "8"])).is_err());
         assert!(parse_add(&words(&["--frob", "m.gguf"])).is_err());
+    }
+
+    #[test]
+    fn launch_arguments_cannot_override_the_model() {
+        for flag in ["--model", "-m", "--model=b.gguf"] {
+            assert!(
+                parse_add(&words(&["a.gguf", "--", flag, "b.gguf"])).is_err(),
+                "{flag}"
+            );
+        }
+        assert!(parse_add(&words(&["a.gguf", "--", "--oxe-cpus", "0-3"])).is_ok());
+    }
+
+    #[test]
+    fn relative_mtp_head_is_made_absolute_against_the_cwd() {
+        let dir = std::env::temp_dir().join(format!("oxa-local-head-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("head.gguf"), b"x").unwrap();
+        let canon = std::fs::canonicalize(dir.join("head.gguf")).unwrap();
+        let canon = canon.to_string_lossy().into_owned();
+        let got = absolute_heads(
+            &words(&["--mtp-head", "./head.gguf", "--spec-type", "draft-mtp"]),
+            &dir,
+        )
+        .unwrap();
+        assert_eq!(got, words(&["--mtp-head", &canon, "--spec-type", "draft-mtp"]));
+        let got = absolute_heads(&words(&["--mtp-head=head.gguf"]), &dir).unwrap();
+        assert_eq!(got, vec![format!("--mtp-head={canon}")]);
+        assert!(absolute_heads(&words(&["--mtp-head", "missing.gguf"]), &dir).is_err());
+        assert_eq!(
+            absolute_heads(&words(&["--oxe-cpus", "0-3"]), &dir).unwrap(),
+            words(&["--oxe-cpus", "0-3"])
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn adds_merge_into_the_settings_the_file_holds_now() {
+        let root = std::env::temp_dir().join(format!("oxa-local-merge-{}", std::process::id()));
+        let dirs = Dirs::under(&root);
+        let server = Path::new("/engine/oxe-server");
+        let limits = json!({"context_window": 4096});
+        // Two instances load the same (empty) snapshot before either writes.
+        let mut first = Settings::load(&dirs, &root, false);
+        let mut second = Settings::load(&dirs, &root, false);
+        for (settings, name) in [(&mut first, "a"), (&mut second, "b")] {
+            settings
+                .update_user(&dirs, "oxa.local", |current| {
+                    let mut local = current.cloned().unwrap_or_else(|| json!({}));
+                    merge_alias(&mut local, name, server, json!({"model": name}), &limits, false)?;
+                    Ok(local)
+                })
+                .unwrap();
+        }
+        let after = Settings::load(&dirs, &root, false);
+        let local = after.user_value("oxa.local").unwrap();
+        assert!(local["models"]["a"].is_object() && local["models"]["b"].is_object());
+        assert!(local["limits"]["a"].is_object() && local["limits"]["b"].is_object());
+        // The duplicate check sees what is on disk, not the stale snapshot.
+        let dup = first.update_user(&dirs, "oxa.local", |current| {
+            let mut local = current.cloned().unwrap_or_else(|| json!({}));
+            merge_alias(&mut local, "b", server, json!({}), &limits, false)?;
+            Ok(local)
+        });
+        assert!(dup.is_err());
+        std::fs::remove_dir_all(&root).ok();
     }
 }
