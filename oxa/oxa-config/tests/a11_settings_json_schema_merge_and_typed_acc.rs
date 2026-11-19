@@ -87,7 +87,8 @@ const OXA_KEYS: &[&str] = &[
     "hooks",
 ];
 
-/// The keys that oxa accepts and ignores with a warning (verdict O in PARITY.md).
+/// The keys that a project file accepts and ignores with a warning (verdict O in PARITY.md or
+/// owner-only settings).
 const VERDICT_O_KEYS: &[&str] = &[
     "defaultProvider",
     "sessionShareDestination",
@@ -98,6 +99,7 @@ const VERDICT_O_KEYS: &[&str] = &[
     "enableInstallTelemetry",
     "enableAnalytics",
     "warnings.anthropicExtraUsage",
+    "oxa.emptyReplyRetries",
 ];
 
 fn strs(items: &[&str]) -> Vec<String> {
