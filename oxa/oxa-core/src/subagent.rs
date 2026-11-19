@@ -118,8 +118,11 @@ pub const DEFAULT_RESULT_CAP: usize = 6144;
 pub const SETTING_REMOTE_CONCURRENCY: &str = "oxa.subagent.remoteConcurrency";
 pub const DEFAULT_REMOTE_CONCURRENCY: usize = 4;
 
-/// pi's limit on `tasks`.
+/// pi's limit on `tasks`, and the default of `oxa.subagent.maxChildren`: the most children one
+/// parent session runs or queues over every call in flight, and the most steps one call takes.
 pub const MAX_PARALLEL_TASKS: usize = 8;
+/// The setting that replaces [`MAX_PARALLEL_TASKS`] (at least 1).
+pub const SETTING_MAX_CHILDREN: &str = "oxa.subagent.maxChildren";
 /// Below this context window (the served model's `model_limits` cap; Flash: 16K) the tool is
 /// not declared by default (O-146).
 pub const MIN_CONTEXT: u32 = 32_000;
@@ -271,6 +274,8 @@ struct Config {
     /// `oxa.subagent.remoteConcurrency`: children of one `tasks` call on a remote model that
     /// run at once (#458; local children always run one at a time).
     remote_concurrency: usize,
+    /// `oxa.subagent.maxChildren`: children per parent session and tasks or steps per call.
+    max_children: usize,
 }
 
 impl Default for Config {
@@ -281,6 +286,7 @@ impl Default for Config {
             enabled: None,
             small_context: false,
             remote_concurrency: DEFAULT_REMOTE_CONCURRENCY,
+            max_children: MAX_PARALLEL_TASKS,
         }
     }
 }
@@ -411,6 +417,8 @@ impl SubagentHooks {
     /// Read `oxa.subagent.enabled`, `oxa.subagent.softTokens`, `oxa.subagent.resultCap` and
     /// `oxa.subagent.smallContext`.
     pub fn with_settings(self, settings: &Settings) -> SubagentHooks {
+        let max_children =
+            (settings.user_u32(SETTING_MAX_CHILDREN, MAX_PARALLEL_TASKS as u32) as usize).max(1);
         *lock(&self.inner.config) = Config {
             soft_tokens: settings.u32(SETTING_SOFT_TOKENS, DEFAULT_SOFT_TOKENS).max(1),
             result_cap: settings.u32(SETTING_RESULT_CAP, DEFAULT_RESULT_CAP as u32) as usize,
@@ -418,7 +426,8 @@ impl SubagentHooks {
             small_context: settings.bool(SETTING_SMALL_CONTEXT, false),
             remote_concurrency: (settings.u32(SETTING_REMOTE_CONCURRENCY, DEFAULT_REMOTE_CONCURRENCY as u32)
                 as usize)
-                .clamp(1, MAX_PARALLEL_TASKS),
+                .clamp(1, max_children),
+            max_children,
         };
         self
     }
@@ -437,7 +446,7 @@ impl SubagentHooks {
         match c.enabled {
             Some(on) => on,
             None if c.small_context => true,
-            None => !flash && !window.is_some_and(|w| w < MIN_CONTEXT),
+            None => !flash && window.is_none_or(|w| w >= MIN_CONTEXT),
         }
     }
 
@@ -820,14 +829,23 @@ impl Tool for SubagentTool {
         if modes != 1 {
             return ToolOutput::error(T::INVALID_MODE.replace("{available}", &available_list(&inner.agents)));
         }
+        let max = lock(&inner.config).max_children;
         let (shape, items) = if !chain.is_empty() {
-            if chain.len() > MAX_PARALLEL_TASKS {
-                return ToolOutput::error(TOO_MANY_CHAIN.replace("{n}", &chain.len().to_string()));
+            if chain.len() > max {
+                return ToolOutput::error(
+                    TOO_MANY_CHAIN
+                        .replace("{n}", &chain.len().to_string())
+                        .replace("{max}", &max.to_string()),
+                );
             }
             (Shape::Chain, chain)
         } else if !tasks.is_empty() {
-            if tasks.len() > MAX_PARALLEL_TASKS {
-                return ToolOutput::error(TOO_MANY.replace("{n}", &tasks.len().to_string()));
+            if tasks.len() > max {
+                return ToolOutput::error(
+                    TOO_MANY
+                        .replace("{n}", &tasks.len().to_string())
+                        .replace("{max}", &max.to_string()),
+                );
             }
             (Shape::Parallel, tasks)
         } else {
@@ -873,7 +891,8 @@ impl Tool for SubagentTool {
                 return ToolOutput::error(
                     TOO_MANY_SESSION
                         .replace("{pending}", &pending.to_string())
-                        .replace("{n}", &items.len().to_string()),
+                        .replace("{n}", &items.len().to_string())
+                        .replace("{max}", &lock(&inner.config).max_children.to_string()),
                 )
             }
         };
@@ -978,6 +997,7 @@ impl Tool for SubagentTool {
             "isError": is_error,
         });
         ToolOutput {
+            images: Vec::new(),
             text: cap_result(&text, config.result_cap, cx.spill_dir),
             is_error,
             ui: details,
@@ -1081,11 +1101,12 @@ struct Budget<'a> {
 
 impl<'a> Budget<'a> {
     /// Reserve `n` children for `session`, or `Err(children already running or waiting)`
-    /// when that would pass [`MAX_PARALLEL_TASKS`].
+    /// when that would pass `oxa.subagent.maxChildren`.
     fn reserve(inner: &'a Inner, session: &str, n: usize) -> Result<Budget<'a>, usize> {
+        let max = lock(&inner.config).max_children;
         let mut pending = lock(&inner.pending);
         let now = pending.get(session).copied().unwrap_or(0);
-        if now.saturating_add(n) > MAX_PARALLEL_TASKS {
+        if now.saturating_add(n) > max {
             return Err(now);
         }
         pending.insert(session.to_string(), now + n);
@@ -1524,6 +1545,13 @@ fn wait_child(
                         let _ = host.call(HostAction::AccountRunTokens(extra));
                         charged = charged.saturating_add(extra);
                     }
+                    if v["complete"] == false {
+                        // The child could not size its own spend: charge the rest of the
+                        // allowance it was given so the parent wraps up, never above it.
+                        let rest = remaining.unwrap_or(0).saturating_sub(charged);
+                        let _ = host.call(HostAction::AccountRunTokens(rest));
+                        charged = charged.saturating_add(rest);
+                    }
                 }
             }
         }
@@ -1783,6 +1811,27 @@ fn spawn(
                 std::thread::sleep(Duration::from_millis(20));
             }
             other => return other,
+        }
+    }
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+
+    #[test]
+    fn project_cannot_raise_the_owner_child_limit() {
+        let project = json!({"oxa": {"subagent": {"maxChildren": 32, "remoteConcurrency": 32}}});
+        for (user, expected) in [
+            (json!({}), MAX_PARALLEL_TASKS),
+            (json!({"oxa": {"subagent": {"maxChildren": 3}}}), 3),
+            (json!({"oxa": {"subagent": {"maxChildren": 12}}}), 12),
+        ] {
+            let settings = Settings::from_values(user, project.clone());
+            let hooks = SubagentHooks::new(PathBuf::from("unused"), Vec::new()).with_settings(&settings);
+            let config = lock(&hooks.inner.config);
+            assert_eq!(config.max_children, expected);
+            assert_eq!(config.remote_concurrency, expected);
         }
     }
 }

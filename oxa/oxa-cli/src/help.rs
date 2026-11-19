@@ -32,6 +32,12 @@ const BASE: &[Entry] = &[
         example: "oxa status 20260101-120000-abcd",
     },
     Entry {
+        path: &["usage"],
+        summary: "Print today's cloud spend and request sums per usage pool as JSON",
+        usage: &["oxa usage --json"],
+        example: "oxa usage --json",
+    },
+    Entry {
         path: &["install"],
         summary: "Install a package source and add it to settings",
         usage: &["oxa install <source> [-l]"],
@@ -87,7 +93,7 @@ const BASE: &[Entry] = &[
     },
     Entry {
         path: &["send"],
-        summary: "Queue a session follow-up, waking its TUI or RPC owner",
+        summary: "Queue a session follow-up for its TUI, RPC owner or headless goal run",
         usage: &["oxa send <session-id> \"text\""],
         example: "oxa send 20260101-120000-abcd \"task finished\"",
     },
@@ -185,12 +191,16 @@ const BASE: &[Entry] = &[
         example: "oxa report-issue submit ~/.oxa/agent/issue-drafts/20260101-120000.md",
     },
     Entry {
+        // Exception: `oxa work` and its `--queue` options are still served by this legacy table,
+        // as the entry note in #1062 records, so their help is declared here and they are not
+        // added to `command_registry.rs` a second time; the migration moves both together.
         path: &["work"],
         summary: "Run tasks in isolated worktrees with external acceptance checks",
         usage: &[
             "oxa work <taskfile> [--rerun]",
             "oxa work --issue N --model MODEL [--rerun]",
             "oxa work --pr N --model MODEL [--rerun]",
+            "oxa work --queue DIR [--max N] [--min-free-mib N] [--max-input-tasks N] [--once]",
             "oxa work status [--json | --usage TASK]",
             "oxa work board --shadow --repo OWNER/REPO --once",
         ],

@@ -37,6 +37,7 @@ impl GitHub for Fake<'_> {
                     has_open_pull_request: false,
                 })
                 .into(),
+            incomplete: vec![],
         })
     }
 }

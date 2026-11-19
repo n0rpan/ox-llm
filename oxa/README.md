@@ -1,24 +1,21 @@
 # oxa
 
-`oxa` is the terminal coding agent of ox-llm. It sends model requests to the OpenAI-compatible endpoint exposed by the `oxc` controller. The model's tools may use the network; see [docs/pages/security.md](docs/pages/security.md). It reads and edits your project with a small set of tools, runs bash in a `bubblewrap` sandbox, keeps sessions as trees, and compacts its context to fit the window of a local model. It has an interactive terminal interface, a print mode, a JSON event stream and an RPC mode, and it can be extended with skills, JavaScript extensions, MCP servers and a `web_search` tool.
+`oxa` is the terminal coding agent and the front door of the ox suite. It runs cloud models through its own gateway (OpenCode Go, OpenRouter, OpenAI, Anthropic and a ChatGPT plan) and local models through the `oxe` engine, which it starts itself. The model's tools may use the network; see [docs/pages/security.md](docs/pages/security.md). It reads and edits your project with a small set of tools, runs bash in a `bubblewrap` sandbox on Linux, keeps sessions as trees, and compacts its context to fit the window of the model. It has an interactive terminal interface, a print mode, a JSON event stream and an RPC mode, and it can be extended with skills, JavaScript extensions, MCP servers and a `web_search` tool.
 
-Status: v0.2.0, part of ox-llm. oxa is a Rust port of the pi coding agent (MIT). See `LICENSE` and `NOTICE` for the licence and the attribution.
+Status: v0.2.1, part of ox-llm. oxa is a Rust port of the pi coding agent (MIT). See `LICENSE` and `NOTICE` for the licence and the attribution.
 
 ## Quickstart
 
-Build from the `oxa/` directory of the checkout:
+Install a release or a dev build with [docs/pages/install.md](docs/pages/install.md). To build from source, run this from the `oxa/` directory of the checkout:
 
 ```console
 $ cargo build --release --locked -p oxa-cli
 $ export PATH="$PWD/target/release:$PATH"
-$ export OXA_ENGINE_URL=http://127.0.0.1:8092
 $ cd ~/project
 $ oxa
 ```
 
-See [tools and context handling](docs/pages/tools-context.md) for the defaults.
-
-`OXA_ENGINE_URL` defaults to the controller on `http://127.0.0.1:8092`. Without a running engine oxa stops with an error that names the address. For one answer from a script, use print mode:
+oxa needs a model before the first prompt: a provider key for a cloud model, or `oxa local add <model.gguf> --enable` for a local one. [docs/pages/quickstart.md](docs/pages/quickstart.md) has both. See [tools and context handling](docs/pages/tools-context.md) for the defaults. For one answer from a script, use print mode:
 
 ```console
 $ oxa -p --tools read,ls "List the files"
@@ -28,7 +25,7 @@ $ oxa -p --tools read,ls "List the files"
 
 The documentation is in [docs/](docs/README.md):
 
-- [quickstart](docs/pages/quickstart.md): build, connect, first prompt, file locations
+- [install](docs/pages/install.md), [quickstart](docs/pages/quickstart.md) and [modes](docs/pages/modes.md): install, cloud and local models, first prompt, permission modes
 - [usage](docs/pages/usage.md): the interface, keys and slash commands
 - [cli](docs/pages/cli.md) and [settings](docs/pages/settings.md): every flag, variable and key
 - [sessions](docs/pages/sessions.md), [compaction](docs/pages/compaction.md) and [tools and context](docs/pages/tools-context.md)
