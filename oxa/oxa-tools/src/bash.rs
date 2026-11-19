@@ -127,7 +127,8 @@ enum BashArgs {
     /// Run `command` (foreground, or detached when `background`).
     Run {
         command: String,
-        /// Whole seconds, rounded up; `None` = no timeout.
+        /// Whole seconds, rounded up. `Some(0)` = the call named no timeout and asked for none
+        /// (it beats `oxa.bash.defaultTimeout`); `None` = the call named none, so the default applies.
         timeout_s: Option<u32>,
         background: bool,
     },
@@ -196,10 +197,11 @@ fn parse(args: &Value) -> Result<BashArgs, String> {
             let timeout_s = match args.get("timeout") {
                 None | Some(Value::Null) => None,
                 Some(v) => {
-                    // pi: a finite number of seconds greater than zero, else refused.
+                    // pi: a finite number of seconds, else refused. Zero is no timeout (owner
+                    // request): it is kept as `Some(0)` so it wins over the default timeout.
                     let t = v
                         .as_f64()
-                        .filter(|t| t.is_finite() && *t > 0.0)
+                        .filter(|t| t.is_finite() && *t >= 0.0)
                         .ok_or_else(|| errors::BASH_BAD_TIMEOUT.to_string())?;
                     Some(t.ceil().min(f64::from(u32::MAX)) as u32)
                 }
@@ -488,8 +490,9 @@ impl BashTool {
             writable: !matches!(cx.mode, Mode::Plan),
             net: net_for(cx.mode, self.sandbox(cx).network()),
             // A background job has no timeout unless the call names one: it runs until it
-            // exits, is killed (`bash {job, kill: true}`) or the session ends.
-            timeout_s,
+            // exits, is killed (`bash {job, kill: true}`) or the session ends. An explicit 0 is
+            // no timeout too.
+            timeout_s: timeout_s.filter(|t| *t > 0),
             env: cx.env.to_vec(),
         };
         match self.jobs.spawn(spec) {
@@ -528,8 +531,12 @@ impl BashTool {
             cwd: cx.cwd.to_path_buf(),
             writable: !matches!(cx.mode, Mode::Plan),
             net: net_for(cx.mode, self.sandbox(cx).network()),
-            // F5: the call's own timeout wins; else the epoch's default (0 = none, pi).
-            timeout_s: timeout_s.or_else(|| (cx.tune.bash_timeout_s > 0).then_some(cx.tune.bash_timeout_s)),
+            // F5: the call's own timeout wins (an explicit 0 means none); else the epoch's
+            // default (0 = none, pi).
+            timeout_s: match timeout_s {
+                Some(t) => (t > 0).then_some(t),
+                None => (cx.tune.bash_timeout_s > 0).then_some(cx.tune.bash_timeout_s),
+            },
             env: cx.env.to_vec(),
         };
         let mut pending: Vec<u8> = Vec::new();
@@ -1347,7 +1354,7 @@ echo '\''a'\'''"#
         let (out, _) = run_with(&sb, json!({"timeout": 3}), Mode::Workspace, &CancelToken::new());
         assert!(out.is_error);
         assert_eq!(out.text, MISSING_COMMAND);
-        for bad in [json!(0), json!(-1), json!("soon")] {
+        for bad in [json!(-1), json!("soon")] {
             let (out, _) = run_with(
                 &sb,
                 json!({"command": "ls", "timeout": bad}),
@@ -1371,7 +1378,7 @@ echo '\''a'\'''"#
             tune: Default::default(),
             hidden: None,
         };
-        let got = BashTool::new().access(&json!({"command": "ls", "timeout": 0}), &cx);
+        let got = BashTool::new().access(&json!({"command": "ls", "timeout": -1}), &cx);
         assert_eq!(got, Err(errors::BASH_BAD_TIMEOUT.to_string()));
     }
 
@@ -1439,6 +1446,47 @@ echo '\''a'\'''"#
             hidden: None,
         };
         BashTool::new().run(&args, &cx, &mut |_| {})
+    }
+
+    /// `timeout: 0` names no timeout: it beats `oxa.bash.defaultTimeout` (the default applies only
+    /// when the call names none), for a foreground run and for a background job.
+    #[test]
+    fn bash_timeout_zero_means_none() {
+        let tuned = oxa_proto::ToolTune {
+            bash_timeout_s: 7,
+            ..Default::default()
+        };
+        let sb = Fake::ok(b"", Some(0));
+        let out = run_tuned(&sb, json!({"command": "sleep 9", "timeout": 0}), tuned);
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(sb.seen.lock().unwrap().as_ref().unwrap().timeout_s, None);
+
+        let sb = Fake::ok(b"", Some(0));
+        let _ = run_tuned(&sb, json!({"command": "sleep 9", "timeout": 0.0}), tuned);
+        assert_eq!(sb.seen.lock().unwrap().as_ref().unwrap().timeout_s, None);
+
+        // A background job with `timeout: 0` has no lifetime cap.
+        let jobs = Arc::new(JobRegistry::new());
+        let sb = Arc::new(Blocking {
+            seen: Mutex::new(None),
+        });
+        jobs.set_sandbox(sb.clone());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone());
+        let _ = run_job_tool(
+            &tool,
+            &*sb,
+            json!({"command": "sleep 100", "background": true, "timeout": 0}),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(sb.seen.lock().unwrap().as_ref().unwrap().timeout_s, None);
+        jobs.kill_all();
+
+        // Negative and garbled values are still refused.
+        let sb = Fake::ok(b"", Some(0));
+        let out = run_tuned(&sb, json!({"command": "sleep 9", "timeout": -2}), tuned);
+        assert!(out.is_error);
+        assert_eq!(out.text, errors::BASH_BAD_TIMEOUT);
+        assert!(sb.seen.lock().unwrap().is_none());
     }
 
     /// F5: `bash_timeout_s` applies only when the call names no timeout; the timeout text is
