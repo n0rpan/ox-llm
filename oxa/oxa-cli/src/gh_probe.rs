@@ -83,6 +83,22 @@ impl ProbeHooks {
         }
     }
 
+    /// The scrub context for evidence that leaves oxa as tool output.
+    fn scrub_ctx(&self) -> ScrubCtx {
+        ScrubCtx {
+            home: Some(self.home_string()),
+            user: std::env::var("USER")
+                .ok()
+                .or_else(|| std::env::var("LOGNAME").ok()),
+            host: None,
+        }
+    }
+
+    /// Scrub, then cut: a credential a cut could separate from its marker stays recognisable.
+    fn scrubbed(&self, text: &str, max: usize) -> String {
+        cut_chars(&scrub(text, &self.scrub_ctx()), max)
+    }
+
     fn pr_view(&self, pr: u64, budget: Duration) -> Result<String, String> {
         let repo = self.repo(budget)?;
         let n = pr.to_string();
@@ -102,7 +118,7 @@ impl ProbeHooks {
         Ok(format!(
             "PR #{pr} {}: {}\nstate {}{}; head {} ({}); base {}; mergeable {}; review {}\n{}\n\n{}",
             s("url"),
-            s("title"),
+            self.scrubbed(&s("title"), BODY_CHARS),
             s("state"),
             if v["isDraft"].as_bool() == Some(true) {
                 " (draft)"
@@ -118,7 +134,8 @@ impl ProbeHooks {
                 .filter(|d| !d.is_empty())
                 .unwrap_or("none"),
             "--- body ---",
-            cut_chars(v["body"].as_str().unwrap_or(""), BODY_CHARS),
+            // A pasted credential in a PR would otherwise reach the model as tool output.
+            self.scrubbed(v["body"].as_str().unwrap_or(""), BODY_CHARS),
         ))
     }
 
@@ -241,14 +258,14 @@ impl ProbeHooks {
         Ok(format!(
             "Issue #{issue} {}: {}\nstate {}; labels {}\n--- body ---\n{}",
             v["url"].as_str().unwrap_or("unknown"),
-            v["title"].as_str().unwrap_or("unknown"),
+            self.scrubbed(v["title"].as_str().unwrap_or("unknown"), BODY_CHARS),
             v["state"].as_str().unwrap_or("unknown"),
             if labels.is_empty() {
                 "none".to_string()
             } else {
                 labels.join(", ")
             },
-            cut_chars(v["body"].as_str().unwrap_or(""), BODY_CHARS),
+            self.scrubbed(v["body"].as_str().unwrap_or(""), BODY_CHARS),
         ))
     }
 }
@@ -343,7 +360,7 @@ mod tests {
 
     #[test]
     fn run_log_failed_is_capped_and_redacted() {
-        let f = Fake::new("log");
+        let f = Fake::new("log-envelope");
         let token = format!("ghp_{}", "A1b2C3d4E5".repeat(4));
         let mut log = String::new();
         for i in 0..4000 {
@@ -420,6 +437,34 @@ mod tests {
             "{checks}"
         );
         assert!(!checks.contains("build"), "{checks}");
+    }
+
+    /// A credential pasted into a PR or an issue must not reach the model as probe evidence.
+    #[test]
+    fn pr_and_issue_bodies_are_scrubbed() {
+        let f = Fake::new("scrub");
+        let token = format!("ghp_{}", "Z9y8X7w6V5".repeat(4));
+        f.answer(
+            "pr_view.json",
+            &format!(
+                r#"{{"number":7,"title":"leak {token}","state":"OPEN","isDraft":false,"headRefName":"agent/x","headRefOid":"abc","baseRefName":"main","mergeable":"MERGEABLE","reviewDecision":"","url":"https://github.com/acme/widgets/pull/7","body":"pasted {token}"}}"#
+            ),
+        );
+        f.answer(
+            "issue_view.json",
+            &format!(
+                r#"{{"number":5,"title":"leak {token}","state":"OPEN","labels":[],"url":"https://github.com/acme/widgets/issues/5","body":"pasted {token}"}}"#
+            ),
+        );
+        for kind in ["pr_view", "issue_view"] {
+            let args = if kind == "pr_view" {
+                json!({"kind": "pr_view", "pr": 7})
+            } else {
+                json!({"kind": "issue_view", "issue": 5})
+            };
+            let out = f.poll(args).unwrap().expect("answered at once");
+            assert!(!out.contains(&token), "{kind} leaked the token: {out}");
+        }
     }
 
     #[test]
