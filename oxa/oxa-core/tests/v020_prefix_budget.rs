@@ -156,8 +156,8 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// 2026-11-19: S12 documents explicit zero in the bash timeout schema.
 /// 2026-11-19: new identity text (Rust-only suite, cloud models as one provider line) and the
 /// done-check rule; hashes copied from the `stable sha256` lines of this test in CI.
-const DEFAULT_STABLE_SHA: &str = "cbf4707823e59a8973e33b0a63bb3c34c0cfb9b4a04dc43ff60d00fa9c09a92f";
-const DEFAULT_STABLE_SHA_SUBAGENT: &str = "dc4c0c1240eb632f636b5f24620469d34a00e23be2ab3f5e1a799aef739f59ba";
+const DEFAULT_STABLE_SHA: &str = "1bfbe797b2d277d4e383ae501af1a58765aa333a6c2ce805ea3159215ac698b6";
+const DEFAULT_STABLE_SHA_SUBAGENT: &str = "d629ff43a995fe1b717ebe27a354fa86495b3a2cb37455f2ca27e1ed5512dcc9";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
 fn has_date(s: &str) -> bool {

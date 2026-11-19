@@ -129,7 +129,11 @@ fn the_new_rules_cost_exactly_their_lines() {
     let env = TestEnv::new();
     let plain = system(&env, true, false, false);
     let child = system(&env, true, true, false);
-    assert_eq!(child.len() - plain.len(), RULE_CHILD_VERIFY.len() + 3);
+    // A child gets the child check instead of the done check (`RULE_VERIFY`, 2026-11-19).
+    assert_eq!(
+        child.len() + oxa_core::prompt::RULE_VERIFY.len(),
+        plain.len() + RULE_CHILD_VERIFY.len()
+    );
     let sub_only = system(&env, true, false, true);
     assert_eq!(
         sub_only.len() - plain.len(),
