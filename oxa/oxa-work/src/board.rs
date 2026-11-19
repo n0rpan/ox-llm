@@ -14,7 +14,7 @@ pub mod check_recovery;
 mod intake;
 pub mod landing;
 pub mod queue;
-pub use intake::{ImportState, Issue, Snapshot};
+pub use intake::{ImportState, Incomplete, Issue, Snapshot};
 mod goal_plan;
 pub mod review;
 pub use goal_plan::GoalStep;
@@ -33,6 +33,8 @@ pub enum Action {
     WaitMergeability,
     WaitReview,
     WaitIssue,
+    /// The PR's evidence exceeded a GitHub read page; its row is shown and never eligible.
+    EvidenceIncomplete,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -94,6 +96,7 @@ pub trait GitHub {
         Ok(Snapshot {
             pull_requests: self.open_pull_requests()?,
             issues: vec![],
+            incomplete: vec![],
         })
     }
 }
@@ -145,6 +148,9 @@ pub struct Entry {
     pub lease: Option<Lease>,
     pub attempts_today: u32,
     pub eligible: bool,
+    /// Why this row's evidence is incomplete; such a row is never eligible for any action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_incomplete: Option<String>,
 }
 
 impl Entry {
@@ -276,6 +282,15 @@ impl Board {
                 policy,
                 now,
             ));
+        }
+        for item in snapshot.incomplete {
+            if item.number == 0 || item.head.is_empty() || !seen.insert(item.number) {
+                return Err("invalid or duplicate incomplete item in board snapshot".into());
+            }
+            let saved = state.get(&item.number);
+            board
+                .entries
+                .push(intake::incomplete_entry(item, saved, policy, now));
         }
         for issue in snapshot.issues {
             if issue.number == 0 || issue.revision.is_empty() || !seen.insert(issue.number) {

@@ -10,10 +10,24 @@ pub struct Issue {
     pub approved: bool,
     pub has_open_pull_request: bool,
 }
+/// A PR whose evidence could not be read completely. It is shown as one row and is never eligible.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Incomplete {
+    pub number: u64,
+    pub head: String,
+    pub release_pinned: bool,
+    /// Names the GitHub connection that exceeded its read page; logged and shown with the row.
+    pub reason: String,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Snapshot {
     pub pull_requests: Vec<PullRequest>,
     pub issues: Vec<Issue>,
+    /// Items the adapter could not evaluate completely; the rest of the snapshot stays usable.
+    #[serde(default)]
+    pub incomplete: Vec<Incomplete>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ImportState {
@@ -36,7 +50,11 @@ pub(super) fn entry(
     let lease = saved.and_then(|s| s.lease.clone());
     let eligible = !matches!(
         action,
-        Action::WaitReview | Action::WaitRequiredCi | Action::WaitMergeability | Action::WaitIssue
+        Action::WaitReview
+            | Action::WaitRequiredCi
+            | Action::WaitMergeability
+            | Action::WaitIssue
+            | Action::EvidenceIncomplete
     ) && attempts_today < policy.max_attempts_per_day
         && lease.as_ref().is_none_or(|l| l.expires_at <= now);
     Entry {
@@ -47,5 +65,27 @@ pub(super) fn entry(
         lease,
         attempts_today,
         eligible,
+        evidence_incomplete: None,
     }
+}
+
+/// One row for an incomplete PR: visible with its reason, and never eligible for any action.
+pub(super) fn incomplete_entry(
+    item: Incomplete,
+    saved: Option<&AttemptState>,
+    policy: &Policy,
+    now: u64,
+) -> Entry {
+    let mut entry = entry(
+        item.number,
+        item.head,
+        item.release_pinned,
+        Action::EvidenceIncomplete,
+        saved,
+        policy,
+        now,
+    );
+    entry.eligible = false;
+    entry.evidence_incomplete = Some(item.reason);
+    entry
 }

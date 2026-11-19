@@ -1565,7 +1565,7 @@ fn landing_shadow_holds_an_approved_head_on_unresolved_current_or_older_reviews(
 }
 
 #[test]
-fn landing_shadow_refuses_an_incomplete_queue_connection() {
+fn landing_shadow_degrades_an_incomplete_queue_connection() {
     let (env, mut detail) = fixture();
     detail["data"]["repository"]["p42"]["comments"] = serde_json::json!({"totalCount": 0, "nodes": []});
     fs::write(env.work().join("review.json"), detail.to_string()).unwrap();
@@ -1590,11 +1590,13 @@ fn landing_shadow_refuses_an_incomplete_queue_connection() {
         &env,
         "work board --shadow --repo example/repo --once --landing-shadow",
     );
-    assert_eq!(result.status.code(), Some(2));
+    // The board is published; the observed queue rows stay usable and the limit is logged.
+    assert_eq!(result.status.code(), Some(0));
     assert!(
-        String::from_utf8_lossy(&result.stderr).contains("refusing a partial board"),
+        String::from_utf8_lossy(&result.stderr)
+            .contains("merge queue connection exceeds its 100-item page (101 entries)"),
         "unexpected result: {}",
         String::from_utf8_lossy(&result.stderr)
     );
-    assert_eq!(fs::metadata(log_for(&env, "example/repo")).unwrap().len(), 0);
+    assert!(fs::metadata(log_for(&env, "example/repo")).unwrap().len() > 0);
 }

@@ -217,6 +217,7 @@ impl GitHub for Input<'_> {
         Ok(Snapshot {
             pull_requests,
             issues,
+            incomplete: vec![],
         })
     }
 }

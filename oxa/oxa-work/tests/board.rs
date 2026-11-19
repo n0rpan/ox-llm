@@ -223,3 +223,75 @@ fn pull_request_debug_redacts_body_while_serde_preserves_policy_input() {
         assert_eq!(restored.body, body);
     }
 }
+
+struct Partial {
+    prs: Vec<PullRequest>,
+    incomplete: Vec<Incomplete>,
+}
+
+impl GitHub for Partial {
+    fn snapshot(&mut self) -> oxa_work::Result<Snapshot> {
+        Ok(Snapshot {
+            pull_requests: self.prs.clone(),
+            issues: vec![],
+            incomplete: self.incomplete.clone(),
+        })
+    }
+}
+
+fn incomplete(number: u64) -> Incomplete {
+    Incomplete {
+        number,
+        head: "synthetic-head".into(),
+        release_pinned: false,
+        reason: "labels exceed the 100-item GitHub page; the item is not evaluated".into(),
+    }
+}
+
+#[test]
+fn oversized_pr_marks_one_item_incomplete_and_keeps_the_rest() {
+    let mut github = Partial {
+        prs: vec![pr(1), pr(3)],
+        incomplete: vec![incomplete(2)],
+    };
+    let policy = Policy {
+        enabled: true,
+        ..Policy::default()
+    };
+    let board = Board::read(&mut github, &policy, &BTreeMap::new(), 0).unwrap();
+    assert_eq!(board.entries.len(), 3, "every other item stays in the snapshot");
+    let marked = board.entries.iter().find(|entry| entry.number == 2).unwrap();
+    assert_eq!(marked.action, Action::EvidenceIncomplete);
+    assert_eq!(
+        marked.evidence_incomplete.as_deref(),
+        Some("labels exceed the 100-item GitHub page; the item is not evaluated")
+    );
+    for number in [1, 3] {
+        let entry = board.entries.iter().find(|entry| entry.number == number).unwrap();
+        assert!(entry.evidence_incomplete.is_none());
+        assert_ne!(entry.action, Action::EvidenceIncomplete);
+    }
+}
+
+#[test]
+fn incomplete_item_is_never_eligible() {
+    let mut item = incomplete(7);
+    item.release_pinned = true;
+    let mut github = Partial {
+        prs: vec![],
+        incomplete: vec![item],
+    };
+    let policy = Policy {
+        enabled: true,
+        ..Policy::default()
+    };
+    let board = Board::read(&mut github, &policy, &BTreeMap::new(), 0).unwrap();
+    let entry = &board.entries[0];
+    assert_eq!(entry.action, Action::EvidenceIncomplete);
+    assert!(entry.release_pinned);
+    assert_eq!(entry.attempts_today, 0);
+    assert!(
+        !entry.eligible,
+        "no attempt budget or expired lease makes incomplete evidence eligible"
+    );
+}

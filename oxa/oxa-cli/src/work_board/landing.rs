@@ -119,7 +119,23 @@ fn queue_observations(queue: &Value, board: &Board) -> Result<BTreeMap<u64, Queu
     if queue.is_null() {
         return Ok(BTreeMap::new());
     }
-    let rows = nodes(&queue["entries"])?;
+    let connection = &queue["entries"];
+    let total = connection["totalCount"]
+        .as_u64()
+        .ok_or("missing GitHub connection")?;
+    let rows = connection["nodes"]
+        .as_array()
+        .ok_or("missing GitHub connection")?;
+    if total < rows.len() as u64 {
+        return Err("invalid merge queue connection".into());
+    }
+    if total > rows.len() as u64 {
+        // Observed rows stay usable. A PR outside them keeps queue state Unknown, which takes no action.
+        eprintln!(
+            "oxa work: merge queue connection exceeds its {}-item page ({total} entries); queue state is unknown beyond it",
+            rows.len()
+        );
+    }
     let mut seen = std::collections::BTreeSet::new();
     let mut queued = BTreeMap::new();
     for row in rows {
@@ -192,6 +208,7 @@ mod tests {
                 lease: None,
                 attempts_today: 0,
                 eligible: true,
+                evidence_incomplete: None,
             }],
             observed_at: 1_767_225_601,
         };
