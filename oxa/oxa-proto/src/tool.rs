@@ -188,6 +188,9 @@ pub struct ToolTune {
     pub read_page_bytes: u32,
     /// `bash`: timeout in seconds when the call sets none (F5). 0 = none (pi).
     pub bash_timeout_s: u32,
+    /// `bash` job read: the longest `wait_s` in seconds (`oxa.bash.waitCap`). 0 = the built-in
+    /// 300.
+    pub bash_wait_cap_s: u32,
     /// L4: the tool output cap in bytes. `grep`, `find`, `ls` and a `read` with
     /// `offset` / `limit` cut their result at it (never above pi's 16 KiB), notices inside it.
     /// 0 = none (pi: each tool's own 16 KiB cut).
