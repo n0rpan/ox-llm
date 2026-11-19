@@ -157,8 +157,8 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// 2026-11-19: R2 rewrote the built-in `ox-llm` skill description (no controller), and the
 /// new identity text (Rust-only suite, cloud models as one provider line) and the done-check
 /// rule; hashes copied from the `stable sha256` lines of this test in CI.
-const DEFAULT_STABLE_SHA: &str = "f0c43ac3c282929ee61851e75cf1d041c876fa3a6e9fb847fd5d515e8beaad72";
-const DEFAULT_STABLE_SHA_SUBAGENT: &str = "568c0649fbfa760413db74a88a571a3c471a3737d886933a83bb679e8995adf7";
+const DEFAULT_STABLE_SHA: &str = "44d38fb90943d9e111559e359399368a8bff5d8fe1e2c8dca61559b04544ea74";
+const DEFAULT_STABLE_SHA_SUBAGENT: &str = "636bb5a19bd57a0c20d29bb3553873c330532df02a042d9370029764e314c2ca";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
 fn has_date(s: &str) -> bool {
