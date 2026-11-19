@@ -97,7 +97,8 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `defaultTools` | list | `["read","bash","edit","write","grep","find","ls"]` | tools on by default; names may include `subagent`, `web_search`, `codemode` and `tool_search` |
-| `oxa.bash.defaultTimeout` | number (seconds) | unset | timeout of a bash call that names none; unset is 120; `0` is no timeout |
+| `oxa.bash.defaultTimeout` | number (seconds) | unset | timeout of a bash call that names none; unset is 120; `0` is no timeout. A call's own `timeout: 0` is no timeout too, and beats this default |
+| `oxa.bash.maxJobs` | number | `16` | background jobs (`bash` with `background: true`) that may run at once; a further start is refused and names the oldest running job to stop with `kill`. User settings only. At least 1 |
 | `oxa.diet.output` | bool | unset | the system prompt's "be concise" rule is replaced by rules on tool use and a final answer of at most 6 lines. Unset is on |
 | `oxa.diet.tools` | bool | unset | shorter `grep` and `bash` output: `grep` prints each path once, and runs of three or more blank lines in bash output become two. Unset is on |
 | `oxa.liveSettings` | bool | `true` | on by default; `false` opts out. When on, a changed settings file is applied at the start of the next run without `/reload` (one `stat` per file; keys that feed the prompt rebuild it). Read from the settings the session holds, so turning it on takes effect at the next `/reload` or start. A file that no longer parses keeps the previous settings |
@@ -111,6 +112,7 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `oxa.subagent.enabled` | bool | unset | the `subagent` tool; unset is on unless the model is Flash or its window is below 32K |
 | `oxa.subagent.smallContext` | bool | `false` | declare `subagent` on a model with a window below 32K |
 | `oxa.subagent.softTokens` | number | `24000` | compaction point of a child agent |
+| `oxa.subagent.maxChildren` | number | `8` | children one parent session runs or queues over every call in flight, and the most `tasks` or `chain` steps one call takes. User settings only. At least 1 |
 | `oxa.subagent.remoteConcurrency` | number | `4` | children of one `tasks` call that run at once when some run on a cloud model (local children run one at a time) |
 | `oxa.subagent.resultCap` | number (bytes) | `6144` | cap on the text a child returns |
 | `oxa.webSearch.enabled` | bool | `true` | the `web_search` tool, when a key exists |
