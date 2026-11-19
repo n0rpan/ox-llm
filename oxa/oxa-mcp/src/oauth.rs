@@ -7,7 +7,7 @@ use base64::Engine;
 use oxa_proto::{codes, CancelToken, OxaError, Value};
 use serde_json::{json, Map};
 use sha2::{Digest, Sha256};
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -437,6 +437,10 @@ const ACCEPT_POLL: Duration = Duration::from_millis(20);
 /// Longest request head the callback server reads.
 const MAX_HEAD_BYTES: usize = 16 * 1024;
 
+const CALLBACK_HEADERS: [(&str, &str); 2] = [
+    ("Content-Type", "text/html; charset=utf-8"),
+    ("Cache-Control", "no-store"),
+];
 const CALLBACK_DONE_PAGE: &str = "<!doctype html><html><head><meta charset=\"utf-8\"><title>oxa</title></head><body><p>Sign-in complete. You can close this tab.</p></body></html>";
 const CALLBACK_FAILED_PAGE: &str = "<!doctype html><html><head><meta charset=\"utf-8\"><title>oxa</title></head><body><p>The sign-in was not completed. You can close this tab and try again.</p></body></html>";
 
@@ -498,27 +502,19 @@ impl CallbackServer {
     fn answer(&self, stream: TcpStream) -> Option<String> {
         let _ = stream.set_nonblocking(false);
         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-        let mut reader = BufReader::new(&stream);
-        let mut request_line = String::new();
-        if reader.read_line(&mut request_line).ok()? == 0 {
+        let parsed = oxa_http::server::read_head(&mut &stream, MAX_HEAD_BYTES)
+            .and_then(|head| {
+                let (line, _headers) = oxa_http::server::split_head(&head)?;
+                let request = oxa_http::server::parse_request_line(line)?;
+                Ok((request.method.to_string(), request.target.to_string()))
+            })
+            .ok();
+        let Some((method, target)) = parsed else {
+            let mut out = &stream;
+            let _ =
+                oxa_http::server::write_response(&mut out, "404 Not Found", &CALLBACK_HEADERS, b"Not found");
             return None;
-        }
-        let mut total = request_line.len();
-        loop {
-            let mut line = String::new();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    total += n;
-                    if line == "\r\n" || line == "\n" || total > MAX_HEAD_BYTES {
-                        break;
-                    }
-                }
-            }
-        }
-        let mut parts = request_line.split_whitespace();
-        let method = parts.next().unwrap_or("");
-        let target = parts.next().unwrap_or("").to_string();
+        };
         let path = target.split('?').next().unwrap_or("");
         let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
         let pairs = query_pairs(query);
@@ -532,13 +528,8 @@ impl CallbackServer {
         } else {
             ("200 OK", CALLBACK_DONE_PAGE)
         };
-        let response = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
         let mut out = &stream;
-        let _ = out.write_all(response.as_bytes());
-        let _ = out.flush();
+        let _ = oxa_http::server::write_response(&mut out, status, &CALLBACK_HEADERS, body.as_bytes());
         if is_callback {
             Some(format!("http://127.0.0.1:{}{target}", self.port()))
         } else {
@@ -1534,5 +1525,67 @@ mod tests {
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
         let err = TokenStore::open(&p).read_doc().expect_err("refused");
         assert_eq!(err.code, codes::INVALID);
+    }
+
+    /// Run `CallbackServer::answer` on a real loopback connection: send `request`, return what
+    /// `answer` returned and the raw response.
+    fn answer_over_socket(request: &[u8]) -> (Option<String>, String) {
+        use std::io::Read;
+        let server = CallbackServer::bind(0).unwrap();
+        let port = server.port();
+        let request = request.to_vec();
+        let client = std::thread::spawn(move || {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let _ = s.write_all(&request);
+            let mut out = String::new();
+            let _ = s.read_to_string(&mut out);
+            out
+        });
+        let (stream, _) = server.listener.accept().unwrap();
+        let url = server.answer(stream);
+        (url, client.join().unwrap())
+    }
+
+    #[test]
+    fn callback_with_code_returns_the_url_and_the_done_page() {
+        let (url, resp) =
+            answer_over_socket(b"GET /callback?code=abc&state=xyz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        assert!(url.unwrap().ends_with("/callback?code=abc&state=xyz"));
+        assert!(resp.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(resp.contains("Cache-Control: no-store\r\n"));
+        assert!(resp.contains("Content-Type: text/html; charset=utf-8\r\n"));
+        assert!(resp.ends_with(CALLBACK_DONE_PAGE));
+    }
+
+    #[test]
+    fn error_without_code_returns_the_failed_page() {
+        let (url, resp) = answer_over_socket(b"GET /callback?error=access_denied HTTP/1.1\r\n\r\n");
+        assert!(url.is_some());
+        assert!(resp.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(resp.ends_with(CALLBACK_FAILED_PAGE));
+    }
+
+    #[test]
+    fn other_paths_get_404_and_no_url() {
+        let (url, resp) = answer_over_socket(b"GET /favicon.ico HTTP/1.1\r\n\r\n");
+        assert_eq!(url, None);
+        assert!(resp.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        assert!(resp.ends_with("Not found"));
+    }
+
+    #[test]
+    fn a_head_over_16_kib_gets_no_url() {
+        let mut req = b"GET /callback?code=abc HTTP/1.1\r\nX-Pad: ".to_vec();
+        req.extend(std::iter::repeat(b'a').take(MAX_HEAD_BYTES));
+        req.extend_from_slice(b"\r\n\r\n");
+        let (url, _resp) = answer_over_socket(&req);
+        assert_eq!(url, None);
+    }
+
+    #[test]
+    fn a_bare_lf_request_gets_404_and_no_url() {
+        let (url, resp) = answer_over_socket(b"GET /callback?code=abc HTTP/1.1\nHost: x\n\n");
+        assert_eq!(url, None);
+        assert!(resp.starts_with("HTTP/1.1 404 Not Found\r\n"));
     }
 }
