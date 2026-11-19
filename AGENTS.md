@@ -137,6 +137,14 @@ Do not run `cargo build`, `cargo test`, Python or end-to-end tests, or whole-wor
 compiler sweeps on n0rpan, Air, or the maintainer's laptop. On n0rpan, run Lead and
 its worker from the dev-release binary. Do not compile binaries for deployment.
 
+**Hosted cloud agent environments are not owner machines.**
+- **Scope:** a hosted sandbox such as the Codex cloud environment for this repo. It sets `OX_HOSTED_AGENT_ENV=1` in its environment settings.
+- **What to run there:** before pushing, run `cargo fmt --check`, `cargo clippy -p <crate> -- -D warnings` and `cargo test -p <crate>` for every crate you touched.
+- **Fix what fails, then push.**
+- **Tests that need bubblewrap, user namespaces or a writable `/proc`** cannot run there. Skip them, and name them in your reply.
+- **GitHub CI is still the judge;** the local run only catches failures before they cost a CI round.
+- **The limits above still apply** on n0rpan, Air and the maintainer's laptop.
+
 Keep target directories and large scratch under your own clone or `~/.cache`; never put them under
 `/tmp` (it is RAM on the owner's machines). Use isolated HOME/XDG. Remove your finished temporary
 files; preserve anything a running process of yours uses, and never clean another lane's files.
