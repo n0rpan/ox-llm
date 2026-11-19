@@ -147,12 +147,103 @@ fn a_key_enables_go_catalog_and_plan_chat_without_legacy_enable_or_limits() {
     mock.assert_healthy();
 }
 
+fn served_mock() -> MockOpenAi {
+    MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"Synthetic work answer"}), "stop"),
+        ]
+    })
+}
+
 #[test]
-fn taskfile_model_does_not_authorize_keyed_go() {
+fn key_only_go_is_available_to_a_delegated_worker() {
+    let env = TestEnv::new();
+    let mock = served_mock();
+    let (_, record) = run_go_work_taskfile(&env, &mock, None);
+    assert!(record["worker"].is_object(), "{record}");
+    assert!(
+        matches!(record["worker"]["exit_code"].as_i64(), Some(0 | 4)),
+        "{record}"
+    );
+    assert_eq!(mock.requests().iter().filter(|r| r.method == "POST").count(), 1);
+    assert_eq!(rows(&env)[0]["remote_provider"], "opencode");
+    mock.assert_healthy();
+}
+
+#[test]
+fn an_enabled_owner_lets_a_delegated_worker_use_go() {
+    let env = TestEnv::new();
+    let mock = served_mock();
+    let (_, record) = run_go_work_taskfile(&env, &mock, Some(true));
+    assert!(
+        matches!(record["worker"]["exit_code"].as_i64(), Some(0 | 4)),
+        "{record}"
+    );
+    assert_eq!(mock.requests().iter().filter(|r| r.method == "POST").count(), 1);
+    assert_eq!(rows(&env)[0]["remote_provider"], "opencode");
+    mock.assert_healthy();
+}
+
+#[test]
+fn user_false_opts_go_out_for_everyone() {
     let env = TestEnv::new();
     let mock = MockOpenAi::start(vec![]);
-    let (output, record) = run_go_work_taskfile(&env, &mock, false);
+    let (output, record) = run_go_work_taskfile(&env, &mock, Some(false));
     assert!(record["worker"].is_object(), "{record}");
+    assert!(!output.status.success());
+    let owner = run(
+        &env,
+        &["--model", MODEL, "--no-tools", "-p", "Synthetic owner task"],
+    );
+    assert!(!owner.status.success());
+    assert!(mock.requests().is_empty());
+    assert!(!env.agent_dir().join("cloud-ledger").exists());
+    mock.assert_healthy();
+}
+
+#[test]
+fn project_settings_cannot_enable_go() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start(vec![]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings["oxa"]["cloud"]["opencode"]["enabled"] = json!(false);
+    fs::write(path, settings.to_string()).unwrap();
+    env.write(
+        "work/.oxa/settings.json",
+        &json!({"oxa":{"cloud":{"opencode":{"enabled":true}},"engine":{"inProcessCloud":true}}}).to_string(),
+    );
+    let output = run(&env, &["--model", MODEL, "--no-tools", "-p", "Synthetic task"]);
+    assert!(!output.status.success());
+    assert!(mock.requests().is_empty());
+    assert!(!env.agent_dir().join("cloud-ledger").exists());
+    mock.assert_healthy();
+}
+
+#[test]
+fn no_key_means_no_go() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start(vec![]);
+    setup(&env, &format!("http://{}", mock.address()));
+    fs::remove_file(env.home().join(".config/oxc/llm/cloud-secrets.json")).unwrap();
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    fs::write(path, settings.to_string()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .current_dir(env.work())
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:9"))
+        .env("OXA_SUBAGENT_DEPTH", "1")
+        .args(["--model", MODEL, "--no-tools", "-p", "Synthetic child task"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
     assert!(!output.status.success());
     assert!(mock.requests().is_empty());
     assert!(!env.agent_dir().join("cloud-ledger").exists());
@@ -168,7 +259,7 @@ fn taskfile_can_use_go_explicitly_enabled_by_the_owner() {
             stream(json!({"content":"Synthetic work answer"}), "stop"),
         ]
     });
-    let (_, record) = run_go_work_taskfile(&env, &mock, true);
+    let (_, record) = run_go_work_taskfile(&env, &mock, Some(true));
     assert!(
         matches!(record["worker"]["exit_code"].as_i64(), Some(0 | 4)),
         "{record}"
@@ -184,18 +275,21 @@ fn taskfile_can_use_go_explicitly_enabled_by_the_owner() {
     mock.assert_healthy();
 }
 
-fn run_go_work_taskfile(env: &TestEnv, mock: &MockOpenAi, explicit: bool) -> (Output, Value) {
+fn run_go_work_taskfile(env: &TestEnv, mock: &MockOpenAi, explicit: Option<bool>) -> (Output, Value) {
     setup(env, &format!("http://{}", mock.address()));
     work_repo::setup(env, "[]");
     let path = env.agent_dir().join("settings.json");
     let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     settings.as_object_mut().unwrap().remove("defaultModel");
     settings["oxa"].as_object_mut().unwrap().remove("engine");
-    if !explicit {
-        settings["oxa"]["cloud"]["opencode"]
-            .as_object_mut()
-            .unwrap()
-            .remove("enabled");
+    match explicit {
+        Some(value) => settings["oxa"]["cloud"]["opencode"]["enabled"] = json!(value),
+        None => {
+            settings["oxa"]["cloud"]["opencode"]
+                .as_object_mut()
+                .unwrap()
+                .remove("enabled");
+        }
     }
     fs::write(path, settings.to_string()).unwrap();
     env.write(
@@ -218,9 +312,9 @@ fn run_go_work_taskfile(env: &TestEnv, mock: &MockOpenAi, explicit: bool) -> (Ou
 }
 
 #[test]
-fn supervised_child_arguments_do_not_authorize_keyed_go() {
+fn supervised_child_model_argument_uses_keyed_go() {
     let env = TestEnv::new();
-    let mock = MockOpenAi::start(vec![]);
+    let mock = served_mock();
     setup(&env, &format!("http://{}", mock.address()));
     let path = env.agent_dir().join("settings.json");
     let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -241,9 +335,13 @@ fn supervised_child_arguments_do_not_authorize_keyed_go() {
         .stdin(Stdio::null())
         .output()
         .unwrap();
-    assert!(!output.status.success());
-    assert!(mock.requests().is_empty());
-    assert!(!env.agent_dir().join("cloud-ledger").exists());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(mock.requests().iter().filter(|r| r.method == "POST").count(), 1);
+    assert_eq!(rows(&env)[0]["remote_provider"], "opencode");
     mock.assert_healthy();
 }
 
@@ -946,7 +1044,11 @@ fn native_go_unknown_cost_stays_unknown_and_admission_continues() {
         &env,
         &["--no-session", "--no-tools", "-p", "Synthetic unknown usage"],
     );
-    assert!(!first.status.success());
+    assert!(
+        first.status.success(),
+        "a finished reply without usage is complete: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
     // Each new process must read earlier unknown rows and still forward.
     for prompt in ["Synthetic estimated usage", "Synthetic paid usage"] {
         let output = run(&env, &["--no-session", "--no-tools", "-p", prompt]);
@@ -2359,6 +2461,7 @@ fn check_private_stream_details(cause: &str, check: Option<&str>, reply: Reply) 
     assert_eq!(ledger[0]["settled"], "reserved");
     assert_eq!(ledger[0]["usage_missing"], true);
     assert_eq!(ledger[0]["subscription_tokens"], 33280);
+    assert!(ledger[0].get("reported_cost_usd").is_none());
     for path in session_files(&env.home().join(".oxa/agent/sessions")) {
         let history = fs::read_to_string(path).unwrap();
         assert!(!history.contains("cause="));
@@ -2428,7 +2531,11 @@ fn go_private_stream_cause_tool_arguments() {
 }
 #[test]
 fn go_private_stream_cause_terminal_usage() {
-    check_private_stream_details("terminal_usage",Some("done_without_usage"),cause_reply(b"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"));
+    check_private_stream_details(
+        "terminal_usage",
+        Some("done_without_finish"),
+        cause_reply(b"data: [DONE]\n\n"),
+    );
 }
 
 fn terminal_frames(frames: &[Value], done: bool) -> Reply {
@@ -2450,14 +2557,6 @@ fn go_private_terminal_done_without_finish() {
         "terminal_usage",
         Some("done_without_finish"),
         terminal_frames(&[], true),
-    );
-}
-#[test]
-fn go_private_terminal_done_without_usage() {
-    check_private_stream_details(
-        "terminal_usage",
-        Some("done_without_usage"),
-        terminal_frames(&[terminal_finish()], true),
     );
 }
 #[test]
@@ -2489,12 +2588,229 @@ fn go_private_terminal_choices_after_finish() {
         ),
     );
 }
+fn terminal_content() -> Value {
+    json!({"choices":[{"index":0,"delta":{"content":"Synthetic success"},"finish_reason":null}]})
+}
+fn settled_success(frames: &[Value]) -> (Output, Vec<Value>) {
+    let env = go_diagnostic_env();
+    let mock =
+        MockOpenAi::start_with(|base| vec![Reply::json(discovery(base)), terminal_frames(frames, true)]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let output = run(
+        &env,
+        &[
+            "--no-session",
+            "--no-tools",
+            "--mode",
+            "json",
+            "-p",
+            "Synthetic request",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("native diagnostic"));
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["status"], 200);
+    assert_eq!(mock.requests().len(), 2);
+    mock.assert_healthy();
+    (output, ledger)
+}
 #[test]
-fn go_private_terminal_usage_before_finish() {
+fn glm_usage_before_finish_is_a_complete_stream() {
+    for frames in [
+        vec![
+            terminal_content(),
+            json!({"choices":[],"usage":usage()}),
+            terminal_finish(),
+        ],
+        // Same-frame usage and finish.
+        vec![terminal_content(), {
+            let mut frame = terminal_finish();
+            frame["usage"] = usage();
+            frame
+        }],
+    ] {
+        let (output, ledger) = settled_success(&frames);
+        assert_eq!(terminal(&output)["tokens"]["prompt"], 100);
+        assert_eq!(terminal(&output)["tokens"]["completion"], 5);
+        assert_eq!(ledger[0]["subscription_tokens"], 105);
+        assert_eq!(ledger[0]["settled"], "usage");
+        assert!(ledger[0].get("usage_missing").is_none());
+    }
+}
+#[test]
+fn done_without_usage_settles_as_usage_missing() {
+    let (output, ledger) = settled_success(&[terminal_content(), terminal_finish()]);
+    assert_eq!(terminal(&output)["tokens"]["complete"], false);
+    assert_eq!(terminal(&output)["tokens"]["unreported_requests"], 1);
+    assert_eq!(ledger[0]["settled"], "reserved");
+    assert_eq!(ledger[0]["usage_missing"], true);
+}
+
+#[test]
+fn a_clean_finish_with_more_output_discards_stale_early_usage() {
+    for on_finish in [false, true] {
+        let tail = json!({"choices":[{"index":0,"delta":{"content":"Synthetic tail"},
+            "finish_reason":on_finish.then_some("stop")}]});
+        let mut frames = vec![terminal_content(), json!({"choices":[],"usage":usage()}), tail];
+        if !on_finish {
+            frames.push(terminal_finish());
+        }
+        let (output, ledger) = settled_success(&frames);
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Synthetic tail"));
+        assert_eq!(terminal(&output)["tokens"]["complete"], false);
+        assert_eq!(terminal(&output)["tokens"]["unreported_requests"], 1);
+        assert_eq!(ledger[0]["settled"], "reserved");
+        assert_eq!(ledger[0]["usage_missing"], true);
+        assert!(ledger[0].get("reported_cost_usd").is_none());
+    }
+}
+
+#[test]
+fn an_unreported_go_reply_is_saved_as_unknown_usage() {
+    let env = go_diagnostic_env();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            terminal_frames(&[terminal_content(), terminal_finish()], true),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let output = run(&env, &["--no-tools", "--mode", "json", "-p", "Synthetic request"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Synthetic success"));
+    let files = session_files(&env.agent_dir().join("sessions"));
+    assert_eq!(files.len(), 1);
+    let status: Value =
+        serde_json::from_slice(&fs::read(files[0].with_extension("status.json")).unwrap()).unwrap();
+    assert_eq!(status["tokens"]["complete"], false);
+    assert_eq!(status["tokens"]["unreported_requests"], 1);
+    let saved = fs::read_to_string(&files[0]).unwrap();
+    assert!(
+        saved.lines().any(|line| {
+            serde_json::from_str::<Value>(line).is_ok_and(|row| row["usage"] == json!({"unreported":true}))
+        }),
+        "{saved}"
+    );
+    mock.assert_healthy();
+}
+#[test]
+fn a_fresh_terminal_report_replaces_stale_early_usage() {
+    let mut early = usage();
+    early["prompt_tokens"] = json!(99);
+    let tail = json!({"choices":[{"index":0,"delta":{"content":"Synthetic tail"},"finish_reason":"stop"}],
+        "usage":usage()});
+    let (output, ledger) = settled_success(&[terminal_content(), json!({"choices":[],"usage":early}), tail]);
+    assert_eq!(terminal(&output)["tokens"]["prompt"], 100);
+    assert_eq!(terminal(&output)["tokens"]["complete"], true);
+    assert_eq!(ledger[0]["subscription_tokens"], 105);
+}
+
+#[test]
+fn an_explicit_invocation_cap_wraps_up_unknown_usage_but_accepts_measured_zero() {
+    for measured_zero in [false, true] {
+        let env = go_diagnostic_env();
+        let mock = MockOpenAi::start_with(|base| {
+            let mut frames = vec![terminal_content(), terminal_finish()];
+            if measured_zero {
+                let mut zero = usage();
+                for name in ["prompt_tokens", "completion_tokens", "total_tokens"] {
+                    zero[name] = json!(0);
+                }
+                zero.as_object_mut().unwrap().remove("prompt_tokens_details");
+                for count in zero["opencode"]["tokens"].as_object_mut().unwrap().values_mut() {
+                    *count = json!(0);
+                }
+                frames.push(json!({"choices":[],"usage":zero}));
+            }
+            let mut replies = vec![Reply::json(discovery(base)), terminal_frames(&frames, true)];
+            if !measured_zero {
+                replies.push(stream(json!({"content":"Synthetic wrap-up"}), "stop"));
+            }
+            replies
+        });
+        setup(&env, &format!("http://{}", mock.address()));
+        let output = run(
+            &env,
+            &[
+                "--no-tools",
+                "--mode",
+                "json",
+                "--max-tokens",
+                "1000",
+                "-p",
+                "Synthetic request",
+            ],
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("Synthetic success"), "{stdout}");
+        assert_eq!(stdout.contains("Synthetic wrap-up"), !measured_zero, "{stdout}");
+        assert_eq!(
+            mock.requests().iter().filter(|r| r.method == "POST").count(),
+            if measured_zero { 1 } else { 2 }
+        );
+        let facts = terminal(&output);
+        // Cache usage was absent in the measured-zero report, but the token counts were real.
+        assert_eq!(facts["tokens"]["complete"], false);
+        assert_eq!(facts["tokens"]["unreported_requests"], u32::from(!measured_zero));
+        assert_eq!(facts["tokens"]["prompt"], if measured_zero { 0 } else { 100 });
+        assert_eq!(facts["tokens"]["completion"], if measured_zero { 0 } else { 5 });
+        mock.assert_healthy();
+    }
+}
+
+#[test]
+fn usage_after_finish_still_counts() {
+    let (_output, ledger) = settled_success(&[
+        terminal_content(),
+        terminal_finish(),
+        json!({"choices":[],"usage":usage()}),
+    ]);
+    assert_eq!(ledger[0]["subscription_tokens"], 105);
+    assert_eq!(ledger[0]["settled"], "usage");
+    assert!(ledger[0].get("usage_missing").is_none());
+}
+#[test]
+fn truly_truncated_stream_is_still_stream_broken() {
+    // Early usage must stay provisional: no finish and no [DONE] is a cut stream.
+    check_private_stream_cause(
+        "eof",
+        terminal_frames(
+            &[terminal_content(), json!({"choices":[],"usage":usage()})],
+            false,
+        ),
+    );
+    // Finish but no [DONE] is also truncation.
+    check_private_stream_cause(
+        "eof",
+        terminal_frames(&[terminal_content(), terminal_finish()], false),
+    );
+    // Even a valid finish cannot commit early usage before [DONE].
+    check_private_stream_cause(
+        "eof",
+        terminal_frames(
+            &[
+                terminal_content(),
+                json!({"choices":[],"usage":usage()}),
+                terminal_finish(),
+            ],
+            false,
+        ),
+    );
+    // [DONE] without any finish.
     check_private_stream_details(
         "terminal_usage",
-        Some("usage_before_finish"),
-        terminal_frames(&[json!({"choices":[],"usage":usage()})], true),
+        Some("done_without_finish"),
+        terminal_frames(&[terminal_content(), json!({"choices":[],"usage":usage()})], true),
     );
 }
 #[test]

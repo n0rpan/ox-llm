@@ -1,6 +1,4 @@
 //! F11 acceptance tests: Docs.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_fake::{parse_script, FakeOpts, FakeServer, TestEnv};
@@ -271,6 +269,79 @@ fn security_documents_headless_inbox_policy() {
     }
 }
 
+/// The security review policy must not reject delegated Go transport that the protected owner key
+/// authorizes, while still requiring the explicit owner setting for project-selected and restored
+/// models.
+#[test]
+fn security_documents_keyed_go_delegation_policy() {
+    let repository = repo_root();
+    let repository = repository.parent().expect("repository root");
+    let security = fs::read_to_string(repository.join("SECURITY.md")).expect("read SECURITY.md");
+    let security = security.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    for required in [
+        "protected user key authorizes an actual Go model argument",
+        "delegated `oxa work` worker or nested child",
+        "No project-selected or restored model enables it without an explicit `oxa.cloud.opencode.enabled: true`",
+    ] {
+        assert!(
+            security.contains(required),
+            "SECURITY.md must document the keyed Go delegation policy: missing {required:?}"
+        );
+    }
+}
+
+/// Memory persistence is a security policy, so the review rules, security policy and user guide
+/// must all retain the owner-only modes and the upgrade behaviour for an existing loose directory.
+#[test]
+fn memory_store_policy_is_documented_everywhere() {
+    let root = repo_root();
+    let repository = root.parent().expect("repository root");
+
+    for (page, path, anchor) in [
+        ("AGENTS.md", repository.join("AGENTS.md"), "memory store's"),
+        ("SECURITY.md", repository.join("SECURITY.md"), "memory store"),
+        (
+            "docs/pages/cli.md",
+            root.join("docs/pages/cli.md"),
+            "agent directory's `memory/`",
+        ),
+    ] {
+        let text = fs::read_to_string(path).expect("read memory policy documentation");
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        for required in [anchor, "`0700`", "`0600`", "existing", "tighten"] {
+            assert!(
+                text.contains(required),
+                "{page} must document the memory-store permission policy: missing {required:?}"
+            );
+        }
+    }
+}
+/// The user guide must match the owner sandbox policy: watched CLI sessions rely on approvals and
+/// in-process guards, while unattended non-yolo runs retain Bubblewrap.
+#[test]
+fn user_docs_distinguish_interactive_and_unattended_sandboxing() {
+    let root = repo_root();
+
+    for page in ["docs/pages/security.md", "docs/pages/modes.md"] {
+        let text = fs::read_to_string(root.join(page)).expect("read sandbox documentation");
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        for required in [
+            "Interactive CLI sessions do not use an OS sandbox by default",
+            "dangerous commands ask for your approval",
+            "Unattended runs without yolo keep the Bubblewrap sandbox by default",
+            "secret masking, private-path denials, user-only settings, and offline mode",
+        ] {
+            assert!(
+                text.contains(required),
+                "{page} must distinguish interactive and unattended sandboxing: missing {required:?}"
+            );
+        }
+    }
+}
+
 /// fenced `oxa ..` lines extracted and run
 #[test]
 fn every_doc_command_line_runs_against_fake() {
@@ -318,6 +389,47 @@ fn every_doc_command_line_runs_against_fake() {
         "{} doc command(s) failed:\n{}",
         failures.len(),
         failures.join("\n")
+    );
+}
+
+/// The key setup documented before the first oxa run must work when the agent directory does not
+/// exist yet.
+#[test]
+fn brave_key_command_works_for_a_fresh_install() {
+    let root = repo_root();
+    let page = fs::read_to_string(root.join("docs/pages/quickstart.md")).expect("quickstart.md");
+    let command = fenced_blocks(&page)
+        .into_iter()
+        .filter(|block| block.info == "console")
+        .flat_map(|block| block.lines)
+        .map(|(_, line)| line)
+        .find(|line| line.contains("~/.oxa/agent/brave-search.key"))
+        .and_then(|line| line.strip_prefix("$ ").map(str::to_owned))
+        .expect("Brave key setup command");
+
+    let env = TestEnv::new();
+    fs::remove_dir_all(env.agent_dir()).expect("remove pre-created agent directory");
+    let mut child = Command::new("bash")
+        .args(["-c", &command])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", env.home())
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("run documented key command");
+    use std::io::Write;
+    child
+        .stdin
+        .take()
+        .expect("command stdin")
+        .write_all(b"synthetic-brave-key\n")
+        .expect("write synthetic key");
+    let status = child.wait().expect("wait for documented key command");
+
+    assert!(status.success(), "documented key command failed: {status}");
+    assert_eq!(
+        fs::read_to_string(env.agent_dir().join("brave-search.key")).expect("saved key"),
+        "synthetic-brave-key\n"
     );
 }
 

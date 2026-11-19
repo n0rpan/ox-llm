@@ -1,6 +1,4 @@
 //! C12 acceptance tests: Argument parsing.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_cli::{parse_args, usage_text, Args, ModeArg, Subcommand};
@@ -661,6 +659,15 @@ fn max_time_accepts_fractional_seconds_and_rejects_invalid_durations() {
     for value in ["0", "-1", "NaN", "inf", "1e100", "invalid"] {
         assert_eq!(parse_err(&["--max-time", value]).code, codes::USAGE, "{value}");
     }
+}
+
+#[test]
+fn max_time_allowed_interactive() {
+    // S11: the limits no longer refuse a terminal start; the interactive session takes them.
+    let args = parse(&["--max-time", "5", "--max-tokens", "9"]);
+    assert_eq!(args.max_time, Some(std::time::Duration::from_secs(5)));
+    assert_eq!(args.max_tokens, Some(9));
+    assert!(args.mode.is_none() && !args.print);
 }
 
 #[test]

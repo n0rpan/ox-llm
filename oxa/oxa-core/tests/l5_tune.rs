@@ -12,7 +12,8 @@ use oxa_sandbox::NoSandbox;
 use oxa_session::{MemStore, SessionStore};
 use std::sync::Arc;
 
-const SEVEN: [&str; 7] = ["bash", "edit", "find", "grep", "ls", "read", "write"];
+// The seven built-ins plus `wait`, which every session declares.
+const SEVEN: [&str; 8] = ["bash", "edit", "find", "grep", "ls", "read", "wait", "write"];
 
 fn write_settings(env: &TestEnv, json: &str) {
     let path = Dirs::under(env.root()).settings_file();
@@ -79,12 +80,17 @@ fn default_tune(read_page_lines: u32, read_page_bytes: u32) -> ToolTune {
         read_page_lines,
         read_page_bytes,
         bash_timeout_s: 120,
+        bash_wait_cap_s: 300,
         // L4: the output cap these windows give (a page under 8 KiB is the cap itself).
         output_cap_bytes: if read_page_bytes < 8192 {
             read_page_bytes
         } else {
             16_384
         },
+        // B2b: no image input in these windows (the tool default); the byte cap is the user
+        // setting's own default, which these windows do not change.
+        max_image_bytes: Settings::default().read_max_image_bytes(),
+        ..Default::default()
     }
 }
 

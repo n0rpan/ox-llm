@@ -8,6 +8,7 @@ use oxa_proto::{
     HookPoint, Level, OxaError, Part, Role, StopReason, TurnKind, Ui, Usage, Value, WireMsg,
 };
 use oxa_session::new_entry_id;
+use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// How a run ended.
@@ -20,6 +21,9 @@ pub enum RunEnd {
     /// A request failed after retries; stored as `Shown { why: failed | cut }`.
     Failed(OxaError),
 }
+
+/// The start of the stop message of a repetition loop (`stream_broken`, never a transient failure).
+pub(crate) const REPEAT_STOP: &str = "Response stopped: the model fell into a repetition loop";
 
 /// Persist `body` as a new entry under the current leaf, add it to the tree and fold it into
 /// the transcript. The only way an entry is created. Emits nothing; callers emit events.
@@ -144,8 +148,13 @@ fn run_inner(
     let mut wrapping_up = false;
     let mut wrap_up_failure = None;
     let mut length_recoveries = 0;
+    // FH-N2: a headless run gets one nudge when its final reply ends on a plan or a promise.
+    let mut headless_nudged = false;
     // The repeat guard warns the user once per run (`repeat.rs`, #1448).
     let mut repeat_warned = false;
+    // Consecutive transient failures of one logical request. This state lives inside the run so
+    // recovery preserves done checks, the turn limit and the request idempotency key.
+    let mut goal_failures: u32 = 0;
     // `oxa.maxTurns` (default unset: no limit): model replies of this run (#507).
     let max_turns = st.settings.u32(crate::repeat::MAX_TURNS, 0);
     'turns: loop {
@@ -233,6 +242,7 @@ fn run_inner(
         };
         let thinking_on = !wrapping_up && crate::think::request_thinking(st, TurnKind::Chat);
         let mut retried = false;
+        let mut empty_retries: u32 = 0;
         let mut replays: u32 = 0;
         let turn = loop {
             // A run that continues after a persisted cut, failure or wrap-up is still foreground
@@ -294,15 +304,20 @@ fn run_inner(
                     st.shared.cancel.reset();
                     Err(OxaError::new(
                         oxa_proto::codes::STREAM_BROKEN,
-                        "Response stopped: the model fell into a repetition loop (the same block of text repeated).",
+                        format!("{REPEAT_STOP} (the same block of text repeated)."),
                     )
-                    .with_hint("Rephrase the request or try again; the partial reply is shown but not sent back."))
+                    .with_hint(
+                        "Rephrase the request or try again; the partial reply is shown but not sent back.",
+                    ))
                 }
                 other => other,
             };
 
             let turn = match res {
-                Ok(t) => t,
+                Ok(t) => {
+                    goal_failures = 0;
+                    t
+                }
                 Err(e) if replayable(st, &e, got_data, looped, replays) => {
                     // #456: a transport cut mid-output. The partial reply stays visible as
                     // `Shown { cut }` (never sent, W2) and the request is resent from the same
@@ -344,6 +359,38 @@ fn run_inner(
                         partial
                     };
                     let progress = persist(st, EntryBody::Shown { text, why }, sink)?;
+                    let retry_stopped = st.shared.gate.retry_stopped.swap(false, Ordering::SeqCst);
+                    if !retry_stopped {
+                        if let Some(delay) = crate::goal::failure_backoff(st, &e, goal_failures) {
+                            goal_failures += 1;
+                            let text = format!(
+                                "Goal waiting {} s after a transient request failure ({}); no request is sent meanwhile, then the goal continues.",
+                                delay.as_secs(), e.code
+                            );
+                            persist(
+                                st,
+                                EntryBody::Shown {
+                                    text: text.clone(),
+                                    why: shown_why::NOTICE,
+                                },
+                                sink,
+                            )?;
+                            sink.emit(&AgentEvent::Notice {
+                                level: Level::Info,
+                                text,
+                            });
+                            match crate::goal::wait_failure_backoff(st, delay) {
+                                crate::goal::BackoffEnd::Elapsed => {
+                                    sink.emit(&AgentEvent::MessageStart {
+                                        message: pending_message(),
+                                    });
+                                    continue;
+                                }
+                                crate::goal::BackoffEnd::Aborted => return Ok(RunEnd::Aborted),
+                                crate::goal::BackoffEnd::RetryStopped => return Ok(RunEnd::Failed(e)),
+                            }
+                        }
+                    }
                     let soft_stop = st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0;
                     if soft_stop {
                         let mut message = pending.clone();
@@ -405,6 +452,28 @@ fn run_inner(
                 sink.emit(&AgentEvent::Notice {
                     level: Level::Info,
                     text: crate::think::OVERRUN_NOTICE.to_string(),
+                });
+                continue;
+            }
+            // A cloud reply that ended normally with no text and no tool call is asked again
+            // (`oxa.emptyReplyRetries`, default 1); the empty reply is never kept.
+            if st.info.caps.remote
+                && !wrapping_up
+                && turn.finish == Finish::Stop
+                && turn.msg.tool_calls.is_empty()
+                && turn.msg.content.as_deref().is_none_or(|c| c.trim().is_empty())
+                && empty_retries < st.settings.empty_reply_retries()
+                && st.auto_retry
+                && st.settings.retry().enabled
+                && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) == 0
+                && !st.shared.cancel.is_cancelled()
+            {
+                empty_retries += 1;
+                account_discarded(st, &turn);
+                opts.idem_key = String::new();
+                sink.emit(&AgentEvent::Notice {
+                    level: Level::Info,
+                    text: "the model returned an empty reply; asking again".to_string(),
                 });
                 continue;
             }
@@ -574,7 +643,7 @@ fn run_inner(
         }
         run_msgs.push(reply.clone());
         account_reply(st, turn.timings, usage);
-        st.last_usage = Some(usage);
+        st.last_usage = usage.reported();
         crate::goal::checkpoint(st, true, sink)?;
         // F4: capabilities that only a loaded engine reports (`/props` `oxe_hints`): re-read
         // once after the first reply while `prefill_only` is still false, and after a request
@@ -862,6 +931,26 @@ fn run_inner(
                 push_user(st, crate::prompt::GOAL_CONTINUE.into(), sink, ui, run_msgs)?;
                 continue;
             }
+        }
+        if crate::is_headless()
+            && !headless_nudged
+            && turn.finish != Finish::Length
+            && !st.shared.cancel.is_cancelled()
+            && !st.shared.has_input()
+            && turn
+                .msg
+                .content
+                .as_deref()
+                .is_some_and(|c| crate::prompt::ends_unfinished(c, done.proof.edited()))
+        {
+            headless_nudged = true;
+            push_user(st, crate::prompt::HEADLESS_NUDGE.to_string(), sink, ui, run_msgs)?;
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Info,
+                text: "The reply ended on a plan or a question in a headless run; asking it to continue."
+                    .to_string(),
+            });
+            continue;
         }
         return Ok(RunEnd::Stopped);
     }

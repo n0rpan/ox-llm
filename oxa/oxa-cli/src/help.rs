@@ -28,7 +28,10 @@ const BASE: &[Entry] = &[
     Entry {
         path: &["status"],
         summary: "Read a saved session's current progress and stall signal",
-        usage: &["oxa status <session-id|session-file> [--session-dir <dir>]"],
+        usage: &[
+            "oxa status <session-id|session-file> [--session-dir <dir>]",
+            "oxa status --json",
+        ],
         example: "oxa status 20260101-120000-abcd",
     },
     Entry {

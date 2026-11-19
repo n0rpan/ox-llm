@@ -1,5 +1,5 @@
 //! Cooperative headless termination: signal callbacks only set an atomic flag.
-use oxa_core::{Handle, WrapUpReason};
+use oxa_core::{Handle, SubagentHooks, WrapUpReason};
 use oxa_proto::{codes, OxaError};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -10,6 +10,48 @@ pub(crate) struct LimitWatcher {
     stop: Arc<(Mutex<bool>, Condvar)>,
     worker: Option<JoinHandle<()>>,
     signals: Vec<signal_hook::SigId>,
+}
+
+/// Owns the watcher and the limit state it installs for the startup session.
+pub(crate) struct StartupLimit {
+    watcher: Option<LimitWatcher>,
+    handle: Handle,
+    subagent: Option<Arc<SubagentHooks>>,
+}
+
+impl StartupLimit {
+    pub fn start(
+        handle: Handle,
+        max_time: Option<Duration>,
+        max_tokens: Option<u64>,
+        supervised_child: bool,
+        subagent: Option<Arc<SubagentHooks>>,
+    ) -> Result<Self, OxaError> {
+        let watcher = LimitWatcher::start(
+            handle.clone(),
+            max_time,
+            max_tokens,
+            supervised_child,
+            subagent.as_deref(),
+        )?;
+        Ok(Self {
+            watcher,
+            handle,
+            subagent,
+        })
+    }
+}
+
+impl Drop for StartupLimit {
+    fn drop(&mut self) {
+        // Join first: the old watcher must not request another wrap-up after the
+        // shared handle has been released to a fork or clone.
+        drop(self.watcher.take());
+        self.handle.clear_startup_limits();
+        if let Some(subagent) = &self.subagent {
+            subagent.set_deadline(None);
+        }
+    }
 }
 
 impl LimitWatcher {
@@ -209,10 +251,10 @@ mod tests {
         let stdout = child.stdout.take().unwrap();
         thread::spawn(move || {
             for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
-                if line.contains("synthetic-ready") || line.contains("synthetic-first-delivered") {
-                    if send.send(line).is_err() {
-                        break;
-                    }
+                if (line.contains("synthetic-ready") || line.contains("synthetic-first-delivered"))
+                    && send.send(line).is_err()
+                {
+                    break;
                 }
             }
         });

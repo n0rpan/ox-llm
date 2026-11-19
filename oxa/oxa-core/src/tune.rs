@@ -75,7 +75,7 @@ fn cap_set(settings: &Settings) -> bool {
 
 /// The per-epoch tool tuning for a context of `n_ctx` tokens (0 = unknown) and the budget soft
 /// point `soft` ([`budget_soft`], 0 = unknown).
-pub(crate) fn tune_for(settings: &Settings, n_ctx: u32, soft: u32) -> ToolTune {
+pub(crate) fn tune_for(settings: &Settings, n_ctx: u32, soft: u32, images: bool) -> ToolTune {
     // L4: the first page of `read` is cut at most at 8 KiB within the output cap; `grep`,
     // `find`, `ls` and the other reads at the output cap itself.
     let cap = u32::try_from(output_cap_for(settings, n_ctx, soft)).unwrap_or(u32::MAX);
@@ -89,14 +89,25 @@ pub(crate) fn tune_for(settings: &Settings, n_ctx: u32, soft: u32) -> ToolTune {
         read_page_lines,
         read_page_bytes,
         bash_timeout_s: settings.bash_default_timeout(),
+        bash_wait_cap_s: settings.bash_wait_cap(),
         output_cap_bytes: cap,
+        // A project may tighten this opt-out, but cannot undo the owner's user-layer choice.
+        image_input: images
+            && !settings.user_bool("images.blockImages", false)
+            && !settings.bool("images.blockImages", false),
+        max_image_bytes: settings.read_max_image_bytes(),
     }
 }
 
 /// Recompute `st.tune` from the current settings and the engine's context window. Call it
 /// wherever one of those changes without a new epoch (see the module doc).
 pub(crate) fn refresh(st: &mut SessionState) {
-    st.tune = tune_for(&st.settings, st.info.n_ctx, budget_soft(st));
+    st.tune = tune_for(
+        &st.settings,
+        st.info.n_ctx,
+        budget_soft(st),
+        st.info.images == Some(true),
+    );
 }
 
 /// R5 and L4: the output cap for `n_ctx` tokens and the budget soft point `soft`. It is the
@@ -145,26 +156,47 @@ mod tests {
         let s = none();
         // large or unknown context: the 400-line / 8 KiB page, no reduction.
         for n in [0, 49_152] {
-            let t = tune_for(&s, n, 0);
+            let t = tune_for(&s, n, 0, false);
             assert!(t.diet);
             assert_eq!((t.read_page_lines, t.read_page_bytes), (400, 8192), "at {n}");
             assert_eq!(t.bash_timeout_s, 120);
         }
         // small context: 200 lines, bytes = the small output cap (5898 at 16384).
-        let t = tune_for(&s, 16_384, 0);
+        let t = tune_for(&s, 16_384, 0, false);
         assert_eq!((t.read_page_lines, t.read_page_bytes), (200, 5898));
         // The byte page is never above 8192, and a tiny window keeps the 2048 floor.
-        assert_eq!(tune_for(&s, 31_999, 0).read_page_bytes, 8192);
-        assert_eq!(tune_for(&s, 1_000, 0).read_page_bytes, 2048);
+        assert_eq!(tune_for(&s, 31_999, 0, false).read_page_bytes, 8192);
+        assert_eq!(tune_for(&s, 1_000, 0, false).read_page_bytes, 2048);
         // The settings decide the diet and the timeout.
         let set = Settings::from_values(
             json!({"oxa": {"diet": {"tools": false}, "bash": {"defaultTimeout": 30}}}),
             json!({}),
         );
-        let t = tune_for(&set, 0, 0);
+        let t = tune_for(&set, 0, 0, false);
         assert!(!t.diet);
         assert_eq!((t.read_page_lines, t.read_page_bytes), (400, 8192));
         assert_eq!(t.bash_timeout_s, 30);
+    }
+
+    #[test]
+    fn block_images_disables_image_tool_results() {
+        let allowed = tune_for(&none(), 0, 0, true);
+        assert!(allowed.image_input);
+
+        let blocked = Settings::from_values(json!({"images": {"blockImages": true}}), json!({}));
+        assert!(!tune_for(&blocked, 0, 0, true).image_input);
+
+        let project_cannot_enable = Settings::from_values(
+            json!({"images": {"blockImages": true}}),
+            json!({"images": {"blockImages": false}}),
+        );
+        assert!(!tune_for(&project_cannot_enable, 0, 0, true).image_input);
+
+        let project_can_disable = Settings::from_values(
+            json!({"images": {"blockImages": false}}),
+            json!({"images": {"blockImages": true}}),
+        );
+        assert!(!tune_for(&project_can_disable, 0, 0, true).image_input);
     }
 
     #[test]
@@ -199,7 +231,7 @@ mod tests {
         let s = none();
         // soft 8000 on a 131072 window: 6000-byte cap and first page.
         assert_eq!(output_cap_for(&s, 131_072, 8_000), 6_000);
-        let t = tune_for(&s, 131_072, 8_000);
+        let t = tune_for(&s, 131_072, 8_000, false);
         assert_eq!((t.read_page_lines, t.read_page_bytes), (400, 6_000));
         assert_eq!(
             t.output_cap_bytes, 6_000,
@@ -207,23 +239,23 @@ mod tests {
         );
         // soft 100000 on 131072: the setting (16 KiB) and the 8 KiB page.
         assert_eq!(output_cap_for(&s, 131_072, 100_000), 16_384);
-        let t = tune_for(&s, 131_072, 100_000);
+        let t = tune_for(&s, 131_072, 100_000, false);
         assert_eq!((t.read_page_lines, t.read_page_bytes), (400, 8_192));
         assert_eq!(t.output_cap_bytes, 16_384, "only the first page is 8 KiB");
         // soft 2000: the floor.
         assert_eq!(output_cap_for(&s, 131_072, 2_000), 2_048);
         // n_ctx 16000 and no soft point: the small-context numbers, unchanged.
         assert_eq!(output_cap_for(&s, 16_000, 0), 5_760);
-        let t = tune_for(&s, 16_000, 0);
+        let t = tune_for(&s, 16_000, 0, false);
         assert_eq!((t.read_page_lines, t.read_page_bytes), (200, 5_760));
         assert_eq!(t.output_cap_bytes, 5_760);
         // An explicit setting is the cap as it is: no budget, the page is at most 8 KiB.
         let set = Settings::from_values(json!({"oxa": {"toolOutputCap": 12000}}), json!({}));
         assert_eq!(output_cap_for(&set, 131_072, 8_000), 12_000);
-        assert_eq!(tune_for(&set, 131_072, 8_000).read_page_bytes, 8_192);
+        assert_eq!(tune_for(&set, 131_072, 8_000, false).read_page_bytes, 8_192);
         let small_set = Settings::from_values(json!({"oxa": {"toolOutputCap": 4000}}), json!({}));
         assert_eq!(output_cap_for(&small_set, 131_072, 8_000), 4_000);
-        assert_eq!(tune_for(&small_set, 131_072, 8_000).read_page_bytes, 4_000);
+        assert_eq!(tune_for(&small_set, 131_072, 8_000, false).read_page_bytes, 4_000);
     }
 
     #[test]

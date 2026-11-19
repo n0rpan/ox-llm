@@ -33,6 +33,7 @@ struct State {
     model: Option<String>,
     pending: VecDeque<Call>,
     log_failed: bool,
+    lookups: u64,
 }
 impl Default for State {
     fn default() -> Self {
@@ -52,6 +53,7 @@ impl Default for State {
             model: None,
             pending: VecDeque::new(),
             log_failed: false,
+            lookups: 0,
         }
     }
 }
@@ -144,6 +146,7 @@ impl ResultFacts {
                 state.log_failed = true;
             }
         }
+        let usage = usage.and_then(Usage::reported);
         if let Some(usage) = usage {
             add(&mut state.prompt, usage.prompt.into());
             add(&mut state.completion, usage.completion.into());
@@ -191,6 +194,8 @@ impl ResultFacts {
             record["goal"] = goal.clone();
         }
         record["usage_scope"] = json!("process");
+        // Web searches this invocation made (FH-N5 integrity report); null when unobserved.
+        record["web_lookups"] = state.as_ref().map_or(Value::Null, |state| json!(state.lookups));
         // Successful tool calls and generated text are not checked workspace/commit evidence.
         record["files_changed"] = Value::Null;
         record["files_changed_evidence"] = json!("unavailable");
@@ -221,6 +226,12 @@ impl ProgressObserver for ResultFacts {
             Progress::Session { file } => self.session(file.map(|_| session.id.as_str())),
             Progress::RequestStart { kind, .. } => self.request_start(kind),
             Progress::RequestEnd { usage, .. } => self.request_end(usage),
+            Progress::ToolStart("web_search") => {
+                let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                if !state.finished {
+                    state.lookups = state.lookups.saturating_add(1);
+                }
+            }
             _ => {}
         }
         if let Some(status) = &self.status {
@@ -239,6 +250,7 @@ mod tests {
             completion,
             cached,
             cached_missing: false,
+            unreported: false,
         }
     }
 
@@ -259,12 +271,30 @@ mod tests {
         assert_eq!(record["session_id"], "saved-session");
         assert_eq!(record["requests"], 4);
         assert_eq!(record["turns"], 2);
+        assert_eq!(record["web_lookups"], 0);
         assert_eq!(
             record["tokens"],
             json!({"prompt":400,"completion":16,"cached":240,"complete":true,"unreported_requests":0})
         );
         assert!(record["files_changed"].is_null());
         assert_eq!(record["files_changed_evidence"], "unavailable");
+    }
+
+    #[test]
+    fn web_searches_are_counted_in_the_result() {
+        let facts = ResultFacts::default();
+        facts.session(Some("s"));
+        let session = oxa_session::SessionRef {
+            path: std::path::PathBuf::from("mem:s"),
+            id: "s".to_string(),
+        };
+        for name in ["read", "web_search", "web_search", "bash"] {
+            facts.notify(&session, Progress::ToolStart(name));
+        }
+        assert_eq!(
+            ResultFacts::record(RunOutcome::Done, Some(&facts))["web_lookups"],
+            2
+        );
     }
 
     #[test]

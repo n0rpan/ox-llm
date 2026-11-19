@@ -1760,6 +1760,25 @@ fn child_run_usage_includes_non_chat_requests_without_double_charging() {
 }
 
 #[test]
+fn unknown_child_usage_stops_additional_children_under_the_parent_cap() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    host.limits.lock().unwrap()["remainingTokens"] = json!(100);
+    let body = r#"printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop","usage":{"input":10,"output":5}}}' '{"type":"run_usage","tokens":15,"complete":false}'
+"#;
+    let h = hooks(&env, body, &host);
+    let _ = run(
+        &env,
+        &h,
+        json!({"tasks":[
+            {"agent":"scout","task":"first"}, {"agent":"worker","task":"second"}
+        ]}),
+    );
+    assert_eq!(log(&env).iter().filter(|s| s.starts_with("start ")).count(), 1);
+    assert_eq!(host.limits.lock().unwrap()["remainingTokens"], json!(0));
+}
+
+#[test]
 fn depleted_run_token_budget_starts_no_child() {
     let env = TestEnv::new();
     let host = MockHost::new(&env);

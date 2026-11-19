@@ -1294,6 +1294,7 @@ fn plan_chat(sh: &Shared, req: &Request, meta: &mut (Option<usize>, Option<u32>)
             completion: 0,
             cached: if o.omit_cached_tokens { 0 } else { cached as u32 },
             cached_missing: o.omit_cached_tokens,
+            unreported: false,
         };
         rec.usage = Some(usage);
         core.cache.retain(|(s, _)| *s != rec.session);
@@ -1455,6 +1456,7 @@ fn plan_chat(sh: &Shared, req: &Request, meta: &mut (Option<usize>, Option<u32>)
         completion,
         cached: if o.omit_cached_tokens { 0 } else { cached as u32 },
         cached_missing: o.omit_cached_tokens,
+        unreported: false,
     };
     let fin = json!({
         "id": "chatcmpl-fake", "object": "chat.completion.chunk", "model": rec.model,
