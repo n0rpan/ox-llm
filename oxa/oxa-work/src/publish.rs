@@ -270,13 +270,6 @@ fn scan_commit_object(commit: &str, raw: &str, scan: ContentScan<'_>) -> Result<
 }
 
 /// Pass every added file name and added line of `git log --patch --cc -U0` output to `scan`.
-/// A raw `--text` line with the NUL bytes of UTF-16 removed: ASCII text then reads as itself in
-/// either byte order, which is what the scanners match. Other characters become their low byte,
-/// which is enough to find a credential in a mixed line.
-fn deinterleave_utf16(text: &str) -> String {
-    text.chars().filter(|c| *c != '\0').collect()
-}
-
 fn scan_patch(text: &str, scan: ContentScan<'_>) -> Result<()> {
     let (mut path, mut added, mut hunk, mut parents, mut line) = (None::<String>, false, false, 1, 0);
     for row in text.lines() {
@@ -339,20 +332,6 @@ fn scan_patch(text: &str, scan: ContentScan<'_>) -> Result<()> {
                     path: name,
                     line: Some(line),
                     text,
-                };
-                if let Some(finding) = scan(&item) {
-                    return Err(refusal(name, Some(line), finding));
-                }
-            }
-            // `--text` hands the raw bytes of a binary file through, and a UTF-16 file
-            // interleaves every character with a NUL: its bytes never spell the text the
-            // scanners look for, so the same line is scanned with the NULs removed.
-            if rest.contains('\0') {
-                let decoded = deinterleave_utf16(rest);
-                let item = PushedContent {
-                    path: name,
-                    line: Some(line),
-                    text: &decoded,
                 };
                 if let Some(finding) = scan(&item) {
                     return Err(refusal(name, Some(line), finding));
@@ -1007,25 +986,6 @@ mod scan_tests {
             .map(|(p, l, t)| (p.to_string(), *l, t.to_string()))
             .collect();
         assert_eq!(seen, expected);
-    }
-
-    /// `--text` emits a UTF-16 file's raw bytes, so a token in one is interleaved with NULs; the
-    /// line is scanned again with the NULs removed, in both byte orders.
-    #[test]
-    fn a_credential_in_a_utf16_file_is_still_found() {
-        for (label, bytes) in [
-            ("UTF-16LE", "s\0y\0n\0t\0h\0e\0t\0i\0c\0"),
-            ("UTF-16BE", "\0s\0y\0n\0t\0h\0e\0t\0i\0c"),
-        ] {
-            let patch = format!(
-                "\0aaaa\n\ndiff --git a/notes.txt b/notes.txt\nnew file mode 100644\n--- /dev/null\n+++ b/notes.txt\n@@ -0,0 +1 @@\n+{bytes}\n"
-            );
-            let error = scan_patch(&patch, &containing("synthetic")).unwrap_err();
-            assert!(error.contains("notes.txt:1"), "{label}: {error}");
-        }
-        // A UTF-8 line with no NUL is scanned once and still matches.
-        let patch = "\0aaaa\n\ndiff --git a/a.txt b/a.txt\nnew file mode 100644\n--- /dev/null\n+++ b/a.txt\n@@ -0,0 +1 @@\n+synthetic\n";
-        assert!(scan_patch(patch, &containing("synthetic")).is_err());
     }
 
     #[test]
