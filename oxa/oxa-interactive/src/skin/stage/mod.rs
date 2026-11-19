@@ -1,9 +1,11 @@
-//! The stage: the picture beside the activity line (design `handoff/animations/design.md`).
+//! The stage: data-driven scenes for the activity line (design `handoff/animations/design.md`).
 //!
-//! Slice 1 holds the data side only: scenes as JSON, loaded and validated at start, with the
-//! built-in pack compiled in. Nothing here draws, reads a clock or touches the terminal.
+//! Slices 1 and 3 together: scenes as JSON, loaded and validated at start, with the built-in pack
+//! compiled in, and the renderer that draws them. Nothing here reads a clock or touches the
+//! terminal directly.
 
 pub mod data;
+pub mod render;
 
 pub use data::{
     ascii_text, glyph_allowed, load_pack, Frame, Intensity, Loaded, Looping, Scene, Skip, Tier, CAPTION_LONG,
