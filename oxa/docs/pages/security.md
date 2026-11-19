@@ -165,7 +165,7 @@ In `standard` and `auto`, the model cannot write `.oxa/**` or `.agents/skills/**
 
 ## Network
 
-The harness connects to one place by default: the engine, on loopback (`127.0.0.1:8092`). It has no telemetry, no version check and no upload of sessions, exports or reports. The model talks only to the engine. Its tools may use the network, as the table shows.
+The harness connects to one place by default: the engine you configured, on loopback (for a bare `oxe-server`, `127.0.0.1:8080`). With nothing configured it connects nowhere. It has no telemetry, no version check and no upload of sessions, exports or reports. The model talks only to the engine. Its tools may use the network, as the table shows.
 
 | Source | Network | In `ask` mode |
 |---|---|---|

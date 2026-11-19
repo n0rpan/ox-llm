@@ -11,14 +11,14 @@ Build from the `oxa/` directory of the checkout:
 ```console
 $ cargo build --release --locked -p oxa-cli
 $ export PATH="$PWD/target/release:$PATH"
-$ export OXA_ENGINE_URL=http://127.0.0.1:8092
+$ export OXA_ENGINE_URL=http://127.0.0.1:8080
 $ cd ~/project
 $ oxa
 ```
 
 See [tools and context handling](docs/pages/tools-context.md) for the defaults.
 
-`OXA_ENGINE_URL` defaults to the controller on `http://127.0.0.1:8092`. Without a running engine oxa stops with an error that names the address. For one answer from a script, use print mode:
+`OXA_ENGINE_URL` names an engine you started yourself (`oxe-server` listens on `http://127.0.0.1:8080`). With no model configured oxa dials nothing and says to configure a cloud key or run `oxa local add`; with a dead address it stops with an error that names it. For one answer from a script, use print mode:
 
 ```console
 $ oxa -p --tools read,ls "List the files"

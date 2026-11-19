@@ -63,7 +63,7 @@ pub const ENV_TABLE: &[EnvVar] = &[
     EnvVar {
         name: "OXA_ENGINE_URL",
         pi_name: None,
-        description: "engine endpoint for the default models.json entry; default http://127.0.0.1:8092 (a local engine endpoint)",
+        description: "engine endpoint for the default models.json entry; default http://127.0.0.1:8080 (the oxe-server default; with no model configured oxa does not dial it)",
         supported: true,
         kind: EnvKind::User,
     },

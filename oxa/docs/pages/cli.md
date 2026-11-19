@@ -305,7 +305,7 @@ Every boolean variable takes the same eight words, in any case: `1`, `true`, `ye
 
 | Variable | Meaning |
 |---|---|
-| `OXA_ENGINE_URL` | engine endpoint for the default model entry. Default `http://127.0.0.1:8092` |
+| `OXA_ENGINE_URL` | engine endpoint for the default model entry, for an engine you started yourself (`oxe-server` listens on `http://127.0.0.1:8080` by default). With no `OXA_ENGINE_URL`, no `models.json` endpoint and no model configured, oxa dials nothing and says to configure a cloud key or run `oxa local add` |
 | `OXA_AGENT_DIR` | agent directory. Default `~/.oxa/agent`; `~` is expanded |
 | `OXA_LEAD_BOARD_LOG` | owner-selected absolute path to a private local board sample log; missing or refused data stays unavailable |
 | `OXA_SESSION_DIR` | session storage; `--session-dir` wins over it |

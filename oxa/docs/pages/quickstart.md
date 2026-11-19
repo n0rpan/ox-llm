@@ -5,7 +5,7 @@ This page gets `oxa` running against a local engine and sends a first prompt. Fo
 ## Requirements
 
 - A Rust toolchain; hosted checks pin Rust 1.99.1.
-- A running engine that speaks the OpenAI-compatible HTTP API. In an ox-llm install this is the controller (`oxc`) on `http://127.0.0.1:8092`.
+- A model source: a cloud key, a local model added with `oxa local add <model.gguf>`, or a running engine that speaks the OpenAI-compatible HTTP API (`oxe-server` listens on `http://127.0.0.1:8080` by default).
 - For the bash tool: Linux with `bubblewrap` (`bwrap`) installed and unprivileged user namespaces enabled. Without a usable `bwrap` the bash tool is disabled and oxa says so at startup.
 
 ## Build
@@ -21,10 +21,10 @@ The binary is `target/release/oxa`. Copy it somewhere on your `PATH`, or run it 
 
 ## Point oxa at the engine
 
-oxa reads the engine address from `OXA_ENGINE_URL`. When the variable is not set and no `models.json` names an endpoint, oxa uses the default `http://127.0.0.1:8092`.
+oxa reads the engine address from `OXA_ENGINE_URL`. When the variable is not set, no `models.json` names an endpoint and no model is configured, oxa dials nothing and stops with `no model is configured`, which says to configure a cloud key or run `oxa local add`.
 
 ```console
-$ export OXA_ENGINE_URL=http://127.0.0.1:8092
+$ export OXA_ENGINE_URL=http://127.0.0.1:8080
 ```
 
 If the engine is not reachable, oxa stops with one line and exit code 2:

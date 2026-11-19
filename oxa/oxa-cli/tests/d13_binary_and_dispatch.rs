@@ -159,6 +159,41 @@ fn no_engine_diagnostic_and_typed_result_exit_2() {
     assert!(result.out.is_empty(), "nothing on stdout");
 }
 
+/// A fresh install (no `OXA_ENGINE_URL`, no models.json, no native local or cloud setting)
+/// gets one clear message about what to configure, and oxa dials nothing.
+#[test]
+fn no_model_configured_says_what_to_configure() {
+    let env = TestEnv::new();
+    let owned = env.envs("http://127.0.0.1:1");
+    let pairs: Vec<(&str, &str)> = owned
+        .iter()
+        .filter(|(k, _)| k != "OXA_ENGINE_URL")
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let result = go_with(
+        &Env::from_pairs(&pairs),
+        &env.work(),
+        &["-p", "hello"],
+        "",
+        false,
+        false,
+    );
+    assert_eq!(result.code, 2, "stderr: {}", result.err);
+    assert!(
+        result.err.contains("no model is configured"),
+        "stderr: {}",
+        result.err
+    );
+    assert!(result.err.contains("oxa local add"), "stderr: {}", result.err);
+    assert!(result.err.contains("cloud key"), "stderr: {}", result.err);
+    assert!(
+        !result.err.contains("cannot reach the engine"),
+        "stderr: {}",
+        result.err
+    );
+    assert!(result.out.is_empty(), "nothing on stdout");
+}
+
 /// output format
 #[test]
 fn list_models() {
