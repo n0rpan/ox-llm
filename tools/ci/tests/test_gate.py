@@ -160,7 +160,7 @@ class EngineNextest(unittest.TestCase):
     def setUp(self):
         build = (WORKFLOWS / 'build.yml').read_text()
         # Build/package, partitioned tests and the inventory are parallel jobs under one `build` result.
-        self.engine = '\n'.join(job_block(build, name) for name in ('engine', 'engine-tests', 'engine-inventory'))
+        self.engine = '\n'.join(job_block(build, name) for name in ('engine', 'engine-tests'))
         self.config = (WORKFLOWS.parents[1] / 'engine' / '.config' / 'nextest.toml').read_text()
 
     def test_engine_job_runs_nextest_doctests_and_counts(self):
@@ -178,7 +178,7 @@ class EngineNextest(unittest.TestCase):
         self.assertIn('shard: [1, 2, 3]', tests)
         self.assertIn('--partition hash:${{ matrix.shard }}/3', tests)
         self.assertNotIn('nextest run', job_block(build, 'engine'))
-        self.assertIn('if: inputs.heavy && inputs.engine', job_block(build, 'engine-inventory'))
+        self.assertIn('tools/ci/engine_test_count.py', tests)
         flash = job_block(build, 'flash-tests')
         self.assertIn('part: [server, qwen4exp]', flash)
         self.assertIn('flash-m3 selftest', flash)
