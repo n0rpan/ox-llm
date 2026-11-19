@@ -10,7 +10,7 @@ use oxa_perm::ModePolicy;
 use oxa_proto::{Autonomy, YoloSwitch};
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
-use oxa_session::{MemStore, SessionStore};
+use oxa_session::MemStore;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -24,6 +24,7 @@ fn deps(env: &TestEnv) -> Deps {
         tools: Vec::new(),
         hooks: Vec::new(),
         policy: Box::new(ModePolicy::new()),
+        sandbox: Arc::new(NoSandbox),
         settings: Settings::from_values(
             serde_json::json!({"oxa": {"envNote": false}}),
             serde_json::json!({}),
