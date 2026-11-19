@@ -547,13 +547,30 @@ impl JobRegistry {
         state.jobs.clear();
     }
 
-    /// Cancel every running job. The sandbox's run loop then kills each process group;
-    /// the jobs' statuses become [`JobStatus::Killed`] as their threads settle.
+    /// Cancel every running job and wait (up to [`KILL_SETTLE`] in all) until each has
+    /// settled: the sandbox's run loop kills each process group and the jobs' statuses become
+    /// [`JobStatus::Killed`]. Waiting matters at session end: a host-rights job (no OS sandbox,
+    /// so no `--die-with-parent`) would otherwise outlive a process that exits right after.
     pub fn kill_all(&self) {
-        let state = self.state.lock().unwrap();
-        for job in state.jobs.values() {
-            job.stopped.store(true, Ordering::SeqCst);
-            job.cancel.cancel();
+        let statuses: Vec<_> = {
+            let state = self.state.lock().unwrap();
+            state
+                .jobs
+                .values()
+                .map(|job| {
+                    job.stopped.store(true, Ordering::SeqCst);
+                    job.cancel.cancel();
+                    job.status.clone()
+                })
+                .collect()
+        };
+        let deadline = Instant::now() + KILL_SETTLE;
+        while statuses
+            .iter()
+            .any(|status| *status.lock().unwrap() == JobStatus::Running)
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(WAIT_TICK);
         }
     }
 }
