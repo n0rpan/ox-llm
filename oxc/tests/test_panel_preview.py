@@ -58,7 +58,7 @@ class PanelPreview(unittest.TestCase):
                 self.assertIsNone(re.search(r'Qt\.(rgba|hsla|hsva)\(\s*[0-9.]', text))    # nor one built from numbers
                 self.assertNotIn('/home/', text)
 
-    def test_every_string_the_panel_asks_for_is_in_the_catalog_and_none_is_left_over(self):
+    def test_every_string_the_surviving_panel_asks_for_is_in_the_catalog(self):
         import re
         plugin = ROOT.parent / 'oxa/omarchy-panel'
         catalog = json.loads((plugin / 'i18n/en.json').read_text(encoding='utf-8'))
@@ -67,6 +67,16 @@ class PanelPreview(unittest.TestCase):
         self.assertEqual(sorted(key for key in literal if key not in catalog and not key.endswith('.')), [])
         # Keys built at run time ("model." + key + ".short") are matched by their fixed prefix.
         prefixes = set(re.findall(r'"([a-z][A-Za-z0-9_.-]*\.)" *\+', source))
-        unused = [key for key in catalog if key not in literal and f'"{key}"' not in source
-                  and not any(key.startswith(prefix) for prefix in prefixes)]
-        self.assertEqual(unused, [])
+        built = [key for key in catalog if any(key.startswith(prefix) for prefix in prefixes)]
+        asked = (literal - {key for key in literal if key.endswith('.')}) | set(built)
+        self.assertGreater(len(asked), 10)  # a bad path or regex must not make this check vacuous
+        self.assertEqual(sorted(key for key in asked if key not in catalog), [])
+
+        # P0 deletes the Python-controller views, not the translations reserved for the oxa
+        # replacements in P5-P9.  Those strings are deliberately unused during the staged move;
+        # still validate the retained catalog so a later view cannot receive a blank label.
+        for key, value in catalog.items():
+            with self.subTest(key=key):
+                texts = [value] if isinstance(value, str) else list(value.values())
+                self.assertTrue(texts)
+                self.assertTrue(all(isinstance(text, str) and text.strip() for text in texts))
