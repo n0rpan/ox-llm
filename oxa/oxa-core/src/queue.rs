@@ -751,7 +751,11 @@ impl Handle {
             .collect();
         inactive
             .into_iter()
-            .filter_map(|id| q.session_follow_up.remove(&id).map(|messages| (id, messages)))
+            .filter_map(|id| {
+                q.session_follow_up
+                    .remove(&id)
+                    .map(|messages| (id, messages.into_iter().map(|message| message.text).collect()))
+            })
             .collect()
     }
 
