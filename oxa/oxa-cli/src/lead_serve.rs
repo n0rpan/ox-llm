@@ -1112,7 +1112,14 @@ mod approval_answer_tests {
         let cwd = test.work();
         let (journal, _) = captured();
         let web = owner_answers(&test, &dirs, &desk, journal);
-        let guard = std::fs::File::open(dirs.agent_dir.join("approvals")).unwrap();
+        // The desk's own advisory lock file: an answer from either entry point waits for it.
+        let guard = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dirs.agent_dir.join("approvals").join(".lock"))
+            .unwrap();
         guard.lock().unwrap();
         let start = Barrier::new(3);
 
