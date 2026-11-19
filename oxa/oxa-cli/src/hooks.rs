@@ -246,13 +246,26 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
         .rev()
         .find(|(k, _)| k == worker_tool::ENV_WORKER_DEPTH)
         .map(|(_, v)| v.as_str());
-    if worker_tool::built(worker_depth, i.settings.bool(worker_tool::SETTING_ENABLED, true)) {
+    if !i.args.no_session
+        && worker_tool::built(worker_depth, i.settings.bool(worker_tool::SETTING_ENABLED, true))
+    {
         match std::env::current_exe() {
             Ok(bin) => {
                 // The supervisor needs a trusted `kill` from the host PATH (never a project shim),
                 // so no worker starts without a way to stop it.
                 let host_path = std::ffi::OsString::from(i.env.get("PATH").unwrap_or(""));
-                match crate::workers::proc::start(i.settings, &host_path, i.cwd, &i.dirs.home) {
+                let project = i
+                    .cwd
+                    .canonicalize()
+                    .ok()
+                    .and_then(|cwd| {
+                        cwd.ancestors()
+                            .filter(|path| path.join(".git").exists())
+                            .last()
+                            .map(Path::to_path_buf)
+                    })
+                    .unwrap_or_else(|| i.cwd.to_path_buf());
+                match crate::workers::proc::start(i.settings, &host_path, &project, &i.dirs.home) {
                     Ok(supervisor) => {
                         // The worker child writes its sessions where this session does.
                         let sessions_dir = i
@@ -277,9 +290,14 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
                                 no_extensions: i.args.no_extensions,
                             },
                         };
+                        let agent_dir = if i.dirs.agent_dir.is_absolute() {
+                            i.dirs.agent_dir.clone()
+                        } else {
+                            i.cwd.join(&i.dirs.agent_dir)
+                        };
                         let workers = Arc::new(WorkerHooks::new(WorkerConfig {
                             oxa_bin: bin,
-                            agent_dir: i.dirs.agent_dir.clone(),
+                            agent_dir,
                             max: usize::try_from(i.settings.u32(worker_tool::SETTING_MAX, 4)).unwrap_or(4),
                             supervisor,
                             sessions_dir,

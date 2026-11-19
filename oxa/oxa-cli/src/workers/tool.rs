@@ -19,6 +19,7 @@ use oxa_proto::{
     Source, Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec, Ui, Value, YoloSwitch,
 };
 use std::fs::{self, OpenOptions};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -262,6 +263,12 @@ fn artifact_slug(parent: &str) -> String {
     }
 }
 
+fn child_session_id(parent: &str, name: &str, started: u64) -> String {
+    let mut hasher = DefaultHasher::new();
+    parent.hash(&mut hasher);
+    format!("worker-{:016x}-{name}-{started}", hasher.finish())
+}
+
 /// The status file of the worker session `session_id` that ran in `worktree`: the sibling
 /// `<session>.status.json` of its session file (`<stamp>_<id>.jsonl`, written by the status writer
 /// as `session_file.with_extension("status.json")`), in the session directory of the worktree.
@@ -477,7 +484,9 @@ impl WorkerCore {
         }
 
         let started = now_ms();
-        let session_id = format!("{parent}-{name}-{started}");
+        // Session-store identifiers are limited to 128 bytes. The registry already records the
+        // full parent relationship, so a bounded digest-shaped component is sufficient here.
+        let session_id = child_session_id(&parent, name, started);
         let spec = WorkerSpec {
             name: name.to_string(),
             session_id: session_id.clone(),
@@ -593,8 +602,14 @@ impl WorkerCore {
         if records[index].stopped {
             return ToolOutput::ok(format!("worker {name} is already stopped"));
         }
-        if let Err(e) = self.supervisor.stop(records[index].pgid) {
-            return ToolOutput::error(format!("worker: cannot stop {name}: {e}"));
+        match self.supervisor.stop(records[index].pgid) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return ToolOutput::error(format!(
+                    "worker: cannot stop {name}: this process does not own that worker"
+                ))
+            }
+            Err(e) => return ToolOutput::error(format!("worker: cannot stop {name}: {e}")),
         }
         records[index].stopped = true;
         if let Err(e) = registry::save(&self.agent_dir, &parent, &records) {
@@ -653,7 +668,27 @@ impl Tool for WorkerTool {
 
     fn run(&self, args: &Value, cx: &ToolCtx, _live: &mut dyn FnMut(&str)) -> ToolOutput {
         match str_arg(args, "action") {
-            Some("start") => self.core.start(args, cx.cwd, cx.mode, self.core.yolo.level()),
+            Some("start") => {
+                let name = str_arg(args, "name").unwrap_or("");
+                let Some(path) = worktree_path(cx.cwd, name) else {
+                    return ToolOutput::error(format!("worker: invalid name {name:?}"));
+                };
+                if let Some(approved) = cx.checked_real(&path) {
+                    let Some(parent) = path.parent() else {
+                        return ToolOutput::error("worker: invalid worktree destination");
+                    };
+                    let current = parent
+                        .canonicalize()
+                        .ok()
+                        .and_then(|parent| path.file_name().map(|leaf| parent.join(leaf)));
+                    if current.as_deref() != Some(approved) {
+                        return ToolOutput::error(
+                            "worker: worktree destination changed after permission approval",
+                        );
+                    }
+                }
+                self.core.start(args, cx.cwd, cx.mode, self.core.yolo.level())
+            }
             Some("list") => self.core.list(),
             Some("stop") => self.core.stop(args),
             _ => ToolOutput::error("worker: action must be start, list or stop"),
@@ -1029,5 +1064,21 @@ mod tests {
         assert!(!built(Some("1"), true));
         assert!(!built(Some(""), true));
         assert!(!built(None, false));
+    }
+
+    #[test]
+    fn child_session_id_is_bounded_for_the_longest_parent_id() {
+        let parent = "p".repeat(128);
+        let id = child_session_id(&parent, "forty-character-worker-name-000000000000", u64::MAX);
+        assert!(id.len() <= 128, "{} bytes: {id}", id.len());
+        assert!(id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+        assert_ne!(
+            id,
+            child_session_id(
+                &format!("{parent}x"),
+                "forty-character-worker-name-000000000000",
+                u64::MAX
+            )
+        );
     }
 }

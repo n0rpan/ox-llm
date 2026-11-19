@@ -229,20 +229,30 @@ impl Table {
         Ok(pgid)
     }
 
-    /// Reap the leaders whose group is empty. A leader whose group still has members stays
-    /// unreaped, which keeps its group number reserved. A probe error keeps the worker tracked.
+    /// Reap exited leaders only after the same teardown used by an explicit stop. `/proc` can
+    /// report a multithreaded process leader as a zombie while another thread is still alive;
+    /// `group_alive` cannot see that thread, so always sweep before relinquishing ownership.
     fn reap(&mut self) {
-        let mut finished = Vec::new();
-        for (pgid, child) in self.live.iter_mut() {
-            if let Ok(false) = group_alive(*pgid) {
-                if let Ok(Some(status)) = child.try_wait() {
-                    finished.push((*pgid, status));
-                }
+        let candidates: Vec<u32> = self
+            .live
+            .keys()
+            .copied()
+            .filter(|pgid| matches!(group_alive(*pgid), Ok(false)))
+            .collect();
+        for pgid in candidates {
+            // Sweep while the leader is still our unreaped child, so its process-group number
+            // cannot have been reused between the probe and the kill.
+            if self.teardown(pgid).is_err() {
+                continue;
             }
-        }
-        for (pgid, status) in finished {
-            self.live.remove(&pgid);
-            self.done.insert(pgid, status);
+            let status = self
+                .live
+                .get_mut(&pgid)
+                .and_then(|child| child.try_wait().ok().flatten());
+            if let Some(status) = status {
+                self.live.remove(&pgid);
+                self.done.insert(pgid, status);
+            }
         }
     }
 
