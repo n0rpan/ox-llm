@@ -67,6 +67,11 @@ const BUILTINS: &[(&str, &str, Option<&str>)] = &[
     ),
     ("resume", "Resume another session", None),
     (
+        "goal",
+        "Set, show or clear the session goal",
+        Some("[text|clear|pause|resume]"),
+    ),
+    (
         "reload",
         "Reload keybindings, extensions, skills, prompts, themes, and context files",
         None,

@@ -23,6 +23,23 @@ const MISSING_HINT: &str =
 const UNUSABLE_HINT: &str = "check that unprivileged user namespaces are allowed: `sysctl kernel.unprivileged_userns_clone` must be 1, \
 and on Ubuntu-based systems `sysctl kernel.apparmor_restrict_unprivileged_userns` must be 0; the `bubblewrap` package must be installed";
 
+/// The whole environment a command sees: nothing is inherited (bwrap `--clearenv`, or
+/// `env_clear` off Linux, [`crate::Unsandboxed`]), so credential variables of the process never
+/// reach the model's bash. The fixed base, the layout's passed-through variables, then the
+/// spec's own, in that order (a later one wins).
+pub(crate) fn base_env(s: &ExecSpec, home: &str, layout: &Layout) -> Vec<(String, String)> {
+    let mut e = vec![
+        ("PATH".to_string(), layout.path_value()),
+        ("HOME".to_string(), home.to_string()),
+        ("LANG".to_string(), BASE_LANG.to_string()),
+        ("TERM".to_string(), BASE_TERM.to_string()),
+        ("AI_AGENT".to_string(), oxa_proto::names::AI_AGENT.to_string()),
+    ];
+    e.extend(layout.env.iter().cloned());
+    e.extend(s.env.iter().cloned());
+    e
+}
+
 /// The exact bwrap argv (without `bwrap` itself) for `s` with the minimal layout (base `PATH`,
 /// no toolchain binds, the deny-list of `home`): [`bwrap_args_with`].
 pub fn bwrap_args(s: &ExecSpec, home: &Path) -> Vec<String> {
@@ -409,16 +426,8 @@ pub(crate) fn bwrap_args_homes(
         }
     }
     push(&mut a, &["--chdir", &cwd, "--clearenv"]);
-    push(&mut a, &["--setenv", "PATH", &layout.path_value()]);
-    push(&mut a, &["--setenv", "HOME", &home_s]);
-    push(&mut a, &["--setenv", "LANG", BASE_LANG]);
-    push(&mut a, &["--setenv", "TERM", BASE_TERM]);
-    push(&mut a, &["--setenv", "AI_AGENT", oxa_proto::names::AI_AGENT]);
-    for (k, v) in &layout.env {
-        push(&mut a, &["--setenv", k, v]);
-    }
-    for (k, v) in &s.env {
-        push(&mut a, &["--setenv", k, v]);
+    for (k, v) in base_env(s, &home_s, layout) {
+        push(&mut a, &["--setenv", &k, &v]);
     }
     push(&mut a, &["--", "bash", "-c", &s.command]);
     a
@@ -1137,6 +1146,7 @@ fn push(a: &mut Vec<String>, xs: &[&str]) {
 
 /// The body of `Bwrap::detect` (lib.rs, architect-owned, must delegate here): find `bwrap` on
 /// `path_var` and probe it. Failure = `no_sandbox` with a hint.
+#[cfg(target_os = "linux")]
 pub(crate) fn detect_bwrap(path_var: &str, home: &Path) -> Result<Bwrap, OxaError> {
     let bwrap = find_on_path(path_var, "bwrap").ok_or_else(|| {
         OxaError::new(codes::NO_SANDBOX, "bwrap is not available; bash is disabled").with_hint(MISSING_HINT)
@@ -1154,8 +1164,21 @@ pub(crate) fn detect_bwrap(path_var: &str, home: &Path) -> Result<Bwrap, OxaErro
 
 /// The body of `Sandbox::check` for [`Bwrap`] (lib.rs, architect-owned, must delegate here):
 /// re-run the probe for `b.bwrap`.
+#[cfg(target_os = "linux")]
 pub(crate) fn check_bwrap(b: &Bwrap) -> Result<(), OxaError> {
     probe(&b.bwrap)
+}
+
+/// Off Linux there is no bubblewrap: `Bwrap` cannot be detected. The front end uses
+/// [`crate::Unsandboxed`] there instead.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn detect_bwrap(_path_var: &str, _home: &Path) -> Result<Bwrap, OxaError> {
+    Err(OxaError::new(codes::NO_SANDBOX, crate::NO_OS_SANDBOX_NOTICE))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn check_bwrap(_b: &Bwrap) -> Result<(), OxaError> {
+    Err(OxaError::new(codes::NO_SANDBOX, crate::NO_OS_SANDBOX_NOTICE))
 }
 
 /// The first absolute PATH entry holding an executable `name`. Relative entries are ignored.

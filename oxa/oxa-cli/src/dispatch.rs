@@ -25,7 +25,9 @@ use oxa_perm::{
 use oxa_proto::{codes, Engine, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
 use oxa_resources::{discover, DiscoverOpts, Resources};
 use oxa_rpc::{run_json_outcome, run_print_outcome, serve_outcome, Out};
-use oxa_sandbox::{Bwrap, NoSandbox};
+use oxa_sandbox::Bwrap;
+#[cfg(target_os = "linux")]
+use oxa_sandbox::NoSandbox;
 use oxa_session::{decode_entry, decode_header, FsStore, MemStore, SessionStore};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -88,23 +90,6 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         stdout_is_tty,
         cwd,
     } = io;
-
-    if let Some(invocation) = oxa_interactive::command_registry::parse_cli(crate::help::command_words(argv)) {
-        if invocation.command.id == oxa_interactive::command_registry::CommandId::Lead
-            && invocation.args.is_empty()
-        {
-            let menu = oxa_interactive::command_menu::menu(
-                invocation.command.id,
-                oxa_interactive::command_registry::Surface::Cli,
-            )
-            .unwrap_or_default();
-            return if stdout.write_all(menu.as_bytes()).is_ok() {
-                0
-            } else {
-                2
-            };
-        }
-    }
 
     if let Some(help) = crate::help::from_argv(argv) {
         return match help {
@@ -194,17 +179,45 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     }
 
     if let Some(sub) = a.subcommand.clone() {
-        if let Subcommand::Registered(id, words) = &sub {
-            use oxa_interactive::command_registry::CommandId;
-            // The one-shot `oxa lead <text>` and every `lead chat` form share the
-            // one bounded owner conversation path; the bare `lead` menu was
-            // answered before parsing.
-            if id == &CommandId::LeadChat || (id == &CommandId::Lead && !words.0.is_empty()) {
+        if let Subcommand::Registered(oxa_interactive::command_registry::CommandId::Lead, words) = &sub {
+            if !words.0.is_empty() {
                 return finish(
-                    crate::lead_chat::run(&words.0, &cwd, env, &mut *stdout),
+                    crate::lead_chat::run_direct(&words.0, &cwd, env, &mut *stdout),
                     &mut *stderr,
                 );
             }
+            if !(stdin_is_tty && stdout_is_tty) {
+                return report(
+                    &mut *stderr,
+                    &OxaError::new(
+                        codes::USAGE,
+                        "Lead needs a terminal. Use oxa lead -p <prompt> for print mode.",
+                    ),
+                );
+            }
+            let result = (|| {
+                let binding = crate::lead_chat::local_binding(&cwd, env)?;
+                let dirs = dirs_from_env(env, None)?;
+                let mode = RunMode::Interactive;
+                let workspace = crate::home_cwd::check(mode, &cwd, env, &dirs, &mut *stdin, &mut *stdout)?;
+                let mut args = Args::default();
+                let prep = binding.prepare(&mut args, env, mode, workspace)?;
+                let session = binding.open(&prep)?;
+                Ok((args, prep, session, binding))
+            })();
+            return match result {
+                Ok((args, prep, session, binding)) => {
+                    run_tui(&args, env, &cwd, prep, &mut *stderr, Some((session, binding)))
+                }
+                Err(error) => report(&mut *stderr, &error),
+            };
+        }
+
+        if let Subcommand::Registered(oxa_interactive::command_registry::CommandId::LeadChat, words) = &sub {
+            return finish(
+                crate::lead_chat::run(&words.0, &cwd, env, &mut *stdout),
+                &mut *stderr,
+            );
         }
         let dirs = match dirs_from_env(env, None) {
             Ok(d) => d,
@@ -227,9 +240,14 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::LeadStatus
                     | CommandId::LeadAsks
                     | CommandId::LeadChat
+                    | CommandId::Goal
                     | CommandId::Help
                     | CommandId::WorkStatus
-                    | CommandId::WorkBoard => Err(OxaError::new(
+                    | CommandId::WorkBoard
+                    | CommandId::Memory
+                    | CommandId::MemoryList
+                    | CommandId::MemoryShow
+                    | CommandId::MemoryRm => Err(OxaError::new(
                         codes::USAGE,
                         "registered command handler or arguments are unavailable",
                     )),
@@ -282,6 +300,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 return crate::work_cmd::run(&words, &cwd, env, &dirs, &mut *stdout, &mut *stderr)
             }
             Subcommand::Mcp(words) => run_mcp(&words, &dirs, &cwd, &mut *stdout, &mut *stderr),
+            Subcommand::Memory(words) => crate::run_memory(&words, &dirs, &mut *stdout, &mut *stderr),
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
             Subcommand::Send(words) => match words.as_slice() {
@@ -476,10 +495,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     };
 
     match mode {
-        RunMode::Interactive => {
-            let dirs = prep.built.dirs.clone();
-            run_tui(&a, env, &dirs, &cwd, prep, &mut *stderr)
-        }
+        RunMode::Interactive => run_tui(&a, env, &cwd, prep, &mut *stderr, None),
         RunMode::Rpc => {
             let dirs = prep.built.dirs.clone();
             run_rpc(prep, a.max_time, a.max_tokens, dirs, stdin, stdout, &mut *stderr)
@@ -699,6 +715,21 @@ impl Built {
             jobs,
         }
     }
+}
+
+/// The sandbox bash and the exec hooks use, plus a start notice when it had to be replaced. A
+/// refused bash network (`oxa.sandbox.net: off`, offline) that this platform cannot enforce must
+/// not run: without an OS sandbox the command would keep the network the owner turned off, so
+/// bash is disabled instead of running.
+fn bash_sandbox(sandbox: Arc<dyn Sandbox>) -> (Arc<dyn Sandbox>, Option<String>) {
+    if !sandbox.network() && !sandbox.network_enforced() {
+        let notice = format!(
+            "{}; bash is disabled while the bash network is off",
+            oxa_proto::NET_NOT_RESTRICTED_NOTICE
+        );
+        return (Arc::new(NoSandbox), Some(notice));
+    }
+    (sandbox, None)
 }
 
 /// Settings, trust, resources, engine, sandbox and the open mode. Notices are printed by the
@@ -957,6 +988,32 @@ fn prepare(
             notices.extend(b.layout.git.notes.iter().map(|n| (Level::Warning, n.clone())));
             Arc::new(b)
         }
+        // No bubblewrap on this platform: run unsandboxed and say so, never claim isolation.
+        #[cfg(not(target_os = "linux"))]
+        Err(_) => {
+            notices.push((
+                Level::Warning,
+                format!(
+                    "{}; bash and hooks run with no isolation",
+                    oxa_sandbox::NO_OS_SANDBOX_NOTICE
+                ),
+            ));
+            // The same cleared base environment bwrap gives: credential variables stay out.
+            let mut layout = oxa_sandbox::Layout::build(&oxa_sandbox::LayoutInputs {
+                home: dirs.home.clone(),
+                agent_dir: Some(dirs.agent_dir.clone()),
+                path_var: env.get("PATH").unwrap_or("").to_string(),
+                env: env.pairs().to_vec(),
+                ..Default::default()
+            });
+            // Toolchain locations only: the sandbox's /tmp redirections do not apply here.
+            layout.env = oxa_sandbox::toolchain_env(env.pairs());
+            Arc::new(oxa_sandbox::Unsandboxed {
+                layout,
+                home: dirs.home.clone(),
+            })
+        }
+        #[cfg(target_os = "linux")]
         Err(e) => {
             notices.push((
                 Level::Warning,
@@ -966,6 +1023,10 @@ fn prepare(
         }
     };
     let sandbox = crate::netguard::with_net(sandbox, &settings);
+    let (sandbox, net_notice) = bash_sandbox(sandbox);
+    if let Some(notice) = net_notice {
+        notices.push((Level::Warning, notice));
+    }
 
     // `--model` resolves against the engine's models; its `:level` suffix sets thinking unless
     // `--thinking` is given.
@@ -1015,6 +1076,9 @@ fn prepare(
         (None, oxa_proto::PermissionMode::Plan) => Some(Mode::Plan),
         (m, _) => m,
     };
+    if let Some(text) = oxa_proto::no_os_sandbox_notice() {
+        notices.push((Level::Warning, text.to_string()));
+    }
     if !matches!(mode, RunMode::Interactive) {
         notices.push((
             Level::Info,
@@ -1680,7 +1744,15 @@ fn run_rpc(
 
 /// The interactive terminal: the first prompt and the further messages come from the command
 /// line; `reopen` builds the sessions of `/new`, `/resume`, fork, clone and import.
-fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mut dyn Write) -> i32 {
+fn run_tui(
+    a: &Args,
+    env: &Env,
+    cwd: &Path,
+    prep: Prep,
+    stderr: &mut dyn Write,
+    owner: Option<(Session, LeadOwnerBinding)>,
+) -> i32 {
+    let dirs = &prep.built.dirs.clone();
     let prompts = match build_prompts(a, dirs, cwd, None) {
         Ok(p) => p,
         Err(e) => return report(stderr, &e),
@@ -1703,9 +1775,12 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         name,
         ..
     } = prep;
-    let session = match open_named(&built, session_id, open, name.as_deref()) {
-        Ok(s) => s,
-        Err(e) => return report(stderr, &e),
+    let (session, owner) = match owner {
+        Some((session, binding)) => (session, Some(binding)),
+        None => match open_named(&built, session_id, open, name.as_deref()) {
+            Ok(session) => (session, None),
+            Err(e) => return report(stderr, &e),
+        },
     };
     #[cfg(feature = "share")]
     let guest_listener = match sharing.map(crate::share_cmd::Prepared::start).transpose() {
@@ -1714,6 +1789,7 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
                 Level::Info,
                 format!("Guest OpenAI API listening at http://{address}/v1"),
             ));
+            notices.extend(running.status.warning().map(|w| (Level::Warning, w.to_string())));
             Some(running)
         }
         Ok(None) => None,
@@ -1742,7 +1818,17 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
     let settings = built.settings.clone();
     let store = built.store.clone();
     let base = built.clone();
+    let pinned = owner.is_some();
     let reopen: ReopenFn = Box::new(move |request, carry| {
+        if let Some(binding) = &owner {
+            if !matches!(&request, Reopen::Resume(session) if session == binding.session_ref()) {
+                return Err(OxaError::new(
+                    codes::INVALID,
+                    "Lead is attached to its dedicated session.",
+                ));
+            }
+            binding.recheck()?;
+        }
         let mut deps = base.deps(None);
         // `/new` keeps the model and thinking level of the session it leaves (a `/model`
         // switch is present in the status bar but only as a `ModelChange` entry of the old
@@ -1760,6 +1846,15 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
             Reopen::Fork(sref) => Open::Fork(sref),
         };
         let mut session = Session::open(deps, how)?;
+        if let Some(binding) = &owner {
+            binding.recheck()?;
+            if &session.inner().sref != binding.session_ref() {
+                return Err(OxaError::new(
+                    codes::INVALID,
+                    "The selected Lead session changed.",
+                ));
+            }
+        }
         base.result_facts.attach(&mut session)?;
         session.set_output_schema(base.output_schema.clone());
         Ok(session)
@@ -1804,7 +1899,11 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         engine_status: None,
         yolo: Some(yolo),
     };
-    let result = run_interactive(session, opts);
+    let result = if pinned {
+        oxa_interactive::run_pinned(session, opts, "oxa lead")
+    } else {
+        run_interactive(session, opts)
+    };
     let result = match &built.status {
         Some(status) => status.finish_interactive(result, stderr),
         None => result,
@@ -2813,5 +2912,80 @@ mod export_source_tests {
         assert_eq!(err.code, codes::INVALID);
         assert!(err.message.contains("source session"), "{}", err.message);
         assert_eq!(std::fs::read(&source).unwrap(), before);
+    }
+}
+
+#[cfg(test)]
+mod bash_sandbox_tests {
+    use super::*;
+
+    /// A platform without an OS sandbox that reports the bash network as unenforceable.
+    struct NoNetworkIsolation;
+
+    impl Sandbox for NoNetworkIsolation {
+        fn check(&self) -> Result<(), OxaError> {
+            Ok(())
+        }
+        fn network(&self) -> bool {
+            false
+        }
+        fn network_enforced(&self) -> bool {
+            false
+        }
+        fn bwrap_args(&self, _s: &oxa_proto::ExecSpec) -> Vec<String> {
+            Vec::new()
+        }
+        fn run(
+            &self,
+            _s: &oxa_proto::ExecSpec,
+            _c: &oxa_proto::CancelToken,
+            _live: &mut dyn FnMut(&[u8]),
+        ) -> oxa_proto::ExecResult {
+            oxa_proto::ExecResult::default()
+        }
+    }
+
+    /// A refused bash network that this platform cannot enforce disables bash instead of running
+    /// a command with the network the owner turned off.
+    #[test]
+    fn a_refused_network_that_cannot_be_enforced_disables_bash() {
+        let (sandbox, notice) = bash_sandbox(Arc::new(NoNetworkIsolation));
+        assert!(notice.unwrap_or_default().contains("bash is disabled"));
+        assert_eq!(
+            sandbox.check().unwrap_err().code,
+            oxa_proto::codes::NO_SANDBOX,
+            "the replacement never runs a command"
+        );
+    }
+
+    /// Without a refused network the sandbox is kept, notice and all.
+    #[test]
+    fn an_allowed_network_keeps_the_sandbox() {
+        struct NetOn;
+        impl Sandbox for NetOn {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn network(&self) -> bool {
+                true
+            }
+            fn network_enforced(&self) -> bool {
+                false
+            }
+            fn bwrap_args(&self, _s: &oxa_proto::ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+            fn run(
+                &self,
+                _s: &oxa_proto::ExecSpec,
+                _c: &oxa_proto::CancelToken,
+                _live: &mut dyn FnMut(&[u8]),
+            ) -> oxa_proto::ExecResult {
+                oxa_proto::ExecResult::default()
+            }
+        }
+        let (sandbox, notice) = bash_sandbox(Arc::new(NetOn));
+        assert!(notice.is_none());
+        assert!(sandbox.check().is_ok());
     }
 }
