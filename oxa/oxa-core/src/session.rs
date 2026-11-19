@@ -1054,9 +1054,26 @@ impl Session {
     /// activity events. Unlike [`Session::begin_run`], this does not start an agent turn or
     /// reset its outcome bookkeeping.
     fn begin_foreground(&self) -> Result<BusyGuard, OxaError> {
-        let guard = self.begin()?;
-        self.st.shared.gate.running.store(true, Ordering::SeqCst);
-        Ok(guard)
+        // Publish foreground intent before the claim.  `begin()` used to set `busy` first,
+        // leaving a small but user-visible window in which the terminal could classify an
+        // input event as idle before it consumed AgentStart.
+        if self
+            .st
+            .shared
+            .gate
+            .running
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err(OxaError::new(codes::BUSY, "the session is busy"));
+        }
+        match self.begin() {
+            Ok(guard) => Ok(guard),
+            Err(error) => {
+                self.st.shared.gate.running.store(false, Ordering::SeqCst);
+                Err(error)
+            }
+        }
     }
 
     fn begin(&self) -> Result<BusyGuard, OxaError> {
@@ -2270,6 +2287,24 @@ mod tests {
             session_id: None,
             jobs: Arc::new(oxa_tools::JobRegistry::new()),
         }
+    }
+
+    /// A published foreground start is itself exclusive, even before the session claim is
+    /// visible. This is the interval in which the terminal has not consumed `AgentStart` yet.
+    #[test]
+    fn foreground_start_reservation_rejects_a_second_run() {
+        let env = oxa_fake::TestEnv::new();
+        let session = Session::open(deps(&env, Arc::new(MemStore::new())), Open::New).unwrap();
+        session.st.shared.gate.running.store(true, Ordering::SeqCst);
+
+        let error = session
+            .begin_foreground()
+            .err()
+            .expect("second run must be refused");
+
+        assert_eq!(error.code, codes::BUSY);
+        assert!(!session.handle().is_busy());
+        assert!(session.handle().is_running());
     }
 
     /// #543, #555: only the active session and its fork/clone ancestors read spill output

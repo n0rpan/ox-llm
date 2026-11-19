@@ -632,6 +632,7 @@ fn run_inner(
                 tool_msgs.push(msg);
             }
             done.note_edits(&results);
+            done.note_proof(&calls, &results);
             done.note_bash(st, &results);
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
             crate::think::observe(st, &calls, &results, sink, ui);
