@@ -437,6 +437,12 @@ impl Settings {
         project: bool,
     ) -> Result<(), OxaError> {
         check_key_shape(key)?;
+        if project && crate::descriptor(key).is_some_and(|d| d.user_only) {
+            return Err(OxaError::new(
+                codes::INVALID,
+                format!("setting `{key}` is user-only; it cannot be set in a project file"),
+            ));
+        }
         if let Some(def) = find_key(key) {
             if !kind_matches(def.kind, &value) {
                 return Err(OxaError::new(
@@ -666,9 +672,10 @@ fn build(
     project_src: &str,
 ) -> Settings {
     let (user, user_diags) = check_root(&user, user_src);
-    let (project, project_diags) = check_root(&project, project_src);
+    let (mut project, project_diags) = check_root(&project, project_src);
     diagnostics.extend(user_diags);
     diagnostics.extend(project_diags);
+    diagnostics.extend(strip_user_only(&mut project, project_src));
     let merged = compose(&user, &project);
     Settings {
         merged,
@@ -679,6 +686,28 @@ fn build(
         overrides: Vec::new(),
         files: None,
     }
+}
+
+/// Drop every key whose descriptor is `user_only` from the project layer, with one warning
+/// per key. A cloned repository must not widen the sandbox, the network or the home-folder
+/// rules; those keys count only from the user file (SECURITY.md, "Refusals that stay in yolo").
+fn strip_user_only(project: &mut Value, source: &str) -> Vec<Diagnostic> {
+    let Some(map) = project.as_object_mut() else {
+        return Vec::new();
+    };
+    let mut diags = Vec::new();
+    for d in crate::descriptors().iter().filter(|d| d.user_only) {
+        if remove_nested(map, d.key) {
+            diags.push(warn(
+                source,
+                format!(
+                    "setting `{}` is user-only and is ignored in a project file; set it in your user settings",
+                    d.key
+                ),
+            ));
+        }
+    }
+    diags
 }
 
 /// defaults < user < project. The defaults layer carries oxa's default tool list so that a
@@ -832,4 +861,37 @@ fn set_nested(root: &mut Map<String, Value>, key: &str, value: Value) {
         };
     }
     cur.insert((*last).to_string(), value);
+
+    #[test]
+    fn project_cannot_set_sandbox_net() {
+        let user = json!({"oxa": {"sandbox": {"net": "off"}}});
+        let project = json!({"oxa": {"sandbox": {"net": "on"}}});
+        let s = build(user, project, Vec::new(), "user", "project");
+        assert_eq!(s.merged["oxa"]["sandbox"]["net"], json!("off"));
+        assert!(s.project.get("oxa").is_none(), "pruned from the project layer");
+    }
+
+    #[test]
+    fn project_user_only_key_diagnostic() {
+        let project = json!({"oxa": {"sandbox": {"net": "on"}}, "theme": "dark"});
+        let s = build(json!({}), project, Vec::new(), "user", "project");
+        let hits: Vec<_> = s
+            .diagnostics
+            .iter()
+            .filter(|d| d.source == "project" && d.message.contains("oxa.sandbox.net"))
+            .collect();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(s.merged["theme"], json!("dark"), "other project keys still apply");
+    }
+
+    #[test]
+    fn project_set_of_user_only_key_is_refused() {
+        let root = Path::new("/nonexistent-oxa-test");
+        let dirs = Dirs::under(root);
+        let mut s = build(json!({}), json!({}), Vec::new(), "user", "project");
+        let err = s
+            .set(&dirs, root, "oxa.sandbox.net", json!("on"), true)
+            .expect_err("refused");
+        assert!(err.to_string().contains("user-only"));
+    }
 }
