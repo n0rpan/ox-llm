@@ -152,8 +152,8 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// and explicit background timeouts; both default tool prefixes intentionally changed.
 /// 2026-11-19: S12 documents explicit zero in the bash timeout schema.
 /// 2026-11-19: R2 rewrote the built-in `ox-llm` skill description (no controller).
-const DEFAULT_STABLE_SHA: &str = "f0c43ac3c282929ee61851e75cf1d041c876fa3a6e9fb847fd5d515e8beaad72";
-const DEFAULT_STABLE_SHA_SUBAGENT: &str = "568c0649fbfa760413db74a88a571a3c471a3737d886933a83bb679e8995adf7";
+const DEFAULT_STABLE_SHA: &str = "1b6f77cd2a720ad76a928fb60df9a858405f51501a683bab92b002fa6d5e9775";
+const DEFAULT_STABLE_SHA_SUBAGENT: &str = "745537ac956ffa7c78fcb3907a4e505444b6ee0377e3d5c58932e76baa30e5f5";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
 fn has_date(s: &str) -> bool {
