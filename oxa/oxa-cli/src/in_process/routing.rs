@@ -1,5 +1,7 @@
 //! Dispatch native requests by catalog identity, never by switch precedence.
-use oxa_proto::{codes, AssistantTurn, CancelToken, ChatRequest, Engine, EngineInfo, OxaError, StreamEvent};
+use oxa_proto::{
+    codes, AssistantTurn, CancelToken, ChatRequest, Engine, EngineInfo, OxaError, StreamEvent, ThinkingLevel,
+};
 use std::{collections::BTreeSet, sync::Arc};
 
 type Backend = Result<Arc<dyn Engine>, OxaError>;
@@ -128,7 +130,11 @@ impl Routed {
         backend.as_deref().map_err(Clone::clone)
     }
     fn models(&self) -> Vec<String> {
-        self.local_models.union(&self.cloud_models).cloned().collect()
+        self.local_models
+            .iter()
+            .chain(self.cloud_models.iter().filter(|model| self.admitted(model)))
+            .cloned()
+            .collect()
     }
 }
 impl Engine for Routed {
@@ -202,12 +208,13 @@ pub(super) fn catalog_owns(pattern: &str, endpoint: &str, models: impl IntoItera
 
 /// The name without a `:thinking` suffix or an endpoint prefix, case-folded.
 fn own_name(model: &str, endpoint: &str) -> String {
-    let bare = model
-        .trim()
-        .to_ascii_lowercase()
-        .split(':')
-        .next()
-        .unwrap_or_default()
+    let normalized = model.trim().to_ascii_lowercase();
+    // Model IDs may contain literal colons. Only the final, recognized thinking level is
+    // selection metadata and may be removed when comparing catalog ownership.
+    let bare = normalized
+        .rsplit_once(':')
+        .filter(|(_, suffix)| ThinkingLevel::parse(suffix).is_some())
+        .map_or(normalized.as_str(), |(name, _)| name)
         .to_string();
     match bare.strip_prefix(&format!("{}/", endpoint.to_ascii_lowercase())) {
         Some(rest) if !endpoint.is_empty() => rest.to_string(),
@@ -227,6 +234,11 @@ pub(super) fn scope_owns_in_catalog(
         && scope.iter().all(|pattern| {
             let pattern = pattern.trim();
             if pattern.contains(['*', '?']) {
+                // A Go namespace wildcard can cover both a configured local alias and models
+                // that are discoverable only from Go. One local hit cannot own that mixed scope.
+                if is_go_model(pattern, endpoint) {
+                    return false;
+                }
                 !oxa_config::resolve_scoped(&[pattern.to_string()], &model_refs(endpoint, models.clone()))
                     .0
                     .is_empty()

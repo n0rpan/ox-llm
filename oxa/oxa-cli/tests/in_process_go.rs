@@ -2686,3 +2686,44 @@ fn an_endpoint_qualified_local_alias_stays_local() {
     assert!(!stderr.contains("OpenCode Go"), "{stderr}");
     mock.assert_healthy();
 }
+
+#[test]
+fn a_local_wildcard_match_does_not_hide_go_models_in_the_same_scope() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"synthetic plan reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings["oxa"]["engine"] = json!({"inProcessLocal": true});
+    settings["oxa"]["local"] = json!({
+        "binary":"/synthetic/not-launched-oxe",
+        "models":{"opencode/custom-local":{"model":"/synthetic/model.gguf"}},
+        "limits":{"opencode/custom-local":{"context_window":4096,"max_output":64,
+            "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,
+                "mtp_state_bytes":0,"margin_bytes":1044480}}}
+    });
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    fs::write(path, settings.to_string()).unwrap();
+
+    let output = run(
+        &env,
+        &["--models", "opencode/*", "--no-tools", "-p", "Synthetic task"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("synthetic plan reply"));
+    assert_eq!(mock.requests().len(), 2);
+    assert_eq!(rows(&env).len(), 1);
+    mock.assert_healthy();
+}
