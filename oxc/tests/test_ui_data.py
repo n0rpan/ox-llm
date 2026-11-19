@@ -287,7 +287,10 @@ class PluginStrings(unittest.TestCase):
                 checked += 1
                 with self.subTest(file=path.name, key=key):
                     self.assertIn(key, strings)
-        self.assertGreater(checked, 40)
+        # The seven controller views that carried most of the strings were deleted in panel slice
+        # P0; the surviving primitives and Panel.qml still ask for their own keys, so the scan
+        # must find them (P5 adds the oxa panel's views back to this count).
+        self.assertGreater(checked, 10)
 
     def test_no_component_id_or_binding_shadows_the_translations(self):
         import re

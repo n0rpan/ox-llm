@@ -293,8 +293,11 @@ class PanelV013Model(unittest.TestCase):
         asked = set()
         for path in sorted(PLUGIN.glob('*.qml')):
             asked.update(key for key in literal.findall(path.read_text(encoding='utf-8')) if not key.endswith('.'))
-        self.assertGreater(len(asked), 80)
-        for key in ('now.resuming', 'now.sessionTip', 'now.error', 'mode.title', 'mode.keep', 'cache.clearAll'):
+        # The controller views that asked for most of these (~125 keys) were deleted in panel slice
+        # P0; the surviving panel still asks for its own keys, so the scan must not come up empty.
+        self.assertGreater(len(asked), 10)
+        for key in ('title', 'bar.stopping', 'tab.models', 'tab.activity', 'tab.storage', 'tab.sharing',
+                    'launch.chat', 'launch.code', 'launch.studio', 'footer.pause'):
             self.assertIn(key, asked)
         built = ['bar.' + p for p in ('offline', 'sleeping', 'loading', 'ready', 'answering', 'error')]
         built += ['mode.' + m + s for m in ('fast', 'deep', 'max') for s in ('', '.cost')]
