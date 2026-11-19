@@ -128,7 +128,10 @@ fn a_win_longer_than_the_limit_is_refused_without_overflowing() {
     win["significance"] = json!(1);
     win["loop"] = json!("once");
     win["step_ms"] = json!(2_147_483_750u32);
-    win["sizes"] = json!({ "8": [["▟█▛▘  ▐▀", "HHHH..DD"], ["▟█▛▘  ▐▀", "HHHH..DD"]] });
+    win["sizes"] = json!({
+        "8": [["▟█▛▘  ▐▀", "HHHH..DD"], ["▟█▛▘  ▐▀", "HHHH..DD"]],
+        "12": [["▟█▛▘      ▐▀", "HHHH......DD"], ["▟█▛▘      ▐▀", "HHHH......DD"]]
+    });
     let loaded = load_pack(&pack(vec![win])).expect("the pack itself parses");
     assert!(loaded.scenes.is_empty());
     assert!(
