@@ -747,7 +747,11 @@ impl<'a> Loop<'a> {
         if !(mode == PermissionMode::Yolo && self.yolo_noticed && self.yolo_banner_until > now_ms()) {
             self.push_notice(
                 Level::Info,
-                format!("Mode: {} ({})", mode.as_str(), mode.describe()),
+                format!(
+                    "Mode: {} ({})",
+                    mode.as_str(),
+                    mode.describe_with(self.vm.status.os_sandbox)
+                ),
             );
         }
         if save {
@@ -2132,7 +2136,7 @@ impl<'a> Loop<'a> {
                 self.overlay = Some(Overlay::Thinking(sel));
             }
             SelectorKind::Mode => {
-                let sel = crate::ModeSelector::new(self.permission_mode());
+                let sel = crate::ModeSelector::new(self.permission_mode(), self.vm.status.os_sandbox);
                 self.overlay = Some(Overlay::Mode(sel));
             }
             SelectorKind::Theme => {

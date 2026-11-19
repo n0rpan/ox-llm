@@ -1102,7 +1102,11 @@ fn prepare(
     if !matches!(mode, RunMode::Interactive) {
         notices.push((
             Level::Info,
-            format!("permission mode {}: {}", level.as_str(), level.describe()),
+            format!(
+                "permission mode {}: {}",
+                level.as_str(),
+                level.describe_with(os_sandbox)
+            ),
         ));
     }
     // The owner's `oxa.sandbox.net = off` (or a runner that owns GitHub) holds for unsandboxed

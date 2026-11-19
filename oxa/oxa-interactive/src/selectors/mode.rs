@@ -20,7 +20,7 @@ pub struct ModeSelector {
 }
 
 impl ModeSelector {
-    pub fn new(current: PermissionMode) -> ModeSelector {
+    pub fn new(current: PermissionMode, os_sandbox: bool) -> ModeSelector {
         let rows = rows();
         let items = rows
             .iter()
@@ -32,7 +32,7 @@ impl ModeSelector {
                 } else {
                     format!("{}{}", if mode == current { "✓ " } else { "  " }, mode.as_str())
                 },
-                description: Some(mode.describe().to_string()),
+                description: Some(mode.describe_with(os_sandbox).to_string()),
             })
             .collect();
         let mut list = SelectList::new(items, MAX_VISIBLE);

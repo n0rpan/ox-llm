@@ -23,7 +23,7 @@ Credential masking in tool output, user-only settings and offline mode hold in e
 
 The owner settings are `oxa.sandbox.interactive`, `oxa.sandbox.unattended`, `oxa.approval.dangerous`, `oxa.approval.always` and `oxa.approval.unattended`. All of them are user settings only (see [settings](settings.md)). The `--sandbox` flag turns the OS sandbox on for one interactive run.
 
-On macOS there is no OS sandbox yet, so unattended runs are fail-closed there by default: bash is disabled, and a dangerous command or an outside-project access is refused rather than filed, because the run's sandbox expectation cannot be met (`oxa.sandbox.unattended: auto` resolves to `refuse`). Set `oxa.sandbox.unattended: request` to have those requests filed for the owner instead.
+On macOS there is no OS sandbox yet, so unattended runs are fail-closed there by default: bash is disabled, and a dangerous command or an outside-project access is refused rather than filed, because the run's sandbox expectation cannot be met (`oxa.approval.unattended: auto` answers `refuse` when the run expects a sandbox it does not get). Set `oxa.approval.unattended: request` to have those requests filed for the owner instead.
 
 ## Permission modes
 
@@ -128,7 +128,7 @@ Unknown entries are ignored, with a warning.
 
 An unattended run has no one to ask (under yolo it has no OS sandbox and no approval, see [Interactive and unattended runs](#interactive-and-unattended-runs)). `oxa.approval.unattended` (user settings only) decides what it does with a dangerous command:
 
-- `auto` (the default): with the OS sandbox on, the command is refused and the refusal gives the reason. Without the OS sandbox (macOS, or `oxa.sandbox.unattended: false`), the command is filed as an approval request and not run.
+- `auto` (the default): a run that expects the OS sandbox refuses, and the refusal gives the reason — that includes macOS, where the sandbox cannot be provided. A run that does not expect it (`oxa.sandbox.unattended: false`) files the command as an approval request and does not run it.
 - `refuse`: always refused.
 - `request`: always filed as an approval request.
 
