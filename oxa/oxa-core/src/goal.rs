@@ -341,6 +341,8 @@ impl GoalRuntime {
     pub(crate) fn stopped(&self, pause_idle: bool) -> (Goal, bool) {
         let mut state = self.lock();
         let before = state.goal.idle_stops;
+        // A lead goal is stepped by the lead loop, which relies on the idle pause.
+        let pause_idle = pause_idle || state.goal.lead.is_some();
         state.goal.stopped_with(false, pause_idle);
         let noted = !pause_idle
             && before < 2

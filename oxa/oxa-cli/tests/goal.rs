@@ -363,7 +363,7 @@ fn explicit_continue_resumes_a_paused_goal_without_resetting_its_budget_or_objec
         let env = TestEnv::new();
         env.write(
             "home/.oxa/agent/settings.json",
-            r#"{"retry":{"enabled":false},"oxa":{"bootPreload":false,"envNote":false},"cacheWarming":"off"}"#,
+            r#"{"retry":{"enabled":false},"oxa":{"bootPreload":false,"envNote":false,"goal":{"idlePause":true}},"cacheWarming":"off"}"#,
         );
         env.write(
             "work/goal.txt",
