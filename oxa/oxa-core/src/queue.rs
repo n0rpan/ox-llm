@@ -543,6 +543,20 @@ impl Handle {
         *lock(&self.shared.gate.run_tokens_used)
     }
 
+    pub(crate) fn account_usage(&self, usage: oxa_proto::Usage) {
+        if usage.unreported {
+            // An explicit budget can no longer establish headroom. Finish the active work
+            // through the usual wrap-up without adding an invented token count to the tally.
+            if self.remaining_tokens().is_some() {
+                self.request_wrap_up(WrapUpReason::TokenLimit);
+            }
+        } else {
+            self.account_tokens(
+                u64::from(usage.prompt.saturating_sub(usage.cached)) + u64::from(usage.completion),
+            );
+        }
+    }
+
     pub(crate) fn account_tokens(&self, tokens: u64) {
         {
             let mut used = lock(&self.shared.gate.run_tokens_used);
@@ -663,6 +677,19 @@ mod tests {
         Handle {
             shared: Arc::new(Shared::new(steer, follow)),
         }
+    }
+
+    #[test]
+    fn only_unreported_usage_under_an_explicit_token_cap_requests_wrap_up() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.account_usage(oxa_proto::Usage::unreported());
+        assert_eq!(h.wrap_up_reason(), None);
+        h.set_token_budget(Some(10));
+        h.account_usage(oxa_proto::Usage::default());
+        assert_eq!(h.wrap_up_reason(), None);
+        h.account_usage(oxa_proto::Usage::unreported());
+        assert_eq!(h.wrap_up_reason(), Some(WrapUpReason::TokenLimit));
+        assert_eq!(h.run_tokens_used(), 0);
     }
 
     #[test]

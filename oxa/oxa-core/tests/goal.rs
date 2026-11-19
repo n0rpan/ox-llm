@@ -1431,12 +1431,7 @@ impl oxa_proto::Engine for Unreported {
         on: &mut dyn FnMut(oxa_proto::StreamEvent),
     ) -> Result<oxa_proto::AssistantTurn, oxa_proto::OxaError> {
         let mut turn = self.0.chat(r, cancel, on)?;
-        turn.usage = oxa_proto::Usage {
-            prompt: 0,
-            completion: 0,
-            cached: 0,
-            cached_missing: true,
-        };
+        turn.usage = oxa_proto::Usage::unreported();
         Ok(turn)
     }
 }

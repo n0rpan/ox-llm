@@ -290,11 +290,8 @@ where
     let mut text = String::new();
     let mut reasoning = String::new();
     let mut finish = None;
-    // Usage that arrived before the finish frame (GLM order). It stays
-    // provisional until a valid finish is seen, so a truncated or cancelled
-    // stream never settles it as final.
-    let mut pending_usage: Option<Usage> = None;
-    let mut usage_seen = false;
+    // Publish usage only after [DONE]. Early usage is provisional for settlement too.
+    let mut pending_usage: Option<(Usage, Value)> = None;
     let mut received = 0usize;
     loop {
         let next = tokio::select! { biased; _=cancel.cancelled()=>return Err(Error::Cancelled), next=source.next()=>next, };
@@ -313,6 +310,15 @@ where
                 // A valid finish plus [DONE] without usage is a complete
                 // answer: usage stays unknown and the request settles as
                 // usage_missing in the ledger.
+                if let Some((usage, projection)) = pending_usage.take() {
+                    *terminal_usage = Some(usage);
+                    if on(Event::Chunk(
+                        json!({"model":alias,"choices":[],"usage":projection}),
+                    )) == Control::Stop
+                    {
+                        return Err(Error::Cancelled);
+                    }
+                }
                 let calls: Vec<Value> = tool_slots.into_values().collect();
                 return Ok(Completed {
                     assistant: json!({"role":"assistant","content":text,"reasoning_content":reasoning,"tool_calls":calls}),
@@ -323,7 +329,7 @@ where
             }
             // Usage may come before, with or after the finish frame, but once
             // both are in, any further frame invalidates the terminal sequence.
-            if finish.is_some() && usage_seen {
+            if finish.is_some() && pending_usage.is_some() {
                 *terminal_usage = None;
                 return Err(terminal(TerminalCheck::FrameAfterUsage));
             }
@@ -358,10 +364,23 @@ where
                     _ => Err(protocol(StreamCause::FrameShape)),
                 })
                 .transpose()?;
+            let has_choice = !choices.is_empty();
             let mut argument_parts = Vec::new();
-            if !choices.is_empty() {
-                if !chunk["choices"][0]["delta"].is_object() {
+            if has_choice {
+                let delta = &chunk["choices"][0]["delta"];
+                if !delta.is_object() {
                     return Err(protocol(StreamCause::FrameShape));
+                }
+                if ["content", "reasoning_content"]
+                    .iter()
+                    .any(|name| delta[*name].as_str().is_some_and(|value| !value.is_empty()))
+                    || delta["tool_calls"]
+                        .as_array()
+                        .is_some_and(|calls| !calls.is_empty())
+                {
+                    // More generated output makes an earlier usage snapshot stale, even
+                    // when the same frame carries finish_reason. A fresh count can replace it.
+                    pending_usage = None;
                 }
                 for (name, field) in [
                     ("content", Field::Content),
@@ -429,33 +448,27 @@ where
                 };
                 buffer.push_str(&args);
             }
-            // Usage that arrived before the finish frame is still provisional: only the finish
-            // may follow it. Content or tool output after it would be delivered to the client
-            // but never charged, because the provisional counts are what settle the request.
-            // The usage frame itself is exempt: a second one is rejected below.
-            if pending_usage.is_some() && ending.is_none() && chunk.get("usage").is_none_or(Value::is_null) {
-                return Err(terminal(TerminalCheck::FrameAfterUsage));
-            }
-            if let Some(value) = chunk.get("usage").filter(|v| !v.is_null()) {
+            let supplied_usage = chunk
+                .as_object_mut()
+                .unwrap()
+                .remove("usage")
+                .filter(|v| !v.is_null());
+            let supplied_usage_on_finish = ending.is_some() && supplied_usage.is_some();
+            if let Some(value) = supplied_usage {
                 if let Some(diagnostics) = diagnostics {
                     diagnostics
                         .billing_source(super::PlanName::from_value(&value["opencode"]["billing_source"]));
                 }
-                // Exactly one usage record per stream. It is validated (type,
-                // sign, range, finiteness) here, then held until the finish
-                // is validated when it arrived first.
-                if usage_seen {
+                if pending_usage.is_some() {
                     return Err(terminal(TerminalCheck::UsageRecordInvalid));
                 }
-                let parsed = Usage::parse(value).map_err(|_| terminal(TerminalCheck::UsageRecordInvalid))?;
-                usage_seen = true;
-                if finish.is_some() || ending.is_some() {
-                    *terminal_usage = Some(parsed);
-                } else {
-                    pending_usage = Some(parsed);
+                let parsed = Usage::parse(&value).map_err(|_| terminal(TerminalCheck::UsageRecordInvalid))?;
+                if finish.is_some() {
+                    *terminal_usage = Some(parsed.clone());
                 }
+                pending_usage = Some((parsed, value));
             }
-            if cancel.is_cancelled() || on(Event::Chunk(chunk)) == Control::Stop {
+            if cancel.is_cancelled() || (has_choice && on(Event::Chunk(chunk)) == Control::Stop) {
                 return Err(Error::Cancelled);
             }
             if let Some(reason) = ending {
@@ -517,14 +530,16 @@ where
                         return Err(Error::Cancelled);
                     }
                 }
+                if supplied_usage_on_finish {
+                    // An explicit terminal report may settle a cut delivery once the finish
+                    // has validated. Never give an earlier GLM snapshot that authority.
+                    *terminal_usage = pending_usage.as_ref().map(|(usage, _)| usage.clone());
+                }
                 let chunk = json!({"model":alias,"choices":[{"index":0,"delta":{},"finish_reason":reason}]});
                 if cancel.is_cancelled() || on(Event::Chunk(chunk)) == Control::Stop {
                     return Err(Error::Cancelled);
                 }
                 finish = Some(reason);
-                if terminal_usage.is_none() {
-                    *terminal_usage = pending_usage.take();
-                }
             }
         }
     }

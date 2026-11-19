@@ -259,15 +259,21 @@ pub struct Usage {
     /// B6: the server did not report `cached_tokens` (`cached` is then 0 and means nothing):
     /// no cache miss is derived from this reply. `false` for every oxe engine.
     pub cached_missing: bool,
+    /// The provider finished the reply without reporting token usage.
+    pub unreported: bool,
 }
 
 impl Usage {
-    /// The reply carried no usage at all. The embedded gateway accepts a stream that ends with a
-    /// valid finish and no usage (it settles as `usage_missing` in the ledger); the zeros it
-    /// reports are not a measured cost. Every request carries a prompt, so a reply with neither
-    /// prompt nor completion tokens is an unreported one.
-    pub fn is_unreported(&self) -> bool {
-        self.prompt == 0 && self.completion == 0
+    pub fn unreported() -> Self {
+        Self {
+            cached_missing: true,
+            unreported: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn reported(self) -> Option<Self> {
+        (!self.unreported).then_some(self)
     }
 }
 

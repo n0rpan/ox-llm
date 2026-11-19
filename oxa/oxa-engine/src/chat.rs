@@ -358,8 +358,7 @@ impl ReplyAssembler {
     }
 
     /// As `finish`, but a reply with a valid finish and no usage completes with unknown usage
-    /// (zero tokens, `cached_missing`). Only for the embedded gateway path, whose ledger settles
-    /// that request as `usage_missing`; the HTTP engine keeps requiring usage.
+    /// through the embedded gateway ledger as `usage_missing`. HTTP still requires usage.
     pub fn finish_unreported_usage_ok(self, level: ThinkingLevel) -> Result<AssistantTurn, OxaError> {
         self.finish_inner(level, true)
     }
@@ -373,12 +372,7 @@ impl ReplyAssembler {
             .ok_or_else(|| broken("the stream ended without a finish_reason".to_string()))?;
         let usage = match self.usage {
             Some(usage) => usage,
-            None if usage_optional => Usage {
-                prompt: 0,
-                completion: 0,
-                cached: 0,
-                cached_missing: true,
-            },
+            None if usage_optional => Usage::unreported(),
             None => return Err(broken("the stream ended without usage".to_string())),
         };
         if let Some(call) = self.calls.iter().find(|c| c.id.is_empty() || c.name.is_empty()) {
@@ -451,6 +445,7 @@ fn parse_usage(u: &Value) -> Result<Usage, OxaError> {
         completion,
         cached: reported.unwrap_or(0),
         cached_missing: reported.is_none(),
+        unreported: false,
     })
 }
 

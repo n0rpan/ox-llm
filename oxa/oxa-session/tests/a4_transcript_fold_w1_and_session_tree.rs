@@ -41,6 +41,7 @@ fn usage(prompt: u32, completion: u32) -> Usage {
         completion,
         cached: 0,
         cached_missing: false,
+        unreported: false,
     }
 }
 
@@ -641,12 +642,7 @@ fn unreported_usage_keeps_the_previous_context_baseline() {
         Some("a2"),
         EntryBody::Usage {
             kind: TurnKind::Chat.as_str().to_string(),
-            usage: Usage {
-                prompt: 0,
-                completion: 0,
-                cached: 0,
-                cached_missing: true,
-            },
+            usage: Usage::unreported(),
         },
     ));
     assert_eq!(t.context(), 120, "an unreported usage is not a zero context");

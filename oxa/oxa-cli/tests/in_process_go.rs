@@ -1930,6 +1930,71 @@ fn an_unreported_go_reply_is_saved_as_unknown_usage() {
     mock.assert_healthy();
 }
 #[test]
+fn a_fresh_terminal_report_replaces_stale_early_usage() {
+    let mut early = usage();
+    early["prompt_tokens"] = json!(99);
+    let tail = json!({"choices":[{"index":0,"delta":{"content":"Synthetic tail"},"finish_reason":"stop"}],
+        "usage":usage()});
+    let (output, ledger) = settled_success(&[terminal_content(), json!({"choices":[],"usage":early}), tail]);
+    assert_eq!(terminal(&output)["tokens"]["prompt"], 100);
+    assert_eq!(terminal(&output)["tokens"]["complete"], true);
+    assert_eq!(ledger[0]["subscription_tokens"], 105);
+}
+
+#[test]
+fn an_explicit_invocation_cap_wraps_up_unknown_usage_but_accepts_measured_zero() {
+    for measured_zero in [false, true] {
+        let env = go_diagnostic_env();
+        let mock = MockOpenAi::start_with(|base| {
+            let mut frames = vec![terminal_content(), terminal_finish()];
+            if measured_zero {
+                let mut zero = usage();
+                for name in ["prompt_tokens", "completion_tokens", "total_tokens"] {
+                    zero[name] = json!(0);
+                }
+                zero.as_object_mut().unwrap().remove("prompt_tokens_details");
+                for count in zero["opencode"]["tokens"].as_object_mut().unwrap().values_mut() {
+                    *count = json!(0);
+                }
+                frames.push(json!({"choices":[],"usage":zero}));
+            }
+            let mut replies = vec![Reply::json(discovery(base)), terminal_frames(&frames, true)];
+            if !measured_zero {
+                replies.push(stream(json!({"content":"Synthetic wrap-up"}), "stop"));
+            }
+            replies
+        });
+        setup(&env, &format!("http://{}", mock.address()));
+        let output = run(
+            &env,
+            &[
+                "--no-tools",
+                "--mode",
+                "json",
+                "--max-tokens",
+                "1000",
+                "-p",
+                "Synthetic request",
+            ],
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("Synthetic success"), "{stdout}");
+        assert_eq!(stdout.contains("Synthetic wrap-up"), !measured_zero, "{stdout}");
+        assert_eq!(
+            mock.requests().iter().filter(|r| r.method == "POST").count(),
+            if measured_zero { 1 } else { 2 }
+        );
+        let facts = terminal(&output);
+        // Cache usage was absent in the measured-zero report, but the token counts were real.
+        assert_eq!(facts["tokens"]["complete"], false);
+        assert_eq!(facts["tokens"]["unreported_requests"], u32::from(!measured_zero));
+        assert_eq!(facts["tokens"]["prompt"], if measured_zero { 0 } else { 100 });
+        assert_eq!(facts["tokens"]["completion"], if measured_zero { 0 } else { 5 });
+        mock.assert_healthy();
+    }
+}
+
+#[test]
 fn usage_after_finish_still_counts() {
     let (_output, ledger) = settled_success(&[
         terminal_content(),

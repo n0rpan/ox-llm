@@ -36,7 +36,7 @@ pub struct Transcript {
     usage: Option<Usage>,
     /// L5: the wire length when `usage` was set (the wire then ends with the reply it counts).
     /// Messages after it were appended since and are not in `usage`. In memory only.
-    usage_len: usize,
+    usage_len: Option<usize>,
     expected: u32,
     /// B6: `prompt` of the last request that answered a user message (the first request of
     /// the user turn in progress); 0 after a rebase.
@@ -346,17 +346,18 @@ impl Transcript {
     /// completion - 1`), so a perfect continuation reports `prompt + completion - 1` cached
     /// tokens; an H6 prefill (`completion == 0`) leaves exactly `prompt`.
     pub fn set_usage(&mut self, u: &Usage) {
-        if u.is_unreported() {
+        if u.unreported {
             // The reply carried no usage: 0 is not a measurement. Keep the context baseline where
             // it was last measured, so `context()` and `usage_wire_len()` stay conservative and
             // the size estimate keeps growing with the appended messages instead of collapsing to
             // zero and hiding the need for compaction. Only the cache stops expecting a
             // continuation (`expected_cache() == 0`).
             self.expected = 0;
+            self.usage_len.get_or_insert(0);
             return;
         }
         self.usage = Some(*u);
-        self.usage_len = self.wire.len();
+        self.usage_len = Some(self.wire.len());
         self.expected = u.prompt.saturating_add(u.completion.saturating_sub(1));
         let n = self.wire.len();
         if u.completion > 0 && n >= 2 && self.wire[n - 2].role == oxa_proto::Role::User {
@@ -376,10 +377,10 @@ impl Transcript {
     pub fn context(&self) -> u32 {
         self.usage.map_or(0, |u| u.prompt.saturating_add(u.completion))
     }
-    /// L5: the wire length at the last usage (`None` when there is no usage). The messages from
-    /// this index on were appended after the counted reply.
+    /// L5: wire length at the last measurement, or zero when the only replies were unreported.
+    /// The messages from this index onward need an estimate.
     pub fn usage_wire_len(&self) -> Option<usize> {
-        self.usage.map(|_| self.usage_len)
+        self.usage_len
     }
     pub fn expected_cache(&self) -> u32 {
         self.expected
@@ -429,7 +430,7 @@ impl Transcript {
         self.origins = origins;
         self.chain = chain_of(&self.wire);
         self.usage = None;
-        self.usage_len = 0;
+        self.usage_len = None;
         self.expected = 0;
         self.turn_base = 0;
         self.rebases.push(RebaseLog {

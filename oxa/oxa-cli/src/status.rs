@@ -589,6 +589,7 @@ mod tests {
                     completion: 8,
                     cached: 60,
                     cached_missing: false,
+                    unreported: false,
                 }),
                 remote: true,
             },
