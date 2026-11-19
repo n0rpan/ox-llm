@@ -2,9 +2,13 @@
 //! row A2d). The fields of `oxa.lead.serve` sit below their object key.
 
 use super::{d, Apply, Control, Descriptor, Group, Item, Options, Unit, WebEdit};
+use crate::schema::Kind;
 
 /// The Lead and web entries, in display order.
 pub(super) const ENTRIES: &[Descriptor] = &[
+    // The owner's explicit route for the Lead conversation: an exact model id for
+    // the normal `--model` selector and the normal gateway. User settings only;
+    // unset keeps the ordinary startup model.
     d(
         "oxa.lead.model",
         Group::Lead,
@@ -12,10 +16,12 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Lead model",
         "Model the Lead conversation uses. Unset = the start model.",
     )
+    .key(Kind::String, "null")
     .control(Control::Model)
     .user_only()
     .apply(Apply::Restart)
     .web(WebEdit::Edit),
+    // Read-only lead shadow preset; user settings only, default off.
     d(
         "oxa.lead.shadow",
         Group::Lead,
@@ -23,10 +29,13 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Shadow mode",
         "Enable `oxa lead --shadow`: proposals only, no actions.",
     )
+    .key(Kind::Bool, "false")
     .toggle()
     .user_only()
     .apply(Apply::Restart)
     .web(WebEdit::Edit),
+    // Lead web access scaffold: user-layer object, disabled by default, no listener installed yet.
+    // The CLI validates the fields it reads (identity mode, loopback bind, port, allow-list).
     d(
         "oxa.lead.serve",
         Group::Lead,
@@ -34,6 +43,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Web access",
         "The lead web UI: on or off, identity, address, chat.",
     )
+    .key(Kind::Object, "{}")
     .control(Control::Fields)
     .user_only()
     .apply(Apply::Restart)
@@ -45,6 +55,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Models shared on the LAN",
         "Metered cloud models that may be shared.",
     )
+    .key(Kind::StringList, "[]")
     .control(Control::MultiSelect(Options::Models))
     .user_only()
     .apply(Apply::Reload)

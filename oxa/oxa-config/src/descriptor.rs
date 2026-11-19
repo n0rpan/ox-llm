@@ -2,16 +2,20 @@
 //! (issue #1489, design section 4.1).
 //!
 //! This module holds the types, the `const fn` builder and the lookups. The entries themselves go
-//! in `descriptor/*.rs` (one `ENTRIES` slice per file); `table()` joins them. `KeyDef` and `SCHEMA`
-//! are untouched: validation and merge do not read descriptors.
+//! in `descriptor/*.rs` (one `ENTRIES` slice per file); `all_rows()` joins them. This is the only
+//! settings table: a row with `.key(kind, default)` is a schema key, and `schema()` is derived from
+//! those rows (`schema.rs`). A `.hidden()` row has no menu entry: it declares a schema key only, and
+//! the lookups below skip it.
 
 mod advanced;
 mod compaction;
 mod display;
+mod hidden;
 mod lead;
 mod models;
 mod safety;
 
+use crate::schema::Kind;
 use std::sync::OnceLock;
 
 /// A settings menu group, in display order.
@@ -207,6 +211,16 @@ pub enum WebEdit {
     ReadOnly,
 }
 
+/// The schema entry a descriptor row declares: kind, default and whether oxa acts on the key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SchemaInfo {
+    pub kind: Kind,
+    /// Default as JSON text.
+    pub default: &'static str,
+    /// `false` = accepted and ignored in oxa with a warning (verdict O keys).
+    pub supported: bool,
+}
+
 /// One row of the settings menus.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Descriptor {
@@ -239,6 +253,10 @@ pub struct Descriptor {
     pub widens: &'static str,
     /// Masked on display.
     pub secret: bool,
+    /// Set on a schema key (not on an object field): its kind and default.
+    pub schema: Option<SchemaInfo>,
+    /// No menu entry; the row only declares a schema key.
+    pub hidden: bool,
 }
 
 /// Starts a descriptor. Every other field has a safe default: a raw editor, `Apply::Restart`
@@ -271,10 +289,35 @@ pub const fn d(
         web: WebEdit::ReadOnly,
         widens: "",
         secret: false,
+        schema: None,
+        hidden: false,
     }
 }
 
 impl Descriptor {
+    /// Declares the row's key a supported schema key with this kind and default (JSON text).
+    pub(crate) const fn key(mut self, kind: Kind, default: &'static str) -> Self {
+        self.schema = Some(SchemaInfo {
+            kind,
+            default,
+            supported: true,
+        });
+        self
+    }
+    /// Declares the row's key a schema key that oxa accepts and ignores (with a warning).
+    pub(crate) const fn ignored(mut self, kind: Kind, default: &'static str) -> Self {
+        self.schema = Some(SchemaInfo {
+            kind,
+            default,
+            supported: false,
+        });
+        self
+    }
+    /// The row has no menu entry; it only declares a schema key.
+    pub(crate) const fn hidden(mut self) -> Self {
+        self.hidden = true;
+        self
+    }
     pub const fn control(mut self, control: Control) -> Self {
         self.control = control;
         self
@@ -355,22 +398,30 @@ impl Descriptor {
     }
 }
 
-/// The data table, in display order: the Display rows, then the Lead and web, the Safety and the
-/// Advanced entries.
+/// Every row, hidden ones included: the Display rows, then Models, Compaction, Lead and web,
+/// Safety, Advanced and the hidden schema-only rows.
+pub(crate) fn all_rows() -> &'static [Descriptor] {
+    static ROWS: OnceLock<Vec<Descriptor>> = OnceLock::new();
+    ROWS.get_or_init(|| {
+        [
+            display::ENTRIES,
+            models::ENTRIES,
+            compaction::ENTRIES,
+            lead::ENTRIES,
+            safety::ENTRIES,
+            advanced::ENTRIES,
+            hidden::ENTRIES,
+        ]
+        .concat()
+    })
+    .as_slice()
+}
+
+/// The rows the menus show, in display order: [`all_rows`] without the hidden ones.
 fn table() -> &'static [Descriptor] {
     static TABLE: OnceLock<Vec<Descriptor>> = OnceLock::new();
     TABLE
-        .get_or_init(|| {
-            [
-                display::ENTRIES,
-                models::ENTRIES,
-                compaction::ENTRIES,
-                lead::ENTRIES,
-                safety::ENTRIES,
-                advanced::ENTRIES,
-            ]
-            .concat()
-        })
+        .get_or_init(|| all_rows().iter().copied().filter(|d| !d.hidden).collect())
         .as_slice()
 }
 
@@ -480,6 +531,35 @@ mod tests {
         assert_eq!(h.apply, Apply::Now);
         assert_eq!(h.web, WebEdit::Confirm);
         assert_eq!(h.widens, "Loosens the guard.");
+    }
+
+    #[test]
+    fn declared_keys_are_unique_and_enums_match_choices() {
+        let mut seen = std::collections::HashSet::new();
+        for row in all_rows() {
+            let Some(info) = row.schema else { continue };
+            assert!(seen.insert(row.key), "key declared twice: {}", row.key);
+            if let Kind::Enum(values) = info.kind {
+                if row.choices.is_empty() {
+                    continue;
+                }
+                let mut want: Vec<&str> = values.to_vec();
+                let mut got: Vec<&str> = row.choices.iter().map(|(v, _)| *v).collect();
+                want.sort_unstable();
+                got.sort_unstable();
+                assert_eq!(want, got, "enum and choice values differ for {}", row.key);
+            }
+        }
+        assert!(seen.len() > 100);
+    }
+
+    #[test]
+    fn hidden_rows_have_a_key_and_no_menu_entry() {
+        for row in all_rows().iter().filter(|r| r.hidden) {
+            assert!(row.schema.is_some(), "hidden row without a key: {}", row.key);
+            assert!(descriptor(row.key).is_none());
+        }
+        assert!(descriptors().iter().all(|r| !r.hidden));
     }
 
     #[test]
