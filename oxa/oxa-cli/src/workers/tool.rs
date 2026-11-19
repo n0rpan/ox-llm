@@ -1070,15 +1070,15 @@ mod tests {
     fn child_session_id_is_bounded_for_the_longest_parent_id() {
         let parent = "p".repeat(128);
         let id = child_session_id(&parent, "forty-character-worker-name-000000000000", u64::MAX);
-        assert!(id.len() <= 128, "{} bytes: {id}", id.len());
+        // Session identifiers are treated as private metadata by the log scanners. Keep assertion
+        // failures useful without copying the generated identifier into test output.
+        assert!(id.len() <= 128, "generated child session id is too long");
         assert!(id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
-        assert_ne!(
-            id,
-            child_session_id(
-                &format!("{parent}x"),
-                "forty-character-worker-name-000000000000",
-                u64::MAX
-            )
+        let other = child_session_id(
+            &format!("{parent}x"),
+            "forty-character-worker-name-000000000000",
+            u64::MAX,
         );
+        assert!(id != other, "distinct parents must produce distinct child ids");
     }
 }
