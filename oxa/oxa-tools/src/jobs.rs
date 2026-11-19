@@ -275,7 +275,7 @@ impl JobRegistry {
             .unwrap()
             .clone()
             .ok_or_else(|| "background jobs are unavailable: no sandbox".to_string())?;
-        self.spawn_on(sandbox, spec, false)
+        self.spawn_on_labeled(sandbox, spec, false, label)
     }
 
     /// Like [`JobRegistry::spawn`], on `sandbox`. With `keep_all` the job keeps every byte of
@@ -287,6 +287,18 @@ impl JobRegistry {
         sandbox: Arc<dyn Sandbox>,
         spec: ExecSpec,
         keep_all: bool,
+    ) -> Result<String, String> {
+        self.spawn_on_labeled(sandbox, spec, keep_all, "")
+    }
+
+    /// [`JobRegistry::spawn_on`] with the wake message's `label` (see
+    /// [`JobRegistry::spawn_labeled`]).
+    pub fn spawn_on_labeled(
+        &self,
+        sandbox: Arc<dyn Sandbox>,
+        spec: ExecSpec,
+        keep_all: bool,
+        label: &str,
     ) -> Result<String, String> {
         let mut state = self.state.lock().unwrap();
         let running: Vec<String> = state

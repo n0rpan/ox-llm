@@ -640,7 +640,7 @@ impl BashTool {
             Some(own) => {
                 let mut job_spec = spec.clone();
                 job_spec.timeout_s = None;
-                match self.jobs.spawn_on(own, job_spec, true) {
+                match self.jobs.spawn_on_labeled(own, job_spec, true, raw_command) {
                     Ok(id) => match self.follow_job(&id, soft_limit, cx, &mut sink) {
                         Followed::Detached(out) => return out,
                         Followed::Done(res) => {
