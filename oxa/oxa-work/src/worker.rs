@@ -139,6 +139,7 @@ pub(crate) fn run(
     root: &Path,
     task: &Task,
     prompt: &str,
+    owner_selected_model: bool,
     policy: &RunPolicy,
     lock: &File,
     session: Option<&str>,
@@ -151,6 +152,9 @@ pub(crate) fn run(
         .as_deref()
         .ok_or("no trusted kill executable outside the source project")?;
     let mut command = Command::new(binary);
+    if !owner_selected_model {
+        command.env(crate::PlannedTask::DELEGATED_MODEL_ENV, "1");
+    }
     crate::isolate_git_environment(&mut command);
     #[cfg(target_os = "linux")]
     {
