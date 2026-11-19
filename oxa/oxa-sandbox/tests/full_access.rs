@@ -4,7 +4,7 @@
 
 use oxa_fake::TestEnv;
 use oxa_proto::{Autonomy, CancelToken, ExecResult, ExecSpec, OxaError, Sandbox, YoloSwitch};
-use oxa_sandbox::{FullAccess, NoSandbox};
+use oxa_sandbox::{FullAccess, Layout, NetSandbox, NoSandbox};
 use std::sync::Arc;
 
 fn spec(env: &TestEnv, command: String, writable: bool) -> ExecSpec {
@@ -23,6 +23,57 @@ fn full(level: Autonomy, env: &TestEnv) -> (FullAccess, YoloSwitch) {
     // The wrapped sandbox refuses everything: whatever runs did not go through it.
     let sb = FullAccess::new(Arc::new(NoSandbox), switch.clone(), "", env.home(), false, false);
     (sb, switch)
+}
+
+#[test]
+fn attended_host_bash_uses_the_toolchain_environment_and_scrubs_output() {
+    let env = TestEnv::new();
+    let (sb, _) = full(Autonomy::Standard, &env);
+    let cargo = env.home().join("cargo");
+    let layout = Layout {
+        path: vec!["/usr/bin".into(), "/bin".into()],
+        env: vec![("CARGO_HOME".into(), cargo.display().to_string())],
+        ..Layout::default()
+    };
+    let synthetic = "fixture-value-for-redaction";
+    let net = NetSandbox::new(Arc::new(NoSandbox), true, false).with_gh_token(Some(synthetic.into()));
+    let sb = sb
+        .with_os_sandbox(false)
+        .with_host_controls(layout, Arc::new(net));
+    let mut spec = spec(
+        &env,
+        format!(
+            "test -z \"${{GH_TOKEN+x}}\" && printf '%s|%s|%s|%s' \"$HOME\" \"$PATH\" \"$CARGO_HOME\" '{}'",
+            synthetic,
+        ),
+        true,
+    );
+    spec.net = true;
+    let expected = format!(
+        "{}|/usr/bin:/bin|{}|[redacted]",
+        env.home().display(),
+        cargo.display()
+    );
+    let mut live = Vec::new();
+    let result = sb.run(&spec, &CancelToken::new(), &mut |bytes| {
+        live.extend_from_slice(bytes)
+    });
+    assert_eq!(
+        result.exit,
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&result.output)
+    );
+    assert_eq!(result.output, expected.as_bytes());
+    assert_eq!(live, expected.as_bytes());
+
+    live.clear();
+    let result = sb.run_streaming(&spec, &CancelToken::new(), &mut |bytes| {
+        live.extend_from_slice(bytes)
+    });
+    assert_eq!(result.exit, Some(0));
+    assert!(result.output.is_empty());
+    assert_eq!(live, expected.as_bytes());
 }
 
 #[test]

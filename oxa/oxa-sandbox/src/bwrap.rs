@@ -15,6 +15,19 @@ use std::path::{Path, PathBuf};
 /// Fixed base environment inside the sandbox (the `PATH` is the layout's, B2).
 const BASE_LANG: &str = "C.UTF-8";
 const BASE_TERM: &str = "dumb";
+
+/// Cleared command environment shared by the sandbox and its attended host wrapper.
+pub(crate) fn base_env(home: &str, layout: &Layout) -> Vec<(String, String)> {
+    let mut env = vec![
+        ("PATH".into(), layout.path_value()),
+        ("HOME".into(), home.into()),
+        ("LANG".into(), BASE_LANG.into()),
+        ("TERM".into(), BASE_TERM.into()),
+        ("AI_AGENT".into(), oxa_proto::names::AI_AGENT.into()),
+    ];
+    env.extend(layout.env.iter().cloned());
+    env
+}
 /// Seconds the probe may take before it counts as a failure.
 const PROBE_TIMEOUT_S: u32 = 10;
 
@@ -409,16 +422,8 @@ pub(crate) fn bwrap_args_homes(
         }
     }
     push(&mut a, &["--chdir", &cwd, "--clearenv"]);
-    push(&mut a, &["--setenv", "PATH", &layout.path_value()]);
-    push(&mut a, &["--setenv", "HOME", &home_s]);
-    push(&mut a, &["--setenv", "LANG", BASE_LANG]);
-    push(&mut a, &["--setenv", "TERM", BASE_TERM]);
-    push(&mut a, &["--setenv", "AI_AGENT", oxa_proto::names::AI_AGENT]);
-    for (k, v) in &layout.env {
-        push(&mut a, &["--setenv", k, v]);
-    }
-    for (k, v) in &s.env {
-        push(&mut a, &["--setenv", k, v]);
+    for (key, value) in base_env(&home_s, layout).iter().chain(&s.env) {
+        push(&mut a, &["--setenv", key, value]);
     }
     push(&mut a, &["--", "bash", "-c", &s.command]);
     a

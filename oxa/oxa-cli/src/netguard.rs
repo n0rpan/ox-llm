@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 /// O-167(b): the process sandbox with the bash network decision (`oxa.sandbox.net`, default
 /// on; always off while offline). Read once at startup.
-pub(crate) fn with_net(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<dyn Sandbox> {
+pub(crate) fn with_net(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<NetSandbox> {
     with_policy(sandbox, settings, true)
 }
 
@@ -17,7 +17,7 @@ pub(crate) fn without_github(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> 
     with_policy(sandbox, settings, false)
 }
 
-fn with_policy(sandbox: Arc<dyn Sandbox>, settings: &Settings, github_auth: bool) -> Arc<dyn Sandbox> {
+fn with_policy(sandbox: Arc<dyn Sandbox>, settings: &Settings, github_auth: bool) -> Arc<NetSandbox> {
     let runner_owns_github = std::env::var_os(oxa_work::RUNNER_GITHUB_ENV).is_some_and(|value| value == "1");
     let on = !runner_owns_github && sandbox_net_setting(settings.string(SETTING_SANDBOX_NET).as_deref());
     let offline = oxa_proto::offline();

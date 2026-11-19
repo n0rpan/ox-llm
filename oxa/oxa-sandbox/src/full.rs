@@ -5,10 +5,13 @@
 //! and the user's file system (as `!cmd` does offline), and is refused without bwrap.
 //!
 //! #1512 S3: without the OS sandbox (`os_sandbox: false`, the interactive default on Linux)
-//! bash and the exec hooks run with the user's rights too; the approval floor of the policy
+//! bash runs with the user's rights too; the approval floor of the policy
 //! asks about dangerous commands. The owner's `oxa.sandbox.net = off` then holds: such a
 //! command goes through bwrap without network, and is refused without bwrap.
-use crate::{offline_argv, run_argv_capture, run_argv_stdin, run_unsandboxed_capture, run_unsandboxed_stdin};
+use crate::{
+    offline_argv, run_argv_capture, run_argv_stdin, run_unsandboxed_capture, run_unsandboxed_stdin, Layout,
+    NetSandbox,
+};
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox, YoloSwitch};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,6 +27,8 @@ pub struct FullAccess {
     net_off: bool,
     /// #1512 S3: the OS sandbox is part of this run's policy (default on).
     os_sandbox: bool,
+    host_layout: Layout,
+    host_net: Option<Arc<NetSandbox>>,
 }
 
 impl FullAccess {
@@ -45,6 +50,8 @@ impl FullAccess {
             offline,
             net_off,
             os_sandbox: true,
+            host_layout: Layout::default(),
+            host_net: None,
         }
     }
 
@@ -52,6 +59,29 @@ impl FullAccess {
     pub fn with_os_sandbox(mut self, on: bool) -> FullAccess {
         self.os_sandbox = on;
         self
+    }
+
+    /// Configure the cleared host shell environment and reuse the session’s output redactor.
+    pub fn with_host_controls(mut self, layout: Layout, network: Arc<NetSandbox>) -> Self {
+        self.host_layout = layout;
+        self.host_net = Some(network);
+        self
+    }
+
+    fn host_spec(&self, s: &ExecSpec) -> ExecSpec {
+        let mut spec = s.clone();
+        let mut env = crate::bwrap::base_env(&self.home.to_string_lossy(), &self.host_layout);
+        // The bind layouts keep cache and temp data inside the sandbox. Host execution
+        // uses the user's normal cache and temp defaults.
+        env.retain(|(key, value)| {
+            !(matches!(
+                key.as_str(),
+                "TMPDIR" | "XDG_CACHE_HOME" | "SCCACHE_DIR" | "SCCACHE_SERVER_UDS"
+            ) || key == "MISE_STATE_DIR" && value == "/tmp/mise-state")
+        });
+        env.extend(s.env.iter().cloned());
+        spec.env = env;
+        spec
     }
 
     /// Exec hooks are trusted project configuration, but retain their dedicated no-network,
@@ -71,6 +101,8 @@ impl FullAccess {
             offline: self.offline,
             net_off: self.net_off,
             os_sandbox: self.os_sandbox,
+            host_layout: self.host_layout.clone(),
+            host_net: self.host_net.clone(),
         }
     }
 
@@ -128,7 +160,13 @@ impl FullAccess {
         capture: bool,
     ) -> ExecResult {
         if !self.no_net() {
-            return run_unsandboxed_capture(s, c, live, capture);
+            let spec = self.host_spec(s);
+            if let Some(net) = &self.host_net {
+                return net.redact_output(s.net, live, |live| {
+                    run_unsandboxed_capture(&spec, c, live, capture)
+                });
+            }
+            return run_unsandboxed_capture(&spec, c, live, capture);
         }
         match self.launch_argv(s) {
             Ok(argv) => run_argv_capture(&argv, &[], s.timeout_s, c, live, capture),
@@ -197,7 +235,11 @@ impl Sandbox for FullAccess {
             return self.inner.run_with_stdin(s, stdin, c, live);
         }
         if !self.no_net() {
-            return run_unsandboxed_stdin(s, stdin, c, live);
+            let spec = self.host_spec(s);
+            if let Some(net) = &self.host_net {
+                return net.redact_output(s.net, live, |live| run_unsandboxed_stdin(&spec, stdin, c, live));
+            }
+            return run_unsandboxed_stdin(&spec, stdin, c, live);
         }
         let argv = ["bash", "-c", s.command.as_str()].map(str::to_string).to_vec();
         match offline_argv(&self.path_var, &self.home, &s.cwd, &s.env, &argv) {

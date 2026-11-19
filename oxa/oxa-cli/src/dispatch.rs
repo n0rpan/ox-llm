@@ -1009,9 +1009,10 @@ fn prepare(
     if let Some(text) = crate::run_kind::no_sandbox_notice(kind, os_sandbox, yolo_level) {
         notices.push((Level::Info, text.to_string()));
     }
+    let layout = crate::sandbox_layout::layout(env, dirs, cwd, home_workspace, &mut notices);
     let sandbox: Arc<dyn Sandbox> = match Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home) {
         Ok(mut b) => {
-            b.layout = crate::sandbox_layout::layout(env, dirs, cwd, home_workspace, &mut notices);
+            b.layout = layout.clone();
             // #457: each session gets its own directory at /tmp (`Built::deps`).
             let root = oxa_sandbox::scratch_root(&dirs.home);
             match std::fs::create_dir_all(&root) {
@@ -1033,7 +1034,8 @@ fn prepare(
             Arc::new(NoSandbox)
         }
     };
-    let sandbox = crate::netguard::with_net(sandbox, &settings);
+    let host_net = crate::netguard::with_net(sandbox, &settings);
+    let sandbox: Arc<dyn Sandbox> = host_net.clone();
 
     // `--model` resolves against the engine's models; its `:level` suffix sets thinking unless
     // `--thinking` is given.
@@ -1094,10 +1096,10 @@ fn prepare(
             oxa_proto::offline(),
             net_off,
         )
-        .with_os_sandbox(os_sandbox),
+        .with_os_sandbox(os_sandbox)
+        .with_host_controls(layout, host_net),
     );
-    // Exec hooks: without the OS sandbox they run with the user's rights (#1512 S3); with it
-    // they stay in `sandbox` as before, also when yolo is switched on later.
+    // Exec hooks keep their dedicated sandbox independently of interactive bash.
     let hook_sandbox = oxa_sandbox::FullAccess::hook_sandbox(&bash_sandbox);
     let hook_inputs = HookInputs {
         args: a,

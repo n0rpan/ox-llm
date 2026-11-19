@@ -14,6 +14,11 @@ Treat as **high** severity:
 - fork-PR or guest access to secrets, cloud providers or owner credentials;
 - new `unsafe`/FFI/process/network code in the engine without bounds checks.
 
+Attended bash can run with host rights under the owner’s interactive sandbox policy. It uses
+a cleared toolchain environment, and output still redacts the selected GitHub token.
+Unattended runs include ownerless RPC and headless runs reopening a saved session. Exec hooks
+keep their dedicated sandbox.
+
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 
 Do not report: style, pre-existing issues outside the diff, test-only code that never runs in production, or hypothetical risks without a concrete path.

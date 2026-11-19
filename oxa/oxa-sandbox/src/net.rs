@@ -172,11 +172,22 @@ impl NetSandbox {
         // token is known, so `cat token.txt` after `gh auth token > token.txt` is scrubbed.
         // `self.token()` loads a lazy token here too: the first networked command may be
         // `cat token.txt` from an earlier session.
-        let Some(t) = s.net.then(|| self.token()).flatten() else {
-            return run(&s, live);
+        self.redact_output(s.net, live, |live| run(&s, live))
+    }
+
+    /// Scrub command output using the session's GitHub token. Host execution keeps its
+    /// own cleared environment and never receives a token through this method.
+    pub(crate) fn redact_output(
+        &self,
+        networked: bool,
+        live: &mut dyn FnMut(&[u8]),
+        run: impl FnOnce(&mut dyn FnMut(&[u8])) -> ExecResult,
+    ) -> ExecResult {
+        let Some(t) = (networked && self.net).then(|| self.token()).flatten() else {
+            return run(live);
         };
         let mut sr = StreamRedactor::new(t);
-        let mut r = run(&s, &mut |b: &[u8]| {
+        let mut r = run(&mut |b: &[u8]| {
             let o = sr.push(b);
             if !o.is_empty() {
                 live(&o);

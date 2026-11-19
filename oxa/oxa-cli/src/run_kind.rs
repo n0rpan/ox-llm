@@ -28,16 +28,25 @@ pub(crate) enum RunKind {
 /// Unattended when ANY of these holds (fail closed); everything else is attended: a subagent
 /// child (`child.nested()`), `OXA_WORKER_DEPTH` (lead workers), `OXA_UNATTENDED=1` (every
 /// spawner sets it), the worktree trust source of `oxa work`, `OXA_RUNNER_OWNS_GITHUB=1`
-/// (runner-owned tasks), an ownerless RPC host, or a headless goal run (`--goal` outside
-/// interactive mode). RPC is attended only when its host explicitly declares an owner.
+/// (runner-owned tasks), an ownerless RPC host, or a headless session that starts or can restore a goal.
+/// A stored session may resume its goal during startup. RPC is attended only when its host
+/// explicitly declares an owner.
 pub(crate) fn run_kind(a: &Args, env: &Env, child: &ChildIdentity, mode: RunMode) -> RunKind {
+    let headless_saved_session = matches!(mode, RunMode::Print | RunMode::Json)
+        && !a.no_session
+        && (a.continue_
+            || a.continue_id.is_some()
+            || a.session.is_some()
+            || a.session_id.is_some()
+            || a.fork.is_some());
     let unattended = child.nested()
         || env.get(ENV_WORKER_DEPTH).is_some()
         || env.get(oxa_proto::names::ENV_UNATTENDED) == Some("1")
         || env.get(oxa_work::WORKTREE_TRUST_SOURCE_ENV).is_some()
         || env.get(oxa_work::RUNNER_GITHUB_ENV) == Some("1")
         || (mode == RunMode::Rpc && env.get("OXA_RPC_OWNER_PRESENT") != Some("1"))
-        || (a.goal.is_some() && mode != RunMode::Interactive);
+        || (a.goal.is_some() && mode != RunMode::Interactive)
+        || headless_saved_session;
     if unattended {
         RunKind::Unattended
     } else {
@@ -89,7 +98,7 @@ pub(crate) fn bwrap_missing_notice(os_sandbox: bool, reason: &str) -> Option<Str
 /// The start notice of an attended run without the OS sandbox (yolo has its own banner).
 pub(crate) fn no_sandbox_notice(kind: RunKind, os_sandbox: bool, yolo: bool) -> Option<&'static str> {
     (kind == RunKind::Attended && !os_sandbox && !yolo).then_some(
-        "No OS sandbox: bash and hooks run with your rights; dangerous commands ask. \
+        "No OS sandbox: bash runs with your rights; dangerous commands ask. \
          --sandbox or oxa.sandbox.interactive turns the sandbox on.",
     )
 }
@@ -111,6 +120,37 @@ mod tests {
 
     fn args() -> Args {
         Args::default()
+    }
+
+    #[test]
+    fn headless_open_of_a_saved_session_keeps_unattended_confinement() {
+        let child = ChildIdentity::default();
+        for mode in [RunMode::Print, RunMode::Json] {
+            for args in [
+                Args {
+                    continue_: true,
+                    ..Args::default()
+                },
+                Args {
+                    continue_id: Some("saved".into()),
+                    ..Args::default()
+                },
+                Args {
+                    session: Some("saved".into()),
+                    ..Args::default()
+                },
+                Args {
+                    session_id: Some("saved".into()),
+                    ..Args::default()
+                },
+                Args {
+                    fork: Some("saved".into()),
+                    ..Args::default()
+                },
+            ] {
+                assert_eq!(run_kind(&args, &no_env(), &child, mode), RunKind::Unattended);
+            }
+        }
     }
 
     #[test]
