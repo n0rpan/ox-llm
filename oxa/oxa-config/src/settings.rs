@@ -200,7 +200,8 @@ impl Settings {
     pub fn bool(&self, key: &str, default: bool) -> bool {
         self.get(key).and_then(Value::as_bool).unwrap_or(default)
     }
-    /// A boolean read from the user settings file only: a project file cannot change it.
+    /// A bool read from the user layer only; a project file never changes it (use for settings
+    /// that start unattended model work). A missing or mistyped value yields `default`.
     pub fn user_bool(&self, key: &str, default: bool) -> bool {
         self.user_value(key).and_then(Value::as_bool).unwrap_or(default)
     }
