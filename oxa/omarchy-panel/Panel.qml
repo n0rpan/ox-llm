@@ -1,323 +1,98 @@
 import QtQuick
 import Quickshell
-import Quickshell.Io
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui as Ui
 import "Model.js" as Model
 
+// The ox AI panel shell (design section 1): bar button, header, hero, state chips, tabs, the
+// tab body and two action rows. Data comes only from Feeds.qml (oxa JSON); this file holds no
+// process, file or network access. The tab bodies are Loaders that later slices fill in.
 Ui.Panel {
     id: root
-    readonly property string controlExecutable: (Quickshell.env("HOME") || "") + "/.local/bin/oxc"
-    moduleName: "snapdragon.local-ai"
-    ipcTarget: "snapdragon.local-ai"
-
-    property var vm: Model.parse("", 0)
-    property var ledger: Model.parseLedger("")
-    property var storage: Model.parseStorage("")
-    property var cache: Model.parseCache("")
-    property var share: Model.parseShare("")
-    property string view: "models"
-    // The Sharing tab exists only while the control command reports the share state.
-    readonly property bool hasSharing: root.share.available === true
-    readonly property string shownView: root.view === "sharing" && !root.hasSharing ? "models" : root.view
-    property bool pollingPaused: false
-    property bool actionFailed: false
-    // Seconds since the epoch; 0 = never. They feed Model.notice(), which expires them.
-    property real lastActionS: 0
-    property real actionFailedS: 0
-    // When the last batch of panel actions finished; 0 while one runs (or none has).
-    property real actionEndS: 0
-    // One status poll: its output and exit code arrive separately and are applied together.
-    property string statusText: ""
-    property int statusCode: 0
-    property bool statusHasText: false
-    property bool statusHasCode: false
-    property bool statusSettled: true
-    property string notice: ""
-    property string harnessFailed: ""
-    property var preparing: []
-    property var queue: []
-    property var current: null
-    property real loadingSince: 0
-    property real nowMs: Date.now()
-    property int remainingSeconds: -1
-
-    readonly property bool busy: actionProc.running
-    readonly property int loadingSeconds: root.loadingSince > 0
-        ? Math.max(0, Math.floor((root.nowMs - root.loadingSince) / 1000)) : -1
-    readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
-    readonly property color accent: Commons.Color.accent
-    readonly property color urgent: Commons.Color.urgent
-    readonly property string face: bar ? bar.fontFamily : Style.font.family
-    readonly property string loadedShort: root.vm.loaded !== "" ? localAiStrings.t("model." + root.vm.loaded + ".short") : ""
-    readonly property string activeShort: root.vm.loaded !== "" ? root.loadedShort
-        : root.vm.selected !== "" ? localAiStrings.t("model." + root.vm.selected + ".short") : ""
-
-    // The loaded model's last real answer, for the hero's speed figure.
-    readonly property var lastAnswer: Model.lastAnswer(root.ledger, root.vm.loaded)
 
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
 
-    Commons.Translations { id: localAiStrings; directory: Qt.resolvedUrl("i18n") }
+    moduleName: "snapdragon.local-ai"
+    ipcTarget: "snapdragon.local-ai"
 
-    // The status command prints its answer and exits 0, or 1 when the service is not running.
-    // Anything else (no answer, another exit code, a command that never started) is the calm
-    // "error" state with its reason; Model.parse decides which.
-    function settleStatus(force) {
-        if (root.statusSettled || (!force && !(root.statusHasText && root.statusHasCode))) return
-        var text = root.statusHasText ? root.statusText : ""
-        var code = root.statusHasCode ? root.statusCode : -1
-        root.statusSettled = true
-        root.statusText = ""
-        root.statusHasText = false
-        root.statusHasCode = false
-        root.applyStatus(text, code)
-    }
+    // The last readable status (Model.parseStatus); before the first answer it is a fault.
+    property var oxaStatus: Model.parseStatus("", null, false)
+    // "models", "usage", "lead" or "storage".
+    property string tab: "models"
+    property bool pollingPaused: false
+    readonly property var head: Model.headline(root.oxaStatus)
+    readonly property var chipList: Model.chips(root.oxaStatus, { leadUrl: root.setting("leadUrl", "") })
+    readonly property string binaryShown: root.setting("oxaPath", "") !== ""
+        ? root.setting("oxaPath", "") : (Quickshell.env("HOME") || "") + "/.local/bin/oxa"
 
-    function applyStatus(text, code) {
-        var next = Model.parse(text, root.loadingSince, code)
-        if (next.phase !== "loading") root.loadingSince = 0
-        else if (root.loadingSince === 0) root.loadingSince = Date.now()
-        root.nowMs = Date.now()
-        root.remainingSeconds = next.idle.remainingSeconds
-        var wasAnswering = root.vm.phase === "answering"
-        root.vm = next
-        if (wasAnswering && next.phase !== "answering") root.refreshLedger()
-        root.updateNotice()
-    }
+    readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
+    readonly property color accent: Commons.Color.accent
+    readonly property color urgent: Commons.Color.urgent
+    readonly property string face: bar ? bar.fontFamily : Style.font.family
 
-    function applyLedger(text) {
-        root.ledger = Model.parseLedger(text)
-        root.updateNotice()
-    }
+    Commons.Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
 
-    function updateNotice() {
-        root.notice = Model.notice(root.vm, root.ledger, Date.now() / 1000, root.lastActionS, root.actionFailedS,
-                                   root.actionEndS)
-    }
-
-    function refresh() {
-        if (statusProc.running) return
-        root.statusText = ""
-        root.statusHasText = false
-        root.statusHasCode = false
-        root.statusSettled = false
-        statusProc.running = true
-    }
-    function refreshLedger() { if (!ledgerProc.running) ledgerProc.running = true }
-    function refreshStorage() { if (!storageProc.running) storageProc.running = true }
-    function refreshCache() { if (!cacheProc.running) cacheProc.running = true }
-    function refreshShare() { if (!shareProc.running) shareProc.running = true }
-    // Sharing with other devices: off, tailscale or lan.
-    function setShare(mode) { root.act(mode === "off" ? ["share", "off"] : ["share", "on", mode]) }
-
-    // Actions run one at a time. A queue item with `prepare` set is a harness
-    // warm-up: its name is in `preparing` while it runs.
-    function prepareItem(name) {
-        return { args: ["harness-prepare", "--harness", name], prepare: name }
-    }
-    function startActions(list) {
-        if (list.length === 0 || root.busy || root.queue.length > 0) return
-        root.actionFailed = false
-        root.actionFailedS = 0
-        root.actionEndS = 0
-        root.lastActionS = Date.now() / 1000
-        root.updateNotice()
-        root.queue = list
-        root.pump()
-    }
-    function pump() {
-        if (actionProc.running || root.queue.length === 0) return
-        var next = root.queue[0]
-        root.queue = root.queue.slice(1)
-        root.current = next
-        if (next.prepare !== "") root.preparing = root.preparing.concat([next.prepare])
-        actionProc.command = [root.controlExecutable].concat(next.args)
-        actionProc.running = true
-    }
-    function act(args) { root.startActions([{ args: args, prepare: "" }]) }
-    function prepareHarness(name) {
-        if (root.preparing.indexOf(name) < 0) root.startActions([root.prepareItem(name)])
-    }
-    function prepareAll() {
-        var list = []
-        var rows = root.vm.harnesses || []
-        for (var i = 0; i < rows.length; i++)
-            if (rows[i].state === "warmup" && root.preparing.indexOf(rows[i].name) < 0)
-                list.push(root.prepareItem(rows[i].name))
-        root.startActions(list)
-    }
-    // Conversation cache: budget in whole GB (0 = off), or clear every saved conversation.
-    // Context mode of the selected 35B MoE model: fast (the default), deep or max.
-    function setMode(mode) { root.act(["mode", "--mode", mode]) }
-    function setCacheBudget(gb) { root.act(["cache", "budget", String(gb), "--json"]) }
-    function clearConversationCache() { root.act(["cache", "clear", "--all", "--json"]) }
-    function clearCaches(prompts, conversations, harnesses) {
-        var list = []
-        if (prompts) list.push({ args: ["clear-cache"], prepare: "" })
-        if (conversations) list.push({ args: ["unload"], prepare: "" })
-        if (harnesses) list.push({ args: ["harness-forget"], prepare: "" })
-        root.startActions(list)
-    }
-
-    onOpenedChanged: {
-        if (opened) {
-            root.refresh()
-            root.refreshLedger()
-            root.refreshShare()
-            root.refreshCache()
-            if (root.view === "storage") root.refreshStorage()
-        }
-    }
-    onViewChanged: {
-        if (root.view === "storage") { root.refreshStorage(); root.refreshCache() }
-        else if (root.view === "sharing") root.refreshShare()
-    }
-
-    Process {
-        id: statusProc
-        command: [root.controlExecutable, "status", "--json"]
-        stdout: StdioCollector {
-            waitForEnd: true
-            onStreamFinished: {
-                root.statusText = text
-                root.statusHasText = true
-                root.settleStatus(false)
-            }
-        }
-        onExited: function(code) {
-            root.statusCode = code
-            root.statusHasCode = true
-            root.settleStatus(false)
-        }
-        // A command that never started gives no output and may give no exit code either. Once
-        // the process is down, a short grace lets the normal pair arrive; then whatever has
-        // come is applied (nothing at all = the command is missing).
-        onRunningChanged: if (!statusProc.running && !root.statusSettled) statusGrace.restart()
-    }
-
-    Timer {
-        id: statusGrace
-        interval: 500
-        onTriggered: if (!statusProc.running) root.settleStatus(true)
-    }
-
-    Process {
-        id: ledgerProc
-        command: [root.controlExecutable, "ledger", "--json", "--limit", "50"]
-        stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applyLedger(text) }
-        onExited: function(code) { if (code !== 0) root.applyLedger("") }
-    }
-
-    Process {
-        id: storageProc
-        command: [root.controlExecutable, "storage", "--json"]
-        stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.storage = Model.parseStorage(text) }
-        onExited: function(code) { if (code !== 0) root.storage = Model.parseStorage("") }
-    }
-
-    Process {
-        id: cacheProc
-        command: [root.controlExecutable, "cache", "status", "--json"]
-        stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.cache = Model.parseCache(text) }
-        onExited: function(code) { if (code !== 0) root.cache = Model.parseCache("") }
-    }
-
-    // An older control command has no share state: it prints nothing and the row stays hidden.
-    Process {
-        id: shareProc
-        command: [root.controlExecutable, "share", "status", "--json"]
-        stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.share = Model.parseShare(text) }
-    }
-
-    Process {
-        id: actionProc
-        onExited: function(code) {
-            var item = root.current
-            root.current = null
-            if (item && item.prepare !== "") {
-                var name = item.prepare
-                root.preparing = root.preparing.filter(function(n) { return n !== name })
-                if (code !== 0) {
-                    root.harnessFailed = name
-                    harnessFailedTimer.restart()
-                }
-            } else {
-                root.actionFailed = code !== 0
-                root.actionFailedS = code !== 0 ? Date.now() / 1000 : 0
-            }
-            if (root.queue.length === 0) root.actionEndS = Date.now() / 1000
-            root.refresh()
-            root.updateNotice()
-            if (root.view === "storage") root.refreshStorage()
-            if (root.opened) { root.refreshLedger(); root.refreshShare(); root.refreshCache() }
-            if (root.queue.length > 0) Qt.callLater(root.pump)
+    // Feeds.qml runs the commands (status every 5 s; the tab's own command while it is shown).
+    Feeds {
+        id: feeds
+        oxaPath: root.setting("oxaPath", "")
+        pollEnabled: root.setting("pollEnabled", true)
+        pollingPaused: root.pollingPaused
+        opened: root.opened
+        tab: root.tab
+        onAnswered: function (kind, text, code, timedOut) {
+            if (kind === "status") root.oxaStatus = Model.parseStatus(text, code, timedOut)
         }
     }
 
-    Timer {
-        id: statusTimer
-        interval: root.opened && (root.vm.phase === "loading" || root.vm.preload.state === "running") ? 1000 : 5000
-        running: root.setting("pollEnabled", true) && !root.pollingPaused
-        repeat: true
-        triggeredOnStart: true
-        onTriggered: root.refresh()
+    // Words for the hero and the bar label, keyed by Model.headline ids.
+    function headlineText(h) {
+        if (h.id === "usage") return strings.t("hero.usage").arg(strings.t("state." + h.state))
+        if (h.id === "stalled") return strings.t("hero.stalled").arg(h.count)
+        if (h.id === "asks") return strings.t("hero.asks").arg(h.count)
+        if (h.id === "working") return strings.t("hero.working").arg(h.count)
+        return strings.t("hero." + h.id)
     }
 
-    Timer {
-        id: ledgerTimer
-        interval: 5000
-        running: root.opened && (root.view === "activity" || root.vm.phase === "answering")
-            && root.setting("pollEnabled", true) && !root.pollingPaused
-        repeat: true
-        triggeredOnStart: true
-        onTriggered: root.refreshLedger()
+    function detailText(h) {
+        if (root.oxaStatus.fault !== null) return strings.t("fault.fix." + root.oxaStatus.fault).arg(root.binaryShown)
+        if (h.id === "asks") return strings.t("hero.detail.asks")
+        if (h.id === "stalled") return h.name !== "" ? strings.t("hero.detail.stalledNamed").arg(h.name) : ""
+        if (h.id === "usage") return strings.t("hero.detail.usage")
+        if (h.id === "no_model") return strings.t("hero.detail.noModel")
+        return root.oxaStatus.defaultModel !== "" ? strings.t("hero.detail.model").arg(root.oxaStatus.defaultModel) : ""
     }
 
-    // WD-17: the sharing row (Storage tab) follows the share state while it is in view, so the
-    // remote request counts and an address that went down are at most one poll old, not one open.
-    Timer {
-        id: shareTimer
-        interval: 5000
-        running: root.opened && root.view === "storage"
-            && root.setting("pollEnabled", true) && !root.pollingPaused
-        repeat: true
-        onTriggered: root.refreshShare()
+    // Which look the hero's dot and tone take: faults and attention in urgent, live work in accent.
+    readonly property bool heroNeedsAttention: root.oxaStatus.fault !== null || root.head.id === "stalled"
+        || root.head.id === "asks" || root.head.id === "usage"
+    readonly property color heroTone: root.heroNeedsAttention ? root.urgent : root.accent
+    readonly property string heroKind: root.oxaStatus.fault !== null || root.head.id === "stalled" ? "filled"
+        : root.heroNeedsAttention ? "hollow" : root.head.id === "working" ? "pulse" : "filled"
+
+    // The launch actions (Chat, Code, Studio, lead page, Settings) are wired by the launch slice.
+    // Until then a click does nothing.
+    function launch(kind) {
     }
 
-    // Moves the loading clock and the idle countdown between polls.
-    Timer {
-        id: tickTimer
-        interval: 1000
-        running: root.opened && (root.vm.phase === "loading" || root.remainingSeconds > 0)
-        repeat: true
-        onTriggered: {
-            root.nowMs = Date.now()
-            if (root.remainingSeconds > 0) root.remainingSeconds -= 1
-        }
+    function openTab(name) {
+        root.tab = name
     }
 
-    Timer {
-        id: harnessFailedTimer
-        interval: 5000
-        onTriggered: root.harnessFailed = ""
-    }
+    // The bar label: asks, else working sessions, else nothing.
+    readonly property string barLabel: root.head.id === "asks" ? String(root.head.count)
+        : root.head.id === "working" ? String(root.head.count) : ""
 
     Ui.BarIconButton {
         id: button
         anchors.fill: parent
         bar: root.bar
-        text: "\uf4ad"
-        labelText: root.vm.phase === "ready" || root.vm.phase === "answering" ? root.loadedShort.charAt(0)
-            : root.vm.phase === "loading" ? "…" : ""
+        text: ""
+        labelText: root.barLabel
         slotSize: Style.bar.statusSlot
-        tooltipText: root.vm.phase === "offline" || root.vm.phase === "sleeping" || root.vm.phase === "error"
-                ? localAiStrings.t("bar." + root.vm.phase)
-            : root.vm.phase === "stopping" ? (root.vm.stopReason !== "" ? localAiStrings.t("bar.stoppingReason").arg(root.vm.stopReason)
-                                                                     : localAiStrings.t("bar.stopping"))
-            : localAiStrings.t("bar." + root.vm.phase).arg(root.activeShort !== "" ? root.activeShort : localAiStrings.t("bar.unlisted"))
+        tooltipText: root.headlineText(root.head)
         onPressed: root.toggle()
     }
 
@@ -334,17 +109,16 @@ Ui.Panel {
             anchors.fill: parent
             implicitHeight: column.implicitHeight
             onCloseRequested: root.close()
-            onTabRequested: function(direction) { root.switchPanel(direction) }
+            onTabRequested: function (direction) { root.switchPanel(direction) }
 
             Column {
                 id: column
                 width: parent.width
                 spacing: Style.space(12)
 
-                // Everything but the tab body; the body takes what is left of the screen and
-                // scrolls when it is taller.
-                readonly property real chrome: header.height + nowCard.height + tabs.height + separator.height
-                    + launchRow.height + column.spacing * 5
+                // Everything but the tab body; the body takes what is left and scrolls.
+                readonly property real chrome: header.height + hero.height + tabs.height
+                    + separator.height + actions.height + column.spacing * 6
                 readonly property real bodyRoom: panel.availableCardHeight > 0
                     ? Math.max(Style.space(140), panel.availableCardHeight - panel.verticalContentInset - column.chrome)
                     : -1
@@ -357,93 +131,98 @@ Ui.Panel {
                     Label {
                         id: titleLabel
                         anchors.verticalCenter: parent.verticalCenter
-                        width: parent.width - pauseButton.width - pausedLabel.width - Style.space(16)
-                        text: localAiStrings.t("title")
+                        width: parent.width - pauseButton.width - Style.space(16)
+                        text: strings.t("title")
                         color: root.foreground
                         font.family: root.face
                         font.pixelSize: Style.font.title
                         font.bold: true
                     }
-                    Pill {
-                        id: pausedLabel
-                        visible: root.pollingPaused
-                        width: visible ? implicitWidth : 0
-                        anchors.right: pauseButton.left
-                        anchors.rightMargin: Style.space(6)
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: localAiStrings.t("footer.paused")
-                        foreground: root.foreground
-                        face: root.face
-                    }
                     Ui.Button {
                         id: pauseButton
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
-                        iconText: root.pollingPaused ? "\uf04b" : "\uf04c"
+                        iconText: root.pollingPaused ? "" : ""
                         iconSize: Style.font.caption
                         opacity: root.pollingPaused || hot ? 1 : 0.5
-                        tooltipText: root.pollingPaused ? localAiStrings.t("footer.resume") : localAiStrings.t("footer.pause")
+                        tooltipText: root.pollingPaused ? strings.t("footer.resume") : strings.t("footer.pause")
                         foreground: root.foreground
                         accent: root.accent
                         fontFamily: root.face
-                        onClicked: {
-                            root.pollingPaused = !root.pollingPaused
-                            if (!root.pollingPaused) root.refresh()
-                        }
+                        onClicked: root.pollingPaused = !root.pollingPaused
                     }
                 }
 
-                NowCard {
-                    id: nowCard
+                // Hero: the headline and its detail, then the three state chips.
+                Card {
+                    id: hero
                     width: column.width
-                    vm: root.vm
-                    cache: root.cache
-                    share: root.share
-                    strings: localAiStrings
                     foreground: root.foreground
-                    accent: root.accent
-                    urgent: root.urgent
-                    face: root.face
-                    busy: root.busy
-                    remainingSeconds: root.remainingSeconds
-                    loadingSeconds: root.loadingSeconds
-                    speedTokS: root.lastAnswer !== null ? root.lastAnswer.tokS : -1
-                    notice: root.harnessFailed !== "" ? "harness" : root.notice
-                    noticeArg: root.harnessFailed
-                    onLoadRequested: root.act(["load"])
-                    onUnloadRequested: root.act(["unload"])
-                    onDetailsRequested: root.view = "activity"
-                    onTabRequested: function(view) { root.view = view }
+                    tone: root.heroTone
+                    gap: Style.space(8)
+
+                    Row {
+                        width: hero.width - hero.pad * 2
+                        spacing: Style.space(8)
+
+                        StateDot {
+                            id: heroDot
+                            kind: root.heroKind
+                            tint: root.heroTone
+                        }
+                        Label {
+                            id: headline
+                            width: parent.width - heroDot.width - parent.spacing
+                            text: root.headlineText(root.head)
+                            color: root.foreground
+                            font.family: root.face
+                            font.pixelSize: Style.font.body
+                            font.bold: true
+                        }
+                    }
+                    Label {
+                        id: detail
+                        width: hero.width - hero.pad * 2
+                        visible: text !== ""
+                        text: root.detailText(root.head)
+                        color: root.foreground
+                        dim: true
+                        font.family: root.face
+                        font.pixelSize: Style.font.caption
+                        wrapMode: Text.WordWrap
+                        maximumLineCount: 3
+                    }
+                    StatusCard {
+                        id: chips
+                        width: hero.width - hero.pad * 2
+                        chips: root.chipList
+                        foreground: root.foreground
+                        accent: root.accent
+                        urgent: root.urgent
+                        face: root.face
+                        onTabRequested: function (name) { root.openTab(name) }
+                    }
                 }
 
                 TabStrip {
                     id: tabs
                     width: column.width
-                    options: {
-                        var list = [
-                            { value: "models", label: localAiStrings.t("tab.models"), mark: "" },
-                            { value: "activity", label: localAiStrings.t("tab.activity"),
-                              mark: root.notice === "request" ? "urgent" : "" },
-                            { value: "storage", label: localAiStrings.t("tab.storage"), mark: "" }
-                        ]
-                        if (root.hasSharing)
-                            list.push({ value: "sharing", label: localAiStrings.t("tab.sharing"),
-                                        mark: !root.share.enabled ? ""
-                                            : !root.share.active || (root.share.mode === "lan" && root.share.encryption !== "tls") ? "urgent"
-                                            : "accent" })
-                        return list
-                    }
-                    value: root.shownView
+                    options: [
+                        { value: "models", label: strings.t("tab.models"), mark: "" },
+                        { value: "usage", label: strings.t("tab.usage"), mark: root.head.id === "usage" ? "urgent" : "" },
+                        { value: "lead", label: strings.t("tab.lead"), mark: root.head.id === "asks" ? "urgent" : "" },
+                        { value: "storage", label: strings.t("tab.storage"), mark: "" }
+                    ]
+                    value: root.tab
                     foreground: root.foreground
                     accent: root.accent
                     urgent: root.urgent
                     face: root.face
-                    onChanged: function(picked) { root.view = picked }
+                    onChanged: function (picked) { root.openTab(picked) }
                 }
 
                 Flickable {
                     id: bodyFlick
-                    objectName: "localAiBody"
                     width: column.width
                     height: column.bodyRoom > 0 ? Math.min(body.implicitHeight, column.bodyRoom) : body.implicitHeight
                     contentWidth: width
@@ -452,95 +231,40 @@ Ui.Panel {
                     interactive: contentHeight > height
                     boundsBehavior: Flickable.StopAtBounds
 
-                    readonly property bool scrolls: contentHeight > height + 1
-
                     Connections {
                         target: root
-                        function onShownViewChanged() { bodyFlick.contentY = 0 }
+                        function onTabChanged() { bodyFlick.contentY = 0 }
                     }
 
                     Column {
                         id: body
-                        width: bodyFlick.width - (bodyFlick.scrolls ? Style.space(8) : 0)
+                        width: bodyFlick.width
 
-                        ModelsView {
-                            id: modelsView
-                            visible: root.shownView === "models"
+                        // Each tab's body is its own file; a slice that adds one only sets its source.
+                        Loader {
                             width: body.width
-                            vm: root.vm
-                            strings: localAiStrings
-                            foreground: root.foreground
-                            accent: root.accent
-                            urgent: root.urgent
-                            face: root.face
-                            busy: root.busy
-                            preparing: root.preparing
-                            onSelectRequested: function(key) { root.act([key]) }
-                            onPrepareRequested: function(name) { root.prepareHarness(name) }
-                            onPrepareAllRequested: root.prepareAll()
-                            onForgetRequested: function(name) { root.act(["harness-forget", "--harness", name]) }
-                            onFlashCacheRequested: function(preference) { root.act(["flash-cache", "--pref", preference]) }
-                            onModeRequested: function(mode) { root.setMode(mode) }
+                            active: root.tab === "models"
+                            visible: active
+                            source: "ModelsView.qml"
                         }
-
-                        ActivityView {
-                            id: activityView
-                            visible: root.shownView === "activity"
+                        Loader {
                             width: body.width
-                            ledger: root.ledger
-                            vm: root.vm
-                            strings: localAiStrings
-                            foreground: root.foreground
-                            accent: root.accent
-                            urgent: root.urgent
-                            face: root.face
+                            active: root.tab === "usage"
+                            visible: active
+                            source: "UsageView.qml"
                         }
-
-                        StorageView {
-                            id: storageView
-                            visible: root.shownView === "storage"
+                        Loader {
                             width: body.width
-                            storage: root.storage
-                            cache: root.cache
-                            vm: root.vm
-                            strings: localAiStrings
-                            foreground: root.foreground
-                            accent: root.accent
-                            urgent: root.urgent
-                            face: root.face
-                            busy: root.busy
-                            onBudgetRequested: function(gb) { root.setCacheBudget(gb) }
-                            onCacheClearRequested: root.clearConversationCache()
-                            onDeleteRequested: function(id) { root.act(["storage-delete", "--id", id]) }
-                            onClearRequested: function(prompts, conversations, harnesses) {
-                                root.clearCaches(prompts, conversations, harnesses)
-                            }
+                            active: root.tab === "lead"
+                            visible: active
+                            source: "LeadView.qml"
                         }
-
-                        ShareRow {
-                            visible: root.shownView === "sharing" && root.hasSharing
+                        Loader {
                             width: body.width
-                            share: root.share
-                            strings: localAiStrings
-                            foreground: root.foreground
-                            accent: root.accent
-                            urgent: root.urgent
-                            face: root.face
-                            busy: root.busy
-                            onShareRequested: function(mode) { root.setShare(mode) }
+                            active: root.tab === "storage"
+                            visible: active
+                            source: "StorageView.qml"
                         }
-                    }
-
-                    // How far the body is scrolled, while it scrolls.
-                    Rectangle {
-                        visible: bodyFlick.scrolls
-                        parent: bodyFlick
-                        anchors.right: parent.right
-                        y: bodyFlick.height * (bodyFlick.contentY / bodyFlick.contentHeight)
-                        width: Style.space(2)
-                        height: Math.max(Style.space(16), bodyFlick.height * (bodyFlick.height / bodyFlick.contentHeight))
-                        radius: Style.cornerRadius > 0 ? width / 2 : 0
-                        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.35)
                     }
                 }
 
@@ -550,48 +274,72 @@ Ui.Panel {
                     foreground: root.foreground
                 }
 
-                Row {
-                    id: launchRow
+                // Primary row: the three ways in. Second row: the lead page and settings.
+                Column {
+                    id: actions
                     width: column.width
                     spacing: Style.space(8)
 
-                    readonly property real cell: (width - spacing * 2) / 3
+                    Row {
+                        width: parent.width
+                        spacing: Style.space(8)
+                        readonly property real cell: (width - spacing * 2) / 3
 
-                    Ui.Button {
-                        width: launchRow.cell
-                        iconText: "\uf086"
-                        text: localAiStrings.t("launch.chat")
-                        enabled: !root.busy
-                        bordered: true
-                        foreground: root.foreground
-                        accent: root.accent
-                        fontFamily: root.face
-                        onClicked: root.act(["chat"])
+                        Ui.Button {
+                            width: parent.cell
+                            iconText: ""
+                            text: strings.t("action.chat")
+                            bordered: true
+                            foreground: root.foreground
+                            accent: root.accent
+                            fontFamily: root.face
+                            onClicked: root.launch("chat")
+                        }
+                        Ui.Button {
+                            width: parent.cell
+                            iconText: ""
+                            text: strings.t("action.code")
+                            bordered: true
+                            foreground: root.foreground
+                            accent: root.accent
+                            fontFamily: root.face
+                            onClicked: root.launch("code")
+                        }
+                        Ui.Button {
+                            width: parent.cell
+                            iconText: ""
+                            text: strings.t("action.studio")
+                            bordered: true
+                            foreground: root.foreground
+                            accent: root.accent
+                            fontFamily: root.face
+                            onClicked: root.launch("studio")
+                        }
                     }
-                    Ui.Button {
-                        width: launchRow.cell
-                        iconText: "\uf121"
-                        text: localAiStrings.t("launch.code")
-                        enabled: !root.busy
-                        bordered: true
-                        foreground: root.foreground
-                        accent: root.accent
-                        fontFamily: root.face
-                        onClicked: root.act(["code"])
-                    }
-                    Ui.Button {
-                        width: launchRow.cell
-                        iconText: "\uf03e"
-                        text: localAiStrings.t("launch.studio")
-                        tooltipText: root.vm.images === "generating" ? localAiStrings.t("launch.studioBusy").arg(root.vm.imageModel)
-                            : root.vm.loaded !== "" ? localAiStrings.t("launch.studioNote") : ""
-                        enabled: !root.busy && root.vm.images !== "generating"
-                        opacity: root.vm.images === "generating" ? 0.5 : 1
-                        bordered: true
-                        foreground: root.foreground
-                        accent: root.accent
-                        fontFamily: root.face
-                        onClicked: root.act(["images"])
+
+                    Row {
+                        width: parent.width
+                        spacing: Style.space(8)
+                        readonly property real cell: (width - spacing) / 2
+
+                        Ui.Button {
+                            width: parent.cell
+                            text: strings.t("action.lead")
+                            bordered: true
+                            foreground: root.foreground
+                            accent: root.accent
+                            fontFamily: root.face
+                            onClicked: root.launch("lead")
+                        }
+                        Ui.Button {
+                            width: parent.cell
+                            text: strings.t("action.settings")
+                            bordered: true
+                            foreground: root.foreground
+                            accent: root.accent
+                            fontFamily: root.face
+                            onClicked: root.launch("settings")
+                        }
                     }
                 }
             }
