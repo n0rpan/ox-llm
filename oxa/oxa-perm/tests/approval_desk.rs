@@ -162,6 +162,51 @@ fn desk_session_grant_is_scoped_to_session() {
     assert!(desk.granted("s1", &keys), "a session grant stays");
 }
 
+/// A reusable grant is bound to the command line the owner reviewed. Approving a compound
+/// command must not authorize its bare segment, and a target the shell computes at run time is
+/// never covered by a reusable grant at all.
+#[test]
+fn desk_grants_cover_only_the_reviewed_command_line() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
+
+    // The standalone push, approved for the session.
+    let own = exec(DANGEROUS);
+    assert_eq!(p.decide(Mode::Workspace, &own, &cwd), Decision::Ask);
+    let text = p.danger_unattended(&own, &cwd).expect("request");
+    desk.answer(&request_id(&text), "session")
+        .expect("owner answers session");
+    assert_eq!(p.decide(Mode::Workspace, &own, &cwd), Decision::Allow);
+
+    // A compound command that merely contains the same segment is another command line.
+    let compound = exec(&format!("true || {DANGEROUS}"));
+    assert_eq!(
+        p.decide(Mode::Workspace, &compound, &cwd),
+        Decision::Ask,
+        "a session grant never covers another command line"
+    );
+    let text = p.danger_unattended(&compound, &cwd).expect("asks");
+    desk.answer(&request_id(&text), "session")
+        .expect("owner answers session");
+    // Its own line stays covered; the standalone one is untouched by the new approval.
+    assert_eq!(p.decide(Mode::Workspace, &compound, &cwd), Decision::Allow);
+    assert_eq!(p.decide(Mode::Workspace, &own, &cwd), Decision::Allow);
+
+    // A target the shell computes at run time can name another path next time: it asks again.
+    let computed = exec(r#"rm -rf "$(cat target.txt)""#);
+    assert_eq!(p.decide(Mode::Workspace, &computed, &cwd), Decision::Ask);
+    let text = p.danger_unattended(&computed, &cwd).expect("asks");
+    desk.answer(&request_id(&text), "session")
+        .expect("owner answers session");
+    assert_eq!(
+        p.decide(Mode::Workspace, &computed, &cwd),
+        Decision::Ask,
+        "a computed segment is never covered by a reusable grant"
+    );
+}
+
 #[test]
 fn desk_symlinked_dir_is_refused() {
     let env = TestEnv::new();

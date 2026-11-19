@@ -7,6 +7,7 @@
 //! name is replaced, never followed. The desk refuses a symlinked agent directory or desk
 //! directory, and one owned by another user.
 use crate::danger::DangerHit;
+use crate::policy::danger_key;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs::{self, DirBuilder, File, OpenOptions};
@@ -164,7 +165,9 @@ impl ApprovalDesk {
         hits: &[DangerHit],
         status: &str,
     ) -> io::Result<String> {
-        let keys: Vec<String> = hits.iter().map(DangerHit::key).collect();
+        // The same key the policy grants use: the rule over the complete command line, so an
+        // approval is bound to the command the owner reviewed and never to a bare segment.
+        let keys: Vec<String> = hits.iter().map(|h| danger_key(h, command)).collect();
         if status == "pending" {
             let open = self
                 .all()?

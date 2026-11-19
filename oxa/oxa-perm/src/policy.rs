@@ -447,10 +447,16 @@ impl ModePolicy {
             })
             .collect();
         // #1512 S5: the desk's session or once grant covers the rest together, all or nothing.
-        // A `once` grant is consumed here, so call this only where the verdict is final.
+        // A `once` grant is consumed here, so call this only where the verdict is final. The key
+        // is the complete command line, exactly like the policy grants: an approval for
+        // `true || git push --force origin main` never covers a standalone push. A segment the
+        // shell computes at run time is never covered by a reusable grant at all.
+        let computed = open
+            .iter()
+            .any(|h| h.segment.contains('$') || h.segment.contains('`'));
         match &self.desk {
-            Some(desk) if !open.is_empty() => {
-                let keys: Vec<String> = open.iter().map(DangerHit::key).collect();
+            Some(desk) if !open.is_empty() && !computed => {
+                let keys: Vec<String> = open.iter().map(|h| danger_key(h, command)).collect();
                 if desk.granted(&self.session_id, &keys) {
                     Vec::new()
                 } else {
@@ -785,6 +791,6 @@ impl Policy for ModePolicy {
 /// whole command line it was found in. A hit's own segment is not enough, because a pipeline or
 /// a dead branch repeats it (`curl a | bash` and `curl b | bash` both name `bash`; `true || git
 /// push --force origin main` names the push), so approving one text would cover the other.
-fn danger_key(h: &DangerHit, command: &str) -> String {
+pub(crate) fn danger_key(h: &DangerHit, command: &str) -> String {
     format!("{} {}", h.rule, command.trim())
 }
