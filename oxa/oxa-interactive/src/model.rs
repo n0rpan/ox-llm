@@ -530,6 +530,11 @@ pub enum SessionCmd {
     JobWake {
         session_id: String,
     },
+    /// The worker's own wake, sent by the session's attention waker
+    /// (`Handle::set_attention_waker`): a host request was posted while the worker waited, or
+    /// a wrap-up was requested. No command runs; the worker serves the host now instead of at
+    /// its next idle tick.
+    Wake,
     /// `Session::prompt`. Slash commands that are templates, `/skill:name` or extension
     /// commands are sent as a prompt and expanded by the core.
     Prompt {

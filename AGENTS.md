@@ -12,7 +12,7 @@ maintainer, who says in the PR when a hardware check is needed.
 - Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests;
   use synthetic fixtures. Do not open real credential files during review.
 - Keep engine transport selection, native binary/launch configuration, `allowRemote`, share
-  authority and login/token paths user-only. A project file must never override these decisions.
+  authority, login/token paths and `oxa.inbox.headless` user-only. A project file must never override these decisions.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
 - Preserve sandbox/bwrap enforcement and file-tool denials for private paths. Only explicit
   owner-selected yolo deliberately disables the permission floor. Off Linux there is no OS sandbox
@@ -28,21 +28,36 @@ maintainer, who says in the PR when a hardware check is needed.
 - OpenCode Go reserves subscription tokens only, including when the provider falls back to its
   paid balance. `oxa.cloud.daily_budget_usd` applies to metered API admission. Record actual Go
   charges reported by the provider in the ledger and include them in the shared daily spend.
-  Preserve subscription token accounting and provider-side limits.
+  Preserve subscription token accounting and provider-side limits. A configured
+  `oxa.cloud.subscription_limits` is advisory: it warns at 80% and 100% and is recorded, it is
+  not a local refusal (#1443/#1444).
+- Keyed Go: a Go key in the owner's own secrets file enables the Go subscription transport for
+  the owner's own model choice, with `oxa.cloud.opencode.enabled: false` as the opt-out. Engine
+  transport selection stays user-only: no project setting, no delegated `oxa work` model and no
+  model restored by `--continue` enables it, and a local alias owns a request only on an exact
+  match.
 - Go/OpenRouter parsing should tolerate compatible optional fields and stream variations,
   while validating numeric type, sign, range and finiteness before accounting or execution.
 - v0.2.1 has no Python in the product/runtime path; build/test tooling is separate.
 - Never expose secrets to fork PRs or execute PR code with review credentials. Never use
   `pull_request_target`; unknown authors need `ok-to-review` before token-spending review.
+- Go review quota and same-diff checks read at most 200 GitHub comment pages (20,000 comments).
+  If either history exceeds that bound, the review defers before reserving quota or requesting a
+  provider token; an incomplete history must never authorize another review.
 - **Intent:** the change must do what its linked issue and PR description say, and nothing else.
   Flag as P1: missing or contradicted acceptance criteria from the linked issue; unrelated changes
   mixed in; a default that contradicts the owner decision stated in the linked issue or PR body
   (on-by-default with an opt-out setting is normal and is not itself a finding); deleted or
   disabled existing behaviour, tests or checks without a `Removes: <what> — <why>` line in the PR
   body; a test weakened, skipped or rewritten to pass instead of fixing the code.
-- **Policy changes carry their rules:** a change to a default, limit, budget, approval, sandbox or
-  other security behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and
-  the user docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A review finding
+- **Security policy changes carry their rules:** a change to approval, sandbox, credential, secret or
+  publish behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and the user
+  docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A change to an ordinary
+  default, limit or budget updates the user docs; a missing docs update is P3 and is fixed forward.
+- **Early-stage process (owner decision, until v0.3):**
+  - Only P0/P1 findings, security findings and an open security review block a merge. P2/P3 findings are filed as follow-ups and fixed forward on main.
+  - Prefer one PR per feature, up to about 800 changed lines, over stacks of small PRs.
+  - A merge that breaks required checks on main is reverted at once, then fixed forward. A review finding
   that contradicts an owner decision stated in the linked issue or PR is answered by updating these
   rules in that PR, not by changing the behaviour.
 - **Bash and subagent limits.** The two caps are user-only. `oxa.bash.maxJobs` defaults to 16
@@ -55,6 +70,9 @@ maintainer, who says in the PR when a hardware check is needed.
   `oxa.sandbox.writePaths` entry. Review environment forwarding and writable mounts independently.
 - **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
   registry with its surfaces and help (P1 if added outside it or without an exception reason).
+- **Worker mode.** An `oxa work` worker is started with `--yolo` only when the owner's user-layer
+  `permissions.defaultMode` is `yolo`; otherwise it keeps the sandboxed default. Project settings
+  cannot raise it. See `oxa/docs/work.md`.
 - **Work acceptance.** In `oxa work`, zero or skipped checks leave the task `Unverified`. The
   owner-only `oxa.work.localChecks` defaults to a per-package `cargo check`. A verified Rust
   acceptance receipt requires hosted test evidence at the exact head, including for changed
@@ -71,7 +89,13 @@ maintainer, who says in the PR when a hardware check is needed.
   follow-up message and, when the session is idle after a normal outcome, starts a turn;
   `oxa.jobs.wakeOnFinish` (`true` by default, `false` opts out, user settings only) is the control,
   it wakes only the session the job started in, and a job the model or the user stopped wakes
-  nothing. A finding that asks for a default-off switch or a cross-session wake is answered here.
+  nothing; a completion retained behind a failed or interrupted turn stays queued (also across a session
+  reopen) until the next prompt. A finding that asks for a default-off switch or a cross-session wake is answered here.
+  The board degrades per item, not per snapshot: a PR whose GitHub evidence exceeds a read page
+  is one row marked evidence incomplete that is never eligible for any action; every other item is
+  kept and published, and the limit is logged. A merge-queue connection beyond its
+  page keeps the observed entries; PRs outside them stay queue-unknown and take no action.
+
   Report dedupe follows it as well: `oxa.reportIssue.semanticDedupe` is the owner's consent for the
   search and the model check, the post asks one question, and `oxa.reportIssue.dailyNew` (unset = no
   check) only warns and records over the cap. A finding that asks for a second consent question or
@@ -176,8 +200,6 @@ consumers against main. Shared workspace manifests/locks expand the affected wor
 release-relevant features, Cargo registry/target caches via GitHub-owned actions, and standard free
 Ubuntu x64/ARM runners. Cache keys include the lockfile, toolchain and architecture; lane caches
 use their own namespace and branch scope, preserving the required workflows' main-cache policy.
-The native-controller crate runs its existing CLI conformance/refusal controls against the real
-native binary; an empty Rust unit inventory alone never qualifies it.
 Native engine tests requiring Oryon CPU features remain on the existing self-hosted route. The lane
 workflow does not replace or change the merge queue's required checks. Start full-workspace and
 release CI only when the change is close to done. Each started job records its queue delay in its
@@ -204,7 +226,6 @@ Run these in GitHub CI before saying a task is done. Automatic local helpers mus
   - `cargo clippy -p <crate> -- -D warnings` for each touched crate
   - `cargo test -p <crate>` for each touched crate
   - UI/TUI change: CI must build the real binary and drive it through the existing PTY/tmux live checks. Unit tests alone are not enough; they have passed for changes that did nothing in the real TUI.
-- **lab** (Python controller, in CI): `cd oxc && ./tools/run_lab_tests.sh`. It sets a throwaway HOME; never run the tests with the real HOME.
 - **Bug fix:** show the new test failing before the fix.
 
 ## Hard rules (never break these)

@@ -733,12 +733,28 @@ impl<'a> Loop<'a> {
         }
     }
 
-    /// A run is active: the worker reported a non-idle activity or the handle says busy. The
-    /// boot preload (O-152) claims the session too, but is not a run: input is a prompt.
-    /// V020-OPTIMIZE #13: so is a draft prefill.
+    /// Foreground activity, including the interval before its start event reaches the UI.
+    /// Background prefix/draft claims are excluded. The shared foreground signal ends when
+    /// a failed, aborted or cut reply is persisted, so settlement's remaining busy claim does
+    /// not turn later input into steering for a finished turn.
     fn running(&self) -> bool {
-        self.vm.status.activity != Activity::Idle
-            || (self.handle.is_busy() && !self.worker.is_preloading() && !self.worker.is_drafting())
+        foreground_running(
+            &self.vm,
+            self.handle.is_running(),
+            self.worker.is_preloading(),
+            self.worker.is_drafting(),
+        )
+    }
+
+    /// Whether Enter / Alt+Enter queue the text (steering / follow-up) rather than start a run:
+    /// a run is active, the user has not aborted it, and it still takes a tool batch. A run
+    /// that is winding down after an abort (#906) takes no further batch, so a queued message
+    /// would never be delivered; input typed in that window starts a new run instead. The
+    /// abort the user asked for is the same window seen before the worker reports it
+    /// ([`Self::abort_requested`]), so both are checked. Only what Enter does changes: Ctrl+C
+    /// still aborts, and the footer hint still reads "steer" for that moment.
+    fn accepts_steering(&self) -> bool {
+        self.running() && !self.abort_requested && !self.handle.is_aborting()
     }
 
     pub(crate) fn animating(&self) -> bool {
@@ -760,6 +776,12 @@ impl<'a> Loop<'a> {
         }
         if self.cmds.send(cmd).is_err() {
             self.quit = Some(1);
+        }
+        // A background claim may have reset its tokens between the first cancellation
+        // and publication. Once the command is visible, cancel any still-armed background
+        // work again; this never cancels the foreground command itself.
+        if self.worker.is_preloading() || self.worker.is_drafting() {
+            self.handle.cancel_background();
         }
     }
 
@@ -792,6 +814,10 @@ impl<'a> Loop<'a> {
                 }
             }
             WorkerMsg::Event(e) => {
+                // A turn started: the run goes on, so input is steering again.
+                if matches!(e, AgentEvent::AgentStart) {
+                    self.abort_requested = false;
+                }
                 // AgentEnd can occur between tool/follow-up turns; only settled ends a run.
                 if matches!(e, AgentEvent::AgentSettled { .. }) {
                     if let Some(inbox) = &self.inbox {
@@ -829,9 +855,7 @@ impl<'a> Loop<'a> {
                 // manual `/compact`: its idle prefill reports progress after `CompactionEnd` and
                 // the core sends no `AgentSettled` for it) leaves the activity at its last
                 // progress event; close it here so the session is idle again.
-                if self.vm.status.activity != Activity::Idle {
-                    apply_event(&mut self.vm, &AgentEvent::AgentSettled { aborted: false });
-                }
+                settle_worker_done(&mut self.vm, result.is_err());
                 self.model_answered = self.model_pending.is_some();
                 if let Err(e) = result {
                     self.push_notice(Level::Error, e.to_string());
@@ -912,13 +936,9 @@ impl<'a> Loop<'a> {
                     session_id: info.id.clone(),
                 });
             }
-            // Retained completions keep their failed-run boundary across a reopen; treating one
-            // as an ordinary inbox wake would bypass `may_continue` in the worker.
-            if self.handle.has_job_wake_input() && self.handle.request_job_wake(&info.id) {
-                let _ = self.cmds.send(SessionCmd::JobWake {
-                    session_id: info.id.clone(),
-                });
-            }
+            // A completion retained behind a stop boundary (a failed or interrupted turn) is not
+            // delivered on a reopen: the replacement session starts with no outcome, so waking
+            // it would start a model turn nobody asked for. It stays queued for the next prompt.
             // Stop the old callback before installing one bound to the current handle.
             self.inbox = None;
             // W4: a finished background job of this session wakes it the way an inbox message does.
@@ -1508,7 +1528,7 @@ impl<'a> Loop<'a> {
             }
             self.editor.set_text("");
             self.editor.add_history(&text);
-            if self.running() && !self.abort_requested {
+            if self.accepts_steering() {
                 self.handle.follow_up(text);
                 self.wake_queued();
                 self.sync_queue();
@@ -1781,7 +1801,7 @@ impl<'a> Loop<'a> {
         // Explicit input after a cancel key (Ctrl+C or Escape) is a new prompt, not steering
         // for the canceled run. The worker channel runs it after that operation releases the
         // session. Ordinary queued input still uses the existing unsuccessful-outcome guard.
-        if self.running() && !self.abort_requested {
+        if self.accepts_steering() {
             self.handle.steer(trimmed);
             self.wake_queued();
             self.sync_queue();
@@ -3236,6 +3256,31 @@ impl<'a> Loop<'a> {
     }
 }
 
+fn foreground_running(vm: &ViewModel, handle_running: bool, preloading: bool, drafting: bool) -> bool {
+    vm.status.activity != Activity::Idle
+        // A foreground `!cmd` / `!!cmd` remains active until its stored entry closes the live
+        // block. It claims the handle directly, without starting the agent run gate.
+        || vm
+            .blocks
+            .iter()
+            .any(|block| matches!(block, Block::Bash { running: true, .. }))
+        || (handle_running && !preloading && !drafting)
+}
+
+fn settle_worker_done(vm: &mut ViewModel, failed: bool) {
+    if vm.status.activity != Activity::Idle {
+        apply_event(vm, &AgentEvent::AgentSettled { aborted: false });
+    }
+    // A failed `user_bash` command has no stored entry to replace its live block.
+    if failed {
+        for block in &mut vm.blocks {
+            if let Block::Bash { running, .. } = block {
+                *running = false;
+            }
+        }
+    }
+}
+
 /// The search with its matches moved up by `first` lines (for highlighting a visible slice).
 fn shift_search(search: &TranscriptSearch, first: usize) -> TranscriptSearch {
     let current = search.current.and_then(|i| search.matches.get(i).copied());
@@ -3315,6 +3360,50 @@ fn write_private(path: &Path, text: &str) -> Result<(), OxaError> {
         .open(path)
         .map_err(io)?;
     file.write_all(text.as_bytes()).map_err(io)
+}
+
+#[cfg(test)]
+mod running_tests {
+    use super::*;
+
+    fn bash(running: bool) -> Block {
+        Block::Bash {
+            command: "sleep 10".into(),
+            output: String::new(),
+            exit: None,
+            excluded: false,
+            running,
+            expanded: false,
+        }
+    }
+
+    /// `user_bash` claims the shared handle without starting the agent run gate, so its live
+    /// block must keep Ctrl+C and Escape on the abort path until the stored entry closes it.
+    #[test]
+    fn live_user_bash_is_foreground_activity() {
+        let mut vm = ViewModel {
+            blocks: vec![bash(true)],
+            ..Default::default()
+        };
+        assert!(foreground_running(&vm, false, false, false));
+
+        vm.blocks[0] = bash(false);
+        assert!(!foreground_running(&vm, false, false, false));
+    }
+
+    /// A worker error can precede the stored bash entry, but it still completes the command.
+    #[test]
+    fn failed_user_bash_closes_live_block() {
+        let mut vm = ViewModel {
+            blocks: vec![bash(true)],
+            ..Default::default()
+        };
+
+        settle_worker_done(&mut vm, true);
+
+        assert!(!foreground_running(&vm, false, false, false));
+        assert!(matches!(vm.blocks[0], Block::Bash { running: false, .. }));
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

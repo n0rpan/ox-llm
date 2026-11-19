@@ -110,7 +110,9 @@ fn builtin_files_install_once_and_expand_without_install() {
     let text = expand_skill_command(find(&skills, "ox-llm"), "status?").expect("expand");
     assert!(
         text.starts_with("<skill name=\"ox-llm\"")
-            && text.contains("oxc status")
+            && text.contains("oxa usage --json")
+            && !text.contains("oxc")
+            && !text.contains("local-ai")
             && text.ends_with("status?")
     );
 
