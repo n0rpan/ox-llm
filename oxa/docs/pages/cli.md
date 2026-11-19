@@ -189,6 +189,8 @@ $ oxa memory rm <name>
 ```
 
 - The store is one Markdown file per entry under the agent directory's `memory/` folder, with a generated `MEMORY.md` index.
+- The store is owner-only: the `memory/` folder is `0700` (an existing looser folder is tightened on the next save); entries and `MEMORY.md` are `0600`, written through a synced private temporary and renamed into place, and the lock file is created `0600`.
+- An entry body is at most 8 KiB and its frontmatter (kind and description) at most 4 KiB; a longer save is refused and nothing is written. The index reads each entry only that far, so a larger hand-written file is never read whole.
 - `list` prints the index. `show` prints an entry's kind, description and body. `rm` deletes the entry file and its index line.
 - A name with no entry exits with 1. A usage error exits with 2.
 
