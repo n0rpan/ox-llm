@@ -157,6 +157,12 @@ code, tests, CI and docs; the owner validates on hardware.
   The repeat guard follows this: the third identical tool result gets a short note, a call that
   still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
   is the cap against loops the guard cannot see.
+  Image input follows it too: `read` attaches an image to a model that takes images, and an image
+  over the user-only `oxa.read.maxImageBytes` (generous default, 0 = no limit) is not sent; that
+  setting also bounds aggregate images across retained session history and the current tool-call
+  batch. A project may enable `images.blockImages` but cannot disable the owner's choice. The result names the limit and the
+  setting instead. `images.blockImages` prevents transmission. Private-path and pinned-open rules
+  apply to images as to any file.
   The finish wake follows it too: a background bash job that finishes on its own queues one
   follow-up message and, when the session is idle after a normal outcome, starts a turn;
   `oxa.jobs.wakeOnFinish` (`true` by default, `false` opts out, user settings only) is the control,

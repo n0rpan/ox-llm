@@ -86,6 +86,10 @@ fn default_tune(read_page_lines: u32, read_page_bytes: u32) -> ToolTune {
         } else {
             16_384
         },
+        // B2b: no image input in these windows (the tool default); the byte cap is the user
+        // setting's own default, which these windows do not change.
+        max_image_bytes: Settings::default().read_max_image_bytes(),
+        ..Default::default()
     }
 }
 
