@@ -1,0 +1,19 @@
+[package]
+name = "oxa-http"
+description = "Shared HTTP pieces of oxa: one SSE framer and the framing helpers of the hand-written servers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Filled by the HTTP client slice (reqwest facade); empty until then.
+client = []
+
+[dependencies]
+oxa-proto.workspace = true
+
+[lints]
+workspace = true

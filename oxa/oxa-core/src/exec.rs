@@ -426,8 +426,8 @@ pub(crate) fn run_calls(
             }
             i = j;
         } else {
-            let warming = !prefilled
-                && !(st.goal.is_some() && matches!(prepared[i].name.as_str(), "goal_done" | "wait"))
+            let warming = !(prefilled
+                || st.goal.is_some() && matches!(prepared[i].name.as_str(), "goal_done" | "wait"))
                 && start_tool_prefill(st, &prepared, &outputs, i, &mut early);
             // Held while the call runs: an unwind ends the prefill too.
             let guard = warming.then(|| PrefillGuard(st.shared.clone()));
@@ -1405,6 +1405,10 @@ impl StreamState {
 
     fn handle(&mut self, ev: StreamEvent, sink: &mut dyn EventSink, events: bool) {
         match ev {
+            StreamEvent::Warning(text) => sink.emit(&AgentEvent::Notice {
+                level: Level::Warning,
+                text: text.into(),
+            }),
             StreamEvent::Prefill { done, total, secs } => {
                 sink.emit(&AgentEvent::Prefill { done, total, secs });
             }

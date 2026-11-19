@@ -20,7 +20,7 @@ fn refusal(error: Refusal, status: u16, code: &str, kind: &str, param: &str) {
 fn offline_and_shared_requests_are_refused_before_admission() {
     for (shared, offline, code) in [(true, false, "cloud_not_shared"), (false, true, "offline")] {
         refusal(
-            before_credentials(&json!({}), shared, offline, true).unwrap_err(),
+            before_credentials(&json!({}), shared, offline, true, true).unwrap_err(),
             403,
             code,
             "permission_error",
@@ -33,7 +33,7 @@ fn offline_and_shared_requests_are_refused_before_admission() {
 fn requests_cannot_multiply_the_reserved_completion() {
     for n in [json!(0), json!(2), json!(-1), json!(true), json!(1.0), json!("1")] {
         refusal(
-            before_credentials(&json!({"n":n}), false, false, true).unwrap_err(),
+            before_credentials(&json!({"n":n}), false, false, true, true).unwrap_err(),
             400,
             "invalid_value",
             "cloud_error",
@@ -41,14 +41,14 @@ fn requests_cannot_multiply_the_reserved_completion() {
         );
     }
     for payload in [json!({}), json!({"n":1}), json!({"n":null})] {
-        assert!(before_credentials(&payload, false, false, true).is_ok());
+        assert!(before_credentials(&payload, false, false, true, true).is_ok());
     }
 }
 
 #[test]
 fn unknown_prices_and_unusable_budgets_have_distinct_client_errors() {
     refusal(
-        before_credentials(&json!({}), false, false, false).unwrap_err(),
+        before_credentials(&json!({}), false, false, false, true).unwrap_err(),
         400,
         "cloud_pricing_unavailable",
         "cloud_error",
@@ -144,5 +144,23 @@ fn null_cap_still_refuses_when_ledger_disabled() {
         "cloud_ledger_unavailable",
         "cloud_error",
         "model",
+    );
+}
+
+#[test]
+fn unpriced_model_admitted_without_cap() {
+    assert!(before_credentials(&json!({}), false, false, false, false).is_ok());
+    assert_eq!(
+        before_credentials(&json!({}), false, false, false, true)
+            .unwrap_err()
+            .code,
+        "cloud_pricing_unavailable"
+    );
+    // Sharing and offline stay refused whatever the pricing.
+    assert_eq!(
+        before_credentials(&json!({}), true, false, false, false)
+            .unwrap_err()
+            .code,
+        "cloud_not_shared"
     );
 }

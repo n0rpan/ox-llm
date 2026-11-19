@@ -9,14 +9,13 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('paths', Path(__file__).resolve().parents[1] / 'paths.py')
 paths = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(paths)
-KEYS = ('engine', 'oxa', 'lab', 'cli', 'gateway')
+KEYS = ('engine', 'oxa', 'gateway')
 
 
 class Paths(unittest.TestCase):
     def test_component_source_and_test_changes(self):
         for directory, components in (('engine', {'engine'}), ('oxa', {'oxa'}),
-                                      ('oxc', {'lab', 'cli', 'gateway'}), ('oxc-rs', {'cli'}),
-                                      ('conformance', {'cli'}),
+                                      ('oxc', {'gateway'}), ('oxc-rs', {'gateway'}),
                                       ('oxa/oxc-gateway', {'oxa', 'gateway'}),
                                       ('oxa/oxa-engine', {'oxa', 'gateway'}),
                                       ('oxa/oxa-cli', {'oxa', 'gateway'}),
@@ -44,7 +43,7 @@ class Paths(unittest.TestCase):
         self.assertFalse(any(got[key] for key in KEYS))
         got = paths.classify(['oxc/docs/page.md', 'oxa/src/code.rs'])
         self.assertTrue(got['oxa'])
-        self.assertFalse(got['lab'])
+        self.assertFalse(got['gateway'])
         self.assertFalse(got['docs'])
 
     def test_runtime_markdown_is_source_for_branch_pr_and_main(self):
@@ -55,7 +54,7 @@ class Paths(unittest.TestCase):
                 with self.subTest(name=name, full_event=full_event):
                     got = paths.classify([name], full_event)
                     self.assertFalse(got['docs'])
-                    self.assertTrue(got[{'oxc': 'lab'}.get(name.split('/')[0], name.split('/')[0])])
+                    self.assertTrue(got[{'oxc': 'gateway'}.get(name.split('/')[0], name.split('/')[0])])
                     self.assertEqual(got['full'], full_event)
         got = paths.classify(['README.md', 'oxa/oxa-resources/builtin-skills/ox-llm/SKILL.md'], True)
         self.assertFalse(got['docs'])
@@ -142,7 +141,7 @@ class GitPaths(unittest.TestCase):
 
     def test_merge_group_classifies_only_the_group_diff(self):
         self.assertEqual(self.group(b'oxa/oxa-core/src/a.rs\0fuzz/oxa/smoke.rs\0'), {'oxa'})
-        self.assertEqual(self.group(b'oxc-rs/src/a.rs\0conformance/t.py\0'), {'cli'})
+        self.assertEqual(self.group(b'oxc-rs/src/a.rs\0oxc/src/t.py\0'), {'gateway'})
         self.assertEqual(self.group(b'oxa/oxc-gateway/src/a.rs\0'), {'oxa', 'gateway'})
         self.assertEqual(self.group(b'engine/crates/server/src/a.rs\0fuzz/oxe/smoke.rs\0'), {'engine'})
         self.assertEqual(self.group(b'oxa/src/a.rs\0engine/src/a.rs\0'), {'oxa', 'engine'})
