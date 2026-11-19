@@ -450,23 +450,24 @@ impl Source {
         let github_quotas = sample.as_ref().and_then(|(board, app_quota)| {
             crate::lead_quota::GitHubQuotas::from_app_sample((*app_quota)?, board.observed_at, now)
         });
-        let owner = self.owner.as_ref().filter(|owner| {
-            matches!(page, crate::lead_page::Page::Chat(_)) && owner.binding.recheck().is_ok()
-        });
+        use crate::lead_page::Page;
+        let approvals_page = matches!(page, Page::Home | Page::Board | Page::BoardQuery(_));
+        let chat_page = matches!(page, Page::Chat(_));
+        // Owner chat is configured only for a single verified Tailscale identity.
+        let bound_owner = self
+            .owner
+            .as_ref()
+            .filter(|owner| (approvals_page || chat_page) && owner.binding.recheck().is_ok());
+        let owner = bound_owner.filter(|_| chat_page);
         let latest = owner.and_then(|owner| owner.latest.try_lock().ok());
-        // Pending approvals show on the home and board pages; a missing or unreadable desk is None.
-        let waiting = match (page, self.desk.as_ref()) {
-            (
-                crate::lead_page::Page::Home
-                | crate::lead_page::Page::Board
-                | crate::lead_page::Page::BoardQuery(_),
-                Some(desk),
-            ) => desk.pending().ok(),
-            _ => None,
+        let waiting = if approvals_page && bound_owner.is_some() {
+            self.desk.as_ref().and_then(|desk| desk.pending().ok())
+        } else {
+            None
         };
         let view = crate::lead_page::View {
             approvals: waiting.as_deref(),
-            approval_csrf: self.owner.as_ref().map(|owner| owner.csrf.as_str()),
+            approval_csrf: bound_owner.map(|owner| owner.csrf.as_str()),
             owner_chat: owner
                 .zip(latest.as_deref())
                 .map(|(owner, latest)| crate::lead_page::OwnerChatView {

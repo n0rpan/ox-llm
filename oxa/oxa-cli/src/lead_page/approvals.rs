@@ -1,6 +1,7 @@
 //! The "Waiting for your approval" panel (#1512 S6): the approval desk's pending requests.
-//! Every field is escaped. Answer forms appear only when owner chat supplies the form credential.
+//! Only the bound owner's view renders the panel. Credential masking precedes HTML escaping.
 use super::{escape, View};
+use crate::report_cmd::{scrub, ScrubCtx};
 use oxa_perm::ApprovalRecord;
 use std::fmt::Write;
 use std::path::Path;
@@ -15,7 +16,7 @@ const ANSWERS: [(&str, &str); 4] = [
 
 /// Nothing renders when the caller supplied no desk reading, so pages without one are unchanged.
 pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
-    let Some(waiting) = view.approvals else {
+    let Some((waiting, csrf)) = view.approvals.zip(view.approval_csrf) else {
         return;
     };
     html.push_str(
@@ -25,20 +26,16 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
         html.push_str("<p class=muted>Nothing is waiting for your approval.</p>");
     } else {
         html.push_str("<ol class=approvals>");
+        let scrub_ctx = ScrubCtx::default();
         for rec in waiting {
-            record(html, view, rec, now);
+            record(html, csrf, rec, now, &scrub_ctx);
         }
         html.push_str("</ol>");
-    }
-    if view.approval_csrf.is_none() {
-        html.push_str(
-            "<p class=muted>Answering needs owner chat enabled in user settings. In a terminal, the same answer is <code>oxa send &lt;session&gt; --approve &lt;id&gt; once|session|always|deny</code>.</p>",
-        );
     }
     html.push_str("</section>");
 }
 
-fn record(html: &mut String, view: &View<'_>, rec: &ApprovalRecord, now: u64) {
+fn record(html: &mut String, csrf: &str, rec: &ApprovalRecord, now: u64, scrub_ctx: &ScrubCtx) {
     let folder = Path::new(&rec.cwd)
         .file_name()
         .map_or_else(|| "(root)".to_owned(), |name| name.to_string_lossy().into_owned());
@@ -49,25 +46,23 @@ fn record(html: &mut String, view: &View<'_>, rec: &ApprovalRecord, now: u64) {
         escape(&rec.session),
         escape(&folder),
         age(now, rec.created_ms),
-        escape(&rec.command),
+        escape(&scrub(&rec.command, scrub_ctx)),
     );
     html.push_str("<ul class=reasons>");
     for reason in &rec.reasons {
-        let _ = write!(html, "<li>{}</li>", escape(reason));
+        let _ = write!(html, "<li>{}</li>", escape(&scrub(reason, scrub_ctx)));
     }
     html.push_str("</ul>");
-    if let Some(csrf) = view.approval_csrf {
-        let _ = write!(
-            html,
-            "<form method=post action=/approvals><input type=hidden name=csrf value=\"{}\"><input type=hidden name=id value=\"{}\">",
-            escape(csrf),
-            escape(&rec.id)
-        );
-        for (answer, label) in ANSWERS {
-            let _ = write!(html, "<button name=answer value={answer}>{label}</button>");
-        }
-        html.push_str("</form>");
+    let _ = write!(
+        html,
+        "<form method=post action=/approvals><input type=hidden name=csrf value=\"{}\"><input type=hidden name=id value=\"{}\">",
+        escape(csrf),
+        escape(&rec.id)
+    );
+    for (answer, label) in ANSWERS {
+        let _ = write!(html, "<button name=answer value={answer}>{label}</button>");
     }
+    html.push_str("</form>");
     html.push_str("</li>");
 }
 
