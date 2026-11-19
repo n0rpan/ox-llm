@@ -987,10 +987,11 @@ fn gate(st: &mut SessionState, a: &Access, ui: &mut dyn Ui) -> Result<(), OxaErr
 }
 
 /// [`gate`] for a command that runs in `cwd` rather than in the session's directory: an
-/// extension may pass its own `cwd` to `oxa.exec`. The session's directory stays the workspace
-/// boundary, so the command is gated there first (an absolute target outside the workspace is
-/// dangerous however the extension picks `cwd`); a different `cwd` is gated as well, so a
-/// relative operand is classified against the directory the sandbox actually runs it in.
+/// extension may pass its own `cwd` to `oxa.exec`. A relative operand is classified against the
+/// directory the sandbox actually runs it in. The session's directory stays the workspace
+/// boundary: when the command is dangerous only against it (`rm -rf /work/other/victim` with
+/// `cwd` `/work/other`), it is gated there, so moving `cwd` never makes a target in-workspace.
+/// One gate either way, so one answer (or one filed request) covers the command.
 fn gate_at(
     st: &mut SessionState,
     a: &Access,
@@ -998,11 +999,15 @@ fn gate_at(
     ui: &mut dyn Ui,
 ) -> Result<(), OxaError> {
     let session_cwd = st.cwd.clone();
-    gate_pinned_in(st, a, &session_cwd, ui)?;
-    if cwd != session_cwd {
-        gate_pinned_in(st, a, cwd, ui)?;
-    }
-    Ok(())
+    let at = if cwd != session_cwd
+        && st.policy.danger_ask(a, cwd).is_empty()
+        && !st.policy.danger_ask(a, &session_cwd).is_empty()
+    {
+        session_cwd.as_path()
+    } else {
+        cwd
+    };
+    gate_pinned_in(st, a, at, ui).map(|_| ())
 }
 
 /// [`gate`], returning the real location the verdict covers (#518, `Policy::decide_pinned`).
