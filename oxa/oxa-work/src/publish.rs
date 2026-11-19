@@ -1082,8 +1082,12 @@ mod scan_tests {
         scan_patch(
             text,
             &|item| {
-                seen.borrow_mut()
-                    .push((item.path.to_string(), item.line, item.text.to_string()));
+                // Pair and block-scalar contexts join lines with a newline; only the lines
+                // themselves are listed here.
+                if !item.text.contains('\n') {
+                    seen.borrow_mut()
+                        .push((item.path.to_string(), item.line, item.text.to_string()));
+                }
                 None
             },
             &|_, _| None,
