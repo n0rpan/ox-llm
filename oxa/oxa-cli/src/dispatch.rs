@@ -431,10 +431,15 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         _ => None,
     };
     let cloud_diagnostics = oxc_gateway::diagnostics::Diagnostics::default();
+    // Input the owner-question handshake read past its own answer; the RPC server replays it.
+    let mut rpc_early: Vec<u8> = Vec::new();
     let prepared = {
         let mut confirm = |notice: &str, question: &str| -> bool {
             if mode == RunMode::Rpc {
-                return false;
+                if !rpc_owner_present(mode, env) {
+                    return false;
+                }
+                return rpc_owner_confirm(&mut *stdin, &mut *stdout, &mut rpc_early, notice, question);
             }
             let _ = writeln!(stdout, "{notice}");
             let _ = write!(stdout, "{question} [y/N] ");
@@ -498,7 +503,16 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         RunMode::Interactive => run_tui(&a, env, &cwd, prep, &mut *stderr, None),
         RunMode::Rpc => {
             let dirs = prep.built.dirs.clone();
-            run_rpc(prep, a.max_time, a.max_tokens, dirs, stdin, stdout, &mut *stderr)
+            let replay = std::io::Cursor::new(rpc_early).chain(stdin);
+            run_rpc(
+                prep,
+                a.max_time,
+                a.max_tokens,
+                dirs,
+                Box::new(replay),
+                stdout,
+                &mut *stderr,
+            )
         }
         RunMode::Print | RunMode::Json => {
             let stdin_text = match read_piped_stdin(&mut *stdin, stdin_is_tty) {
@@ -1128,7 +1142,15 @@ fn prepare(
     };
     let (open, session_id) = match owner_open {
         Some((bound, _)) => (Open::Resume(bound.clone()), None),
-        None => choose_open(a, store.as_ref(), cwd, mode, &mut notices, confirm)?,
+        None => choose_open(
+            a,
+            store.as_ref(),
+            cwd,
+            mode,
+            rpc_owner_present(mode, env),
+            &mut notices,
+            confirm,
+        )?,
     };
     let name = match a.name.as_deref().map(str::trim) {
         Some("") => {
@@ -1431,6 +1453,7 @@ fn choose_open(
     store: &dyn SessionStore,
     cwd: &Path,
     mode: RunMode,
+    rpc_owner: bool,
     _notices: &mut Vec<(Level, String)>,
     confirm: &mut dyn FnMut(&str, &str) -> bool,
 ) -> Result<(Open, Option<String>), OxaError> {
@@ -1450,7 +1473,9 @@ fn choose_open(
             if let Ok(header) = store.header(&sref) {
                 if header.cwd != cwd {
                     let notice = format!("Session found in different project: {}", header.cwd.display());
-                    if mode == RunMode::Rpc {
+                    // RPC asks the owner over the protocol when a client is listening; without
+                    // one the offer is an error with the way to fork it yourself.
+                    if mode == RunMode::Rpc && !rpc_owner {
                         return Err(OxaError::new(codes::INVALID, notice)
                             .with_hint("use --fork <id> to copy it into this directory"));
                     }
@@ -2252,6 +2277,63 @@ fn write_session_export(
 /// The error code of a declined cross-directory fork offer (CLI-019): `run` prints
 /// "Aborted." and exits 0, as pi does.
 const FORK_DECLINED: &str = "oxa_cli_fork_declined";
+
+/// An RPC client is listening for owner questions (the host sets `OXA_RPC_OWNER_PRESENT=1`).
+fn rpc_owner_present(mode: RunMode, env: &Env) -> bool {
+    mode == RunMode::Rpc && env.get("OXA_RPC_OWNER_PRESENT") == Some("1")
+}
+
+/// The owner's yes or no for a question asked before the RPC server starts (the fork offer):
+/// an `extension_ui_request` `confirm` that the client answers with an `extension_ui_response`
+/// of the same id. Other input read on the way is kept in `early` and replayed to the server.
+/// Only `confirmed: true` is yes; EOF, a cancel or a malformed answer declines.
+fn rpc_owner_confirm(
+    stdin: &mut dyn Read,
+    stdout: &mut dyn Write,
+    early: &mut Vec<u8>,
+    title: &str,
+    message: &str,
+) -> bool {
+    const ID: &str = "pre-start-confirm-1";
+    let request = serde_json::json!({
+        "type": "extension_ui_request", "id": ID, "method": "confirm",
+        "title": title, "message": message,
+    });
+    if writeln!(stdout, "{request}")
+        .and_then(|()| stdout.flush())
+        .is_err()
+    {
+        return false;
+    }
+    loop {
+        let mut line = Vec::new();
+        let mut byte = [0u8; 1];
+        let mut eof = false;
+        loop {
+            match stdin.read(&mut byte) {
+                Ok(1) => {
+                    line.push(byte[0]);
+                    if byte[0] == b'\n' {
+                        break;
+                    }
+                }
+                _ => {
+                    eof = true;
+                    break;
+                }
+            }
+        }
+        match serde_json::from_slice::<Value>(&line) {
+            Ok(v) if v["type"] == "extension_ui_response" && v["id"] == ID => {
+                return v["cancelled"] != true && v["confirmed"] == true;
+            }
+            _ => early.extend_from_slice(&line),
+        }
+        if eof {
+            return false;
+        }
+    }
+}
 
 /// One line from `stdin`, read byte by byte (nothing after the newline is consumed).
 fn read_line(stdin: &mut dyn Read) -> String {
