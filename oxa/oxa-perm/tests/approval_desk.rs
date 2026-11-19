@@ -207,6 +207,31 @@ fn desk_grants_cover_only_the_reviewed_command_line() {
     );
 }
 
+/// Two processes can create the desk at the same instant: the second must keep working with the
+/// directory the first made instead of disabling approval requests for its whole process.
+#[test]
+fn desk_open_survives_a_concurrent_create() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    let desk = ApprovalDesk::open(&agent).expect("first open");
+    let dir = agent.join("approvals");
+    // The loser of the create sees `AlreadyExists` after its `NotFound` probe: replay that.
+    std::fs::remove_dir_all(&dir).expect("remove");
+    std::thread::scope(|scope| {
+        let a = &agent;
+        scope.spawn(move || {
+            for _ in 0..8 {
+                let _ = ApprovalDesk::open(a);
+            }
+        });
+        for _ in 0..8 {
+            ApprovalDesk::open(&agent).expect("a concurrent create is not an error");
+        }
+    });
+    drop(desk);
+    ApprovalDesk::open(&agent).expect("the desk still opens");
+}
+
 #[test]
 fn desk_symlinked_dir_is_refused() {
     let env = TestEnv::new();

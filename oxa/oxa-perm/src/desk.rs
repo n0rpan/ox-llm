@@ -128,7 +128,18 @@ impl ApprovalDesk {
             Ok(meta) if meta.is_dir() => {}
             Ok(_) => return Err(invalid_dir("approval desk is not a directory")),
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                DirBuilder::new().mode(0o700).create(&dir)?;
+                // Two processes can see `NotFound` at once: the loser of the create gets
+                // `AlreadyExists` and must carry on with the directory the winner made, or
+                // approval requests would be disabled for that whole process.
+                match DirBuilder::new().mode(0o700).create(&dir) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                        if !fs::metadata(&dir)?.is_dir() {
+                            return Err(invalid_dir("approval desk is not a directory"));
+                        }
+                    }
+                    Err(e) => return Err(e),
+                }
             }
             Err(e) => return Err(e),
         }
