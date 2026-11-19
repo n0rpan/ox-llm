@@ -99,7 +99,7 @@ impl Claims {
         let Some((_lock, mut row)) = self.active_item_for(worker_id, host_id, binding, receipt, now)? else {
             return Ok(false);
         };
-        let activity = row.data.lease_activity.get_or_insert_with(|| LeaseActivity {
+        let activity = row.data.lease_activity.get_or_insert(LeaseActivity {
             generation: receipt.lease.generation,
             heartbeat_at: None,
             last_action: None,

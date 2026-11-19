@@ -98,6 +98,7 @@ impl Sandbox for RecordingSandbox {
             output,
             exit: status.and_then(|s| s.code()),
             timed_out,
+            unsandboxed: false,
         }
     }
 }

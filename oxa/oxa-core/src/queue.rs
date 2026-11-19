@@ -115,6 +115,10 @@ pub struct Gate {
     pub(crate) advisor: Mutex<Option<Arc<crate::advice::BoundAdvisor>>>,
     /// Coalesce frontend inbox wakes while a model run drains follow-ups internally.
     pub inbox_wake_pending: std::sync::atomic::AtomicBool,
+    /// Foreground work, excluding settlement after a dropped reply.
+    pub running: std::sync::atomic::AtomicBool,
+    /// Serializes abort publication with foreground reservation claims and releases.
+    pub(crate) foreground_transition: Mutex<()>,
     /// Coalesce worker wakes for ordinary editor queues, independently of bound inbox wakes.
     pub queued_wake_pending: std::sync::atomic::AtomicBool,
     pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
@@ -140,6 +144,39 @@ pub struct Gate {
     /// `true` once a front end polls `Session::take_swap_request`; without it the two
     /// extension calls answer `unsupported_in_oxa`.
     pub swap_enabled: std::sync::atomic::AtomicBool,
+    /// The wake a front end registered for state it cannot poll (see
+    /// [`Handle::set_attention_waker`]).
+    pub attention: Attention,
+}
+
+/// The wake a front end registered for state it cannot see through its own channels: a host
+/// request posted while its worker waits ([`CoreHost::post`]) and a wrap-up or interruption
+/// request. A front end that would otherwise poll a channel waits with a deadline and is
+/// woken here instead. One waker per session; the closure must be cheap and must not block.
+#[derive(Default)]
+pub struct Attention(Mutex<Option<Arc<dyn Fn() + Send + Sync>>>);
+
+impl std::fmt::Debug for Attention {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The closure is not printable; its presence is enough for a `{:?}` of the state.
+        f.write_str("Attention(..)")
+    }
+}
+
+impl Attention {
+    fn set(&self, waker: Arc<dyn Fn() + Send + Sync>) {
+        *lock(&self.0) = Some(waker);
+    }
+
+    /// Wake the front end, if one registered. Called after the state the front end will look
+    /// at is in place (the host request is in its channel, the wrap-up flag is set), so a
+    /// woken front end that re-checks sees it. A panic in the waker is contained here.
+    pub(crate) fn notify(&self) {
+        let waker = lock(&self.0).clone();
+        if let Some(waker) = waker {
+            let _ = oxa_proto::panic::contain(|| waker());
+        }
+    }
 }
 
 #[derive(Default)]
@@ -217,7 +254,7 @@ fn take_by_mode(list: &mut Vec<String>, mode: QueueMode) -> Vec<String> {
     }
 }
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     match m.lock() {
         Ok(g) => g,
         Err(p) => p.into_inner(),
@@ -573,6 +610,24 @@ impl Handle {
         }
         steering
     }
+    /// Remove the inbox messages bound to sessions other than the active one, grouped by
+    /// destination. [`Handle::dequeue`] leaves them, so a headless owner that switched sessions
+    /// can return each message to the inbox it came from instead of dropping it at exit.
+    pub fn take_inactive_inbox(&self) -> Vec<(String, Vec<String>)> {
+        let mut q = lock(&self.shared.queue);
+        let active = q.session_id.clone();
+        let inactive: Vec<String> = q
+            .session_follow_up
+            .keys()
+            .filter(|id| **id != active)
+            .cloned()
+            .collect();
+        inactive
+            .into_iter()
+            .filter_map(|id| q.session_follow_up.remove(&id).map(|messages| (id, messages)))
+            .collect()
+    }
+
     /// Set an invocation-wide soft budget before accepting prompts (not restored from a session).
     pub fn set_token_budget(&self, tokens: Option<u64>) {
         *lock(&self.shared.gate.token_budget) = tokens;
@@ -616,6 +671,9 @@ impl Handle {
                 .compare_exchange(0, reason as u8, Ordering::SeqCst, Ordering::SeqCst);
         self.cancel_background();
         self.shared.cancel_retry.cancel();
+        // The flag is set: a front end that waits instead of polling (see
+        // [`Handle::set_attention_waker`]) must re-check it now.
+        self.notify_attention();
     }
 
     pub fn wrap_up_reason(&self) -> Option<WrapUpReason> {
@@ -639,6 +697,21 @@ impl Handle {
         self.abort();
         self.abort_retry();
         self.cancel_background();
+        // Set before the wake, so a woken front end sees it (see `set_attention_waker`).
+        self.notify_attention();
+    }
+
+    /// Register the wake this session gives a front end that waits instead of polling: a host
+    /// request posted while the front end waits ([`CoreHost::post`]) and a wrap-up or
+    /// interruption request ([`Handle::request_wrap_up`], [`Handle::interrupt`]). One waker
+    /// per session; the closure must be cheap and must not block.
+    pub fn set_attention_waker(&self, waker: Arc<dyn Fn() + Send + Sync>) {
+        self.shared.gate.attention.set(waker);
+    }
+
+    /// Wake the registered front end, if any (see [`Handle::set_attention_waker`]).
+    pub(crate) fn notify_attention(&self) {
+        self.shared.gate.attention.notify();
     }
 
     pub fn interrupted(&self) -> bool {
@@ -647,11 +720,21 @@ impl Handle {
 
     /// Abort the current run. The partial reply is shown, never sent (W2). Queued messages stay
     /// queued; the front end restores them with `dequeue`. A no-op when no run is in progress
-    /// (a stale cancel must not abort the next prompt; `Session` also resets the token).
+    /// (a stale cancel must not abort the next prompt; `Session` also resets the token). A
+    /// foreground reservation counts as the current run: preserve an abort until its claim.
     pub fn abort(&self) {
+        let _transition = lock(&self.shared.gate.foreground_transition);
         if self.shared.busy.load(Ordering::SeqCst) {
             self.shared.cancel.cancel();
             self.shared.gate.bg_cancel.cancel();
+        } else if self.shared.gate.running.load(Ordering::SeqCst) {
+            self.shared.gate.abort_next.store(true, Ordering::SeqCst);
+            // The reservation may have become a claim after the first busy check. Cancel it
+            // directly too; its guard clears the sticky bit if `begin` already passed it.
+            if self.shared.busy.load(Ordering::SeqCst) {
+                self.shared.cancel.cancel();
+                self.shared.gate.bg_cancel.cancel();
+            }
         }
     }
     /// Cancel only this instance's BACKGROUND work (a boot preload, a draft prefill, an idle
@@ -678,8 +761,20 @@ impl Handle {
     pub fn abort_retry(&self) {
         self.shared.cancel_retry.cancel();
     }
+    /// A foreground operation still accepts input, even before its start event is consumed.
+    pub fn is_running(&self) -> bool {
+        self.shared.gate.running.load(Ordering::SeqCst)
+    }
     pub fn is_busy(&self) -> bool {
         self.shared.busy.load(Ordering::SeqCst)
+    }
+    /// Whether the run that holds the session is winding down: an abort ([`Handle::abort`]) or
+    /// the run's own loop guard set `cancel`, so the run takes no further tool batch and leaves
+    /// the queue undrained. A front end must send input typed now as a new prompt, never as a
+    /// steering message ([`Handle::steer`]) that nothing would deliver. `false` while the
+    /// session is idle: the next claim resets the token.
+    pub fn is_aborting(&self) -> bool {
+        self.shared.busy.load(Ordering::SeqCst) && self.shared.cancel.is_cancelled()
     }
     /// The queues (steering, follow-up) when they changed since the last report, and clear the
     /// change mark. A front end that changed the queue from another thread reports the change
@@ -702,6 +797,7 @@ impl Handle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     fn handle(steer: QueueMode, follow: QueueMode) -> Handle {
         Handle {
@@ -726,6 +822,41 @@ mod tests {
         assert_eq!(h.queued().1, vec!["retained instruction"]);
         h.request_wrap_up(WrapUpReason::Signal);
         assert_eq!(h.wrap_up_reason(), Some(WrapUpReason::TimeLimit));
+    }
+
+    /// O-386: a front end that waits instead of polling is woken when the state it cannot see
+    /// through its own channels changes: a wrap-up request and an interruption.
+    #[test]
+    fn the_attention_waker_fires_on_wrap_up_and_interrupt() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        let fired = Arc::new(AtomicUsize::new(0));
+        let count = fired.clone();
+        h.set_attention_waker(Arc::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        }));
+        h.request_wrap_up(WrapUpReason::TimeLimit);
+        assert_eq!(fired.load(Ordering::SeqCst), 1, "the wrap-up wakes the front end");
+        h.interrupt();
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            2,
+            "the interruption wakes the front end"
+        );
+        // The state is set before the wake, so a woken front end that re-checks sees it.
+        assert!(h.interrupted());
+        assert_eq!(h.wrap_up_reason(), Some(WrapUpReason::TimeLimit));
+    }
+
+    /// A waker is front-end code: a panic in it must not unwind into the session that set the
+    /// state (the state is already in place and the front end re-checks it).
+    #[test]
+    fn a_panicking_attention_waker_is_contained() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.set_attention_waker(Arc::new(|| panic!("injected waker panic")));
+        h.request_wrap_up(WrapUpReason::Signal);
+        assert_eq!(h.wrap_up_reason(), Some(WrapUpReason::Signal));
+        h.interrupt();
+        assert!(h.interrupted());
     }
 
     #[test]
@@ -820,6 +951,24 @@ mod tests {
         assert_eq!(h.dequeue(), vec!["s1"]);
     }
 
+    /// `is_aborting` is the run the front end must not steer: a claimed session whose run was
+    /// cancelled. Idle, or busy with a clear token, is a run that still takes input.
+    #[test]
+    fn is_aborting_needs_a_claimed_cancelled_run() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        assert!(!h.is_aborting(), "idle");
+        h.shared.busy.store(true, Ordering::SeqCst);
+        assert!(!h.is_aborting(), "a run that was not cancelled takes input");
+        h.abort();
+        assert!(h.is_aborting());
+        // The run ends and the next claim resets the token (`Session::begin`).
+        h.shared.busy.store(false, Ordering::SeqCst);
+        assert!(!h.is_aborting(), "a stale abort is not the next run");
+        h.shared.busy.store(true, Ordering::SeqCst);
+        h.shared.cancel.reset();
+        assert!(!h.is_aborting());
+    }
+
     /// A background cancel never reaches the user's run: `cancel` stays clear, and a run
     /// claimed after it (`Session::begin` resets `bg_cancel` and `bg_abort`) starts clean.
     /// A background request that has claimed but not armed yet sees it.
@@ -896,6 +1045,21 @@ mod tests {
         assert_eq!(h.shared.take_follow_up(), ["already admitted"]);
         assert_eq!(h.dequeue(), ["racing callback"]);
         assert!(!h.shared.has_input());
+    }
+
+    #[test]
+    fn inactive_inbox_messages_are_taken_for_their_own_session() {
+        let h = handle(QueueMode::All, QueueMode::OneAtATime);
+        h.shared.bind_session("old");
+        h.follow_up_for("old", "admitted before switch".into());
+        h.shared.bind_session("new");
+        h.follow_up_for("new", "new inbox".into());
+        assert_eq!(
+            h.take_inactive_inbox(),
+            vec![("old".to_string(), vec!["admitted before switch".to_string()])]
+        );
+        assert!(h.take_inactive_inbox().is_empty());
+        assert_eq!(h.dequeue(), ["new inbox"]);
     }
 
     #[test]

@@ -20,7 +20,13 @@ type Plan = (&'static str, SocketAddr, SocketAddr);
 fn address(value: SocketAddr) -> String {
     let ip = match value.ip() {
         IpAddr::V4(ip) => format!("{:08X}", u32::from_ne_bytes(ip.octets())),
-        IpAddr::V6(ip) => ip.octets().chunks_exact(4).map(hex_word).collect(),
+        IpAddr::V6(ip) => ip
+            .octets()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|word| hex_word(word))
+            .collect(),
     };
     format!("{ip}:{:04X}", value.port())
 }

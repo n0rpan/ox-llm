@@ -136,7 +136,9 @@ Nothing waits for an answer. The run goes on with its other work. The owner answ
 
 ## The bash sandbox
 
-The sections below describe the OS sandbox, which is on for unattended runs and for an interactive run with `--sandbox` or `oxa.sandbox.interactive`. On Linux, bash then runs in a `bubblewrap` (`bwrap`) sandbox. Where the OS sandbox is wanted and `bwrap` is not usable, the bash tool is disabled and oxa says so at start-up; oxa does not fall back to running those commands unsandboxed. Without the OS sandbox (an interactive run by default, and yolo), bash and hooks run with your rights; see [Interactive and unattended runs](#interactive-and-unattended-runs).
+The sections below describe the OS sandbox, which is on for unattended runs and for an interactive run with `--sandbox` or `oxa.sandbox.interactive`. On Linux, bash then runs in a `bubblewrap` (`bwrap`) sandbox. Where the OS sandbox is wanted and `bwrap` is not usable, the bash tool is disabled and oxa says so at start-up; oxa does not fall back to running those commands unsandboxed. Without the OS sandbox (an interactive run by default, and yolo), bash and hooks run with your rights; see [Interactive and unattended runs](#interactive-and-unattended-runs). Unattended runs include ownerless RPC and headless runs that start or resume a pursuing goal. Exec hooks retain their dedicated sandbox and no-network policy. Host bash uses a cleared environment with toolchain variables and keeps GitHub output redaction for every GitHub CLI credential. Network-disabled model bash also masks host runtime IPC.
+
+Off Linux (macOS) there is no OS sandbox. Bash and exec hooks run as `bash -c` with your full user rights, every result is flagged as unsandboxed, and oxa says so at start-up and to the model. The guards that live inside oxa stay: the file tools' denials and protected paths, credential masking, permissions and trust, and `--offline` for oxa's own provider and network calls. Bash gets the same cleared base environment as the Linux sandbox (a fixed `PATH`, `HOME`, `LANG`, `TERM`, toolchain variables), so credential variables of the oxa process are not inherited. A refused bash network cannot be enforced there: when `oxa.sandbox.net: "off"` or `--offline` asks for one, bash is disabled for that run (start-up and the model's environment note say so) instead of running a command with the network the owner turned off. With the network on, commands run as you and every result is flagged unsandboxed.
 
 What a command sees inside the OS sandbox:
 
@@ -160,7 +162,12 @@ Tools that insist on "owned by root or the caller" (stat/ownership checks, some 
 
 The same mapping limits what a command can write as metadata. Setting a POSIX ACL (`setfacl`, or `fsetxattr` on `system.posix_acl_access`) that names a user id or group id other than the mapped ones fails with `EINVAL`, because the kernel cannot represent an unmapped id in the namespace; the same goes for `chown` to another id. Named entries for your own uid and gid, and ACLs with only owner, group, mask and other entries, work. A test or script that needs a foreign named uid in an ACL has to run outside the sandbox.
 
-Inside the OS sandbox the environment of a command starts empty. It gets `PATH`, `HOME`, `LANG`, `TERM` and `AI_AGENT`, the toolchain variables that are set (for example `CARGO_HOME`, `RUSTUP_HOME`, `GOPATH`, `NVM_DIR`, `UV_CACHE_DIR`, and the `MISE_*` variables), and the variables oxa sets for the session (`OXA_SESSION_ID`, and `OXA_SESSION_FILE` unless the session is ephemeral). Every other variable is dropped, including your API keys and tokens. A toolchain variable whose name contains `TOKEN`, `SECRET`, `KEY`, `PASSWORD`, `PASSWD`, `CREDENTIAL`, `AUTH`, `COOKIE` or `SESSION` is never passed.
+The environment of a command starts empty. It gets `PATH`, `HOME`, `LANG`, `TERM` and `AI_AGENT`, the toolchain variables that are set (for example `CARGO_HOME`, `CARGO_TARGET_DIR`, `RUSTUP_HOME`, `GOPATH`, `NVM_DIR`, `UV_CACHE_DIR`, and the `MISE_*` variables), and the variables oxa sets for the session (`OXA_SESSION_ID`, and `OXA_SESSION_FILE` unless the session is ephemeral). Every other variable is dropped, including your API keys and tokens. A toolchain variable whose name contains `TOKEN`, `SECRET`, `KEY`, `PASSWORD`, `PASSWD`, `CREDENTIAL`, `AUTH`, `COOKIE` or `SESSION` is never passed.
+
+To reuse a Cargo cache across worker worktrees, set `CARGO_TARGET_DIR` in the
+environment that starts the workers and add that dedicated directory to
+`oxa.sandbox.writePaths` in user settings. The sandbox mounts the directory
+through the user setting.
 
 ### Starting in your home directory
 
@@ -192,6 +199,8 @@ These paths are masked inside the OS sandbox, and the file tools refuse them in 
 The list applies to your `$HOME` and also to the home of your account from the passwd database, so starting oxa with another `HOME` never exposes the real `~/.ssh` or the cloud keys.
 
 Exception for the GitHub CLI: in a sandbox with network access (not `--offline`), `~/.config/gh` is bound read-only so `gh` works (its host list and token file are readable there). With `--offline` there is no network and `gh` fails. A token in the system keyring is not reachable from inside the sandbox, so at start-up, when the network is on and `gh` is installed, oxa runs `gh auth token` once outside the sandbox (3 second limit; any failure is ignored). It passes the result to commands that have the network as `GH_TOKEN`, with `GH_HOST=github.com`. This happens in workspace and full modes with network only, never with `--offline` or `oxa.sandbox.net: off`. The token is not logged and is not in the session file, the transcript or the prompt. An exact copy of it in command output is replaced with `[redacted]` before the model sees it. Any command that has the network can use the token, for example to call the GitHub API, so log in with a token that has only the scopes you accept. It is handed to bwrap through a pipe, not on its command line, so other processes of your user cannot read it from the process list. Every other entry stays masked.
+
+GitHub reads without a token in the sandbox: the `wait` tool accepts the host-side read probes `pr_view`, `pr_checks`, `run_log_failed` and `issue_view`. They run `gh` outside the sandbox with your login, read only, in fixed argument vectors with a number from the call and the repository from the `origin` remote (github.com only). `gh` must be found in a trusted PATH directory. A failed-step log is cut to its last 24 KB and scrubbed of credentials before the model sees it. They refuse with `--offline` and in a runner-owned worker session. The token never enters the sandbox.
 
 Other secrets are not on the list. A project's `.env` file, a token in a project configuration file, and files outside your home directory are readable by bash, and by the file tools in the modes that allow reads. Keep such files out of the project when the model should not see them, or use `plan` or `--offline` for the session.
 
@@ -245,7 +254,7 @@ The harness connects to one place by default: the engine, on loopback (`127.0.0.
 
 ### Bash network
 
-Bash has network access by default in `workspace` and `ask` modes. `oxa.sandbox.net: "off"` in user settings removes it from bash in every mode.
+Bash has network access by default in `workspace` and `ask` modes. `oxa.sandbox.net: "off"` in user settings removes it from bash in every mode. Off Linux there is no OS sandbox to enforce this, so bash is disabled there while the setting is off (see [The bash sandbox](#the-bash-sandbox)).
 
 This matters because the model can be steered by text it reads. A steered model can run a command that sends what bash can read to any host. Bash can read the project, the system files, and the parts of your home directory that the deny-list does not mask. In `ask` mode you approve each command, but the approval does not show where the command sends its output. When the project holds secrets, set `oxa.sandbox.net: "off"`, use `ask` mode, or run with `--offline`.
 

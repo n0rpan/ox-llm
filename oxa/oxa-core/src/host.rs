@@ -183,6 +183,10 @@ impl CoreHost {
         let (reply, answer) = mpsc::channel();
         let tx = self.tx.lock().unwrap_or_else(|p| p.into_inner());
         tx.send(HostRequest { action, reply }).map_err(|_| gone())?;
+        drop(tx);
+        // The request is in the channel before the wake: a front end that waits instead of
+        // polling (see `Handle::set_attention_waker`) finds it when it serves the host.
+        self.shared.gate.attention.notify();
         Ok(answer)
     }
 
@@ -982,20 +986,51 @@ fn gate(st: &mut SessionState, a: &Access, ui: &mut dyn Ui) -> Result<(), OxaErr
     gate_pinned(st, a, ui).map(|_| ())
 }
 
+/// [`gate`] for a command that runs in `cwd` rather than in the session's directory: an
+/// extension may pass its own `cwd` to `oxa.exec`, and a relative operand is classified against
+/// the directory the sandbox actually runs it in.
+fn gate_at(
+    st: &mut SessionState,
+    a: &Access,
+    cwd: &std::path::Path,
+    ui: &mut dyn Ui,
+) -> Result<(), OxaError> {
+    gate_pinned_in(st, a, cwd, ui).map(|_| ())
+}
+
 /// [`gate`], returning the real location the verdict covers (#518, `Policy::decide_pinned`).
 fn gate_pinned(
     st: &mut SessionState,
     a: &Access,
     ui: &mut dyn Ui,
 ) -> Result<Option<std::path::PathBuf>, OxaError> {
-    let (decision, pin) = st.policy.decide_pinned(st.mode, a, &st.cwd);
+    let cwd = st.cwd.clone();
+    gate_pinned_in(st, a, &cwd, ui)
+}
+
+/// [`gate_pinned`] in an explicit directory.
+fn gate_pinned_in(
+    st: &mut SessionState,
+    a: &Access,
+    cwd: &std::path::Path,
+    ui: &mut dyn Ui,
+) -> Result<Option<std::path::PathBuf>, OxaError> {
+    let (decision, pin) = st.policy.decide_pinned(st.mode, a, cwd);
     match decision {
         Decision::Allow => Ok(pin),
         Decision::Deny(reason) => Err(OxaError::new(codes::DENIED, reason)),
         Decision::Ask => {
             // #1512 S2: a dangerous command asks first; its answer covers only its rule keys.
-            let danger = st.policy.danger_ask(a, &st.cwd);
+            let danger = st.policy.danger_ask(a, cwd);
             if !danger.is_empty() {
+                // #1512 S5: an extension's exec takes the same unattended answer as the bash
+                // tool: refused, or filed at the approval desk for the owner, never paused for.
+                if !ui.interactive() {
+                    // Classified, and filed, in the directory the command actually runs in.
+                    if let Some(text) = st.policy.danger_unattended(a, cwd) {
+                        return Err(OxaError::new(codes::DENIED, text));
+                    }
+                }
                 let (keys, reasons): (Vec<String>, Vec<String>) = danger.into_iter().unzip();
                 return match ui.ask_dangerous(a, &reasons, &keys) {
                     DangerAnswer::Once => Ok(pin),
@@ -1031,12 +1066,13 @@ fn exec_gated(st: &mut SessionState, spec: ExecSpec, ui: &mut dyn Ui) -> Result<
     if spec.net {
         oxa_proto::check_online("a command with network access")?; // P4: no network grant offline
     }
-    gate(
+    gate_at(
         st,
         &Access::Exec {
             command: spec.command.clone(),
             net: spec.net,
         },
+        &spec.cwd,
         ui,
     )?;
     st.sandbox.check()?;
@@ -1316,6 +1352,7 @@ fn notice(sink: &mut dyn EventSink, level: Level, text: impl Into<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Handle;
     use oxa_config::{Dirs, Settings};
     use oxa_proto::{Engine, FrozenPrefix, HeadlessUi, Mode, ThinkingLevel, VecSink};
     use oxa_sandbox::NoSandbox;
@@ -1496,6 +1533,71 @@ mod tests {
         assert!(gate_pinned(&mut f.st, &plain, &mut headless).is_ok());
     }
 
+    /// #1512 S5: an extension's dangerous exec in a run with no one to ask files an approval
+    /// request at the desk (request mode), like the bash tool, instead of the S2 dead-end refusal.
+    #[test]
+    fn extension_exec_gate_unattended_files_an_approval_request() {
+        let mut f = fixture();
+        let desk =
+            Arc::new(oxa_perm::ApprovalDesk::open(&f.env.root().join("agent")).expect("approval desk"));
+        f.st.policy = Box::new(
+            oxa_perm::ModePolicy::new()
+                .with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new())
+                .with_desk(
+                    desk.clone(),
+                    "s1".into(),
+                    oxa_perm::UnattendedMode::Request,
+                    false,
+                ),
+        );
+        let dangerous = Access::Exec {
+            command: "git push --force origin main".into(),
+            net: false,
+        };
+        let mut headless = HeadlessUi::default();
+        let err = gate_pinned(&mut f.st, &dangerous, &mut headless).expect_err("not run");
+        assert_eq!(err.code, codes::DENIED);
+        assert!(
+            err.message.starts_with("Needs owner approval (request "),
+            "{}",
+            err.message
+        );
+        assert_eq!(desk.pending().expect("pending").len(), 1);
+    }
+
+    /// #1512 S5: an extension may run in a directory other than the session's. The unattended
+    /// classification and the filed request use that directory, so the request describes what
+    /// will actually run.
+    #[test]
+    fn extension_exec_unattended_files_the_request_in_the_execution_directory() {
+        let mut f = fixture();
+        let desk =
+            Arc::new(oxa_perm::ApprovalDesk::open(&f.env.root().join("agent")).expect("approval desk"));
+        f.st.policy = Box::new(
+            oxa_perm::ModePolicy::new()
+                .with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new())
+                .with_desk(
+                    desk.clone(),
+                    "s1".into(),
+                    oxa_perm::UnattendedMode::Request,
+                    false,
+                ),
+        );
+        let exec_dir = f.env.work().join("deep");
+        std::fs::create_dir_all(&exec_dir).expect("exec dir");
+        let dangerous = Access::Exec {
+            command: "git push --force origin main".into(),
+            net: false,
+        };
+        let mut headless = HeadlessUi::default();
+        let err =
+            super::gate_pinned_in(&mut f.st, &dangerous, &exec_dir, &mut headless).expect_err("not run");
+        assert_eq!(err.code, codes::DENIED);
+        let filed = desk.pending().expect("pending");
+        assert_eq!(filed.len(), 1, "one request");
+        assert_eq!(filed[0].cwd, exec_dir.display().to_string());
+    }
+
     /// #1512 S5: a dangerous exec in a run with no one to ask is not paused for. The tool error
     /// names the approval request, and the same text goes out as a Warning notice in the event
     /// stream (the JSON stream the lead and the runner read). The tool does not run.
@@ -1563,6 +1665,41 @@ mod tests {
         let (level, text) = notice.expect("a notice in the event stream");
         assert!(matches!(level, Level::Warning), "{text}");
         assert!(text.starts_with("Needs owner approval (request "), "{text}");
+    }
+
+    /// O-386: a host request posted while the front end waits (instead of polling) wakes it, so
+    /// the request is served at once and not at the front end's next idle tick. The request is
+    /// in the channel before the wake, so a woken front end finds it.
+    #[test]
+    fn a_posted_host_request_wakes_the_front_end() {
+        let f = fixture();
+        let fired = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = fired.clone();
+        let handle = Handle {
+            shared: f.st.shared.clone(),
+        };
+        handle.set_attention_waker(Arc::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        }));
+        f.host
+            .call(HostAction::SendMessage {
+                custom_type: "test".into(),
+                content: "wake".into(),
+                display: true,
+                details: Value::Null,
+                deliver: Delivery::FollowUp,
+                trigger_turn: true,
+            })
+            .expect("accepted");
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            1,
+            "the posted request wakes the front end"
+        );
+        assert!(
+            f.rx.try_recv().is_ok(),
+            "the request is in the channel the front end serves"
+        );
     }
 
     /// #554 / #557: host writes use the same truthful unattended refusal as built-in tools,

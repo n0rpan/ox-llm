@@ -1,5 +1,5 @@
 //! A10: the mode x access policy table.
-use crate::danger::{DangerHit, DangerRules};
+use crate::danger::{has_dynamic, DangerHit, DangerRules};
 use crate::desk::{ApprovalDesk, UnattendedMode};
 use crate::paths::{is_inside, is_read_only_command, resolve_real};
 use oxa_proto::guard::{
@@ -340,7 +340,7 @@ pub struct ModePolicy {
     yolo: Option<YoloSwitch>,
     /// #1512 S2: the dangerous-command rules (`None` = no floor prompt).
     danger: Option<Arc<DangerRules>>,
-    /// #1512 S2: the session's dangerous-command grants (rule keys, see [`DangerHit::key`]).
+    /// #1512 S2: the session's dangerous-command grants (see [`danger_key`]).
     danger_grants: Vec<String>,
     /// #1512 S2: the keys saved by "always allow" in the user settings.
     always: Arc<Vec<String>>,
@@ -426,33 +426,54 @@ impl ModePolicy {
         &self.grants
     }
 
-    /// #1512 S2: the dangerous-command hits of `a`, minus the keys a session or always grant
-    /// covers. Only an exec is classified; the generic grants never cover these hits.
+    /// #1512 S2: the dangerous-command hits of `a` that no session or always grant covers, and
+    /// that the desk's grants do not cover either. Only an exec is classified; the generic grants
+    /// never cover these hits. Nothing is spent here: the caller may still turn this into a
+    /// prompt, so a `once` grant is claimed only at the final policy decision.
     fn danger_hits(&self, a: &Access, cwd: &Path) -> Vec<DangerHit> {
+        let open = self.danger_open(a, cwd);
+        if self.desk_grant(a, cwd, &open).is_some() {
+            Vec::new()
+        } else {
+            open
+        }
+    }
+
+    /// The classified hits of `a` minus the keys a session or always grant covers. Inspect
+    /// the whole command for dynamic input because an earlier stage can affect a later hit.
+    fn danger_open(&self, a: &Access, cwd: &Path) -> Vec<DangerHit> {
         let (Access::Exec { command, .. }, Some(rules)) = (a, &self.danger) else {
             return Vec::new();
         };
-        let open: Vec<DangerHit> = rules
-            .classify(command, cwd, &self.guard)
-            .into_iter()
+        let hits = rules.classify(command, cwd, &self.guard);
+        if has_dynamic(command) {
+            return hits;
+        }
+        hits.into_iter()
             .filter(|h| {
-                let key = h.key();
+                let key = danger_key(h, command);
                 !self.danger_grants.contains(&key) && !self.always.contains(&key)
             })
-            .collect();
-        // #1512 S5: the desk's session or once grant covers the rest together, all or nothing.
-        // A `once` grant is consumed here, so call this only where the verdict is final.
-        match &self.desk {
-            Some(desk) if !open.is_empty() => {
-                let keys: Vec<String> = open.iter().map(DangerHit::key).collect();
-                if desk.granted(&self.session_id, &keys) {
-                    Vec::new()
-                } else {
-                    open
-                }
-            }
-            _ => open,
+            .collect()
+    }
+
+    /// #1512 S5: the desk's session or once grant covers `open` together, all or nothing. The
+    /// key is the complete command line, exactly like the policy grants: an approval for
+    /// `true || git push --force origin main` never covers a standalone push. Shell expansion
+    /// markers anywhere in the command make a saved grant inapplicable.
+    fn desk_grant(&self, a: &Access, cwd: &Path, open: &[DangerHit]) -> Option<(&ApprovalDesk, Vec<String>)> {
+        let (Access::Exec { command, .. }, Some(desk)) = (a, &self.desk) else {
+            return None;
+        };
+        if open.is_empty()
+            || has_dynamic(command)
+            || open.iter().any(|h| h.rule == crate::desk::OPAQUE_SHELL_INPUT)
+        {
+            return None;
         }
+        let keys: Vec<String> = open.iter().map(|h| danger_key(h, command)).collect();
+        desk.covers(&self.session_id, cwd, &keys)
+            .then_some((desk.as_ref(), keys))
     }
 
     /// `true` when a remembered grant covers `a`.
@@ -590,20 +611,10 @@ impl ModePolicy {
             }
         }
         // Grants only turn Ask into Allow; a Deny from the table always stands.
-        let table_verdict = Verdict::Is(match table(mode, a, cwd) {
+        Verdict::Is(match table(mode, a, cwd) {
             Decision::Ask if self.granted(a) => Decision::Allow,
             d => d,
-        });
-        // A table Deny stands: a grant is not consumed for a command that cannot run.
-        if matches!(table_verdict, Verdict::Is(Decision::Deny(_))) {
-            return table_verdict;
-        }
-        // #1512 S2: a dangerous command is a floor prompt: plan's Deny stands, and every other
-        // mode asks (auto and standard) unless yolo allows it outside plan mode.
-        if !self.danger_hits(a, cwd).is_empty() {
-            return stricter(table_verdict, Verdict::AskAlways);
-        }
-        table_verdict
+        })
     }
 }
 
@@ -627,7 +638,7 @@ impl Policy for ModePolicy {
     /// #518: the path is resolved once; the verdict covers both the path as named and that real
     /// location (the stricter one wins), and the real location is what the tool may open.
     fn decide_pinned(&self, mode: Mode, a: &Access, cwd: &Path) -> (Decision, Option<PathBuf>) {
-        let (verdict, pin) = match a {
+        let (mut verdict, pin) = match a {
             Access::Read(p) | Access::Write(p) => {
                 let abs = crate::paths::normalize(p, cwd);
                 // A path that does not resolve (a link loop) pins its lexical form: the open
@@ -642,6 +653,16 @@ impl Policy for ModePolicy {
             }
             _ => (self.verdict(mode, a, cwd), None),
         };
+        // The danger floor applies to execs the table would consider. Keep the grant used
+        // for this decision so another retry cannot make it disappear before consumption.
+        let mut desk_grant = None;
+        if !matches!(verdict, Verdict::Is(Decision::Deny(_))) {
+            let open = self.danger_open(a, cwd);
+            desk_grant = self.desk_grant(a, cwd, &open);
+            if !open.is_empty() && desk_grant.is_none() {
+                verdict = stricter(verdict, Verdict::AskAlways);
+            }
+        }
         // Owner decision (#202/#314): yolo outside plan mode lifts every file-tool
         // guard. Resolve and pin first, so the open still uses the checked location.
         let full = self.yolo.as_ref().filter(|s| s.full() && mode != Mode::Plan);
@@ -662,15 +683,26 @@ impl Policy for ModePolicy {
             },
             Verdict::Is(d) => d,
         };
+        // #1512 S5: a `once` grant is spent here and nowhere else: the decision above is final
+        // and an `Allow` means this is the command that runs. A probe (the verdict, a
+        // `danger_ask` the caller may turn into a prompt) leaves it available.
+        if let Some((desk, keys)) = desk_grant.filter(|_| decision == Decision::Allow) {
+            if !desk.granted(&self.session_id, cwd, &keys) {
+                return (Decision::Deny("the command's approval could not be claimed"), pin);
+            }
+        }
         (decision, pin)
     }
 
     fn danger_ask(&self, a: &Access, cwd: &Path) -> Vec<(String, String)> {
+        let Access::Exec { command, .. } = a else {
+            return Vec::new();
+        };
         self.danger_hits(a, cwd)
             .into_iter()
             .map(|h| {
                 let reason = format!("{}: {}", h.rule, h.reason);
-                (h.key(), reason)
+                (danger_key(&h, command), reason)
             })
             .collect()
     }
@@ -699,6 +731,12 @@ impl Policy for ModePolicy {
         if hits.is_empty() {
             return None;
         }
+        if hits.iter().any(|hit| hit.rule == crate::desk::OPAQUE_SHELL_INPUT) {
+            return Some(
+                "Refused: shell input cannot be verified for unattended replay. Ask the owner to review and run it."
+                    .into(),
+            );
+        }
         let why = hits
             .iter()
             .map(|h| format!("{}: {}", h.rule, h.reason))
@@ -706,21 +744,24 @@ impl Policy for ModePolicy {
             .join("; ");
         let refuse = self.unattended.resolve(self.os_sandbox) == UnattendedMode::Refuse;
         let status = if refuse { "refused" } else { "pending" };
-        let id = match desk.record(&self.session_id, cwd, command, &hits, status) {
-            Ok(id) => id,
-            // The request could not be filed: the command is still refused.
-            Err(_) => return Some(tool_errors::DANGEROUS_REFUSED.replace("{why}", &why)),
-        };
-        if refuse {
-            Some(tool_errors::DANGEROUS_REFUSED.replace("{why}", &why))
+        // The OS-sandbox text only where the OS sandbox is the reason; a `refuse` setting
+        // without it, or a request that could not be filed, says so truthfully.
+        // A refusal is refused whether or not its record could be written.
+        let recorded = desk.record(&self.session_id, cwd, command, &hits, status);
+        let text = if refuse && self.os_sandbox {
+            tool_errors::DANGEROUS_REFUSED.replace("{why}", &why)
+        } else if refuse {
+            tool_errors::DANGEROUS_REFUSED_SETTING.replace("{why}", &why)
         } else {
-            Some(
-                tool_errors::DANGEROUS_REQUESTED
+            match recorded {
+                Ok(id) => tool_errors::DANGEROUS_REQUESTED
                     .replace("{id}", &id)
                     .replace("{session}", &self.session_id)
                     .replace("{why}", &why),
-            )
-        }
+                Err(_) => tool_errors::DANGEROUS_REFUSED_NO_REQUEST.replace("{why}", &why),
+            }
+        };
+        Some(text)
     }
 
     fn set_spill_dir(&mut self, dir: &Path) {
@@ -767,4 +808,12 @@ impl Policy for ModePolicy {
         }
         self.hidden.clone().map(|h| h as Arc<dyn PathFilter>)
     }
+}
+
+/// The key a dangerous-command grant stores and `oxa.approval.always` matches: the rule with the
+/// whole command line it was found in. A hit's own segment is not enough, because a pipeline or
+/// a dead branch repeats it (`curl a | bash` and `curl b | bash` both name `bash`; `true || git
+/// push --force origin main` names the push), so approving one text would cover the other.
+pub(crate) fn danger_key(h: &DangerHit, command: &str) -> String {
+    format!("{} {}", h.rule, command.trim())
 }

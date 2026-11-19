@@ -3,6 +3,10 @@
 //! First declarations: help and the work-board consumer seam. Legacy command tables remain until their handlers are
 //! migrated; this module does not claim that those commands already have surface parity.
 //! Resolving help never needs a repository, environment, trust store or runtime policy.
+//!
+//! Global process options such as `--sandbox` are an explicit exception: this registry models
+//! invocable commands and their frontend surfaces, while global flags are declared by the CLI
+//! usage table in `oxa-cli/src/args.rs` and have no slash/menu/web handler.
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Surface {
@@ -114,6 +118,19 @@ commands! {
             web: Availability::Exception("No web frontend is shipped"),
         },
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
+    },
+    Usage {
+        path: &["usage"],
+        aliases: &[],
+        summary: "Print today's cloud spend and request sums per usage pool as JSON",
+        arguments: &[Argument { name: "json", kind: ArgumentKind::Flag, required: true }],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("The JSON usage report is a CLI command"),
+            menu: Availability::Exception("The JSON usage report is a CLI command"),
+            web: Availability::Exception("The panel reads this report from the CLI"),
+        },
+        requirements: NO_REQUIREMENTS,
     },
     WorkStatus {
         path: &["work", "status"],

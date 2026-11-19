@@ -42,6 +42,7 @@ impl Sandbox for ShSandbox {
             output,
             exit: out.status.code(),
             timed_out: false,
+            unsandboxed: false,
         }
     }
 }
@@ -593,6 +594,7 @@ impl Sandbox for Hold {
             output: Vec::new(),
             exit: None,
             timed_out: false,
+            unsandboxed: false,
         }
     }
 }

@@ -1,7 +1,8 @@
 //! Deterministic step recovery; every next action follows a durable checkpoint.
-use crate::{acceptance, checked, dirty_worktree, git, output, state, supervise, tree, worker};
+use crate::{acceptance, checked, derived, dirty_worktree, git, output, state, supervise, tree, worker};
 use crate::{
-    Outcome, Record, Result, RunError, RunPolicy, SupervisorOperation, SupervisorRequest, WorkerTokens,
+    Acceptance, CheckOrigin, Outcome, Record, Result, RunError, RunPolicy, SupervisorOperation,
+    SupervisorRequest, WorkerTokens,
 };
 use serde::{Deserialize, Serialize};
 use state::{CheckpointKind, CheckpointObserver, State, Step, Writer};
@@ -96,12 +97,14 @@ pub(crate) struct Runner<'a> {
     pub repo: &'a Path,
     pub binary: &'a Path,
     pub policy: &'a RunPolicy,
+    pub local_checks: &'a derived::LocalCheckCommands,
     pub lock: &'a File,
     pub writer: &'a mut Writer,
     pub observer: &'a dyn CheckpointObserver,
     pub scrub_note: &'a (dyn Fn(&crate::ProblemNote) -> Option<crate::ProblemNote> + Sync),
     pub base_alias: Option<&'a tree::BaseAlias>,
     pub native: bool,
+    pub owner_selected_model: bool,
     #[cfg(target_os = "linux")]
     pub managed_steering: Option<&'a crate::managed_steering::Launch>,
 }
@@ -178,6 +181,7 @@ impl Runner<'_> {
                         &tree,
                         &task,
                         &prompt,
+                        self.owner_selected_model,
                         self.policy,
                         self.lock,
                         session.as_deref(),
@@ -198,6 +202,7 @@ impl Runner<'_> {
                                 .unwrap_or_else(|| "worker session checkpoint failed".into()),
                         ));
                     }
+                    let mut declared: Option<derived::Declaration> = None;
                     let error = match &result {
                         Ok(worker) => {
                             if matches!(worker.result.outcome, crate::WorkerOutcome::Interrupted)
@@ -224,6 +229,7 @@ impl Runner<'_> {
                                 }
                             }
                             state.record.session_id = worker.session.clone();
+                            declared = Some(worker.declared.clone());
                             worker.failure()
                         }
                         Err(error) => {
@@ -237,6 +243,12 @@ impl Runner<'_> {
                         .as_mut()
                         .ok_or("missing task execution checkpoint")?;
                     point.worker_error = error;
+                    // Declarations accumulate across rounds: a repair cannot withdraw what
+                    // an earlier run asked to be verified (#1442).
+                    point.declared = derived::merge_declaration(
+                        point.declared.take(),
+                        declared.as_ref().unwrap_or(&derived::Declaration::Absent),
+                    );
                     point.merge_error =
                         tree::ensure_merged(self.policy, &tree, &point.base, &task.branch).err();
                     self.writer
@@ -260,11 +272,80 @@ impl Runner<'_> {
                     let point = point(state)?;
                     let merge =
                         tree::ensure_merged(self.policy, &tree, &point.base, &state.task.branch).err();
+                    // Run frozen static checks and the local compile precheck. Declared
+                    // acceptance crates require hosted test evidence.
+                    let declared = point.declared.clone().unwrap_or_default();
+                    let mut requires_hosted = !declared.is_empty();
+                    let initial = point.initial.clone();
+                    let mut commands: Vec<(CheckOrigin, String)> = point
+                        .commands
+                        .iter()
+                        .map(|command| (CheckOrigin::Settings, command.clone()))
+                        .collect();
+                    let mut could_not_run = Vec::new();
+                    let plan = supervise(
+                        self.binary,
+                        &tree,
+                        SupervisorRequest {
+                            source: self.repo.to_path_buf(),
+                            operation: SupervisorOperation::ChangedPaths {
+                                base: point.base.clone(),
+                                deadline_at_ms: state.deadline_at_ms,
+                            },
+                        },
+                        self.policy,
+                        self.lock,
+                    )
+                    .and_then(|out| {
+                        if out.status.success() {
+                            derived::from_changed_paths_with(&tree, &out.stdout, self.local_checks)
+                        } else {
+                            Err(format!(
+                                "change inventory could not run: {}",
+                                String::from_utf8_lossy(&out.stderr)
+                            ))
+                        }
+                    });
+                    match plan {
+                        Ok(derived) => {
+                            requires_hosted |= derived.requires_hosted;
+                            commands.extend(
+                                derived
+                                    .commands
+                                    .into_iter()
+                                    .map(|command| (CheckOrigin::Derived, command)),
+                            );
+                            if !declared.is_empty() {
+                                match derived::discover(&tree) {
+                                    Some(discovered) => {
+                                        if let Err(missing) =
+                                            derived::validate_declarations(&declared, &discovered)
+                                        {
+                                            could_not_run.extend(missing);
+                                        }
+                                    }
+                                    None => could_not_run.push(
+                                        "the repository's crates cannot be listed, so the declared acceptance tests cannot run"
+                                            .to_owned(),
+                                    ),
+                                }
+                            }
+                        }
+                        Err(reason) => could_not_run.push(reason),
+                    }
+                    if commands.len() > derived::MAX_CHECKS {
+                        could_not_run.push(format!(
+                            "the round would run more than {} checks, so it cannot produce a complete verdict",
+                            derived::MAX_CHECKS
+                        ));
+                        commands.clear();
+                    }
                     let checks = acceptance(
                         self.binary,
                         &tree,
                         self.repo,
-                        &point.commands,
+                        (&state.task.id, state.deadline_at_ms),
+                        &commands,
                         self.policy,
                         self.lock,
                     );
@@ -277,21 +358,49 @@ impl Runner<'_> {
                             .map(|error| format!("merge verification: {error}")),
                     );
                     errors.dedup();
-                    let failures = match checks {
-                        Ok(failures) => failures,
+                    let round = match checks {
+                        Ok(round) => round,
                         Err(error) => {
+                            if errors.is_empty() {
+                                state.record.outcome = Outcome::Unverified;
+                                state.record.detail = format!("checks could not run: {error}");
+                                self.advance(state, Step::Saving)?;
+                                return Ok(());
+                            }
                             errors.push(error);
-                            String::new()
+                            Acceptance::default()
                         }
                     };
-                    if !errors.is_empty() {
+                    state.record.checks = round.runs;
+                    could_not_run.extend(round.unrunnable.lines().map(str::to_owned));
+                    let failures = round.failures;
+                    if !could_not_run.is_empty() {
+                        if !errors.is_empty() {
+                            errors.push(format!("Acceptance could not run:\n{}", could_not_run.join("\n")));
+                            if !failures.is_empty() {
+                                errors.push(format!("Acceptance checks:\n{failures}"));
+                            }
+                            return Err(RunError::Blocked(errors.join("\n")));
+                        }
+                        // Nothing the worker could repair: the round has no verdict.
+                        state.record.outcome = Outcome::Unverified;
+                        let mut detail = format!("checks could not run:\n{}", could_not_run.join("\n"));
+                        if !failures.is_empty() {
+                            detail.push_str(&format!("\nfailed checks:\n{failures}"));
+                        }
+                        state.record.detail = detail;
+                        self.advance(state, Step::Saving)?;
+                    } else if !errors.is_empty() {
                         if !failures.is_empty() {
                             errors.push(format!("Acceptance checks:\n{failures}"));
                         }
                         return Err(RunError::Blocked(errors.join("\n")));
-                    }
-                    if failures.is_empty() {
-                        let initial = point.initial.as_ref().ok_or("missing initial task commit")?;
+                    } else if failures.is_empty() && requires_hosted {
+                        state.record.outcome = Outcome::Unverified;
+                        state.record.detail = crate::HOSTED_TEST_EVIDENCE_REQUIRED.into();
+                        self.advance(state, Step::Saving)?;
+                    } else if failures.is_empty() {
+                        let initial = initial.as_ref().ok_or("missing initial task commit")?;
                         let head = checked(git(self.policy, &tree, &["rev-parse", "HEAD"]))?;
                         let dirty = dirty_worktree(self.binary, &tree, self.repo, self.policy, self.lock)?;
                         state.record.outcome = if head == *initial && !dirty {
