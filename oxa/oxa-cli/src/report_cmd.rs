@@ -1,19 +1,24 @@
 //! O-152: `oxa report-issue` (architect-owned), the code behind the built-in `report-issue`
 //! skill. `draft` collects a scrubbed digest and saves a draft; `submit` shows the exact text
 //! and posts it with `gh issue create` only after the user typed `yes` on the controlling
-//! terminal. Reporting is off until `oxa.reportIssue.repo` names the public repository.
+//! terminal, or pressed Approve in the interactive session's approval dialog (#1552, [`PublishTool`]).
+//! Reporting goes to `oxstack/ox-llm` unless `oxa.reportIssue.repo` names another repository (or turns it off).
 //!
 //! What a draft may contain: the user's description (scrubbed, capped, no transcript records),
 //! the identity facts (version, machine, OS, models). No controller is called. Never prompts, transcripts, file contents,
 //! emails, home paths, user or host names, IP addresses or secrets.
+mod publish_tool;
 mod pushed;
 mod semantic;
 pub(crate) use pushed::PushScan;
+
+pub use publish_tool::PublishTool;
 
 use oxa_config::{Dirs, Env, Settings};
 use oxa_proto::{codes, OxaError};
 use oxa_resources::{read_identity, write_atomic};
 use regex::Regex;
+use serde_json::Value as Json;
 use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
 use std::io::{BufRead, Write};
@@ -26,7 +31,11 @@ const USAGE: &str =
 /// The setting that names the target repository (`OWNER/NAME`); unset = reporting is off.
 pub const SETTING_REPORT_REPO: &str = "oxa.reportIssue.repo";
 
-/// What `submit` says while no repository is configured.
+/// Where oxa's own issues go when `oxa.reportIssue.repo` is unset. A value that is not
+/// `OWNER/NAME` (for example `off`) turns reporting off.
+pub const DEFAULT_REPORT_REPO: &str = "oxstack/ox-llm";
+
+/// What `submit` says while reporting is turned off by the setting.
 pub const REPORT_DISABLED: &str = "Issue reporting is off: the public ox-llm repository does not exist yet. \
 Nothing was posted. The draft stays where it is; you can file it by hand, or set \
 `oxa.reportIssue.repo` (OWNER/NAME) in ~/.oxa/agent/settings.json once the repository exists.";
@@ -274,6 +283,14 @@ pub fn save_draft(
     Ok((path, title, body))
 }
 
+/// [`report_repo`], or [`DEFAULT_REPORT_REPO`] when the setting is unset.
+pub(crate) fn report_target(settings: &Settings) -> Option<String> {
+    match settings.string(SETTING_REPORT_REPO) {
+        None => Some(DEFAULT_REPORT_REPO.to_string()),
+        Some(_) => report_repo(settings),
+    }
+}
+
 /// `OWNER/NAME` from the settings; `None` = reporting is off.
 pub fn report_repo(settings: &Settings) -> Option<String> {
     let repo = settings.string(SETTING_REPORT_REPO)?;
@@ -327,7 +344,11 @@ pub(crate) enum Submission {
 }
 
 pub(crate) fn semantic_reporting(settings: &Settings) -> bool {
-    settings.bool(semantic::SETTING, false)
+    // The consent is the owner's: a trusted project's `.oxa/settings.json` must not enable it.
+    settings
+        .user_value(semantic::SETTING)
+        .and_then(Json::as_bool)
+        .unwrap_or(false)
 }
 
 pub(crate) fn report_ledger(dirs: &Dirs) -> PathBuf {
@@ -335,6 +356,13 @@ pub(crate) fn report_ledger(dirs: &Dirs) -> PathBuf {
 }
 
 pub(crate) use semantic::judge as judge_report;
+
+/// The question before a dedupe comment: the exact comment and where it goes (issue and URL).
+pub(crate) fn comment_question(repo: &str, issue: u64, body: &str) -> String {
+    format!(
+        "Comment on {repo}#{issue}?\nDestination: https://github.com/{repo}/issues/{issue}\n\n{body}\n\nType yes to post: "
+    )
+}
 
 pub(crate) fn submit_record(
     draft: &Path,
@@ -367,7 +395,7 @@ pub(crate) fn submit_record(
         .map_err(w)?;
         return Ok(Submission::Local("draft needs scrubbing".into()));
     }
-    let Some(repo) = report_repo(settings) else {
+    let Some(repo) = report_target(settings) else {
         writeln!(out, "{REPORT_DISABLED}\nDraft: {}", draft.display()).map_err(w)?;
         return Ok(Submission::Disabled);
     };
@@ -413,10 +441,7 @@ pub(crate) fn submit_record(
     let issue = publication.as_ref().and_then(|plan| plan.issue);
     let number;
     let mut args = if let Some(issue) = issue {
-        if confirm(&format!(
-            "Comment on {repo}#{issue}?\n\n{body}\n\nType yes to post: "
-        )) != Some(true)
-        {
+        if confirm(&comment_question(&repo, issue, body)) != Some(true) {
             writeln!(out, "Comment retained locally at {}.", draft.display()).map_err(w)?;
             return Ok(Submission::Local("comment requires confirmation".into()));
         }
@@ -698,6 +723,43 @@ system-wide or put it in a trusted PATH entry outside the project (for example ~
     )
 }
 
+/// The runner `submit` and the in-session publish tool share: the semantic judge for `oxa`,
+/// the trusted `gh` (home as its directory, `GH_HOST` pinned) in semantic mode, the plain
+/// process runner otherwise. One implementation of the publication path.
+pub(crate) fn submit_runner<'a>(
+    dirs: &'a Dirs,
+    cwd: &'a Path,
+    env: &'a Env,
+    settings: &'a Settings,
+) -> impl FnMut(&str, &[String]) -> Option<(i32, String)> + 'a {
+    let mut runner = process_runner(env, cwd, &dirs.home);
+    move |program: &str, args: &[String]| {
+        if program == "oxa" {
+            return semantic::judge(args.first()?, dirs, settings, env).map(|reply| (0, reply));
+        }
+        if semantic_reporting(settings) {
+            let project = cwd
+                .ancestors()
+                .find(|path| path.join(".git").exists())
+                .unwrap_or(cwd);
+            let gh = crate::netguard::trusted_executable_for(
+                "gh",
+                env.get("PATH").map(OsStr::new),
+                Some(project),
+                Some(&dirs.home),
+            )?;
+            let mut command = std::process::Command::new(gh);
+            command
+                .args(args)
+                .current_dir(&dirs.home)
+                .env("GH_HOST", "github.com");
+            command_runner(command, Some(1_048_576), COMMAND_DEADLINE)
+        } else {
+            runner(program, args)
+        }
+    }
+}
+
 /// `oxa report-issue draft|submit ..`. Returns the exit code.
 pub fn run_report_issue(
     words: &[String],
@@ -739,7 +801,8 @@ pub fn run_report_issue(
             writeln!(out, "Draft: {}\n\nTitle: {title}\n\n{body}\n", path.display()).map_err(w)?;
             writeln!(
                 out,
-                "Nothing was posted. To post it, run `oxa report-issue submit {}` in a terminal.",
+                "Nothing was posted. To post it, run `oxa report-issue submit {}` in a terminal. \
+In an interactive oxa session, ask for it to be published: the approval dialog shows this exact text and only the owner's key press posts it.",
                 path.display()
             )
             .map_err(w)?;
@@ -751,31 +814,7 @@ pub fn run_report_issue(
             };
             let settings = Settings::load(dirs, cwd, false);
             let mut confirm = tty_confirm(env);
-            let mut submit_runner = |program: &str, args: &[String]| {
-                if program == "oxa" {
-                    return semantic::judge(args.first()?, dirs, &settings, env).map(|reply| (0, reply));
-                }
-                if semantic_reporting(&settings) {
-                    let project = cwd
-                        .ancestors()
-                        .find(|path| path.join(".git").exists())
-                        .unwrap_or(cwd);
-                    let gh = crate::netguard::trusted_executable_for(
-                        "gh",
-                        env.get("PATH").map(OsStr::new),
-                        Some(project),
-                        Some(&dirs.home),
-                    )?;
-                    let mut command = std::process::Command::new(gh);
-                    command
-                        .args(args)
-                        .current_dir(&dirs.home)
-                        .env("GH_HOST", "github.com");
-                    command_runner(command, Some(1_048_576), COMMAND_DEADLINE)
-                } else {
-                    runner(program, args)
-                }
-            };
+            let mut publish_runner = submit_runner(dirs, cwd, env, &settings);
             let draft = cwd.join(draft);
             submit_with_storage(
                 &draft,
@@ -783,10 +822,44 @@ pub fn run_report_issue(
                 &settings,
                 &ctx,
                 &mut confirm,
-                &mut submit_runner,
+                &mut publish_runner,
                 out,
             )
         }
         _ => Err(usage("report-issue needs `draft` or `submit`")),
+    }
+}
+
+#[cfg(test)]
+mod consent_tests {
+    use super::semantic_reporting;
+    use oxa_config::Settings;
+    use serde_json::json;
+
+    /// The semantic-dedupe consent is the owner's: a trusted project's settings must not grant
+    /// it, because that consent sends the report text to GitHub and to the configured model.
+    #[test]
+    fn a_project_cannot_grant_the_semantic_consent() {
+        let key = "oxa.reportIssue.semanticDedupe";
+        let project_only = Settings::from_values(
+            json!({}),
+            json!({"oxa": {"reportIssue": {"semanticDedupe": true}}}),
+        );
+        assert!(
+            !semantic_reporting(&project_only),
+            "a project file granted consent"
+        );
+        let user_on = Settings::from_values(
+            json!({"oxa": {"reportIssue": {"semanticDedupe": true}}}),
+            json!({}),
+        );
+        assert!(semantic_reporting(&user_on), "the owner's own switch must work");
+        let user_off_project_on = Settings::from_values(
+            json!({"oxa": {"reportIssue": {"semanticDedupe": false}}}),
+            json!({"oxa": {"reportIssue": {"semanticDedupe": true}}}),
+        );
+        assert!(!semantic_reporting(&user_off_project_on));
+        assert!(!semantic_reporting(&Settings::from_values(json!({}), json!({}))));
+        assert_eq!(key, super::semantic::SETTING);
     }
 }

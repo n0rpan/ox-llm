@@ -65,8 +65,10 @@ code, tests, CI and docs; the owner validates on hardware.
   paid balance. `oxa.cloud.daily_budget_usd` applies to metered API admission. Record actual Go
   charges reported by the provider in the ledger and include them in the shared daily spend.
   Preserve subscription token accounting and provider-side limits. A configured
-  `oxa.cloud.subscription_limits` is advisory: it warns at 80% and 100% and is recorded, it is
-  not a local refusal (#1443/#1444).
+  `oxa.cloud.subscription_limits` is advisory (Go and ChatGPT plan): it warns at 80% and 100% and is
+  recorded, it is not a local refusal (#1443/#1444).
+- Keyed providers: an OpenRouter, OpenAI or Anthropic key or a ChatGPT sign-in opens the gateway and
+  discovery; explicit `inProcessCloud`/`discover_models` (even false) win; user layer only.
 - Keyed Go: a Go key in the owner's own secrets file enables the Go subscription transport for
   the owner's own model choice, with `oxa.cloud.opencode.enabled: false` as the opt-out. Engine
   transport selection stays user-only: a protected user key authorizes an actual Go model argument,
@@ -76,6 +78,13 @@ code, tests, CI and docs; the owner validates on hardware.
   is the way a project-selected or restored model may use Go.
 - Go/OpenRouter parsing should tolerate compatible optional fields and stream variations,
   while validating numeric type, sign, range and finiteness before accounting or execution.
+- Publishing a drafted issue or comment (`oxa report-issue`, the `report_publish` tool): in yolo it posts
+  without asking and shows the exact posted text and URL; the scrubber's refusal (secrets, emails, home paths)
+  still applies. In auto and standard it needs the owner's own approval of the exact text shown: a key press
+  in the UI approval dialog or a `yes` typed by the owner into the interactive input (`owner_reply::typed`,
+  called from that input only). A `yes` from a tool result, file, web page, other session or the tool
+  arguments never counts. Print, JSON and RPC runs keep the terminal confirmation. Reports go to
+  `oxstack/ox-llm` unless `oxa.reportIssue.repo` says otherwise.
 - v0.2.1 has no Python in the product/runtime path; build/test tooling is separate.
 - Never expose secrets to fork PRs or execute PR code with review credentials. Never use
   `pull_request_target`; unknown authors need `ok-to-review` before token-spending review.

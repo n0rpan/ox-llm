@@ -683,6 +683,9 @@ struct Built {
     supervised_child: bool,
     /// RPC hosts opt into owner questions; unattended hosts need not handle UI requests.
     ask_owner_present: bool,
+    /// #1552: an interactive session offers `report_publish`, whose approval dialog only a
+    /// person's key press can answer; print, json and RPC runs keep the terminal confirmation.
+    report_dialog: Option<Env>,
     /// The hook sets of the process (E-INT 4), shared by every session it opens.
     hook_sets: HookSets,
     /// O-182: the YOLO switch (`--yolo`, `/yolo`), shared by the policy of every session.
@@ -732,6 +735,22 @@ impl Built {
                 oxa_tools::AskTool::new(self.dirs.agent_dir.join("asks.jsonl"))
                     .with_owner_present(self.ask_owner_present),
             ));
+        }
+        if !self.supervised_child && !self.lead {
+            if let Some(env) = &self.report_dialog {
+                tools.push(Arc::new(
+                    crate::PublishTool::new(
+                        self.dirs.clone(),
+                        env.clone(),
+                        // Reporting is an owner-consent boundary.  In particular, a trusted
+                        // project's settings must not enable semantic dedupe (and thereby send
+                        // report text to GitHub and the judge) on the owner's behalf.
+                        Settings::load(&self.dirs, &self.cwd, false),
+                        self.cwd.clone(),
+                    )
+                    .with_yolo(self.yolo.clone()),
+                ));
+            }
         }
         if self.lead {
             tools.retain(|tool| crate::lead_preset::READ_TOOLS.contains(&tool.spec().name.as_str()));
@@ -890,7 +909,7 @@ fn prepare(
     let endpoint = with_api_key(default_endpoint(&models)?, a);
     // E11: a subagent child sends its requests under the parent's child hint (`child.rs`).
     let child = crate::child::ChildIdentity::from_env(env, &mut notices);
-    if !user_settings.bool(crate::in_process::SETTING, false) {
+    if !crate::in_process::cloud_enabled(&user_settings, dirs) {
         notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
     }
 
@@ -1341,6 +1360,7 @@ fn prepare(
         mode: table_mode,
         supervised_child: child.nested(),
         ask_owner_present: mode != RunMode::Rpc || env.get("OXA_RPC_OWNER_PRESENT") == Some("1"),
+        report_dialog: (mode == RunMode::Interactive).then(|| env.clone()),
         hook_sets,
         yolo,
         bash_sandbox,
@@ -3088,6 +3108,7 @@ mod session_scratch_tests {
             mode: None,
             supervised_child: false,
             ask_owner_present: true,
+            report_dialog: None,
             hook_sets: HookSets::default(),
             bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
                 base.clone(),
@@ -3232,6 +3253,7 @@ mod session_scratch_tests {
                 )),
                 yolo,
                 danger: Arc::new(oxa_perm::DangerRules::builtin()),
+                report_dialog: None,
             }
         };
         let policy = build().deps(None).policy;

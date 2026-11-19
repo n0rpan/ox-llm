@@ -591,8 +591,6 @@ impl Runtime {
             }
             if matches!(billing, Billing::Metered(_)) {
                 policy::daily_budget(&self.cap, self.ledger_enabled, Some(0.0), 0.0, 0.0)?;
-            } else if self.subscription_limits.is_none() && model.info().provider != Provider::OpenCode {
-                return Err(crate::billing::SubscriptionLimits::missing());
             } else if !self.ledger_enabled {
                 return Err(Refusal::ledger());
             }
