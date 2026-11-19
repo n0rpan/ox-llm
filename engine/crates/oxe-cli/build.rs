@@ -10,7 +10,12 @@ fn main() {
     // --no-optional-locks: a plain `git status` refreshes and rewrites .git/index, which is
     // watched below, so every cargo call would see it changed and rerun this script.
     let dirty = Command::new("git")
-        .args(["--no-optional-locks", "status", "--porcelain", "--untracked-files=no"])
+        .args([
+            "--no-optional-locks",
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+        ])
         .output()
         .ok()
         .map(|o| !o.stdout.is_empty())
