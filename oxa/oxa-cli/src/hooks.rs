@@ -285,6 +285,7 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
                             session_dir: (sessions_dir != default_sessions).then(|| sessions_dir.clone()),
                             narrowing: crate::workers::launch::Narrowing {
                                 offline: i.args.offline,
+                                no_approve: i.args.approve == Some(false),
                                 no_context_files: i.args.no_context_files,
                                 tools: i.args.tools.clone(),
                                 no_tools: i.args.no_tools,

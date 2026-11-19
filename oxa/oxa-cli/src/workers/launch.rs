@@ -71,6 +71,8 @@ pub struct WorkerSpec {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Narrowing {
     pub offline: bool,
+    /// An explicit `--no-approve` must not fall back to project auto-trust in the child.
+    pub no_approve: bool,
     /// `--no-context-files`: do not rediscover repository instructions in the worker checkout.
     pub no_context_files: bool,
     /// `--tools <list>`: the allowlist.
@@ -186,6 +188,7 @@ pub fn child_argv(
     }
     for (on, flag) in [
         (n.offline, "--offline"),
+        (n.no_approve, "--no-approve"),
         (n.no_context_files, "--no-context-files"),
         (n.no_tools, "--no-tools"),
         (n.no_builtin_tools, "--no-builtin-tools"),
@@ -419,6 +422,7 @@ mod tests {
         let mut spec = spec(None);
         spec.narrowing = Narrowing {
             offline: true,
+            no_approve: true,
             no_context_files: true,
             tools: Some(vec!["read".into(), "grep".into()]),
             no_tools: true,
@@ -430,6 +434,7 @@ mod tests {
         let (args, _) = child_argv(&spec, Mode::Workspace, Autonomy::Standard).unwrap();
         for expected in [
             "--offline",
+            "--no-approve",
             "--no-context-files",
             "--tools=read,grep",
             "--no-tools",
@@ -446,6 +451,7 @@ mod tests {
         assert!(crate::args::parse_args(&argv, &[]).is_ok(), "{argv:?}");
         let parsed = crate::args::parse_args(&argv, &[]).unwrap();
         assert!(parsed.offline && parsed.no_tools && parsed.no_builtin_tools);
+        assert_eq!(parsed.approve, Some(false));
         assert!(parsed.no_mcp && parsed.no_web_search && parsed.no_extensions);
         assert_eq!(parsed.tools, Some(vec!["read".to_string(), "grep".to_string()]));
         // No narrowing flag, none forwarded.
