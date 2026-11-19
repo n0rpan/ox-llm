@@ -1,6 +1,6 @@
 # A2A orchestration in oxa
 
-Status: proposed; milestone 1, coordinator review pending. No runtime change.
+Status: crates linked into `oxa` (Linux) and gated at run time by `oxa.a2a.enabled` (default true); the session listener and channel sender are later slices.
 
 ## Scope and protocol decision
 

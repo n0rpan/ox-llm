@@ -6,6 +6,17 @@ use super::{d, Apply, Control, Descriptor, Group, Item, Options, Unit, WebEdit};
 /// The Lead and web entries, in display order.
 pub(super) const ENTRIES: &[Descriptor] = &[
     d(
+        "oxa.a2a.enabled",
+        Group::Lead,
+        "Lead",
+        "Agent channel",
+        "Sessions accept follow-ups and control from the lead over a local authenticated channel. Off: file inbox only.",
+    )
+    .toggle()
+    .user_only()
+    .apply(Apply::Restart)
+    .web(WebEdit::Edit),
+    d(
         "oxa.lead.model",
         Group::Lead,
         "Lead",

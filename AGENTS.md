@@ -12,6 +12,11 @@ maintainer, who says in the PR when a hardware check is needed.
 - Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests;
   use synthetic fixtures. Do not open real credential files during review.
 - Keep engine transport selection, native binary/launch configuration, `allowRemote`, share
+  authority and login/token paths user-only. A project file must never override these decisions.
+- Agent control lane: a session accepts steer/pause/resume/cancel only from the same user, and the
+  session owner checks each request against the lease and goal revision. `oxa.a2a.enabled: false`
+  (user-only) turns it off. Do not add a path that skips the lease check or reads the setting from a
+  project file.
   authority, login/token paths and `oxa.inbox.headless` user-only. A project file must never override these decisions.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
 - Preserve sandbox/bwrap enforcement and file-tool denials for private paths. Only explicit
@@ -82,6 +87,10 @@ maintainer, who says in the PR when a hardware check is needed.
   publish behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and the user
   docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A change to an ordinary
   default, limit or budget updates the user docs; a missing docs update is P3 and is fixed forward.
+- **Memory store:** the memory store's `memory/` directory is owner-only (`0700`), and every entry,
+  generated index and lock file is owner-only (`0600`). A save must tighten an existing directory
+  with looser permissions before writing; review changes against this upgrade behaviour as well as
+  new stores.
 - **Early-stage process (owner decision, until v0.3):**
   - Only P0/P1 findings, security findings and an open security review block a merge. P2/P3 findings are filed as follow-ups and fixed forward on main.
   - Prefer one PR per feature, up to about 800 changed lines, over stacks of small PRs.
@@ -129,6 +138,13 @@ maintainer, who says in the PR when a hardware check is needed.
   only a short pointer is queued. The agent directory remains denied.
   The repeat guard follows this: the third identical tool result gets a short note, a call that
   still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
+  is the cap against loops the guard cannot see.
+  The finish wake follows it too: a background bash job that finishes on its own queues one
+  follow-up message and, when the session is idle after a normal outcome, starts a turn;
+  `oxa.jobs.wakeOnFinish` (`true` by default, `false` opts out, user settings only) is the control,
+  it wakes only the session the job started in, and a job the model or the user stopped wakes
+  nothing; a completion retained behind a failed or interrupted turn stays queued (also across a session
+  reopen) until the next prompt. A finding that asks for a default-off switch or a cross-session wake is answered here.
   is the cap against loops the guard cannot see. A pursuing goal whose request fails transiently
   (stream cut, engine down or busy, timeout, 429, 5xx) waits without tokens and sends it again:
   `oxa.goal.failureBackoffSeconds` (default 60, doubling, capped at 900 unless set higher, `0` opts
