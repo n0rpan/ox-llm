@@ -184,6 +184,21 @@ fn environment_secret_assignment(text: &str) -> bool {
         .any(|found| opaque_value(&found[1]))
 }
 
+/// A JSON credential key at the end of one added line with its value on the next:
+/// `"password":` / `"opaque-pass-value-17"`. Each line alone looks harmless.
+fn json_split_secret(text: &str) -> bool {
+    static SPLIT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    SPLIT
+        .get_or_init(|| {
+            regex::Regex::new(concat!(
+                r#"(?i)"[^"\n]*(?:password|passwd|passphrase|secret|token|api_?key|access_?key)[^"\n]*"\s*:\s*\n\s*"([^"]+)""#
+            ))
+            .expect("JSON split secret pattern")
+        })
+        .captures_iter(text)
+        .any(|found| opaque_value(found[1].trim()))
+}
+
 /// A YAML secret key followed by a block-scalar marker and one of its added
 /// value lines. `scan_patch` supplies this bounded two-line context.
 fn block_scalar_secret(text: &str) -> bool {
@@ -192,7 +207,7 @@ fn block_scalar_secret(text: &str) -> bool {
         .get_or_init(|| {
             regex::Regex::new(concat!(
                 r"(?i)(?:^|[^a-z])(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|token",
-                r"|secret|password|passwd|passphrase|authorization|key)\s*:\s*[|>]\d?[+-]?\s*\n[^\n]*?([^\s].*)$"
+                r"|secret|password|passwd|passphrase|authorization|key)\s*:\s*[|>](?:[+-]?\d?|\d[+-])?\s*(?:#[^\n]*)?\n[^\n]*?([^\s].*)$"
             ))
             .expect("YAML secret block pattern")
         })
@@ -335,6 +350,7 @@ impl PushScan {
             || quoted_secret_literal(text)
             || environment_secret_assignment(text)
             || block_scalar_secret(text)
+            || json_split_secret(text)
             || p.bearer
                 .find_iter(text)
                 .any(|found| opaque_value(&value_of(found.as_str())))
