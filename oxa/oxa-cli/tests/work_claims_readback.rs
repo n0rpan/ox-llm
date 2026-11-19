@@ -82,6 +82,7 @@ fn same_store_readback_preserves_full_claims_and_unknown_legacy_coverage_while_p
         lease: None,
         attempts_today: 0,
         eligible: true,
+        evidence_incomplete: None,
     };
     let receipt = claims
         .claim_item_for(

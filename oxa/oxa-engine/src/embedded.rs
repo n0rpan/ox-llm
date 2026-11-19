@@ -47,6 +47,7 @@ pub type GatewayHistory =
 #[derive(Clone)]
 pub enum GatewayEvent {
     Chunk(Value),
+    Warning(&'static str),
     /// The complete reply and private ledger settlement are committed.
     Done,
     /// Settlement is committed; bind private replay to the actual assembled
@@ -57,6 +58,7 @@ impl std::fmt::Debug for GatewayEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Chunk(value) => f.debug_tuple("Chunk").field(value).finish(),
+            Self::Warning(text) => f.debug_tuple("Warning").field(text).finish(),
             Self::Done => f.write_str("Done"),
             Self::DoneWithHistory(_) => f.write_str("DoneWithHistory([redacted])"),
         }
@@ -175,6 +177,7 @@ impl Engine for EmbeddedEngine {
                         return Flow::Stop;
                     }
                 },
+                GatewayEvent::Warning(text) => on(StreamEvent::Warning(text)),
                 GatewayEvent::Done => done = true,
                 GatewayEvent::DoneWithHistory(bind) => {
                     history = Some(bind);
@@ -211,7 +214,7 @@ impl Engine for EmbeddedEngine {
             on(event);
         }
         let level = request.effective_level();
-        let mut turn = assembler.finish(level)?;
+        let mut turn = assembler.finish_unreported_usage_ok(level)?;
         if let Some(bind) = history {
             turn.msg.provider_history = Some(bind(&turn.msg)?);
         }

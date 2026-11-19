@@ -26,6 +26,7 @@ use std::{
 
 pub enum Event {
     Chunk(Value),
+    Warning(&'static str),
     Done,
 }
 
@@ -439,6 +440,17 @@ impl Gateway {
                 return Err(Error::Refused(error));
             }
         }
+        if let Some(warning) = call.budget_warning() {
+            if on(Event::Warning(warning)) == Control::Stop {
+                return self.finish(
+                    call,
+                    Err(Error::Upstream(anthropic_client::Error::Cancelled)),
+                    None,
+                    false,
+                    on,
+                );
+            }
+        }
         self.forward(call, payload, history, cancel, on).await
     }
 
@@ -701,8 +713,8 @@ impl Gateway {
         F: FnMut(Event) -> Control + ?Sized,
     {
         use crate::opencode::client::Error as GoError;
-        // Parsed terminal usage survives cancellation before public delivery.
-        // Meter it privately before consuming the hold, just as for Anthropic.
+        // A validated terminal report survives cancellation before public delivery.
+        // Provisional early usage can reach here only after a clean [DONE].
         call.metered_go(usage.as_ref());
         // Go chat completions have no native replay items. The common request
         // path already verifies incoming history before dispatch; the common
