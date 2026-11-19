@@ -438,7 +438,11 @@ fn desk_answers_and_consumption_are_serialised() {
                 })
             })
             .collect();
-        handles.into_iter().filter(|h| h.join().unwrap_or(false)).count()
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or(false))
+            .filter(|won| *won)
+            .count()
     });
     assert_eq!(wins, 1, "one answer wins, the rest see an answered request");
     assert!(
