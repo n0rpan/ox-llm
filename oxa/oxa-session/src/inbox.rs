@@ -118,13 +118,20 @@ pub fn remove_inbox(agent_dir: &Path, id: Option<&str>) -> Result<usize, oxa_pro
 
 /// Publish exactly one message without contacting an engine or requiring a running owner.
 pub fn send_inbox(agent_dir: &Path, id: &str, text: &str) -> io::Result<()> {
-    if text.len() > INBOX_MESSAGE_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "inbox message exceeds 256 KiB",
-        ));
+    if text.len() <= INBOX_MESSAGE_BYTES {
+        return publish(agent_dir, id, "msg", text).map(|_| ());
     }
-    publish(agent_dir, id, "msg", text)
+    // `Dirs::tmp_dir` is `<agent_dir>/tmp`; the active session installs its own child as the
+    // narrowly scoped readable spill exception without exposing the rest of the agent directory.
+    let spill_root = agent_dir.join("tmp");
+    let spill = publish_in(directory_at(&spill_root, id)?, "txt", text)?;
+    let path = spill_root.join(id).join(spill);
+    let pointer = format!(
+        "The message is {} bytes, too large to queue inline. Its full text is in the private file {}; read that file.",
+        text.len(),
+        path.display()
+    );
+    publish(agent_dir, id, "msg", &pointer).map(|_| ())
 }
 
 /// Publish a control packet for a trusted, already resolved session reference.
@@ -137,7 +144,7 @@ pub fn send_inbox_control(agent_dir: &Path, session: &SessionRef, packet: &str) 
             "inbox control packet exceeds 32 KiB",
         ));
     }
-    publish(agent_dir, &session.id, &control_extension(session), packet)
+    publish(agent_dir, &session.id, &control_extension(session), packet).map(|_| ())
 }
 
 fn control_extension(session: &SessionRef) -> String {
@@ -147,8 +154,21 @@ fn control_extension(session: &SessionRef) -> String {
     )
 }
 
-fn publish(agent_dir: &Path, id: &str, extension: &str, text: &str) -> io::Result<()> {
+/// Publish atomically and return the published file name inside the session's inbox directory.
+fn publish(agent_dir: &Path, id: &str, extension: &str, text: &str) -> io::Result<String> {
     let dir = directory(agent_dir, id)?;
+    publish_in(dir, extension, text)
+}
+
+fn directory_at(root: &Path, id: &str) -> io::Result<Directory> {
+    if !valid_inbox_id(id) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid session id"));
+    }
+    DirBuilder::new().recursive(true).mode(0o700).create(root)?;
+    Directory::open(root)?.child(id)
+}
+
+fn publish_in(dir: Directory, extension: &str, text: &str) -> io::Result<String> {
     let name = format!(
         "{:032}-{}",
         std::time::SystemTime::now()
@@ -158,7 +178,8 @@ fn publish(agent_dir: &Path, id: &str, extension: &str, text: &str) -> io::Resul
         crate::new_entry_id(&|_| false)
     );
     let temp = dir.path().join(format!(".{name}.tmp"));
-    let ready = dir.path().join(format!("{name}.{extension}"));
+    let file_name = format!("{name}.{extension}");
+    let ready = dir.path().join(&file_name);
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -173,7 +194,7 @@ fn publish(agent_dir: &Path, id: &str, extension: &str, text: &str) -> io::Resul
     if result.is_err() {
         let _ = fs::remove_file(temp);
     }
-    result
+    result.map(|()| file_name)
 }
 
 /// The retry signal of a running [`Inbox`]: cheap to clone and to call from any thread.
