@@ -113,6 +113,9 @@ pub mod tool_errors {
     /// the action ("write /tmp/x"). Nobody declined; avoid workarounds whose approval depends
     /// on the active policy and path protections.
     pub const DENIED_UNATTENDED: &str = "Permission denied: {what} needs approval, but this run cannot ask (non-interactive), so it was refused; nobody declined it.";
+    /// #1512 S2: a dangerous command in a run with no one to ask. `{why}` is the matched rules.
+    pub const DANGEROUS_UNATTENDED: &str =
+        "Refused: dangerous command ({why}). This run has no one to approve it; nobody declined it.";
     pub const ABORTED: &str = "Tool execution aborted";
     /// A call in a reply cut by the output limit (`Finish::Length`) is never run (pi's
     /// `failToolCallsFromTruncatedMessage`). `{name}` is replaced by the tool name.
@@ -188,6 +191,9 @@ pub struct ToolTune {
     pub read_page_bytes: u32,
     /// `bash`: timeout in seconds when the call sets none (F5). 0 = none (pi).
     pub bash_timeout_s: u32,
+    /// `bash` job read: the longest `wait_s` in seconds (`oxa.bash.waitCap`). 0 = the built-in
+    /// 300.
+    pub bash_wait_cap_s: u32,
     /// L4: the tool output cap in bytes. `grep`, `find`, `ls` and a `read` with
     /// `offset` / `limit` cut their result at it (never above pi's 16 KiB), notices inside it.
     /// 0 = none (pi: each tool's own 16 KiB cut).

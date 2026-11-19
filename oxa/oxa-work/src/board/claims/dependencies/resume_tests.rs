@@ -58,6 +58,7 @@ fn pick(claims: &Claims, now: u64) -> Option<ItemLease> {
         lease: None,
         attempts_today: 0,
         eligible: true,
+        evidence_incomplete: None,
     };
     let worker = Worker {
         id: "worker-a".into(),

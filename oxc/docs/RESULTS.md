@@ -171,7 +171,7 @@ There is still **no single matched "stock upstream → today" run**. The ladder 
 
 ## 5. Compared with Apple Silicon
 
-**No matched measurement exists.** The rules a Mac row must meet: same model file (SHA256) and prompt token ids; same day, ≥3 warm runs per side; a stock baseline on each machine (pinned upstream llama.cpp) plus the Mac's usual best stack, named and pinned; decode and prefill separately; context, threads, power and thermal state stated; receipt and command in the repository. [`tools/mac_reproduce.py`](../tools/mac_reproduce.py) does this; it has not yet run on a Mac.
+**No matched measurement exists.** The rules a Mac row must meet: same model file (SHA256) and prompt token ids; same day, ≥3 warm runs per side; a stock baseline on each machine (pinned upstream llama.cpp) plus the Mac's usual best stack, named and pinned; decode and prefill separately; context, threads, power and thermal state stated; receipt and command in the repository. `tools/mac_reproduce.py` does this; it has not yet run on a Mac.
 
 Third-party Flash-Next figures we have seen [E: community posts, other quants, engines and prompts, not verified by us], listed so the gap is not hidden:
 

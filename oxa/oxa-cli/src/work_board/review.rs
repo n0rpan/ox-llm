@@ -1,4 +1,4 @@
-use super::{nodes, Board, GitHub, Policy, PullRequest, Reader, RequiredCi};
+use super::{nodes, Board, GitHub, Policy, Reader, RequiredCi};
 use oxa_session::parse_utc_seconds;
 use oxa_work::board::review::{
     self, Approval, Change, ChangeKind, Comment, Facts, GitDiff, GitHubRequestReceipt, PathRule, Reviewer,
@@ -248,10 +248,10 @@ impl<'a> Evidence<'a> {
     }
 }
 
-struct Snapshot(Vec<PullRequest>);
+struct Snapshot(oxa_work::board::Snapshot);
 
 impl GitHub for Snapshot {
-    fn open_pull_requests(&mut self) -> Result<Vec<PullRequest>, String> {
+    fn snapshot(&mut self) -> Result<oxa_work::board::Snapshot, String> {
         Ok(std::mem::take(&mut self.0))
     }
 }
@@ -280,12 +280,13 @@ pub(super) fn sample(
         enabled: true,
         paths: &paths,
     };
-    let pulls = reader.open_pull_requests()?;
+    let snapshot = reader.snapshot()?;
     let observations = reader
         .review_rows
         .take()
         .ok_or("missing board review observations")?;
-    let observations: Vec<_> = pulls
+    let observations: Vec<_> = snapshot
+        .pull_requests
         .iter()
         .filter_map(|pr| {
             let row = &observations[format!("p{}", pr.number)];
@@ -389,7 +390,7 @@ pub(super) fn sample(
         )
         .collect();
     Board::read_with_review_policy(
-        &mut Snapshot(pulls),
+        &mut Snapshot(snapshot),
         board_policy,
         &BTreeMap::new(),
         now,

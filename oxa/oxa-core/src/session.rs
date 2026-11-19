@@ -2,6 +2,7 @@
 // ported from pi packages/coding-agent/src/core/agent-session.ts
 use crate::agent_loop::{persist, run_loop, RunEnd};
 use crate::host::{attach_hosts, first_reply, observe_hooks, pumped, serve_host, serve_idle, Serve};
+use crate::queue::lock;
 use crate::{Expanded, Handle, SessionState, Shared, Toolset};
 use oxa_compact::CompactPolicy;
 use oxa_config::{Dirs, Settings};
@@ -12,8 +13,10 @@ use oxa_proto::{
 };
 use oxa_session::{MemStore, SessionRef, SessionStore, Transcript, Tree};
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+static NEXT_CONFIRM_BROKER: AtomicU64 = AtomicU64::new(1);
 
 /// What a session is built from. `tools` are the built-ins to offer (normally
 /// `oxa_tools::builtin_tools()`); hook tools are added from `hooks` at each epoch.
@@ -165,6 +168,10 @@ struct BusyGuard(Arc<Shared>);
 
 impl Drop for BusyGuard {
     fn drop(&mut self) {
+        let _transition = lock(&self.0.gate.foreground_transition);
+        // An explicit `abort_next` may arrive after `begin` consumed an earlier request. Do not
+        // leak that bit to a later run.
+        self.0.gate.abort_next.store(false, Ordering::SeqCst);
         self.0.gate.running.store(false, Ordering::SeqCst);
         self.0.busy.store(false, Ordering::SeqCst);
     }
@@ -417,6 +424,34 @@ impl Session {
         });
     }
 
+    /// Start the owner confirm broker (a per-session unix socket, dir 0700, socket 0600) and
+    /// export it to tool children as `OXA_CONFIRM_SOCK`. `yolo` is the session's switch: in
+    /// yolo the broker answers yes and records it; otherwise the owner's dialog answer or
+    /// typed message decides. A bind failure leaves the session without a broker.
+    pub fn enable_owner_confirm(&mut self, yolo: oxa_proto::YoloSwitch) -> std::io::Result<()> {
+        // SDK sessions in one process share `Dirs`. Give each broker a distinct short
+        // path so it cannot unlink another session's socket when rebinding.
+        let dir = self.st.dirs.tmp_dir.join(format!(
+            "confirm-{}-{}",
+            std::process::id(),
+            NEXT_CONFIRM_BROKER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let broker = crate::owner_confirm::OwnerConfirm::start(&dir, yolo)?;
+        let old = self
+            .st
+            .shared
+            .gate
+            .owner_confirm
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .replace(broker);
+        if let Some(old) = old {
+            old.close();
+        }
+        refresh_tool_env(&mut self.st);
+        Ok(())
+    }
+
     /// Install a progress observer for this session and subsequent in-process switches.
     pub fn set_progress_observer(&mut self, observer: Arc<dyn crate::ProgressObserver>) {
         *self
@@ -427,6 +462,7 @@ impl Session {
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = Some(observer);
         crate::progress::session(&self.st);
+        crate::goal::publish_status(&self.st);
     }
 
     /// S1 / ENG-002: run the steering and follow-up messages that are queued, as one run, when
@@ -802,6 +838,18 @@ impl Session {
     /// Replace the session goal while idle, persisting before exposing controls.
     pub fn set_goal(
         &mut self,
+        goal: Option<oxa_session::Goal>,
+        sink: &mut dyn EventSink,
+    ) -> Result<(), OxaError> {
+        self.replace_goal(goal, sink)?;
+        crate::goal::publish_status(&self.st);
+        Ok(())
+    }
+
+    /// Replace the saved goal without publishing it. Callers that require an
+    /// explicit store sync publish only after that sync succeeds.
+    pub(crate) fn replace_goal(
+        &mut self,
         mut goal: Option<oxa_session::Goal>,
         sink: &mut dyn EventSink,
     ) -> Result<(), OxaError> {
@@ -849,6 +897,9 @@ impl Session {
             &mut sink,
             ui,
         );
+        if let Some(broker) = self.st.shared.owner_confirm() {
+            broker.close();
+        }
         self.st.host_rx = None;
         self.st.host_deferred.clear();
         self.st.jobs.kill_all();
@@ -888,6 +939,12 @@ impl Session {
             return false;
         }
         self.preloaded = true;
+        // Nothing to preload (a turn already filled the wire, an engine without prefill, the
+        // setting off): do not claim the session, or an idle worker shows it busy right after
+        // each command and a front end reading `is_busy` sees a run that never was.
+        if !crate::compaction::boot_preload_applies(&self.st) {
+            return false;
+        }
         let Ok(_guard) = self.begin() else {
             return false;
         };
@@ -1035,13 +1092,34 @@ impl Session {
     /// activity events. Unlike [`Session::begin_run`], this does not start an agent turn or
     /// reset its outcome bookkeeping.
     fn begin_foreground(&self) -> Result<BusyGuard, OxaError> {
-        let guard = self.begin()?;
-        self.st.shared.gate.running.store(true, Ordering::SeqCst);
-        Ok(guard)
+        // Publish foreground intent before the claim.  `begin()` used to set `busy` first,
+        // leaving a small but user-visible window in which the terminal could classify an
+        // input event as idle before it consumed AgentStart.
+        {
+            let _transition = lock(&self.st.shared.gate.foreground_transition);
+            if self
+                .st
+                .shared
+                .gate
+                .running
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                return Err(OxaError::new(codes::BUSY, "the session is busy"));
+            }
+        }
+        match self.begin() {
+            Ok(guard) => Ok(guard),
+            Err(error) => {
+                self.st.shared.gate.running.store(false, Ordering::SeqCst);
+                Err(error)
+            }
+        }
     }
 
     fn begin(&self) -> Result<BusyGuard, OxaError> {
         let shared = self.st.shared.clone();
+        let _transition = lock(&shared.gate.foreground_transition);
         if shared
             .busy
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -1060,6 +1138,7 @@ impl Session {
             shared.cancel.cancel();
             shared.gate.bg_cancel.cancel();
         }
+        drop(_transition);
         Ok(BusyGuard(shared))
     }
 
@@ -1718,6 +1797,12 @@ pub(crate) fn refresh_tool_env(st: &mut SessionState) {
     ));
     env.push(("AI_AGENT".to_string(), names::AI_AGENT.to_string()));
     env.push(("OXA_CODING_AGENT".to_string(), "true".to_string()));
+    if let Some(broker) = st.shared.owner_confirm() {
+        env.push((
+            crate::owner_confirm::SOCK_ENV.to_string(),
+            broker.sock_path().to_string_lossy().into_owned(),
+        ));
+    }
     st.tool_env = env;
 }
 
@@ -2251,6 +2336,67 @@ mod tests {
             session_id: None,
             jobs: Arc::new(oxa_tools::JobRegistry::new()),
         }
+    }
+
+    /// A published foreground start is itself exclusive, even before the session claim is
+    /// visible. This is the interval in which the terminal has not consumed `AgentStart` yet.
+    #[test]
+    fn foreground_start_reservation_rejects_a_second_run() {
+        let env = oxa_fake::TestEnv::new();
+        let session = Session::open(deps(&env, Arc::new(MemStore::new())), Open::New).unwrap();
+        session.st.shared.gate.running.store(true, Ordering::SeqCst);
+
+        let error = session
+            .begin_foreground()
+            .err()
+            .expect("second run must be refused");
+
+        assert_eq!(error.code, codes::BUSY);
+        assert!(!session.handle().is_busy());
+        assert!(session.handle().is_running());
+    }
+
+    /// #1717: Ctrl+C/Escape is routed to `abort` as soon as the foreground reservation is
+    /// published. The abort must survive until that reservation claims `busy`.
+    #[test]
+    fn abort_during_foreground_reservation_cancels_the_claim() {
+        let env = oxa_fake::TestEnv::new();
+        let session = Session::open(deps(&env, Arc::new(MemStore::new())), Open::New).unwrap();
+        let handle = session.handle();
+        session.st.shared.gate.running.store(true, Ordering::SeqCst);
+
+        handle.abort();
+        let guard = session
+            .begin()
+            .expect("the reserved foreground run claims the session");
+
+        assert!(handle.is_aborting(), "the reservation must retain its abort");
+        drop(guard);
+        assert!(!handle.is_busy());
+    }
+
+    /// #1737: an abort that starts while a run is releasing must observe the completed
+    /// release, rather than publishing a sticky abort for an unrelated later prompt.
+    #[test]
+    fn abort_racing_foreground_release_does_not_cancel_the_next_claim() {
+        let env = oxa_fake::TestEnv::new();
+        let session = Session::open(deps(&env, Arc::new(MemStore::new())), Open::New).unwrap();
+        let handle = session.handle();
+        session.st.shared.gate.running.store(true, Ordering::SeqCst);
+
+        let transition = lock(&session.st.shared.gate.foreground_transition);
+        let aborting = std::thread::spawn({
+            let handle = handle.clone();
+            move || handle.abort()
+        });
+        session.st.shared.gate.running.store(false, Ordering::SeqCst);
+        drop(transition);
+        aborting.join().unwrap();
+
+        assert!(!session.st.shared.gate.abort_next.load(Ordering::SeqCst));
+        let guard = session.begin_foreground().expect("the next run starts normally");
+        assert!(!handle.is_aborting());
+        drop(guard);
     }
 
     /// #543, #555: only the active session and its fork/clone ancestors read spill output

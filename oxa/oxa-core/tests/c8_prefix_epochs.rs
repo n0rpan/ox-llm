@@ -200,6 +200,7 @@ fn change_is_one_prefix_entry_and_notice() {
         completion: 20,
         cached: 0,
         cached_missing: false,
+        unreported: false,
     });
     env.write("work/AGENTS.md", "project rules v2\n");
     let mut sink = VecSink(Vec::new());

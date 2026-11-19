@@ -77,7 +77,6 @@ Model-free checks run anywhere with Python 3:
 
 ```sh
 PYTHONPATH=src python3 -B -m oxc doctor
-./tools/run_lab_tests.sh
 ```
 
 ## Supported models
