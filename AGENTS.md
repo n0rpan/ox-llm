@@ -12,7 +12,7 @@ maintainer, who says in the PR when a hardware check is needed.
 - Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests;
   use synthetic fixtures. Do not open real credential files during review.
 - Keep engine transport selection, native binary/launch configuration, `allowRemote`, share
-  authority and login/token paths user-only. A project file must never override these decisions.
+  authority, login/token paths and `oxa.inbox.headless` user-only. A project file must never override these decisions.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
 - Preserve sandbox/bwrap enforcement and file-tool denials for private paths. Only explicit
   owner-selected yolo deliberately disables the permission floor. Off Linux there is no OS sandbox
@@ -41,15 +41,23 @@ maintainer, who says in the PR when a hardware check is needed.
 - v0.2.1 has no Python in the product/runtime path; build/test tooling is separate.
 - Never expose secrets to fork PRs or execute PR code with review credentials. Never use
   `pull_request_target`; unknown authors need `ok-to-review` before token-spending review.
+- Go review quota and same-diff checks read at most 200 GitHub comment pages (20,000 comments).
+  If either history exceeds that bound, the review defers before reserving quota or requesting a
+  provider token; an incomplete history must never authorize another review.
 - **Intent:** the change must do what its linked issue and PR description say, and nothing else.
   Flag as P1: missing or contradicted acceptance criteria from the linked issue; unrelated changes
   mixed in; a default that contradicts the owner decision stated in the linked issue or PR body
   (on-by-default with an opt-out setting is normal and is not itself a finding); deleted or
   disabled existing behaviour, tests or checks without a `Removes: <what> — <why>` line in the PR
   body; a test weakened, skipped or rewritten to pass instead of fixing the code.
-- **Policy changes carry their rules:** a change to a default, limit, budget, approval, sandbox or
-  other security behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and
-  the user docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A review finding
+- **Security policy changes carry their rules:** a change to approval, sandbox, credential, secret or
+  publish behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and the user
+  docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A change to an ordinary
+  default, limit or budget updates the user docs; a missing docs update is P3 and is fixed forward.
+- **Early-stage process (owner decision, until v0.3):**
+  - Only P0/P1 findings, security findings and an open security review block a merge. P2/P3 findings are filed as follow-ups and fixed forward on main.
+  - Prefer one PR per feature, up to about 800 changed lines, over stacks of small PRs.
+  - A merge that breaks required checks on main is reverted at once, then fixed forward. A review finding
   that contradicts an owner decision stated in the linked issue or PR is answered by updating these
   rules in that PR, not by changing the behaviour.
 - **Bash and subagent limits.** The two caps are user-only. `oxa.bash.maxJobs` defaults to 16
@@ -77,6 +85,11 @@ maintainer, who says in the PR when a hardware check is needed.
   The repeat guard follows this: the third identical tool result gets a short note, a call that
   still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
   is the cap against loops the guard cannot see.
+  The board degrades per item, not per snapshot: a PR whose GitHub evidence exceeds a read page
+  is one row marked evidence incomplete that is never eligible for any action; every other item is
+  kept and published, and the limit is logged. A merge-queue connection beyond its
+  page keeps the observed entries; PRs outside them stay queue-unknown and take no action.
+
   Report dedupe follows it as well: `oxa.reportIssue.semanticDedupe` is the owner's consent for the
   search and the model check, the post asks one question, and `oxa.reportIssue.dailyNew` (unset = no
   check) only warns and records over the cap. A finding that asks for a second consent question or
@@ -181,8 +194,7 @@ consumers against main. Shared workspace manifests/locks expand the affected wor
 release-relevant features, Cargo registry/target caches via GitHub-owned actions, and standard free
 Ubuntu x64/ARM runners. Cache keys include the lockfile, toolchain and architecture; lane caches
 use their own namespace and branch scope, preserving the required workflows' main-cache policy.
-The native-controller crate runs its existing CLI conformance/refusal controls against the real
-native binary; an empty Rust unit inventory alone never qualifies it.
+The oxc-rs crate has no unit cases of its own; the lane selects it only by its sources.
 Native engine tests requiring Oryon CPU features remain on the existing self-hosted route. The lane
 workflow does not replace or change the merge queue's required checks. Start full-workspace and
 release CI only when the change is close to done. Each started job records its queue delay in its
@@ -209,7 +221,6 @@ Run these in GitHub CI before saying a task is done. Automatic local helpers mus
   - `cargo clippy -p <crate> -- -D warnings` for each touched crate
   - `cargo test -p <crate>` for each touched crate
   - UI/TUI change: CI must build the real binary and drive it through the existing PTY/tmux live checks. Unit tests alone are not enough; they have passed for changes that did nothing in the real TUI.
-- **lab** (Python controller, in CI): `cd oxc && ./tools/run_lab_tests.sh`. It sets a throwaway HOME; never run the tests with the real HOME.
 - **Bug fix:** show the new test failing before the fix.
 
 ## Hard rules (never break these)

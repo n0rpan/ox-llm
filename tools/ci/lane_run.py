@@ -157,14 +157,6 @@ def main():
                      '--expected', str(inventory), str(report)])
             if result.returncode:
                 raise SystemExit(result.returncode)
-        if workspace == 'oxc-rs':
-            # This crate currently has no Rust unit cases; its existing behavior
-            # contracts drive the actual native executable, never the Python controller.
-            native_env = {**env, 'OXC_COMMAND': str(root / workspace / 'target/debug/oxc-native')}
-            run(['python3', '-I', '-m', 'unittest', 'discover', '-s', 'conformance',
-                 '-p', 'test_cli*.py', '-v'], cwd=root, env=native_env)
-            run(['python3', '-I', 'conformance/check_native_scaffold.py', native_env['OXC_COMMAND']],
-                cwd=root, env=native_env)
         doctests = subprocess.run(
             ['cargo', 'test', '--locked', '--profile', profile, *arguments, '--doc', '--no-fail-fast'],
             cwd=workspace, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

@@ -110,10 +110,7 @@ const LANG_BY_EXT: &[(&str, &str)] = &[
 
 /// The language of a path: by extension from [`LANG_BY_EXT`], or by a well-known file name.
 pub fn lang_of_path(path: &str) -> Option<&'static str> {
-    let name = path
-        .rsplit(|c: char| c == '/' || c == '\\')
-        .next()?
-        .to_ascii_lowercase();
+    let name = path.rsplit(['/', '\\']).next()?.to_ascii_lowercase();
     if name == "dockerfile" || name == "containerfile" || name.starts_with("dockerfile.") {
         return Some("docker");
     }

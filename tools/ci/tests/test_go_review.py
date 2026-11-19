@@ -16,6 +16,11 @@ SOURCE = Path(__file__).resolve().parents[1] / 'go_review.py'
 spec = importlib.util.spec_from_file_location('go_review', SOURCE)
 review = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(review)
+MODEL = 'deepseek-v4.1-flash'
+GLM = 'glm-5.3'
+ARGON = 'gemini-4-argon'
+MODEL_URL = review.MODEL_URL
+ARGON_URL = review.GOOGLE_BASE + ARGON + ':generateContent'
 SHA = 'a' * 40
 FILES = [{'filename': 'oxa/sample.rs', 'status': 'modified', 'additions': 1, 'deletions': 1,
           'patch': '@@ -1 +1 @@\n-old\n+new'}]
@@ -68,7 +73,7 @@ class GoReview(unittest.TestCase):
                 return daily_comments or []
             if '/comments?' in url:
                 return comments or []
-            if url == review.ARGON_URL:
+            if url.startswith(review.GOOGLE_BASE):
                 self.assertIn('"verdict":"RESERVED"', posted[0])
                 payload = json.loads(body)
                 self.assertEqual(payload['generationConfig']['responseMimeType'], 'application/json')
@@ -77,11 +82,11 @@ class GoReview(unittest.TestCase):
                 self.assertNotIn('synthetic-access', json.dumps(payload))
                 return argon if argon is not None else {'candidates': [{'finishReason': 'STOP',
                     'content': {'parts': [{'text': response()['choices'][0]['message']['content']}]}}]}
-            if url == review.MODEL_URL:
+            if url == MODEL_URL:
                 self.assertIn('"verdict":"RESERVED"', posted[0])
                 payload = json.loads(body)
-                self.assertEqual(payload['model'], 'deepseek-v4.1-flash')
-                self.assertEqual(payload['max_tokens'], 4096)
+                self.assertFalse(payload['model'].startswith('gemini-'))
+                self.assertEqual(payload['max_tokens'], review.max_output(payload['model']))
                 self.assertFalse(payload['stream'])
                 self.assertIn('Project guidelines:', payload['messages'][0]['content'])
                 self.assertIn('# Review rubric', payload['messages'][0]['content'])
@@ -117,13 +122,13 @@ class GoReview(unittest.TestCase):
     def test_complete_review_posts_one_full_sha_and_diff_hash_receipt(self):
         calls, posted, auth = self.run_review(answer=response([finding(body='Do not emit synthetic-access')]))
         self.assertEqual(auth, 1)
-        self.assertEqual(calls.count(review.MODEL_URL), 1)
+        self.assertEqual(calls.count(MODEL_URL), 1)
         self.assertEqual(len(posted), 1)
         self.assertNotIn('synthetic-access', posted[0])
         marker = review.MARKER.findall(posted[0])
         self.assertEqual(len(marker), 1)
         self.assertEqual(json.loads(marker[0]),
-                         {'sha': SHA, 'model': review.MODEL, 'verdict': 'REVISE',
+                         {'sha': SHA, 'model': MODEL, 'verdict': 'REVISE',
                           'findings': 1, 'diff_hash': review.own_diff_hash(FILES)})
 
     def test_full_daily_quota_refuses_before_authentication(self):
@@ -138,7 +143,7 @@ class GoReview(unittest.TestCase):
         self.assertEqual(self.run_review(daily_comments=comments)[2], 1)
 
     def test_unverifiable_daily_counter_refuses(self):
-        for listing in ({'message': 'unavailable'}, [quota_comment(login='untrusted')] * 100,
+        for listing in ({'message': 'unavailable'},
                         [{**quota_comment(), 'created_at': 'unknown'}]):
             with self.subTest(listing_type=type(listing)), self.assertRaises(review.Refused):
                 self.run_review(daily_comments=listing)
@@ -146,7 +151,7 @@ class GoReview(unittest.TestCase):
             self.run_review(max_per_day='unknown')
 
     def test_provider_quota_refusal_is_skipped_after_one_attempt(self):
-        for url in (review.MODEL_URL, review.ARGON_URL):
+        for url in (MODEL_URL, review.GOOGLE_BASE):
             for status in (402, 429):
                 with self.subTest(url=url, status=status), \
                         patch.object(review.urllib.request, 'build_opener') as build:
@@ -158,7 +163,7 @@ class GoReview(unittest.TestCase):
 
     def test_oversized_review_input_never_reaches_provider(self):
         with patch.object(review, 'request') as send, self.assertRaises(review.Skipped):
-            review.model_response(review.MODEL, 'synthetic', 'prompt', 'é' * review.MAX_INPUT_BYTES, 'session')
+            review.model_response(MODEL, 'synthetic', 'prompt', 'é' * review.MAX_INPUT_BYTES, 'session')
         send.assert_not_called()
 
     def test_clean_comment_has_required_machine_readable_marker_on_its_own_line(self):
@@ -167,42 +172,89 @@ class GoReview(unittest.TestCase):
         match = review.MARKER.fullmatch(marker_line)
         self.assertIsNotNone(match)
         receipt = json.loads(match[1])
-        self.assertEqual(receipt, {'sha': SHA, 'model': review.MODEL, 'verdict': 'OK',
+        self.assertEqual(receipt, {'sha': SHA, 'model': MODEL, 'verdict': 'OK',
                                   'findings': 0, 'diff_hash': review.own_diff_hash(FILES)})
         comments = [{'user': {'login': 'github-actions[bot]'}, 'body': posted[0]}]
         self.assertEqual(self.run_review(comments=comments)[1:], ([], 0))
 
     def test_second_model_is_explicitly_enabled_and_scope_limited(self):
-        models = json.dumps([review.MODEL, review.ARGON])
+        models = json.dumps([MODEL, ARGON])
         for files, labels in ((FILES, [{'name': 'two-review'}]),
                               ([{**FILES[0], 'filename': 'oxa/oxa-core/src/lib.rs'}], []),
                               ([{**FILES[0], 'previous_filename': 'engine-perf/probe.rs'}], []),
                               ([{**FILES[0], 'filename': 'oxa-work-board/src/lib.rs'}], [])):
             pr = {**copy.deepcopy(PR), 'labels': labels}
             calls, posted, auth = self.run_review(pr=pr, files=files, models=models)
-            self.assertEqual((calls.count(review.MODEL_URL), calls.count(review.ARGON_URL)), (1, 1))
+            self.assertEqual((calls.count(MODEL_URL), calls.count(ARGON_URL)), (1, 1))
             self.assertEqual((len(posted), auth), (1, 1))
             self.assertEqual(len(review.MARKER.findall(posted[0])), 1)
-            self.assertIn(review.ARGON, posted[0])
+            self.assertIn(ARGON, posted[0])
         calls, _, _ = self.run_review(models=models)
-        self.assertNotIn(review.ARGON_URL, calls)
+        self.assertFalse(any(c.startswith(review.GOOGLE_BASE) for c in calls))
         pr = {**copy.deepcopy(PR), 'labels': [{'name': 'two-review'}]}
         calls, _, _ = self.run_review(pr=pr)
-        self.assertNotIn(review.ARGON_URL, calls)
+        self.assertFalse(any(c.startswith(review.GOOGLE_BASE) for c in calls))
 
     def test_invalid_model_configuration_never_authenticates(self):
-        for models in ('not-json', '[]', '["unknown"]', '["gemini-4-argon"]',
+        for models in ('not-json', '[]', '["gemini-4-argon","glm-5.3","deepseek-v4.1-flash"]',
                        '["deepseek-v4.1-flash","deepseek-v4.1-flash"]'):
             with self.subTest(models=models), self.assertRaises(review.Refused):
                 self.run_review(models=models)
+
+    def test_any_valid_go_model_id_is_accepted(self):
+        calls, posted, auth = self.run_review(models=json.dumps(['glm-5.3']))
+        self.assertEqual((calls.count(MODEL_URL), auth, len(posted)), (1, 1, 1))
+        self.assertEqual(json.loads(review.MARKER.findall(posted[0])[0])['model'], 'glm-5.3')
+        pr = {**copy.deepcopy(PR), 'labels': [{'name': 'two-review'}]}
+        calls, posted, auth = self.run_review(pr=pr, models=json.dumps(['kimi-k3', 'glm-5.3']))
+        self.assertEqual((calls.count(MODEL_URL), auth, len(posted)), (2, 1, 1))
+        self.assertEqual(json.loads(review.MARKER.findall(posted[0])[0])['model'], 'kimi-k3,glm-5.3')
+
+    def test_invalid_id_is_refused(self):
+        for models in ('["glm 5.3"]', '["glm/5.3"]', '["GLM-5.3"]', '["' + 'a' * 65 + '"]', '[""]',
+                       '["../x"]', '["glm-5.3","glm-5.3"]', '["glm-5.3","kimi-k3","x"]', '[1]'):
+            with self.subTest(models=models), self.assertRaises(review.Refused):
+                self.run_review(models=models)
+
+    def test_gemini_ids_use_google_endpoint(self):
+        calls, _, _ = self.run_review(models=json.dumps(['gemini-4-argon']))
+        self.assertEqual((calls.count(ARGON_URL), calls.count(MODEL_URL)), (1, 0))
+        calls, _, _ = self.run_review(models=json.dumps(['gemini-5-flash']))
+        self.assertIn(review.GOOGLE_BASE + 'gemini-5-flash:generateContent', calls)
+        self.assertNotIn(MODEL_URL, calls)
+
+    def test_others_use_openai_endpoint(self):
+        calls, _, _ = self.run_review(models=json.dumps(['kimi-k3']))
+        self.assertEqual((calls.count(MODEL_URL), calls.count(ARGON_URL)), (1, 0))
+        self.assertFalse(any(c.startswith(review.GOOGLE_BASE) for c in calls))
+
+    def test_default_when_unset(self):
+        self.assertEqual(review.review_models(PR, FILES), [MODEL])
+        self.assertEqual(review.DEFAULT_MODELS, [MODEL])
+        pr = {**copy.deepcopy(PR), 'labels': [{'name': 'two-review'}]}
+        calls, posted, _ = self.run_review(pr=pr)
+        self.assertEqual((calls.count(MODEL_URL), calls.count(ARGON_URL)), (1, 0))
+        self.assertEqual(json.loads(review.MARKER.findall(posted[0])[0])['model'], MODEL)
+
+    def test_two_models_any_order_accepted(self):
+        pr = {**copy.deepcopy(PR), 'labels': [{'name': 'two-review'}]}
+        for order in ([ARGON, GLM], [GLM, MODEL], [GLM, ARGON], [ARGON, MODEL]):
+            with self.subTest(order=order):
+                calls, posted, auth = self.run_review(pr=pr, models=json.dumps(order))
+                self.assertEqual(auth, 1)
+                self.assertEqual(len(posted), 1)
+                marker = json.loads(review.MARKER.findall(posted[0])[0])
+                self.assertEqual(marker['model'], ','.join(order))
+                self.assertEqual(calls.count(ARGON_URL), order.count(ARGON))
+                self.assertEqual(calls.count(MODEL_URL), len(order) - order.count(ARGON))
 
     def test_two_review_label_does_not_consume_a_second_slot_for_the_same_diff(self):
         _, first, _ = self.run_review()
         comments = [{'user': {'login': 'github-actions[bot]'}, 'body': first[0]}]
         pr = {**copy.deepcopy(PR), 'labels': [{'name': 'two-review'}]}
-        models = json.dumps([review.MODEL, review.ARGON])
+        models = json.dumps([MODEL, ARGON])
         calls, posted, auth = self.run_review(pr=pr, comments=comments, models=models)
-        self.assertEqual((calls.count(review.MODEL_URL), calls.count(review.ARGON_URL)), (0, 0))
+        self.assertEqual((calls.count(MODEL_URL), calls.count(ARGON_URL)), (0, 0))
         self.assertEqual((posted, auth), ([], 0))
 
     def test_gemini_text_metadata_and_thoughts_preserve_the_final_review(self):
@@ -212,7 +264,7 @@ class GoReview(unittest.TestCase):
             {'text': 'Thought text must stay out of JSON.', 'thought': True, 'thoughtSignature': 'c2ln'},
             {'text': final_text, 'thoughtSignature': 'c2ln', 'partMetadata': {'source': 'synthetic'}},
         ]}}]}
-        models = json.dumps([review.MODEL, review.ARGON])
+        models = json.dumps([MODEL, ARGON])
         _, posted, _ = self.run_review(pr=pr, models=models, argon=argon)
         self.assertEqual(len(posted), 1)
         self.assertIn('[P2] Argon finding', posted[0])
@@ -226,7 +278,7 @@ class GoReview(unittest.TestCase):
                               {'text': response()['choices'][0]['message']['content'], 'functionCall': {}}
                           ]}}):
             with self.subTest(candidate=candidate), self.assertRaises(review.Refused):
-                self.run_review(pr=pr, models=json.dumps([review.MODEL, review.ARGON]),
+                self.run_review(pr=pr, models=json.dumps([MODEL, ARGON]),
                                 argon={'candidates': [candidate]})
 
     def test_same_diff_on_a_different_head_spends_nothing(self):
@@ -235,7 +287,7 @@ class GoReview(unittest.TestCase):
                      'body': '<!-- go-review:v1 ' + json.dumps(marker) + ' -->'}]
         calls, posted, auth = self.run_review(comments=comments)
         self.assertEqual((posted, auth), ([], 0))
-        self.assertNotIn(review.MODEL_URL, calls)
+        self.assertNotIn(MODEL_URL, calls)
         marker['diff_hash'] = '0' * 64
         marker['sha'] = SHA
         comments[0]['body'] = '<!-- go-review:v1 ' + json.dumps(marker) + ' -->'
@@ -274,7 +326,7 @@ class GoReview(unittest.TestCase):
     def test_stale_result_leaves_only_the_non_retryable_reservation(self):
         calls, posted, auth = self.run_review(stale=True)
         self.assertEqual(auth, 1)
-        self.assertIn(review.MODEL_URL, calls)
+        self.assertIn(MODEL_URL, calls)
         self.assertEqual(len(posted), 1)
         self.assertIn('"verdict":"RESERVED"', posted[0])
         comments = [{'user': {'login': 'github-actions[bot]'}, 'body': posted[0]}]
@@ -366,6 +418,29 @@ class GoReview(unittest.TestCase):
         self.assertTrue(review.reviewed(comments, SHA, marker['diff_hash']))
         comments[0]['user']['login'] = 'outside-author'
         self.assertFalse(review.reviewed(comments, SHA, marker['diff_hash']))
+
+    def test_incomplete_history_defers_instead_of_failing_open(self):
+        # Busy repositories exceed the comment-listing bound. An uncountable quota or an
+        # unreadable same-diff history must defer the review: no reservation, no provider call.
+        busy = [{'id': i, 'user': {'login': 'someone'}, 'body': 'chat'} for i in range(1, 101)]
+        with self.assertRaisesRegex(review.Skipped, 'Per-PR'):
+            self.run_review(comments=busy)
+        with self.assertRaisesRegex(review.Skipped, 'Daily'):
+            self.run_review(daily_comments=busy)
+        # The same bound with a configured quota set to zero still refuses: nothing counted,
+        # nothing spent.
+        with self.assertRaisesRegex(review.Skipped, 'quota'):
+            self.run_review(daily_comments=busy, max_per_day='0')
+
+    def test_comment_history_bound_and_deferral_are_documented(self):
+        root = SOURCE.parents[2]
+        self.assertEqual(review.MAX_COMMENT_PAGES, 200)
+        self.assertEqual(review.comment_pages.__defaults__, (review.MAX_COMMENT_PAGES,))
+        for path in ('AGENTS.md', 'SECURITY.md', 'oxa/docs/pages/settings.md'):
+            text = (root / path).read_text()
+            with self.subTest(path=path):
+                self.assertIn('20,000', text)
+                self.assertIn('defer', text.lower())
 
     def test_instruction_and_author_boundaries(self):
         self.assertTrue(review.eligible(PR, SHA))

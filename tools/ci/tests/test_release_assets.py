@@ -53,6 +53,14 @@ class ReleaseAssets(unittest.TestCase):
         self.assertEqual(dev.count('--prerelease --latest=false'), 2)
         self.assertIn('actions/attest-build-provenance@', dev)
 
+    def test_dev_version_extraction_handles_spaces_around_assignment(self):
+        dev = (W / 'dev-build.yml').read_text()
+        self.assertIn('split($0,a,"=");gsub(/[" ]/,"",a[2]);print a[2]', dev)
+        command = r'''awk '/^\[workspace\.package\]/{p=1;next} /^\[/{p=0} p&&/^version[ ]*=/{split($0,a,"=");gsub(/[" ]/,"",a[2]);print a[2];exit}' oxa/Cargo.toml'''
+        result = subprocess.run(['/bin/sh', '-c', command], cwd=W.parents[1],
+                                text=True, capture_output=True, check=True)
+        self.assertRegex(result.stdout.strip(), r'^\d+\.\d+\.\d+[0-9A-Za-z.+-]*$')
+
     def test_release_environment_resolves_itself_when_sourced_by_a_workflow(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / 'source'
@@ -178,6 +186,59 @@ EOF
             recipe.write_text("depends=('glibc')\n")
             helper.write_text('python3 -B tool.py\n')
             self.assertEqual(run().returncode, 1)
+
+    def test_no_python_check_is_wired_into_every_release_path(self):
+        script = (W.parents[1] / 'packaging/release/no-python.sh').read_text()
+        self.assertTrue(script.startswith('#!/bin/sh\n'))
+        for rule in ('python shebang', 'non-native executable', 'controller payload', 'python invocation'):
+            self.assertIn(rule, script)
+        self.assertIn('packaging/release/no-python.sh "$artifact"',
+                      (W / 'release-build.yml').read_text())
+        self.assertIn('packaging/release/no-python.sh:/no-python.sh:ro',
+                      (W / 'release-build.yml').read_text())
+        self.assertIn('packaging/release/no-python.sh dist/*.tar.gz', (W / 'release.yml').read_text())
+        dev = (W / 'dev-build.yml').read_text()
+        publish = dev.split('  publish:', 1)[1]
+        self.assertLess(publish.index('packaging/release/no-python.sh dist/*.tar.gz'),
+                        publish.index('gh release upload dev'))
+        arch = (W.parents[1] / 'packaging/release/arch-test.sh').read_text()
+        self.assertIn('sh /no-python.sh --list /tmp/installed-files', arch)
+        for name in ('dev-build.yml', 'release-build.yml'):
+            self.assertNotIn('python3 -I - <<', (W / name).read_text())
+            self.assertNotIn('tomllib', (W / name).read_text())
+
+    def test_no_python_script_flags_python_and_passes_native_trees(self):
+        script = W.parents[1] / 'packaging/release/no-python.sh'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            good = root / 'good/usr/bin'
+            good.mkdir(parents=True)
+            (good / 'oxa').write_bytes(b'\x7fELF\x02\x01')
+            (root / 'good/usr/share/licenses').mkdir(parents=True)
+            (root / 'good/usr/share/licenses/LICENSE').write_text('python3 is mentioned in a licence\n')
+            run = lambda *a: subprocess.run(['/bin/sh', str(script), *a], text=True, capture_output=True)
+            self.assertEqual(run(str(root / 'good')).returncode, 0)
+            cases = {
+                'usr/share/x/tool.py': 'print(1)\n',
+                'usr/bin/script': '#!/usr/bin/env python3\n',
+                'usr/share/ox-llm/memlat/hook.sh': '#!/bin/sh\nexec /usr/bin/python3 x\n',
+                'usr/share/ox-llm/hooks/plain.sh': '#!/bin/sh\nexec python "$@"\n',
+                'usr/share/ox-llm/oxc/a': 'x\n',
+            }
+            for index, (name, text) in enumerate(cases.items()):
+                bad = root / f'bad-{index}'
+                shutil.copytree(root / 'good', bad)
+                (bad / name).parent.mkdir(parents=True, exist_ok=True)
+                (bad / name).write_text(text)
+                self.assertEqual(run(str(bad)).returncode, 1, name)
+
+            linked = root / 'linked'
+            shutil.copytree(root / 'good', linked)
+            (linked / 'usr/bin/oxa').unlink()
+            (linked / 'usr/bin/oxa').symlink_to('/usr/bin/python3')
+            result = run(str(linked))
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('unsupported symlink', result.stderr)
 
 
 if __name__ == '__main__':
