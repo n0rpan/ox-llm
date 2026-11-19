@@ -435,22 +435,15 @@ fn user_pages_name_no_internal_id() {
     );
 }
 
-/// settings.md has a row for every key of the schema table (oxa-config/src/schema.rs).
+/// settings.md has a row for every key of the schema table (`oxa_config::schema()`, derived from the
+/// descriptor rows in oxa-config/src/descriptor/).
 #[test]
 fn settings_page_lists_every_schema_key() {
     let root = repo_root();
-    let schema = fs::read_to_string(root.join("oxa-config/src/schema.rs")).expect("read schema.rs");
-    let key = Regex::new(r#"key\(\s*"([^"]+)""#).expect("regex");
-    let mut keys: Vec<String> = key.captures_iter(&schema).map(|c| c[1].to_string()).collect();
-    keys.sort();
-    keys.dedup();
-    assert!(
-        keys.len() > 50,
-        "the schema has {} keys; the regex missed them",
-        keys.len()
-    );
+    let keys: Vec<&str> = oxa_config::schema().iter().map(|d| d.key).collect();
+    assert!(keys.len() > 50, "the schema has {} keys", keys.len());
     let page = fs::read_to_string(root.join("docs/pages/settings.md")).expect("read settings.md");
-    let missing: Vec<&String> = keys
+    let missing: Vec<&&str> = keys
         .iter()
         .filter(|k| !page.contains(&format!("`{k}`")))
         .collect();
