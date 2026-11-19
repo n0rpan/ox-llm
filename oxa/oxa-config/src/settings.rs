@@ -206,19 +206,6 @@ impl Settings {
             .and_then(|n| u32::try_from(n).ok())
             .unwrap_or(default)
     }
-    /// An owner-only unsigned setting. Project values never widen or replace it.
-    pub fn user_u32(&self, key: &str, default: u32) -> u32 {
-        let mut cur = &self.user;
-        for part in key.split('.') {
-            let Some(next) = cur.as_object().and_then(|object| object.get(part)) else {
-                return default;
-            };
-            cur = next;
-        }
-        cur.as_u64()
-            .and_then(|n| u32::try_from(n).ok())
-            .unwrap_or(default)
-    }
     fn u64(&self, key: &str, default: u64) -> u64 {
         self.get(key).and_then(Value::as_u64).unwrap_or(default)
     }

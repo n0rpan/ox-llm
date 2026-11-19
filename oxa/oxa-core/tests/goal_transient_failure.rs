@@ -81,7 +81,12 @@ fn goal_run_continues_after_transient_failure() {
     let env = TestEnv::new();
     let engine = Arc::new(ScriptedEngine::new(vec![busy(), finish()]));
     let store = Arc::new(MemStore::new());
-    let mut session = Session::open(deps(&env, store, engine.clone(), Some(1)), Open::New).unwrap();
+    let mut dependencies = deps(&env, store, engine.clone(), Some(1));
+    dependencies.settings = Settings::from_values(
+        dependencies.settings.merged().clone(),
+        serde_json::json!({"oxa": {"goal": {"failureBackoffSeconds": 0}}}),
+    );
+    let mut session = Session::open(dependencies, Open::New).unwrap();
     let mut sink = VecSink::default();
     session
         .set_goal(Some(objective(GoalBudget::default())), &mut sink)
