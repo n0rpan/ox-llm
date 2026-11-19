@@ -250,6 +250,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.workers.resumeOnStart", Kind::Bool, "true"),
     // K4: seconds a worker gets after SIGINT before its process group gets SIGTERM.
     key("oxa.workers.stopGraceSeconds", Kind::Number, "10"),
+    // The worker runner reads this list from owner settings only.
+    key("oxa.work.localChecks", Kind::StringList, "[\"cargo check\"]"),
     key("packages", Kind::Any, "[]"),
     // #202: the permission mode at start; a project's value may only lower it
     // (`Settings::default_permission_mode`).
