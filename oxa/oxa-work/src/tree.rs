@@ -243,26 +243,61 @@ fn merge_prompt(
     Ok(format!("{}\n\nThere is a merge in progress from base {} at commit {pending}. The current base for this run is {base}. Resolve the conflicts, stage the resolutions, and finish the merge commit before completing the task. Then run `git merge --no-edit {base}` to integrate the captured current base as well, resolving and committing any further conflicts. Preserve the task's existing work.\nConflicted paths (at most twenty; use git diff --name-only --diff-filter=U for the full list):\n{paths}\nMerge output:\n{diagnostic}", task.prompt, task.base))
 }
 
-pub(crate) fn validate(policy: &RunPolicy, repo: &Path, tree: &Path, task: &Task) -> Result<()> {
+fn linked_worktree_common(
+    repo: &Path,
+    tree: &Path,
+    git_at: impl Fn(&Path, &[&str]) -> std::process::Command,
+) -> Result<PathBuf> {
     let canonical = tree.canonicalize().map_err(|e| e.to_string())?;
     if !fs::symlink_metadata(tree.join(".git")).is_ok_and(|m| m.is_file())
         || canonical == repo.canonicalize().map_err(|e| e.to_string())?
     {
         return Err("retained directory is not a separate linked task worktree".into());
     }
-    let actual = PathBuf::from(checked(git(policy, tree, &["rev-parse", "--show-toplevel"]))?);
+    let actual = PathBuf::from(checked(git_at(tree, &["rev-parse", "--show-toplevel"]))?);
     let common = |p: &Path| -> Result<PathBuf> {
-        PathBuf::from(checked(git(
-            policy,
+        PathBuf::from(checked(git_at(
             p,
             &["rev-parse", "--path-format=absolute", "--git-common-dir"],
         ))?)
         .canonicalize()
         .map_err(|e| e.to_string())
     };
-    if actual.canonicalize().map_err(|e| e.to_string())? != canonical || common(tree)? != common(repo)? {
+    let source_common = common(repo)?;
+    if actual.canonicalize().map_err(|e| e.to_string())? != canonical || common(tree)? != source_common {
         return Err("retained directory is not this repository's task worktree".into());
     }
+    Ok(source_common)
+}
+
+/// Check the same linked-worktree boundary used by the runner before inheriting trust.
+pub fn verify_managed_worktree(
+    binary: &Path,
+    host_path: &std::ffi::OsStr,
+    source: &Path,
+    tree: &Path,
+) -> Result<()> {
+    let git_at = |cwd: &Path, args: &[&str]| crate::metadata_git(binary, host_path, cwd, args);
+    let source_top = PathBuf::from(checked(git_at(source, &["rev-parse", "--show-toplevel"]))?);
+    if !source.is_absolute() || source_top != source {
+        return Err("inherited trust source must be the repository root".into());
+    }
+    let common = linked_worktree_common(source, tree, git_at)?;
+    let expected = crate::worktree_root(&common)?;
+    let tree = tree.canonicalize().map_err(|error| error.to_string())?;
+    if tree.parent() != Some(expected.as_path())
+        || !tree
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(crate::valid_task_id)
+    {
+        return Err("inherited trust is limited to managed task worktrees".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate(policy: &RunPolicy, repo: &Path, tree: &Path, task: &Task) -> Result<()> {
+    linked_worktree_common(repo, tree, |cwd, args| git(policy, cwd, args))?;
     if checked(git(policy, tree, &["symbolic-ref", "--quiet", "HEAD"]))?
         != format!("refs/heads/{}", task.branch)
     {

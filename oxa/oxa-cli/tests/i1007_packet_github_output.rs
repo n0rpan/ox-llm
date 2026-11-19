@@ -3,10 +3,9 @@
 //! session's tools. Neither instruction could be dropped, so the pull request's reviews and check
 //! results were either fetched against the rules or never read.
 //!
-//! The repository guidance now names the instruction that decides, says that a line showing how a
-//! supplied packet was fetched is provenance rather than an order, and says what a session without
-//! GitHub access hands over instead. The `gh` commands stay exactly as they were for a session that
-//! owns GitHub access, so ordinary work gains no new restriction.
+//! The repository guidance assigns workers' GitHub access to their runner. It treats a packet's
+//! fetch line as provenance and says what a worker hands over. Sessions that own GitHub access
+//! can still use the documented `gh` commands.
 
 const GUIDANCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../AGENTS.md");
 const RULE: &str = "GitHub access has one owner per session.";
@@ -36,8 +35,8 @@ fn a_packet_line_asking_for_pull_request_output_is_not_an_order() {
     let text = guidance();
     let rule = rule(&text);
     assert!(
-        rule.contains("Either you own GitHub access"),
-        "the rule has to name the two cases that decide: {rule}"
+        rule.contains("Their runner owns GitHub access."),
+        "the worker's runner must own GitHub access: {rule}"
     );
     assert!(
         rule.contains("make no `gh` call"),

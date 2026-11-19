@@ -135,6 +135,14 @@ types an ask has only ID, subject and question. Its options, recommendation,
 meanwhile and ask revision are unavailable until the standing API supplies them;
 the card must say so, rather than manufacture runner facts.
 
+## Protected Board observation
+
+`oxa lead run` reads the protected Board observation named by
+`OXA_LEAD_BOARD_LOG`. A missing, unreadable, malformed, oversized or
+unsupported observation keeps the saved asks, falls back to an empty board and
+reports a fixed `cause` with a recovery `hint`; raw paths and file contents
+never appear in output.
+
 ## Event integration after L1
 
 Consume the runner's sequenced events and bounded situation file after L1 is on
