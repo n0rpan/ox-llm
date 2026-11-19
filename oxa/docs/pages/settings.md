@@ -187,7 +187,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.local` | object | `{}` | literal native binary/model/arguments/environment and model limits; user settings only; see [native local configuration](../../oxc-local/CONFIGURATION.md) |
 | `oxa.a2a.enabled` | bool | `true` | sessions accept follow-ups and control (steer, pause, resume, cancel) from the lead over a local authenticated channel, from the same user only. `false`: file inbox only, and `nativeSteering` is refused. User settings only. See [security.md](security.md#agent-control-channel) |
 | `oxa.lead.shadow` | bool | `true` | the read-only `oxa lead --shadow` proposal preset; `false` turns it off; user settings only; no live runner actions |
-| `oxa.engine.inProcessCloud` | bool | `false` | select the in-process Rust cloud gateway for sessions and model discovery; user settings only |
+| `oxa.engine.inProcessCloud` | bool | unset | select the in-process Rust cloud gateway for sessions and model discovery. Unset is on when the owner's key file has an `openrouter`, `openai` or `anthropic` key or `oxa login chatgpt` was done; `false` opts out. User settings only |
 | `oxa.cloud.opencode.enabled` | bool | on when a key exists | OpenCode Go is on when the `opencode` key exists in the protected cloud key file and the run has an actual `--model` argument naming a Go model (including a delegated worker or nested child), or an owner model scope that is not a local alias; `false` opts out everywhere; project settings and restored sessions cannot enable it; offline mode refuses; user settings only |
 | `oxa.cloud` | object | `{}` | native cloud models, prices, USD budget and subscription caps; user settings only; see below |
 | `oxa.lead.serve` | object | `{}` | the lead web access scaffold: `enabled`, `identity` (`local` or `tailscale`), `bind` (a loopback address), `port`, `allowed_identities`. Off by default and no listener is installed yet; user settings only. See [lead-web.md](lead-web.md) |
@@ -204,8 +204,17 @@ The compaction rules are in [compaction.md](compaction.md).
 
 See [quickstart.md](quickstart.md#cloud-models) for the keys file and a first setup of each provider.
 
-Set `oxa.engine.inProcessCloud` in the user settings file to select the Rust
-gateway for sessions and `--list-models`. The default is `false`. Offline mode
+`oxa.engine.inProcessCloud` selects the Rust gateway for sessions and
+`--list-models`. Unset, it is on as soon as the owner's key file holds an
+`openrouter`, `openai` or `anthropic` key, or after `oxa login chatgpt`; with it
+on, `oxa.cloud.discover_models` also defaults to `true`. An explicit value
+always wins, so `false` opts out (a local HTTP engine with a key in the file
+sets it to `false`). The built-in recommended models of a keyed provider
+(Anthropic and OpenAI current models with their limits and prices, and the
+ChatGPT plan models after sign-in) are merged under `oxa.cloud.models`: an
+entry of yours with the same alias (`provider/upstream-model`) is never
+replaced, and discovery refines the built-in limits and prices. Prices go stale;
+set your own entry to pin one. Offline mode
 refuses before opening the gateway; configuration or gateway failures are returned
 directly. Project settings cannot enable this transport or change its cloud policy.
 
@@ -220,7 +229,8 @@ the transport on by themselves. A configured local alias keeps a request local
 only when the alias owns the asked model exactly; a fuzzy local match does not
 hide the Go model of that name.
 
-Set `oxa.cloud.discover_models` to `true` to discover models at startup for the
+`oxa.cloud.discover_models` defaults to `true` with a key (see above) and
+`false` otherwise; it discovers models at startup for the
 configured OpenRouter, OpenAI and Anthropic API keys. It also enables the
 OpenCode model cache when that provider is configured. A fresh cached catalog
 avoids a discovery request. A stale OpenRouter catalog is refreshed at startup
@@ -300,9 +310,10 @@ An invalid saved binding refuses the request before provider I/O.
 
 A `chatgpt` route defaults to `https://chatgpt.com/backend-api/codex` and uses the
 existing owner-only `chatgpt-auth.json` beside the key file. It does not discover
-other applications' credentials or start a sign-in. Configure the user-only
-`oxa.cloud.subscription_limits` object with positive integer `daily_requests`
-and `daily_tokens`. The separate optional `oxa.cloud.subscription` refresh object
+other applications' credentials or start a sign-in. After `oxa login chatgpt` the plan models
+(`chatgpt/gpt-5`, `chatgpt/gpt-5-codex`) exist without a route in your settings;
+the optional user-only `oxa.cloud.subscription_limits` object (positive integer
+`daily_requests` and `daily_tokens`) only adds warnings. The separate optional `oxa.cloud.subscription` refresh object
 accepts a public `client_id` override (`[A-Za-z0-9_.-]{1,128}`); its default is the
 experimental public identity approved in #252. The refresh endpoint is fixed at
 `https://auth.openai.com/oauth/token` and cannot be overridden in settings.
@@ -311,14 +322,14 @@ client's 30-second maximum. These settings contain no access or refresh token.
 Client transport tests inject loopback endpoints privately; production refresh
 configuration never supplies one.
 
-Subscription calls require their own positive request/token caps, retain actual
+Subscription calls retain actual
 token usage and settle zero USD. Unknown paid work retains its full token bound;
 the cap includes concurrent and crashed-process reservations. It never falls back
 to a paid API balance. Missing metered pricing still refuses metered requests when a daily budget is set.
-ChatGPT requires positive request and token caps. For OpenCode Go,
-`oxa.cloud.subscription_limits` is optional and has no default. If configured,
+`oxa.cloud.subscription_limits` is optional for the ChatGPT plan and OpenCode Go
+and has no default, so a plan route works right after `oxa login chatgpt`. If configured,
 oxa warns when projected usage reaches 80% or 100% of either limit, including
-concurrent reservations, and continues the request. Both providers keep
+concurrent reservations, and continues the request. Both routes keep
 recording requests and tokens, including conservative reservations for unknown
 outcomes. Provider limits and credential, offline, and LAN access checks still
 apply. Missing metered pricing still refuses metered requests.
