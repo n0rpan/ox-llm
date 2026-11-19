@@ -12,7 +12,7 @@ use crate::frontmatter::{frontmatter_get, parse_frontmatter};
 use crate::skills::validate_skill_name;
 use oxa_proto::{codes, OxaError};
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -187,24 +187,8 @@ fn ensure_private_dir(dir: &Path) -> Result<(), OxaError> {
 /// Write `bytes` to `path` through an owner-only (0600) temporary sibling that is synced and then
 /// renamed over `path`, so a crash never leaves a half-written entry and no mode is ever looser.
 fn write_replace(path: &Path, bytes: &[u8]) -> Result<(), OxaError> {
-    let err = |e: std::io::Error| OxaError::io(&format!("write {}", path.display()), &e);
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-    let _ = std::fs::remove_file(&tmp);
-    let written = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)
-        .and_then(|mut f| f.write_all(bytes).and_then(|()| f.sync_all()))
-        .and_then(|()| std::fs::rename(&tmp, path));
-    if let Err(e) = written {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(err(e));
-    }
-    if let Some(parent) = path.parent() {
-        let _ = File::open(parent).and_then(|d| d.sync_all());
-    }
-    Ok(())
+    crate::builtin::write_atomic_private(path, bytes)
+        .map_err(|e| OxaError::io(&format!("write {}", path.display()), &e))
 }
 
 /// Regenerate `MEMORY.md` from the entries on disk (uncapped). Callers hold the lock.
