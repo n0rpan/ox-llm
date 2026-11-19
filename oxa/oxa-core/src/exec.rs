@@ -139,6 +139,7 @@ pub fn request(
     let mut hooks = crate::fire::StreamHooks::new(st, opts.events);
     let progress = crate::progress::observer(st);
     if let Some(progress) = &progress {
+        progress.notify(&session, crate::progress::prefix_progress(&prefix));
         progress.notify(
             &session,
             crate::Progress::RequestStart {
@@ -823,6 +824,7 @@ fn start_tool_prefill(
                     return Ok(false);
                 }
                 if let Some(progress) = &progress {
+                    progress.notify(&session, crate::progress::prefix_progress(&prefix));
                     progress.notify(
                         &session,
                         crate::Progress::RequestStart {

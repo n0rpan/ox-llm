@@ -18,7 +18,8 @@ prompt_repeat = 300
 max_tokens = 8
 
 [oxa]
-# `oxa -p`, two runs in one session (the second continues the first).
+# `oxa -p`, three runs in one session (each continues the previous one), then the first prompt once
+# more in a fresh session (temperature-0 determinism note).
 run_timeout_s = 240
 max_time_s = 180
 # stops a run after this many new prompt+output tokens (cached ones are free)
@@ -33,6 +34,8 @@ task_word = "hi"
 # answered from the conversation: bash is off in the container (no usable bwrap), and a tool call
 # here sent the 0.8B model into a retry loop until --max-time (first real run)
 second_prompt = "Without using any tool, answer in one sentence: which file did you just create?"
+# a real tool result in the third run: the file is read back, so a request follows a tool result
+third_prompt = "Use the read tool to read hello.txt, then tell me in one sentence what it contains."
 
 [budget]
 # warn above *_warn_ms; fail only above *_fail_ms.
