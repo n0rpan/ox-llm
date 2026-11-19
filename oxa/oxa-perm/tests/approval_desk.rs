@@ -409,6 +409,53 @@ fn unattended_approval_cannot_replay_opaque_shell_input() {
     assert_eq!(p.decide(Mode::Workspace, &cmd, &cwd), Decision::Ask);
 }
 
+/// A command fed from a file or stdin acts on data the owner never saw: the same text can delete
+/// other paths after the answer. It is refused unattended, and a grant saved for its text (an
+/// old record) never covers it.
+#[test]
+fn unattended_approval_cannot_replay_file_fed_input() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    for command in [
+        "xargs rm -rf < targets",
+        "cat targets | xargs rm -rf",
+        "rm -rf --files-from=targets",
+    ] {
+        let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
+        let cmd = exec(command);
+        let hits = p.danger_ask(&cmd, &cwd);
+        if hits.is_empty() {
+            continue;
+        }
+        let refusal = p.danger_unattended(&cmd, &cwd).expect("refusal");
+        assert!(
+            refusal.contains("cannot be verified for unattended replay"),
+            "{command}: {refusal}"
+        );
+        assert!(desk.pending().expect("pending").is_empty(), "{command}");
+        let saved: Vec<DangerHit> = hits
+            .iter()
+            .map(|(key, reason)| DangerHit {
+                rule: key.split_once(' ').map_or(key.as_str(), |(rule, _)| rule).into(),
+                reason: reason.clone(),
+                segment: command.into(),
+            })
+            .collect();
+        let old = desk
+            .record("s1", &cwd, command, &saved, "pending")
+            .expect("old request");
+        desk.answer(&old, "session").expect("owner answer");
+        assert_eq!(p.decide(Mode::Workspace, &cmd, &cwd), Decision::Ask, "{command}");
+        desk.forget_session("s1").ok();
+    }
+    let p = policy(&desk, "s1", UnattendedMode::Request, false);
+    assert!(
+        !p.danger_ask(&exec("xargs rm -rf < targets"), &cwd).is_empty(),
+        "the recursive delete is classified"
+    );
+}
+
 #[test]
 fn a_once_approval_requires_a_successful_claim() {
     let env = TestEnv::new();

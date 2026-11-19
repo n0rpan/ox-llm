@@ -97,7 +97,7 @@ pub(crate) fn list(dirs: &Dirs, out: &mut dyn Write) -> Result<i32, OxaError> {
 /// The text as one printable line. A command and its reasons are model-controlled: written
 /// verbatim they could carry ESC/CSI/OSC or carriage returns that clear or overwrite the line the
 /// owner reads before approving it, so every control character is escaped.
-fn one_line(text: &str) -> String {
+pub(crate) fn one_line(text: &str) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {

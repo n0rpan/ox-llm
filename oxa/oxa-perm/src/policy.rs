@@ -1,5 +1,5 @@
 //! A10: the mode x access policy table.
-use crate::danger::{has_dynamic, DangerHit, DangerRules};
+use crate::danger::{has_dynamic, has_mutable_input, DangerHit, DangerRules};
 use crate::desk::{ApprovalDesk, UnattendedMode};
 use crate::paths::{is_inside, is_read_only_command, resolve_real};
 use oxa_proto::guard::{
@@ -460,13 +460,16 @@ impl ModePolicy {
     /// #1512 S5: the desk's session or once grant covers `open` together, all or nothing. The
     /// key is the complete command line, exactly like the policy grants: an approval for
     /// `true || git push --force origin main` never covers a standalone push. Shell expansion
-    /// markers anywhere in the command make a saved grant inapplicable.
+    /// markers anywhere in the command make a saved grant inapplicable, and so does input the
+    /// command reads from a file or stdin (`xargs rm -rf < targets`): the file can change after
+    /// the answer while the text stays the same.
     fn desk_grant(&self, a: &Access, cwd: &Path, open: &[DangerHit]) -> Option<(&ApprovalDesk, Vec<String>)> {
         let (Access::Exec { command, .. }, Some(desk)) = (a, &self.desk) else {
             return None;
         };
         if open.is_empty()
             || has_dynamic(command)
+            || has_mutable_input(command)
             || open.iter().any(|h| h.rule == crate::desk::OPAQUE_SHELL_INPUT)
         {
             return None;
@@ -731,7 +734,7 @@ impl Policy for ModePolicy {
         if hits.is_empty() {
             return None;
         }
-        if hits.iter().any(|hit| hit.rule == crate::desk::OPAQUE_SHELL_INPUT) {
+        if hits.iter().any(|hit| hit.rule == crate::desk::OPAQUE_SHELL_INPUT) || has_mutable_input(command) {
             return Some(
                 "Refused: shell input cannot be verified for unattended replay. Ask the owner to review and run it."
                     .into(),

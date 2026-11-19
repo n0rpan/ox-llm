@@ -1,6 +1,9 @@
 //! The "Waiting for your approval" panel (#1512 S6): the approval desk's pending requests.
-//! Only the bound owner's view renders the panel. Credential masking precedes HTML escaping.
+//! Only the bound owner's view renders the panel. Credential masking precedes HTML escaping, and
+//! the record text goes through the CLI listing's one-line form first, so line breaks, control and
+//! bidi or zero-width characters show as escapes: the owner reads the text the shell will run.
 use super::{escape, View};
+use crate::approve_cmd::one_line;
 use crate::report_cmd::{scrub, ScrubCtx};
 use oxa_perm::ApprovalRecord;
 use std::fmt::Write;
@@ -42,15 +45,15 @@ fn record(html: &mut String, csrf: &str, rec: &ApprovalRecord, now: u64, scrub_c
     let _ = write!(
         html,
         "<li class=approval><p><code>{}</code> · session <code>{}</code> · <code>{}</code> · waiting {}</p><pre>{}</pre>",
-        escape(&rec.id),
-        escape(&rec.session),
-        escape(&folder),
+        escape(&one_line(&rec.id)),
+        escape(&one_line(&rec.session)),
+        escape(&one_line(&folder)),
         age(now, rec.created_ms),
-        escape(&scrub(&rec.command, scrub_ctx)),
+        escape(&one_line(&scrub(&rec.command, scrub_ctx))),
     );
     html.push_str("<ul class=reasons>");
     for reason in &rec.reasons {
-        let _ = write!(html, "<li>{}</li>", escape(&scrub(reason, scrub_ctx)));
+        let _ = write!(html, "<li>{}</li>", escape(&one_line(&scrub(reason, scrub_ctx))));
     }
     html.push_str("</ul>");
     let _ = write!(
@@ -125,5 +128,39 @@ mod tests {
         assert!(!html.contains("Waiting for your approval"));
         assert!(!html.contains("s&lt;1&gt;"));
         assert!(!html.contains("action=/approvals"));
+    }
+
+    /// A multiline command or one with bidi or zero-width characters renders the escaped one-line
+    /// form of the CLI listing, never a joined line that hides the second command in a comment.
+    #[test]
+    fn approval_panel_shows_line_breaks_and_format_characters() {
+        let waiting = vec![ApprovalRecord {
+            id: "0123456789abcdef".into(),
+            session: "s\u{202e}1".into(),
+            cwd: "/work/proj".into(),
+            command: "echo safe # explanation\nrm -rf /srv/data\u{200b}".into(),
+            keys: vec!["rm".into()],
+            reasons: vec!["rm:\u{2066} recursive".into()],
+            status: "pending".into(),
+            used: false,
+            created_ms: 0,
+            answered_ms: None,
+        }];
+        let owner = View {
+            approvals: Some(&waiting),
+            approval_csrf: Some("tok"),
+            ..Default::default()
+        };
+        let html = content_for(Page::Board, &owner, 120);
+        assert!(
+            html.contains("<pre>echo safe # explanation\\nrm -rf /srv/data\\u{200b}</pre>"),
+            "{html}"
+        );
+        assert!(html.contains("session <code>s\\u{202e}1</code>"), "{html}");
+        assert!(html.contains("<li>rm:\\u{2066} recursive</li>"), "{html}");
+        for hidden in ['\u{202e}', '\u{200b}', '\u{2066}'] {
+            assert!(!html.contains(hidden), "{html}");
+        }
+        assert!(!html.contains("explanation rm"), "{html}");
     }
 }
