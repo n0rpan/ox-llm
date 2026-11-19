@@ -100,10 +100,12 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `oxa.bash.defaultTimeout` | number (seconds) | unset | timeout of a bash call that names none; unset is 120; `0` is no timeout |
 | `oxa.diet.output` | bool | unset | the system prompt's "be concise" rule is replaced by rules on tool use and a final answer of at most 6 lines. Unset is on |
 | `oxa.diet.tools` | bool | unset | shorter `grep` and `bash` output: `grep` prints each path once, and runs of three or more blank lines in bash output become two. Unset is on |
+| `oxa.liveSettings` | bool | `true` | on by default; `false` opts out. When on, a changed settings file is applied at the start of the next run without `/reload` (one `stat` per file; keys that feed the prompt rebuild it). Read from the settings the session holds, so turning it on takes effect at the next `/reload` or start. A file that no longer parses keeps the previous settings |
 | `oxa.maxTurns` | number | unset | end a run after this many model replies with a `turn_limit` error (a cap against loops the repeat guard cannot see, such as alternating calls). Unset or `0` is no limit |
 | `oxa.toolOutputCap` | number (bytes) | `16384` | cap on one tool output sent to the model. When `oxa.compaction.softTokens` is set or the engine publishes a compaction point, one tool result is at most a quarter of it (never below 2048 bytes), unless this is set; `grep`, `find`, `ls` and a `read` with `offset` or `limit` are cut at that cap, the first page of `read` at 8 KiB within it; see [tools-context.md](tools-context.md) |
 | `oxa.toolRepair` | bool | `true` | repair a malformed tool call with one extra turn ([tools.md](tools.md#repair-turn)) |
-| `oxa.toolRepeatGuard` | bool | `true` | answer a tool call that returned the same result three times in a row with a short note, and stop the run if it goes on ([tools.md](tools.md#repeated-calls)) |
+| `oxa.work.localChecks` | list of strings | `["cargo check"]` | owner-only local compile commands for `oxa work`. The runner adds `-p <crate>` for a touched crate. The hosted lane supplies the test verdict. |
+| `oxa.toolRepeatGuard` | bool | `true` | answer a tool call that returned the same result three times in a row with a short note, and warn once (shown and kept in the session) if it goes on; the run continues ([tools.md](tools.md#repeated-calls)) |
 | `oxa.wait.maxSeconds` | number (seconds) | `3600` | cap on one `wait` call's `seconds` (schema maximum 86400); a longer request is cut to it |
 | `oxa.wait.pollSeconds` | number (seconds) | `30` | how often a `wait` with an `until` condition asks the hook sets for its state; no model request is made meanwhile |
 | `oxa.subagent.enabled` | bool | unset | the `subagent` tool; unset is on unless the model is Flash or its window is below 32K |
@@ -286,6 +288,21 @@ Subscription calls require their own positive request/token caps, retain actual
 token usage and settle zero USD. Unknown paid work retains its full token bound;
 the cap includes concurrent and crashed-process reservations. It never falls back
 to a paid API balance. Missing metered pricing still refuses metered requests.
+
+OpenCode Go and every other subscription request reserve tokens only. Their cost
+is unknown to oxa, so no daily USD headroom is held for them and no local USD
+cap or request bound pauses their admission: a tiny or fully consumed
+`oxa.cloud.daily_budget_usd` never returns a local refusal for them, and the
+former `oxa.cloud.opencode.daily_budget_usd` and
+`oxa.cloud.opencode.max_request_usd` settings are no longer read. OpenCode's
+reported paid charges settle into the ledger and count in the shared daily
+total. Missing or estimated Go costs stay unknown, with no actual USD amount.
+Historical Go estimates remain readable and do not count toward the daily total.
+Holds written by older versions — including stored `reserved_usd` and `go_usd`
+amounts — stay readable with their tokens counted toward the subscription caps,
+while their recorded USD reserves nothing. OpenCode controls whether a call falls
+back to its paid balance; if it reports a higher charge than expected, the
+ledger records the full amount and admission continues.
 
 ### Other
 
