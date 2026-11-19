@@ -311,7 +311,8 @@ fn check_shape(
                         "a significance {significance} win has at most {max} frames"
                     ));
                 }
-                if frames.len() as u32 * step_ms > WIN_MAX_MS {
+                // A long `step_ms` times a full frame set overflows `u32`; measure in `u64`.
+                if frames.len() as u64 * u64::from(step_ms) > u64::from(WIN_MAX_MS) {
                     return Err(format!("a win lasts longer than {WIN_MAX_MS} ms"));
                 }
             }

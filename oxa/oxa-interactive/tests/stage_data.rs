@@ -120,6 +120,25 @@ fn a_win_is_at_most_six_frames_at_significance_one() {
 }
 
 #[test]
+fn a_win_longer_than_the_limit_is_refused_without_overflowing() {
+    // Two frames per size at a `step_ms` that is a multiple of 125 and overflows `u32` when
+    // multiplied by the frame count: 2 * 2_147_483_750 does not fit a `u32`.
+    let mut win = run_scene("win.overflow");
+    win["tier"] = json!("win");
+    win["significance"] = json!(1);
+    win["loop"] = json!("once");
+    win["step_ms"] = json!(2_147_483_750u32);
+    win["sizes"] = json!({ "8": [["▟█▛▘  ▐▀", "HHHH..DD"], ["▟█▛▘  ▐▀", "HHHH..DD"]] });
+    let loaded = load_pack(&pack(vec![win])).expect("the pack itself parses");
+    assert!(loaded.scenes.is_empty());
+    assert!(
+        loaded.skipped[0].reason.contains("lasts longer than 1500 ms"),
+        "reason: {}",
+        loaded.skipped[0].reason
+    );
+}
+
+#[test]
 fn ascii_map_gives_ascii_of_the_same_width() {
     let text = "▟█▛▘ ▜█▛▘ ▝▜▙ ▐▀▪─────↵ ◐ ✓ ▂▂█";
     let ascii = ascii_text(text).expect("every glyph here has an ASCII form");
