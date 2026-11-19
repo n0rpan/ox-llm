@@ -462,7 +462,9 @@ jobs:
           # removal it verifies. Plan item 22: exact test-only fixture of fake OpenAI key/JWT/refresh
           # shapes; asserts configured secrets disappear from errors and echoed headers.
           # No real credentials or requests. Keep realistic inputs intact (T3 review).
-          if git grep -nIE "$pat" -- . ':!oxc/tools/tests/test_export_receipt.py' ':!oxa/oxa-cli/tests/o152_report_issue_and_identity.rs' ':!oxa/oxc-gateway/tests/redaction_openai.rs'; then echo "secret-like strings found"; exit 1; fi
+          # test_gate.py pins that the sanitizer fixture keeps its realistic shapes: its own
+          # assertions carry the same synthetic literals (exact file, reviewed; no splitting).
+          if git grep -nIE "$pat" -- . ':!oxc/tools/tests/test_export_receipt.py' ':!oxa/oxa-cli/tests/o152_report_issue_and_identity.rs' ':!oxa/oxc-gateway/tests/redaction_openai.rs' ':!tools/ci/tests/test_gate.py'; then echo "secret-like strings found"; exit 1; fi
           echo "no secret-like strings in $(git ls-files | wc -l) tracked files"
       - name: SDK-material check (file names, ELF objects, hexagon directories)
         # Self-contained: the exporter's full scan (text notices included) runs at export time.

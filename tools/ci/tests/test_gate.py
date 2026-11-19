@@ -79,8 +79,11 @@ class Gate(unittest.TestCase):
         fixture = WORKFLOWS.parents[1] / 'oxc' / 'tools' / 'tests' / 'test_export_receipt.py'
         self.assertIn(":!oxc/tools/tests/test_export_receipt.py", self.checks)
         text = fixture.read_text()
-        self.assertIn('sk-' + 'a' * 32, text)
-        self.assertIn('-----BEGIN OPENSSH ' + 'PRIVATE KEY-----', text)
+        self.assertIn('sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', text)
+        self.assertIn('-----BEGIN OPENSSH PRIVATE KEY-----', text)
+        # This test's own literals are the same synthetic shapes, so the scan step excludes
+        # this exact file as well (reason in checks.yml; T3 review, no string splitting).
+        self.assertIn(':!tools/ci/tests/test_gate.py', self.checks)
 
     def test_merge_group_always_selects_complete_oxa_workspace(self):
         build = job_block(self.checks, 'build')
