@@ -42,7 +42,7 @@ pub const SETTING_MAX: &str = "oxa.workers.max";
 /// nested; only an unset variable lets the hook set be built.
 pub const ENV_WORKER_DEPTH: &str = "OXA_WORKER_DEPTH";
 
-const DESCRIPTION: &str = "Background workers: each is a separate oxa process that runs one goal in its own git worktree on branch agent/<name>. Actions: start {name, goal, model?, mode?} starts one (name: lowercase letters, digits and dashes, at most 40 characters); list shows this session's workers and their state; stop {name} stops one. mode is plan, ask, workspace, auto or yolo, never wider than this session.";
+const DESCRIPTION: &str = "Background workers: each is a separate oxa process that runs one goal in its own git worktree on branch agent/<name>. Actions: start {name, goal, model?, mode?} starts one (name: lowercase letters, digits and dashes, at most 40 characters); list shows this session's workers and their state; stop {name} stops one. mode is plan, ask, workspace, auto or yolo, never wider than this session; without mode the worker inherits this session's level (a yolo session starts yolo workers, so they can push, open PRs and read CI).";
 
 const SCHEMA: &str = r#"{"type":"object","properties":{"action":{"type":"string","enum":["start","list","stop"]},"name":{"type":"string"},"goal":{"type":"string"},"model":{"type":"string"},"mode":{"type":"string","enum":["plan","ask","workspace","auto","yolo"]}},"required":["action"]}"#;
 

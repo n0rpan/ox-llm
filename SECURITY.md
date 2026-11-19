@@ -61,7 +61,7 @@ Do not report: style, pre-existing issues outside the diff, test-only code that 
 ## Sandbox standard (owner decision)
 
 - **Interactive CLI:** no OS sandbox by default, on Linux and macOS. Dangerous commands ask the owner.
-- **Yolo:** no OS sandbox for the session, nor for any worker, subagent, headless or unattended run it starts. Yolo refuses only publishing secrets and an OS-breaking wipe.
+- **Yolo:** no OS sandbox for the session, nor for any worker, subagent, headless or unattended run it starts. Yolo refuses only publishing secrets and an OS-breaking wipe. A worker started by the `worker` tool without a `mode` inherits the parent's level (yolo parent, yolo worker); an explicit narrower mode wins, a wider one is clamped.
 - **Unattended runs without yolo:** keep bwrap by default.
 - **In-process guards in every mode:** secret masking, private-path denials, user-only settings, offline mode.
 - **Re-adding an OS sandbox to interactive or yolo paths** is a regression, not a hardening.
@@ -107,7 +107,7 @@ descriptor (`--body-file /dev/fd/N`), never a pathname a command could swap afte
 ## Sandbox standard (owner decision)
 
 - **Interactive CLI:** no OS sandbox by default, on Linux and macOS. Dangerous commands ask the owner.
-- **Yolo:** no OS sandbox for the session, nor for any worker, subagent, headless or unattended run it starts. Yolo refuses only publishing secrets and an OS-breaking wipe.
+- **Yolo:** no OS sandbox for the session, nor for any worker, subagent, headless or unattended run it starts. Yolo refuses only publishing secrets and an OS-breaking wipe. A worker started by the `worker` tool without a `mode` inherits the parent's level (yolo parent, yolo worker); an explicit narrower mode wins, a wider one is clamped.
 - **Unattended runs without yolo:** keep bwrap by default.
 - **In-process guards in every mode:** secret masking, private-path denials, user-only settings, offline mode.
 - **Settings fail safe:** a user settings file that exists but cannot be read or parsed keeps offline on, bash network off, remote engines off and new projects untrusted, and warns the owner. Only a missing file or a valid file changes this.

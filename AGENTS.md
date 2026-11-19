@@ -133,6 +133,9 @@ code, tests, CI and docs; the owner validates on hardware.
 - **Worker mode.** An `oxa work` worker is started with `--yolo` only when the owner's user-layer
   `permissions.defaultMode` is `yolo`; otherwise it keeps the sandboxed default. Project settings
   cannot raise it. See `oxa/docs/work.md`.
+- **Worker tool default.** A worker started by the `worker` tool inherits its parent's level when no
+  `mode` is given (yolo -> yolo, auto -> auto, workspace -> workspace, plan -> plan); an explicit narrower
+  mode wins and a wider one is clamped with a notice. Env and GitHub access are the parent's, unchanged.
 - **Work acceptance.** In `oxa work`, zero or skipped checks leave the task `Unverified`. The
   owner-only `oxa.work.localChecks` defaults to a per-package `cargo check`. A verified Rust
   acceptance receipt requires hosted test evidence at the exact head, including for changed
@@ -388,6 +391,9 @@ read its result; they never launch builds or tests.
 - **Worker mode.** An `oxa work` worker is started with `--yolo` only when the owner's user-layer
   `permissions.defaultMode` is `yolo`; otherwise it keeps the sandboxed default. Project settings cannot raise it. See
   `oxa/docs/work.md`.
+- **Worker tool default.** A worker started by the `worker` tool inherits its parent's level when no
+  `mode` is given (yolo -> yolo, auto -> auto, workspace -> workspace, plan -> plan); an explicit narrower
+  mode wins and a wider one is clamped with a notice. Env and GitHub access are the parent's, unchanged.
 - Never expose secrets to fork PRs or execute PR code with review credentials. Never use `pull_request_target`;
   unknown authors need `ok-to-review` before token-spending review.
 - Nothing shipped or installed runs Python. Small Python dev and CI tools outside the release are fine.
