@@ -504,8 +504,12 @@ impl Settings {
     }
     /// Make `root` the layer for `project` in memory and recompose the merged settings.
     fn adopt(&mut self, path: &Path, root: Map<String, Value>, project: bool) {
-        let (checked, _) = check_root(&Value::Object(root), &path.display().to_string());
+        let source = path.display().to_string();
+        let (mut checked, _) = check_root(&Value::Object(root), &source);
         if project {
+            // A set/unset rereads the complete file before adopting the edited layer. Apply the
+            // same trust boundary as load so an unrelated edit cannot restore rejected keys.
+            strip_user_only(&mut checked, &source);
             self.project = checked;
         } else {
             self.user = checked;

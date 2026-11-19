@@ -17,6 +17,10 @@ Treat as **high** severity:
 The sandbox can forward the owner's `CARGO_TARGET_DIR` to worker shells. External cache
 paths are writable only through an explicit owner `oxa.sandbox.writePaths` mount.
 
+User-only settings are filtered from the project layer both when it is loaded and whenever a
+project settings edit rereads and adopts that layer. Editing an unrelated project key must not
+restore a rejected project value in the running settings instance.
+
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 
 Do not report: style, pre-existing issues outside the diff, test-only code that never runs in production, or hypothetical risks without a concrete path.
