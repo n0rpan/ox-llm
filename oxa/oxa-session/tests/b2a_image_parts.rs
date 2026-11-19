@@ -34,6 +34,7 @@ fn old_sessions_without_images_still_load() {
     let e = msg_entry(WireMsg::user("written before images existed"));
     let mut line = Vec::new();
     encode_entry(&e, &mut line);
-    assert!(!String::from_utf8_lossy(&line).contains("images"));
+    // The key is written only when images exist; the text itself mentions images.
+    assert!(!String::from_utf8_lossy(&line).contains("\"images\""));
     assert_eq!(decode_entry(&line).expect("old entry decodes"), e);
 }
