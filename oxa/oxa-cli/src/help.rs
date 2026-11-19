@@ -35,6 +35,12 @@ const BASE: &[Entry] = &[
         example: "oxa status 20260101-120000-abcd",
     },
     Entry {
+        path: &["usage"],
+        summary: "Print today's cloud spend and request sums per usage pool as JSON",
+        usage: &["oxa usage --json"],
+        example: "oxa usage --json",
+    },
+    Entry {
         path: &["install"],
         summary: "Install a package source and add it to settings",
         usage: &["oxa install <source> [-l]"],

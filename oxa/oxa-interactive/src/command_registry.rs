@@ -115,6 +115,19 @@ commands! {
         },
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
     },
+    Usage {
+        path: &["usage"],
+        aliases: &[],
+        summary: "Print today's cloud spend and request sums per usage pool as JSON",
+        arguments: &[Argument { name: "json", kind: ArgumentKind::Flag, required: true }],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("The JSON usage report is a CLI command"),
+            menu: Availability::Exception("The JSON usage report is a CLI command"),
+            web: Availability::Exception("The panel reads this report from the CLI"),
+        },
+        requirements: NO_REQUIREMENTS,
+    },
     WorkStatus {
         path: &["work", "status"],
         aliases: &[],
