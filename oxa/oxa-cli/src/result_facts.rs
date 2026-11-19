@@ -33,10 +33,7 @@ struct State {
     model: Option<String>,
     pending: VecDeque<Call>,
     log_failed: bool,
-<<<<<<< HEAD
     lookups: u64,
-=======
->>>>>>> origin/agent/yolo-s11
 }
 impl Default for State {
     fn default() -> Self {
@@ -56,10 +53,7 @@ impl Default for State {
             model: None,
             pending: VecDeque::new(),
             log_failed: false,
-<<<<<<< HEAD
             lookups: 0,
-=======
->>>>>>> origin/agent/yolo-s11
         }
     }
 }
@@ -152,10 +146,7 @@ impl ResultFacts {
                 state.log_failed = true;
             }
         }
-<<<<<<< HEAD
         let usage = usage.and_then(Usage::reported);
-=======
->>>>>>> origin/agent/yolo-s11
         if let Some(usage) = usage {
             add(&mut state.prompt, usage.prompt.into());
             add(&mut state.completion, usage.completion.into());

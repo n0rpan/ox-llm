@@ -212,18 +212,12 @@ fn connection_fixed(
             bytes = head;
             request(&bytes, form.is_some(), owner.is_some())
         }
-<<<<<<< HEAD
         Err(HeadError::Closed) => return Ok(()),
         Err(HeadError::Io(kind)) => return Err(kind.into()),
         Err(HeadError::TooLarge) => Err("431 Request Header Fields Too Large"),
         Err(_) => Err("400 Bad Request"),
     };
     let allowed = parsed
-=======
-        bytes.push(byte[0]);
-    }
-    let allowed = request(&bytes, form.is_some(), owner.is_some())
->>>>>>> origin/agent/yolo-s11
         .inspect_err(|status| {
             // Framing failures precede identity and any fact read: one fixed
             // early-parse line, with no request bytes.

@@ -103,12 +103,9 @@ maintainer, who says in the PR when a hardware check is needed.
   with a warning. Settings and environment opt-ins retain their own rules. Interactive `--max-time`
   and `--max-tokens` stop the watched startup session at its wrap-up boundary, before later prompts.
   An idle expiry starts no model request.
-<<<<<<< HEAD
   `oxe admission` is an engine CLI exception. It reports allocation bounds directly from a GGUF
   header and accepts `oxe-server` launch arguments without opening an oxa session. Its command and
   flag help live in `oxe admission --help`. It has no oxa slash, menu, or web surface.
-=======
->>>>>>> origin/agent/yolo-s11
 - **Worker mode.** An `oxa work` worker is started with `--yolo` only when the owner's user-layer
   `permissions.defaultMode` is `yolo`; otherwise it keeps the sandboxed default. Project settings
   cannot raise it. See `oxa/docs/work.md`.

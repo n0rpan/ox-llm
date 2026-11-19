@@ -120,11 +120,8 @@ pub struct Gate {
     pub inbox_wake_pending: std::sync::atomic::AtomicBool,
     /// Foreground work, excluding settlement after a dropped reply.
     pub running: std::sync::atomic::AtomicBool,
-<<<<<<< HEAD
     /// Serializes abort publication with foreground reservation claims and releases.
     pub(crate) foreground_transition: Mutex<()>,
-=======
->>>>>>> origin/agent/yolo-s11
     /// Coalesce worker wakes for ordinary editor queues, independently of bound inbox wakes.
     pub queued_wake_pending: std::sync::atomic::AtomicBool,
     pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
