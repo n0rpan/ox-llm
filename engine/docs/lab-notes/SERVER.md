@@ -401,8 +401,8 @@ long-context tests), `lane_shape` (shared with `Engine::with_options`) and `Plan
 an RSS measurement. The launch arguments use the oxe-server names (`--ctx-size`/`-c`, `--oxe-cpus`,
 `--oxe-prefill-cpus`, `--spec-type`, `--spec-draft-n-max`/`--draft-max`, `--cache-type-k/-v`,
 `--mtp-head`, `--engine oxe`), resolved by the same rules (model-default MTP depth, sidecar head,
-KV type mapping). `--ctx` has no default; an option it does not understand is an error, never a
-guess. The output's `arguments` is the complete resolved argument list the budget is valid for.
+KV type mapping). Without `--ctx` the report is for the model's own `context_length` (said in
+`launch.context_source`); an option it does not understand is an error, never a guess. The output's `arguments` is the complete resolved argument list the budget is valid for.
 
 With `T = ctx_mem(...).total(decode threads, prefill threads)` of the launch:
 `kv_bytes_per_position` (MTP attention layer included once) `* capacity + scratch_bytes +

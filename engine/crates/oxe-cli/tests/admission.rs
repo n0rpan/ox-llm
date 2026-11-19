@@ -182,10 +182,9 @@ fn admission_report_refuses_unknown_architecture_with_reason() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("architecture llama is not supported"), "{err}");
 
-    // other refusals are explained too: no default context, unknown option, context beyond training
+    // other refusals are explained too: unknown option, context beyond training
     let (d2, mini) = fixture("refuse", false);
     for (extra, why) in [
-        (vec![], "--ctx is required"),
         (
             vec!["--ctx", "4096", "--frobnicate", "1"],
             "unknown option --frobnicate",
@@ -202,6 +201,14 @@ fn admission_report_refuses_unknown_architecture_with_reason() {
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(err.contains(why), "{extra:?}: {err}");
     }
+    // no --ctx: the model's own context_length, said so in the report (the fixture declares 4096)
+    let r = report(&mini, &[]);
+    assert_eq!(num(&r["limits"]["context_window"]), 4096);
+    assert_eq!(r["launch"]["context_source"], "model context_length");
+    assert_eq!(
+        report(&mini, &["--ctx", "512"])["launch"]["context_source"],
+        "requested"
+    );
     std::fs::remove_dir_all(dir).ok();
     std::fs::remove_dir_all(d2).ok();
 }

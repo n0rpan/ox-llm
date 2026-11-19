@@ -110,6 +110,14 @@ pub fn has_mtp_block(h: &Header, n_layer: usize) -> bool {
     .all(|s| h.tensor(&format!("blk.{n_layer}.{s}")).is_some())
 }
 
+/// The model's own `context_length`: the context an admission report uses when none is asked for.
+pub fn trained_context(h: &Header) -> Result<usize, String> {
+    match ModelDesc::from_header(h)?.n_ctx_train {
+        0 => Err("the model declares no context_length; pass --ctx".into()),
+        n => Ok(n),
+    }
+}
+
 fn to_u64(v: usize) -> u64 {
     v as u64
 }

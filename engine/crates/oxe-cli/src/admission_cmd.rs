@@ -1,4 +1,4 @@
-//! `oxe admission --model M --ctx N [oxe-server launch arguments] [--margin-bytes B] --json`
+//! `oxe admission --model M [--ctx N] [oxe-server launch arguments] [--margin-bytes B] --json`
 //!
 //! Prints, as JSON, the allocation bounds oxa's native local admission needs for one model and
 //! launch profile. Only the GGUF header is read (the weights are not mapped, no thread pool or
@@ -144,9 +144,6 @@ fn cpu_count(flag: &str, list: &str) -> Result<usize, String> {
 pub fn report_json(args: &[String]) -> Result<Value, String> {
     let p = parse(args)?;
     let model = PathBuf::from(p.model.ok_or("--model is required")?);
-    let ctx = p
-        .ctx
-        .ok_or("--ctx is required: the budget is for one context size, there is no default")?;
     let cpus_arg = p.cpus.unwrap_or_else(|| "0-7".to_string());
     let decode = cpu_count("--oxe-cpus", &cpus_arg)?;
     let prefill = match &p.prefill_cpus {
@@ -162,6 +159,14 @@ pub fn report_json(args: &[String]) -> Result<Value, String> {
         .map_err(|e| format!("{}: {e}", model.display()))?
         .len();
     let g = gguf::Gguf::open(&model).map_err(|e| format!("{}: {e}", model.display()))?;
+    // no --ctx: the model's own context_length (stated in the report), never a made-up size
+    let (ctx, ctx_source) = match p.ctx {
+        Some(c) => (c, "requested"),
+        None => (
+            admission::trained_context(&g.header)?,
+            "model context_length",
+        ),
+    };
 
     // MTP depth, as oxe-server resolves it
     let head_path = model::mtp::mtp_head_path(&model, p.mtp_head.as_deref().map(Path::new));
@@ -255,6 +260,7 @@ pub fn report_json(args: &[String]) -> Result<Value, String> {
         },
         "launch": {
             "context": r.n_ctx_requested,
+            "context_source": ctx_source,
             "context_capacity": r.n_ctx_capacity,
             "kv_type": r.kv.name(),
             "mtp_depth": r.mtp_depth,
