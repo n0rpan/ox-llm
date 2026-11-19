@@ -219,10 +219,10 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.sandbox.net", Kind::Enum(&["on", "off"]), "\"on\""),
     // B2 (lane harden): extra binds of the bash sandbox; user settings only.
     key("oxa.sandbox.readPaths", Kind::StringList, "[]"),
-    // #1512 S3: the OS sandbox of an unattended run (workers, subagents, headless goals).
-    key("oxa.sandbox.unattended", Kind::Bool, "true"),
     // RP6: host runtime sockets (docker, podman) bound into bash; user settings only.
     key("oxa.sandbox.sockets", Kind::StringList, "[]"),
+    // #1512 S3: the OS sandbox of an unattended run (workers, subagents, headless goals).
+    key("oxa.sandbox.unattended", Kind::Bool, "true"),
     key("oxa.sandbox.writePaths", Kind::StringList, "[]"),
     // Skills another product synced into `~/.agents/skills` (`synced/`); off = skipped.
     key("oxa.share.remoteModels", Kind::StringList, "[]"),
