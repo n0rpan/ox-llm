@@ -76,6 +76,57 @@ fn attended_host_bash_uses_the_toolchain_environment_and_scrubs_output() {
     assert_eq!(live, expected.as_bytes());
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn network_disabled_host_bash_uses_the_cleared_environment() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    let fake = env.write(
+        "bin/bwrap",
+        "#!/bin/sh\n[ \"$1\" = --unshare-all ] && exit 0\n[ \"$1\" = --unshare-net ] || exit 1\n[ -z \"${GH_TOKEN+x}\" ] || exit 2\nprintf '%s|%s' \"$HOME\" \"$OXA_SESSION_ID\"\n",
+    );
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let switch = YoloSwitch::new(Autonomy::Standard);
+    let sb = FullAccess::new(
+        Arc::new(NoSandbox),
+        switch,
+        fake.parent().unwrap().to_str().unwrap(),
+        env.home(),
+        false,
+        true,
+    )
+    .with_os_sandbox(false);
+    let mut spec = spec(&env, "true".into(), true);
+    spec.env.push(("GH_TOKEN".into(), "fixture-value".into()));
+    spec.env.push(("OXA_SESSION_ID".into(), "fixture-session".into()));
+    let result = sb.run(&spec, &CancelToken::new(), &mut |_| {});
+    assert_eq!(
+        result.exit,
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&result.output)
+    );
+    assert_eq!(
+        result.output,
+        format!("{}|fixture-session", env.home().display()).as_bytes()
+    );
+}
+
+#[test]
+fn requiring_sandbox_at_run_start_updates_existing_bash_views() {
+    let env = TestEnv::new();
+    let (sb, _) = full(Autonomy::Standard, &env);
+    let sb = sb.with_os_sandbox(false);
+    let view = sb.with_inner(Arc::new(NoSandbox));
+    let command = spec(&env, "printf ran".into(), true);
+    let result = view.run(&command, &CancelToken::new(), &mut |_| {});
+    assert_eq!(result.exit, Some(0));
+
+    sb.require_os_sandbox();
+    let result = view.run(&command, &CancelToken::new(), &mut |_| {});
+    assert_eq!(result.exit, None);
+}
+
 #[test]
 fn yolo_runs_unsandboxed_outside_the_workspace() {
     let env = TestEnv::new();

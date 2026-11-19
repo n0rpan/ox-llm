@@ -186,7 +186,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.sandbox.allowHomeWrite` | bool | `false` | make the home directory the bash workspace when oxa starts in it, in every mode (its folders and files writable; dotfiles, dot-folders, `~/bin` and the home folder itself stay read-only; never `/` or a parent of home). In interactive mode confirming the start question does the same. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
 | `oxa.sandbox.interactive` | bool | `false` | the OS sandbox (bubblewrap) for bash in an attended run (the TUI, a person's `oxa -p`, the lead chat). Off by default: bash runs with your rights and dangerous commands ask. Exec hooks keep their dedicated sandbox. `--sandbox` turns it on for one run. Yolo has no OS sandbox. User settings only |
 | `oxa.sandbox.readPaths` | list | `[]` | extra read-only paths for bash; `~/` is expanded; user settings only |
-| `oxa.sandbox.unattended` | bool | `true` | the OS sandbox (bubblewrap) for bash in an unattended run, including a subagent, a lead worker, `oxa work`, an ownerless RPC host, or a headless run that starts or opens a saved goal session. Stays on by default; set `false` only if you accept bash without it there. User settings only |
+| `oxa.sandbox.unattended` | bool | `true` | the OS sandbox (bubblewrap) for bash in an unattended run, including a subagent, a lead worker, `oxa work`, an ownerless RPC host, or a headless run that starts or resumes a pursuing goal. Stays on by default; set `false` only if you accept bash without it there. User settings only |
 | `oxa.sandbox.writePaths` | list | `[]` | extra writable paths for bash; `~/` is expanded; user settings only |
 
 ### Native cloud gateway

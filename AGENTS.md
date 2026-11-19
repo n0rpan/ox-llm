@@ -18,7 +18,7 @@ maintainer, who says in the PR when a hardware check is needed.
   rights by default and dangerous commands ask; `--sandbox` opts them into bwrap. Unattended runs
   keep bwrap by default. Explicit owner-selected yolo disables the permission floor. Exec hooks
   retain their dedicated sandbox in every mode.
-  Headless runs reopening a saved session and ownerless RPC count as unattended. Host bash uses
+  Headless runs pursuing a goal and ownerless RPC count as unattended. Host bash uses
   a cleared toolchain environment and keeps GitHub output redaction.
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded

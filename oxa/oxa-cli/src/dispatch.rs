@@ -1553,6 +1553,10 @@ fn run_headless(
     let mut prompts = prompts;
     if let Some(goal) = session.goal() {
         if goal.status == oxa_session::GoalStatus::Pursuing {
+            if crate::run_kind::unattended_os_sandbox(&built.settings) {
+                built.bash_sandbox.require_os_sandbox();
+                notices.retain(|(_, notice)| notice != crate::run_kind::NO_SANDBOX_NOTICE);
+            }
             if starts_goal {
                 let start = oxa_core::prompt::goal_start(&goal.objective);
                 if let Some((text, _parts)) = prompts.first_mut() {

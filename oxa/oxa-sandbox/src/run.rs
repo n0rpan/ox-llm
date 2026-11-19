@@ -69,6 +69,26 @@ pub fn run_argv_stdin(
     execute(cmd, prog, Some(stdin), timeout_s, cancel, live, true)
 }
 
+/// Run a resolved command with only the environment chosen by the caller.
+pub(crate) fn run_argv_cleared(
+    argv: &[String],
+    env: &[(String, String)],
+    stdin: Option<&[u8]>,
+    timeout_s: Option<u32>,
+    cancel: &CancelToken,
+    live: &mut dyn FnMut(&[u8]),
+    capture: bool,
+) -> ExecResult {
+    let Some((prog, args)) = argv.split_first() else {
+        return spawn_failed("no command to run".to_string());
+    };
+    let mut cmd = Command::new(prog);
+    cmd.args(args)
+        .env_clear()
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    execute(cmd, prog, stdin, timeout_s, cancel, live, capture)
+}
+
 /// Run `argv` (optionally feeding `stdin`) so that the child inherits `fd`, which is otherwise
 /// close-on-exec; only this child gets it.
 pub(crate) fn run_argv_fd(

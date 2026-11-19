@@ -8,12 +8,10 @@
 //! bash runs with the user's rights too; the approval floor of the policy
 //! asks about dangerous commands. The owner's `oxa.sandbox.net = off` then holds: such a
 //! command goes through bwrap without network, and is refused without bwrap.
-use crate::{
-    offline_argv, run_argv_capture, run_argv_stdin, run_unsandboxed_capture, run_unsandboxed_stdin, Layout,
-    NetSandbox,
-};
+use crate::{offline_argv, run_unsandboxed_capture, run_unsandboxed_stdin, Layout, NetSandbox};
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox, YoloSwitch};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// The bash tool's sandbox with the full-access bypass of `yolo`.
@@ -26,7 +24,7 @@ pub struct FullAccess {
     /// `oxa.sandbox.net` is `off`: unsandboxed commands get no network either.
     net_off: bool,
     /// #1512 S3: the OS sandbox is part of this run's policy (default on).
-    os_sandbox: bool,
+    os_sandbox: Arc<AtomicBool>,
     host_layout: Layout,
     host_net: Option<Arc<NetSandbox>>,
 }
@@ -49,7 +47,7 @@ impl FullAccess {
             home,
             offline,
             net_off,
-            os_sandbox: true,
+            os_sandbox: Arc::new(AtomicBool::new(true)),
             host_layout: Layout::default(),
             host_net: None,
         }
@@ -57,8 +55,13 @@ impl FullAccess {
 
     /// #1512 S3: `false` runs model bash with the user's rights (no OS sandbox).
     pub fn with_os_sandbox(mut self, on: bool) -> FullAccess {
-        self.os_sandbox = on;
+        self.os_sandbox = Arc::new(AtomicBool::new(on));
         self
+    }
+
+    /// Require the OS sandbox for this run and its already constructed tool views.
+    pub fn require_os_sandbox(&self) {
+        self.os_sandbox.store(true, Ordering::Relaxed);
     }
 
     /// Configure the cleared host shell environment and reuse the session’s output redactor.
@@ -79,7 +82,15 @@ impl FullAccess {
                 "TMPDIR" | "XDG_CACHE_HOME" | "SCCACHE_DIR" | "SCCACHE_SERVER_UDS"
             ) || key == "MISE_STATE_DIR" && value == "/tmp/mise-state")
         });
-        env.extend(s.env.iter().cloned());
+        env.extend(
+            s.env
+                .iter()
+                .filter(|(key, _)| {
+                    matches!(key.as_str(), "OXA_SESSION_ID" | "OXA_SESSION_FILE")
+                        || !crate::is_secret_name(key)
+                })
+                .cloned(),
+        );
         spec.env = env;
         spec
     }
@@ -100,7 +111,7 @@ impl FullAccess {
             home: self.home.clone(),
             offline: self.offline,
             net_off: self.net_off,
-            os_sandbox: self.os_sandbox,
+            os_sandbox: self.os_sandbox.clone(),
             host_layout: self.host_layout.clone(),
             host_net: self.host_net.clone(),
         }
@@ -112,13 +123,13 @@ impl FullAccess {
         Arc::new(FileView {
             inner,
             switch: self.switch.clone(),
-            os_sandbox: self.os_sandbox,
+            os_sandbox: self.os_sandbox.clone(),
         })
     }
 
     /// Commands run with the user's rights: full access is on, or there is no OS sandbox.
     fn unsandboxed(&self) -> bool {
-        self.switch.full() || !self.os_sandbox
+        self.switch.full() || !self.os_sandbox.load(Ordering::Relaxed)
     }
 
     /// An unsandboxed command gets no network when the process is offline or the owner set
@@ -146,7 +157,7 @@ impl FullAccess {
         }
         let argv = ["bash", "-c", s.command.as_str()].map(str::to_string).to_vec();
         if self.no_net() {
-            return offline_argv(&self.path_var, &self.home, &s.cwd, &s.env, &argv)
+            return offline_argv(&self.path_var, &self.home, &s.cwd, &[], &argv)
                 .map_err(|_| oxa_proto::offline_error("bash under full access"));
         }
         Ok(argv)
@@ -168,17 +179,34 @@ impl FullAccess {
             }
             return run_unsandboxed_capture(&spec, c, live, capture);
         }
-        match self.launch_argv(s) {
-            Ok(argv) => run_argv_capture(&argv, &[], s.timeout_s, c, live, capture),
-            Err(e) => ExecResult {
-                output: if capture {
-                    e.to_string().into_bytes()
-                } else {
-                    Vec::new()
-                },
-                exit: None,
-                timed_out: false,
-            },
+        self.run_without_network(s, None, c, live, capture)
+    }
+
+    fn run_without_network(
+        &self,
+        s: &ExecSpec,
+        stdin: Option<&[u8]>,
+        c: &CancelToken,
+        live: &mut dyn FnMut(&[u8]),
+        capture: bool,
+    ) -> ExecResult {
+        let argv = ["bash", "-c", s.command.as_str()].map(str::to_string);
+        match offline_argv(&self.path_var, &self.home, &s.cwd, &[], &argv) {
+            Ok(argv) => {
+                let spec = self.host_spec(s);
+                crate::run::run_argv_cleared(&argv, &spec.env, stdin, s.timeout_s, c, live, capture)
+            }
+            Err(_) => {
+                let message = oxa_proto::offline_error("bash under full access")
+                    .to_string()
+                    .into_bytes();
+                live(&message);
+                ExecResult {
+                    output: if capture { message } else { Vec::new() },
+                    exit: None,
+                    timed_out: false,
+                }
+            }
         }
     }
 }
@@ -231,7 +259,7 @@ impl Sandbox for FullAccess {
         c: &CancelToken,
         live: &mut dyn FnMut(&[u8]),
     ) -> ExecResult {
-        if self.os_sandbox {
+        if self.os_sandbox.load(Ordering::Relaxed) {
             return self.inner.run_with_stdin(s, stdin, c, live);
         }
         if !self.no_net() {
@@ -241,15 +269,7 @@ impl Sandbox for FullAccess {
             }
             return run_unsandboxed_stdin(&spec, stdin, c, live);
         }
-        let argv = ["bash", "-c", s.command.as_str()].map(str::to_string).to_vec();
-        match offline_argv(&self.path_var, &self.home, &s.cwd, &s.env, &argv) {
-            Ok(argv) => run_argv_stdin(&argv, &[], stdin, s.timeout_s, c, live),
-            Err(_) => ExecResult {
-                output: oxa_proto::offline_error("exec hooks").to_string().into_bytes(),
-                exit: None,
-                timed_out: false,
-            },
-        }
+        self.run_without_network(s, Some(stdin), c, live, true)
     }
 }
 
@@ -257,7 +277,7 @@ impl Sandbox for FullAccess {
 struct FileView {
     inner: Arc<dyn Sandbox>,
     switch: YoloSwitch,
-    os_sandbox: bool,
+    os_sandbox: Arc<AtomicBool>,
 }
 
 impl Sandbox for FileView {
@@ -277,7 +297,7 @@ impl Sandbox for FileView {
         self.inner.scratch_dir()
     }
     fn file_scratch_dir(&self, mode: oxa_proto::Mode) -> Option<&std::path::Path> {
-        if (self.switch.full() || !self.os_sandbox) && mode != oxa_proto::Mode::Plan {
+        if (self.switch.full() || !self.os_sandbox.load(Ordering::Relaxed)) && mode != oxa_proto::Mode::Plan {
             None
         } else {
             self.inner.file_scratch_dir(mode)
@@ -291,7 +311,7 @@ impl Sandbox for FileView {
             Arc::new(FileView {
                 inner,
                 switch: self.switch.clone(),
-                os_sandbox: self.os_sandbox,
+                os_sandbox: self.os_sandbox.clone(),
             }) as Arc<dyn Sandbox>
         })
     }

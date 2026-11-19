@@ -60,7 +60,7 @@ $ alias yoxa='oxa --yolo'
 
 ## The bash sandbox
 
-On Linux, unattended bash runs in a `bubblewrap` (`bwrap`) sandbox by default. This includes ownerless RPC and headless runs that reopen a saved session, since the session can resume a goal. Attended runs default to no OS sandbox and say so at start-up; use `--sandbox` or `oxa.sandbox.interactive` to opt in. Without usable bwrap, a run that requires it disables bash and plan execution fails closed. Exec hooks retain their dedicated sandbox and no-network policy. Host bash uses a cleared environment with toolchain variables and keeps GitHub output redaction.
+On Linux, unattended bash runs in a `bubblewrap` (`bwrap`) sandbox by default. This includes ownerless RPC and headless runs that start or resume a pursuing goal. Attended runs default to no OS sandbox and say so at start-up; use `--sandbox` or `oxa.sandbox.interactive` to opt in. Without usable bwrap, a run that requires it disables bash and plan execution fails closed. Exec hooks retain their dedicated sandbox and no-network policy. Host bash uses a cleared environment with toolchain variables and keeps GitHub output redaction.
 
 What a command sees:
 
