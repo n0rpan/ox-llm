@@ -12,18 +12,76 @@
 //! nobody could answer (no way to ask the owner); callers treat it as "not confirmed".
 use oxa_proto::{Ui, YoloSwitch};
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::time::{Duration, Instant};
 
 /// The environment variable a tool child finds the broker socket in.
 pub const SOCK_ENV: &str = "OXA_CONFIRM_SOCK";
 
-/// Maximum complete request frame, including its terminating newline.
-const MAX_REQUEST_BYTES: usize = 64 * 1024;
+/// Owner override of the largest request frame in bytes (newline included).
+pub const MAX_REQUEST_ENV: &str = "OXA_CONFIRM_MAX_REQUEST_BYTES";
+/// Owner override of the seconds a client has to send its whole request line.
+pub const READ_TIMEOUT_ENV: &str = "OXA_CONFIRM_READ_TIMEOUT_SECS";
+/// Owner override of the number of connections served at once.
+pub const MAX_CONNECTIONS_ENV: &str = "OXA_CONFIRM_MAX_CONNECTIONS";
+
+/// How much the broker accepts from tool children. The broker runs in the oxa parent and its
+/// socket is reachable by any command the model runs, so every resource a request can hold
+/// (bytes buffered, time spent waiting for a line, threads) is bounded. The defaults are
+/// generous (a full publication preview fits many times over); the owner can change them with
+/// the `OXA_CONFIRM_*` variables, read once when the session's broker starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// Largest complete request frame, including its terminating newline.
+    pub max_request_bytes: usize,
+    /// Time a client has to deliver its whole request line.
+    pub read_timeout: Duration,
+    /// Connections served at once; more are answered `none` at once and closed.
+    pub max_connections: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits {
+            max_request_bytes: 8 * 1024 * 1024,
+            read_timeout: Duration::from_secs(60),
+            max_connections: 64,
+        }
+    }
+}
+
+impl Limits {
+    /// The defaults with the owner's `OXA_CONFIRM_*` overrides applied. A value that is not a
+    /// positive whole number is ignored and the default stays.
+    pub fn from_env() -> Self {
+        Self::from_lookup(|name| std::env::var(name).ok())
+    }
+
+    fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Self {
+        let num = |name: &str| {
+            get(name)
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .filter(|n| *n > 0)
+        };
+        let d = Limits::default();
+        Limits {
+            max_request_bytes: num(MAX_REQUEST_ENV)
+                .and_then(|n| usize::try_from(n).ok())
+                .unwrap_or(d.max_request_bytes),
+            read_timeout: num(READ_TIMEOUT_ENV)
+                .map(Duration::from_secs)
+                .unwrap_or(d.read_timeout),
+            max_connections: num(MAX_CONNECTIONS_ENV)
+                .and_then(|n| usize::try_from(n).ok())
+                .unwrap_or(d.max_connections),
+        }
+    }
+}
 
 /// A typed reply that counts as yes (after trimming, lowercasing and dropping `.`/`!`).
 const AFFIRMATIVE: [&str; 5] = ["yes", "y", "ja", "ok", "post it"];
@@ -121,6 +179,18 @@ pub struct OwnerConfirm {
     /// host pump). Without it a dialog could never be shown, so the answer is `none` at once.
     servable: AtomicBool,
     closed: AtomicBool,
+    limits: Limits,
+    /// Connections being served now (bounded by `limits.max_connections`).
+    active: AtomicUsize,
+}
+
+/// Counts one served connection for as long as it lives.
+struct Slot(Arc<OwnerConfirm>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -133,15 +203,21 @@ fn is_affirmative(text: &str) -> bool {
 }
 
 impl OwnerConfirm {
-    /// Bind the socket `<dir>/confirm.sock` (dir 0700, socket 0600) and serve connections.
+    /// Bind the socket `<dir>/confirm.sock` (dir 0700, socket 0600) and serve connections,
+    /// with the owner's [`Limits`] from the environment.
     pub fn start(dir: &Path, yolo: YoloSwitch) -> std::io::Result<Arc<OwnerConfirm>> {
-        let (broker, listener) = Self::bind(dir, yolo)?;
+        Self::start_with(dir, yolo, Limits::from_env())
+    }
+
+    /// [`OwnerConfirm::start`] with explicit limits.
+    pub fn start_with(dir: &Path, yolo: YoloSwitch, limits: Limits) -> std::io::Result<Arc<OwnerConfirm>> {
+        let (broker, listener) = Self::bind(dir, yolo, limits)?;
         let weak = Arc::downgrade(&broker);
         std::thread::spawn(move || accept_loop(listener, weak));
         Ok(broker)
     }
 
-    fn bind(dir: &Path, yolo: YoloSwitch) -> std::io::Result<(Arc<Self>, UnixListener)> {
+    fn bind(dir: &Path, yolo: YoloSwitch, limits: Limits) -> std::io::Result<(Arc<Self>, UnixListener)> {
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -158,6 +234,8 @@ impl OwnerConfirm {
             cv: Condvar::new(),
             servable: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            limits,
+            active: AtomicUsize::new(0),
         });
         Ok((broker, listener))
     }
@@ -303,24 +381,56 @@ impl OwnerConfirm {
         outcome
     }
 
+    /// Read one request line: at most `max_request_bytes` (newline included), delivered
+    /// within `read_timeout`. Anything else is no request.
+    fn read_frame(&self, stream: &UnixStream) -> Option<String> {
+        let max = self.limits.max_request_bytes;
+        let deadline = Instant::now() + self.limits.read_timeout;
+        let mut buf: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 8192];
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return None;
+            }
+            stream.set_read_timeout(Some(left)).ok()?;
+            let n = (&*stream).read(&mut chunk).ok()?;
+            if n == 0 {
+                return None;
+            }
+            let start = buf.len();
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(pos) = buf[start..].iter().position(|b| *b == b'\n') {
+                let end = start + pos + 1;
+                if end > max {
+                    return None;
+                }
+                buf.truncate(end);
+                return String::from_utf8(buf).ok();
+            }
+            if buf.len() >= max {
+                return None;
+            }
+        }
+    }
+
+    fn reply(&self, stream: &UnixStream, verdict: Verdict, origin: Origin) {
+        let _ = stream.set_write_timeout(Some(self.limits.read_timeout));
+        let reply = json!({"answer": verdict.as_str(), "source": origin.as_str()});
+        let _ = writeln!(&*stream, "{reply}");
+    }
+
     fn connection(&self, stream: UnixStream) {
-        let mut line = String::new();
-        let mut frame = BufReader::new(&stream).take(MAX_REQUEST_BYTES as u64 + 1);
-        let Ok(count) = frame.read_line(&mut line) else {
-            return;
-        };
-        let req: Value = if count <= MAX_REQUEST_BYTES && line.ends_with('\n') {
-            serde_json::from_str(&line).unwrap_or(Value::Null)
-        } else {
-            Value::Null
+        let req: Value = match self.read_frame(&stream) {
+            Some(line) => serde_json::from_str(&line).unwrap_or(Value::Null),
+            None => Value::Null,
         };
         let sha = req.get("preview_sha256").and_then(Value::as_str).unwrap_or("");
         let (verdict, origin) = match req.get("question").and_then(Value::as_str) {
             Some(q) => self.request(q.to_string(), sha.to_string()),
             None => (Verdict::None, Origin::Nobody),
         };
-        let reply = json!({"answer": verdict.as_str(), "source": origin.as_str()});
-        let _ = writeln!(&stream, "{reply}");
+        self.reply(&stream, verdict, origin);
     }
 }
 
@@ -346,9 +456,21 @@ fn accept_loop(listener: UnixListener, broker: Weak<OwnerConfirm>) {
         if b.closed.load(Ordering::SeqCst) {
             return;
         }
-        if let Ok(stream) = conn {
-            std::thread::spawn(move || b.connection(stream));
+        let Ok(stream) = conn else {
+            continue;
+        };
+        // Bounded concurrency: past the limit the request is answered `none` at once, on the
+        // accept thread, with a bounded write (the reply fits the socket buffer).
+        if b.active.fetch_add(1, Ordering::SeqCst) >= b.limits.max_connections {
+            b.active.fetch_sub(1, Ordering::SeqCst);
+            b.reply(&stream, Verdict::None, Origin::Nobody);
+            continue;
         }
+        let slot = Slot(b);
+        std::thread::spawn(move || {
+            let slot = slot;
+            slot.0.connection(stream);
+        });
     }
 }
 
@@ -356,8 +478,6 @@ fn accept_loop(listener: UnixListener, broker: Weak<OwnerConfirm>) {
 mod tests {
     use super::*;
     use oxa_proto::{Autonomy, HeadlessUi};
-    use std::io::Read;
-    use std::time::Duration;
 
     fn dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("oxa-oc-{name}-{}", std::process::id()))
@@ -365,9 +485,16 @@ mod tests {
 
     fn ask(broker: &OwnerConfirm, question: &str) -> Value {
         let mut s = UnixStream::connect(broker.sock_path()).expect("connect");
-        writeln!(s, "{}", json!({"question": question, "preview_sha256": "abc"})).expect("write");
+        // The broker may stop reading an oversized frame early; the write can then fail.
+        let _ = writeln!(s, "{}", json!({"question": question, "preview_sha256": "abc"}));
+        answer_of(&s)
+    }
+
+    /// Read the one reply line. Stops at its newline: a further read could see the reset the
+    /// kernel reports when the broker closed with request bytes still unread.
+    fn answer_of(s: &UnixStream) -> Value {
         let mut out = String::new();
-        s.read_to_string(&mut out).expect("read");
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(s), &mut out).expect("read");
         serde_json::from_str(&out).expect("json")
     }
 
@@ -437,16 +564,98 @@ mod tests {
         }
     }
 
+    fn small(max_request_bytes: usize, secs: u64, max_connections: usize) -> Limits {
+        Limits {
+            max_request_bytes,
+            read_timeout: Duration::from_secs(secs),
+            max_connections,
+        }
+    }
+
+    #[test]
+    fn owner_confirm_limits_default_generous_and_owner_configurable() {
+        let d = Limits::default();
+        assert!(d.max_request_bytes >= 1024 * 1024, "a full preview fits");
+        let none = Limits::from_lookup(|_| None);
+        assert_eq!(none, d);
+        let set = Limits::from_lookup(|name| {
+            Some(
+                match name {
+                    MAX_REQUEST_ENV => "4096",
+                    READ_TIMEOUT_ENV => "7",
+                    MAX_CONNECTIONS_ENV => "3",
+                    _ => return None,
+                }
+                .to_string(),
+            )
+        });
+        assert_eq!(set, small(4096, 7, 3));
+        let bad = Limits::from_lookup(|_| Some("0".into()));
+        assert_eq!(bad, d, "a bad value keeps the default");
+        let junk = Limits::from_lookup(|_| Some("lots".into()));
+        assert_eq!(junk, d);
+    }
+
     #[test]
     fn owner_confirm_rejects_requests_beyond_the_frame_limit() {
         let d = dir("frame-limit");
-        let broker = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Yolo)).expect("start");
+        let max = 64 * 1024;
+        let broker =
+            OwnerConfirm::start_with(&d, YoloSwitch::new(Autonomy::Yolo), small(max, 30, 8)).expect("start");
         let overhead = json!({"question": "", "preview_sha256": "abc"}).to_string().len() + 1;
-        let at_limit = MAX_REQUEST_BYTES - overhead;
+        let at_limit = max - overhead;
         assert_eq!(ask(&broker, &"q".repeat(at_limit + 1))["answer"], "none");
         assert!(broker.take_records().is_empty());
         assert_eq!(ask(&broker, &"q".repeat(at_limit))["answer"], "yes");
         assert_eq!(broker.take_records().len(), 1);
+        // A newline-free stream far past the limit is cut off, not buffered.
+        let mut s = UnixStream::connect(broker.sock_path()).expect("connect");
+        let _ = s.write_all(&vec![b'q'; 4 * max]);
+        assert_eq!(answer_of(&s)["answer"], "none");
+        assert!(broker.take_records().is_empty());
+        broker.close();
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn owner_confirm_times_out_a_silent_client() {
+        let d = dir("read-deadline");
+        let broker =
+            OwnerConfirm::start_with(&d, YoloSwitch::new(Autonomy::Yolo), small(4096, 1, 8)).expect("start");
+        let mut s = UnixStream::connect(broker.sock_path()).expect("connect");
+        // A partial line and then silence: the broker gives up at the deadline.
+        s.write_all(b"{\"question\": \"po").expect("write");
+        let started = Instant::now();
+        assert_eq!(answer_of(&s)["answer"], "none");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(broker.take_records().is_empty());
+        broker.close();
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn owner_confirm_bounds_concurrent_connections() {
+        let d = dir("concurrency");
+        let broker =
+            OwnerConfirm::start_with(&d, YoloSwitch::new(Autonomy::Yolo), small(4096, 30, 2)).expect("start");
+        // Two silent clients hold both slots.
+        let held: Vec<UnixStream> = (0..2)
+            .map(|_| UnixStream::connect(broker.sock_path()).expect("connect"))
+            .collect();
+        while broker.active.load(Ordering::SeqCst) < 2 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // A third is answered `none` at once, without waiting for the read deadline.
+        let started = Instant::now();
+        assert_eq!(ask(&broker, "post issue?")["answer"], "none");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(broker.take_records().is_empty());
+        // Freeing a slot serves the next request again.
+        drop(held);
+        while broker.active.load(Ordering::SeqCst) > 0 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(ask(&broker, "post issue?")["answer"], "yes");
         broker.close();
         let _ = std::fs::remove_dir_all(d);
     }
@@ -470,7 +679,8 @@ mod tests {
     #[test]
     fn owner_confirm_drop_wakes_the_listener() {
         let d = dir("drop-listener");
-        let (broker, listener) = OwnerConfirm::bind(&d, YoloSwitch::new(Autonomy::Standard)).expect("bind");
+        let (broker, listener) =
+            OwnerConfirm::bind(&d, YoloSwitch::new(Autonomy::Standard), Limits::default()).expect("bind");
         let weak = Arc::downgrade(&broker);
         let (done, observed) = std::sync::mpsc::channel();
         let listener_thread = std::thread::spawn(move || {
