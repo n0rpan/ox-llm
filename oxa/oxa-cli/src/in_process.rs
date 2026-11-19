@@ -24,9 +24,6 @@ pub(crate) struct ModelSelection<'a> {
     pub scope: &'a [String],
     pub endpoint: &'a str,
     pub owner_selected: bool,
-    /// The model came from a command-line argument or a restored session, and not from a
-    /// launcher's task file: a nested child may use it, a delegated run may not.
-    pub model_argument: bool,
 }
 
 enum SelectPurpose<'a> {
@@ -120,7 +117,6 @@ pub(crate) fn select(
             scope: &[],
             endpoint: "",
             owner_selected: requested.is_some(),
-            model_argument: requested.is_some(),
         },
         None,
         SharedEngines::default(),
@@ -275,16 +271,15 @@ fn select_for(
     shared: SharedEngines,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Selected, OxaError> {
-    let (requested, scope, endpoint, owner_selected, model_argument, show_status) = match purpose {
+    let (requested, scope, endpoint, owner_selected, show_status) = match purpose {
         SelectPurpose::Model(selection) => (
             selection.pattern,
             selection.scope,
             selection.endpoint,
             selection.owner_selected,
-            selection.model_argument,
             false,
         ),
-        SelectPurpose::Inventory => (None, &[][..], "", false, false, true),
+        SelectPurpose::Inventory => (None, &[][..], "", false, true),
     };
     let local_engine = || match shared.local {
         Some(engine) => Ok(engine as Arc<dyn Engine>),
@@ -330,18 +325,14 @@ fn select_for(
     // A project may not choose the model of a Go-only admission: the run then has no scope of
     // its own and the effective settings do have one.
     let project_scope = scope.is_empty() && !effective.list("enabledModels").is_empty();
-    let scope_go = !(scope.is_empty()
-        || native_local && routing::scope_resolves_in_catalog(scope, endpoint, local_models.iter().cloned()));
+    let scope_go = !scope.is_empty()
+        && !(native_local && routing::scope_owns_in_catalog(scope, endpoint, local_models.iter().cloned()));
     // A keyed catalog is available for inventory and owner model selection.
-    // A project default alone cannot choose a new cloud transport, and a delegated
-    // model (`oxa work`'s task file) is not the owner's selection: a key (with no
-    // user `false`) enables Go for the owner's own model choice only, and never for
-    // an alias the local catalog already resolves unless the owner enabled Go.
+    // A project default alone cannot choose a new cloud transport.
     let native_cloud = explicit_cloud
         || (go_enabled
             && (show_status
                 || owner_selected && (requested.is_some() && (!requested_local || explicit_go) || scope_go)
-                || model_argument && go_requested && (!requested_local || explicit_go)
                 // The owner's explicit opt-in opens the gateway only for a model this run
                 // actually asks for; a project scope alone never opens it.
                 || explicit_go
@@ -406,6 +397,16 @@ fn select_for(
             go_error: go_error.cloned().or(go_failure),
             endpoint: endpoint.to_owned(),
             default: effective.string("defaultModel"),
+            // A gateway opened by the owner's Go scope answers for that scope only. An owner
+            // switch (`oxa.cloud.opencode.enabled`, `oxa.engine.inProcessCloud`) opens it whole.
+            admitted: if explicit_go || explicit_cloud {
+                Vec::new()
+            } else {
+                scope.to_vec()
+            },
+            // The owner's Go switch opens the Go catalog, not another provider's models.
+            go_only: explicit_go && !explicit_cloud,
+            metered: aliases("oxa.cloud.models"),
         }
         .into_engine(requested)
         .map(|engine| (engine, catalog_notices));
@@ -440,6 +441,27 @@ fn select_for(
     let (engine, notices, go_failure) = selected?;
     if let Some(error) = go_failure.filter(|_| go_requested) {
         return Err(error);
+    }
+    // A gateway opened by the owner's Go scope answers for that scope here too: without a
+    // local backend there is no `Routed`, so the same bound is applied around the catalog the
+    // effective settings are resolved against.
+    if !explicit_cloud && (explicit_go || !scope.is_empty()) {
+        return Ok((
+            routing::Routed {
+                local: Err(OxaError::new(codes::INVALID, "Native local is not enabled.")),
+                cloud: Ok(engine),
+                local_models: Default::default(),
+                cloud_models,
+                go_error: None,
+                endpoint: endpoint.to_owned(),
+                default: effective.string("defaultModel"),
+                admitted: scope.to_vec(),
+                go_only: explicit_go && !explicit_cloud,
+                metered: aliases("oxa.cloud.models"),
+            }
+            .into_engine(requested)?,
+            notices,
+        ));
     }
     Ok((engine, notices))
 }

@@ -950,10 +950,14 @@ fn prepare(
             pattern: requested_model.as_deref(),
             scope: &owner_scope,
             endpoint: &endpoint.name,
-            // This is an argument supplied for this invocation, including one passed by a trusted
-            // worker or parent. Restored models are excluded because they are not arguments.
-            model_argument: a.model.is_some(),
+            // Model arguments delegated by a launcher cannot opt into a
+            // provider without explicit user settings, and a restored session model
+            // is provenance-less: it counts only when the owner enabled Go. A project
+            // `defaultModel` or `enabledModels` never counts, and an agent process is not
+            // the owner: tool subprocesses carry `AI_AGENT`/`OXA_CODING_AGENT`, so the
+            // check they already fail elsewhere applies to the model argument too.
             owner_selected: !child.nested()
+                && !is_agent(env)
                 && env.get(oxa_work::PlannedTask::DELEGATED_MODEL_ENV).is_none()
                 && (a.model.is_some()
                     || (continued_go.is_some() && user_settings.bool(crate::in_process::GO_SETTING, false))
