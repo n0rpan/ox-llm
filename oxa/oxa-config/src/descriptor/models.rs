@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn models_keys_exist_in_schema() {
-        assert_eq!(ENTRIES.len(), 24);
+        assert_eq!(ENTRIES.len(), 25);
         let mut seen = std::collections::HashSet::new();
         for e in ENTRIES {
             assert_eq!(e.group, Group::Models, "{}", e.key);
