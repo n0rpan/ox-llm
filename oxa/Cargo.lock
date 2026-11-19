@@ -1440,6 +1440,7 @@ dependencies = [
  "libc",
  "oxa-fake",
  "oxa-proto",
+ "regex",
  "serde_json",
  "sha2",
 ]

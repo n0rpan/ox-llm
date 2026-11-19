@@ -2,8 +2,8 @@
 //! Spec: OXA-UI-DESIGN.md sec. 4 and 6. Public API only.
 use oxa_config::Keymap;
 use oxa_interactive::{
-    oxa_activity_line, oxa_footer, oxa_hint_bar, oxa_hud, oxa_splash, oxa_title_text, Activity, HeaderInfo,
-    HintContext, Skin, StatusModel, ViewModel,
+    oxa_activity_line, oxa_footer, oxa_hint_bar, oxa_hud, oxa_splash, oxa_title_text, Activity, BudgetMeter,
+    BudgetScope, BudgetUnit, HeaderInfo, HintContext, Skin, StatusModel, ViewModel,
 };
 use oxa_proto::{Mode, ThinkingLevel};
 use oxa_tui::{strip_ansi, visible_width, ColorMode, Theme};
@@ -310,6 +310,205 @@ fn hud_without_model_says_no_model() {
         ..full_status()
     };
     assert!(plain_hud(&st, 200).contains("no-model"));
+}
+
+// ---- HUD: the budget meter (#873) -------------------------------------------------------------
+
+/// A daily USD budget with a settled used value.
+fn usd(used: f64, cap: Option<f64>) -> BudgetMeter {
+    BudgetMeter {
+        used: Some(used),
+        cap,
+        unit: BudgetUnit::Usd,
+        scope: BudgetScope::Day,
+        incomplete: false,
+    }
+}
+
+fn with_budget(budget: BudgetMeter) -> StatusModel {
+    StatusModel {
+        budget: Some(budget),
+        ..full_status()
+    }
+}
+
+/// Just the `BUDGET` part of a rendered line, so assertions about it are not
+/// confused by the percentages of the context and cache meters. Colour is
+/// stripped first, because the label itself is coloured.
+fn budget_part(line: &str) -> String {
+    let plain = strip_ansi(line);
+    let after = plain.split("BUDGET ").nth(1).expect("no BUDGET part");
+    after.split(" │ ").next().unwrap_or(after).to_string()
+}
+
+#[test]
+fn hud_budget_absent_without_a_projection() {
+    let line = plain_hud(&full_status(), 200);
+    assert!(!line.contains("BUDGET"), "{line:?}");
+}
+
+#[test]
+fn hud_budget_spells_out_unit_scope_and_percent() {
+    let line = plain_hud(&with_budget(usd(8.10, Some(10.0))), 200);
+    assert!(line.contains("BUDGET day $ 8.10/10.00 81% near cap"), "{line:?}");
+    // The scope and the unit are always spelled out, whatever the budget is.
+    let run = BudgetMeter {
+        used: Some(12_000.0),
+        cap: Some(50_000.0),
+        unit: BudgetUnit::Tokens,
+        scope: BudgetScope::Run,
+        incomplete: false,
+    };
+    let line = plain_hud(&with_budget(run), 200);
+    assert!(line.contains("BUDGET run tok 12k/50k 24%"), "{line:?}");
+    let goal = BudgetMeter {
+        scope: BudgetScope::Goal,
+        ..run
+    };
+    assert!(plain_hud(&with_budget(goal), 200).contains("BUDGET goal tok 12k/50k 24%"));
+}
+
+#[test]
+fn hud_budget_thresholds() {
+    let theme = colour();
+    let check = |used: f64, token: &str, word: Option<&str>| {
+        let line = hud(&with_budget(usd(used, Some(100.0))), 200, &theme);
+        assert!(
+            line.contains(&theme.fg(token, &format!("{used:.0}%"))),
+            "{used}% should be {token}: {line:?}"
+        );
+        match word {
+            Some(word) => assert!(
+                line.contains(&theme.fg(token, word)),
+                "{used}% should say {word:?}: {line:?}"
+            ),
+            None => assert!(
+                !budget_part(&line).contains("cap"),
+                "{used}% should warn: {line:?}"
+            ),
+        }
+    };
+    check(79.0, "text", None);
+    check(80.0, "warning", Some("near cap"));
+    check(99.0, "warning", Some("near cap"));
+    check(100.0, "error", Some("over cap"));
+    // Over the cap is shown as it is, not clamped to 100 %.
+    check(112.0, "error", Some("over cap"));
+}
+
+#[test]
+fn hud_budget_warnings_use_unrounded_usage() {
+    let theme = colour();
+    for (used, pct, token, warning) in [
+        (7.95, 80, "text", ""),
+        (7.99, 80, "text", ""),
+        (8.0, 80, "warning", " near cap"),
+        (8.01, 80, "warning", " near cap"),
+        (9.96, 100, "warning", " near cap"),
+        (9.99, 100, "warning", " near cap"),
+        (10.0, 100, "error", " over cap"),
+        (10.01, 100, "error", " over cap"),
+    ] {
+        let line = hud(&with_budget(usd(used, Some(10.0))), 200, &theme);
+        assert_eq!(
+            budget_part(&line).trim(),
+            format!("day $ {used:.2}/10.00 {pct}%{warning}"),
+            "warnings must use the actual usage, not the rounded {pct}%"
+        );
+        for text in [format!("{used:.2}/10.00"), format!("{pct}%")] {
+            assert!(
+                line.contains(&theme.fg(token, &text)),
+                "{used}/10 should use {token} for {text:?}: {line:?}"
+            );
+        }
+        if !warning.is_empty() {
+            assert!(line.contains(&theme.fg(token, warning.trim())));
+        }
+    }
+}
+
+#[test]
+fn hud_budget_unknown_settlement_shows_question_mark() {
+    let unknown = BudgetMeter {
+        used: None,
+        ..usd(0.0, Some(10.0))
+    };
+    let line = plain_hud(&with_budget(unknown), 200);
+    let part = budget_part(&line);
+    assert!(line.contains("BUDGET day $ ?/10.00"), "{line:?}");
+    assert!(
+        !part.contains('%'),
+        "no percentage without a used value: {part:?}"
+    );
+    assert!(!part.contains("0.00/"), "unknown is never a zero: {part:?}");
+    // Without a cap either, only the question mark is left.
+    let bare = BudgetMeter { cap: None, ..unknown };
+    assert!(plain_hud(&with_budget(bare), 200).contains("BUDGET day $ ?"));
+}
+
+#[test]
+fn hud_budget_incomplete_marks_a_lower_bound() {
+    let partial = BudgetMeter {
+        incomplete: true,
+        ..usd(8.10, Some(10.0))
+    };
+    let line = plain_hud(&with_budget(partial), 200);
+    assert!(line.contains("BUDGET day $ 8.10+/10.00 81% near cap"), "{line:?}");
+}
+
+#[test]
+fn hud_budget_unset_and_zero_cap() {
+    // No cap: the used value alone, no percentage and no warning.
+    let line = plain_hud(&with_budget(usd(8.10, None)), 200);
+    let part = budget_part(&line);
+    assert!(line.contains("BUDGET day $ 8.10"), "{line:?}");
+    assert!(!part.contains('%'), "no percentage without a cap: {part:?}");
+    assert!(!part.contains("cap"), "no warning without a cap: {part:?}");
+    // A zero cap has no percentage (nothing fits in it) and is a hard stop.
+    let theme = colour();
+    let line = hud(&with_budget(usd(0.0, Some(0.0))), 200, &theme);
+    let part = budget_part(&line);
+    assert!(part.starts_with("day $ 0.00/0.00"), "{part:?}");
+    assert!(!part.contains('%'), "a zero cap has no percentage: {part:?}");
+    assert!(!part.contains("over cap"), "a zero cap is not over: {part:?}");
+}
+
+#[test]
+fn hud_budget_large_values_stay_readable() {
+    let line = plain_hud(&with_budget(usd(1_234_567.89, Some(2_000_000.0))), 200);
+    assert!(
+        line.contains("BUDGET day $ 1234567.89/2000000.00 62%"),
+        "{line:?}"
+    );
+    let tokens = BudgetMeter {
+        used: Some(1_500_000.0),
+        cap: Some(2_000_000.0),
+        unit: BudgetUnit::Tokens,
+        scope: BudgetScope::Goal,
+        incomplete: false,
+    };
+    assert!(plain_hud(&with_budget(tokens), 200).contains("BUDGET goal tok 1.5M/2.0M 75%"));
+}
+
+#[test]
+fn hud_budget_fits_every_width_and_drops_before_the_location() {
+    let st = with_budget(usd(8.10, Some(10.0)));
+    for width in 20..=200u16 {
+        assert_one_line(&plain_hud(&st, width), width);
+    }
+    // Wide: the part is there. Narrow: it goes before the location, which #343 keeps.
+    assert!(plain_hud(&st, 200).contains("BUDGET"));
+    let narrow = plain_hud(&st, 60);
+    assert!(!narrow.contains("BUDGET"), "{narrow:?}");
+    assert!(narrow.contains("local"), "{narrow:?}");
+}
+
+#[test]
+fn hud_budget_text_stands_alone_without_colour() {
+    // NO_COLOR / reduced motion: the words carry the fact, not the colour.
+    let line = plain_hud(&with_budget(usd(8.10, Some(10.0))), 200);
+    assert!(line.contains("BUDGET day $ 8.10/10.00 81% near cap"), "{line:?}");
+    assert!(!line.contains('\u{1b}'), "no escape sequences: {line:?}");
 }
 
 // ---- hint bar ---------------------------------------------------------------------------------

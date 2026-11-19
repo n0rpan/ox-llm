@@ -249,19 +249,51 @@ impl PermissionMode {
     }
     /// One line on what the mode does (start notices, stderr in print/rpc runs, the picker).
     pub fn describe(self) -> &'static str {
-        match self {
-            PermissionMode::Standard => {
+        self.describe_with(OS_SANDBOX)
+    }
+    /// [`describe`](Self::describe) for a platform with or without an OS sandbox. Without one the
+    /// text never says the bash sandbox is on: it says bash is disabled, which is what
+    /// `NoSandbox::check` does unless yolo runs the command unsandboxed.
+    pub fn describe_with(self, os_sandbox: bool) -> &'static str {
+        match (self, os_sandbox) {
+            (PermissionMode::Standard, true) => {
                 "prompts before actions outside the workspace; sandbox and deny-list on"
             }
-            PermissionMode::Auto => {
+            // No OS sandbox and no yolo: `NoSandbox::check` refuses, so bash is disabled rather
+            // than running with the user rights. Yolo is the only mode that runs it.
+            (PermissionMode::Standard, false) => {
+                "prompts before actions outside the workspace; no OS sandbox on this platform, \
+                 so bash is disabled; the deny-list stays on"
+            }
+            (PermissionMode::Auto, true) => {
                 "no prompts; the bash sandbox, the deny-list and the protected paths stay on"
             }
-            PermissionMode::Yolo => {
+            (PermissionMode::Auto, false) => {
+                "no prompts; no OS sandbox on this platform, so bash is disabled; the deny-list \
+                 and the protected paths stay on"
+            }
+            (PermissionMode::Yolo, _) => {
                 "full access: no prompts, bash runs without the sandbox in your own environment, \
                  no deny-list and no protected paths for the file tools"
             }
-            PermissionMode::Plan => "read-only: plans, writes nothing",
+            (PermissionMode::Plan, _) => "read-only: plans, writes nothing",
         }
+    }
+}
+
+/// Whether this build has an OS sandbox for bash (bubblewrap, Linux only). Off Linux nothing
+/// sandboxes commands: `NoSandbox` refuses to run them unless yolo, and no text may claim
+/// otherwise.
+pub const OS_SANDBOX: bool = cfg!(target_os = "linux");
+
+/// The start notice for a platform without an OS sandbox; `None` where there is one.
+pub fn no_os_sandbox_notice() -> Option<&'static str> {
+    if OS_SANDBOX {
+        None
+    } else if cfg!(target_os = "macos") {
+        Some("macOS: no OS sandbox; bash is disabled unless yolo")
+    } else {
+        Some("no OS sandbox on this platform; bash is disabled unless yolo")
     }
 }
 

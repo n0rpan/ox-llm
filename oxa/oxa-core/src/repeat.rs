@@ -35,9 +35,12 @@
 //! With [`LIMIT`] identical consecutive results the new result is replaced by a short notice
 //! ([`crate::prompt::repeat_notice`]) that says the content is unchanged and already in context
 //! and asks the model to change approach. The call still runs, so a changed outcome is never
-//! hidden. After [`NOTICES_BEFORE_STOP`] notices in the same run, the next repeat ends the run
-//! with a shown stop message. Nothing already sent is rewritten (W1): the notice is the tool
-//! result of the new call.
+//! hidden. After [`NOTICES_BEFORE_STOP`] notices in the same run the guard no longer ends the
+//! run (#1448): the user is warned once — shown and persisted with the remedy ([`warning_text`])
+//! — and the run continues, so a later reply can still finish the task. The advisor can still end
+//! it on escalation (`agent_loop.rs`); `oxa.maxTurns` and cancellation bound a loop that never
+//! recovers. Further repeats keep getting the notice. Nothing already sent is rewritten (W1):
+//! the notice is the tool result of the new call.
 use crate::SessionState;
 use oxa_proto::{Role, Value, WireMsg};
 
@@ -45,11 +48,10 @@ use oxa_proto::{Role, Value, WireMsg};
 pub const SETTING: &str = "oxa.toolRepeatGuard";
 /// The setting that caps the model replies of one run (default unset: no limit).
 pub const MAX_TURNS: &str = "oxa.maxTurns";
-/// The error class of a run this guard stopped (`outcome` / exit code 1, not a finished task).
-pub const ERROR_CODE: &str = "repeat_guard";
 /// Identical results already on the wire before a repeat is answered with the notice.
 pub const LIMIT: u32 = 3;
-/// Notices for the same call before the next repeat stops the run.
+/// Notices for the same call before the next repeat reaches the guard's give-up point: the
+/// user is warned once and the run continues (#1448; it no longer ends the run).
 pub const NOTICES_BEFORE_STOP: u32 = 2;
 
 /// What to do with one finished call.
@@ -59,8 +61,9 @@ pub enum Verdict {
     Pass,
     /// Replace the result with this notice text.
     Notice(String),
-    /// Replace the result with this notice text and end the run after the batch.
-    Stop(String),
+    /// Replace the result with this notice text and mark the give-up point: the loop warns the
+    /// user once and continues (#1448).
+    Warn(String),
 }
 
 /// Judge one call `name(args)` that ran and whose shaped result is `text`. `in_batch` = the
@@ -121,17 +124,22 @@ fn finish(found: Found, name: &str, args_raw: &str) -> Verdict {
     }
     let notice = crate::prompt::repeat_notice(name, args_raw, found.identical);
     if found.notices >= NOTICES_BEFORE_STOP {
-        Verdict::Stop(notice)
+        Verdict::Warn(notice)
     } else {
         Verdict::Notice(notice)
     }
 }
 
-/// The stop text shown to the user when [`Verdict::Stop`] ends a run.
-pub fn stop_text(name: &str) -> String {
+/// The warning shown and persisted (once per run) when [`Verdict::Warn`] fires. The run
+/// continues (#1448), so it says what happened, that it goes on, and the remedy; it names the
+/// tool and quotes nothing else.
+pub fn warning_text(name: &str) -> String {
     oxa_proto::problem_text(
-        "Run stopped: the model repeated the same tool call after being told its result is unchanged",
-        &format!("`{name}` kept returning the same result ({LIMIT} times in a row, then {NOTICES_BEFORE_STOP} notices)"),
+        "The model repeated the same tool call after being told its result is unchanged",
+        &format!(
+            "`{name}` kept returning the same result ({LIMIT} times in a row, then \
+{NOTICES_BEFORE_STOP} notices); the run continues with the notice in its place"
+        ),
         "send a more specific instruction, or switch model with /model",
     )
 }
