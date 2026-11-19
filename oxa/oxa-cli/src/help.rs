@@ -191,12 +191,16 @@ const BASE: &[Entry] = &[
         example: "oxa report-issue submit ~/.oxa/agent/issue-drafts/20260101-120000.md",
     },
     Entry {
+        // Exception: `oxa work` and its `--queue` options are still served by this legacy table,
+        // as the entry note in #1062 records, so their help is declared here and they are not
+        // added to `command_registry.rs` a second time; the migration moves both together.
         path: &["work"],
         summary: "Run tasks in isolated worktrees with external acceptance checks",
         usage: &[
             "oxa work <taskfile> [--rerun]",
             "oxa work --issue N --model MODEL [--rerun]",
             "oxa work --pr N --model MODEL [--rerun]",
+            "oxa work --queue DIR [--max N] [--min-free-mib N] [--max-input-tasks N] [--once]",
             "oxa work status [--json | --usage TASK]",
             "oxa work board --shadow --repo OWNER/REPO --once",
         ],
