@@ -429,9 +429,6 @@ impl Ui for LockedUi<'_, '_> {
     fn confirm(&mut self, title: &str, body: &str, timeout_ms: Option<u32>) -> Option<bool> {
         self.with(|u| u.confirm(title, body, timeout_ms))
     }
-    fn dialog_canceller(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
-        self.with(|u| u.dialog_canceller())
-    }
     fn input(&mut self, title: &str, placeholder: &str) -> Option<String> {
         self.with(|u| u.input(title, placeholder))
     }
@@ -486,8 +483,7 @@ const POLL_MAX: Duration = Duration::from_millis(10);
 /// gets the caller's UI; the permission prompts of served requests use the same one, one call
 /// at a time. Returns when `f` returns; a panic in `f` is resumed here.
 ///
-/// Without a host (`st.host_rx == None`) `f` runs inline unless an owner-confirm broker also
-/// needs the session thread as its dialog pump.
+/// Without a host (`st.host_rx == None`) `f` runs inline: nothing could answer a host call.
 pub(crate) fn pumped<R: Send>(
     st: &mut SessionState,
     level: Serve,
@@ -502,7 +498,7 @@ pub(crate) fn pumped<R: Send>(
     let tapped = !crate::fire::PromptTap::quiet();
     let mut tap = crate::fire::PromptTap::new(ui, prompts.clone());
     let ui: &mut dyn Ui = if tapped { &mut tap } else { tap.inner_mut() };
-    if st.host_rx.is_none() && st.shared.owner_confirm().is_none() {
+    if st.host_rx.is_none() {
         let out = f(&mut *ui);
         tick(sink);
         crate::fire::drain(st, sink, ui);
@@ -511,10 +507,6 @@ pub(crate) fn pumped<R: Send>(
     }
     let cell: Mutex<&mut dyn Ui> = Mutex::new(ui);
     let (done_tx, done_rx) = mpsc::channel::<()>();
-    let previous_broker_state = st.shared.owner_confirm().map(|broker| {
-        let previous = broker.set_servable(true);
-        (broker, previous)
-    });
     std::thread::scope(|scope| {
         let shared_ui = &cell;
         let dependent = level == Serve::Run;
@@ -529,7 +521,7 @@ pub(crate) fn pumped<R: Send>(
         while let Err(mpsc::RecvTimeoutError::Timeout) = done_rx.recv_timeout(pause) {
             let mut ui = LockedUi(&cell);
             let served = serve_level(st, level, sink, &mut ui);
-            serve_owner_confirm(st, sink, &mut ui, true);
+            serve_owner_confirm(st, sink, &mut ui);
             tick(sink);
             crate::fire::drain(st, sink, &mut ui);
             crate::fire::fire_prompts(st, &prompts, sink, &mut ui);
@@ -541,10 +533,10 @@ pub(crate) fn pumped<R: Send>(
         }
         tick(sink);
         let mut ui = LockedUi(&cell);
-        if let Some((broker, previous)) = previous_broker_state {
-            broker.set_servable(previous);
+        if let Some(broker) = st.shared.owner_confirm() {
+            broker.set_servable(false);
         }
-        serve_owner_confirm(st, sink, &mut ui, false);
+        serve_owner_confirm(st, sink, &mut ui);
         crate::fire::drain(st, sink, &mut ui);
         crate::fire::fire_prompts(st, &prompts, sink, &mut ui);
         match helper.join() {
@@ -557,13 +549,12 @@ pub(crate) fn pumped<R: Send>(
 /// Serve the owner confirm broker from the session thread while a tool runs: show the dialog
 /// of a waiting request, then report what was answered (a notice and a session record, so a
 /// yolo answer is never silent).
-fn serve_owner_confirm(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui, serve: bool) {
+fn serve_owner_confirm(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) {
     let Some(broker) = st.shared.owner_confirm() else {
         return;
     };
-    if serve {
-        broker.serve(ui);
-    }
+    broker.set_servable(true);
+    broker.serve(ui);
     for r in broker.take_records() {
         let text = format!(
             "owner confirm {} ({}), preview sha256 {}",

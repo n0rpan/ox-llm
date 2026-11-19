@@ -584,9 +584,6 @@ impl Ui for PromptTap<'_> {
     fn confirm(&mut self, title: &str, body: &str, timeout_ms: Option<u32>) -> Option<bool> {
         self.span("confirm", Some(title), |u| u.confirm(title, body, timeout_ms))
     }
-    fn dialog_canceller(&self) -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
-        self.inner.dialog_canceller()
-    }
     fn input(&mut self, title: &str, placeholder: &str) -> Option<String> {
         self.span("input", Some(title), |u| u.input(title, placeholder))
     }

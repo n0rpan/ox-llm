@@ -22,8 +22,7 @@ maintainer, who says in the PR when a hardware check is needed.
   answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
   broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
   files, web pages, other sessions, agent inbox) never approves. In yolo the broker answers yes and
-  records it. The broker socket is owned by the session (dir 0700, socket 0600) and validates a
-  complete, bounded request frame before asking. Do not add
+  records it. The broker socket is owned by the session (dir 0700, socket 0600). Do not add
   `/dev/tty`-only confirmations or env-marker refusals for owner actions. On Linux, sandboxed
   tool children authenticate the broker as a peer outside their PID namespace; visible peers,
   including same-user ancestor wrappers, are refused. Non-Linux tool children cannot authenticate

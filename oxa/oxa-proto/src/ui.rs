@@ -94,12 +94,6 @@ pub trait Ui: Send {
     fn interactive(&self) -> bool {
         false
     }
-    /// A handle that dismisses dialogs currently waiting in this UI. RPC uses this so an
-    /// owner reply delivered through another authenticated input path can release a session
-    /// thread waiting in [`Ui::confirm`].
-    fn dialog_canceller(&self) -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
-        None
-    }
 }
 
 /// The non-interactive `Ui`: dialogs answer `None`, permission asks answer `Deny`, notifications
