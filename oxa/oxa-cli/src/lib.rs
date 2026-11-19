@@ -20,7 +20,6 @@ mod approval;
 mod args;
 mod child;
 mod config_cmd;
-mod local_cmd;
 mod dispatch;
 mod goal_cmd;
 mod help;
@@ -42,6 +41,7 @@ pub mod lead_quota;
 pub mod lead_runs;
 pub mod lead_serve;
 mod limits;
+mod local_cmd;
 mod login_cmd;
 mod mcp_cmd;
 mod memory_cmd;
@@ -69,11 +69,11 @@ pub use args::{
     NO_TOOL_ALIASES,
 };
 pub use config_cmd::run_config;
-pub use local_cmd::run_local;
 pub use dispatch::{choose_mode, run, with_lead_owner, LeadOwnerBinding, RunMode, Stdio};
 pub use help::{requested, text};
 pub use hooks::{build_hooks, HookInputs, HookSets, EXTENSIONS_LOG};
 pub use identity_cmd::{identity_facts, run_identity, write_identity};
+pub use local_cmd::run_local;
 pub use mcp_cmd::run_mcp;
 pub use memory_cmd::run_memory;
 pub use pkg_cmd::run_pkg;
