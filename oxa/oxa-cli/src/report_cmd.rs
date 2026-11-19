@@ -385,7 +385,11 @@ pub(crate) enum Submission {
 }
 
 pub(crate) fn semantic_reporting(settings: &Settings) -> bool {
-    settings.bool(semantic::SETTING, false)
+    // The consent is the owner's: a trusted project's `.oxa/settings.json` must not enable it.
+    settings
+        .user_value(semantic::SETTING)
+        .and_then(Json::as_bool)
+        .unwrap_or(false)
 }
 
 pub(crate) fn report_ledger(dirs: &Dirs) -> PathBuf {
@@ -685,5 +689,39 @@ In an interactive oxa session, ask for it to be published: the approval dialog s
             )
         }
         _ => Err(usage("report-issue needs `draft` or `submit`")),
+    }
+}
+
+#[cfg(test)]
+mod consent_tests {
+    use super::semantic_reporting;
+    use oxa_config::Settings;
+    use serde_json::json;
+
+    /// The semantic-dedupe consent is the owner's: a trusted project's settings must not grant
+    /// it, because that consent sends the report text to GitHub and to the configured model.
+    #[test]
+    fn a_project_cannot_grant_the_semantic_consent() {
+        let key = "oxa.reportIssue.semanticDedupe";
+        let project_only = Settings::from_values(
+            json!({}),
+            json!({"oxa": {"reportIssue": {"semanticDedupe": true}}}),
+        );
+        assert!(
+            !semantic_reporting(&project_only),
+            "a project file granted consent"
+        );
+        let user_on = Settings::from_values(
+            json!({"oxa": {"reportIssue": {"semanticDedupe": true}}}),
+            json!({}),
+        );
+        assert!(semantic_reporting(&user_on), "the owner's own switch must work");
+        let user_off_project_on = Settings::from_values(
+            json!({"oxa": {"reportIssue": {"semanticDedupe": false}}}),
+            json!({"oxa": {"reportIssue": {"semanticDedupe": true}}}),
+        );
+        assert!(!semantic_reporting(&user_off_project_on));
+        assert!(!semantic_reporting(&Settings::from_values(json!({}), json!({}))));
+        assert_eq!(key, super::semantic::SETTING);
     }
 }
