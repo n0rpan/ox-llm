@@ -546,8 +546,7 @@ mod tests {
         assert!(descriptor("compaction.keepRecentTokens").is_some());
         assert_eq!(fields_of("oxa.lead.serve").count(), 9);
         assert_eq!(in_group(Group::Display).count(), 30);
-        assert_eq!(descriptors().len(), 110);
-        assert_eq!(descriptors().len(), 146);
+        assert_eq!(descriptors().len(), 147);
     }
 
     #[test]
