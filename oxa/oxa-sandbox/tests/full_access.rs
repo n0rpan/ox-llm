@@ -170,11 +170,11 @@ fn tempdir_outside(env: &TestEnv) -> std::path::PathBuf {
     dir
 }
 
-/// Owner standard: yolo = no sandbox anywhere. Exec hooks (inline and with stdin) run with the
-/// user's rights while the switch is at yolo, also live; outside yolo both stay in the wrapped
-/// sandbox (the raw `FullAccess` stdin path always does).
+/// Owner standard (`SECURITY.md`): exec hooks always run in their dedicated sandbox, without
+/// network. Inline and stdin hooks stay in it outside yolo and under it, including when the
+/// switch moves to yolo live: only bash takes the yolo bypass.
 #[test]
-fn yolo_hooks_run_unsandboxed_and_non_yolo_hooks_stay_sandboxed() {
+fn hooks_stay_in_their_sandbox_outside_and_under_yolo() {
     let env = TestEnv::new();
     std::fs::create_dir_all(env.work()).unwrap();
     let inline = env.root().join("hook-inline.txt");
@@ -197,12 +197,13 @@ fn yolo_hooks_run_unsandboxed_and_non_yolo_hooks_stay_sandboxed() {
     );
 
     switch.set_level(Autonomy::Yolo);
-    assert!(hooks.check().is_ok(), "yolo hooks need no bwrap");
     let (a, b) = run(&hooks);
-    assert_eq!(a.exit, Some(0), "{}", String::from_utf8_lossy(&a.output));
-    assert_eq!(b.exit, Some(0), "{}", String::from_utf8_lossy(&b.output));
-    assert_eq!(std::fs::read_to_string(&inline).unwrap(), "x\n");
-    assert_eq!(std::fs::read_to_string(&piped).unwrap(), "payload");
+    assert_eq!(a.exit, None, "{}", String::from_utf8_lossy(&a.output));
+    assert_eq!(b.exit, None, "{}", String::from_utf8_lossy(&b.output));
+    assert!(
+        !inline.exists() && !piped.exists(),
+        "a yolo hook left the sandbox"
+    );
 
     // The raw FullAccess stdin path is not the hooks' view.
     let (raw, _switch) = full(Autonomy::Yolo, &env);
