@@ -170,7 +170,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.diet.output", Kind::Bool, "null"),
     key("oxa.diet.tools", Kind::Bool, "null"),
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
-    key("oxa.engine.inProcessCloud", Kind::Bool, "false"),
+    key("oxa.engine.inProcessCloud", Kind::Bool, "null"),
     key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
@@ -210,6 +210,8 @@ const SCHEMA: &[KeyDef] = &[
     // V020-OPTIMIZE #13 / OXA-LOCAL-FIRST F1: timing only (bytes unchanged); unset = on.
     key("oxa.prefill.paste", Kind::Bool, "null"),
     key("oxa.prefill.tools", Kind::Bool, "null"),
+    // B2b: user-only largest image and per-batch image budget; 0 = no limit.
+    key("oxa.read.maxImageBytes", Kind::Number, "20971520"),
     key("oxa.reportIssue.dailyNew", Kind::Number, "null"),
     key("oxa.reportIssue.repo", Kind::String, "null"),
     key("oxa.reportIssue.semanticDedupe", Kind::Bool, "false"),

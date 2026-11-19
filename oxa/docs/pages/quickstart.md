@@ -31,13 +31,14 @@ Create the file private before a key goes in it, then paste the key in your edit
 
 ```console
 $ mkdir -p ~/.config/oxc/llm
-$ install -m 600 /dev/null ~/.config/oxc/llm/cloud-secrets.json
+$ [ -e ~/.config/oxc/llm/cloud-secrets.json ] || install -m 600 /dev/null ~/.config/oxc/llm/cloud-secrets.json
+$ chmod 600 ~/.config/oxc/llm/cloud-secrets.json
 ```
 
 The Brave Search key for `web_search` is a file of its own that holds only the key. This stores it without showing it on screen or in the shell history:
 
 ```console
-$ (umask 077; read -rs KEY && printf '%s\n' "$KEY" > ~/.oxa/agent/brave-search.key)
+$ (umask 077; mkdir -p ~/.oxa/agent && read -rs KEY && printf '%s\n' "$KEY" > ~/.oxa/agent/brave-search.key)
 ```
 
 Without a Brave key the `web_search` tool is not offered to the model at all. The ChatGPT plan uses no key: sign in with `oxa login chatgpt --experimental`.
@@ -57,14 +58,12 @@ Go is a subscription. oxa counts its requests and tokens and records any paid ch
 
 ### OpenRouter, OpenAI and Anthropic
 
-These are metered providers. Turn the cloud gateway on and let oxa discover the models your keys can use. Merge this into `~/.oxa/agent/settings.json`:
+These are metered providers. Put the key in the protected key file (see above) and that is all: the gateway and model discovery turn on by themselves, and the current Anthropic and OpenAI models are built in with their limits and prices. Set `oxa.engine.inProcessCloud` to `false` to opt out. A budget is optional; merge this into `~/.oxa/agent/settings.json` to set one:
 
 ```json
 {
   "oxa": {
-    "engine": { "inProcessCloud": true },
     "cloud": {
-      "discover_models": true,
       "daily_budget_usd": 10
     }
   }
@@ -111,7 +110,7 @@ Sign in once, in your own terminal:
 $ oxa login chatgpt --experimental
 ```
 
-Then add a model with the provider `chatgpt` under `oxa.cloud.models` and set the two limits a subscription needs:
+That is all: the plan models appear as `chatgpt/gpt-5` and `chatgpt/gpt-5-codex`, with no route and no limits to write. To add your own route or advisory daily limits (a warning at 80% and 100%, never a refusal), use:
 
 ```json
 {

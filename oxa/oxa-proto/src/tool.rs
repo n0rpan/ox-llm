@@ -198,6 +198,12 @@ pub struct ToolTune {
     /// `offset` / `limit` cut their result at it (never above pi's 16 KiB), notices inside it.
     /// 0 = none (pi: each tool's own 16 KiB cut).
     pub output_cap_bytes: u32,
+    /// B2b: the model takes image parts (`EngineInfo::images`). `read` then returns the image
+    /// itself instead of the placeholder line. `false` = the placeholder.
+    pub image_input: bool,
+    /// B2b: the largest image `read` sends, in bytes (`oxa.read.maxImageBytes`). 0 = no limit.
+    /// A larger image is not sent; the result names the limit and the setting.
+    pub max_image_bytes: u32,
 }
 
 /// A tool the model can call. Built-ins, extension tools, MCP tools and codemode all implement

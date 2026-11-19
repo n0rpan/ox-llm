@@ -65,8 +65,10 @@ code, tests, CI and docs; the owner validates on hardware.
   paid balance. `oxa.cloud.daily_budget_usd` applies to metered API admission. Record actual Go
   charges reported by the provider in the ledger and include them in the shared daily spend.
   Preserve subscription token accounting and provider-side limits. A configured
-  `oxa.cloud.subscription_limits` is advisory: it warns at 80% and 100% and is recorded, it is
-  not a local refusal (#1443/#1444).
+  `oxa.cloud.subscription_limits` is advisory (Go and ChatGPT plan): it warns at 80% and 100% and is
+  recorded, it is not a local refusal (#1443/#1444).
+- Keyed providers: an OpenRouter, OpenAI or Anthropic key or a ChatGPT sign-in opens the gateway and
+  discovery; explicit `inProcessCloud`/`discover_models` (even false) win; user layer only.
 - Keyed Go: a Go key in the owner's own secrets file enables the Go subscription transport for
   the owner's own model choice, with `oxa.cloud.opencode.enabled: false` as the opt-out. Engine
   transport selection stays user-only: a protected user key authorizes an actual Go model argument,
@@ -115,12 +117,12 @@ code, tests, CI and docs; the owner validates on hardware.
   secret-store file and `.env.example` publish unless the content holds a secret. Flag as P1 a change that
   weakens these refusals or adds a name-only or blanket long-value block (P2 without a doc update).
 - **Bash and subagent limits.** `oxa.bash.maxJobs` (16) and `oxa.subagent.maxChildren` (8, also
-  steps per call) are user-only warning thresholds, never refusals (owner decision 2026-11-19):
+  steps per call) are user-only warning thresholds, never refusals:
   above them a job starts or children queue, with a warning in the result. A goal token budget
   counts known usage only; two idle replies warn unless `oxa.goal.idlePause`. Both limits are at least 1. An explicit bash `timeout: 0` disables the
   timeout for that call, including a background job, and overrides the foreground default.
   A foreground command that passes its timeout is not killed: it moves to a background job
-  (counted toward the `oxa.bash.maxJobs` warning). `oxa.bash.waitCap` (user-only, default 300 s) caps `wait_s`.
+  (counted in `oxa.bash.maxJobs`). `oxa.bash.waitCap` (user-only, default 300 s) caps `wait_s`.
 - **Cargo cache mounts.** The sandbox forwards an owner-set `CARGO_TARGET_DIR` as a
   toolchain location. An external cache needs a separate user-only
   `oxa.sandbox.writePaths` entry. Review environment forwarding and writable mounts independently.
@@ -155,6 +157,12 @@ code, tests, CI and docs; the owner validates on hardware.
   The repeat guard follows this: the third identical tool result gets a short note, a call that
   still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
   is the cap against loops the guard cannot see.
+  Image input follows it too: `read` attaches an image to a model that takes images, and an image
+  over the user-only `oxa.read.maxImageBytes` (generous default, 0 = no limit) is not sent; that
+  setting also bounds aggregate images across retained session history and the current tool-call
+  batch. A project may enable `images.blockImages` but cannot disable the owner's choice. The result names the limit and the
+  setting instead. `images.blockImages` prevents transmission. Private-path and pinned-open rules
+  apply to images as to any file.
   The finish wake follows it too: a background bash job that finishes on its own queues one
   follow-up message and, when the session is idle after a normal outcome, starts a turn;
   `oxa.jobs.wakeOnFinish` (`true` by default, `false` opts out, user settings only) is the control,

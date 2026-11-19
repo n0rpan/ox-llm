@@ -67,6 +67,7 @@ fn gather(st: &SessionState) -> Inputs {
         &st.settings,
         st.info.n_ctx,
         crate::tune::budget_soft(st),
+        st.info.images == Some(true),
         st.info.caps.remote,
     );
     Inputs {
