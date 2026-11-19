@@ -8,6 +8,8 @@
 - `oxa work` starts a new task branch at its published head (`origin/<branch>`) when that tip descends from the captured base, instead of always at the base. A task for an already pushed pull-request branch now audits and continues that head rather than redoing work from a tree that predates it; several diverging tips or an unrelated one keep the base. See [work.md](docs/work.md).
 ### Added
 
+- An interactive session without a usable `bwrap` now runs bash unsandboxed with a start warning instead of disabling bash, and an unenforceable `oxa.sandbox.net: off` keeps bash with a "network is NOT restricted" warning (offline still disables it). Unattended runs keep "bash is disabled" (#1512). Part of the yolo power plan (S10).
+
 - `oxa work --pr N --model MODEL` (#1019): the unattended packet for a pull request carries its title, body, reviews, issue comments and the names of failing checks at the current head, and the task branch is the pull request's own head branch. Review text and check names are labelled as data and bounded (reviews to 16 KiB, 40 check names); only failing checks travel, never passing ones. Malformed review or check lists are refused, never silently dropped.
 
 ### Changed
