@@ -23,20 +23,30 @@ pub struct NetSandbox {
     net: bool,
     /// Shared by the per-session copies ([`Sandbox::for_session`]): the token is looked up
     /// once per process, and redaction knows it in every later session.
-    gh_token: Arc<std::sync::OnceLock<Option<String>>>,
+    gh_token: Arc<std::sync::Mutex<TokenState>>,
     gh_source: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    /// How long a token read from `gh_source` stays in use; `None` = for the whole process.
+    gh_ttl: Option<std::time::Duration>,
+}
+
+/// The token in use, when it was read, and every token this process has used: a replaced
+/// token stays redacted, because earlier output or files may still hold it.
+#[derive(Default)]
+struct TokenState {
+    current: Option<String>,
+    loaded: Option<std::time::Instant>,
+    seen: Vec<String>,
 }
 
 /// The replacement for a redacted token in tool output.
 const REDACTED: &str = "[redacted]";
 
 /// Exact-match replace of `token` in `bytes`.
-fn redact(bytes: &[u8], token: &str) -> Vec<u8> {
-    let t = token.as_bytes();
+fn redact(bytes: &[u8], tokens: &[String]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i..].starts_with(t) {
+        if let Some(t) = tokens.iter().find(|t| bytes[i..].starts_with(t.as_bytes())) {
             out.extend_from_slice(REDACTED.as_bytes());
             i += t.len();
         } else {
@@ -50,14 +60,14 @@ fn redact(bytes: &[u8], token: &str) -> Vec<u8> {
 /// A streaming redactor: holds back at most `token.len() - 1` bytes (a suffix that could be the
 /// start of the token) between chunks; [`StreamRedactor::finish`] flushes them at EOF.
 struct StreamRedactor<'a> {
-    token: &'a [u8],
+    tokens: &'a [String],
     pending: Vec<u8>,
 }
 
 impl<'a> StreamRedactor<'a> {
-    fn new(token: &'a str) -> Self {
+    fn new(tokens: &'a [String]) -> Self {
         StreamRedactor {
-            token: token.as_bytes(),
+            tokens,
             pending: Vec::new(),
         }
     }
@@ -65,16 +75,15 @@ impl<'a> StreamRedactor<'a> {
     /// Feed a chunk; returns the bytes now safe to show.
     fn push(&mut self, chunk: &[u8]) -> Vec<u8> {
         self.pending.extend_from_slice(chunk);
-        let t = self.token;
         let mut out = Vec::new();
         let mut i = 0;
         let buf = &self.pending;
         while i < buf.len() {
             let rest = &buf[i..];
-            if rest.starts_with(t) {
+            if let Some(t) = self.tokens.iter().find(|t| rest.starts_with(t.as_bytes())) {
                 out.extend_from_slice(REDACTED.as_bytes());
                 i += t.len();
-            } else if t.starts_with(rest) {
+            } else if self.tokens.iter().any(|t| t.as_bytes().starts_with(rest)) {
                 break; // maybe the start of the token: wait for more
             } else {
                 out.push(buf[i]);
@@ -97,8 +106,9 @@ impl NetSandbox {
         NetSandbox {
             inner,
             net: setting_on && !offline,
-            gh_token: Arc::new(std::sync::OnceLock::new()),
+            gh_token: Arc::new(std::sync::Mutex::new(TokenState::default())),
             gh_source: None,
+            gh_ttl: None,
         }
     }
 
@@ -109,8 +119,27 @@ impl NetSandbox {
     /// and never shown in [`Sandbox::bwrap_args`].
     pub fn with_gh_token(mut self, token: Option<String>) -> NetSandbox {
         let net = self.net;
-        self.gh_token = Arc::new(std::sync::OnceLock::new());
-        let _ = self.gh_token.set(Self::clean(net, token));
+        let current = Self::clean(net, token);
+        let state = TokenState {
+            seen: current.iter().cloned().collect(),
+            current,
+            loaded: Some(std::time::Instant::now()),
+        };
+        self.gh_token = Arc::new(std::sync::Mutex::new(state));
+        self
+    }
+
+    /// Like [`with_gh_token_lazy`](Self::with_gh_token_lazy), but the token is read again once
+    /// it is `ttl` old, and right after a command whose output shows a rejected credential
+    /// (a 401). A token that was replaced stays redacted. A read that fails keeps the token in
+    /// use until the next read.
+    pub fn with_gh_token_refreshing(
+        mut self,
+        source: impl Fn() -> Option<String> + Send + Sync + 'static,
+        ttl: std::time::Duration,
+    ) -> NetSandbox {
+        self.gh_source = Some(Arc::new(source));
+        self.gh_ttl = Some(ttl);
         self
     }
 
@@ -134,31 +163,77 @@ impl NetSandbox {
     /// `git` is included because git over HTTPS authenticates through `gh auth git-credential`,
     /// which needs the same token: without it push, fetch, pull and clone would lose their
     /// credentials in the sandbox.
-    fn token_for(&self, s: &ExecSpec) -> Option<&String> {
+    fn token_for(&self, s: &ExecSpec) -> Option<String> {
         if !s.net || !mentions_gh(&s.command) {
             return None;
         }
         self.token()
     }
 
-    fn token(&self) -> Option<&String> {
-        self.gh_token
-            .get_or_init(|| {
-                let src = self.gh_source.as_ref()?;
-                Self::clean(self.net, src())
-            })
-            .as_ref()
+    /// The token to inject now, reading the source when there is no token yet or it is older
+    /// than the lifetime.
+    fn token(&self) -> Option<String> {
+        let mut st = self.gh_token.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(src) = &self.gh_source {
+            let fresh = st
+                .loaded
+                .is_some_and(|at| self.gh_ttl.is_none_or(|ttl| at.elapsed() < ttl));
+            if !fresh {
+                let new = Self::clean(self.net, src());
+                st.loaded = Some(std::time::Instant::now());
+                if let Some(new) = new {
+                    if !st.seen.contains(&new) {
+                        st.seen.push(new.clone());
+                    }
+                    st.current = Some(new);
+                }
+            }
+        }
+        st.current.clone()
+    }
+
+    /// Every token this process has used, longest first, for redaction.
+    fn redaction_tokens(&self) -> Vec<String> {
+        let mut all = self
+            .gh_token
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .seen
+            .clone();
+        all.sort_by_key(|t| std::cmp::Reverse(t.len()));
+        all
+    }
+
+    /// A rejected credential in a command's output: read the source again before the next one.
+    fn note_rejected(&self, output: &[u8]) {
+        if self.gh_ttl.is_none() {
+            return;
+        }
+        let text = String::from_utf8_lossy(output);
+        let rejected = [
+            "HTTP 401",
+            "Bad credentials",
+            "Invalid username or token",
+            "Authentication failed",
+        ]
+        .iter()
+        .any(|m| text.contains(m));
+        if rejected {
+            self.gh_token.lock().unwrap_or_else(|e| e.into_inner()).loaded = None;
+        }
     }
 
     /// The spec for a real run: the clamp plus the token, when the command has the network.
-    fn clamp_run(&self, s: &ExecSpec) -> ExecSpec {
+    /// Also says whether the token source was consulted for this command.
+    fn clamp_run(&self, s: &ExecSpec) -> (ExecSpec, bool) {
         let mut s = self.clamp(s);
+        let wants = s.net && mentions_gh(&s.command);
         if let (true, Some(t)) = (s.net, self.token_for(&s)) {
             s.env.retain(|(k, _)| k != "GH_TOKEN" && k != "GH_HOST");
-            s.env.push(("GH_TOKEN".into(), t.clone()));
+            s.env.push(("GH_TOKEN".into(), t));
             s.env.push(("GH_HOST".into(), "github.com".into()));
         }
-        s
+        (s, wants)
     }
 
     fn redacted_run(
@@ -167,15 +242,19 @@ impl NetSandbox {
         live: &mut dyn FnMut(&[u8]),
         run: impl FnOnce(&ExecSpec, &mut dyn FnMut(&[u8])) -> ExecResult,
     ) -> ExecResult {
-        let s = self.clamp_run(spec);
+        let (s, consulted) = self.clamp_run(spec);
         // Injection is per command, but redaction covers every networked command once the
         // token is known, so `cat token.txt` after `gh auth token > token.txt` is scrubbed.
         // `self.token()` loads a lazy token here too: the first networked command may be
         // `cat token.txt` from an earlier session.
-        let Some(t) = s.net.then(|| self.token()).flatten() else {
+        if s.net && !consulted {
+            self.token();
+        }
+        let tokens = self.redaction_tokens();
+        if !s.net || tokens.is_empty() {
             return run(&s, live);
-        };
-        let mut sr = StreamRedactor::new(t);
+        }
+        let mut sr = StreamRedactor::new(&tokens);
         let mut r = run(&s, &mut |b: &[u8]| {
             let o = sr.push(b);
             if !o.is_empty() {
@@ -186,7 +265,8 @@ impl NetSandbox {
         if !tail.is_empty() {
             live(&tail);
         }
-        r.output = redact(&r.output, t);
+        self.note_rejected(&r.output);
+        r.output = redact(&r.output, &tokens);
         r
     }
 
@@ -216,6 +296,7 @@ impl Sandbox for NetSandbox {
             net: self.net,
             gh_token: self.gh_token.clone(),
             gh_source: self.gh_source.clone(),
+            gh_ttl: self.gh_ttl,
         }))
     }
     fn check(&self) -> Result<(), OxaError> {
@@ -608,5 +689,116 @@ mod tests {
             assert_eq!(live, "a [redacted] b [redacted]", "split at {at}");
             assert_eq!(String::from_utf8(r.output).unwrap(), live, "split at {at}");
         }
+    }
+
+    /// Answers every run with fixed output and records the environment.
+    struct Say(Mutex<Vec<Vec<(String, String)>>>, &'static str);
+    impl Sandbox for Say {
+        fn check(&self) -> Result<(), OxaError> {
+            Ok(())
+        }
+        fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+            Vec::new()
+        }
+        fn run(&self, s: &ExecSpec, _c: &CancelToken, _l: &mut dyn FnMut(&[u8])) -> ExecResult {
+            self.0.lock().unwrap().push(s.env.clone());
+            ExecResult {
+                output: self.1.as_bytes().to_vec(),
+                exit: Some(0),
+                timed_out: false,
+                unsandboxed: false,
+            }
+        }
+    }
+
+    fn rotating() -> (
+        impl Fn() -> Option<String> + Send + Sync + 'static,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = calls.clone();
+        (
+            move || {
+                Some(format!(
+                    "ghs_TOKEN_{}",
+                    c.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                ))
+            },
+            calls,
+        )
+    }
+
+    fn token_of(env: &[(String, String)]) -> Option<&str> {
+        env.iter().find(|(k, _)| k == "GH_TOKEN").map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn gh_token_is_refreshed_after_ttl() {
+        let (src, calls) = rotating();
+        let inner = Arc::new(Say(Mutex::new(Vec::new()), "ok"));
+        let sb = NetSandbox::new(inner.clone(), true, false)
+            .with_gh_token_refreshing(src, std::time::Duration::from_secs(3600));
+        for _ in 0..2 {
+            sb.run(&spec(true), &CancelToken::new(), &mut |_| {});
+        }
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "within the lifetime"
+        );
+        let (src, calls) = rotating();
+        let inner = Arc::new(Say(Mutex::new(Vec::new()), "ok"));
+        let sb = NetSandbox::new(inner.clone(), true, false)
+            .with_gh_token_refreshing(src, std::time::Duration::ZERO);
+        for _ in 0..2 {
+            sb.run(&spec(true), &CancelToken::new(), &mut |_| {});
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let envs = inner.0.lock().unwrap();
+        assert_eq!(token_of(&envs[0]), Some("ghs_TOKEN_0"));
+        assert_eq!(token_of(&envs[1]), Some("ghs_TOKEN_1"));
+    }
+
+    #[test]
+    fn gh_token_is_read_again_after_a_401() {
+        let (src, calls) = rotating();
+        let inner = Arc::new(Say(Mutex::new(Vec::new()), "gh: Bad credentials (HTTP 401)"));
+        let sb = NetSandbox::new(inner.clone(), true, false)
+            .with_gh_token_refreshing(src, std::time::Duration::from_secs(3600));
+        for _ in 0..2 {
+            sb.run(&spec(true), &CancelToken::new(), &mut |_| {});
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(token_of(&inner.0.lock().unwrap()[1]), Some("ghs_TOKEN_1"));
+    }
+
+    #[test]
+    fn stale_env_token_is_replaced() {
+        let inner = Arc::new(Say(Mutex::new(Vec::new()), "ok"));
+        let sb = NetSandbox::new(inner.clone(), true, false)
+            .with_gh_token_refreshing(|| Some("ghs_FRESH".into()), std::time::Duration::from_secs(300));
+        let mut sp = spec(true);
+        sp.env.push(("GH_TOKEN".into(), "ghs_STALE".into()));
+        sb.run(&sp, &CancelToken::new(), &mut |_| {});
+        let envs = inner.0.lock().unwrap();
+        assert_eq!(envs[0].iter().filter(|(k, _)| k == "GH_TOKEN").count(), 1);
+        assert_eq!(token_of(&envs[0]), Some("ghs_FRESH"));
+    }
+
+    #[test]
+    fn token_command_output_is_redacted() {
+        // Both the token in use and one it replaced are scrubbed from output and live text.
+        let (src, _) = rotating();
+        let inner = Arc::new(Say(Mutex::new(Vec::new()), "a ghs_TOKEN_0 b ghs_TOKEN_1 c"));
+        let sb = NetSandbox::new(inner, true, false).with_gh_token_refreshing(src, std::time::Duration::ZERO);
+        let mut live = Vec::new();
+        sb.run(&spec(true), &CancelToken::new(), &mut |b| {
+            live.extend_from_slice(b)
+        });
+        let r = sb.run(&spec(true), &CancelToken::new(), &mut |_| {});
+        assert_eq!(
+            String::from_utf8(r.output).unwrap(),
+            "a [redacted] b [redacted] c"
+        );
     }
 }

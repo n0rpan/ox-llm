@@ -218,6 +218,7 @@ mod tests {
             terminate_binary: None,
             offline: true,
             runner_owns_github: false,
+            github_token_command: Vec::new(),
             storage: directory.path().join("runner"),
         };
         (directory, claims, binding, prepared, policy)

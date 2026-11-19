@@ -462,6 +462,35 @@ pub fn command_runner(command: Command, limit: Option<usize>, deadline: Duration
     command_runner_with_stdin(command, limit, Stdio::null(), deadline)
 }
 
+/// Run `exe args` outside the sandbox and take its stdout as a GitHub token: one word of at most
+/// 4096 bytes. Any failure is `None`; the output is never logged.
+pub fn token_from_command(exe: &Path, args: &[String], deadline: Duration) -> Option<String> {
+    let mut command = Command::new(exe);
+    command.args(args);
+    let (code, out) = command_runner(command, Some(4096), deadline)?;
+    let token = out.trim();
+    (code == 0 && !token.is_empty() && !token.chars().any(char::is_whitespace)).then(|| token.to_string())
+}
+
+/// The owner's token command (`oxa.github.tokenCommand`) for the runner's own GitHub calls:
+/// an absolute program as written, a bare name only from the vetted tool directories.
+fn policy_token(policy: &RunPolicy) -> Result<Option<String>> {
+    let Some((program, args)) = policy.github_token_command.split_first() else {
+        return Ok(None);
+    };
+    let exe = if program.contains('/') {
+        PathBuf::from(program)
+    } else {
+        std::env::split_paths(&policy.host_path)
+            .map(|dir| dir.join(program))
+            .find(|p| p.is_file())
+            .unwrap_or_else(|| PathBuf::from(program))
+    };
+    token_from_command(&exe, args, COMMAND_DEADLINE)
+        .map(Some)
+        .ok_or_else(|| "GitHub token command failed".into())
+}
+
 /// Capture binary stdout with the same process and pipe deadline as the text runner.
 pub fn command_output_bytes(
     command: Command,
@@ -806,6 +835,9 @@ pub struct RunPolicy {
     pub offline: bool,
     /// Set by the runner from the immutable packet before launching its children.
     pub runner_owns_github: bool,
+    /// `oxa.github.tokenCommand` from the user's settings: argv that prints the token the
+    /// runner's `gh` and `git push` use when publishing. Empty keeps the stored `gh` login.
+    pub github_token_command: Vec<String>,
     pub storage: PathBuf,
 }
 

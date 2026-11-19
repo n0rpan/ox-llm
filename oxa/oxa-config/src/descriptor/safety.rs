@@ -1,6 +1,6 @@
 //! Safety: guards on permissions, network and the bash sandbox (design section 5, row A2d).
 
-use super::{d, Apply, Control, Descriptor, Group, Item, WebEdit};
+use super::{d, Apply, Control, Descriptor, Group, Item, Unit, WebEdit};
 
 /// The Safety entries, in display order.
 pub(super) const ENTRIES: &[Descriptor] = &[
@@ -98,6 +98,29 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .apply(Apply::Reload)
     .web(WebEdit::Confirm)
     .widens("Lets bash commands reach the network in workspace and ask modes."),
+    d(
+        "oxa.github.tokenCommand",
+        Group::Safety,
+        "GitHub",
+        "GitHub token command",
+        "Command that prints a GitHub token; empty uses `gh auth token`.",
+    )
+    .control(Control::List(Item::Text))
+    .user_only()
+    .apply(Apply::Reload)
+    .web(WebEdit::Confirm)
+    .widens("Runs this command outside the sandbox and gives its output to commands that use GitHub."),
+    d(
+        "oxa.github.tokenTtlSeconds",
+        Group::Safety,
+        "GitHub",
+        "GitHub token lifetime",
+        "Seconds before the token is read again (300 when unset).",
+    )
+    .number(Unit::Seconds)
+    .user_only()
+    .apply(Apply::Reload)
+    .web(WebEdit::Edit),
     d(
         "oxa.sandbox.allowHomeWrite",
         Group::Safety,

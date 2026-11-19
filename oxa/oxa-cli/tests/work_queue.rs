@@ -744,6 +744,7 @@ fn a_monitor_error_drains_admitted_workers_before_returning() {
         terminate_binary: None,
         offline: true,
         runner_owns_github: false,
+        github_token_command: Vec::new(),
         storage: env.agent_dir().join("work/monitor-fixture"),
     };
     let result = oxa_work::run_queue(

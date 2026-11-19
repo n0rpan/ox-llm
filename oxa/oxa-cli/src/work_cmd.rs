@@ -169,6 +169,9 @@ pub(crate) fn run(
             terminate_binary,
             offline: oxa_proto::offline(),
             runner_owns_github: false,
+            github_token_command: crate::netguard::github_token_command(&oxa_config::Settings::load(
+                dirs, &root, false,
+            )),
             storage: dirs.agent_dir.join("work").join(key),
         };
         protected_storage(&policy.storage, &root, &common)?;

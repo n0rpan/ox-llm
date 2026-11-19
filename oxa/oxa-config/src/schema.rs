@@ -159,6 +159,11 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
+    // The GitHub token for bash and the runner's publish path: an argv list that prints it, read
+    // again after the lifetime in seconds (unset = 300) and after a rejected credential. User
+    // settings only.
+    key("oxa.github.tokenCommand", Kind::StringList, "[]"),
+    key("oxa.github.tokenTtlSeconds", Kind::Number, "null"),
     // The owner's explicit route for the Lead conversation: an exact model id for
     // the normal `--model` selector and the normal gateway. User settings only;
     // unset keeps the ordinary startup model.

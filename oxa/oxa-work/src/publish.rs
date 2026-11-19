@@ -43,10 +43,20 @@ fn isolate_github_environment(command: &mut Command) {
     }
 }
 
-fn gh(binary: &Path, policy: &RunPolicy, repo: &Path, lock: &File, args: &[&str]) -> Result<String> {
+fn gh(
+    binary: &Path,
+    policy: &RunPolicy,
+    token: Option<&str>,
+    repo: &Path,
+    lock: &File,
+    args: &[&str],
+) -> Result<String> {
     let mut command = Command::new(binary);
     super::isolate_git_environment(&mut command);
     isolate_github_environment(&mut command);
+    if let Some(token) = token {
+        command.env("GH_TOKEN", token);
+    }
     command
         .env("PATH", &policy.host_path)
         .env("GH_PROMPT_DISABLED", "1")
@@ -164,11 +174,15 @@ fn publish_locked(
     value.record.acceptance_outcome = Some(accepted);
     writer.save(&mut value, Step::Publishing, observer)?;
     let git = |repo: &Path, args: &[&str]| super::git(policy, repo, args);
-    let gh = |repo: &Path, lock: &File, args: &[&str]| gh(gh_binary, policy, repo, lock, args);
     let result = (|| -> Result<(String, bool)> {
         if policy.offline {
             return Err("publishing is unavailable in offline mode".into());
         }
+        // The owner's token source, read once for this publication.
+        let token = super::policy_token(policy)?;
+        let gh = |repo: &Path, lock: &File, args: &[&str]| {
+            gh(gh_binary, policy, token.as_deref(), repo, lock, args)
+        };
         let tree = &value.record.worktree;
         tree::validate(policy, repo, tree, task)?;
         if super::dirty_worktree(binary, tree, repo, policy, lock)? {
@@ -304,6 +318,9 @@ fn publish_locked(
             ],
         );
         isolate_github_environment(&mut push);
+        if let Some(token) = &token {
+            push.env("GH_TOKEN", token);
+        }
         push.env("GIT_TERMINAL_PROMPT", "0")
             .env("GH_PROMPT_DISABLED", "1")
             // Metadata probes deny every transport. Only this explicit,
@@ -488,5 +505,53 @@ impl LockedTask<'_> {
         reporter: &mut impl FnMut(&super::ProblemNote, &Record, &File, bool) -> Result<super::ReportRecord>,
     ) -> Result<Record> {
         report_locked(self, observer, reporter)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn script(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    fn policy(dir: &Path, command: Vec<String>) -> RunPolicy {
+        RunPolicy {
+            git_binary: "/usr/bin/git".into(),
+            host_path: "/usr/bin:/bin".into(),
+            terminate_binary: None,
+            offline: false,
+            runner_owns_github: false,
+            github_token_command: command,
+            storage: dir.join("runner"),
+        }
+    }
+
+    #[test]
+    fn runner_publish_uses_the_token_source() {
+        let dir = crate::test_dir::PrivateDir::new("publish-token-source");
+        let fake_gh = script(dir.path(), "gh", "printf '%s' \"$GH_TOKEN\"");
+        let source = script(dir.path(), "token", "echo ghs_RUNNER_TOKEN");
+        let lock = File::create(dir.path().join("lock")).unwrap();
+        // Without the setting the runner keeps the stored login: no token is passed on.
+        let plain = policy(dir.path(), Vec::new());
+        assert_eq!(super::super::policy_token(&plain), Ok(None));
+        let seen = gh(&fake_gh, &plain, None, dir.path(), &lock, &[]);
+        assert_eq!(seen, Ok(String::new()));
+        // With it, gh gets exactly the command's token.
+        let owned = policy(dir.path(), vec![source.display().to_string()]);
+        let token = super::super::policy_token(&owned).unwrap();
+        assert_eq!(token.as_deref(), Some("ghs_RUNNER_TOKEN"));
+        let seen = gh(&fake_gh, &owned, token.as_deref(), dir.path(), &lock, &[]);
+        assert_eq!(seen, Ok("ghs_RUNNER_TOKEN".into()));
+        // A command that fails stops the publication instead of falling back.
+        let failing = script(dir.path(), "bad", "exit 1");
+        let broken = policy(dir.path(), vec![failing.display().to_string()]);
+        assert!(super::super::policy_token(&broken).is_err());
     }
 }

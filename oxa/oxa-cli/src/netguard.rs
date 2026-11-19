@@ -33,10 +33,41 @@ fn with_policy(sandbox: Arc<dyn Sandbox>, settings: &Settings, github_auth: bool
         );
     let ns = NetSandbox::new(sandbox, on, offline);
     Arc::new(if lookup {
-        ns.with_gh_token_lazy(gh_token)
+        let command = github_token_command(settings);
+        let ttl = github_token_ttl(settings);
+        ns.with_gh_token_refreshing(move || gh_token(&command), ttl)
     } else {
         ns
     })
+}
+
+/// Owner setting: argv that prints the GitHub token. User layer only: a project file never
+/// names a program that runs outside the sandbox.
+pub(crate) const SETTING_GH_TOKEN_COMMAND: &str = "oxa.github.tokenCommand";
+/// Owner setting: seconds before the token is read again.
+pub(crate) const SETTING_GH_TOKEN_TTL: &str = "oxa.github.tokenTtlSeconds";
+/// Default lifetime of a read token, in seconds.
+const GH_TOKEN_TTL_DEFAULT: u64 = 300;
+
+pub(crate) fn github_token_command(settings: &Settings) -> Vec<String> {
+    settings
+        .user_value(SETTING_GH_TOKEN_COMMAND)
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn github_token_ttl(settings: &Settings) -> std::time::Duration {
+    let secs = settings
+        .user_value(SETTING_GH_TOKEN_TTL)
+        .and_then(|v| v.as_u64())
+        .unwrap_or(GH_TOKEN_TTL_DEFAULT);
+    std::time::Duration::from_secs(secs)
 }
 
 /// Under test isolation (`OXA_TEST_ISOLATION=1`) the host's `gh` login is never consulted: a
@@ -49,13 +80,21 @@ fn test_isolated(v: Option<&str>) -> bool {
 /// #52: the GitHub CLI token for the networked sandbox, from `gh auth token` run once here,
 /// outside the sandbox, with a short timeout. Any failure (no `gh`, not logged in, slow) is
 /// `None`. The token is never logged.
-fn gh_token() -> Option<String> {
+fn gh_token(command: &[String]) -> Option<String> {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    let exe = trusted_gh_for(
-        std::env::var_os("PATH").as_deref(),
-        std::env::current_dir().ok().as_deref(),
-        home.as_deref(),
-    )?;
+    let path = std::env::var_os("PATH");
+    let cwd = std::env::current_dir().ok();
+    if let Some((program, args)) = command.split_first() {
+        // The owner's command: an absolute program as written, a bare name only from the
+        // trusted tool directories (never the project).
+        let exe = if program.contains('/') {
+            std::path::PathBuf::from(program)
+        } else {
+            trusted_executable_for(program, path.as_deref(), cwd.as_deref(), home.as_deref())?
+        };
+        return oxa_work::token_from_command(&exe, args, oxa_work::COMMAND_DEADLINE);
+    }
+    let exe = trusted_gh_for(path.as_deref(), cwd.as_deref(), home.as_deref())?;
     gh_token_from(&exe, GH_DEADLINE)
 }
 
@@ -119,14 +158,11 @@ const GH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
 /// Run `exe auth token --hostname github.com` under one `deadline` that covers the process and
 /// the reading of its output.
 fn gh_token_from(exe: &Path, deadline: std::time::Duration) -> Option<String> {
-    let mut command = std::process::Command::new(exe);
-    command.args(["auth", "token", "--hostname", "github.com"]);
-    let (code, out) = oxa_work::command_runner(command, Some(4096), deadline)?;
-    if code != 0 {
-        return None;
-    }
-    let t = out.trim();
-    (!t.is_empty() && !t.chars().any(char::is_whitespace)).then(|| t.to_string())
+    oxa_work::token_from_command(
+        exe,
+        &["auth", "token", "--hostname", "github.com"].map(String::from),
+        deadline,
+    )
 }
 
 /// The host tool to run: the first executable with the requested name in an absolute `PATH` entry that is
@@ -250,6 +286,31 @@ pub(crate) fn endpoint_notice(base_url: &str) -> Option<(Level, String)> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn token_command_is_user_only() {
+        let command =
+            serde_json::json!({"oxa": {"github": {"tokenCommand": ["/tmp/evil"], "tokenTtlSeconds": 1}}});
+        let project_only = Settings::from_values(serde_json::json!({}), command.clone());
+        assert!(github_token_command(&project_only).is_empty());
+        assert_eq!(
+            github_token_ttl(&project_only),
+            std::time::Duration::from_secs(300)
+        );
+        let user = Settings::from_values(command, serde_json::json!({}));
+        assert_eq!(github_token_command(&user), vec!["/tmp/evil".to_string()]);
+        assert_eq!(github_token_ttl(&user), std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn owner_token_command_supplies_the_token() {
+        let dir = tmp("token-command");
+        let source = script(&dir, "mint", "echo \"ghs_$1\"");
+        let argv = vec![source.display().to_string(), "MINTED".to_string()];
+        assert_eq!(gh_token(&argv), Some("ghs_MINTED".to_string()));
+        let failing = script(&dir, "fail", "exit 3");
+        assert_eq!(gh_token(&[failing.display().to_string()]), None);
+    }
 
     #[test]
     fn test_isolation_skips_the_host_gh_login() {
