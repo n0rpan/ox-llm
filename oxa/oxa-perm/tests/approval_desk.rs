@@ -506,10 +506,9 @@ fn a_once_approval_survives_a_headless_ask_retry() {
         p.danger_ask(&cmd, &cwd).is_empty(),
         "the approved command runs instead of asking again"
     );
-    assert!(
-        !desk.covers("s1", &cwd, &[KEY.to_string()]),
-        "and the final allow spent it"
-    );
+    // Nothing consumed it: in this mode the retry is never allowed, so the grant waits for a
+    // decision that does allow it (a workspace run of the same command).
+    assert!(desk.covers("s1", &cwd, &[KEY.to_string()]));
 }
 
 /// The CLI accepts `--offline` before `send`, so the self-approve rule must look past leading
