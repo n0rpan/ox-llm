@@ -1305,6 +1305,7 @@ dependencies = [
 name = "oxa-interactive"
 version = "0.2.0"
 dependencies = [
+ "libc",
  "oxa-config",
  "oxa-core",
  "oxa-engine",
