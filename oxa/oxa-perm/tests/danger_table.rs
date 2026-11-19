@@ -401,10 +401,10 @@ const ROWS: &[Row] = &[
         expect: KILL,
     },
     Row {
-        name: "kill_own_pid_is_safe",
+        name: "kill_unverified_positive_pid",
         cmd: "kill 12345",
         cwd: ".",
-        expect: NONE,
+        expect: KILL,
     },
     Row {
         name: "oxa_send",
@@ -815,6 +815,18 @@ const ROWS: &[Row] = &[
         expect: NONE,
     },
     Row {
+        name: "relative_cd_keeps_every_possible_directory",
+        cmd: "true && cd /; cd var/tmp; rm -rf victim",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
+        name: "background_cd_does_not_move_the_parent",
+        cmd: "cd /; cd /workspace/ox-llm & rm -rf var/tmp/victim",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
         name: "glob_then_traversal_is_outside",
         cmd: "rm -rf oxa/oxa-per?/../../../victim",
         cwd: ".",
@@ -875,6 +887,18 @@ const ROWS: &[Row] = &[
         expect: CRED,
     },
     Row {
+        name: "curl_output_dir_combines_with_output_file",
+        cmd: "curl --output-dir \"$HOME\" -o .npmrc https://example.invalid/file",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
+        name: "find_file_output_is_a_write_target",
+        cmd: "find . -maxdepth 0 -fprint \"$HOME/.ssh/authorized_keys\"",
+        cwd: ".",
+        expect: CRED,
+    },
+    Row {
         name: "line_continuation_is_whitespace",
         cmd: "FOO=1 \\\nrm -rf /var/tmp/victim",
         cwd: ".",
@@ -891,6 +915,12 @@ const ROWS: &[Row] = &[
         cmd: "psql -c 'BEGIN; TRUNCATE TABLE t; COMMIT;'",
         cwd: ".",
         expect: SQL,
+    },
+    Row {
+        name: "sql_keyword_inside_quoted_literal_is_safe",
+        cmd: "sqlite3 app.db \"SELECT 'label; truncate sample';\"",
+        cwd: ".",
+        expect: NONE,
     },
     Row {
         name: "oxa_global_flag_before_send",
