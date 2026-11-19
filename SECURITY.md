@@ -21,6 +21,10 @@ An explicit owner CLI `--auto` or `--yolo` is sufficient startup consent for hom
 parent of home, with a warning. Project settings and model output cannot supply that CLI consent.
 An interactive time or token limit ends the watched startup session after its bounded wrap-up,
 and an idle expiry starts no model request.
+The background-job and per-parent child limits are configurable through `oxa.bash.maxJobs`
+(default 16) and `oxa.subagent.maxChildren` (default 8). Read both caps from the user file.
+Project settings for remote concurrency remain bounded by the user’s child cap. An explicit
+bash `timeout: 0` opts out of the call timeout. Sandbox and permission checks still apply.
 
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 
