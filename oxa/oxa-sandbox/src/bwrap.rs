@@ -477,10 +477,7 @@ pub(crate) fn bwrap_args_pinned(
         push(&mut a, &["--ro-bind", sock, crate::OWNER_CONFIRM_SOCK]);
     }
     push(&mut a, &["--chdir", &cwd, "--clearenv"]);
-    for (k, mut v) in base_env(s, &home_s, layout)
-        .into_iter()
-        .chain(s.env.iter().cloned())
-    {
+    for (k, mut v) in base_env(&home_s, layout).into_iter().chain(s.env.iter().cloned()) {
         if k == crate::OWNER_CONFIRM_SOCK_ENV {
             v = crate::OWNER_CONFIRM_SOCK.to_string();
         }
