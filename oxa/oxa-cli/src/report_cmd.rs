@@ -597,7 +597,11 @@ fn ask_verified(sock: &Path, question: &str) -> Option<bool> {
 #[cfg(target_os = "linux")]
 fn peer_is_session_oxa(stream: &std::os::unix::net::UnixStream) -> bool {
     use std::os::fd::AsRawFd;
-    let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     // SAFETY: getsockopt on a socket this function owns, into a ucred of the stated length.
     let rc = unsafe {
@@ -756,7 +760,12 @@ mod confirm_tests {
         // Not an ancestor: a listener a command started beside or below the consumer.
         assert!(!is_session_broker(99, &[20, 10, 5], oxa, oxa));
         // An ancestor that is not oxa's executable (a script that wraps the consumer).
-        assert!(!is_session_broker(10, &[20, 10, 5], Path::new("/usr/bin/python3"), oxa));
+        assert!(!is_session_broker(
+            10,
+            &[20, 10, 5],
+            Path::new("/usr/bin/python3"),
+            oxa
+        ));
     }
 
     #[test]
