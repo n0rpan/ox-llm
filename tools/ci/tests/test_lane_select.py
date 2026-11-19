@@ -63,7 +63,7 @@ class Selection(unittest.TestCase):
 
     def test_lane_execution_contract_is_global_but_other_workflows_are_not(self):
         matrix, _, reasons = lane.select(self.packages, self.packages, ['tools/ci/lane_run.py'])
-        self.assertEqual(len(matrix['include']), 4)
+        self.assertEqual(len(matrix['include']), 2)
         self.assertTrue(reasons)
         empty, _, _ = lane.select(self.packages, self.packages, ['.github/workflows/macos.yml'])
         self.assertEqual(empty, {'include': []})
