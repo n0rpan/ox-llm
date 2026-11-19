@@ -901,6 +901,12 @@ impl Session {
             return false;
         }
         self.preloaded = true;
+        // Nothing to preload (a turn already filled the wire, an engine without prefill, the
+        // setting off): do not claim the session, or an idle worker shows it busy right after
+        // each command and a front end reading `is_busy` sees a run that never was.
+        if !crate::compaction::boot_preload_applies(&self.st) {
+            return false;
+        }
         let Ok(_guard) = self.begin() else {
             return false;
         };
