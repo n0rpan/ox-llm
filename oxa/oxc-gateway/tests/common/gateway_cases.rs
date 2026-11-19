@@ -423,7 +423,12 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
         ),
         (
             "conflicting final usage",
-            vec![finish.clone(), final_usage.clone(), early_usage],
+            vec![finish.clone(), final_usage.clone(), early_usage.clone()],
+            false,
+        ),
+        (
+            "early usage then finish without DONE",
+            vec![early_usage.clone(), finish.clone()],
             false,
         ),
         (
@@ -443,7 +448,7 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
             for frame in frames {
                 bytes.extend_from_slice(format!("data: {frame}\n\n").as_bytes());
             }
-            if !known {
+            if !known && !name.ends_with("without DONE") {
                 bytes.extend_from_slice(b"data: {malformed\n\n");
             }
             if name.starts_with("completed length") {
@@ -487,6 +492,7 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
         let mut done = false;
         let mut length = false;
         let mut arguments_delivered = false;
+        let mut usage_delivered = 0;
         let driver = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -498,6 +504,7 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
             &mut |event| {
                 done |= matches!(event, Event::Done);
                 if let Event::Chunk(chunk) = event {
+                    usage_delivered += usize::from(chunk.get("usage").is_some());
                     length |= chunk.pointer("/choices/0/finish_reason") == Some(&json!("length"));
                     if let Some(calls) = chunk
                         .pointer("/choices/0/delta/tool_calls")
@@ -521,6 +528,7 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
             assert_eq!(error.refusal().code, "cloud_upstream_stream_broken", "{name}");
             assert!(!done, "{name}");
         }
+        assert_eq!(usage_delivered, usize::from(done), "{name}");
         if name.contains("length") {
             assert!(length, "length transition must be delivered: {name}");
             assert!(!arguments_delivered, "incomplete arguments stay private: {name}");

@@ -1690,6 +1690,7 @@ fn check_private_stream_details(cause: &str, check: Option<&str>, reply: Reply) 
     assert_eq!(ledger[0]["settled"], "reserved");
     assert_eq!(ledger[0]["usage_missing"], true);
     assert_eq!(ledger[0]["subscription_tokens"], 33280);
+    assert!(ledger[0].get("reported_cost_usd").is_none());
     for path in session_files(&env.home().join(".oxa/agent/sessions")) {
         let history = fs::read_to_string(path).unwrap();
         assert!(!history.contains("cause="));
@@ -1816,12 +1817,22 @@ fn go_private_terminal_choices_after_finish() {
 fn terminal_content() -> Value {
     json!({"choices":[{"index":0,"delta":{"content":"Synthetic success"},"finish_reason":null}]})
 }
-fn settled_success(frames: &[Value]) -> (TestEnv, Vec<Value>) {
+fn settled_success(frames: &[Value]) -> (Output, Vec<Value>) {
     let env = go_diagnostic_env();
     let mock =
         MockOpenAi::start_with(|base| vec![Reply::json(discovery(base)), terminal_frames(frames, true)]);
     setup(&env, &format!("http://{}", mock.address()));
-    let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+    let output = run(
+        &env,
+        &[
+            "--no-session",
+            "--no-tools",
+            "--mode",
+            "json",
+            "-p",
+            "Synthetic request",
+        ],
+    );
     assert!(
         output.status.success(),
         "{}",
@@ -1833,7 +1844,7 @@ fn settled_success(frames: &[Value]) -> (TestEnv, Vec<Value>) {
     assert_eq!(ledger[0]["status"], 200);
     assert_eq!(mock.requests().len(), 2);
     mock.assert_healthy();
-    (env, ledger)
+    (output, ledger)
 }
 #[test]
 fn glm_usage_before_finish_is_a_complete_stream() {
@@ -1850,7 +1861,9 @@ fn glm_usage_before_finish_is_a_complete_stream() {
             frame
         }],
     ] {
-        let (_env, ledger) = settled_success(&frames);
+        let (output, ledger) = settled_success(&frames);
+        assert_eq!(terminal(&output)["tokens"]["prompt"], 100);
+        assert_eq!(terminal(&output)["tokens"]["completion"], 5);
         assert_eq!(ledger[0]["subscription_tokens"], 105);
         assert_eq!(ledger[0]["settled"], "usage");
         assert!(ledger[0].get("usage_missing").is_none());
@@ -1858,32 +1871,67 @@ fn glm_usage_before_finish_is_a_complete_stream() {
 }
 #[test]
 fn done_without_usage_settles_as_usage_missing() {
-    let (_env, ledger) = settled_success(&[terminal_content(), terminal_finish()]);
+    let (output, ledger) = settled_success(&[terminal_content(), terminal_finish()]);
+    assert_eq!(terminal(&output)["tokens"]["complete"], false);
+    assert_eq!(terminal(&output)["tokens"]["unreported_requests"], 1);
     assert_eq!(ledger[0]["settled"], "reserved");
     assert_eq!(ledger[0]["usage_missing"], true);
 }
+
 #[test]
-fn usage_before_finish_rejects_generation_after_it() {
-    // Usage that arrives before the finish frame is provisional: any content after it would be
-    // delivered to the client but never charged, because the provisional counts settle the
-    // request. The stream fails closed instead.
-    check_private_stream_details(
-        "terminal_usage",
-        Some("frame_after_usage"),
-        terminal_frames(
-            &[
-                terminal_content(),
-                json!({"choices":[],"usage":usage()}),
-                json!({"choices":[{"index":0,"delta":{"content":"Uncharged tail"},"finish_reason":null}]}),
-                terminal_finish(),
-            ],
-            true,
-        ),
+fn a_clean_finish_with_more_output_discards_stale_early_usage() {
+    for on_finish in [false, true] {
+        let tail = json!({"choices":[{"index":0,"delta":{"content":"Synthetic tail"},
+            "finish_reason":on_finish.then_some("stop")}]});
+        let mut frames = vec![terminal_content(), json!({"choices":[],"usage":usage()}), tail];
+        if !on_finish {
+            frames.push(terminal_finish());
+        }
+        let (output, ledger) = settled_success(&frames);
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Synthetic tail"));
+        assert_eq!(terminal(&output)["tokens"]["complete"], false);
+        assert_eq!(terminal(&output)["tokens"]["unreported_requests"], 1);
+        assert_eq!(ledger[0]["settled"], "reserved");
+        assert_eq!(ledger[0]["usage_missing"], true);
+        assert!(ledger[0].get("reported_cost_usd").is_none());
+    }
+}
+
+#[test]
+fn an_unreported_go_reply_is_saved_as_unknown_usage() {
+    let env = go_diagnostic_env();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            terminal_frames(&[terminal_content(), terminal_finish()], true),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let output = run(&env, &["--no-tools", "--mode", "json", "-p", "Synthetic request"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Synthetic success"));
+    let files = session_files(&env.agent_dir().join("sessions"));
+    assert_eq!(files.len(), 1);
+    let status: Value =
+        serde_json::from_slice(&fs::read(files[0].with_extension("status.json")).unwrap()).unwrap();
+    assert_eq!(status["tokens"]["complete"], false);
+    assert_eq!(status["tokens"]["unreported_requests"], 1);
+    let saved = fs::read_to_string(&files[0]).unwrap();
+    assert!(
+        saved.lines().any(|line| {
+            serde_json::from_str::<Value>(line).is_ok_and(|row| row["usage"] == json!({"unreported":true}))
+        }),
+        "{saved}"
+    );
+    mock.assert_healthy();
 }
 #[test]
 fn usage_after_finish_still_counts() {
-    let (_env, ledger) = settled_success(&[
+    let (_output, ledger) = settled_success(&[
         terminal_content(),
         terminal_finish(),
         json!({"choices":[],"usage":usage()}),
@@ -1906,6 +1954,18 @@ fn truly_truncated_stream_is_still_stream_broken() {
     check_private_stream_cause(
         "eof",
         terminal_frames(&[terminal_content(), terminal_finish()], false),
+    );
+    // Even a valid finish cannot commit early usage before [DONE].
+    check_private_stream_cause(
+        "eof",
+        terminal_frames(
+            &[
+                terminal_content(),
+                json!({"choices":[],"usage":usage()}),
+                terminal_finish(),
+            ],
+            false,
+        ),
     );
     // [DONE] without any finish.
     check_private_stream_details(
