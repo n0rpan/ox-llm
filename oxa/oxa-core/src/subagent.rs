@@ -437,7 +437,7 @@ impl SubagentHooks {
         match c.enabled {
             Some(on) => on,
             None if c.small_context => true,
-            None => !flash && !window.is_some_and(|w| w < MIN_CONTEXT),
+            None => !flash && window.is_none_or(|w| w >= MIN_CONTEXT),
         }
     }
 
