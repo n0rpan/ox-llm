@@ -42,13 +42,15 @@ fn gather(st: &SessionState) -> Inputs {
         all.extend(h.tools());
         extra.extend(h.prompt_sections());
     }
+    let policy = crate::goal::WaitPolicy::from_settings(&st.settings);
+    // `wait` is declared in every session from its start (`oxa.tools.wait`, default on), with
+    // the same spec a goal's `wait` has, so starting a goal does not change that tool entry.
+    if st.settings.bool("oxa.tools.wait", true) {
+        all.push(crate::goal::wait_tool(&st.shared, &st.hooks, policy, &st.jobs));
+    }
     if let Some(goal) = st.goal.as_ref().filter(|goal| goal.pursuing()) {
         all.retain(|t| !matches!(t.spec().name.as_str(), "goal_done" | "wait"));
-        all.extend(goal.tools(
-            &st.shared,
-            &st.hooks,
-            crate::goal::WaitPolicy::from_settings(&st.settings),
-        ));
+        all.extend(goal.tools(&st.shared, &st.hooks, policy, &st.jobs));
         extra.push((
             "goal".into(),
             crate::prompt::goal_start(&goal.snapshot().objective),

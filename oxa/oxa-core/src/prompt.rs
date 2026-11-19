@@ -74,7 +74,7 @@ pub const RULE_SUBAGENT_CHECK: &str =
 /// done check: the model runs the project's checks, or says it did not).
 pub const RULE_VERIFY: &str =
     "Before you call a task done, run the project's own tests or checks and report the result; if you ran none, say so";
-/// Added with the output diet when `wait` is declared (a goal is pursued).
+/// Added with the output diet when `wait` is declared (every session, unless `oxa.tools.wait` is off).
 pub const RULE_WAIT: &str =
     "To wait for CI, a merge or anything else, call wait (with until when a probe fits); never sleep or poll in a loop";
 /// L4-SUBVERIFY: added after [`RULES_DIET_OUTPUT`] only with the output diet
@@ -672,7 +672,7 @@ pub fn goal_start(objective: &str) -> String {
 pub const GOAL_DONE_DESCRIPTION: &str =
     "End the active goal with a complete or blocked status and concrete evidence.";
 pub const GOAL_DONE_SCHEMA: &str = r#"{"type":"object","properties":{"status":{"type":"string","enum":["complete","blocked"]},"evidence":{"type":"string","minLength":1,"maxLength":8192}},"required":["status","evidence"],"additionalProperties":false}"#;
-pub const GOAL_WAIT_DESCRIPTION: &str = "Wait without polling for 1 to 86400 seconds, capped by oxa.wait.maxSeconds and bounded by the remaining goal time budget. Cancellation interrupts the wait. With `until`, the wait checks that condition every oxa.wait.pollSeconds and returns its evidence once it is met; it ends early at the deadline or when input arrives. Kinds from the GitHub probes: `{kind:\"ci\", sha:<40 hex>, workflow:<name>}` (the run of that workflow for exactly that commit completed) and `{kind:\"pr_merged\", pr:<number>}`. Read probes answer at once from the host, which holds the GitHub login a sandboxed bash lacks: `{kind:\"pr_view\", pr:<number>}`, `{kind:\"pr_checks\", pr:<number>}`, `{kind:\"run_log_failed\", run:<id>}` (the tail of the failed-step log, secrets removed) and `{kind:\"issue_view\", issue:<number>}`. The repository is always the origin remote.";
+pub const GOAL_WAIT_DESCRIPTION: &str = "Wait without polling for 1 to 86400 seconds, capped by oxa.wait.maxSeconds and bounded by the remaining goal time budget when a goal is pursued. Cancellation interrupts the wait, and so does a message the user types. With `until` kind `job_done` and `job` (a background bash job id) the wait returns when that job finishes. With `until`, the wait checks that condition every oxa.wait.pollSeconds and returns its evidence once it is met; it ends early at the deadline or when input arrives. Kinds from the GitHub probes: `{kind:\"ci\", sha:<40 hex>, workflow:<name>}` (the run of that workflow for exactly that commit completed) and `{kind:\"pr_merged\", pr:<number>}`. Read probes answer at once from the host, which holds the GitHub login a sandboxed bash lacks: `{kind:\"pr_view\", pr:<number>}`, `{kind:\"pr_checks\", pr:<number>}`, `{kind:\"run_log_failed\", run:<id>}` (the tail of the failed-step log, secrets removed) and `{kind:\"issue_view\", issue:<number>}`. The repository is always the origin remote.";
 pub const GOAL_WAIT_SCHEMA: &str = r#"{"type":"object","properties":{"seconds":{"type":"integer","minimum":1,"maximum":86400},"reason":{"type":"string","minLength":1,"maxLength":1024},"until":{"type":"object","properties":{"kind":{"type":"string","minLength":1,"maxLength":64}},"required":["kind"]}},"required":["seconds","reason"],"additionalProperties":false}"#;
 
 #[cfg(test)]
