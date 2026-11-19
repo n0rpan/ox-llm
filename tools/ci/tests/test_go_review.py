@@ -423,9 +423,9 @@ class GoReview(unittest.TestCase):
         # Busy repositories exceed the comment-listing bound. An uncountable quota or an
         # unreadable same-diff history must defer the review: no reservation, no provider call.
         busy = [{'id': i, 'user': {'login': 'someone'}, 'body': 'chat'} for i in range(1, 101)]
-        with self.assertRaisesRegex(review.Skipped, 'per-PR'):
+        with self.assertRaisesRegex(review.Skipped, 'Per-PR'):
             self.run_review(comments=busy)
-        with self.assertRaisesRegex(review.Skipped, 'daily'):
+        with self.assertRaisesRegex(review.Skipped, 'Daily'):
             self.run_review(daily_comments=busy)
         # The same bound with a configured quota set to zero still refuses: nothing counted,
         # nothing spent.
