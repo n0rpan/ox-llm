@@ -176,6 +176,7 @@ fn every_body() -> Vec<EntryBody> {
                 completion: 17,
                 cached: 4000,
                 cached_missing: false,
+                unreported: false,
             },
         },
         EntryBody::Compaction {
@@ -740,6 +741,7 @@ fn usage_without_cached_tokens_round_trips_as_missing() {
                 completion: 12,
                 cached: 0,
                 cached_missing: true,
+                unreported: false,
             },
         },
     };
@@ -757,6 +759,7 @@ fn usage_without_cached_tokens_round_trips_as_missing() {
                 completion: 12,
                 cached: 0,
                 cached_missing: false,
+                unreported: false,
             },
         },
         ..e

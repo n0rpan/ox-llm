@@ -77,11 +77,15 @@ fn facts() -> IdentityFacts {
                 alias: "flash".to_string(),
                 context: 16384,
                 max_output: 4096,
+                remote: false,
+                remote_provider: None,
             },
             IdentityModel {
                 alias: "moe".to_string(),
                 context: 131072,
                 max_output: 32768,
+                remote: false,
+                remote_provider: None,
             },
         ],
     }
@@ -312,7 +316,12 @@ fn boot_preload_is_generic_and_opt_out() {
     )
     .expect("prompt");
     let before = server.requests().len();
-    assert!(!s.preload_prefix(&mut VecSink::default(), &mut HeadlessUi::default()));
+    assert!(
+        !s.preload_prefix_if(&mut VecSink::default(), &mut HeadlessUi::default(), || panic!(
+            "an inapplicable preload must not claim the session"
+        ))
+    );
+    assert!(!s.handle().is_busy());
     assert_eq!(server.requests().len(), before);
 }
 
@@ -324,6 +333,8 @@ fn cloud_models_are_one_provider_line_and_a_catalog_change_keeps_the_bytes() {
         alias: alias.to_string(),
         context: 8192,
         max_output: 1024,
+        remote: alias.contains('/'),
+        remote_provider: alias.split_once('/').map(|(provider, _)| provider.to_string()),
     };
     let mut a = facts();
     a.models.extend([model("openrouter/y"), model("opencode/x")]);
@@ -343,4 +354,16 @@ fn cloud_models_are_one_provider_line_and_a_catalog_change_keeps_the_bytes() {
     local.models.clear();
     local.models.push(model("moe"));
     assert!(!identity_text(&local).contains("Cloud models"));
+
+    let mut unprefixed_cloud = facts();
+    unprefixed_cloud.models.push(IdentityModel {
+        alias: "cloud-model".to_string(),
+        context: 64_000,
+        max_output: 4_096,
+        remote: true,
+        remote_provider: Some("openrouter".to_string()),
+    });
+    let text = identity_text(&unprefixed_cloud);
+    assert!(text.contains("- Cloud models: from openrouter ("));
+    assert!(!text.contains("  - cloud-model"));
 }

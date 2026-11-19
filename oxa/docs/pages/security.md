@@ -4,6 +4,8 @@ oxa is a local agent. The model reads your project, runs commands and writes fil
 
 The short threat model is in [SECURITY.md](../../SECURITY.md) at the repository root.
 
+Execution context matters independently of the permission mode. Interactive CLI sessions do not use an OS sandbox by default; dangerous commands ask for your approval. Unattended runs without yolo keep the Bubblewrap sandbox by default. Yolo never uses an OS sandbox, including for unattended work it starts. In every context, the in-process guards remain: secret masking, private-path denials, user-only settings, and offline mode.
+
 ## Permission modes
 
 Every tool call has an access class: `Read`, `Write`, `Exec` (a command), `Net` (a host) or `Mcp` (an MCP tool, read or write). The mode decides what happens to each class.
@@ -15,13 +17,13 @@ Every tool call has an access class: `Read`, `Write`, `Exec` (a command), `Net` 
 | write inside the project | deny | allow | ask |
 | write outside the project | deny | ask | ask |
 | bash, read-only command, no network | allow | allow | ask |
-| bash, other command, no network | deny | allow (sandboxed) | ask |
+| bash, other command, no network | deny | allow (context determines OS sandboxing) | ask |
 | extension `exec` with `net: true` | deny | ask | ask |
 | `web_search` | deny | allow, no prompt | ask |
 | MCP tool that its server marks read-only | allow | allow | ask |
 | MCP tool, other | deny | ask | ask |
 
-In `workspace`, bash runs without asking, in the sandbox described below. Bash has network access in `workspace` and `ask` modes by default (see [Network](#network)). An extension `exec` that asks for network is asked for in `workspace` and `ask`, and refused in `plan`.
+In `workspace`, bash runs without a routine permission question. Interactive sessions still ask before dangerous commands and run bash without an OS sandbox; unattended non-yolo runs use the sandbox described below. Bash has network access in `workspace` and `ask` modes by default (see [Network](#network)). An extension `exec` that asks for network is asked for in `workspace` and `ask`, and refused in `plan`.
 
 - When oxa asks, it offers "Allow once", "Allow for this session", and "Deny". A session grant covers the same path directory, command, host or tool for the rest of the run. Grants are kept in memory and never written to disk. A grant never overrides a deny.
 - Plan mode is for reading and planning. It refuses writes, the `subagent` tool, `web_search`, and every command that is not read-only.
@@ -38,13 +40,13 @@ Pasted and dropped images saved as `tmp/paste-<hash>.<image extension>` remain r
 
 | Mode | Prompts | Bash | File tools |
 |---|---|---|---|
-| `standard` | the table above asks you | in the sandbox | deny-list and protected paths enforced |
-| `auto` (default) | table questions allowed and counted; protected configuration still asks | in the sandbox | deny-list and protected paths enforced |
-| `yolo` | none | **without the sandbox**, in your own environment | no deny-list, no protected paths |
+| `standard` | the table above asks you; dangerous commands ask interactively | no OS sandbox interactively; sandboxed when unattended | deny-list and protected paths enforced |
+| `auto` (default) | routine table questions allowed and counted; protected configuration and dangerous commands still ask interactively | no OS sandbox interactively; sandboxed when unattended | deny-list and protected paths enforced |
+| `yolo` | none | **without the sandbox**, in your own environment | in-process security guards remain |
 | `plan` | as in the table | read-only commands | no writes |
 
-- `auto` is the default of a fresh install. It removes the prompts and nothing else: the bash sandbox and its deny-list stay, the file tools still refuse `~/.ssh`, `~/.gnupg`, cloud and git credentials, `~/.config/oxc`, browser profiles and the agent directory, `.git/hooks` and `.git/config` are never written, and a write to the project's `.oxa` configuration still asks.
-- `yolo` is full access. Bash runs as you, with your files, credentials and network; the file tools no longer refuse the deny-list or git's protected files and do not ask before writing `.oxa` or a startup file. Yolo removes every guard; use `auto` when you want no prompts but still want the sandbox. Use it only in a session you watch, on a machine and project you can restore. With `--offline` bash still has no network.
+- `auto` is the default of a fresh install. It removes routine prompts, but interactive dangerous commands still require approval. Interactive bash has no OS sandbox; unattended non-yolo bash keeps it. The file tools still refuse `~/.ssh`, `~/.gnupg`, cloud and git credentials, `~/.config/oxc`, browser profiles and the agent directory, `.git/hooks` and `.git/config` are never written, and a write to the project's `.oxa` configuration still asks.
+- `yolo` removes permission prompts and OS sandboxing. Bash runs as you, with the files, credentials and network available to the process, but the in-process guards listed above remain. It hard-refuses publishing secrets and an OS-breaking wipe; the owner's explicit confirmation passes other dangerous commands. Yolo also applies to every worker, subagent, headless session and unattended run it starts. Use it only on a machine and project you can restore. With `--offline` bash still has no network.
 - Set the mode at start with `--standard`, `--auto`, `--yolo` or `--permission-mode <mode>` (one run), or with the `permissions.defaultMode` setting (`standard`, `auto`, `yolo` or `plan`). `/mode <mode> --save` and "make default" in the `/mode` picker write that setting. A project's settings can lower the mode (for example to `standard`) but never raise it.
 - In a session: `/mode` opens the picker, `/mode <mode>` switches, `/auto` switches to auto, `/yolo [on|off]` or Ctrl+Alt+O toggles yolo (off returns to the mode before it), and Alt+M cycles standard, auto and yolo. `/mode workspace` and `/mode ask` still set the table mode.
 - The status bar always shows the mode. In yolo it shows a flame, `YOLO full access` and the count of auto-approved actions, the frames turn to the theme's hot colours, and the first switch in a session prints a one-line notice. In print, JSON and RPC mode the mode is written to stderr at start.
@@ -60,7 +62,7 @@ $ alias yoxa='oxa --yolo'
 
 ## The bash sandbox
 
-On Linux, bash runs in a `bubblewrap` (`bwrap`) sandbox. Without a usable `bwrap`, the bash tool is disabled and oxa says so at start-up. On Linux oxa does not fall back to running commands unsandboxed; only the `yolo` mode runs bash without it.
+On Linux, unattended non-yolo bash runs in a `bubblewrap` (`bwrap`) sandbox. Without a usable `bwrap`, the bash tool is disabled for those runs and oxa says so at start-up. Interactive CLI bash runs without an OS sandbox by design and relies on dangerous-command approval plus the in-process guards. Yolo never uses `bwrap`, including for workers, subagents, headless sessions and other unattended work it starts.
 
 Off Linux (macOS) there is no OS sandbox. Bash and exec hooks run as `bash -c` with your full user rights, every result is flagged as unsandboxed, and oxa says so at start-up and to the model. The guards that live inside oxa stay: the file tools' denials and protected paths, credential masking, permissions and trust, and `--offline` for oxa's own provider and network calls. Bash gets the same cleared base environment as the Linux sandbox (a fixed `PATH`, `HOME`, `LANG`, `TERM`, toolchain variables), so credential variables of the oxa process are not inherited. A refused bash network cannot be enforced there: when `oxa.sandbox.net: "off"` or `--offline` asks for one, bash is disabled for that run (start-up and the model's environment note say so) instead of running a command with the network the owner turned off. With the network on, commands run as you and every result is flagged unsandboxed.
 
@@ -78,7 +80,7 @@ What a command sees:
 | `.oxa`, `.agents/skills`, `.git/hooks`, `.git/config` inside a writable project | read-only |
 | a project's `.git` file (a worktree), `.git/config.worktree`, and a missing `.git/hooks` or `.git/config` | read-only; a missing one cannot be created (see below) |
 | the deny-list below | masked: an empty read-only tmpfs over a directory, `/dev/null` over a file |
-| host runtime IPC: `/run/user/<uid>`, `/run/dbus`, `/run/systemd/resolve`, Docker/Podman sockets, name-service sockets | masked: they are Unix sockets, not network sockets, so the network namespace does not contain them; online, only the resolver’s regular DNS configuration files remain readable |
+| host runtime IPC: `/run/user/<uid>`, `/run/dbus`, `/run/systemd/resolve`, Docker/Podman sockets, name-service sockets | masked, except the sockets you list in `oxa.sandbox.sockets` for a network-enabled command (user settings only, default none; a start notice names each, and the docker socket gives root on the host): they are Unix sockets, not network sockets, so the network namespace does not contain them; online, only the resolver’s regular DNS configuration files remain readable |
 | environment variables | none, except the short list below |
 | file ownership | only your own uid is mapped; root-owned system files (for example `/usr/bin/python3`) show as uid 65534 (`nobody`), and `id` shows your uid plus group `nobody` |
 
