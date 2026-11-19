@@ -1,8 +1,9 @@
 //! Responses transport only. The caller owns routing, admission and settlement.
 //! No ambient credential discovery, sign-in, continuation cache or transport Done.
 use super::{chatgpt_request, chatgpt_tokens, request, stream};
-use crate::{accounting::Usage, rate_limits, secrets::Key, sse::Framer};
+use crate::{accounting::Usage, rate_limits, secrets::Key};
 use futures_util::StreamExt;
+use oxa_http::sse::{Frame, Framer};
 use reqwest::{
     header::{HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE},
     Url,
@@ -426,7 +427,7 @@ impl Client {
                 if received > MAX_BODY {
                     return Err(Error::TooLarge);
                 }
-                let Some(data) = decoder.push(byte) else {
+                let Some(Frame::Data(data)) = decoder.push(byte) else {
                     continue;
                 };
                 let event: Value = serde_json::from_slice(&data).map_err(|_| Error::Protocol)?;
@@ -1021,7 +1022,10 @@ mod tests {
         let mut decoder = Framer::default();
         let events: Vec<Value> = wire
             .iter()
-            .filter_map(|b| decoder.push(*b))
+            .filter_map(|b| match decoder.push(*b) {
+                Some(Frame::Data(data)) => Some(data),
+                _ => None,
+            })
             .map(|data| serde_json::from_slice(&data).unwrap())
             .collect();
         assert_eq!(events, vec![serde_json::json!({"type":"ping","text":"λ"})]);
