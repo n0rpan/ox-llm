@@ -1836,6 +1836,25 @@ pub(crate) fn has_dynamic(text: &str) -> bool {
     text.contains('$') || text.contains('`')
 }
 
+/// `true` when the command takes data from a file or stdin that can change between the owner's
+/// answer and a replay of the same text: an input redirection (`< targets`), or a reader that
+/// turns its input into arguments (`xargs`, `parallel`, `read`, `mapfile`, `readarray`,
+/// `--files-from`). A saved unattended approval never covers such a command, because the text
+/// the owner reviewed does not fix what it acts on. The check is deliberately coarse: a false
+/// positive only means the command is not replayed unattended.
+pub(crate) fn has_mutable_input(text: &str) -> bool {
+    text.contains('<')
+        || text
+            .split(|c: char| c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')' | '{' | '}'))
+            .map(|w| w.trim_matches(|c| c == '\'' || c == '"' || c == '\\'))
+            .any(|w| {
+                matches!(w, "xargs" | "parallel" | "read" | "mapfile" | "readarray")
+                    || w.ends_with("/xargs")
+                    || w.ends_with("/parallel")
+                    || w.starts_with("--files-from")
+            })
+}
+
 /// Where a brace expansion (`{a,b}`, `{1..3}`) starts in `w`, if it has one. `{}` (the
 /// `find -exec` placeholder) and `${x}` are not brace expansions.
 fn brace_expansion_at(w: &str) -> Option<usize> {

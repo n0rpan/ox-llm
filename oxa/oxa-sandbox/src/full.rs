@@ -10,9 +10,10 @@
 //! command goes through bwrap without network, and is refused without bwrap.
 use crate::{run_unsandboxed_capture, run_unsandboxed_stdin, Layout, NetSandbox};
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox, YoloSwitch};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 /// The bash tool's sandbox with the full-access bypass of `yolo`.
 pub struct FullAccess {
@@ -27,6 +28,11 @@ pub struct FullAccess {
     os_sandbox: Arc<AtomicBool>,
     host_layout: Layout,
     host_net: Option<Arc<NetSandbox>>,
+    /// The bwrap of the network-disabled host path, found and probed once. It is resolved when
+    /// the run is built offline or with `oxa.sandbox.net = off`, before any model command: a
+    /// later `PATH` lookup could pick up a `bwrap` a command placed in a writable `PATH` entry
+    /// and run it (the probe included) with the network. `None` when bwrap was not usable.
+    offline_bwrap: Arc<OnceLock<Option<PathBuf>>>,
 }
 
 impl FullAccess {
@@ -50,7 +56,36 @@ impl FullAccess {
             os_sandbox: Arc::new(AtomicBool::new(true)),
             host_layout: Layout::default(),
             host_net: None,
+            offline_bwrap: Arc::new(OnceLock::new()),
         }
+        .pin_offline_bwrap()
+    }
+
+    /// Resolve the network-disabled bwrap now when this run may need it (see `offline_bwrap`).
+    fn pin_offline_bwrap(self) -> FullAccess {
+        if self.offline || self.net_off {
+            self.offline_bwrap();
+        }
+        self
+    }
+
+    fn offline_bwrap(&self) -> Option<&Path> {
+        self.offline_bwrap
+            .get_or_init(|| {
+                crate::Bwrap::detect(&self.path_var, &self.home)
+                    .ok()
+                    .map(|b| b.bwrap)
+            })
+            .as_deref()
+    }
+
+    fn offline_argv(&self, s: &ExecSpec) -> Result<Vec<String>, OxaError> {
+        let bwrap = self
+            .offline_bwrap()
+            .ok_or_else(|| oxa_proto::offline_error("bash under full access"))?;
+        Ok(crate::offline::model_offline_argv(
+            bwrap, &self.home, &s.cwd, &s.command,
+        ))
     }
 
     /// #1512 S3: `false` runs model bash with the user's rights (no OS sandbox).
@@ -114,6 +149,7 @@ impl FullAccess {
             os_sandbox: self.os_sandbox.clone(),
             host_layout: self.host_layout.clone(),
             host_net: self.host_net.clone(),
+            offline_bwrap: self.offline_bwrap.clone(),
         }
     }
 
@@ -157,8 +193,7 @@ impl FullAccess {
         }
         let argv = ["bash", "-c", s.command.as_str()].map(str::to_string).to_vec();
         if self.no_net() {
-            return crate::offline::model_offline_argv(&self.path_var, &self.home, &s.cwd, &s.command)
-                .map_err(|_| oxa_proto::offline_error("bash under full access"));
+            return self.offline_argv(s);
         }
         Ok(argv)
     }
@@ -188,7 +223,7 @@ impl FullAccess {
         live: &mut dyn FnMut(&[u8]),
         capture: bool,
     ) -> ExecResult {
-        match crate::offline::model_offline_argv(&self.path_var, &self.home, &s.cwd, &s.command) {
+        match self.offline_argv(s) {
             Ok(argv) => {
                 let spec = self.host_spec(s);
                 let run = |live: &mut dyn FnMut(&[u8])| {
