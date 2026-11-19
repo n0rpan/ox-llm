@@ -17,6 +17,30 @@ use model::engine::KvType;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
+const HELP: &str = "\
+Usage: oxe admission --model M [--ctx N] [oxe-server launch options] [--margin-bytes B] --json
+
+Print JSON allocation bounds from the model header without loading model weights.
+  --model, -m M                   Read the GGUF header from M
+  --ctx, --ctx-size, -c N         Size allocations for N context positions
+  --oxe-cpus LIST                  Set the decode CPU list
+  --oxe-prefill-cpus LIST          Set the prefill CPU list
+  --engine oxe                    Use the native oxe engine
+  --spec-type TYPE                 Select draft-mtp or none
+  --spec-draft-n-max N             Set the draft depth
+  --draft, --draft-max, --draft-n N  Enable MTP and set its draft depth
+  --cache-type-k, -ctk TYPE         Set the key cache format (f16 or q8_0)
+  --cache-type-v, -ctv TYPE         Set the value cache format (f16 or q8_0)
+  --mtp-head PATH                  Select a separate MTP head
+  --mtp-tune PATH                  Accept a server MTP tuning file
+  --margin-bytes B                 Set the extra allocation margin in bytes
+  --json                           Request JSON output (the default)
+  -h, --help                       Show this help
+
+Also accepted from server launch arguments: --alias/-a, --host, --port,
+--ubatch-size/-ub, --oxe-weights, --mtp-max-ctx, --mlock, and --mtp-sampled.
+";
+
 /// Options that change nothing the report computes (value arity 1), accepted so that a real
 /// oxe-server argument list can be passed through unchanged.
 const NEUTRAL_WITH_VALUE: &[&str] = &[
@@ -304,6 +328,10 @@ pub fn report_json(args: &[String]) -> Result<Value, String> {
 }
 
 pub fn run(args: &[String]) -> ! {
+    if matches!(args, [flag] if matches!(flag.as_str(), "-h" | "--help")) {
+        print!("{HELP}");
+        std::process::exit(0);
+    }
     match report_json(args) {
         Ok(v) => {
             println!("{}", serde_json::to_string_pretty(&v).unwrap());

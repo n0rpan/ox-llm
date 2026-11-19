@@ -50,6 +50,9 @@ maintainer, who says in the PR when a hardware check is needed.
   `oxa.sandbox.writePaths` entry. Review environment forwarding and writable mounts independently.
 - **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
   registry with its surfaces and help (P1 if added outside it or without an exception reason).
+  `oxe admission` is an engine CLI exception. It reports allocation bounds directly from a GGUF
+  header and accepts `oxe-server` launch arguments without opening an oxa session. Its command and
+  flag help live in `oxe admission --help`. It has no oxa slash, menu, or web surface.
 - **Work acceptance.** In `oxa work`, zero or skipped checks leave the task `Unverified`. The
   owner-only `oxa.work.localChecks` defaults to a per-package `cargo check`. A verified Rust
   acceptance receipt requires hosted test evidence at the exact head, including for changed

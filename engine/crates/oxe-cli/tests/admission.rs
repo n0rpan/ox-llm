@@ -45,6 +45,29 @@ fn num(v: &Value) -> u64 {
 }
 
 #[test]
+fn admission_help_lists_launch_options_without_a_model() {
+    for flag in ["--help", "-h"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_oxe"))
+            .args(["admission", flag])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output);
+        assert!(output.stderr.is_empty(), "{:?}", output);
+        let help = std::str::from_utf8(&output.stdout).unwrap();
+        assert!(help.contains("oxe admission --model M"), "{help}");
+        for option in [
+            "--ctx-size",
+            "--spec-draft-n-max",
+            "--mtp-tune",
+            "--margin-bytes",
+            "--json",
+        ] {
+            assert!(help.contains(option), "missing {option} in {help}");
+        }
+    }
+}
+
+#[test]
 fn admission_report_matches_engine_allocation_plan() {
     for mtp in [false, true] {
         let (dir, path) = fixture(if mtp { "plan-mtp" } else { "plan" }, mtp);
