@@ -33,6 +33,18 @@ fn subagent_spec() -> ToolSpec {
 /// The system text of a session with the diet on or off, as a parent (`child` false) or a
 /// subagent child, with or without a declared `subagent` tool.
 fn system(env: &TestEnv, diet_output: bool, child: bool, subagent: bool) -> String {
+    system_opts(
+        env,
+        PrefixOpts {
+            diet_output,
+            child,
+            ..Default::default()
+        },
+        subagent,
+    )
+}
+
+fn system_opts(env: &TestEnv, prefix_opts: PrefixOpts, subagent: bool) -> String {
     let dirs = Dirs::under(env.root());
     let settings = Settings::load(&dirs, &env.work(), true);
     let opts = DiscoverOpts {
@@ -45,7 +57,6 @@ fn system(env: &TestEnv, diet_output: bool, child: bool, subagent: bool) -> Stri
     if subagent {
         specs.push(subagent_spec());
     }
-    let prefix_opts = PrefixOpts { diet_output, child };
     build_prefix_with(&env.work(), &resources, &specs, &[], &prefix_opts).system_text()
 }
 
@@ -140,4 +151,30 @@ fn the_new_rules_cost_exactly_their_lines() {
         (RULE_SUBAGENT.len() + 3) + (RULE_SUBAGENT_CHECK.len() + 3),
         "a declared subagent tool adds its rule and the check"
     );
+}
+
+#[test]
+fn integrity_rule_only_in_a_headless_diet_session_that_is_not_a_child() {
+    use oxa_core::prompt::RULE_INTEGRITY;
+    let env = TestEnv::new();
+    let on = PrefixOpts {
+        diet_output: true,
+        headless: true,
+        ..Default::default()
+    };
+    let has = |o: PrefixOpts| line_of(&system_opts(&env, o, false), RULE_INTEGRITY).is_some();
+    assert!(has(on));
+    assert!(!has(PrefixOpts {
+        headless: false,
+        ..on
+    }));
+    assert!(!has(PrefixOpts {
+        diet_output: false,
+        ..on
+    }));
+    assert!(!has(PrefixOpts { child: true, ..on }));
+    let lower = RULE_INTEGRITY.to_lowercase();
+    for banned in ["date", "today", "plan mode"] {
+        assert!(!lower.contains(banned), "{banned}");
+    }
 }

@@ -10,7 +10,7 @@ import re
 import subprocess
 import tomllib
 
-WORKSPACES = ('oxa', 'engine', 'oxc-rs')
+WORKSPACES = ('oxa', 'engine')
 # oxe-cli includes ISA benchmark tests that require native ARM kernels too.
 PORTABLE_ENGINE = {'server', 'gguf', 'tokenizer', 'sched', 'chat'}
 LANE_CONTRACT = {

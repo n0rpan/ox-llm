@@ -81,6 +81,10 @@ pub const RULE_WAIT: &str =
 /// on, and only in a subagent child (the child verifies what it reports).
 pub const RULE_CHILD_VERIFY: &str = "Before you answer, check every claim about the code with a tool; give path:line for each, and write \"not verified\" for anything you did not check";
 
+/// FH-N5 (headless runs, output diet on): a graded or unattended task is solved by the model
+/// itself. Added through the guidelines slot, so it comes before the diet rules.
+pub const RULE_INTEGRITY: &str = "Solve the task yourself: do not look up its ready-made solution online, and do not read verifier, grader or hidden-test files; your result reports how many web lookups you made";
+
 /// First line of the `<project_context>` section.
 pub const CONTEXT_HEADER: &str = "Project-specific instructions and guidelines:";
 
@@ -331,6 +335,10 @@ pub struct IdentityModel {
     pub context: u32,
     /// Maximum output tokens (0 = not published).
     pub max_output: u32,
+    /// Whether the endpoint reports that this model runs remotely.
+    pub remote: bool,
+    /// The remote provider reported by the endpoint (`None` for local models).
+    pub remote_provider: Option<String>,
 }
 
 /// First paragraph of the identity: who oxa is and where it runs.
@@ -372,11 +380,11 @@ pub fn identity_text(f: &IdentityFacts) -> String {
     if f.models.is_empty() {
         lines.push("- Models: not known (the engine was not reachable when this was written); run `oxa --list-models` to see them".to_string());
     } else {
-        // A `provider/model` alias is a cloud model; an alias without `/` is local. Cloud
-        // models are named by provider only, so a catalog change does not change these bytes
-        // (and so not the cached prefix); `oxa --list-models` prints them with their limits.
+        // Cloud models are named by their reported provider only, so a catalog change does not
+        // change these bytes (and so not the cached prefix); `oxa --list-models` prints them
+        // with their limits.
         let (cloud, local): (Vec<&IdentityModel>, Vec<&IdentityModel>) =
-            f.models.iter().partition(|m| m.alias.contains('/'));
+            f.models.iter().partition(|m| m.remote);
         if !local.is_empty() {
             lines.push("- Local models (oxe loads one at a time; switching reloads it and reads the whole conversation again):".to_string());
             for m in local {
@@ -394,7 +402,10 @@ pub fn identity_text(f: &IdentityFacts) -> String {
                 });
             }
         }
-        let mut providers: Vec<&str> = cloud.iter().filter_map(|m| m.alias.split('/').next()).collect();
+        let mut providers: Vec<&str> = cloud
+            .iter()
+            .map(|m| m.remote_provider.as_deref().unwrap_or("unknown"))
+            .collect();
         providers.sort_unstable();
         providers.dedup();
         if !providers.is_empty() {

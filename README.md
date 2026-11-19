@@ -1,104 +1,137 @@
 # ox-llm
 
-Local large language models, a coding agent and image generation on **Snapdragon X laptops under
-Linux** (Omarchy), on the CPU. Local inference runs on the machine. Every speed number links its receipt.
-Failed attempts are kept too.
+The ox suite is a terminal coding agent that works with local models, cloud models, or both. It is
+written in Rust and ships as one release. v0.2.1 has no Python, no controller daemon and no
+background service: you start `oxa`, and `oxa` starts what it needs.
 
-ox-llm is one release with three parts. Each part is its own build unit:
+| Part | What you run | What it is |
+|---|---|---|
+| **oxa** | `oxa` | The agent and the front door: a terminal UI, a print mode for scripts, tools that read and edit your project, sessions, skills and MCP servers. It talks to the cloud providers itself and owns the local engine process. |
+| **oxe** | started by `oxa` (`oxe-server`, `oxe`) | The engine for local models: CPU inference for 35B mixture-of-experts GGUF models on Snapdragon X laptops under Linux. |
+| **ox AI panel** | an Omarchy bar widget | Shows models, usage, the lead session and workers. It runs only `oxa` and reads the JSON that `oxa` prints. In development: the source is in [`oxa/omarchy-panel/`](oxa/omarchy-panel) and it is not in the v0.2.1 packages yet. |
 
-| Directory | Part | Language / build | What it is |
-|---|---|---|---|
-| [`engine/`](engine/README.md) | **oxe** | Rust, its own cargo workspace | Inference engines with an OpenAI-compatible HTTP API: `oxe-server` (35B mixture-of-experts models such as Ornith and Qwen3.6), Flash (a 125B MoE whose experts stream from the SSD) and the experimental `oxi` image engine (FLUX.2 klein) |
-| [`oxc/`](oxc/README.md) | **oxc** | Python package | The controller: one loopback OpenAI-compatible endpoint, model loading and unloading, memory admission, a request ledger. It also holds the `oxc` CLI, the Omarchy panel widget, Studio (images), the installer, the benchmark and qualification tools, the receipts and the docs |
-| [`oxa/`](oxa/README.md) | **oxa** | Rust, its own cargo workspace | The coding agent: a Rust port of the pi coding agent (MIT, Mario Zechner), tuned for this engine. It is the coding client that `oxc code` and the widget's code button start |
+## Install
 
-## How they fit
+**Stable.** Each release attaches `ox-llm-<version>-linux-aarch64.tar.gz` and
+`ox-llm-<version>-linux-x86_64.tar.gz` with `SHA256SUMS`, an SBOM and build provenance. The
+archive holds one `usr/` tree with `oxa`, `oxe` and `oxe-server`.
 
+```console
+$ sha256sum -c SHA256SUMS
+$ mkdir ~/ox-llm-<version>
+$ tar -xzf ox-llm-<version>-linux-aarch64.tar.gz -C ~/ox-llm-<version>
+$ ~/ox-llm-<version>/usr/bin/oxa --version
 ```
-  oxa (oxc code, widget code button)   other OpenAI-compatible clients (curl, ...)
-                    \                          /
-                     v                        v
-     oxc controller (loopback 127.0.0.1:8092, OpenAI-compatible; admission, queue, ledger)
-                                  |
-                                  v
-     oxe-server (MoE) | oxe-server --engine flash (125B) | oxi (images, via Studio)
+
+Keep `oxa`, `oxe` and `oxe-server` in the same directory: `oxa` looks for the engine beside itself
+and refuses an engine from another build. The full steps, the Arch packages and the upgrade from
+v0.2.0 are in [install.md](oxa/docs/pages/install.md).
+
+**Dev.** Every push to `main` publishes a rolling `dev` build. `tools/lab/dev-update.sh` downloads
+it, checks the sums and the provenance, and installs it under
+`~/.local/state/oxc/dev-builds/default/` without touching a stable install or your `PATH`. See
+[docs/DEV.md](docs/DEV.md). On macOS (Apple silicon) the twin script is
+`tools/lab/dev-update-macos.sh`; macOS support is in progress and no macOS build is published yet.
+
+**From source.** `cd oxa && cargo build --release --locked -p oxa-cli` builds `oxa`;
+`cd engine && cargo build --release --locked -p server --bin oxe-server` builds the engine.
+
+Linux needs `bubblewrap` (`bwrap`) for the bash sandbox. The local engine is built for Snapdragon X
+(ARM64) under Linux; on x86_64 and on macOS, use cloud models.
+
+## First run with a cloud model
+
+Keys live in one private file, outside any project: `~/.config/oxc/llm/cloud-secrets.json`, owned
+by you, mode `0600`. Put the key of each provider you use in it:
+
+```json
+{
+  "opencode": { "api_key": "..." },
+  "openrouter": { "api_key": "..." },
+  "openai": { "api_key": "..." },
+  "anthropic": { "api_key": "..." }
+}
 ```
 
-The engine and the controller are **client-neutral**: they make no client-specific choices, pin no
-client version and use no per-client byte templates. Caching is generic (exact prefix reuse,
-token-exact echo, state snapshots as a mechanism). The policy for when to compact, checkpoint or reshape
-history lives in the client. oxa is the client that is tuned for this engine. See
-[ARCHITECTURE.md](ARCHITECTURE.md) and [DECISIONS.md](DECISIONS.md).
+- **OpenCode Go** (subscription): the key is enough. `oxa --list-models` lists the Go models, and
+  `oxa --model opencode/<model>` starts a session on one.
+- **OpenRouter, OpenAI, Anthropic** (metered): also set `oxa.engine.inProcessCloud` and
+  `oxa.cloud.discover_models` to `true` in `~/.oxa/agent/settings.json`.
+- **ChatGPT plan** (subscription): `oxa login chatgpt --experimental`, then add a `chatgpt` model.
 
-## Quick start
+The settings for each provider, prices and the optional daily budget are in
+[quickstart.md](oxa/docs/pages/quickstart.md#cloud-models). Then:
 
-- **Native v0.2.1:** use the [native install and upgrade guide](docs/NATIVE-INSTALL.md)
-  with the published v0.2.1 artifacts once the release is available.
-- **Legacy v0.2.0:** [oxc/README.md](oxc/README.md#quick-start) covers engine downloads and verification.
-  The controller bootstrap installs source into an explicit sandbox HOME; see its
-  [installation status and limits](oxc/docs/BOOTSTRAP-INSTALL.md).
-- **Prebuilt, any Linux:** each release attaches `ox-llm-<version>-linux-aarch64.tar.gz` and
-  `ox-llm-<version>-linux-x86_64.tar.gz` (oxc, oxa, oxe, licences) with SBOMs, `SHA256SUMS` and build provenance.
-- **Legacy v0.2.0 cloud-only setup:** [Python controller quickstart](oxc/docs/CLOUD-ONLY-QUICKSTART.md)
-  (any Linux, x86_64 or arm64; cloud models through oxc, plus oxa).
-- **Code (installed runtime):** run `oxc code` in a project directory, or press the code button in the widget. Both
-  start oxa against the controller.
-- **Other clients:** any OpenAI-compatible client can use `http://127.0.0.1:8092/v1`. See
-  [oxc/docs/OTHER-CLIENTS.md](oxc/docs/OTHER-CLIENTS.md).
-- **Reproduce:** [oxc/docs/REPRODUCE.md](oxc/docs/REPRODUCE.md).
-- **Build the engine:** `cd engine && cargo build --release --locked -p server --bin oxe-server`
-  ([engine/README.md](engine/README.md)).
-- **Build oxa:** `cd oxa && cargo build --release --locked` ([oxa/README.md](oxa/README.md)).
+```console
+$ cd ~/src/my-project
+$ oxa
+```
 
-## The coding agent: oxa
+Type a request and press Enter. `/model` switches the model. For one answer in a script:
+`oxa -p "Say hello"`.
 
-oxa is the default coding client. `oxc code` and the widget's code button start it with
-`OXA_ENGINE_URL` set to the controller (`http://127.0.0.1:8092`). Started by hand, oxa reads its
-endpoint from `OXA_ENGINE_URL` or from `~/.oxa/agent/models.json`.
+## First run with a local model
 
-oxa's bash tool runs inside a bubblewrap (`bwrap`) sandbox; without `bwrap` the bash tool refuses
-to run. From `oxc/`, `PYTHONPATH=src python3 -B -m oxc doctor` reports prerequisites.
+Point `oxa` at a GGUF file you already have. It asks the engine what the model needs and writes the
+settings for you:
 
-## Flash: the expert sidecar on an unencrypted partition
+```console
+$ oxa local add /path/to/model.gguf --enable
+$ oxa --model model
+```
 
-For reproduction, the Flash expert sidecar (public model weights only) may live on a plain ext4
-partition such as `/var/lib/local-ai-models/flash/`. SSD read latency is part of every decoded Flash
-token, and disk encryption adds to it. Prompts, sessions, KV and state caches, request ledgers, logs and
-receipts stay on the encrypted disk. Flash also works with the sidecar on an encrypted volume, more
-slowly. Setup, measurements and the fallback: [oxc/docs/FLASH-STORAGE.md](oxc/docs/FLASH-STORAGE.md).
+`oxa` starts `oxe-server` when the first request needs it and unloads it when idle. It downloads no
+weights, and it refuses to load a model that does not fit in the memory that is free. Details:
+[quickstart.md](oxa/docs/pages/quickstart.md#local-models).
 
-## NPU (Hexagon): bring your own SDK
+## Modes
 
-The NPU (Hexagon) paths need Qualcomm's Hexagon SDK / QAIRT. You obtain it from Qualcomm and accept
-its licence yourself. No SDK files, headers, skels or objects generated from them are in this
-repository or in its releases. The CPU paths, which all published numbers use, work without it.
+The mode decides how much the agent may do without asking. The status bar always shows it.
 
-## Updates and uninstall
+| Mode | What it does |
+|---|---|
+| `standard` | Asks before a write outside the project and other steps that reach beyond it. Bash runs in the sandbox. |
+| `auto` (default) | Does not stop to ask. Bash still runs in the sandbox, and the file tools still refuse credentials and other protected paths. |
+| `yolo` | Full power. No questions, no sandbox, no protected paths: bash runs as you, with your files, your credentials and your network. Use it only in a session you watch, on a machine and a project you can restore. |
+| `plan` | Read-only: the agent reads and plans, and changes nothing. |
 
-- `oxc update` applies a release that you have already staged on this machine. It does not
-  download anything.
-- `oxc uninstall` is a dry run by default: it lists what it would remove. Add `--apply` to act.
-  It removes only files an install record lists (exact path and the sha256 ox-llm installed); anything
-  else, or anything you changed, is reported and kept. It stops the services first and stops without
-  changing anything if it cannot prove they stopped. It keeps model weights unless you add
-  `--remove-models`, which deletes only the exact model files the config names.
+On macOS there is no OS sandbox in any mode. Bash runs with your user rights and `oxa` says so at
+start. The guards inside `oxa` (protected paths, permissions, project trust) stay on in `standard`
+and `auto`.
 
-## Repository map
+Start with `oxa --standard`, `oxa --auto` or `oxa --yolo`, or switch in a session with `/mode`.
+The whole picture is in [modes.md](oxa/docs/pages/modes.md).
 
-- [ARCHITECTURE.md](ARCHITECTURE.md): the components, the engine contract and the build units.
-- [DECISIONS.md](DECISIONS.md): the decision record (ADR-style).
-- [KNOWN-ISSUES.md](KNOWN-ISSUES.md), [ROADMAP.md](ROADMAP.md), [CHANGELOG.md](CHANGELOG.md).
-- [CONTRIBUTING.md](CONTRIBUTING.md): measurement rules, privacy, tests and CI.
-- Results and method: [oxc/docs/RESULTS.md](oxc/docs/RESULTS.md). What did not work:
-  [oxc/docs/FAILED-PATHS.md](oxc/docs/FAILED-PATHS.md).
+## Lead and workers
+
+`oxa work` runs tasks unattended, each in its own git worktree, and accepts a task only when its
+checks pass. `oxa lead` is a dedicated session that watches the work board and the workers,
+answers your questions about them and proposes the next step; `oxa lead serve` shows the same
+state as a local web page. The lead is off until you enable it in your user settings. See
+[work.md](oxa/docs/work.md) and [lead.md](oxa/docs/lead.md).
+
+## Where the docs live
+
+- [oxa/docs/](oxa/docs/README.md): the user documentation. Start with
+  [install](oxa/docs/pages/install.md), [quickstart](oxa/docs/pages/quickstart.md) and
+  [modes](oxa/docs/pages/modes.md); then [usage](oxa/docs/pages/usage.md),
+  [cli](oxa/docs/pages/cli.md), [settings](oxa/docs/pages/settings.md) and
+  [security](oxa/docs/pages/security.md).
+- [docs/release-notes/v0.2.1.md](docs/release-notes/v0.2.1.md): what changed since v0.2.0.
+- [docs/NATIVE-INSTALL.md](docs/NATIVE-INSTALL.md): upgrading a v0.2.0 install.
+- [engine/README.md](engine/README.md): the engine, its models and how to build it.
+- [ARCHITECTURE.md](ARCHITECTURE.md), [DECISIONS.md](DECISIONS.md),
+  [KNOWN-ISSUES.md](KNOWN-ISSUES.md), [ROADMAP.md](ROADMAP.md), [CHANGELOG.md](CHANGELOG.md).
+- [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md): how to send a change.
+  [SECURITY.md](SECURITY.md): how to report a vulnerability.
 
 ## Licence
 
-Our code is MIT ([LICENSE](LICENSE)). Vendored and ported code keeps its own licence. oxa ports the pi
-coding agent (MIT) and statically links QuickJS (MIT); both licence texts are in [NOTICE](NOTICE). Each
-part lists its components in its own `THIRD_PARTY_NOTICES`; the root [NOTICE](NOTICE) and
-[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) index them. There are no model weights and no vendor SDK,
-firmware or runtime files in this repository.
+Our code is MIT ([LICENSE](LICENSE)). Vendored and ported code keeps its own licence. oxa ports the
+pi coding agent (MIT) and statically links QuickJS (MIT); both licence texts are in
+[NOTICE](NOTICE). Each part lists its components in its own `THIRD_PARTY_NOTICES`; the root
+[NOTICE](NOTICE) and [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) index them. There are no model
+weights and no vendor SDK, firmware or runtime files in this repository.
 
 Snapdragon and Hexagon are trademarks of Qualcomm Incorporated. This is an independent project, not
 affiliated with, sponsored by, or endorsed by Qualcomm.

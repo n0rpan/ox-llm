@@ -271,6 +271,30 @@ fn security_documents_headless_inbox_policy() {
     }
 }
 
+/// The user guide must match the owner sandbox policy: watched CLI sessions rely on approvals and
+/// in-process guards, while unattended non-yolo runs retain Bubblewrap.
+#[test]
+fn user_docs_distinguish_interactive_and_unattended_sandboxing() {
+    let root = repo_root();
+
+    for page in ["docs/pages/security.md", "docs/pages/modes.md"] {
+        let text = fs::read_to_string(root.join(page)).expect("read sandbox documentation");
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        for required in [
+            "Interactive CLI sessions do not use an OS sandbox by default",
+            "dangerous commands ask for your approval",
+            "Unattended runs without yolo keep the Bubblewrap sandbox by default",
+            "secret masking, private-path denials, user-only settings, and offline mode",
+        ] {
+            assert!(
+                text.contains(required),
+                "{page} must distinguish interactive and unattended sandboxing: missing {required:?}"
+            );
+        }
+    }
+}
+
 /// fenced `oxa ..` lines extracted and run
 #[test]
 fn every_doc_command_line_runs_against_fake() {

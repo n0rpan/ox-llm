@@ -15,7 +15,7 @@ KEYS = ('engine', 'oxa', 'gateway')
 class Paths(unittest.TestCase):
     def test_component_source_and_test_changes(self):
         for directory, components in (('engine', {'engine'}), ('oxa', {'oxa'}),
-                                      ('oxc', {'gateway'}), ('oxc-rs', {'gateway'}),
+                                      ('oxc', {'gateway'}),
                                       ('oxa/oxc-gateway', {'oxa', 'gateway'}),
                                       ('oxa/oxa-engine', {'oxa', 'gateway'}),
                                       ('oxa/oxa-cli', {'oxa', 'gateway'}),
@@ -141,7 +141,7 @@ class GitPaths(unittest.TestCase):
 
     def test_merge_group_classifies_only_the_group_diff(self):
         self.assertEqual(self.group(b'oxa/oxa-core/src/a.rs\0fuzz/oxa/smoke.rs\0'), {'oxa'})
-        self.assertEqual(self.group(b'oxc-rs/src/a.rs\0oxc/src/t.py\0'), {'gateway'})
+        self.assertEqual(self.group(b'oxc/packaging/memlat/a.hook\0oxc/packaging/memlat/b\0'), {'gateway'})
         self.assertEqual(self.group(b'oxa/oxc-gateway/src/a.rs\0'), {'oxa', 'gateway'})
         self.assertEqual(self.group(b'engine/crates/server/src/a.rs\0fuzz/oxe/smoke.rs\0'), {'engine'})
         self.assertEqual(self.group(b'oxa/src/a.rs\0engine/src/a.rs\0'), {'oxa', 'engine'})

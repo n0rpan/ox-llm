@@ -13,8 +13,10 @@ use oxa_proto::{
 };
 use oxa_session::{MemStore, SessionRef, SessionStore, Transcript, Tree};
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+static NEXT_CONFIRM_BROKER: AtomicU64 = AtomicU64::new(1);
 
 /// What a session is built from. `tools` are the built-ins to offer (normally
 /// `oxa_tools::builtin_tools()`); hook tools are added from `hooks` at each epoch.
@@ -420,6 +422,34 @@ impl Session {
             session: self.st.sref.clone(),
             authority,
         });
+    }
+
+    /// Start the owner confirm broker (a per-session unix socket, dir 0700, socket 0600) and
+    /// export it to tool children as `OXA_CONFIRM_SOCK`. `yolo` is the session's switch: in
+    /// yolo the broker answers yes and records it; otherwise the owner's dialog answer or
+    /// typed message decides. A bind failure leaves the session without a broker.
+    pub fn enable_owner_confirm(&mut self, yolo: oxa_proto::YoloSwitch) -> std::io::Result<()> {
+        // SDK sessions in one process share `Dirs`. Give each broker a distinct short
+        // path so it cannot unlink another session's socket when rebinding.
+        let dir = self.st.dirs.tmp_dir.join(format!(
+            "confirm-{}-{}",
+            std::process::id(),
+            NEXT_CONFIRM_BROKER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let broker = crate::owner_confirm::OwnerConfirm::start(&dir, yolo)?;
+        let old = self
+            .st
+            .shared
+            .gate
+            .owner_confirm
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .replace(broker);
+        if let Some(old) = old {
+            old.close();
+        }
+        refresh_tool_env(&mut self.st);
+        Ok(())
     }
 
     /// Install a progress observer for this session and subsequent in-process switches.
@@ -867,6 +897,9 @@ impl Session {
             &mut sink,
             ui,
         );
+        if let Some(broker) = self.st.shared.owner_confirm() {
+            broker.close();
+        }
         self.st.host_rx = None;
         self.st.host_deferred.clear();
         self.st.jobs.kill_all();
@@ -906,6 +939,12 @@ impl Session {
             return false;
         }
         self.preloaded = true;
+        // Nothing to preload (a turn already filled the wire, an engine without prefill, the
+        // setting off): do not claim the session, or an idle worker shows it busy right after
+        // each command and a front end reading `is_busy` sees a run that never was.
+        if !crate::compaction::boot_preload_applies(&self.st) {
+            return false;
+        }
         let Ok(_guard) = self.begin() else {
             return false;
         };
@@ -1758,6 +1797,12 @@ pub(crate) fn refresh_tool_env(st: &mut SessionState) {
     ));
     env.push(("AI_AGENT".to_string(), names::AI_AGENT.to_string()));
     env.push(("OXA_CODING_AGENT".to_string(), "true".to_string()));
+    if let Some(broker) = st.shared.owner_confirm() {
+        env.push((
+            crate::owner_confirm::SOCK_ENV.to_string(),
+            broker.sock_path().to_string_lossy().into_owned(),
+        ));
+    }
     st.tool_env = env;
 }
 
