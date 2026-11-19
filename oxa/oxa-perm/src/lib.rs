@@ -32,10 +32,12 @@
 //! * Grants are per session and are never written to disk.
 #![forbid(unsafe_code)]
 
+mod danger;
 mod paths;
 mod policy;
 mod trust;
 
+pub use danger::{DangerHit, DangerRules, BUILTIN_RULES, SETTING_DANGEROUS};
 pub use paths::{is_inside, is_read_only_command, normalize, resolve_real};
 pub use policy::{deny_reasons, HiddenPaths, ModePolicy, PathGuard};
 pub use trust::{

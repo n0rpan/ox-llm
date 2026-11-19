@@ -19,6 +19,10 @@ applies to both print and JSON session runs.
 
 The sandbox can forward the owner's `CARGO_TARGET_DIR` to worker shells. External cache
 paths are writable only through an explicit owner `oxa.sandbox.writePaths` mount.
+Host runtime sockets (docker, podman) stay masked in sandboxed bash unless the owner lists them in
+`oxa.sandbox.sockets` and permits network access. The launch validates and pins each socket
+through an FD-based bind (user settings only; the docker socket gives root on the host, so it is noted
+at start, not blocked).
 
 Persisted headless print and JSON runs with a pursuing goal consume plain `oxa send` inbox
 messages with `oxa.inbox.headless` set to `true` by default. This user-only setting can opt out;
@@ -47,6 +51,8 @@ in a tree with Cargo manifests. A worker declaration can add requirements to tha
 
 The repeat guard warns and continues by owner decision (#1448): the third identical tool result gets a notice, a call that still repeats gets one persisted warning, and the run is not stopped. A finding that asks for the old stopping behaviour is not a finding; `oxa.maxTurns` is the configured cap.
 
+A pursuing goal whose request fails transiently (stream cut, engine down or busy, timeout, 429, 5xx) waits without a model request and then sends the same request again, by owner decision (#1448): `oxa.goal.failureBackoffSeconds` (default 60, doubling, capped at 900 unless set higher, `0` opts out) is the only control, and there is no attempt cap. Auth errors, refusals, a repetition stop, an abort and an owner-set budget still stop the goal with the reason shown. A finding that asks for an attempt cap, a default-off switch or a new terminal exception is not a finding; it is answered here.
+
 Board evidence limits degrade only the affected pull request. A connection that cannot be read
 completely produces a visible, ineligible row and cannot trigger review, landing, or refill actions;
 the other rows remain usable. An over-page merge queue retains its observed entries, while every
@@ -61,3 +67,11 @@ read-only shadow preset and the one-shot `oxa lead chat` command expose no worke
 `oxa.workers.enabled` to `false` in user settings disables the surface.
 
 Intentional removals must be stated in the PR body with a `Removes:` line; flag silent deletion of security checks as high.
+
+## Sandbox standard (owner decision)
+
+- **Interactive CLI:** no OS sandbox by default, on Linux and macOS. Dangerous commands ask the owner.
+- **Yolo:** no OS sandbox for the session, nor for any worker, subagent, headless or unattended run it starts. Yolo refuses only publishing secrets and an OS-breaking wipe.
+- **Unattended runs without yolo:** keep bwrap by default.
+- **In-process guards in every mode:** secret masking, private-path denials, user-only settings, offline mode.
+- **Re-adding an OS sandbox to interactive or yolo paths** is a regression, not a hardening.
