@@ -397,3 +397,57 @@ fn refused_at_capacity_is_retried_after_each_prompt() {
     second_out_tx.send(()).unwrap();
     run.join().expect("the run finishes");
 }
+
+#[test]
+fn refused_at_capacity_is_admitted_during_the_goal_run_that_drained_the_queue() {
+    // One goal prompt is one run: the queue drains at a stop inside it, so a message refused
+    // at capacity must be admitted by that drain, before the run's next request, not after it.
+    let env = TestEnv::new();
+    let inner = Arc::new(ScriptedEngine::new(
+        (0..12)
+            .map(|i| ScriptTurn::text(&format!("answer {i}")))
+            .collect(),
+    ));
+    let (first_in, first_in_rx) = mpsc::channel();
+    let (first_out_tx, first_out) = mpsc::channel();
+    let (second_in, second_in_rx) = mpsc::channel();
+    let (second_out_tx, second_out) = mpsc::channel();
+    let engine: Arc<dyn Engine> = Arc::new(HeldFirst {
+        inner: inner.clone(),
+        hold: Mutex::new(vec![("", first_in, first_out), ("0yyyy", second_in, second_out)]),
+    });
+    let mut session = open(&env, engine);
+    pursue(&mut session);
+    let id = session.state().session_id;
+    let handle = session.handle();
+    let agent = agent_dir(&env);
+    let run = {
+        let agent = agent.clone();
+        thread::spawn(move || {
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let _ =
+                run_json_outcome_with_inbox(&mut session, prompt("start"), &mut out, &mut err, &agent, true);
+        })
+    };
+    first_in_rx.recv_timeout(WAIT).expect("the first request is held");
+    // Four 256 KiB messages fill the 1 MiB queue; the fifth is refused and kept on disk.
+    for i in 0..5 {
+        send_inbox(&agent, &id, &format!("{i}{}", "y".repeat(256 * 1024 - 1))).unwrap();
+    }
+    wait_until("the queue to fill", || handle.queued().1.len() == 4);
+    wait_until("the refused message to stay on disk", || queued(&agent, &id) == 1);
+    first_out_tx.send(()).unwrap();
+    second_in_rx
+        .recv_timeout(WAIT)
+        .expect("the run continues with the drained messages");
+    wait_until("the refused message to be admitted during the run", || {
+        queued(&agent, &id) == 0
+    });
+    second_out_tx.send(()).unwrap();
+    run.join().expect("the run finishes");
+    assert!(
+        received(&inner, "4yyyy"),
+        "the refused message reaches the model in the same run"
+    );
+}

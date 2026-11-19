@@ -107,6 +107,9 @@ impl WrapUpReason {
 ///   the session and has not armed `bg_cancel` yet would otherwise miss the cancel).
 #[derive(Debug, Default)]
 pub struct Gate {
+    /// L1: the settings files as last seen (`settings_refresh`).
+    pub(crate) settings_watch: Mutex<crate::settings_refresh::Watch>,
+    live_settings: Mutex<LiveSettings>,
     goal_steering_enabled: std::sync::atomic::AtomicBool,
     pub(crate) lead_steering_authority: Mutex<Option<crate::goal::BoundLeadAuthority>>,
     pub(crate) advisor: Mutex<Option<Arc<crate::advice::BoundAdvisor>>>,
@@ -137,6 +140,21 @@ pub struct Gate {
     /// `true` once a front end polls `Session::take_swap_request`; without it the two
     /// extension calls answer `unsupported_in_oxa`.
     pub swap_enabled: std::sync::atomic::AtomicBool,
+}
+
+#[derive(Default)]
+struct LiveSettings {
+    subscribed: bool,
+    pending: Option<oxa_config::Settings>,
+}
+
+impl std::fmt::Debug for LiveSettings {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fmt.debug_struct("LiveSettings")
+            .field("subscribed", &self.subscribed)
+            .field("pending", &self.pending.is_some())
+            .finish()
+    }
 }
 
 /// Holds [`Gate::in_flight`] for one request; dropping it opens the gate.
@@ -207,6 +225,13 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Shared {
+    pub(crate) fn publish_live_settings(&self, settings: &oxa_config::Settings) {
+        let mut live = lock(&self.gate.live_settings);
+        if live.subscribed {
+            live.pending = Some(settings.clone());
+        }
+    }
+
     pub(crate) fn begin_literal_turn(
         self: &Arc<Self>,
         context: Option<oxa_proto::WireMsg>,
@@ -326,6 +351,16 @@ impl Shared {
         !q.steering.is_empty() || q.follow_ups().next().is_some()
     }
 
+    pub(crate) fn has_follow_up(&self) -> bool {
+        lock(&self.queue).follow_ups().next().is_some()
+    }
+
+    pub(crate) fn update_modes(&self, steering: Option<QueueMode>, follow_up: Option<QueueMode>) {
+        let mut modes = lock(&self.modes);
+        *modes = (steering.unwrap_or(modes.0), follow_up.unwrap_or(modes.1));
+        self.dirty.store(true, Ordering::SeqCst);
+    }
+
     /// ENG-002: arm the background cancel for one background request. Returns `false` (send
     /// nothing) when user input is already queued or the run was aborted. The token is cleared
     /// BEFORE the queue is read, and the handle queues before it cancels, so input that arrives
@@ -389,6 +424,16 @@ pub struct Handle {
 }
 
 impl Handle {
+    /// Subscribe a local frontend to applied settings before it starts a run.
+    pub fn watch_live_settings(&self) {
+        lock(&self.shared.gate.live_settings).subscribed = true;
+    }
+
+    /// Take the latest effective settings without sending values through public events.
+    pub fn take_live_settings(&self) -> Option<oxa_config::Settings> {
+        lock(&self.shared.gate.live_settings).pending.take()
+    }
+
     /// Enable typed steering for this frontend before it starts the native run.
     pub fn enable_goal_steering(&self) {
         self.shared
@@ -528,6 +573,24 @@ impl Handle {
         }
         steering
     }
+    /// Remove the inbox messages bound to sessions other than the active one, grouped by
+    /// destination. [`Handle::dequeue`] leaves them, so a headless owner that switched sessions
+    /// can return each message to the inbox it came from instead of dropping it at exit.
+    pub fn take_inactive_inbox(&self) -> Vec<(String, Vec<String>)> {
+        let mut q = lock(&self.shared.queue);
+        let active = q.session_id.clone();
+        let inactive: Vec<String> = q
+            .session_follow_up
+            .keys()
+            .filter(|id| **id != active)
+            .cloned()
+            .collect();
+        inactive
+            .into_iter()
+            .filter_map(|id| q.session_follow_up.remove(&id).map(|messages| (id, messages)))
+            .collect()
+    }
+
     /// Set an invocation-wide soft budget before accepting prompts (not restored from a session).
     pub fn set_token_budget(&self, tokens: Option<u64>) {
         *lock(&self.shared.gate.token_budget) = tokens;
@@ -650,8 +713,7 @@ impl Handle {
         self.shared.snapshot()
     }
     pub fn set_modes(&self, steering: QueueMode, follow_up: QueueMode) {
-        *lock(&self.shared.modes) = (steering, follow_up);
-        self.shared.dirty.store(true, Ordering::SeqCst);
+        self.shared.update_modes(Some(steering), Some(follow_up));
     }
 }
 
@@ -852,6 +914,21 @@ mod tests {
         assert_eq!(h.shared.take_follow_up(), ["already admitted"]);
         assert_eq!(h.dequeue(), ["racing callback"]);
         assert!(!h.shared.has_input());
+    }
+
+    #[test]
+    fn inactive_inbox_messages_are_taken_for_their_own_session() {
+        let h = handle(QueueMode::All, QueueMode::OneAtATime);
+        h.shared.bind_session("old");
+        h.follow_up_for("old", "admitted before switch".into());
+        h.shared.bind_session("new");
+        h.follow_up_for("new", "new inbox".into());
+        assert_eq!(
+            h.take_inactive_inbox(),
+            vec![("old".to_string(), vec!["admitted before switch".to_string()])]
+        );
+        assert!(h.take_inactive_inbox().is_empty());
+        assert_eq!(h.dequeue(), ["new inbox"]);
     }
 
     #[test]

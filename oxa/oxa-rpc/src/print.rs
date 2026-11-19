@@ -228,6 +228,7 @@ fn run_print_prompts(
         io_error: None,
     };
     let mut ui = HeadlessUi::default();
+    let retry = inbox.map(|inbox| inbox.retry_handle());
     let mut failed = false;
     let mut outcome = RunOutcome::NothingToDo;
     let n = prompts.len();
@@ -245,7 +246,14 @@ fn run_print_prompts(
         sink.is_last_prompt = i + 1 == n;
         let _ = session.take_outcome();
         let before = session.inner().tree.leaf().to_string();
-        let lines = match prompt_or_command(session, text, parts, &mut sink, &mut ui) {
+        let result = {
+            let mut drain = DrainRetry {
+                inner: &mut sink,
+                retry: retry.clone(),
+            };
+            prompt_or_command(session, text, parts, &mut drain, &mut ui)
+        };
+        let lines = match result {
             Ok(Message::Prompt | Message::Extension) => None,
             Ok(Message::Command(lines)) => Some(lines),
             Err(e) => {
@@ -396,11 +404,41 @@ fn restore_undelivered(
 ) {
     let Some(inbox) = inbox else { return };
     drop(inbox);
-    let id = session.state().session_id;
-    for text in session.handle().dequeue() {
+    let active = session.state().session_id;
+    // A message admitted before the run switched sessions goes back to the inbox it came from.
+    let undelivered = session
+        .handle()
+        .dequeue()
+        .into_iter()
+        .map(|text| (active.clone(), text))
+        .chain(
+            session
+                .handle()
+                .take_inactive_inbox()
+                .into_iter()
+                .flat_map(|(id, texts)| texts.into_iter().map(move |text| (id.clone(), text))),
+        );
+    for (id, text) in undelivered {
         if let Err(error) = oxa_session::send_inbox(agent_dir, &id, &text) {
             let _ = writeln!(err, "Session inbox message could not be kept: {error}");
         }
+    }
+}
+
+/// Reports every queue drain to the owner's watcher, so a message refused at capacity is
+/// admitted during the run that drained the queue. A goal run is one prompt, so the per-prompt
+/// retry alone would leave it on disk until the process exits.
+struct DrainRetry<'a> {
+    inner: &'a mut dyn EventSink,
+    retry: Option<oxa_session::InboxRetry>,
+}
+
+impl EventSink for DrainRetry<'_> {
+    fn emit(&mut self, e: &AgentEvent) {
+        if let (Some(retry), AgentEvent::QueueUpdate { .. }) = (&self.retry, e) {
+            retry.retry();
+        }
+        self.inner.emit(e);
     }
 }
 
@@ -551,6 +589,7 @@ fn run_json_prompts(
     inbox: Option<&oxa_session::Inbox>,
 ) -> Result<RunOutcome, OxaError> {
     let mut ui = HeadlessUi::default();
+    let retry = inbox.map(|inbox| inbox.retry_handle());
     let mut sink = JsonSink {
         out: &mut *out,
         error: None,
@@ -563,7 +602,14 @@ fn run_json_prompts(
         }
         let _ = session.take_outcome();
         let before = session.inner().tree.leaf().to_string();
-        match prompt_or_command(session, text, parts, &mut sink, &mut ui) {
+        let result = {
+            let mut drain = DrainRetry {
+                inner: &mut sink,
+                retry: retry.clone(),
+            };
+            prompt_or_command(session, text, parts, &mut drain, &mut ui)
+        };
+        match result {
             Ok(Message::Prompt | Message::Extension) => {}
             // A command's lines are `notice` records (info).
             Ok(Message::Command(mut lines)) => {

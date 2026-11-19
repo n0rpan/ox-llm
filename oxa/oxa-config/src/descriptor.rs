@@ -6,6 +6,7 @@
 //! are untouched: validation and merge do not read descriptors.
 
 mod advanced;
+mod display;
 mod lead;
 mod safety;
 
@@ -352,11 +353,20 @@ impl Descriptor {
     }
 }
 
-/// The data table, in display order: the Lead and web, the Safety, then the Advanced entries.
+/// The data table, in display order: the Display rows, then the Lead and web, the Safety and the
+/// Advanced entries.
 fn table() -> &'static [Descriptor] {
     static TABLE: OnceLock<Vec<Descriptor>> = OnceLock::new();
     TABLE
-        .get_or_init(|| [lead::ENTRIES, safety::ENTRIES, advanced::ENTRIES].concat())
+        .get_or_init(|| {
+            [
+                display::ENTRIES,
+                lead::ENTRIES,
+                safety::ENTRIES,
+                advanced::ENTRIES,
+            ]
+            .concat()
+        })
         .as_slice()
 }
 
@@ -485,11 +495,13 @@ mod tests {
 
     #[test]
     fn unwired_groups_have_no_entries() {
-        // Only Lead, Safety and Advanced have data so far (A2d); the other groups arrive in A2a-c.
+        // Display (A2a) and Lead, Safety and Advanced (A2d) have data; the other groups arrive in
+        // A2b and A2c.
         assert!(descriptor("oxa.bash.defaultTimeout").is_none());
         assert_eq!(in_group(Group::Tools).count(), 0);
         assert_eq!(fields_of("oxa.lead.serve").count(), 9);
-        assert_eq!(descriptors().len(), 39);
+        assert_eq!(in_group(Group::Display).count(), 30);
+        assert_eq!(descriptors().len(), 69);
     }
 
     #[test]
