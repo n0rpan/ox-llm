@@ -7,8 +7,12 @@ llama.cpp's dump_ref (engine/tools/oracle) runs a fixed chat prompt one token pe
 continues greedily, writing the logits of every evaluated position. `oxe verify` replays the same
 tokens through oxe's decode path and compares every logit row. Fails when the top-1 agreement is
 below --min-top1, the mean KL divergence above --max-mean-kld, or the largest absolute logit
-difference above --max-abs-diff times the largest reference logit. Writes report.json and the
-markdown summary. Standard library only.
+difference above --max-abs-diff times the largest reference logit, and warns when a logit row is
+not bit-exact. Writes report.json and the markdown summary. Standard library only.
+
+Measured on the first run (llama.cpp b11898, Q8_0, 4 threads, hosted ARM64): 81 of 81 logit rows
+bit-exact, greedy continuation identical. The bounds leave room for a last-bit change of a kernel,
+not for a different computation.
 """
 import argparse
 import json
@@ -41,9 +45,9 @@ def main():
     ap.add_argument('--out', required=True)
     ap.add_argument('--threads', type=int, default=4)
     ap.add_argument('--gen', type=int, default=48)
-    ap.add_argument('--min-top1', type=float, default=0.95)
-    ap.add_argument('--max-mean-kld', type=float, default=0.01)
-    ap.add_argument('--max-abs-diff', type=float, default=0.05)
+    ap.add_argument('--min-top1', type=float, default=0.99)
+    ap.add_argument('--max-mean-kld', type=float, default=1e-4)
+    ap.add_argument('--max-abs-diff', type=float, default=1e-3)
     a = ap.parse_args()
     out = Path(a.out)
     ref = out / 'ref'
@@ -79,6 +83,9 @@ def main():
     if summary:
         with open(summary, 'a') as f:
             f.write(md)
+    if v['bit_exact_logit_rows'] != v['positions_with_logits']:
+        print(f"::warning::oracle: {v['bit_exact_logit_rows']} of {v['positions_with_logits']} logit rows "
+              'bit-exact with llama.cpp (all were on the first run)', flush=True)
     bad = [n for n, ok, _, _ in checks if not ok]
     for n in bad:
         print(f'::error::oracle: {n} out of bounds', flush=True)
