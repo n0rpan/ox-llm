@@ -12,6 +12,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Cloud budget and models",
         "Daily USD budget, subscription caps, cloud models and prices.",
     )
+    .key(Kind::Object, "{}")
     .control(Control::Fields)
     .apply(Apply::Reload)
     .web(WebEdit::ReadOnly)
@@ -119,6 +120,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Turn limit per run",
         "End a run after this many model replies. Unset or 0 = no limit.",
     )
+    .key(Kind::Number, "null")
     .number(Unit::Count)
     .zero("no limit")
     .apply(Apply::Reload)
