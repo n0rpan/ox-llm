@@ -640,13 +640,16 @@ fn select(root: &Path, paths: &[String]) -> Result<Selected, String> {
         selected.requires_hosted |= name.ends_with(".rs");
         if name == "Cargo.toml" || name == "Cargo.lock" {
             selected.requires_hosted = true;
-            let manifest = manifests.at(root, dir)?;
-            if manifest.workspace {
+            let (is_workspace, package) = {
+                let manifest = manifests.at(root, dir)?;
+                (manifest.workspace, manifest.package.clone())
+            };
+            if is_workspace {
                 selected
                     .workspace_inputs
                     .insert(manifests.in_dir(root, dir, &mut budget)?);
             }
-            if let Some(package) = manifest.package.clone() {
+            if let Some(package) = package {
                 selected
                     .packages
                     .insert((package, manifests.in_dir(root, dir, &mut budget)?));
