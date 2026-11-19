@@ -4,7 +4,7 @@ use oxc_gateway::opencode;
 use serde_json::{json, Value};
 
 fn model(id: &str) -> opencode::Model {
-    let found = json!({"data":[{"id":id, "canonical_id":null, "limit":{"context":262144,"output":200000},
+    let found = json!({"data":[{"id":id, "canonical_id":"synthetic/canonical", "limit":{"context":262144,"output":200000},
         "api":{"chat-completions":{"base_url":"https://example.invalid/inference/go/openai/v1"}},
         "cost":{"input":0.1},"capabilities":{"tools":true},"modalities":{"input":["text"],"output":["text"]}}]});
     opencode::models(&found, "https://example.invalid/inference/go")
