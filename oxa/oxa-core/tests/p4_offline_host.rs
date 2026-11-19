@@ -192,6 +192,6 @@ fn extension_exec_is_classified_in_its_own_directory() {
     );
     // This workspace has no OS sandbox, so the command cannot actually run here; what matters
     // is that the classifier does not refuse it in the directory the extension gave it.
-    let e = through_host(&mut st, spec(other)).unwrap_err();
+    let e = through_host(&mut st, spec(other.clone())).unwrap_err();
     assert!(!e.message.starts_with("Refused: dangerous command"), "{e}");
 }
