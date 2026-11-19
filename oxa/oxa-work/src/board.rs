@@ -160,7 +160,7 @@ impl AttemptAdvisory {
     /// the limit, so a limit of zero warns from the first attempt.
     pub fn at(lease: &Lease, policy: &Policy) -> Option<Self> {
         let (utc_day, attempt) = lease.generation;
-        (attempt > policy.max_attempts_per_day).then_some(Self {
+        (attempt > policy.max_attempts_per_day).then(|| Self {
             attempt,
             limit: policy.max_attempts_per_day,
             utc_day,

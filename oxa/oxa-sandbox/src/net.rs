@@ -130,8 +130,8 @@ impl NetSandbox {
     /// #52: the GitHub token (from `gh auth token`, read outside the sandbox) to pass to
     /// commands that have the network, as `GH_TOKEN` with `GH_HOST=github.com`. Injection is
     /// ignored when the network is off (offline, `oxa.sandbox.net: off`), or the token is
-    /// empty or contains whitespace. Normal sandboxed runs only load and mask with the network;
-    /// [`Sandbox::output_secret`] lets yolo retain masking when the network is disabled.
+    /// empty or contains whitespace; the redaction mask is not: `gh auth token` reads the
+    /// credential locally, so every command's output is scrubbed with or without the network.
     /// The token is only in the child's environment; it is replaced in the output of the
     /// command and never shown in [`Sandbox::bwrap_args`].
     pub fn with_gh_token(mut self, token: Option<String>) -> NetSandbox {
@@ -141,7 +141,7 @@ impl NetSandbox {
     }
 
     /// Like [`with_gh_token`](Self::with_gh_token), but `source` runs lazily, once, at the
-    /// first networked command or yolo command, so startup never waits for it.
+    /// first command — with or without the network — so startup never waits for it.
     pub fn with_gh_token_lazy(
         mut self,
         source: impl Fn() -> Option<String> + Send + Sync + 'static,
@@ -194,11 +194,12 @@ impl NetSandbox {
         run: impl FnOnce(&ExecSpec, &mut dyn FnMut(&[u8])) -> ExecResult,
     ) -> ExecResult {
         let s = self.clamp_run(spec);
-        // Do not load a host credential into an offline sandboxed stream. Besides being
-        // unnecessary (the sandbox cannot read the masked host paths), a streaming redactor
-        // would reveal whether a guessed prefix was buffered. Yolo obtains the same source
-        // through `output_secret` and masks its unsandboxed output in `FullAccess`.
-        let t = s.net.then(|| self.token()).flatten();
+        // Injection is per command, but redaction is not: `gh auth token` reads the
+        // credential without the network, so every command's output is scrubbed once the
+        // token is known, and `cat token.txt` after `gh auth token > token.txt` is masked
+        // with the network off too. `self.token()` loads a lazy token here: the first
+        // command may be `cat token.txt` from an earlier session.
+        let t = self.token();
         redact_run(t.map(String::as_str), live, |live| run(&s, live))
     }
 
@@ -285,7 +286,7 @@ mod tests {
     use std::sync::Mutex;
 
     #[test]
-    fn lazy_gh_token_is_read_only_for_networked_or_yolo_output() {
+    fn lazy_gh_token_is_read_once_at_the_first_run_not_at_startup() {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let c = calls.clone();
         let inner: Arc<dyn Sandbox> = Arc::new(Echo(Mutex::new(vec![])));
@@ -296,19 +297,19 @@ mod tests {
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         let _ = n.bwrap_args(&spec(true));
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-        // An ordinary offline sandbox must not acquire a host secret: secret-dependent
-        // streaming would provide a token-prefix oracle.
+        // The first run reads the token even without the network: `gh auth token` needs no
+        // network, so the redaction mask must know the secret in every mode.
         n.run(&spec(false), &CancelToken::new(), &mut |_| {});
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-        n.run(&spec(true), &CancelToken::new(), &mut |_| {});
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert_eq!(n.output_secret().as_deref(), Some("SYNTH_LAZY_TOKEN"));
+        n.run(&spec(true), &CancelToken::new(), &mut |_| {});
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
-    /// With the network off, a normal sandboxed stream must be independent of the host token.
+    /// With the network off (`--offline`, `oxa.sandbox.net: off`), a locally printed token
+    /// (`gh auth token` reads its config file) is still scrubbed; only the `GH_TOKEN`
+    /// injection is network-gated.
     #[test]
-    fn a_run_without_the_network_does_not_apply_the_host_token_mask() {
+    fn a_run_without_the_network_still_masks_the_locally_printed_token() {
         struct LocalToken(Mutex<Vec<Vec<(String, String)>>>);
         impl Sandbox for LocalToken {
             fn check(&self) -> Result<(), OxaError> {
@@ -334,7 +335,7 @@ mod tests {
         let r = sb.run(&sp, &CancelToken::new(), &mut |_| {});
         assert_eq!(
             String::from_utf8_lossy(&r.output),
-            "token ghp_OFF_SECRET as gh auth token"
+            "token [redacted] as gh auth token"
         );
         let env = inner.0.lock().unwrap().pop().unwrap();
         assert!(
@@ -545,66 +546,15 @@ mod tests {
     }
 
     #[test]
-    fn streaming_offline_is_secret_independent() {
+    fn streaming_offline_refuses_injection_but_still_masks() {
         let (env, live, _) = stream(true, true, 5);
         assert!(
             !env.iter().any(|(k, _)| k == "GH_TOKEN" || k == "GH_HOST"),
             "{env:?}"
         );
-        // In normal sandboxed mode the host credential is inaccessible, so output must not
-        // be delayed based on matching prefixes of it. Yolo masks in `FullAccess` instead.
-        assert_eq!(live, "x SYNTH_BG_TOKEN_9 y");
-    }
-
-    #[test]
-    fn streaming_offline_emits_a_token_prefix_without_waiting_for_eof() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        struct PrefixProbe(Arc<AtomicUsize>);
-        impl Sandbox for PrefixProbe {
-            fn check(&self) -> Result<(), OxaError> {
-                Ok(())
-            }
-            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
-                Vec::new()
-            }
-            fn run(&self, _s: &ExecSpec, _c: &CancelToken, _l: &mut dyn FnMut(&[u8])) -> ExecResult {
-                unreachable!("the probe uses streaming")
-            }
-            fn run_streaming(
-                &self,
-                _s: &ExecSpec,
-                _c: &CancelToken,
-                live: &mut dyn FnMut(&[u8]),
-            ) -> ExecResult {
-                live(b"SYNTH_BG_");
-                assert_eq!(self.0.load(Ordering::SeqCst), b"SYNTH_BG_".len());
-                ExecResult {
-                    output: Vec::new(),
-                    exit: Some(0),
-                    timed_out: false,
-                    unsandboxed: false,
-                }
-            }
-        }
-
-        let source_calls = Arc::new(AtomicUsize::new(0));
-        let calls = source_calls.clone();
-        let emitted_before_eof = Arc::new(AtomicUsize::new(0));
-        let sb = NetSandbox::new(Arc::new(PrefixProbe(emitted_before_eof.clone())), false, false)
-            .with_gh_token_lazy(move || {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Some("SYNTH_BG_TOKEN_9".into())
-            });
-        let mut live = Vec::new();
-        sb.run_streaming(&spec(true), &CancelToken::new(), &mut |b| {
-            live.extend_from_slice(b);
-            emitted_before_eof.fetch_add(b.len(), Ordering::SeqCst);
-        });
-
-        assert_eq!(source_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(emitted_before_eof.load(Ordering::SeqCst), b"SYNTH_BG_".len());
-        assert_eq!(live, b"SYNTH_BG_");
+        // `gh auth token` reads its config locally: the output mask stays on with the
+        // network off; only the `GH_TOKEN` injection is refused.
+        assert_eq!(live, "x [redacted] y");
     }
 
     fn spec(net: bool) -> ExecSpec {
