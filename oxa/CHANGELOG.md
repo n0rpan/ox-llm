@@ -11,6 +11,7 @@
 ### Added
 
 - Model rule table for OpenCode Go routes, keyed by model id (not provider URL): GLM-5.3 (`thinking` with `clear_thinking:false`, window and output), Kimi K3 and DeepSeek V4 (reasoning carried on tool-call turns, DeepSeek `thinking` switch), local alias families (engine template switch, local body untouched). `oxa.cloud.model_rules` (user settings) overrides or adds rows. See [settings.md](docs/pages/settings.md).
+- Owner confirm broker (yolo power plan S1): each session exports `OXA_CONFIRM_SOCK`, a private unix socket through which oxa commands ask the owner. Yolo answers yes and records it, standard and auto show a dialog, and the owner's typed message answers a waiting one. Commands move to it in later slices.
 - `--usage-log FILE` (#1592): one JSONL record per model call (prompt, cached and output tokens, duration, model, turn), owner-only file, no message text. Reasoning tokens are null until the engine reports them.
 - `oxa work --pr N --model MODEL` (#1019): the unattended packet for a pull request carries its title, body, reviews, issue comments and the names of failing checks at the current head, and the task branch is the pull request's own head branch. Review text and check names are labelled as data and bounded (reviews to 16 KiB, 40 check names); only failing checks travel, never passing ones. Malformed review or check lists are refused, never silently dropped.
 
