@@ -55,7 +55,7 @@ Pasted and dropped images saved as `tmp/paste-<hash>.<image extension>` remain r
 
 ### standard, auto and yolo
 
-On top of the table, the permission mode decides who answers the questions:
+[modes.md](modes.md) is the short guide to these modes. On top of the table, the permission mode decides who answers the questions:
 
 | Mode | Prompts | Bash | File tools |
 |---|---|---|---|
@@ -154,7 +154,7 @@ What a command sees inside the OS sandbox:
 | `.oxa`, `.agents/skills`, `.git/hooks`, `.git/config` inside a writable project | read-only |
 | a project's `.git` file (a worktree), `.git/config.worktree`, and a missing `.git/hooks` or `.git/config` | read-only; a missing one cannot be created (see below) |
 | the deny-list below | masked: an empty read-only tmpfs over a directory, `/dev/null` over a file |
-| host runtime IPC: `/run/user/<uid>`, `/run/dbus`, `/run/systemd/resolve`, Docker/Podman sockets, name-service sockets | masked: they are Unix sockets, not network sockets, so the network namespace does not contain them; online, only the resolver’s regular DNS configuration files remain readable |
+| host runtime IPC: `/run/user/<uid>`, `/run/dbus`, `/run/systemd/resolve`, Docker/Podman sockets, name-service sockets | masked, except the sockets you list in `oxa.sandbox.sockets` for a network-enabled command (user settings only, default none; a start notice names each, and the docker socket gives root on the host): they are Unix sockets, not network sockets, so the network namespace does not contain them; online, only the resolver’s regular DNS configuration files remain readable |
 | environment variables | none, except the short list below |
 | file ownership | only your own uid is mapped; root-owned system files (for example `/usr/bin/python3`) show as uid 65534 (`nobody`), and `id` shows your uid plus group `nobody` |
 
@@ -241,7 +241,7 @@ In `standard` and `auto`, the model cannot write `.oxa/**` or `.agents/skills/**
 
 ## Network
 
-The harness connects to one place by default: the engine, on loopback (`127.0.0.1:8092`). It has no telemetry, no version check and no upload of sessions, exports or reports. The model talks only to the engine. Its tools may use the network, as the table shows.
+The harness connects to the model you chose: the local engine on loopback, or the provider of the selected cloud model. It has no telemetry, no version check and no upload of sessions, exports or reports. Its tools may use the network, as the table shows.
 
 | Source | Network | In `ask` mode |
 |---|---|---|

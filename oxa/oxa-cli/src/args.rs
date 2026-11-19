@@ -76,13 +76,15 @@ impl std::fmt::Debug for RegistryArgs {
 
 pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -> bool {
     use oxa_interactive::command_registry::CommandId;
-    // #1512 S5: `send` keeps its legacy parser (follow-ups and approval answers); it is declared
-    // for help only. Declared in the registry for discovery, help and surfaces, but parsed and
-    // handled by the legacy path below; the registry route must not take them over.
+    // Admission belongs exclusively to the oxe binary.
+    // Declared in the registry for discovery, help and surfaces, but parsed and handled by the
+    // legacy path below; the registry route must not take them over. #1512 S5: `send` keeps its
+    // legacy parser (follow-ups and approval answers).
     // #1475: the memory verbs are declared for help and parsed here too.
     !matches!(
         id,
-        CommandId::Help
+        CommandId::Admission
+            | CommandId::Help
             | CommandId::WorkStatus
             | CommandId::WorkBoard
             | CommandId::Send

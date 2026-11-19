@@ -107,6 +107,7 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `oxa.toolRepair` | bool | `true` | repair a malformed tool call with one extra turn ([tools.md](tools.md#repair-turn)) |
 | `oxa.work.localChecks` | list of strings | `["cargo check"]` | owner-only local compile commands for `oxa work`. The runner adds `-p <crate>` for a touched crate. The hosted lane supplies the test verdict. |
 | `oxa.toolRepeatGuard` | bool | `true` | answer a tool call that returned the same result three times in a row with a short note, and warn once (shown and kept in the session) if it goes on; the run continues ([tools.md](tools.md#repeated-calls)) |
+| `oxa.goal.failureBackoffSeconds` | number (seconds) | `60` | a pursuing goal whose request fails transiently (stream cut, engine down or busy, timeout, 429 or 5xx) notes it, waits this long without a model request, and sends the same request again; each further consecutive failure doubles the wait, capped at 900 s unless this is set higher. There is no attempt cap. `0` opts out: the run ends as before. Auth errors, refusals, a repetition stop, an abort and an owner-set budget still stop the goal with the reason shown |
 | `oxa.wait.maxSeconds` | number (seconds) | `3600` | cap on one `wait` call's `seconds` (schema maximum 86400); a longer request is cut to it |
 | `oxa.wait.pollSeconds` | number (seconds) | `30` | how often a `wait` with an `until` condition asks the hook sets for its state; no model request is made meanwhile |
 | `oxa.subagent.enabled` | bool | unset | the `subagent` tool; unset is on unless the model is Flash or its window is below 32K |
@@ -194,11 +195,11 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.sandbox.readPaths` | list | `[]` | extra read-only paths for bash; `~/` is expanded; user settings only |
 | `oxa.sandbox.unattended` | bool | `true` | the OS sandbox (bubblewrap) for bash and hooks in an unattended run: a subagent, a lead worker, `oxa work`, a headless `--goal` run, an ownerless RPC host, or a headless run that starts or resumes a pursuing goal. Stays on by default; set `false` only if you accept bash without it there. In yolo the setting does not apply: yolo has no OS sandbox in any run, workers, subagents and headless runs included. User settings only |
 | `oxa.sandbox.writePaths` | list | `[]` | extra writable paths for bash; `~/` is expanded; user settings only |
+| `oxa.sandbox.sockets` | list | `[]` | host runtime sockets (for example `/run/docker.sock`, `/run/podman/podman.sock`) that stay reachable in network-enabled sandboxed bash with Bubblewrap FD binds; absolute paths of existing sockets; user settings only, a project file cannot list them. The start notice names each one. The start notice warns about the Docker socket’s root access. An online command fails closed if a configured socket cannot be pinned or Bubblewrap cannot mount the descriptor. Offline, a listed socket is masked at its path instead, and a socket below a writable mount (the workspace, a write bind, `$HOME` or `/tmp`) is refused: its mask could be moved away by renaming the parent, so relocate the socket or drop the setting. Yolo bash has no sandbox and needs no entry |
 
 ### Native cloud gateway
 
-See [Run oxa without Python](no-python.md) for setup, remaining Python dependencies
-and a loopback-only manual check.
+See [quickstart.md](quickstart.md#cloud-models) for the keys file and a first setup of each provider.
 
 Set `oxa.engine.inProcessCloud` in the user settings file to select the Rust
 gateway for sessions and `--list-models`. The default is `false`. Offline mode
