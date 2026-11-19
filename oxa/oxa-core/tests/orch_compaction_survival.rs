@@ -58,6 +58,7 @@ fn build(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Vec<Arc<dyn Hooks>>) -> 
         dirty: std::sync::atomic::AtomicBool::new(false),
         gate: Default::default(),
         wait_wake: CancelToken::new(),
+        wake: Default::default(),
     });
     SessionState {
         goal: None,

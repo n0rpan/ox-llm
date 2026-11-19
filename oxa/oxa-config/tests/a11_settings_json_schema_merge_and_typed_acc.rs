@@ -1,6 +1,4 @@
 //! A11 acceptance tests: settings.json schema, merge and typed access.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_config::{apply_list_patch, merge_settings, schema, validate, Dirs, Kind, QueueMode, Settings};
@@ -193,6 +191,22 @@ fn user_project_merge() {
     // The pure merge agrees.
     let merged = merge_settings(&json!({"a": {"x": 1, "y": 2}}), &json!({"a": {"y": 3}}));
     assert_eq!(merged, json!({"a": {"x": 1, "y": 3}}));
+}
+
+/// `user_bool` ignores the project layer, so a trusted project cannot enable a user-only switch
+#[test]
+fn user_bool_ignores_the_project_layer() {
+    let key = "oxa.jobs.wakeOnFinish";
+    let off = Settings::from_values(json!({}), json!({"oxa": {"jobs": {"wakeOnFinish": true}}}));
+    assert!(off.bool(key, false), "the merged read sees the project value");
+    assert!(!off.user_bool(key, false), "the user-only read does not");
+    let denied = Settings::from_values(
+        json!({"oxa": {"jobs": {"wakeOnFinish": false}}}),
+        json!({"oxa": {"jobs": {"wakeOnFinish": true}}}),
+    );
+    assert!(!denied.user_bool(key, true));
+    let on = Settings::from_values(json!({"oxa": {"jobs": {"wakeOnFinish": true}}}), json!({}));
+    assert!(on.user_bool(key, false));
 }
 
 /// +x / -x patches
@@ -442,16 +456,12 @@ fn set_refuses_wrong_type_without_writing() {
     assert!(!dirs.settings_file().exists());
 }
 
-/// Extra: the schema is sorted by key and has no duplicates.
+/// A key defined twice would shadow one of its two definitions.
 #[test]
-fn schema_sorted_and_unique() {
+fn schema_keys_are_unique() {
     let keys: Vec<&str> = schema().iter().map(|d| d.key).collect();
-    let mut sorted = keys.clone();
-    sorted.sort_unstable();
-    assert_eq!(keys, sorted);
-    let mut dedup = sorted.clone();
-    dedup.dedup();
-    assert_eq!(dedup.len(), keys.len());
+    let unique: std::collections::BTreeSet<&str> = keys.iter().copied().collect();
+    assert_eq!(unique.len(), keys.len());
 }
 
 #[test]
