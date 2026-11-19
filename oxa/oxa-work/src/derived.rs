@@ -984,6 +984,18 @@ members = ["crates/*", "tools/pinned"]
     }
 
     #[test]
+    fn an_unmapped_manifest_still_requires_hosted_evidence_for_its_inputs() {
+        let dir = PrivateDir::new("derived-unmapped-manifest");
+        manifest(&dir, "app/Cargo.toml", "package.name = \"one\"\n");
+        let plan = from_changed_paths(dir.path(), b"app/data/catalog.txt\0").unwrap();
+        assert!(plan.requires_hosted);
+        assert!(plan.commands.is_empty());
+
+        let outside = from_changed_paths(dir.path(), b"docs/standalone.txt\0").unwrap();
+        assert!(!outside.requires_hosted);
+    }
+
+    #[test]
     fn a_changed_path_outside_manifest_limits_has_a_bounded_diagnostic() {
         let dir = PrivateDir::new("derived-manifest-limit");
         let parent = "src/".repeat(65);
