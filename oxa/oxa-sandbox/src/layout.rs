@@ -98,6 +98,7 @@ pub const CACHE_WRITE: &[&str] = &[
 /// Environment variables passed through when set (toolchain locations, never secrets).
 pub const TOOLCHAIN_ENV: &[&str] = &[
     "CARGO_HOME",
+    "CARGO_TARGET_DIR",
     "RUSTUP_HOME",
     "RUSTUP_TOOLCHAIN",
     "GOPATH",
@@ -463,6 +464,25 @@ mod tests {
         assert!(!l.read.contains(&bin), "{:?}", l.read);
         assert!(l.env.iter().any(|(k, _)| k == "OXA_RUNNING_BIN"));
         assert!(!l.env.iter().any(|(k, _)| k == "OXA_BIN"));
+    }
+
+    #[test]
+    fn cargo_target_is_forwarded_without_granting_a_mount() {
+        let directory = oxa_fake::TestEnv::new();
+        let target = directory.home().join(".cache/oxa-worker-target");
+        std::fs::create_dir_all(&target).unwrap();
+        let entry = ("CARGO_TARGET_DIR".to_owned(), target.display().to_string());
+        let mut inputs = LayoutInputs {
+            home: directory.home().clone(),
+            env: vec![entry.clone()],
+            ..Default::default()
+        };
+        let layout = Layout::build(&inputs);
+        assert!(layout.env.contains(&entry));
+        assert!(layout.write.iter().all(|path| !target.starts_with(path)));
+
+        inputs.write_extra.push(target.clone());
+        assert!(Layout::build(&inputs).write.contains(&target));
     }
 
     #[test]
