@@ -421,6 +421,10 @@ impl Settings {
             Source::Default
         }
     }
+    /// True when a layer or an in-memory override sets `key`. A built-in default does not count.
+    pub(crate) fn is_explicit(&self, key: &str) -> bool {
+        self.source(key) != Source::Default || self.overrides.iter().any(|(k, _)| k == key)
+    }
     /// The value `key` has in the user file, if any (not the merged value).
     pub fn user_value(&self, key: &str) -> Option<&Value> {
         lookup(&self.user, key)
