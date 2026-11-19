@@ -129,7 +129,7 @@ const SCHEMA: &[KeyDef] = &[
     key("fullscreenWheelScrollLines", Kind::Any, "\"auto\""),
     key("hideThinkingBlock", Kind::Bool, "false"),
     key("hooks", Kind::Object, "{}"),
-    key("httpIdleTimeoutMs", Kind::Any, "300000"),
+    key("httpIdleTimeoutMs", Kind::Any, "900000"),
     key("httpProxy", Kind::String, "null"),
     verdict_o("images.autoResize", Kind::Bool, "true"),
     key("images.blockImages", Kind::Bool, "false"),
@@ -169,6 +169,9 @@ const SCHEMA: &[KeyDef] = &[
     // V020-OPTIMIZE #1 / #2: unset = on.
     key("oxa.diet.output", Kind::Bool, "null"),
     key("oxa.diet.tools", Kind::Bool, "null"),
+    // Cloud resilience: a reply with no text and no tool call is retried; user settings only
+    // (`settings.rs` reads it via `user_u32`, the descriptor row carries `.user_only()`).
+    key("oxa.emptyReplyRetries", Kind::Number, "1"),
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
     key("oxa.engine.inProcessCloud", Kind::Bool, "null"),
     key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
@@ -259,6 +262,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.toolRepair", Kind::Bool, "true"),
     // The repeat guard for identical tool calls (oxa-core `repeat.rs`).
     key("oxa.toolRepeatGuard", Kind::Bool, "true"),
+    // The `wait` tool is declared in every session; `false` opts out (read at session start).
+    key("oxa.tools.wait", Kind::Bool, "true"),
     // W2: the `wait` tool's `until` conditions, answered by hook sets (`Hooks::poll_event`).
     key("oxa.wait.maxSeconds", Kind::Number, "86400"),
     key("oxa.wait.pollSeconds", Kind::Number, "30"),
@@ -290,7 +295,7 @@ const SCHEMA: &[KeyDef] = &[
     key("retry.baseDelayMs", Kind::Number, "2000"),
     key("retry.enabled", Kind::Bool, "true"),
     key("retry.maxAgentDelayMs", Kind::Number, "60000"),
-    key("retry.maxRetries", Kind::Number, "5"),
+    key("retry.maxRetries", Kind::Number, "10"),
     key("retry.provider.maxRetries", Kind::Number, "0"),
     key("retry.provider.maxRetryDelayMs", Kind::Number, "60000"),
     key("retry.provider.timeoutMs", Kind::Number, "null"),

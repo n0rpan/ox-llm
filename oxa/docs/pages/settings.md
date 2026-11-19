@@ -27,8 +27,7 @@ Settings that older files may contain but oxa does not implement are not listed 
 
 Where the user file alone counts, the table says so:
 
-- user settings only: `defaultProjectTrust`, `httpProxy`, `oxa.allowHomeCwd`, `oxa.a2a.enabled`, `oxa.offline`, `oxa.engine.allowRemote`, `oxa.engine.inProcessCloud`, `oxa.cloud`, `oxa.engine.inProcessLocal`, `oxa.local`, `oxa.lead.shadow`, `oxa.lead.serve`, `oxa.lead.sessionId`, `oxa.lead.model`, and every `oxa.sandbox.*` key. A project file cannot set them, because a project file cannot widen what the model can reach.
-- user settings only: `defaultProjectTrust`, `httpProxy`, `oxa.allowHomeCwd`, `oxa.approval.*`, `oxa.offline`, `oxa.engine.allowRemote`, `oxa.engine.inProcessCloud`, `oxa.cloud`, `oxa.engine.inProcessLocal`, `oxa.local`, `oxa.lead.shadow`, `oxa.lead.serve`, `oxa.lead.sessionId`, `oxa.lead.model`, and every `oxa.sandbox.*` key. A project file cannot set them, because a project file cannot widen what the model can reach.
+- user settings only: `defaultProjectTrust`, `httpProxy`, `oxa.allowHomeCwd`, `oxa.a2a.enabled`, `oxa.emptyReplyRetries`, `oxa.offline`, `oxa.engine.allowRemote`, `oxa.engine.inProcessCloud`, `oxa.cloud`, `oxa.engine.inProcessLocal`, `oxa.local`, `oxa.lead.shadow`, `oxa.lead.serve`, `oxa.lead.sessionId`, `oxa.lead.model`, and every `oxa.sandbox.*` key. A project file cannot set them, because a project file cannot widen what the model can reach.
 - project settings are trust-gated. In an untrusted project they are not read. Project files that run or load code (`hooks`, `shellPath`, `shellCommandPrefix`, `packages`, `extensions`, `skills`, `prompts`) also need the content approval described in [security.md](security.md#project-trust).
 
 Interactive selectors (`/settings`, `/thinking` and `/model` with Ctrl+S) write the user file.
@@ -103,6 +102,7 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `oxa.bash.maxJobs` | number | `16` | background jobs (`bash` with `background: true`) that may run at once; above it a start still goes ahead and the result warns, naming this key. User settings only. At least 1 |
 | `oxa.diet.output` | bool | unset | the system prompt's "be concise" rule is replaced by rules on tool use and a final answer of at most 6 lines. Unset is on |
 | `oxa.diet.tools` | bool | unset | shorter `grep` and `bash` output: `grep` prints each path once, and runs of three or more blank lines in bash output become two. Unset is on |
+| `oxa.emptyReplyRetries` | number | `1` | user settings only, a project file cannot set it: a cloud reply with no text and no tool call is asked once more (a new request, the empty reply is not kept); `0` turns it off. Waits between agent retries double from `retry.baseDelayMs` up to `retry.maxAgentDelayMs` (60 s) and follow a `Retry-After` up to that cap |
 | `oxa.jobs.wakeOnFinish` | bool | `true` | user settings only (a project file cannot turn it on). When `true`, a background bash job that finishes on its own (not one stopped by the model or the user) queues one follow-up message with the command as written, its exit code and last lines; when the session is idle and its last run ended normally it starts a turn. A job wakes only the session it started in. `false` (opt-out): the output waits for a read |
 | `oxa.liveSettings` | bool | `true` | on by default; `false` opts out. When on, a changed settings file is applied at the start of the next run without `/reload` (one `stat` per file; keys that feed the prompt rebuild it). Read from the settings the session holds, so turning it on takes effect at the next `/reload` or start. A file that no longer parses keeps the previous settings |
 | `oxa.read.maxImageBytes` | number (bytes) | `20971520` | the largest image `read` sends to a model that takes images (PNG, JPEG, GIF, WebP), and the aggregate image budget across retained session history and the current tool-call batch; a result that would cross the limit is not sent and names this limit. User settings only, so a project cannot raise or disable the bound. `0` is no limit. Other models get the text line `[image <name> <w>x<h>: not visible to this model]` whatever the size |
@@ -113,6 +113,7 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `oxa.toolRepeatGuard` | bool | `true` | answer a tool call that returned the same result three times in a row with a short note, and warn once (shown and kept in the session) if it goes on; the run continues ([tools.md](tools.md#repeated-calls)) |
 | `oxa.goal.idlePause` | boolean | `false` | `true` pauses a goal after two replies without a tool call (with a notice and `/goal resume`); by default the second such reply only shows a warning and the goal keeps pursuing. User settings only |
 | `oxa.goal.failureBackoffSeconds` | number (seconds) | `60` | a pursuing goal whose request fails transiently (stream cut, engine down or busy, timeout, 429 or 5xx) notes it, waits this long without a model request, and sends the same request again; each further consecutive failure doubles the wait, capped at 900 s unless this is set higher. There is no attempt cap. `0` opts out: the run ends as before. Auth errors, refusals, a repetition stop, an abort and an owner-set budget still stop the goal with the reason shown |
+| `oxa.tools.wait` | bool | `true` | declare the `wait` tool in every session (interactive, print, RPC, lead and workers), not only while a goal is pursued. It is declared from the session start and its entry is the same in a goal, so the cached prefix does not change. `false` opts out (read at session start). Outside a goal a wait ends when the owner types a message, on cancel or on `--max-time`; with offline mode the GitHub probes stay refused |
 | `oxa.wait.maxSeconds` | number (seconds) | `86400` | cap on one `wait` call's `seconds`. The default is the tool's own maximum (one day), so nothing is cut unless you set a lower value; a longer request is cut to it |
 | `oxa.wait.pollSeconds` | number (seconds) | `30` | how often a `wait` with an `until` condition asks the hook sets for its state; no model request is made meanwhile |
 | `oxa.subagent.enabled` | bool | unset | the `subagent` tool; unset is on unless the model is Flash or its window is below 32K |
@@ -132,7 +133,7 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `shellPath` | string | `null` | shell for bash and `!cmd`; it must be visible in the sandbox |
 | `shellCommandPrefix` | string | `null` | text placed before each bash command, on its own line |
 | `httpProxy` | string | `null` | proxy for MCP HTTP requests; user settings only |
-| `httpIdleTimeoutMs` | number or `"disabled"` | `300000` | silence limit on the engine stream; `0` or `"disabled"` means none |
+| `httpIdleTimeoutMs` | number or `"disabled"` | `900000` | silence limit on the engine stream; `0` or `"disabled"` means none |
 | `hooks` | object | `{}` | exec hooks, by event name ([extensions.md](extensions.md#exec-hooks)) |
 | `extensions` | list | `[]` | extension files and directories to load |
 | `skills` | list | `[]` | skill files and directories to load |
@@ -165,7 +166,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `retry.enabled` | bool | `true` | retry a failed request; off sends each request once, with no provider retry |
-| `retry.maxRetries` | number | `5` | retries of an agent request (2 s, 4 s, 8 s, 16 s, 32 s: about a minute before the request fails) |
+| `retry.maxRetries` | number | `10` | retries of an agent request |
 | `retry.baseDelayMs` | number | `2000` | first delay, doubled each retry |
 | `retry.maxAgentDelayMs` | number | `60000` | longest delay the agent loop waits |
 | `retry.provider.maxRetries` | number | `0` | silent retries of one HTTP request, before the first byte of the reply; `retry.enabled` false disables them |

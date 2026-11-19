@@ -27,6 +27,7 @@ code, tests, CI and docs; the owner validates on hardware.
   owner-selected yolo deliberately disables the permission floor. Off Linux there is no OS sandbox
   (owner policy, #1512): in-process guards stay, bash gets the same cleared base environment, and
   the bash network is not restricted there; the start notice and the model env note say so.
+- **Extension exec directory:** an extension's `oxa.exec` whose `cwd` is outside the session directory asks like a write (or read) outside the project before the directory is mounted; yolo does not ask, a `cwd` inside the session directory is unchanged (`exec_gated`, `oxa-core/src/host.rs`).
 - **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
   answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
   broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
@@ -52,7 +53,13 @@ code, tests, CI and docs; the owner validates on hardware.
   broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
   files, web pages, other sessions, agent inbox) never approves. In yolo the broker answers yes and
   records it. The broker socket is owned by the session (dir 0700, socket 0600) and validates a
-  complete, bounded request frame before asking. Do not add
+  complete, bounded request frame before asking. A typed yes answers only a request whose dialog
+  oxa has already shown (the broker records it); a yes with no shown dialog, or for another request
+  id, is ignored. A consumer a model-run command starts (`oxa work --publish`, `oxa report-issue`)
+  trusts only the sandbox's pinned socket or a listener verified as the session's own oxa process
+  (peer credentials: an ancestor, same executable, same user), whatever `OXA_CONFIRM_SOCK` and
+  `OXA_CODING_AGENT` say; a fake socket is no answer. Yolo is unchanged (the model already has the
+  owner's rights). The question is shown to the owner as the process's text, marked as such. Do not add
   `/dev/tty`-only confirmations or env-marker refusals for owner actions.
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
@@ -346,6 +353,11 @@ read its result; they never launch builds or tests.
 - Prefer deleting and merging code over adding it. Measure before and after when a change is about speed or size.
 - Write names as they are on `main`. Use short, plain sentences in docs, comments, PR text and user messages.
 - No person names, session links or internal decision ids in code, docs, commits, PR text or issues.
+- **Online data is fetched, never hard-coded (owner rule).** Model lists, context windows, max output, prices,
+  plan and rate limits, latest versions and release assets come from the live source (the provider's API or a
+  public catalog), cached from the last successful fetch and refreshed in the background. No built-in copies: an
+  online service needs the network anyway; an unknown value warns, never refuses. Protocol constants (API paths,
+  header names) and security pins (checksums, action SHAs) stay in code. Never fill such values from memory.
 - An issue filed by an agent states how the problem was observed (command, run or log line). Verify an agent-filed
   issue against current main before building on it; close it with the evidence if it does not reproduce.
 

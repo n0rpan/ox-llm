@@ -427,7 +427,9 @@ fn ordinary_prefix_unchanged_and_two_idle_turns_stall_with_one_fixed_continuatio
     assert_eq!(resumed.goal(), Some(goal));
     resumed.set_goal(None, &mut sink).unwrap();
     assert_eq!(resumed.inner().prefix, ordinary);
-    assert!(resumed.inner().active.get("wait").is_none());
+    // `wait` is declared in every session, goal or not (wait_everywhere.rs).
+    assert!(resumed.inner().active.get("wait").is_some());
+    assert!(resumed.inner().active.get("goal_done").is_none());
 }
 #[test]
 fn done_closes_all_calls_without_running_later_calls_or_requesting_another_reply() {

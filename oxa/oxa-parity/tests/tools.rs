@@ -101,7 +101,7 @@ fn schema_of(ran: &Ran, name: &str) -> serde_json::Value {
         .clone()
 }
 
-const ALL_SEVEN: [&str; 7] = ["bash", "edit", "find", "grep", "ls", "read", "write"];
+const ALL_SEVEN: [&str; 8] = ["bash", "edit", "find", "grep", "ls", "read", "wait", "write"];
 
 /// Tool selection without a turn: the names the engine was offered.
 fn offered(env: &TestEnv, extra: &[&str]) -> Vec<String> {

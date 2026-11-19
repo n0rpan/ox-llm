@@ -625,7 +625,7 @@ fn rpc_006() {
     let mut r = Rpc::start(
         TestEnv::new(),
         held_opts(1500),
-        // One reply per run: the prompt, the steer, the follow-up and the image prompt.
+        // One turn per request (hi, steer, follow-up, image): an exhausted script is a retried 500.
         vec![
             ScriptTurn::text("first"),
             ScriptTurn::text("second"),
