@@ -2397,6 +2397,11 @@ fn a_user_model_scope_selects_go_without_a_cli_scope() {
     let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     settings.as_object_mut().unwrap().remove("defaultModel");
     settings["oxa"].as_object_mut().unwrap().remove("engine");
+    // The stored key and the user's own scope are the only authorization inputs.
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
     settings["enabledModels"] = json!([MODEL]);
     fs::write(&path, settings.to_string()).unwrap();
     let output = run(&env, &["--no-tools", "-p", "Synthetic task"]);
@@ -2425,8 +2430,9 @@ fn a_fuzzy_local_alias_does_not_shadow_the_exact_go_model() {
     let path = env.agent_dir().join("settings.json");
     let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     settings.as_object_mut().unwrap().remove("defaultModel");
-    // No cloud switch and no Go enablement: the stored key is the only Go fact in play.
-    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    // Native local on, cloud enablement omitted and no Go setting: the stored key is the only
+    // Go fact in play, and the fuzzy alias is a real local candidate.
+    settings["oxa"]["engine"] = json!({"inProcessLocal":true});
     settings["oxa"]["cloud"]["opencode"]
         .as_object_mut()
         .unwrap()
@@ -2440,15 +2446,21 @@ fn a_fuzzy_local_alias_does_not_shadow_the_exact_go_model() {
                                 "mtp_state_bytes":0,"margin_bytes":1044480}}}
     });
     fs::write(&path, settings.to_string()).unwrap();
-    // The fuzzy alias does not own the exact Go name: this request is never treated as the
-    // local model (whose weights are missing), so it does not fail with the local error.
+    // The fuzzy alias does not own the exact Go name: the request goes to Go and completes.
     let output = run(&env, &["--model", MODEL, "--no-tools", "-p", "Synthetic task"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !stderr.contains("Local weights are missing"),
         "the Go model must not be shadowed by {alias}: {stderr}"
     );
-    assert!(!stderr.contains(&alias), "{stderr}");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("synthetic plan reply"));
+    assert_eq!(rows(&env)[0]["remote_provider"], "opencode");
+    mock.assert_healthy();
 }
 
 /// #1435: an endpoint-qualified spelling (`oxe/opencode/x`) names the same local alias, so it
