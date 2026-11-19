@@ -9,6 +9,7 @@ OpenCode base URL points at a host-side proxy that adds the real key.
 """
 
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -58,14 +59,28 @@ def resolve_max_time(agent_timeout_sec, margin_sec=DEFAULT_MARGIN_SEC):
 
 
 def check_proxy_url(url):
-    """The host-side proxy URL the container uses. Never the real provider host."""
+    """A proxy URL accepted by oxa's native OpenCode transport."""
     parts = urlsplit(url or "")
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise BenchError("proxy URL must be http(s)://host:port (set OXA_BENCH_PROXY_URL)")
+    try:
+        parts.port
+    except ValueError as error:
+        raise BenchError("proxy URL has an invalid port") from error
     if parts.hostname.lower().rstrip(".").endswith(UPSTREAM_HOST):
         raise BenchError("proxy URL points at the real provider: containers must use the key-injecting proxy")
     if parts.username or parts.password:
         raise BenchError("proxy URL must not carry credentials")
+    if "?" in url or "#" in url:
+        raise BenchError("proxy URL must not carry a query or fragment")
+    try:
+        address = ipaddress.ip_address(parts.hostname)
+        mapped = getattr(address, "ipv4_mapped", None)
+        loopback = address.is_loopback or bool(mapped and mapped.is_loopback)
+    except ValueError:
+        loopback = parts.hostname.lower() == "localhost"
+    if parts.scheme == "http" and not loopback:
+        raise BenchError("remote proxy URL must use https (http is accepted only on loopback)")
     return url.rstrip("/")
 
 

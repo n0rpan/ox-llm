@@ -172,7 +172,7 @@ class AdapterTests(unittest.TestCase):
                     "FAKE_USAGE_FIXTURE": str(HERE / "fixtures/usage.jsonl")}
 
     def _agent(self, module, **kwargs):
-        opts = dict(oxa_binary=str(self.binary), proxy_url="http://172.17.0.1:8089",
+        opts = dict(oxa_binary=str(self.binary), proxy_url="https://bench-proxy.example.invalid:8089",
                     agent_timeout_sec=900, model_name="opencode/kimi-k3")
         opts.update(kwargs)
         return module.OxaAgent(self.logs, **opts)
@@ -216,7 +216,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_adapter_margin_is_configurable_from_the_environment(self):
         agent = self.harbor.OxaAgent(self.logs, oxa_binary="x", extra_env={
-            "OXA_BENCH_PROXY_URL": "http://10.0.0.1:1", "OXA_BENCH_AGENT_TIMEOUT_SEC": "1000",
+            "OXA_BENCH_PROXY_URL": "https://bench-proxy.example.invalid:8089", "OXA_BENCH_AGENT_TIMEOUT_SEC": "1000",
             "OXA_BENCH_MARGIN_SEC": "250"})
         self.assertEqual(core.resolve_max_time(agent._timeout, agent._margin), 750)
 
@@ -243,12 +243,30 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual(json.loads(secrets.read_text()), {"opencode": core.STUB_KEY})
                 self.assertEqual(stat.S_IMODE(secrets.stat().st_mode), 0o600)
                 settings = json.loads((home / ".oxa/agent/settings.json").read_text())
-                self.assertEqual(settings["oxa"]["cloud"]["opencode"]["base_url"], "http://172.17.0.1:8089")
+                self.assertEqual(settings["oxa"]["cloud"]["opencode"]["base_url"], "https://bench-proxy.example.invalid:8089")
                 self.assertTrue(settings["oxa"]["engine"]["inProcessCloud"])
         with self.assertRaises(core.BenchError):
             core.check_proxy_url("https://opencode.ai/inference/go")
         with self.assertRaises(core.BenchError):
             core.check_proxy_url("http://user:pw@172.17.0.1:1")
+
+    def test_proxy_url_matches_the_native_transport_policy(self):
+        self.assertEqual(
+            core.check_proxy_url("https://bench-proxy.example.invalid:8089"),
+            "https://bench-proxy.example.invalid:8089",
+        )
+        self.assertEqual(core.check_proxy_url("http://127.0.0.1:8089"), "http://127.0.0.1:8089")
+        for url in (
+            "http://172.17.0.1:8089",
+            "http://bench-proxy.example.invalid:8089",
+            "https://bench-proxy.example.invalid:8089?token=stub",
+            "https://bench-proxy.example.invalid:8089?",
+            "https://bench-proxy.example.invalid:8089/#fragment",
+            "https://bench-proxy.example.invalid:8089/#",
+            "https://bench-proxy.example.invalid:not-a-port",
+        ):
+            with self.subTest(url=url), self.assertRaises(core.BenchError):
+                core.check_proxy_url(url)
 
     def test_only_scorable_exit_codes_pass_through(self):
         for code, ok in ((0, True), (1, True), (130, True), (3, False), (5, False), (8, False)):
@@ -268,11 +286,11 @@ class AdapterTests(unittest.TestCase):
 
     def test_pier_allowlist_names_only_the_proxy_host(self):
         agent = self._agent(self.pier)
-        self.assertEqual(agent.network_allowlist().domains, ["172.17.0.1"])
+        self.assertEqual(agent.network_allowlist().domains, ["bench-proxy.example.invalid"])
 
     def test_trial_prefix_is_added_to_the_base_url_when_asked(self):
         agent = self._agent(self.harbor, proxy_trial_prefix=True)
-        self.assertEqual(agent._base_url(), "http://172.17.0.1:8089/trial")
+        self.assertEqual(agent._base_url(), "https://bench-proxy.example.invalid:8089/trial")
 
 
 class InstallScriptTests(unittest.TestCase):
