@@ -391,6 +391,27 @@ class DevPromote(Fixture):
     def compare(self, mapping):
         (self.remote / 'compare.json').write_text(json.dumps(mapping))
 
+    def hold_lock(self, path, *flags):
+        # flock(1) hands its lock descriptor to the command, so killing only flock
+        # would leave `sleep` holding the lock. Own a process group and end it whole.
+        holder = subprocess.Popen(['flock', *flags, str(path), 'sleep', '60'],
+                                  start_new_session=True)
+
+        def release():
+            try:
+                os.killpg(holder.pid, 9)
+            except ProcessLookupError:
+                pass
+            holder.wait(timeout=5)
+
+        self.addCleanup(release)
+        for _ in range(100):
+            if subprocess.run(['flock', '-n', str(path), 'true'],
+                              capture_output=True).returncode:
+                break
+            time.sleep(0.02)
+        return release
+
     def restarts(self):
         path = self.remote / 'restarts.log'
         return path.read_text().split() if path.exists() else []
@@ -510,13 +531,7 @@ class DevPromote(Fixture):
     def test_busy_session_defers_without_replacing_the_pair(self):
         _, old_digest = self.prepare()
         previous_downloads = self.assets()
-        holder = subprocess.Popen(['flock', str(self.session) + '.lock', 'sleep', '60'])
-        self.addCleanup(holder.kill)
-        for _ in range(100):
-            if subprocess.run(['flock', '-n', str(self.session) + '.lock', 'true'],
-                              capture_output=True).returncode:
-                break
-            time.sleep(0.02)
+        self.hold_lock(str(self.session) + '.lock')
         result = self.promote()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('an owner chat turn is in flight', result.stdout + result.stderr)
@@ -537,13 +552,7 @@ class DevPromote(Fixture):
 
     def test_operator_install_lock_blocks_only_the_activation(self):
         _, old_digest = self.prepare()
-        holder = subprocess.Popen(['flock', str(self.install_lock), 'sleep', '60'])
-        self.addCleanup(holder.kill)
-        for _ in range(100):
-            if subprocess.run(['flock', '-n', str(self.install_lock), 'true'],
-                              capture_output=True).returncode:
-                break
-            time.sleep(0.02)
+        release = self.hold_lock(self.install_lock)
         downloads = len(self.assets())
         result = self.promote()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -553,21 +562,14 @@ class DevPromote(Fixture):
         # The verified bytes were downloaded and imported; only activation waited.
         self.assertEqual(len(self.assets()), downloads + 1)
 
-        holder.terminate()
-        holder.wait(timeout=5)
+        release()
         retried = self.promote()
         self.assertEqual(retried.returncode, 0, retried.stderr)
         self.assertEqual(self.running_digest(), hashlib.sha256(self.elf('b' * 40)).hexdigest())
 
     def test_shared_sampler_lock_defers_the_activation(self):
         _, old_digest = self.prepare()
-        holder = subprocess.Popen(['flock', '--shared', str(self.install_lock), 'sleep', '60'])
-        self.addCleanup(holder.kill)
-        for _ in range(100):
-            if subprocess.run(['flock', '-n', str(self.install_lock), 'true'],
-                              capture_output=True).returncode:
-                break
-            time.sleep(0.02)
+        self.hold_lock(self.install_lock, '--shared')
         result = self.promote()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('another artifact install is in progress', result.stdout + result.stderr)
