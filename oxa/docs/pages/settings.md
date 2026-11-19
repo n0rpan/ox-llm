@@ -183,6 +183,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.local` | object | `{}` | literal native binary/model/arguments/environment and model limits; user settings only; see [native local configuration](../../oxc-local/CONFIGURATION.md) |
 | `oxa.lead.shadow` | bool | `false` | enable the read-only `oxa lead --shadow` proposal preset; user settings only; no live runner actions |
 | `oxa.engine.inProcessCloud` | bool | `false` | select the in-process Rust cloud gateway for sessions and model discovery; user settings only |
+| `oxa.cloud.opencode.enabled` | bool | on when a key exists | OpenCode Go is on when the `opencode` key exists in the protected cloud key file and the run has an actual `--model` argument naming a Go model (including a delegated worker or nested child), or an owner model scope that is not a local alias; `false` opts out everywhere; project settings and restored sessions cannot enable it; offline mode refuses; user settings only |
 | `oxa.cloud` | object | `{}` | native cloud models, prices, USD budget and subscription caps; user settings only; see below |
 | `oxa.lead.serve` | object | `{}` | the lead web access scaffold: `enabled`, `identity` (`local` or `tailscale`), `bind` (a loopback address), `port`, `allowed_identities`. Off by default and no listener is installed yet; user settings only. See [lead-web.md](lead-web.md) |
 | `oxa.lead.sessionId` | string | unset | exact ID of the dedicated Lead Session created by the native owner operation, from owner-private user settings. Free text is disabled when unset. |
@@ -205,11 +206,11 @@ directly. Project settings cannot enable this transport or change its cloud poli
 
 The OpenCode Go subscription is the exception to that switch: a Go key in the
 owner's secrets file (`~/.config/oxc/llm/cloud-secrets.json`, the `opencode`
-entry) already enables the Go transport for the owner's own model choice, without
-`inProcessCloud`. `oxa.cloud.opencode.enabled: false` in the user settings opts
-out again, and `true` enables Go even for a delegated or restored model. Transport
-selection stays user-only: a project settings file, a model a launcher delegated
-through `oxa work`'s task file, and a model restored by `--continue` never turn
+entry) already enables the Go transport for an actual Go model argument, including
+a delegated worker or nested child, without `inProcessCloud`.
+`oxa.cloud.opencode.enabled: false` in the user settings opts out again, and `true`
+enables Go even for a project-selected or restored model. Transport selection stays
+user-only: a project settings file and a model restored by `--continue` never turn
 the transport on by themselves. A configured local alias keeps a request local
 only when the alias owns the asked model exactly; a fuzzy local match does not
 hide the Go model of that name.

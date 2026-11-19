@@ -83,7 +83,7 @@ pub(crate) fn trusted_executable_for(
     let Some(h) = home.map(canon) else {
         return trusted_executable(program, path, cwd);
     };
-    if !cwd.is_some_and(|c| canon(c) == h) {
+    if cwd.is_none_or(|c| canon(c) != h) {
         return trusted_executable(program, path, cwd);
     }
     let allowed: Vec<std::path::PathBuf> = USER_BIN.iter().map(|d| h.join(d)).collect();
