@@ -21,9 +21,11 @@ Replace `SESSION_ID` with the printed id. `--continue=<id>` also works. A word a
 
 ```console
 $ oxa send SESSION_ID "task finished, red"
+$ generate-large-follow-up | oxa send SESSION_ID -
 ```
 
 Use the full session id. This queues one follow-up without starting an engine or requiring the session to be running. Its TUI or RPC owner consumes it when idle or at a follow-up boundary, just like queued follow-up input; it does not interrupt the active turn. A stopped session retains the message until it is opened again in TUI or RPC mode. Success means **queued**, not that the model has answered.
+Use `-` as the text argument to read the entire follow-up from standard input. This avoids the operating system's per-argument size limit for large messages.
 
 The inbox lives at `inbox/<session-id>/` under the agent directory, in private `0700` directories with `0600` message files. Publication is an atomic rename; the owner uses inotify (no file polling, socket or daemon), including a startup scan for queued messages. The agent directory remains masked by the sandbox. A message over 256 KiB is not refused: its full text is kept in the session's private, tool-readable spill directory under the temporary-data directory, and the queued follow-up names that file. Only that session (and sessions inheriting its history) can read the spill through model tools; other private agent state remains masked. The owner admits at most 64 messages or 1 MiB of inbox text across destinations; excess files remain on disk and are retried when the owner releases capacity, without polling. Oversized externally written files remain on disk and are not delivered. Once admitted to the owner's in-memory follow-up queue, a message file is removed. This is not transactional with the session transcript: a process crash can lose an admitted message or replay a file not yet removed. Worker prompts are unchanged.
 
@@ -102,7 +104,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa login chatgpt --experimental [--paste] [--replace]` | explicit owner-only native ChatGPT sign-in |
 | `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa status <session-id\|session-file> [--session-dir <dir>]` | read a saved session's progress and stall signal without contacting an engine |
-| `oxa send <session-id> "text"` | queue one follow-up for the session's TUI or RPC owner |
+| `oxa send <session-id> <text\|->` | queue one follow-up for the session's TUI or RPC owner; `-` reads standard input |
 | `oxa config [-l]` | print every setting with its value and where it comes from |
 | `oxa mcp <command>` | manage MCP servers, see below |
 | `oxa memory <list\|show\|rm>` | list the memory index, show one memory entry, or remove one entry and its index line, see [Memory commands](#memory-commands) |

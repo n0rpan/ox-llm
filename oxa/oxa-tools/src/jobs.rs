@@ -115,6 +115,8 @@ struct Out {
     total: u64,
     /// `total` as of the last read: what the model has seen.
     seen: u64,
+    /// Whether new output and the current buffer are limited to [`BUFFER_CAP`].
+    bounded: bool,
 }
 
 /// The shared state of one job.
@@ -334,7 +336,10 @@ impl JobRegistry {
         state.next += 1;
         let id = format!("job-{}", state.next);
         let cancel = CancelToken::new();
-        let output = Arc::new(Mutex::new(Out::default()));
+        let output = Arc::new(Mutex::new(Out {
+            bounded: !keep_all,
+            ..Out::default()
+        }));
         let status = Arc::new(Mutex::new(JobStatus::Running));
         // A foreground command followed to its end (`keep_all`) never wakes the session; only
         // one that moves to the background does (see `release_to_background`).
@@ -363,7 +368,7 @@ impl JobRegistry {
                 let mut out = output.lock().unwrap();
                 out.total += chunk.len() as u64;
                 out.buf.extend_from_slice(chunk);
-                if !keep_all && out.buf.len() > BUFFER_CAP {
+                if out.bounded && out.buf.len() > BUFFER_CAP {
                     let keep = out.buf.len() - BUFFER_CAP;
                     out.buf.drain(..keep);
                 }
@@ -398,6 +403,19 @@ impl JobRegistry {
             }
         });
         Ok(id)
+    }
+
+    /// Switch a foreground job that detached to bounded background retention.
+    pub fn bound_output(&self, id: &str) -> Result<(), String> {
+        let state = self.state.lock().unwrap();
+        let job = state.jobs.get(id).ok_or_else(|| format!("Unknown job: {id}"))?;
+        let mut out = job.output.lock().unwrap();
+        out.bounded = true;
+        if out.buf.len() > BUFFER_CAP {
+            let drop = out.buf.len() - BUFFER_CAP;
+            out.buf.drain(..drop);
+        }
+        Ok(())
     }
 
     /// Read a job's status and the last [`READ_CAP`] bytes of its output. `Err` for an

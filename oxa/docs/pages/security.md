@@ -206,7 +206,7 @@ This matters because the model can be steered by text it reads. A steered model 
 - subagent children inherit the switch;
 - the local engine keeps working.
 
-Offline mode is about the network only. It does not limit what those programs read or write. A `!cmd` command or a stdio MCP server, when started offline, sees your files as you do: it is not under the deny-list masks, and it can write anywhere your account can write. Exec hooks have never had network. Programs you start yourself, outside oxa, are not affected by oxa at all.
+Offline mode is about the network only. It does not limit what those programs read or write. A `!cmd` command or a stdio MCP server, when started offline, sees your files as you do: it is not under the deny-list masks, and it can write anywhere your account can write. Exec hooks have no network outside yolo. Programs you start yourself, outside oxa, are not affected by oxa at all.
 
 ### Remote engine
 
@@ -219,7 +219,7 @@ A headless session (`--mode json` or `--mode rpc`) started by `oxa work` or a le
 ## Extensions, hooks and MCP
 
 - Extensions run in an embedded JavaScript runtime with no file, network or process access of their own. Each host function they call (`exec`, `fs`, `fetch`, session actions) goes through the same policy as the model's tools.
-- Exec hooks (`hooks` setting) run as `bash -c` in the sandbox, with no network. A hook that exits with status 2 blocks the `tool_call` or `user_bash` event it belongs to. A hook that times out or fails does not block anything. They run on every event, without the model asking, so only put commands you have read in a hook.
+- Exec hooks (`hooks` setting) run as `bash -c` in the sandbox, with no network. Under yolo (including an unattended worker started with yolo) there is no sandbox anywhere: they run with your rights, and `--offline` still keeps their network off. A hook that exits with status 2 blocks the `tool_call` or `user_bash` event it belongs to. A hook that times out or fails does not block anything. They run on every event, without the model asking, so only put commands you have read in a hook.
 - MCP stdio servers and `!cmd` commands run with your rights. Outside offline mode they are not in the bash sandbox, and an MCP stdio server starts after an approval. MCP HTTP servers and their OAuth tokens (`mcp-auth.json`, mode `0600`) are subject to the network rules above.
 - An MCP tool's read-only mark (`readOnlyHint`) is the server's own claim. oxa does not check it. For a remote server oxa does not believe the mark unless the server entry says `"trustAnnotations": true` (see [mcp.md](mcp.md#permissions)).
 
