@@ -414,6 +414,17 @@ mod tests {
     }
 
     #[test]
+    fn models_declares_its_json_flag_and_cli_only_surface() {
+        let input = words("models --json");
+        let parsed = parse_cli(&input).expect("models resolves on the CLI");
+        assert_eq!(parsed.command.id, CommandId::Models);
+        assert_eq!(parsed.args, &input[1..]);
+        assert_eq!(parsed.command.arguments[0].name, "json");
+        assert_eq!(parsed.command.arguments[0].kind, ArgumentKind::Flag);
+        assert!(dispatch_slash(&input).is_none());
+    }
+
+    #[test]
     fn unavailable_child_does_not_resolve_as_the_available_lead_menu() {
         assert_eq!(parse_cli(&words("lead")).unwrap().command.id, CommandId::Lead);
         assert!(parse_cli(&words("lead board")).is_none());

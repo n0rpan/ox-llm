@@ -201,12 +201,75 @@ pub(crate) fn select_observed(
     cloud_engine()
 }
 
+/// Select the configured engines for catalog inspection without refreshing discovery, reading a
+/// credential, or enabling the usage ledger. This is deliberately separate from request selection:
+/// callers receive configured metadata only and cannot accidentally turn a listing into network I/O.
+pub(crate) fn select_catalog(
+    user: &Settings,
+    effective: &Settings,
+    dirs: &Dirs,
+    http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
+) -> Result<Selected, OxaError> {
+    let local_engine = || {
+        let (launch, stream) = local_engine_settings(user, effective);
+        oxc_local::configured_engine(launch, dirs.agent_dir.join("local-engine"), stream)
+    };
+    let cloud_engine = || {
+        open_gateway_with_mode(user, effective, dirs, None, Ok, false).map(|opened| {
+            (
+                Arc::new(EmbeddedEngine::from_shared_gateway(opened.gateway)) as Arc<dyn Engine>,
+                opened.notices,
+            )
+        })
+    };
+    if user.bool(oxc_local::LOCAL_SETTING, false) && user.bool(SETTING, false) {
+        let aliases = |path| {
+            user.get(path)
+                .and_then(Value::as_object)
+                .map(|models| models.keys().cloned().collect())
+                .unwrap_or_default()
+        };
+        let (cloud, notices) = match cloud_engine() {
+            Ok((engine, notices)) => (Ok(engine), notices),
+            Err(error) => (Err(error), Vec::new()),
+        };
+        return routing::Routed {
+            local: local_engine(),
+            cloud,
+            local_models: aliases("oxa.local.models"),
+            cloud_models: aliases("oxa.cloud.models"),
+            dynamic_go: false,
+            default: effective.string("defaultModel"),
+        }
+        .into_engine(None)
+        .map(|engine| (engine, notices));
+    }
+    if user.bool(oxc_local::LOCAL_SETTING, false) {
+        return local_engine().map(|engine| (engine, Vec::new()));
+    }
+    if !user.bool(SETTING, false) {
+        return http().map(|engine| (engine, Vec::new()));
+    }
+    cloud_engine()
+}
+
 pub(crate) fn open_gateway(
     user: &Settings,
     effective: &Settings,
     dirs: &Dirs,
     diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
     configure: impl FnOnce(Gateway) -> Result<Gateway, OxaError>,
+) -> Result<OpenedGateway, OxaError> {
+    open_gateway_with_mode(user, effective, dirs, diagnostics, configure, true)
+}
+
+fn open_gateway_with_mode(
+    user: &Settings,
+    effective: &Settings,
+    dirs: &Dirs,
+    diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
+    configure: impl FnOnce(Gateway) -> Result<Gateway, OxaError>,
+    active: bool,
 ) -> Result<OpenedGateway, OxaError> {
     let cloud = user.get("oxa.cloud").ok_or_else(invalid)?;
     let go_enabled = cloud.pointer("/opencode/enabled") == Some(&Value::Bool(true));
@@ -292,13 +355,13 @@ pub(crate) fn open_gateway(
         Options {
             access: Access::Enabled,
             daily_budget_usd: cap,
-            ledger_enabled: true,
+            ledger_enabled: active,
             subscription,
             subscription_limits,
         },
     )
     .map_err(|e| OxaError::new(e.code, e.message))?;
-    if discover {
+    if discover && active {
         runtime = runtime.with_catalog_cache();
         if let Some(pricing) = cloud.get("unpriced_discovered_pricing") {
             runtime = runtime
@@ -320,7 +383,7 @@ pub(crate) fn open_gateway(
     let mut refresh_cloud = Vec::new();
     let mut notices = Vec::new();
     let discovery_timeout = Duration::from_secs(15);
-    for source in sources {
+    for source in sources.into_iter().filter(|_| active) {
         let provider = source.provider().as_str();
         match gateway.discover_cloud(&source, discovery_timeout) {
             Ok(Some(status)) => {
@@ -347,7 +410,7 @@ pub(crate) fn open_gateway(
             )),
         }
     }
-    if go_enabled {
+    if go_enabled && active {
         let base = cloud
             .pointer("/opencode/base_url")
             .map_or(Some(oxc_gateway::opencode::GO_BASE), Value::as_str)

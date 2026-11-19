@@ -4,7 +4,7 @@
 use oxa_cli::{parse_args, run, Stdio, Subcommand};
 use oxa_config::Env;
 use oxa_fake::{FakeOpts, FakeServer, TestEnv};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::io::{Cursor, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -126,6 +126,47 @@ fn models_reads_no_key_and_no_ledger() {
     assert_eq!(lines.len(), 1, "one JSON line: {:?}", captured.out);
     let value: Value = serde_json::from_str(lines[0]).expect("JSON");
     assert_eq!(value["type"], "oxa_models");
+}
+
+/// Native catalog listing is metadata-only even when the owner enabled both discovery paths.
+/// In particular, OpenCode discovery normally requires the protected credential store.
+#[test]
+fn models_native_discovery_reads_neither_credentials_nor_ledger() {
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        &json!({
+            "defaultModel": "configured-cloud",
+            "oxa": {
+                "engine": {"inProcessCloud": true},
+                "cloud": {
+                    "discover_models": true,
+                    "opencode": {"enabled": true, "base_url": "http://127.0.0.1:9"},
+                    "subscription_limits": {"daily_requests": 2, "daily_tokens": 1000},
+                    "models": {"configured-cloud": {
+                        "provider": "anthropic",
+                        "upstream_model": "synthetic-model",
+                        "base_url": "http://127.0.0.1:9",
+                        "context_window": 32000,
+                        "max_output": 1024,
+                        "pricing": {"input_per_million": 1, "output_per_million": 2}
+                    }}
+                }
+            }
+        })
+        .to_string(),
+    );
+    let captured = go_with(
+        &env_of(&env, "http://127.0.0.1:9"),
+        &env.work(),
+        &["models", "--json"],
+    );
+    assert_eq!(captured.code, 0, "stderr: {}", captured.err);
+    assert!(!captured.err.contains("credential"), "stderr: {}", captured.err);
+    let value: Value = serde_json::from_str(captured.out.trim()).expect("catalog JSON");
+    assert_eq!(value["models"][0]["id"], "configured-cloud");
+    assert!(!env.home().join(".config/oxc/llm/cloud-secrets.json").exists());
+    assert!(!env.agent_dir().join("cloud-ledger").exists());
 }
 
 /// A bad word is a usage error, not a prompt and not a listing.

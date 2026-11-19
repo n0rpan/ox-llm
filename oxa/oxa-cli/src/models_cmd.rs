@@ -6,6 +6,7 @@ use crate::dispatch::{default_endpoint, engine_for, list_models, row_provider, w
 use oxa_config::{Dirs, Env, ModelsConfig, Settings};
 use oxa_proto::{codes, Engine, EngineInfo, Level, OxaError};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
@@ -21,6 +22,8 @@ struct Catalog {
     default: Option<String>,
     /// `oxa.lead.model` (user-only), when set.
     lead_model: Option<String>,
+    /// Backend identity from the configured route, retained even when that backend cannot answer.
+    routes: BTreeMap<String, (bool, String)>,
 }
 
 /// Run `oxa models [--json]`. `words` are the words after `models`.
@@ -64,21 +67,29 @@ fn catalog(dirs: &Dirs, cwd: &Path, env: &Env, err: &mut dyn Write) -> Result<Ca
     );
     let endpoint = default_endpoint(&models)?;
     let user = Settings::load(dirs, cwd, false);
-    let (engine, notices) = crate::in_process::select_observed(
-        &user,
-        &user,
-        dirs,
-        None,
-        None,
-        crate::in_process::SharedEngines::default(),
-        || engine_for(&endpoint),
-    )?;
+    let mut routes = BTreeMap::new();
+    if let Some(local) = user.get("oxa.local.models").and_then(Value::as_object) {
+        routes.extend(
+            local
+                .keys()
+                .map(|id| (id.clone(), (false, endpoint.name.clone()))),
+        );
+    }
+    if let Some(cloud) = user.get("oxa.cloud.models").and_then(Value::as_object) {
+        routes.extend(cloud.iter().filter_map(|(id, route)| {
+            route["provider"]
+                .as_str()
+                .map(|provider| (id.clone(), (true, provider.to_owned())))
+        }));
+    }
+    let (engine, notices) = crate::in_process::select_catalog(&user, &user, dirs, || engine_for(&endpoint))?;
     write_diagnostics(err, notices.into_iter().map(|text| (Level::Info, text)));
     Ok(Catalog {
         engine,
         provider: endpoint.name.clone(),
         default: user.string("defaultModel"),
         lead_model: user.string("oxa.lead.model"),
+        routes,
     })
 }
 
@@ -104,20 +115,7 @@ fn listing(catalog: &Catalog) -> Result<Value, OxaError> {
             Ok(info) => models.push(model_row(&id, &info, &catalog.provider)),
             Err(_) => {
                 warnings.push(json!({"code": "row_failed", "id": id}));
-                models.push(json!({
-                    "id": id,
-                    "kind": if base.caps.remote { "cloud" } else { "local" },
-                    "provider": catalog.provider,
-                    "billing": billing(base.caps.remote, &catalog.provider),
-                    "pool": billing(base.caps.remote, &catalog.provider),
-                    "state": "unavailable",
-                    "source": "configured",
-                    "context": null,
-                    "max_output": null,
-                    "thinking": null,
-                    "images": null,
-                    "fix": null
-                }));
+                models.push(unavailable_row(&id, catalog, &base));
             }
         }
     }
@@ -129,6 +127,28 @@ fn listing(catalog: &Catalog) -> Result<Value, OxaError> {
         "models": models,
         "warnings": warnings
     }))
+}
+
+fn unavailable_row(id: &str, catalog: &Catalog, base: &EngineInfo) -> Value {
+    let (cloud, provider) = catalog
+        .routes
+        .get(id)
+        .cloned()
+        .unwrap_or_else(|| (base.caps.remote, catalog.provider.clone()));
+    json!({
+        "id": id,
+        "kind": if cloud { "cloud" } else { "local" },
+        "provider": provider,
+        "billing": billing(cloud, &provider),
+        "pool": billing(cloud, &provider),
+        "state": "unavailable",
+        "source": "configured",
+        "context": null,
+        "max_output": null,
+        "thinking": null,
+        "images": null,
+        "fix": null
+    })
 }
 
 /// One ready row. `pool` is the usage pool the model draws from (`metered`, `subscription` or
@@ -236,6 +256,25 @@ mod tests {
         assert_eq!(billing(true, "chatgpt"), "subscription");
         assert_eq!(billing(true, "opencode"), "subscription");
         assert_eq!(billing(true, "anthropic"), "metered");
+    }
+
+    #[test]
+    fn unavailable_row_keeps_its_configured_backend() {
+        let mut routes = BTreeMap::new();
+        routes.insert("cloud-down".into(), (true, "anthropic".into()));
+        let catalog = Catalog {
+            engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
+            provider: "oxe".into(),
+            default: None,
+            lead_model: None,
+            routes,
+        };
+        let base = catalog.engine.info(None).unwrap();
+        assert!(!base.caps.remote, "the usable base row is local");
+        let row = unavailable_row("cloud-down", &catalog, &base);
+        assert_eq!(row["kind"], "cloud");
+        assert_eq!(row["provider"], "anthropic");
+        assert_eq!(row["billing"], "metered");
     }
 
     #[test]
