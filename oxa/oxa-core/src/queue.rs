@@ -608,6 +608,24 @@ impl Handle {
         }
         steering
     }
+    /// Remove the inbox messages bound to sessions other than the active one, grouped by
+    /// destination. [`Handle::dequeue`] leaves them, so a headless owner that switched sessions
+    /// can return each message to the inbox it came from instead of dropping it at exit.
+    pub fn take_inactive_inbox(&self) -> Vec<(String, Vec<String>)> {
+        let mut q = lock(&self.shared.queue);
+        let active = q.session_id.clone();
+        let inactive: Vec<String> = q
+            .session_follow_up
+            .keys()
+            .filter(|id| **id != active)
+            .cloned()
+            .collect();
+        inactive
+            .into_iter()
+            .filter_map(|id| q.session_follow_up.remove(&id).map(|messages| (id, messages)))
+            .collect()
+    }
+
     /// Set an invocation-wide soft budget before accepting prompts (not restored from a session).
     pub fn set_token_budget(&self, tokens: Option<u64>) {
         *lock(&self.shared.gate.token_budget) = tokens;
@@ -700,11 +718,20 @@ impl Handle {
 
     /// Abort the current run. The partial reply is shown, never sent (W2). Queued messages stay
     /// queued; the front end restores them with `dequeue`. A no-op when no run is in progress
-    /// (a stale cancel must not abort the next prompt; `Session` also resets the token).
+    /// (a stale cancel must not abort the next prompt; `Session` also resets the token). A
+    /// foreground reservation counts as the current run: preserve an abort until its claim.
     pub fn abort(&self) {
         if self.shared.busy.load(Ordering::SeqCst) {
             self.shared.cancel.cancel();
             self.shared.gate.bg_cancel.cancel();
+        } else if self.shared.gate.running.load(Ordering::SeqCst) {
+            self.shared.gate.abort_next.store(true, Ordering::SeqCst);
+            // The reservation may have become a claim after the first busy check. Cancel it
+            // directly too; its guard clears the sticky bit if `begin` already passed it.
+            if self.shared.busy.load(Ordering::SeqCst) {
+                self.shared.cancel.cancel();
+                self.shared.gate.bg_cancel.cancel();
+            }
         }
     }
     /// Cancel only this instance's BACKGROUND work (a boot preload, a draft prefill, an idle
@@ -1015,6 +1042,21 @@ mod tests {
         assert_eq!(h.shared.take_follow_up(), ["already admitted"]);
         assert_eq!(h.dequeue(), ["racing callback"]);
         assert!(!h.shared.has_input());
+    }
+
+    #[test]
+    fn inactive_inbox_messages_are_taken_for_their_own_session() {
+        let h = handle(QueueMode::All, QueueMode::OneAtATime);
+        h.shared.bind_session("old");
+        h.follow_up_for("old", "admitted before switch".into());
+        h.shared.bind_session("new");
+        h.follow_up_for("new", "new inbox".into());
+        assert_eq!(
+            h.take_inactive_inbox(),
+            vec![("old".to_string(), vec!["admitted before switch".to_string()])]
+        );
+        assert!(h.take_inactive_inbox().is_empty());
+        assert_eq!(h.dequeue(), ["new inbox"]);
     }
 
     #[test]

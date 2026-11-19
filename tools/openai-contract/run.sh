@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # OpenAI v1 contract job (v0.2.0 M3): the real openai-python SDK (pinned in requirements.txt,
 # installed into a private venv, never system-wide) against the REAL `oxe-server --engine stub`
+<<<<<<< HEAD
 # (synthetic GGUF + the committed Qwen3.6 tokenizer fixture; no weights).
 # The Python controller in front of the engine was removed; the contract now runs against the engine only.
 #
@@ -14,6 +15,19 @@
 # Servers: engine E1 (stub reply text, slow prefill 2 ms/token so a request can be cut in flight),
 # engine E2 (stub reply = two tool calls).
 # Prints 'OPENAI CONTRACT RESULT: PASS|FAIL ...'; exit 0 only when the mode passed.
+=======
+# (synthetic GGUF + the committed Qwen3.6 tokenizer fixture; no weights). The retired Python
+# controller mode was removed with the controller (archive/python-oxc-final).
+#
+# usage: tools/openai-contract/run.sh --mode engine [--server BIN] [--work DIR]
+#                                     [--venv DIR] [--strict] [--keep]
+#   --server BIN  a built oxe-server (default: cargo build --release --locked -p server in engine/)
+#   --venv DIR    a venv to (re)use for the SDK (default: DIR under --work); requirements.txt is installed
+#   --strict      no expected failures (ignore xfail.<mode>.txt)
+# Servers: engine E1 (stub reply text, slow prefill 2 ms/token so a request can be cut in flight),
+# engine E2 (stub reply = two tool calls).
+# Prints 'OPENAI CONTRACT RESULT: PASS|FAIL ...' per mode; exit 0 only when every mode passed.
+>>>>>>> origin/main
 # Model-free; no network beyond 127.0.0.1 except pip (PyPI) for the pinned SDK.
 set -euo pipefail
 
@@ -28,7 +42,11 @@ while [ $# -gt 0 ]; do
     --venv) venv=$2; shift 2 ;;
     --strict) strict=1; shift ;;
     --keep) keep=1; shift ;;
+<<<<<<< HEAD
     -h|--help) sed -n 2,19p "$0"; exit 0 ;;
+=======
+    -h|--help) sed -n 2,16p "$0"; exit 0 ;;
+>>>>>>> origin/main
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -62,8 +80,13 @@ venv=${venv:-$work/venv}
 "$venv/bin/python" -c 'import openai, sys; print("openai-python", openai.__version__)'
 
 N_CTX=32768
+<<<<<<< HEAD
 ALIAS=ornith-35b-a3b-local     # the model alias the stub engine serves
 LIMITED=qwen3.6-35b-a3b-local  # the model name the contract asks for by default
+=======
+ALIAS=ornith-35b-a3b-local
+LIMITED=qwen3.6-35b-a3b-local  # its output default is 4 tokens
+>>>>>>> origin/main
 TOOL_REPLY=$'Checking both.\n\n<tool_call>\n<function=get_weather>\n<parameter=city>\nOslo\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=get_time>\n<parameter=zone>\nUTC\n</parameter>\n</function>\n</tool_call>'
 mkdir -p "$work/home" "$work/logs"
 
@@ -78,7 +101,10 @@ start_engine() { # name, extra args...
   wait_http "http://127.0.0.1:$port/health" 60
   started=$port
 }
+<<<<<<< HEAD
 
+=======
+>>>>>>> origin/main
 if [ -z "$server" ]; then
   (cd "$repo/engine" && cargo build --release --locked -p server --bin oxe-server)
   server="${CARGO_TARGET_DIR:-$repo/engine/target}/release/oxe-server"
@@ -103,7 +129,11 @@ run_mode() { # mode, engine url, tools engine url
   [ "$status" = 0 ] || rc=1
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then grep -h 'OPENAI CONTRACT RESULT' "$work/logs/contract-$m.log" >>"$GITHUB_STEP_SUMMARY" || true; fi
 }
+<<<<<<< HEAD
 run_mode engine "http://127.0.0.1:$e1" "http://127.0.0.1:$e2"
+=======
+run_mode engine "http://127.0.0.1:$e1" "http://127.0.0.1:$e2" "" "http://127.0.0.1:$e1"
+>>>>>>> origin/main
 if [ "$rc" != 0 ]; then
   echo "--- server logs (tail)"; for f in "$work"/logs/engine-*.log; do
     [ -f "$f" ] && { echo "## $f"; tail -n 30 "$f"; }; done

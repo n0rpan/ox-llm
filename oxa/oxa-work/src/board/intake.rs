@@ -27,18 +27,18 @@ pub(super) fn entry(
     release_pinned: bool,
     action: Action,
     saved: Option<&AttemptState>,
-    policy: &Policy,
     now: u64,
 ) -> Entry {
     let attempts_today = saved
         .filter(|s| s.utc_day >= now / 86_400)
         .map_or(0, |s| s.attempts);
     let lease = saved.and_then(|s| s.lease.clone());
+    // The daily attempt threshold is advisory, so attempts alone never make an
+    // entry ineligible; leases and wait actions still do.
     let eligible = !matches!(
         action,
         Action::WaitReview | Action::WaitRequiredCi | Action::WaitMergeability | Action::WaitIssue
-    ) && attempts_today < policy.max_attempts_per_day
-        && lease.as_ref().is_none_or(|l| l.expires_at <= now);
+    ) && lease.as_ref().is_none_or(|l| l.expires_at <= now);
     Entry {
         number,
         head,

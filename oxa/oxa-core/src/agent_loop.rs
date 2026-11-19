@@ -632,6 +632,7 @@ fn run_inner(
                 tool_msgs.push(msg);
             }
             done.note_edits(&results);
+            done.note_proof(&calls, &results);
             done.note_bash(st, &results);
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
             crate::think::observe(st, &calls, &results, sink, ui);
@@ -844,8 +845,14 @@ fn run_inner(
                 crate::goal::checkpoint(st, false, sink)?;
                 return Ok(RunEnd::Stopped);
             }
+            let was_pursuing = goal.pursuing();
             let snapshot = goal.stopped();
             crate::goal::save_checkpoint(st, &snapshot, sink)?;
+            if was_pursuing && snapshot.status == oxa_session::GoalStatus::Paused {
+                if let Some(reason) = snapshot.pause_reason.as_deref() {
+                    crate::goal::announce_pause(reason, sink);
+                }
+            }
             if goal.pursuing() {
                 // Queued input (a follow-up that woke a wait) is the next user message:
                 // stop so `settle_runs` delivers it instead of the continuation prompt.

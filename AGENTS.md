@@ -12,7 +12,7 @@ maintainer, who says in the PR when a hardware check is needed.
 - Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests;
   use synthetic fixtures. Do not open real credential files during review.
 - Keep engine transport selection, native binary/launch configuration, `allowRemote`, share
-  authority and login/token paths user-only. A project file must never override these decisions.
+  authority, login/token paths and `oxa.inbox.headless` user-only. A project file must never override these decisions.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
 - Preserve sandbox/bwrap enforcement and file-tool denials for private paths. Only explicit
   owner-selected yolo deliberately disables the permission floor. Off Linux there is no OS sandbox
@@ -41,6 +41,9 @@ maintainer, who says in the PR when a hardware check is needed.
 - v0.2.1 has no Python in the product/runtime path; build/test tooling is separate.
 - Never expose secrets to fork PRs or execute PR code with review credentials. Never use
   `pull_request_target`; unknown authors need `ok-to-review` before token-spending review.
+- Go review quota and same-diff checks read at most 200 GitHub comment pages (20,000 comments).
+  If either history exceeds that bound, the review defers before reserving quota or requesting a
+  provider token; an incomplete history must never authorize another review.
 - **Intent:** the change must do what its linked issue and PR description say, and nothing else.
   Flag as P1: missing or contradicted acceptance criteria from the linked issue; unrelated changes
   mixed in; a default that contradicts the owner decision stated in the linked issue or PR body

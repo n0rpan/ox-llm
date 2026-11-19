@@ -145,6 +145,17 @@ class Gate(unittest.TestCase):
 
 
 
+class RetiredControllerJobs(unittest.TestCase):
+    def test_python_controller_jobs_are_gone_and_the_gate_does_not_wait_for_them(self):
+        checks = (WORKFLOWS / 'checks.yml').read_text()
+        for name in ('lab-shards:', 'lab:', 'native-controller-cli:'):
+            self.assertNotRegex(checks, r'(?m)^  ' + re.escape(name))
+        self.assertNotIn('lab tests', checks)
+        gate = job_block(checks, 'gate')
+        for job in ('lab', 'lab-shards', 'native-controller-cli'):
+            self.assertNotRegex(gate, r'[\[ ,]' + job + r'[,\]]')
+
+
 class EngineNextest(unittest.TestCase):
     def setUp(self):
         self.engine = job_block((WORKFLOWS / 'build.yml').read_text(), 'engine')
