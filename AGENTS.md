@@ -47,9 +47,14 @@ maintainer, who says in the PR when a hardware check is needed.
   (on-by-default with an opt-out setting is normal and is not itself a finding); deleted or
   disabled existing behaviour, tests or checks without a `Removes: <what> — <why>` line in the PR
   body; a test weakened, skipped or rewritten to pass instead of fixing the code.
-- **Policy changes carry their rules:** a change to a default, limit, budget, approval, sandbox or
-  other security behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and
-  the user docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A review finding
+- **Security policy changes carry their rules:** a change to approval, sandbox, credential, secret or
+  publish behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and the user
+  docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A change to an ordinary
+  default, limit or budget updates the user docs; a missing docs update is P3 and is fixed forward.
+- **Early-stage process (owner decision, until v0.3):**
+  - Only P0/P1 findings, security findings and an open security review block a merge. P2/P3 findings are filed as follow-ups and fixed forward on main.
+  - Prefer one PR per feature, up to about 800 changed lines, over stacks of small PRs.
+  - A merge that breaks required checks on main is reverted at once, then fixed forward. A review finding
   that contradicts an owner decision stated in the linked issue or PR is answered by updating these
   rules in that PR, not by changing the behaviour.
 - **Bash and subagent limits.** The two caps are user-only. `oxa.bash.maxJobs` defaults to 16

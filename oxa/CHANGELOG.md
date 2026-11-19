@@ -9,7 +9,7 @@
 ### Added
 
 - `oxa.work.workerGithub` (owner settings only): a yolo `oxa work` worker keeps its own GitHub environment, `gh`, MCP, web search and subagents; auto workers are `broker` (no token), standard workers stay `runner`. See [work.md](docs/work.md).
-
+- `--usage-log FILE` (#1592): one JSONL record per model call (prompt, cached and output tokens, duration, model, turn), owner-only file, no message text. Reasoning tokens are null until the engine reports them.
 - `oxa work --pr N --model MODEL` (#1019): the unattended packet for a pull request carries its title, body, reviews, issue comments and the names of failing checks at the current head, and the task branch is the pull request's own head branch. Review text and check names are labelled as data and bounded (reviews to 16 KiB, 40 check names); only failing checks travel, never passing ones. Malformed review or check lists are refused, never silently dropped.
 
 ### Changed
