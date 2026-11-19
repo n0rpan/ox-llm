@@ -1,6 +1,7 @@
 //! A14: the fake engine over HTTP + SSE.
 use crate::record::{parse_recorded, write_log};
 use crate::{cache_bytes, Fault, Recorded, ScriptTurn};
+use oxa_http::server::{parse_request_line, read_head, split_head, write_response, HeadError};
 use oxa_proto::{codes, Finish, OxaError, Usage};
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -783,30 +784,20 @@ fn tokenize(body: &[u8]) -> Result<Value, String> {
 }
 
 fn read_request(s: &mut TcpStream) -> Result<Request, String> {
-    let mut buf: Vec<u8> = Vec::new();
-    let mut tmp = [0u8; 4096];
-    let head_end = loop {
-        if let Some(p) = find(&buf, b"\r\n\r\n") {
-            break p;
-        }
-        if buf.len() > 1 << 20 {
-            return Err("headers too large".into());
-        }
-        let n = s.read(&mut tmp).map_err(|e| e.to_string())?;
-        if n == 0 {
-            return Err("connection closed before headers".into());
-        }
-        buf.extend_from_slice(&tmp[..n]);
-    };
-    let head = std::str::from_utf8(&buf[..head_end]).map_err(|_| "headers are not UTF-8".to_string())?;
-    let mut lines = head.split("\r\n");
-    let start = lines.next().unwrap_or("");
-    let mut parts = start.split(' ');
-    let method = parts.next().unwrap_or("").to_string();
-    let target = parts.next().unwrap_or("");
-    let path = target.split('?').next().unwrap_or("").to_string();
+    // The head is framed by the shared helper. The header loop below stays lenient on purpose:
+    // names are lowercased and values trimmed, nothing is validated.
+    let head = read_head(s, 1 << 20).map_err(|e| match e {
+        HeadError::TooLarge => "headers too large".to_string(),
+        HeadError::Closed => "connection closed before headers".to_string(),
+        HeadError::Io(kind) => io::Error::from(kind).to_string(),
+        _ => "malformed request head".to_string(),
+    })?;
+    let (start, block) = split_head(&head).map_err(|_| "headers are not UTF-8".to_string())?;
+    let line = parse_request_line(start).map_err(|_| "malformed request line".to_string())?;
+    let method = line.method.to_string();
+    let path = line.target.split('?').next().unwrap_or("").to_string();
     let mut headers = Vec::new();
-    for l in lines {
+    for l in block.split("\r\n") {
         if let Some((k, v)) = l.split_once(':') {
             headers.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
         }
@@ -819,7 +810,8 @@ fn read_request(s: &mut TcpStream) -> Result<Request, String> {
     if len > 64 << 20 {
         return Err("body too large".into());
     }
-    let mut body = buf[head_end + 4..].to_vec();
+    let mut tmp = [0u8; 4096];
+    let mut body = Vec::new();
     while body.len() < len {
         let n = s.read(&mut tmp).map_err(|e| e.to_string())?;
         if n == 0 {
@@ -836,10 +828,6 @@ fn read_request(s: &mut TcpStream) -> Result<Request, String> {
     })
 }
 
-fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    hay.windows(needle.len()).position(|w| w == needle)
-}
-
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
@@ -854,14 +842,12 @@ fn reason(status: u16) -> &'static str {
 }
 
 fn respond(s: &mut TcpStream, status: u16, ctype: &str, body: &[u8]) -> io::Result<()> {
-    let head = format!(
-        "HTTP/1.1 {status} {}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        reason(status),
-        body.len()
-    );
-    s.write_all(head.as_bytes())?;
-    s.write_all(body)?;
-    s.flush()
+    write_response(
+        s,
+        &format!("{status} {}", reason(status)),
+        &[("Content-Type", ctype)],
+        body,
+    )
 }
 
 fn respond_json(s: &mut TcpStream, status: u16, v: &Value) -> io::Result<()> {
@@ -1170,6 +1156,7 @@ pub(crate) fn generate(turn: &ScriptTurn, limit: u32) -> (oxa_proto::WireMsg, Fi
     let reasoning = cut(&msg.reasoning);
     let text = cut(&msg.content);
     let out = oxa_proto::WireMsg {
+        images: Vec::new(),
         role: oxa_proto::Role::Assistant,
         content: text,
         reasoning,

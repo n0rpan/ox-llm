@@ -14,7 +14,7 @@ fn commit_file(env: &TestEnv, file: &str, content: &str) {
     git(env, &project(env), &["commit", "-m", "fixture update"]);
 }
 fn diverge(env: &TestEnv, conflict: bool) {
-    setup(env, "[]");
+    setup(env, r#"["test -f .oxa/settings.json"]"#);
     commit_file(env, "shared.txt", "original\n");
     git(env, &project(env), &["checkout", "-b", "agent/test"]);
     commit_file(env, "shared.txt", "task version\n");
@@ -59,7 +59,7 @@ fn trust(env: &TestEnv) {
 #[test]
 fn existing_branch_fast_forwards_to_base_before_agent() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     git(&env, &project(&env), &["branch", "agent/test"]);
     commit_file(&env, "base.txt", "from main\n");
     let record = run(&env, vec![ScriptTurn::text("nothing")]);
@@ -76,7 +76,7 @@ fn existing_branch_fast_forwards_to_base_before_agent() {
 }
 
 fn published_task(env: &TestEnv) -> String {
-    setup(env, "[]");
+    setup(env, r#"["test -f .oxa/settings.json"]"#);
     publish_prepared_task(env)
 }
 
@@ -126,7 +126,7 @@ fn fresh_worktree_starts_at_the_published_task_branch_head() {
 fn ordinary_fresh_branch_reference_hooks_run_only_in_the_task_sandbox() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let pushed = git(&env, &project(&env), &["rev-parse", "main"]);
     let hook = env.write(
         "work/project/.git/hooks/reference-transaction",
@@ -434,7 +434,7 @@ fn ordinary_branch_creation_keeps_required_reference_hook_policy() {
 #[test]
 fn unrelated_published_tip_keeps_the_base() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     // An orphan commit shares no history with the captured base, so it is not
     // proof that the pushed branch continues this task.
     git(&env, &project(&env), &["checkout", "--orphan", "agent/test"]);
@@ -527,7 +527,7 @@ fn unresolved_merge_can_be_continued_without_resetting_it() {
 #[test]
 fn dirty_retained_worktree_is_blocked_without_dropping_edits() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     trust(&env);
     let first = run(
         &env,
@@ -632,7 +632,7 @@ fn resumed_old_merge_is_told_to_integrate_the_newly_captured_base() {
 }
 
 fn lagging_base(env: &TestEnv) -> (String, String) {
-    setup(env, "[]");
+    setup(env, r#"["test -f .oxa/settings.json"]"#);
     lag_existing_base(env)
 }
 
@@ -784,7 +784,7 @@ fn a_concurrent_checkout_during_ancestry_validation_keeps_its_head_and_index() {
 #[test]
 fn local_base_branch_checked_out_elsewhere_is_never_moved() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     // `main` lives in the review worktree; the source checkout is off it.
     git(&env, &project(&env), &["checkout", "-b", "source"]);
     let other = env.work().join("review");
@@ -943,7 +943,7 @@ fn automatic_merge_hooks_stay_inside_the_sandbox() {
 #[test]
 fn post_worker_merge_verification_does_not_run_clean_filters_on_the_host() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     trust(&env);
     env.write("work/project/.gitattributes", "*.data filter=probe\n");
     env.write("work/project/fixture.data", "before\n");

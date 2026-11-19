@@ -15,6 +15,19 @@ use std::path::{Path, PathBuf};
 /// Fixed base environment inside the sandbox (the `PATH` is the layout's, B2).
 const BASE_LANG: &str = "C.UTF-8";
 const BASE_TERM: &str = "dumb";
+
+/// Cleared command environment shared by the sandbox and its attended host wrapper.
+pub(crate) fn base_env(home: &str, layout: &Layout) -> Vec<(String, String)> {
+    let mut env = vec![
+        ("PATH".into(), layout.path_value()),
+        ("HOME".into(), home.into()),
+        ("LANG".into(), BASE_LANG.into()),
+        ("TERM".into(), BASE_TERM.into()),
+        ("AI_AGENT".into(), oxa_proto::names::AI_AGENT.into()),
+    ];
+    env.extend(layout.env.iter().cloned());
+    env
+}
 /// Seconds the probe may take before it counts as a failure.
 const PROBE_TIMEOUT_S: u32 = 10;
 
@@ -296,28 +309,7 @@ pub(crate) fn bwrap_args_homes(
     // sockets, and systemd-resolved (DNS with the network unshared). Mask them after every
     // bind, before the deny-list.
     if layout.mask_runtime_ipc {
-        for p in runtime_ipc_paths(&home_c) {
-            let Ok(meta) = std::fs::symlink_metadata(&p) else {
-                continue;
-            };
-            let ps = p.to_string_lossy();
-            if meta.is_dir() {
-                push(&mut a, &["--tmpfs", &ps]);
-                if s.net && p == Path::new("/run/systemd/resolve") {
-                    // Preserve only DNS configuration online; all resolver IPC stays hidden.
-                    for name in ["resolv.conf", "stub-resolv.conf"] {
-                        let file = p.join(name);
-                        if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
-                            let file = file.to_string_lossy();
-                            push(&mut a, &["--ro-bind", &file, &file]);
-                        }
-                    }
-                }
-                push(&mut a, &["--remount-ro", &ps]);
-            } else {
-                push(&mut a, &["--ro-bind", "/dev/null", &ps]);
-            }
-        }
+        mask_runtime_ipc(&mut a, runtime_ipc_paths(&home_c), s.net);
     }
     // #60: the gh token-store masks, after every bind that could cover them (the git data and the
     // cwd's `.git` above included), like the deny-list below.
@@ -409,16 +401,8 @@ pub(crate) fn bwrap_args_homes(
         }
     }
     push(&mut a, &["--chdir", &cwd, "--clearenv"]);
-    push(&mut a, &["--setenv", "PATH", &layout.path_value()]);
-    push(&mut a, &["--setenv", "HOME", &home_s]);
-    push(&mut a, &["--setenv", "LANG", BASE_LANG]);
-    push(&mut a, &["--setenv", "TERM", BASE_TERM]);
-    push(&mut a, &["--setenv", "AI_AGENT", oxa_proto::names::AI_AGENT]);
-    for (k, v) in &layout.env {
-        push(&mut a, &["--setenv", k, v]);
-    }
-    for (k, v) in &s.env {
-        push(&mut a, &["--setenv", k, v]);
+    for (key, value) in base_env(&home_s, layout).iter().chain(&s.env) {
+        push(&mut a, &["--setenv", key, value]);
     }
     push(&mut a, &["--", "bash", "-c", &s.command]);
     a
@@ -767,10 +751,36 @@ reaches what a command could change, so commands are not run here"
     })
 }
 
+/// Keep IPC masks identical in both Bubblewrap launch paths.
+pub(crate) fn mask_runtime_ipc(a: &mut Vec<String>, paths: impl IntoIterator<Item = PathBuf>, net: bool) {
+    for p in paths {
+        let Ok(meta) = std::fs::symlink_metadata(&p) else {
+            continue;
+        };
+        let ps = p.to_string_lossy();
+        if meta.is_dir() {
+            push(a, &["--tmpfs", &ps]);
+            if net && p == Path::new("/run/systemd/resolve") {
+                // Preserve only DNS configuration online; all resolver IPC stays hidden.
+                for name in ["resolv.conf", "stub-resolv.conf"] {
+                    let file = p.join(name);
+                    if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
+                        let file = file.to_string_lossy();
+                        push(a, &["--ro-bind", &file, &file]);
+                    }
+                }
+            }
+            push(a, &["--remount-ro", &ps]);
+        } else {
+            push(a, &["--ro-bind", "/dev/null", &ps]);
+        }
+    }
+}
+
 /// sbx-ipc: the host runtime sockets a command must not reach. They live outside `$HOME`,
 /// so the deny-list does not cover them and `--unshare-net` does not either (a Unix socket is
 /// not a network socket).
-fn runtime_ipc_paths(home: &Path) -> Vec<PathBuf> {
+pub(crate) fn runtime_ipc_paths(home: &Path) -> Vec<PathBuf> {
     let uid = std::fs::metadata(home)
         .map(|m| m.uid())
         .unwrap_or_else(|_| unsafe { libc::geteuid() });
@@ -1137,6 +1147,7 @@ fn push(a: &mut Vec<String>, xs: &[&str]) {
 
 /// The body of `Bwrap::detect` (lib.rs, architect-owned, must delegate here): find `bwrap` on
 /// `path_var` and probe it. Failure = `no_sandbox` with a hint.
+#[cfg(target_os = "linux")]
 pub(crate) fn detect_bwrap(path_var: &str, home: &Path) -> Result<Bwrap, OxaError> {
     let bwrap = find_on_path(path_var, "bwrap").ok_or_else(|| {
         OxaError::new(codes::NO_SANDBOX, "bwrap is not available; bash is disabled").with_hint(MISSING_HINT)
@@ -1154,8 +1165,21 @@ pub(crate) fn detect_bwrap(path_var: &str, home: &Path) -> Result<Bwrap, OxaErro
 
 /// The body of `Sandbox::check` for [`Bwrap`] (lib.rs, architect-owned, must delegate here):
 /// re-run the probe for `b.bwrap`.
+#[cfg(target_os = "linux")]
 pub(crate) fn check_bwrap(b: &Bwrap) -> Result<(), OxaError> {
     probe(&b.bwrap)
+}
+
+/// Off Linux there is no bubblewrap: `Bwrap` cannot be detected. The front end uses
+/// [`crate::Unsandboxed`] there instead.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn detect_bwrap(_path_var: &str, _home: &Path) -> Result<Bwrap, OxaError> {
+    Err(OxaError::new(codes::NO_SANDBOX, crate::NO_OS_SANDBOX_NOTICE))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn check_bwrap(_b: &Bwrap) -> Result<(), OxaError> {
+    Err(OxaError::new(codes::NO_SANDBOX, crate::NO_OS_SANDBOX_NOTICE))
 }
 
 /// The first absolute PATH entry holding an executable `name`. Relative entries are ignored.
@@ -1594,6 +1618,26 @@ mod tests {
             "{on:?}"
         );
         assert!(!on.windows(3).any(|w| w[0] == "--bind" && w[1] == ssh), "{on:?}");
+    }
+
+    #[test]
+    fn runtime_ipc_masks_hide_synthetic_socket_and_directory() {
+        let env = TestEnv::new();
+        let socket = env.work().join("fixture.sock");
+        let _socket = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let runtime_dir = env.work().join("runtime");
+        std::fs::create_dir(&runtime_dir).unwrap();
+        let mut masked = Vec::new();
+        mask_runtime_ipc(&mut masked, [socket.clone(), runtime_dir.clone()], false);
+        let socket = socket.to_string_lossy();
+        let runtime_dir = runtime_dir.to_string_lossy();
+        assert!(masked
+            .windows(3)
+            .any(|args| args == ["--ro-bind", "/dev/null", &socket]));
+        assert!(masked.windows(2).any(|args| args == ["--tmpfs", &runtime_dir]));
+        assert!(masked
+            .windows(2)
+            .any(|args| args == ["--remount-ro", &runtime_dir]));
     }
 
     #[test]

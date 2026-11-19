@@ -177,7 +177,7 @@ cat "$0.reply"
         "p44":{"number":44,"headRefOid":revision,"baseRefName":"main","state":"OPEN","body":"",
             "isDraft":false,"reviewDecision":null,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY",
             "baseRef":{"refUpdateRule":null,"rules":{"totalCount":0,"nodes":[]}},
-            "labels":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[]},
+            "labels":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}},
             "reviewThreads":{"totalCount":0,"nodes":[]},"latestOpinionatedReviews":{"totalCount":0,"nodes":[]},
             "commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}
     }}}).to_string()).unwrap();

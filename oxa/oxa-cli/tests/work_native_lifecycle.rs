@@ -31,7 +31,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let env = TestEnv::new();
-        work::setup(&env, "[]");
+        work::setup(&env, r#"["test -f .oxa/settings.json"]"#);
         let controls = env.agent_dir().join("native-lifecycle");
         let queue = controls.join("queue");
         let claims_path = controls.join("claims");
@@ -67,6 +67,7 @@ impl Fixture {
             lease: None,
             attempts_today: 0,
             eligible: true,
+            evidence_incomplete: None,
         };
         let policy = Policy {
             enabled: true,

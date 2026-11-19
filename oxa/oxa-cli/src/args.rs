@@ -136,6 +136,8 @@ pub struct Args {
     pub stall_timeout: Option<std::time::Duration>,
     /// Soft run budget: uncached prompt plus output tokens (`--max-tokens`).
     pub max_tokens: Option<u64>,
+    /// `--usage-log FILE`: one JSONL record per model call (owner-only file, no message text).
+    pub usage_log: Option<PathBuf>,
     /// `--mode text|json|rpc`.
     pub mode: Option<ModeArg>,
     /// `--export <input> [output]`.
@@ -289,7 +291,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("oxa logout chatgpt", "Remove the owner ChatGPT token record"),
     (
         "oxa send <session-id> \"text\"",
-        "Queue a session follow-up, waking its TUI or RPC owner",
+        "Queue a session follow-up for its TUI, RPC owner or headless goal run",
     ),
     (
         "oxa send <session-id> --approve <request-id> once|session|always|deny",
@@ -375,6 +377,10 @@ const OPTIONS: &[(&str, &str)] = &[
     (
         "--max-tokens <N>",
         "Gracefully wrap up a headless run after N new prompt + output tokens (cached tokens are free)",
+    ),
+    (
+        "--usage-log <file>",
+        "Write one JSONL record per model call (tokens, duration, model, turn) to FILE; owner-only, no message text",
     ),
     ("--resume, -r", "Pick a session to resume"),
     (
@@ -497,7 +503,7 @@ const OPTIONS: &[(&str, &str)] = &[
     ),
     (
         "--sandbox",
-        "Run bash and hooks in the OS sandbox (bwrap) for this interactive run; default: no OS sandbox, dangerous commands ask",
+        "Run bash in the OS sandbox (bwrap) for this interactive run; hooks are always sandboxed; default: no OS sandbox, dangerous commands ask",
     ),
     (
         "--                ",
@@ -808,6 +814,9 @@ fn parse_flag(
                     .filter(|n| *n > 0)
                     .ok_or_else(|| usage("--max-tokens requires a positive integer"))?,
             );
+        }
+        "--usage-log" => {
+            a.usage_log = Some(PathBuf::from(value(argv, i, inline, flag, "a file path")?));
         }
         "--provider" => a.provider = Some(value(argv, i, inline, flag, "a provider name")?),
         "--model" => a.model = Some(value(argv, i, inline, flag, "a model pattern")?),

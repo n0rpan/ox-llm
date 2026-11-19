@@ -41,6 +41,7 @@ fn transcript(msgs: Vec<WireMsg>) -> Transcript {
 /// An assistant message with tool calls `(name, args_raw)`; ids are `call_0`, `call_1`, ...
 fn assistant_calls(text: Option<&str>, calls: &[(&str, &str)]) -> WireMsg {
     WireMsg {
+        images: Vec::new(),
         role: Role::Assistant,
         content: text.map(str::to_owned),
         reasoning: None,
