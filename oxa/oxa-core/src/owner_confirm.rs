@@ -86,6 +86,27 @@ impl Limits {
 /// A typed reply that counts as yes (after trimming, lowercasing and dropping `.`/`!`).
 const AFFIRMATIVE: [&str; 5] = ["yes", "y", "ja", "ok", "post it"];
 
+/// The tool-child side: ask the session's broker at `sock` and wait for the owner's answer.
+/// `Some(true)` yes, `Some(false)` no, `None` when nobody could answer or the socket is unusable.
+/// There is no timeout: the owner may take as long as they need.
+pub fn ask(sock: &Path, question: &str) -> Option<bool> {
+    use sha2::{Digest, Sha256};
+    let sha: String = Sha256::digest(question.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let mut stream = UnixStream::connect(sock).ok()?;
+    writeln!(stream, "{}", json!({"question": question, "preview_sha256": sha})).ok()?;
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).ok()?;
+    let reply: Value = serde_json::from_str(&line).ok()?;
+    match reply.get("answer").and_then(Value::as_str)? {
+        "yes" => Some(true),
+        "no" => Some(false),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     Yes,
