@@ -506,11 +506,13 @@ impl Context {
                 Some(&dirs.home),
             )
             .unwrap_or_else(|| PathBuf::from("/unavailable/gh"));
+            let scan = crate::report_cmd::PushScan::new(env, &oxa_config::Settings::load(dirs, root, true));
             record = locked.publish(
                 root,
                 binary,
                 &gh,
                 &|_: &oxa_work::Record| Ok(()),
+                &|item| scan.check(item),
                 &mut crate::owner_confirm_client::owner_confirm(env),
             )?;
         }

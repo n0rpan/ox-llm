@@ -21,6 +21,10 @@ Host runtime sockets (docker, podman) stay masked in sandboxed bash unless the o
 through an FD-based bind (user settings only; the docker socket gives root on the host, so it is noted
 at start, not blocked).
 
+`oxa send` keeps owner messages over the 256 KiB inline inbox limit in the receiving session's
+private spill directory and queues a short pointer. The sandbox exposes that spill directory only
+to the receiving session and sessions inheriting its history; the private agent directory remains
+denied to model tools.
 Persisted headless print and JSON runs with a pursuing goal consume plain `oxa send` inbox
 messages with `oxa.inbox.headless` set to `true` by default. This user-only setting can opt out;
 project settings cannot enable or disable it. Non-persisted sessions, sessions without a pursuing
@@ -36,6 +40,11 @@ configured daily quota and prior same-diff receipts. If either listing is incomp
 deferred before quota reservation, provider authentication, or provider I/O. An incomplete history
 cannot authorize another token-spending review.
 
+The memory store (`memory/` under the agent directory) is owner-only: folder `0700`, tightened by a
+save when an existing one is looser; entries and `MEMORY.md` `0600` via a private synced temporary;
+lock created `0600`. A save is bounded (8 KiB body, 4 KiB frontmatter) and the index scan reads each
+file only that far.
+
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 
 Do not report: style, pre-existing issues outside the diff, test-only code that never runs in production, or hypothetical risks without a concrete path.
@@ -48,6 +57,7 @@ in a tree with Cargo manifests. A worker declaration can add requirements to tha
 
 The repeat guard warns and continues by owner decision (#1448): the third identical tool result gets a notice, a call that still repeats gets one persisted warning, and the run is not stopped. A finding that asks for the old stopping behaviour is not a finding; `oxa.maxTurns` is the configured cap.
 
+A background bash job that finishes on its own queues one follow-up message with the command as written, its exit code and last lines, by owner decision (#1448 W4): `oxa.jobs.wakeOnFinish` (default `true`, `false` opts out, user settings only so a project file cannot turn it on) is the control, and it wakes only the session the job started in. A job the model or the user stopped wakes nothing, and a completion retained behind a failed or interrupted turn stays queued, also across a session reopen, until the next prompt. A finding that asks for a default-off switch, for the output to stay silent, or for a cross-session wake is not a finding; it is answered here.
 A pursuing goal whose request fails transiently (stream cut, engine down or busy, timeout, 429, 5xx) waits without a model request and then sends the same request again, by owner decision (#1448): `oxa.goal.failureBackoffSeconds` (default 60, doubling, capped at 900 unless set higher, `0` opts out) is the only control, and there is no attempt cap. Auth errors, refusals, a repetition stop, an abort and an owner-set budget still stop the goal with the reason shown. A finding that asks for an attempt cap, a default-off switch or a new terminal exception is not a finding; it is answered here.
 
 Board evidence limits degrade only the affected pull request. A connection that cannot be read

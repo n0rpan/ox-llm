@@ -200,7 +200,8 @@ impl Settings {
     pub fn bool(&self, key: &str, default: bool) -> bool {
         self.get(key).and_then(Value::as_bool).unwrap_or(default)
     }
-    /// A boolean read from the user settings file only: a project file cannot change it.
+    /// A bool read from the user layer only; a project file never changes it (use for settings
+    /// that start unattended model work). A missing or mistyped value yields `default`.
     pub fn user_bool(&self, key: &str, default: bool) -> bool {
         self.user_value(key).and_then(Value::as_bool).unwrap_or(default)
     }
@@ -232,6 +233,27 @@ impl Settings {
             Some(p) if p.rank() <= user.rank() => p,
             _ => user,
         }
+    }
+    /// The raw entries of a list setting as the user layer wrote them, before the merge applies
+    /// its `+x` / `-x` edits to the (empty) default. `[]` when the user layer does not set it.
+    /// A caller that patches its own built-in list (`oxa.approval.dangerous`) reads this, so an
+    /// edit list is not turned into a plain list that replaces the built-ins.
+    pub fn user_list(&self, key: &str) -> Vec<String> {
+        let mut cur = &self.user;
+        for part in key.split('.') {
+            match cur.as_object().and_then(|o| o.get(part)) {
+                Some(v) => cur = v,
+                None => return Vec::new(),
+            }
+        }
+        cur.as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
     /// A string list; `+x` / `-x` patch entries are already applied over the lower layer.
     pub fn list(&self, key: &str) -> Vec<String> {

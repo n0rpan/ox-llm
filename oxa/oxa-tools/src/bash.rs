@@ -492,6 +492,7 @@ impl BashTool {
         if let Err(e) = self.sandbox(cx).check() {
             return ToolOutput::error(e.to_string());
         }
+        let label = command;
         let command = match self.shell.command(command) {
             Ok(c) => c,
             Err(e) => return ToolOutput::error(e),
@@ -507,7 +508,7 @@ impl BashTool {
             timeout_s: timeout_s.filter(|t| *t > 0),
             env: cx.env.to_vec(),
         };
-        match self.jobs.spawn(spec) {
+        match self.jobs.spawn_labeled(spec, label) {
             Ok(id) => ToolOutput {
                 images: Vec::new(),
                 text: format!(
@@ -639,9 +640,12 @@ impl BashTool {
             Some(own) => {
                 let mut job_spec = spec.clone();
                 job_spec.timeout_s = None;
-                match self.jobs.spawn_on(own, job_spec, true) {
+                match self.jobs.spawn_on_labeled(own, job_spec, true, raw_command) {
                     Ok(id) => match self.follow_job(&id, soft_limit, cx, &mut sink) {
-                        Followed::Detached(out) => return out,
+                        Followed::Detached(out) => {
+                            self.jobs.release_to_background(&id);
+                            return out;
+                        }
                         Followed::Done(res) => {
                             wall_note = started.elapsed() >= WALL_NOTE_AFTER;
                             res
@@ -2272,6 +2276,54 @@ mod poll_tests {
         assert_eq!(streamed, "start\nend\n");
         // The finished foreground job is forgotten: no slot, no readable leftover.
         assert_eq!(jobs.running(), 0);
+        assert!(jobs.list().is_empty());
+    }
+
+    /// #1782: an executor can fail before it has a process to stream from. The foreground job
+    /// path must retain the diagnostic returned in `ExecResult.output`.
+    #[test]
+    fn foreground_job_preserves_process_creation_failure() {
+        struct SpawnFails;
+
+        impl Sandbox for SpawnFails {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+
+            fn run(&self, _s: &ExecSpec, _c: &CancelToken, _live: &mut dyn FnMut(&[u8])) -> ExecResult {
+                unreachable!("the foreground job path uses run_streaming")
+            }
+
+            fn run_streaming(
+                &self,
+                _s: &ExecSpec,
+                _c: &CancelToken,
+                _live: &mut dyn FnMut(&[u8]),
+            ) -> ExecResult {
+                ExecResult {
+                    output: b"bash: synthetic process creation failure".to_vec(),
+                    exit: None,
+                    timed_out: false,
+                    unsandboxed: false,
+                }
+            }
+        }
+
+        let jobs = Arc::new(JobRegistry::new());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone())
+            .with_sandbox(Arc::new(SpawnFails));
+        let (out, streamed) = job_call(&tool, json!({"command": "true", "timeout": 30}));
+
+        assert!(out.is_error, "{out:?}");
+        assert!(
+            out.text.contains("bash: synthetic process creation failure"),
+            "{out:?}"
+        );
+        assert_eq!(streamed, "bash: synthetic process creation failure");
         assert!(jobs.list().is_empty());
     }
 }

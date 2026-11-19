@@ -327,6 +327,25 @@ broker is present. After the yes the runner
 re-checks the origin push URL and the task head, and refuses if either moved. When the
 task is not accepted as done, the record's `detail` says it was not published and why.
 
+### What the publication scan refuses
+
+Before it asks for approval, `--publish` (and a lane push) scans every commit it would push
+that `origin` does not have: the commit objects, the names of added files and every added
+line. It refuses, and names only the file and line, when it finds a private key, a known
+access token format (GitHub, Anthropic, AWS, Slack, Google, GitLab; also when a letter or digit
+directly precedes the prefix), a `password`/`token`/`secret`-style assignment or quoted
+literal with an opaque value (spaces inside quotes do not hide it), a `Bearer` header or URL
+password, or the value of a secret-named environment variable or setting. Lines added to a
+secret store (`.env`, `credentials`, key and certificate files, registry logins such as
+`.docker/config.json`) are refused. An empty secret-store file and a template such as
+`.env.example` are not refused by name: they publish unless their content holds one of the
+secrets above. A path that itself contains secret text is refused and withheld.
+
+Deleting a credential in a later commit does not unblock publication, because the earlier
+commit is still pushed. Rewrite the unpublished commits (`git rebase` or a fresh branch), and
+rotate a credential that left the machine. The scan reads only git objects; it does not
+change them.
+
 `--report-problems` independently authorizes filing the task's own structured
 problem notes using the `report-issue` workflow. This flag must be launched by the
 user, or from a session through its owner confirm broker. Each new report or comment
