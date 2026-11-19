@@ -345,7 +345,7 @@ These are set by oxa for its own child processes, or are test hooks. They are no
 - `OXA_SESSION_HINT`: a parent sets `<parent session id>.s<n>` in a subagent child, and every chat request of the child names it.
 - `OXA_CHILD_SOFT_TOKENS`: a parent may set the soft compaction limit of a subagent child; it overrides `oxa.compaction.softTokens`.
 - `OXA_WORKER_DEPTH`: oxa sets `1` in the environment of a lead worker session.
-- `OXA_WORK_MODEL_DELEGATED`: `oxa work` sets `1` in a worker, so a model argument does not count as chosen by the owner.
+- `OXA_WORK_MODEL_DELEGATED`: `oxa work` sets `1` in a worker; a restored or project-selected model then never counts as chosen by the owner, while an actual model argument is still admitted by a protected Go key.
 - `OXA_WORKTREE_TRUST_SOURCE`: `oxa work` names the trusted source checkout of a managed worktree; it counts only in `--mode json`, and only when the checkout, the trust record and the approved resources verify.
 - `OXA_RUNNER_OWNS_GITHUB`: `oxa work` sets `1` in a worker: the runner owns GitHub access, so the worker runs no `gh`.
 - `OXA_NATIVE_STEERING_FD`: `oxa work` passes the inherited descriptor of the steering lease to a native worker.

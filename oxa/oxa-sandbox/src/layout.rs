@@ -40,6 +40,9 @@ use std::path::{Path, PathBuf};
 pub const SETTING_READ_PATHS: &str = "oxa.sandbox.readPaths";
 /// Setting: extra read-write binds (user settings only).
 pub const SETTING_WRITE_PATHS: &str = "oxa.sandbox.writePaths";
+/// Setting: host runtime sockets (docker, podman) bound into bash (user settings only,
+/// default none; a project file cannot list them).
+pub const SETTING_SOCKETS: &str = "oxa.sandbox.sockets";
 /// Setting: make `$HOME` a workspace when oxa runs in it (user settings only; see the module
 /// docs). Never for `/` or a parent of `$HOME`. The deny-list still holds.
 pub const SETTING_ALLOW_HOME_WRITE: &str = "oxa.sandbox.allowHomeWrite";
@@ -188,6 +191,9 @@ pub struct Layout {
     /// systemd-resolved) in the argv. Set by the front end ([`Bwrap::detect`] and the CLI's
     /// layout); off in the pure-argv tests, whose `Layout::default()` is not a sandbox.
     pub mask_runtime_ipc: bool,
+    /// The owner-listed host sockets ([`SETTING_SOCKETS`]; absolute, canonical, existing,
+    /// sorted by the front end) that stay reachable although the runtime masks cover them.
+    pub sockets: Vec<PathBuf>,
     /// #457: the session directory, mounted at `/tmp` (`scratch.rs`). `None` = a fresh tmpfs
     /// per command.
     pub scratch: Option<std::sync::Arc<Scratch>>,
@@ -401,6 +407,7 @@ impl Layout {
             allow_home_write: i.allow_home_write,
             git: GitBinds::default(),
             mask_runtime_ipc: false,
+            sockets: Vec::new(),
             scratch: None,
             scratch_root: None,
             cache_home: crate::scratch::user_cache_home(&i.home, &i.env),
