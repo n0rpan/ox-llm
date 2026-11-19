@@ -4,7 +4,7 @@
 //! terminal. Reporting is off until `oxa.reportIssue.repo` names the public repository.
 //!
 //! What a draft may contain: the user's description (scrubbed, capped, no transcript records),
-//! the identity facts (version, machine, OS, models) and and `oxa usage --json` (numbers only). Never prompts, transcripts, file contents,
+//! the identity facts (version, machine, OS, models). No controller is called. Never prompts, transcripts, file contents,
 //! emails, home paths, user or host names, IP addresses or secrets.
 mod semantic;
 
@@ -193,12 +193,6 @@ pub fn clean_notes(notes: &str, ctx: &ScrubCtx) -> String {
     scrub(&text, ctx)
 }
 
-/// Run `oxa <args>` from PATH; `None` when it is missing, untrusted or fails.
-fn oxa_cli(runner: Runner<'_>, args: &[&str]) -> Option<String> {
-    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-    runner("oxa", &args).map(|(_, out)| out)
-}
-
 fn cap(text: &str) -> String {
     if text.chars().count() <= MAX_SECTION_CHARS {
         text.to_string()
@@ -207,9 +201,8 @@ fn cap(text: &str) -> String {
     }
 }
 
-/// The body of an issue: the description, the identity facts and today's
-/// usage numbers from `oxa usage --json`. Every part is scrubbed.
-pub fn draft_body(notes: &str, dirs: &Dirs, ctx: &ScrubCtx, runner: Runner<'_>) -> String {
+/// The body of an issue: the description and the identity facts. Every part is scrubbed.
+pub fn draft_body(notes: &str, dirs: &Dirs, ctx: &ScrubCtx, _runner: Runner<'_>) -> String {
     let mut parts: Vec<String> = Vec::new();
     let notes = clean_notes(notes, ctx);
     parts.push(format!("## What happened\n\n{}", notes));
@@ -225,16 +218,6 @@ pub fn draft_body(notes: &str, dirs: &Dirs, ctx: &ScrubCtx, runner: Runner<'_>) 
         system.push("- identity: not installed".to_string());
     }
     parts.push(format!("## System\n\n{}", scrub(&system.join("\n"), ctx)));
-    let usage = oxa_cli(runner, &["usage", "--json"])
-        .and_then(|o| serde_json::from_str::<Json>(&o).ok())
-        .and_then(|v| serde_json::to_string_pretty(&v).ok());
-    parts.push(format!(
-        "## Usage (today)\n\n{}",
-        match usage {
-            Some(u) => format!("```json\n{}\n```", scrub(&cap(&u), ctx)),
-            None => "(no usage numbers available)".to_string(),
-        }
-    ));
     parts.push(
         "Drafted by `oxa report-issue`: scrubbed of emails, home paths, user and host names, IP addresses and secrets; no prompts or transcripts."
             .to_string(),
