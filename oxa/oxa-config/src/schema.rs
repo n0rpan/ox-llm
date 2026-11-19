@@ -224,6 +224,9 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.toolRepair", Kind::Bool, "true"),
     // The repeat guard for identical tool calls (oxa-core `repeat.rs`).
     key("oxa.toolRepeatGuard", Kind::Bool, "true"),
+    // W2: the `wait` tool's `until` conditions, answered by hook sets (`Hooks::poll_event`).
+    key("oxa.wait.maxSeconds", Kind::Number, "3600"),
+    key("oxa.wait.pollSeconds", Kind::Number, "30"),
     // O-169: `web_search` (oxa-web); declared only with a Brave key and never offline.
     key("oxa.webSearch.enabled", Kind::Bool, "true"),
     key("oxa.webSearch.maxTokens", Kind::Number, "2048"),

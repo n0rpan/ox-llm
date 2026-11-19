@@ -475,6 +475,19 @@ pub trait Hooks: Send + Sync {
     fn take_errors(&self) -> Vec<HookError> {
         Vec::new()
     }
+    /// Answer one wait condition: the `wait` tool's `until` object (W2). `None` = not this
+    /// set's kind; `Ok(None)` = still pending; `Ok(Some(text))` = done, `text` is the probe
+    /// evidence; `Err` = the probe failed. The first set that answers `Some` decides.
+    /// `budget` is what the wait has left: a probe must not run past it, and may return
+    /// `Ok(None)` without work when it is zero.
+    fn poll_event(
+        &self,
+        _kind: &str,
+        _args: &Value,
+        _budget: std::time::Duration,
+    ) -> Option<Result<Option<String>, String>> {
+        None
+    }
 }
 
 /// One failed handler of a hook set ([`Hooks::take_errors`]): pi's `extension_error` fields.
