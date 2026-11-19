@@ -61,7 +61,7 @@ Raw runs: `benchmarks/roofline/ram-runs.jsonl` (lab notebook, not in the public 
 
 Direct reads plateaued at about **4.58 GB/s**, reached by 1 MiB/QD32 or larger blocks with sufficient queue depth. At 256 KiB/QD1 the median was only 0.346 GB/s; concurrency and read size matter substantially. Buffered random-read medians ranged 0.44–1.62 GB/s and were slower here, not a faster SSD path. Physical-device counters and achieved-depth distributions are retained per arm; parent and partition counters must not be added.
 
-Raw results: `benchmarks/roofline/nvme-runs.jsonl` (lab notebook, not in the public snapshot). Source: [`nvme_read.py`](../benchmarks/roofline/nvme_read.py).
+Raw results: `benchmarks/roofline/nvme-runs.jsonl` (lab notebook, not in the public snapshot). Source: `nvme_read.py`.
 
 ## Accelerator matrix throughput
 

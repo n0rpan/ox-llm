@@ -14,10 +14,15 @@ maintainer, who says in the PR when a hardware check is needed.
 - Keep engine transport selection, native binary/launch configuration, `allowRemote`, share
   authority, login/token paths and `oxa.inbox.headless` user-only. A project file must never override these decisions.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
-- Preserve sandbox/bwrap enforcement and file-tool denials for private paths. Only explicit
-  owner-selected yolo deliberately disables the permission floor. Off Linux there is no OS sandbox
-  (owner policy, #1512): in-process guards stay, bash gets the same cleared base environment, and
-  the bash network is not restricted there; the start notice and the model env note say so.
+- Preserve file-tool denials for private paths. Attended runs execute model bash with the user's
+  rights by default and dangerous commands ask; `--sandbox` opts them into bwrap. Unattended runs
+  keep bwrap by default. Explicit owner-selected yolo disables the permission floor. Exec hooks
+  retain their dedicated sandbox in every mode.
+  Headless runs pursuing a goal and ownerless RPC count as unattended. Host bash uses
+  a cleared toolchain environment and keeps GitHub output redaction.
+  Off Linux there is no OS sandbox (owner policy, #1512): in-process guards stay, bash gets the
+  same cleared base environment, and the bash network is not restricted there; the start notice
+  and the model env note say so.
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
   in the ledger (an unknown cost is recorded as unknown). Limits are owner configuration: with no cap
@@ -194,7 +199,6 @@ consumers against main. Shared workspace manifests/locks expand the affected wor
 release-relevant features, Cargo registry/target caches via GitHub-owned actions, and standard free
 Ubuntu x64/ARM runners. Cache keys include the lockfile, toolchain and architecture; lane caches
 use their own namespace and branch scope, preserving the required workflows' main-cache policy.
-The oxc-rs crate has no unit cases of its own; the lane selects it only by its sources.
 Native engine tests requiring Oryon CPU features remain on the existing self-hosted route. The lane
 workflow does not replace or change the merge queue's required checks. Start full-workspace and
 release CI only when the change is close to done. Each started job records its queue delay in its

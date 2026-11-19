@@ -105,7 +105,7 @@ Acceptance:
 
 **Effort S–M · Hardware: an Apple Silicon Mac with ≥32 GB (≥64 GB for Flash) · Area: benchmarks**
 
-We claim nothing against Macs because we have no matched measurement. [`tools/mac_reproduce.py`](../tools/mac_reproduce.py) checks the same model files by SHA-256, runs upstream llama.cpp at the pinned commit (Metal and CPU-only) and MLX, and writes receipts with no serial, user name or path in them. It has never run on a Mac, so the first job is to make it work.
+We claim nothing against Macs because we have no matched measurement. `tools/mac_reproduce.py` checks the same model files by SHA-256, runs upstream llama.cpp at the pinned commit (Metal and CPU-only) and MLX, and writes receipts with no serial, user name or path in them. It has never run on a Mac, so the first job is to make it work.
 
 Acceptance:
 - [ ] `plan`, `verify-models` and `run` complete on a Mac; fixes sent as a pull request.

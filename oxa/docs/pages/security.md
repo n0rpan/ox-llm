@@ -15,13 +15,13 @@ Every tool call has an access class: `Read`, `Write`, `Exec` (a command), `Net` 
 | write inside the project | deny | allow | ask |
 | write outside the project | deny | ask | ask |
 | bash, read-only command, no network | allow | allow | ask |
-| bash, other command, no network | deny | allow (sandboxed) | ask |
+| bash, other command, no network | deny | allow | ask |
 | extension `exec` with `net: true` | deny | ask | ask |
 | `web_search` | deny | allow, no prompt | ask |
 | MCP tool that its server marks read-only | allow | allow | ask |
 | MCP tool, other | deny | ask | ask |
 
-In `workspace`, bash runs without asking, in the sandbox described below. Bash has network access in `workspace` and `ask` modes by default (see [Network](#network)). An extension `exec` that asks for network is asked for in `workspace` and `ask`, and refused in `plan`.
+In `workspace`, bash runs without asking. An attended run uses your host rights by default; `--sandbox` or `oxa.sandbox.interactive` enables the sandbox described below. Unattended runs use it by default. Bash has network access in `workspace` and `ask` modes by default (see [Network](#network)). An extension `exec` that asks for network is asked for in `workspace` and `ask`, and refused in `plan`.
 
 - When oxa asks, it offers "Allow once", "Allow for this session", and "Deny". A session grant covers the same path directory, command, host or tool for the rest of the run. Grants are kept in memory and never written to disk. A grant never overrides a deny.
 - Plan mode is for reading and planning. It refuses writes, the `subagent` tool, `web_search`, and every command that is not read-only.
@@ -38,12 +38,12 @@ On top of the table, the permission mode decides who answers the questions:
 
 | Mode | Prompts | Bash | File tools |
 |---|---|---|---|
-| `standard` | the table above asks you | in the sandbox | deny-list and protected paths enforced |
-| `auto` (default) | table questions allowed and counted; protected configuration still asks | in the sandbox | deny-list and protected paths enforced |
+| `standard` | the table above asks you | host rights when attended unless `--sandbox` | deny-list and protected paths enforced |
+| `auto` (default) | table questions allowed and counted; protected configuration still asks | host rights when attended unless `--sandbox` | deny-list and protected paths enforced |
 | `yolo` | none | **without the sandbox**, in your own environment | no deny-list, no protected paths |
 | `plan` | as in the table | read-only commands | no writes |
 
-- `auto` is the default of a fresh install. It removes the prompts and nothing else: the bash sandbox and its deny-list stay, the file tools still refuse `~/.ssh`, `~/.gnupg`, cloud and git credentials, `~/.config/oxc`, browser profiles and the agent directory, `.git/hooks` and `.git/config` are never written, and a write to the project's `.oxa` configuration still asks.
+- `auto` is the default of a fresh install. The file tools still refuse `~/.ssh`, `~/.gnupg`, cloud and git credentials, `~/.config/oxc`, browser profiles and the agent directory, and a write to the project's `.oxa` configuration still asks. In an attended run, bash itself has host rights unless you pass `--sandbox`.
 - `yolo` is full access. Bash runs as you, with your files, credentials and network; the file tools no longer refuse the deny-list or git's protected files and do not ask before writing `.oxa` or a startup file. Yolo removes every guard; use `auto` when you want no prompts but still want the sandbox. Use it only in a session you watch, on a machine and project you can restore. With `--offline` bash still has no network.
 - Set the mode at start with `--standard`, `--auto`, `--yolo` or `--permission-mode <mode>` (one run), or with the `permissions.defaultMode` setting (`standard`, `auto`, `yolo` or `plan`). `/mode <mode> --save` and "make default" in the `/mode` picker write that setting. A project's settings can lower the mode (for example to `standard`) but never raise it.
 - In a session: `/mode` opens the picker, `/mode <mode>` switches, `/auto` switches to auto, `/yolo [on|off]` or Ctrl+Alt+O toggles yolo (off returns to the mode before it), and Alt+M cycles standard, auto and yolo. `/mode workspace` and `/mode ask` still set the table mode.
@@ -60,7 +60,7 @@ $ alias yoxa='oxa --yolo'
 
 ## The bash sandbox
 
-On Linux, bash runs in a `bubblewrap` (`bwrap`) sandbox. Without a usable `bwrap`, the bash tool is disabled and oxa says so at start-up. On Linux oxa does not fall back to running commands unsandboxed; only the `yolo` mode runs bash without it.
+On Linux, unattended bash runs in a `bubblewrap` (`bwrap`) sandbox by default. This includes ownerless RPC and headless runs that start or resume a pursuing goal. Attended runs default to no OS sandbox and say so at start-up; use `--sandbox` or `oxa.sandbox.interactive` to opt in. Without usable bwrap, a run that requires it disables bash and plan execution fails closed. Exec hooks retain their dedicated sandbox and no-network policy. Host bash uses a cleared environment with toolchain variables and keeps GitHub output redaction. Network-disabled model bash also masks host runtime IPC.
 
 Off Linux (macOS) there is no OS sandbox. Bash and exec hooks run as `bash -c` with your full user rights, every result is flagged as unsandboxed, and oxa says so at start-up and to the model. The guards that live inside oxa stay: the file tools' denials and protected paths, credential masking, permissions and trust, and `--offline` for oxa's own provider and network calls. Bash gets the same cleared base environment as the Linux sandbox (a fixed `PATH`, `HOME`, `LANG`, `TERM`, toolchain variables), so credential variables of the oxa process are not inherited. A refused bash network cannot be enforced there: when `oxa.sandbox.net: "off"` or `--offline` asks for one, bash is disabled for that run (start-up and the model's environment note say so) instead of running a command with the network the owner turned off. With the network on, commands run as you and every result is flagged unsandboxed.
 

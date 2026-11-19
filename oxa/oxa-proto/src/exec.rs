@@ -267,28 +267,24 @@ impl PermissionMode {
     pub fn describe(self) -> &'static str {
         self.describe_with(OS_SANDBOX)
     }
-    /// [`describe`](Self::describe) for a platform with or without an OS sandbox. Without one the
-    /// text never says the bash sandbox is on: commands run with the user's rights (and are
-    /// disabled while the bash network is off, which that platform cannot enforce).
+    /// [`describe`](Self::describe) for a run with or without the OS sandbox. Without one the
+    /// text never says the bash sandbox is on: it says there is none and that dangerous commands
+    /// ask (#1512 S3: interactive runs are unsandboxed by default and the floor prompt stays).
     pub fn describe_with(self, os_sandbox: bool) -> &'static str {
         match (self, os_sandbox) {
             (PermissionMode::Standard, true) => {
                 "prompts before actions outside the workspace; sandbox and deny-list on"
             }
-            // No OS sandbox: bash runs as the user, and it is disabled while the bash network is
-            // off (that setting cannot be enforced there).
             (PermissionMode::Standard, false) => {
-                "prompts before actions outside the workspace; no OS sandbox on this platform: \
-                 bash runs with your user rights, and is disabled while the bash network is off; \
-                 the deny-list stays on"
+                "prompts before actions outside the workspace; no OS sandbox, dangerous commands \
+                 ask; deny-list on"
             }
             (PermissionMode::Auto, true) => {
                 "no prompts; the bash sandbox, the deny-list and the protected paths stay on"
             }
             (PermissionMode::Auto, false) => {
-                "no prompts; no OS sandbox on this platform: bash runs with your user rights, and \
-                 is disabled while the bash network is off; the deny-list and the protected paths \
-                 stay on"
+                "no prompts; no OS sandbox, dangerous commands still ask; the deny-list and \
+                 protected paths stay on"
             }
             (PermissionMode::Yolo, _) => {
                 "full access: no prompts, bash runs without the sandbox in your own environment, \

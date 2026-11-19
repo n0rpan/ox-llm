@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 /// O-167(b): the process sandbox with the bash network decision (`oxa.sandbox.net`, default
 /// on; always off while offline). Read once at startup.
-pub(crate) fn with_net(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<dyn Sandbox> {
+pub(crate) fn with_net(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<NetSandbox> {
     with_policy(sandbox, settings, true)
 }
 
@@ -17,7 +17,7 @@ pub(crate) fn without_github(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> 
     with_policy(sandbox, settings, false)
 }
 
-fn with_policy(sandbox: Arc<dyn Sandbox>, settings: &Settings, github_auth: bool) -> Arc<dyn Sandbox> {
+fn with_policy(sandbox: Arc<dyn Sandbox>, settings: &Settings, github_auth: bool) -> Arc<NetSandbox> {
     let runner_owns_github = std::env::var_os(oxa_work::RUNNER_GITHUB_ENV).is_some_and(|value| value == "1");
     let on = !runner_owns_github && sandbox_net_setting(settings.string(SETTING_SANDBOX_NET).as_deref());
     let offline = oxa_proto::offline();
@@ -31,12 +31,105 @@ fn with_policy(sandbox: Arc<dyn Sandbox>, settings: &Settings, github_auth: bool
                 .ok()
                 .as_deref(),
         );
-    let ns = NetSandbox::new(sandbox, on, offline);
-    Arc::new(if lookup {
-        ns.with_gh_token_lazy(gh_token)
-    } else {
-        ns
-    })
+    // Host-rights bash can read a file-backed login with the network off too, and `gh auth token
+    // --user other` names any account: every credential is scrubbed from its output, so this
+    // lookup does not depend on the network setting.
+    let scrub_host = github_auth
+        && !runner_owns_github
+        && !test_isolated(
+            std::env::var(oxa_proto::names::ENV_TEST_ISOLATION)
+                .ok()
+                .as_deref(),
+        );
+    let mut ns = NetSandbox::new(sandbox, on, offline);
+    if lookup {
+        ns = ns.with_gh_token_lazy(gh_token);
+    }
+    if scrub_host {
+        ns = ns.with_host_secrets_lazy(gh_host_secrets);
+    }
+    Arc::new(ns)
+}
+
+/// Every GitHub CLI credential of this machine: the plain tokens in `hosts.yml` and the token
+/// `gh auth token` returns for each host and account it lists (keyring logins included). Runs
+/// `gh` outside the sandbox with a short deadline; any failure yields what was found so far.
+/// Reads local state only. Tokens are never logged.
+fn gh_host_secrets() -> Vec<String> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let config = std::env::var_os("GH_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(|x| std::path::PathBuf::from(x).join("gh")))
+        .or_else(|| home.as_ref().map(|h| h.join(".config").join("gh")));
+    let text = config
+        .and_then(|c| std::fs::read_to_string(c.join("hosts.yml")).ok())
+        .unwrap_or_default();
+    let (mut found, accounts) = parse_gh_hosts(&text);
+    let exe = trusted_gh_for(
+        std::env::var_os("PATH").as_deref(),
+        std::env::current_dir().ok().as_deref(),
+        home.as_deref(),
+    );
+    if let Some(exe) = exe {
+        let mut ask = |args: &[&str]| {
+            let mut command = std::process::Command::new(&exe);
+            command.args(args);
+            if let Some((0, out)) = oxa_work::command_runner(command, Some(4096), GH_DEADLINE) {
+                let t = out.trim();
+                if !t.is_empty() && !t.chars().any(char::is_whitespace) {
+                    found.push(t.to_string());
+                }
+            }
+        };
+        ask(&["auth", "token", "--hostname", "github.com"]);
+        for (host, user) in accounts.iter() {
+            ask(&[
+                "auth",
+                "token",
+                "--hostname",
+                host.as_str(),
+                "--user",
+                user.as_str(),
+            ]);
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// The plain `oauth_token` values and the (host, user) pairs of a `gh` `hosts.yml`. A line
+/// parser for the fixed shape `gh` writes: hosts at column 0, `users:` with nested account
+/// names, `oauth_token:` values at any depth.
+fn parse_gh_hosts(text: &str) -> (Vec<String>, Vec<(String, String)>) {
+    let mut tokens = Vec::new();
+    let mut accounts = Vec::new();
+    let (mut host, mut in_users, mut users_indent) = (String::new(), false, 0usize);
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - trimmed.len();
+        let unquote = |v: &str| v.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
+        if indent == 0 {
+            host = unquote(trimmed.trim_end_matches(':'));
+            in_users = false;
+        } else if let Some(v) = trimmed.strip_prefix("oauth_token:") {
+            let v = unquote(v);
+            if !v.is_empty() && !v.chars().any(char::is_whitespace) {
+                tokens.push(v);
+            }
+        } else if trimmed == "users:" {
+            in_users = true;
+            users_indent = indent;
+        } else if in_users && indent <= users_indent {
+            in_users = false;
+        } else if in_users && indent == users_indent + 4 && trimmed.ends_with(':') && !host.is_empty() {
+            accounts.push((host.clone(), unquote(trimmed.trim_end_matches(':'))));
+        }
+    }
+    (tokens, accounts)
 }
 
 /// Under test isolation (`OXA_TEST_ISOLATION=1`) the host's `gh` login is never consulted: a
@@ -248,6 +341,21 @@ pub(crate) fn endpoint_notice(base_url: &str) -> Option<(Level, String)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hosts_yml_yields_every_account_and_plain_token() {
+        let yml = "github.com:\n    users:\n        alice:\n            oauth_token: SYNTH_ONE\n        bob:\n    oauth_token: SYNTH_TWO\n    git_protocol: https\n    user: alice\nghe.example:\n    users:\n        carol:\n";
+        let (tokens, accounts) = super::parse_gh_hosts(yml);
+        assert_eq!(tokens, ["SYNTH_ONE", "SYNTH_TWO"]);
+        assert_eq!(
+            accounts,
+            [
+                ("github.com".to_string(), "alice".to_string()),
+                ("github.com".to_string(), "bob".to_string()),
+                ("ghe.example".to_string(), "carol".to_string()),
+            ]
+        );
+    }
+
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 

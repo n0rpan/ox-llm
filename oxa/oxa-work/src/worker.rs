@@ -456,6 +456,7 @@ mod tests {
             .any(|(k, v)| k == "OXA_UNATTENDED" && v == Some(std::ffi::OsStr::new("1"))));
     }
 
+    #[test]
     fn yolo_runner_starts_yolo_worker() {
         assert_eq!(mode_args(Autonomy::Yolo), ["--yolo"]);
     }

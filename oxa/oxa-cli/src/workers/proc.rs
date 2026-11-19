@@ -501,22 +501,27 @@ fn thread_group_alive(pgid: u32) -> io::Result<bool> {
     Ok(false)
 }
 
-/// [`group_alive`] without procfs: a live member is an existing group that is not just our
-/// unreaped leader. `ESRCH` is an empty group; `EPERM` is a member we may not signal, which the
-/// Linux path treats the same way.
+/// [`group_alive`] without procfs: ask the kernel whether the group has a member. `ESRCH` is an
+/// empty group; `EPERM` is a member we may not signal, which the Linux path treats the same way.
+/// This probe must not be short-circuited by the leader's exit: another member can survive it.
 #[cfg(not(target_os = "linux"))]
 fn group_alive(pgid: u32) -> io::Result<bool> {
-    if leader_exited(pgid)? {
-        return Ok(false);
-    }
     // SAFETY: killpg only inspects the group; signal 0 delivers nothing.
     if unsafe { libc::killpg(pgid as libc::pid_t, 0) } == 0 {
-        return Ok(true);
+        return group_alive_from_probe(Ok(()), libc::ESRCH, libc::EPERM);
     }
-    let error = io::Error::last_os_error();
+    group_alive_from_probe(Err(io::Error::last_os_error()), libc::ESRCH, libc::EPERM)
+}
+
+/// Interpret the portable signal-0 process-group probe.
+#[cfg(any(test, not(target_os = "linux")))]
+fn group_alive_from_probe(probe: io::Result<()>, missing: i32, denied: i32) -> io::Result<bool> {
+    let Err(error) = probe else {
+        return Ok(true);
+    };
     match error.raw_os_error() {
-        Some(libc::ESRCH) => Ok(false),
-        Some(libc::EPERM) => Ok(true),
+        Some(code) if code == missing => Ok(false),
+        Some(code) if code == denied => Ok(true),
         _ => Err(error),
     }
 }
@@ -677,6 +682,13 @@ mod tests {
             "the background sleep survived stop"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// On platforms without procfs, an exited leader must not override the kernel's report that
+    /// its process group still contains a surviving child.
+    #[test]
+    fn successful_group_probe_reports_survivors_after_leader_exit() {
+        assert!(group_alive_from_probe(Ok(()), ESRCH, 1).expect("group probe"));
     }
 
     #[test]

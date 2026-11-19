@@ -726,13 +726,15 @@ impl Built {
 }
 
 /// #1512 S2: the dangerous-command rules of the user settings. `[]` (the default) is every
-/// built-in rule; a plain entry replaces the built-ins and `+id` / `-id` patch them.
+/// built-in rule; a plain entry replaces the built-ins and `+id` / `-id` patch them. The raw
+/// user entries are read: the merged value has already applied a `+x` / `-x` list to the empty
+/// default, which would turn `["+cmd:x"]` into a plain list that drops every built-in rule.
 fn dangerous_rules(user_settings: &Settings) -> (DangerRules, Vec<String>) {
     let builtin_ids: Vec<String> = oxa_perm::BUILTIN_RULES
         .iter()
         .map(|row| row.0.to_string())
         .collect();
-    let patch = user_settings.list(oxa_perm::SETTING_DANGEROUS);
+    let patch = user_settings.user_list(oxa_perm::SETTING_DANGEROUS);
     let entries = if patch.is_empty() {
         builtin_ids
     } else {
@@ -1022,7 +1024,11 @@ fn prepare(
     if !owner_chat && env.get(oxa_proto::names::ENV_TEST_ISOLATION) != Some("1") && !child.nested() {
         let probe = (!oxa_proto::offline()).then_some(engine.as_ref());
         let facts = crate::identity_cmd::identity_facts(Path::new("/"), probe);
-        let keep_known_models = facts.models.is_empty() && oxa_resources::read_identity(dirs).is_some();
+        // An old file is kept only when it is in the current format; one written by an older
+        // oxa (old head, cloud model lines) is rewritten with `Models: not known`.
+        let keep_known_models = facts.models.is_empty()
+            && oxa_resources::read_identity(dirs)
+                .is_some_and(|t| t.starts_with(oxa_core::prompt::IDENTITY_HEAD));
         if !keep_known_models {
             if let Err(e) = crate::identity_cmd::write_identity(dirs, &facts) {
                 notices.push((Level::Warning, e.message));
@@ -1071,13 +1077,16 @@ fn prepare(
     // way: plan mode and offline/net-off commands need it.
     let kind = crate::run_kind::run_kind(a, env, &child, mode);
     let yolo_level = matches!(level, oxa_proto::PermissionMode::Yolo);
-    let os_sandbox = crate::run_kind::os_sandbox_wanted(kind, a, &user_settings, yolo_level);
+    // Keep the configured policy separate from the live yolo override. If the user leaves
+    // startup yolo, FullAccess immediately restores this policy.
+    let os_sandbox = crate::run_kind::os_sandbox_wanted(kind, a, &user_settings);
     if let Some(text) = crate::run_kind::no_sandbox_notice(kind, os_sandbox, yolo_level) {
         notices.push((Level::Info, text.to_string()));
     }
+    let layout = crate::sandbox_layout::layout(env, dirs, cwd, home_workspace, &mut notices);
     let sandbox: Arc<dyn Sandbox> = match Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home) {
         Ok(mut b) => {
-            b.layout = crate::sandbox_layout::layout(env, dirs, cwd, home_workspace, &mut notices);
+            b.layout = layout.clone();
             // #457: each session gets its own directory at /tmp (`Built::deps`).
             let root = oxa_sandbox::scratch_root(&dirs.home);
             match std::fs::create_dir_all(&root) {
@@ -1125,7 +1134,8 @@ fn prepare(
             Arc::new(NoSandbox)
         }
     };
-    let sandbox = crate::netguard::with_net(sandbox, &settings);
+    let host_net = crate::netguard::with_net(sandbox, &settings);
+    let sandbox: Arc<dyn Sandbox> = host_net.clone();
     let (sandbox, net_notice) = bash_sandbox(sandbox);
     if let Some(notice) = net_notice {
         notices.push((Level::Warning, notice));
@@ -1190,10 +1200,10 @@ fn prepare(
             oxa_proto::offline(),
             net_off,
         )
-        .with_os_sandbox(os_sandbox),
+        .with_os_sandbox(os_sandbox)
+        .with_host_controls(layout, host_net),
     );
-    // Exec hooks: without the OS sandbox they run with the user's rights (#1512 S3); with it
-    // they stay in `sandbox` as before, also when yolo is switched on later.
+    // Exec hooks keep their dedicated sandbox independently of interactive bash.
     let hook_sandbox = oxa_sandbox::FullAccess::hook_sandbox(&bash_sandbox);
     let hook_inputs = HookInputs {
         args: a,
@@ -1664,6 +1674,7 @@ fn run_headless(
         continue_goal,
         ..
     } = prep;
+    oxa_core::set_headless(true);
     let mut session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
         Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),
@@ -1696,6 +1707,10 @@ fn run_headless(
     let mut prompts = prompts;
     if let Some(goal) = session.goal() {
         if goal.status == oxa_session::GoalStatus::Pursuing {
+            if crate::run_kind::unattended_os_sandbox(&built.settings) {
+                built.bash_sandbox.require_os_sandbox();
+                notices.retain(|(_, notice)| notice != crate::run_kind::NO_SANDBOX_NOTICE);
+            }
             if starts_goal {
                 let start = oxa_core::prompt::goal_start(&goal.objective);
                 if let Some((text, _parts)) = prompts.first_mut() {
@@ -3028,6 +3043,41 @@ mod session_scratch_tests {
         assert!(!b.exists(), "the second session's scratch outlived it");
     }
 
+    /// #1512 S7: an edit list in `oxa.approval.dangerous` edits the built-in rules. Adding a
+    /// custom rule keeps every built-in rule, `-id` removes only that rule, and only a plain
+    /// list replaces the built-in set (the merged value must not turn `+x` into a plain list).
+    #[test]
+    fn dangerous_rules_edit_list_keeps_the_builtin_rules() {
+        let env = oxa_fake::TestEnv::new();
+        let guard = oxa_perm::PathGuard::new(&env.home(), &env.agent_dir(), &env.tmp());
+        let cwd = env.work();
+        let rules = |list: serde_json::Value| {
+            let user = serde_json::json!({"oxa": {"approval": {"dangerous": list}}});
+            dangerous_rules(&Settings::from_values(user, serde_json::json!({}))).0
+        };
+        let hits = |r: &DangerRules, cmd: &str| -> Vec<String> {
+            r.classify(cmd, &cwd, &guard)
+                .into_iter()
+                .map(|h| h.rule)
+                .collect()
+        };
+        let has = |r: &DangerRules, cmd: &str, rule: &str| hits(r, cmd).iter().any(|h| h == rule);
+        let force = "git push --force origin main";
+        let added = rules(serde_json::json!(["+cmd:terraform destroy"]));
+        assert!(has(&added, "terraform destroy", "cmd:terraform destroy"));
+        assert!(has(&added, force, "git-push-force"));
+        assert!(has(&added, "sudo ls", "sudo"));
+        let edited = rules(serde_json::json!(["-sudo", "+cmd:terraform destroy"]));
+        assert!(!has(&edited, "sudo ls", "sudo"));
+        assert!(has(&edited, force, "git-push-force"));
+        assert!(has(&edited, "terraform destroy", "cmd:terraform destroy"));
+        let removed = rules(serde_json::json!(["-sudo"]));
+        assert!(!has(&removed, "sudo ls", "sudo"));
+        assert!(has(&removed, force, "git-push-force"));
+        let replaced = rules(serde_json::json!(["cmd:terraform destroy"]));
+        assert!(hits(&replaced, force).is_empty());
+        assert!(has(&replaced, "terraform destroy", "cmd:terraform destroy"));
+    }
     /// #1512 S2: the dangerous-command rules and the always keys come from the user settings
     /// only. A project file that replaces the rules and lists the key changes nothing; the same
     /// key in the user file allows the command.
