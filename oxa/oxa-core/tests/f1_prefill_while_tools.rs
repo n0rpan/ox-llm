@@ -1135,10 +1135,9 @@ fn cancelled_sent_prefill_marks_goal_usage_unknown_without_blocking_the_goal() {
         .prompt("Start".into(), vec![], &mut sink, &mut ui)
         .unwrap();
     let goal = session.goal().unwrap();
-    assert!(
-        goal.unknown_requests >= 1,
-        "the sent prefill is recorded as unknown spend"
-    );
+    // Two requests carry unknown spend: the cancelled turn and the prefill that was already
+    // sent for it. Each is recorded once; neither counts as used tokens.
+    assert_eq!(goal.unknown_requests, 2);
     assert!(
         !goal.exhausted(),
         "an uncertain prefill is recorded, not an exhausted budget"

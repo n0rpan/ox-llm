@@ -1123,7 +1123,9 @@ impl<'a> Budget<'a> {
         let max = lock(&inner.config).max_children;
         let mut pending = lock(&inner.pending);
         let now = pending.get(session).copied().unwrap_or(0);
-        let over = now.saturating_add(n) > max;
+        // The warning names what was already in flight: with nothing pending, this call's own
+        // size is the per-call warning's business, not a session one.
+        let over = now > 0 && now.saturating_add(n) > max;
         pending.insert(session.to_string(), now.saturating_add(n));
         (
             Budget {
