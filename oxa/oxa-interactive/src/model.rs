@@ -5,8 +5,8 @@ use oxa_config::{Dirs, Keymap, Settings};
 use oxa_core::Session;
 use oxa_mcp::McpManager;
 use oxa_proto::{
-    Access, Answer, CustomOpts, Hooks, Level, Mode, OxaError, Part, Placement, StopReason, ThinkingLevel,
-    ToolOutput, UiComponent, Value,
+    Access, Answer, CustomOpts, DangerAnswer, Hooks, Level, Mode, OxaError, Part, Placement, StopReason,
+    ThinkingLevel, ToolOutput, UiComponent, Value,
 };
 use oxa_session::{SessionRef, SessionStore};
 use oxa_tui::TermCaps;
@@ -677,6 +677,14 @@ pub enum UiRequest {
     AskAccess {
         access: Access,
         reply: Sender<Answer>,
+    },
+    /// #1512 S2: the dangerous-command prompt. `keys` are the grant keys of `reasons`; `Always`
+    /// saves them to the user settings (see `driver::append_always`).
+    AskDangerous {
+        access: Access,
+        reasons: Vec<String>,
+        keys: Vec<String>,
+        reply: Sender<DangerAnswer>,
     },
     Custom {
         component: Box<dyn UiComponent>,
