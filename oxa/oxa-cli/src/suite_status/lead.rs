@@ -244,8 +244,20 @@ mod tests {
         write_settings(&dirs, &json!({"oxa": {"lead": {"model": "bad\u{0007}model"}}}));
         assert!(section_for(&test, &dirs)["model"].is_null());
 
-        write_settings(&dirs, &json!({"oxa": {"lead": {"model": "lead-model"}}}));
-        assert_eq!(section_for(&test, &dirs)["model"], "lead-model");
+        write_settings(&dirs, &json!({"oxa": {"lead": {"model": "owner-model"}}}));
+        let project_settings = dirs.project_settings_file(&test.work());
+        fs::create_dir_all(project_settings.parent().unwrap()).unwrap();
+        fs::write(
+            project_settings,
+            json!({"oxa": {"lead": {"model": "project-model"}}}).to_string(),
+        )
+        .unwrap();
+        let merged = Settings::load(&dirs, &test.work(), true);
+        assert_eq!(merged.get("oxa.lead.model"), Some(&json!("project-model")));
+        assert_eq!(
+            section(&merged, &dirs, &test.work(), &Env::from_pairs(&[]))["model"],
+            "owner-model"
+        );
     }
 
     #[test]
