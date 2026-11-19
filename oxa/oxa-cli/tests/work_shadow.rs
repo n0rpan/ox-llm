@@ -71,7 +71,7 @@ case "$*" in
 esac
 "#);
     fs::set_permissions(gh, fs::Permissions::from_mode(0o700)).unwrap();
-    let detail: serde_json::Value = serde_json::from_str(r#"{"data":{"repository":{"pullRequests":{"totalCount":1,"nodes":[{"number":42}]},"mergeQueue":null,"p42":{"number":42,"headRefOid":"synthetic-head","baseRefName":"main","state":"OPEN","body":"","isDraft":false,"reviewDecision":null,"mergeable":"CONFLICTING","mergeStateStatus":"CLEAN","labels":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[]},"reviewThreads":{"totalCount":0,"nodes":[]},"latestOpinionatedReviews":{"totalCount":0,"nodes":[]},"commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}}"#).unwrap();
+    let detail: serde_json::Value = serde_json::from_str(r#"{"data":{"repository":{"pullRequests":{"totalCount":1,"nodes":[{"number":42}]},"mergeQueue":null,"p42":{"number":42,"headRefOid":"synthetic-head","baseRefName":"main","state":"OPEN","body":"","isDraft":false,"reviewDecision":null,"mergeable":"CONFLICTING","mergeStateStatus":"CLEAN","labels":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}},"reviewThreads":{"totalCount":0,"nodes":[]},"latestOpinionatedReviews":{"totalCount":0,"nodes":[]},"commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}}"#).unwrap();
     let mut detail = detail;
     detail["data"]["repository"]["pullRequests"]["nodes"][0]["headRefOid"] = "synthetic-head".into();
     detail["data"]["repository"]["pullRequests"]["pageInfo"] =
@@ -179,9 +179,11 @@ fn real_cli_requires_opt_in_and_offline_never_reads_github() {
             serde_json::json!({"totalCount":1,"nodes":[{"state":"APPROVED","commit":{"oid":head}}]});
         row["commits"] = serde_json::json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":1,"nodes":[{"name":"ci","isRequired":true,"status":status,"conclusion":conclusion}]}}}}]});
         row["files"] = if source.is_empty() {
-            serde_json::json!({"totalCount":0,"nodes":[]})
+            serde_json::json!({"totalCount":0,"nodes":[],
+                "pageInfo":{"hasNextPage":false,"endCursor":null}})
         } else {
-            serde_json::json!({"totalCount":1,"nodes":[{"path":source,"deletions":1}]})
+            serde_json::json!({"totalCount":1,"nodes":[{"path":source,"deletions":1}],
+                "pageInfo":{"hasNextPage":false,"endCursor":null}})
         };
         fs::write(env.work().join("detail.json"), detail.to_string()).unwrap();
         assert!(invoke(&env, "work board --shadow --repo example/repo --once")
@@ -953,6 +955,32 @@ fn opt_in_review_policy_observes_pinned_diff_and_authenticated_reviews() {
     }
 }
 
+#[test]
+fn review_policy_preserves_an_incomplete_pr_row() {
+    let (env, mut detail) = fixture();
+    env.write(
+        "home/review.json",
+        r#"{"requester":"review-bot","codex":"code-reviewer","security":"security-reviewer","owner":"owner-reviewer","core":["engine"],"protected":["docs/protected"]}"#,
+    );
+    let row = &mut detail["data"]["repository"]["p42"];
+    row["comments"] = serde_json::json!({"totalCount":101,"nodes":[]});
+    row["reviews"] = serde_json::json!({"totalCount":0,"nodes":[]});
+    fs::write(env.work().join("detail.json"), detail.to_string()).unwrap();
+    fs::write(env.work().join("first.json"), detail.to_string()).unwrap();
+    fs::write(env.work().join("review.json"), detail.to_string()).unwrap();
+
+    let out = invoke(
+        &env,
+        "work board --shadow --repo example/repo --once --review-policy ../home/review.json",
+    );
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let log = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
+    let sample: serde_json::Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+    assert_eq!(sample["board"]["entries"][0]["number"], 42);
+    assert_eq!(sample["board"]["entries"][0]["action"], "evidence_incomplete");
+    assert!(sample["reviews"].get("42").is_none());
+}
+
 fn queue_rejection(group: &str) -> serde_json::Value {
     serde_json::json!({"data":{"repository":{
         "mergeQueue":{"id":"queue-1"},
@@ -1563,7 +1591,7 @@ fn landing_shadow_holds_an_approved_head_on_unresolved_current_or_older_reviews(
 }
 
 #[test]
-fn landing_shadow_refuses_an_incomplete_queue_connection() {
+fn landing_shadow_degrades_an_incomplete_queue_connection() {
     let (env, mut detail) = fixture();
     detail["data"]["repository"]["p42"]["comments"] = serde_json::json!({"totalCount": 0, "nodes": []});
     fs::write(env.work().join("review.json"), detail.to_string()).unwrap();
@@ -1588,11 +1616,13 @@ fn landing_shadow_refuses_an_incomplete_queue_connection() {
         &env,
         "work board --shadow --repo example/repo --once --landing-shadow",
     );
-    assert_eq!(result.status.code(), Some(2));
+    // The board is published; the observed queue rows stay usable and the limit is logged.
+    assert_eq!(result.status.code(), Some(0));
     assert!(
-        String::from_utf8_lossy(&result.stderr).contains("refusing a partial board"),
+        String::from_utf8_lossy(&result.stderr)
+            .contains("merge queue connection exceeds its 100-item page (101 entries)"),
         "unexpected result: {}",
         String::from_utf8_lossy(&result.stderr)
     );
-    assert_eq!(fs::metadata(log_for(&env, "example/repo")).unwrap().len(), 0);
+    assert!(fs::metadata(log_for(&env, "example/repo")).unwrap().len() > 0);
 }

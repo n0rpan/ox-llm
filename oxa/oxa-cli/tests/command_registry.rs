@@ -1,5 +1,5 @@
 //! Supported registry routes must describe real, side-effect-free CLI help paths.
-use oxa_interactive::command_registry::{entries, parse_cli, Surface};
+use oxa_interactive::command_registry::{entries, parse_cli, Availability, CommandId, Surface};
 
 #[test]
 fn supported_registry_cli_paths_have_real_public_help() {
@@ -29,4 +29,28 @@ fn work_status_declaration_matches_the_existing_cli_route() {
     let parsed = oxa_cli::parse_args(&words, &[]).unwrap();
     assert!(matches!(parsed.subcommand, Some(oxa_cli::Subcommand::Work(rest))
         if rest == ["status", "--json"]));
+}
+
+#[test]
+fn memory_verbs_are_declared_with_their_surfaces() {
+    for (words, id) in [
+        (vec!["memory"], CommandId::Memory),
+        (vec!["memory", "list"], CommandId::MemoryList),
+        (vec!["memory", "show", "build-notes"], CommandId::MemoryShow),
+        (vec!["memory", "rm", "build-notes"], CommandId::MemoryRm),
+    ] {
+        let words: Vec<String> = words.into_iter().map(String::from).collect();
+        let resolved = parse_cli(&words).expect("declared CLI route");
+        assert_eq!(resolved.command.id, id, "{words:?}");
+        assert_eq!(resolved.command.surfaces.cli, Availability::Supported);
+        for surface in [Surface::Slash, Surface::Menu, Surface::Web] {
+            assert!(
+                matches!(resolved.command.surfaces.at(surface), Availability::Exception(_)),
+                "{id:?} declares {surface:?} without a handler: {words:?}"
+            );
+        }
+    }
+    // The verbs win the longest match over their parent.
+    let words: Vec<String> = ["memory", "list"].iter().map(|w| w.to_string()).collect();
+    assert_eq!(parse_cli(&words).unwrap().command.id, CommandId::MemoryList);
 }

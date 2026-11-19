@@ -386,7 +386,6 @@ mod tests {
             },
             attempt: &later_attempt,
             job: &later_job,
-            ..evidence
         })
         .unwrap();
         assert!(later.attempt.replaces(&matched.attempt));
@@ -415,7 +414,6 @@ mod tests {
             },
             attempt: &later_attempt,
             job: &later_job,
-            ..evidence
         })
         .unwrap();
         assert_eq!(

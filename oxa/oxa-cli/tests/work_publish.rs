@@ -117,6 +117,8 @@ fn exercise_save_recovery(test_name: &str, case: SaveRecovery) {
             host_path: std::env::var_os("PATH").unwrap(),
             terminate_binary: Some("/usr/bin/kill".into()),
             runner_owns_github: false,
+            autonomy: Default::default(),
+            autonomy_now: None,
             offline: false,
             storage: root.join("home/.oxa/agent/work/save-recovery"),
         };
@@ -208,7 +210,7 @@ fn exercise_save_recovery(test_name: &str, case: SaveRecovery) {
     let checks = if case == SaveRecovery::Edited {
         r#"["grep -Fx published answer.txt"]"#
     } else {
-        "[]"
+        r#"["test -f .oxa/settings.json"]"#
     };
     setup(&env, checks);
     let server = oxa_fake::FakeServer::start(edits(), oxa_fake::FakeOpts::default()).unwrap();
@@ -226,6 +228,34 @@ fn exercise_save_recovery(test_name: &str, case: SaveRecovery) {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(server.requests().len(), 2, "save retry must not call a model");
+}
+
+#[test]
+fn a_legacy_done_without_checks_cannot_publish() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let record = run(&env, edits());
+    assert_eq!(record["outcome"], "unverified", "{record}");
+    let state_path = state_path(&env);
+    let mut state: serde_json::Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    state["record"]["outcome"] = "done".into();
+    fs::write(state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+
+    let (records, requests, code) = work::run_with_exit(
+        &env,
+        vec![],
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_eq!(code, 1, "{records:?}");
+    assert_eq!(records[0]["outcome"], "blocked", "{records:?}");
+    assert!(records[0]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("no acceptance checks"));
+    assert!(requests.is_empty());
+    assert!(!env.home().join("push-calls").exists());
+    assert!(!env.home().join("gh-calls").exists());
 }
 
 #[test]
@@ -258,7 +288,7 @@ fn publishing_requires_acceptance_without_ignored_helpers() {
 #[test]
 fn publication_refuses_oversized_repository_metadata_before_push() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     env.write("home/oversized-repo-response", "");
     let record = run_args(
         &env,
@@ -274,7 +304,7 @@ fn publication_refuses_oversized_repository_metadata_before_push() {
 #[test]
 fn publication_does_not_forward_ambient_enterprise_credentials_to_origin() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     env.write("home/enterprise-host", "");
     let (record, _) = work::run_observed_with(
         &env,
@@ -294,7 +324,7 @@ fn publication_does_not_forward_ambient_enterprise_credentials_to_origin() {
 #[test]
 fn publication_refuses_a_same_owner_fork_before_push() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     env.write(
         "home/pr-state.json",
         r#"{"number":1,"url":"https://github.com/example/project/pull/1","isDraft":false,"headRepositoryOwner":{"login":"example"},"isCrossRepository":true}"#,
@@ -316,7 +346,7 @@ fn publication_refuses_a_same_owner_fork_before_push() {
 fn publishes_local_branch_and_updates_same_pr_on_restart() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);
     let hook = env.write(
         "work/project/.git/hooks/pre-push",
@@ -357,7 +387,7 @@ fn publishes_local_branch_and_updates_same_pr_on_restart() {
 #[test]
 fn publication_keeps_the_origin_host_for_prs_and_graphql() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);
     env.write("home/enterprise-host", "synthetic");
     let first = run_args(
@@ -387,7 +417,7 @@ fn publication_keeps_the_origin_host_for_prs_and_graphql() {
 #[test]
 fn rerun_updates_managed_metadata_without_erasing_owner_body() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);
     let first = run_args(
         &env,
@@ -436,7 +466,7 @@ fn red_checks_never_push_or_create_a_pr() {
 #[test]
 fn queued_pr_is_never_pushed_and_publication_retries_without_agent_replay() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);
     run_args(
         &env,
@@ -470,7 +500,7 @@ fn queued_pr_is_never_pushed_and_publication_retries_without_agent_replay() {
 #[test]
 fn offline_publication_never_starts_gh_or_push() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);
     let record = run_args(
         &env,
@@ -522,7 +552,7 @@ fn publication_drift_requires_fresh_checks_on_explicit_rerun() {
 #[test]
 fn ordinary_run_cannot_reseal_a_failed_publication_checkpoint() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);
     let done = run(&env, edits());
     let tree = PathBuf::from(done["worktree"].as_str().unwrap());
@@ -550,7 +580,7 @@ fn ordinary_run_cannot_reseal_a_failed_publication_checkpoint() {
 #[test]
 fn branch_drift_after_acceptance_cannot_publish_unchecked_commits() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);
     let done = run(&env, edits());
     let tree = PathBuf::from(done["worktree"].as_str().unwrap());
@@ -804,7 +834,7 @@ fn a_local_report_retries_without_replaying_the_completed_task() {
 #[test]
 fn later_publication_and_reporting_do_not_erase_execution_policy() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);
     let mut turns = edits();
     turns[1] = ScriptTurn::text(concat!(
@@ -836,7 +866,7 @@ fn later_publication_and_reporting_do_not_erase_execution_policy() {
 #[test]
 fn optional_publication_metadata_defaults_to_inactive() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     run(&env, vec![ScriptTurn::text("done")]);
     let state_path = state_path(&env);
     let mut state: serde_json::Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
@@ -858,7 +888,7 @@ fn optional_publication_metadata_defaults_to_inactive() {
 #[test]
 fn failed_draft_creation_does_not_strand_reporting_checkpoint() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);
     env.write(
         "home/.oxa/agent/issue-drafts",
@@ -893,7 +923,7 @@ fn unsetting_the_agent_marker_and_piping_yes_cannot_authorize_public_writes() {
     let mut unauthorized = vec![];
     for flag in ["--publish", "--report-problems"] {
         let env = TestEnv::new();
-        setup(&env, "[]");
+        setup(&env, r#"["test -f .oxa/settings.json"]"#);
         let path = configure(&env);
         env.write("tmp/gh", r##"#!/bin/sh
 case "$1 $2" in

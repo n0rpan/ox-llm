@@ -3,7 +3,7 @@ use super::refill_input::{text, Input, Prepared};
 use super::*;
 use crate::work_refill::{Consumer, Packet, Partition};
 use oxa_work::board::Action;
-use std::{fs, os::unix::fs::MetadataExt, path::PathBuf};
+use std::{fs, io::Write, os::unix::fs::MetadataExt, path::PathBuf};
 
 pub(super) fn private(path: &Path, uid: u32) -> Result<Value, String> {
     let mut bytes = Vec::new();
@@ -187,7 +187,6 @@ pub(super) fn run(
     let policy = Policy {
         enabled: true,
         max_attempts_per_day: attempt_limit(&value)?,
-        ..Policy::default()
     };
     let consumer = Consumer {
         repository: repo,
@@ -209,7 +208,7 @@ pub(super) fn run(
         })
         .collect();
     let mut log = oxa_work::shadow::open_log(&owner_path("log")?)?;
-    consumer.once(
+    let receipts = consumer.once(
         &mut source,
         &inputs,
         now,
@@ -234,5 +233,15 @@ pub(super) fn run(
             Ok(())
         },
     )?;
+    // One operator warning per claimed receipt, once per claim, on stderr: the
+    // refill's stdout stays machine-only. The notice is best-effort like every
+    // other diagnostic write: a broken sink cannot fail an admission whose
+    // claim and packet are already durable.
+    let mut err = std::io::stderr().lock();
+    for receipt in &receipts {
+        if let Some(advisory) = &receipt.advisory {
+            let _ = writeln!(err, "{}", advisory.line(receipt.number));
+        }
+    }
     Ok(0)
 }

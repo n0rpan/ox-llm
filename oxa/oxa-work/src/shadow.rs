@@ -83,6 +83,28 @@ pub fn open_log(path: &Path) -> Result<File> {
     open_log_for_owner(path, unsafe { libc::geteuid() })
 }
 
+/// An owner-private append log for a worker's stdout and stderr: created 0600, never opened
+/// through a symlink, and refused unless it is an owner-only regular file with one link.
+pub fn open_owner_log(path: &Path) -> Result<File> {
+    // SAFETY: geteuid has no preconditions and returns this process's effective owner.
+    let owner = unsafe { libc::geteuid() };
+    let file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(OWNER_FILE_FLAGS)
+        .open(path)
+        .map_err(|_| "cannot open private worker log")?;
+    let metadata = file.metadata().map_err(|_| "cannot inspect worker log")?;
+    if !regular_file_owned_by(&metadata, owner)
+        || metadata.nlink() != 1
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err("worker log must be a private regular file with one link".into());
+    }
+    Ok(file)
+}
+
 fn open_log_for_owner(path: &Path, owner: u32) -> Result<File> {
     let mut file = OpenOptions::new()
         .read(true)

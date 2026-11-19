@@ -97,6 +97,7 @@ impl FullAccess {
                 },
                 exit: None,
                 timed_out: false,
+                unsandboxed: false,
             },
         }
     }
@@ -114,6 +115,9 @@ impl Sandbox for FullAccess {
             return !self.offline;
         }
         self.inner.network()
+    }
+    fn network_enforced(&self) -> bool {
+        self.inner.network_enforced()
     }
     fn persistence_notice(&self) -> Option<&str> {
         if self.switch.full() {
@@ -164,6 +168,9 @@ impl Sandbox for FileView {
     }
     fn network(&self) -> bool {
         self.inner.network()
+    }
+    fn network_enforced(&self) -> bool {
+        self.inner.network_enforced()
     }
     fn persistence_notice(&self) -> Option<&str> {
         self.inner.persistence_notice()
