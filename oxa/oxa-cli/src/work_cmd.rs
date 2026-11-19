@@ -169,6 +169,14 @@ pub(crate) fn run(
             terminate_binary,
             offline: oxa_proto::offline(),
             runner_owns_github: false,
+            autonomy: runner_autonomy(&oxa_config::Settings::load(dirs, &root, false)),
+            // Re-read for every launch: lowering `permissions.defaultMode` revokes yolo for the
+            // tasks a running queue has not started yet.
+            autonomy_now: Some({
+                let (dirs, root) = (dirs.clone(), root.clone());
+                std::sync::Arc::new(move || runner_autonomy(&oxa_config::Settings::load(&dirs, &root, false)))
+                    as std::sync::Arc<dyn Fn() -> oxa_proto::Autonomy + Send + Sync>
+            }),
             storage: dirs.agent_dir.join("work").join(key),
         };
         protected_storage(&policy.storage, &root, &common)?;
@@ -314,8 +322,8 @@ pub(crate) fn run(
                 })?;
             return Ok(i32::from(summary.failed > 0 || summary.pending > 0));
         }
-        let tasks = match task_args {
-            [file] if !file.starts_with('-') => oxa_work::read_tasks(&cwd.join(file))?,
+        let (tasks, explicit_model) = match task_args {
+            [file] if !file.starts_with('-') => (oxa_work::read_tasks(&cwd.join(file))?, false),
             [flag, number, model_flag, model] if flag == "--issue" && model_flag == "--model" => {
                 if oxa_proto::offline() {
                     return Err("GitHub issue lookup is unavailable in offline mode".into());
@@ -324,8 +332,8 @@ pub(crate) fn run(
                     return Err("source project is not trusted; approve it before issue lookup".into());
                 }
                 let number = number.parse().map_err(|_| "invalid issue number")?;
-                if let Some(task) = oxa_work::saved_issue_task(&policy, number, model)? {
-                    vec![task]
+                let task = if let Some(task) = oxa_work::saved_issue_task(&policy, number, model)? {
+                    task
                 } else {
                     let gh = crate::netguard::trusted_executable_for(
                         "gh",
@@ -337,8 +345,9 @@ pub(crate) fn run(
                     let mut task =
                         oxa_work::issue_task(&root, &gh, &policy.host_path, number, model.clone())?;
                     task.prompt.insert_str(0, &oxa_work::github_runner_guidance("issue"));
-                    vec![task]
-                }
+                    task
+                };
+                (vec![task], true)
             }
             [flag, number, model_flag, model] if flag == "--pr" && model_flag == "--model" => {
                 if oxa_proto::offline() {
@@ -355,13 +364,27 @@ pub(crate) fn run(
                 )
                 .ok_or("no trusted gh executable outside the source project")?;
                 let number = number.parse().map_err(|_| "invalid pull request number")?;
-                vec![oxa_work::pull_request_task(&root, &gh, &policy, number, model.clone())?]
+                (
+                    vec![oxa_work::pull_request_task(&root, &gh, &policy, number, model.clone())?],
+                    true,
+                )
             }
             _ => return Err(
                 "usage: oxa work <taskfile> [--rerun] | --issue N --model MODEL [--rerun] | --pr N --model MODEL [--rerun] | status [--json | --usage TASK]"
                     .into(),
             ),
         };
+        let owner_selected_model = explicit_model
+            && !env.pairs().iter().any(|(name, _)| {
+                matches!(
+                    name.as_str(),
+                    "OXA_CODING_AGENT"
+                        | "AI_AGENT"
+                        | oxa_core::SubagentHooks::ENV_SUBAGENT_DEPTH
+                        | oxa_core::SubagentHooks::ENV_SESSION_HINT
+                        | oxa_work::PlannedTask::DELEGATED_MODEL_ENV
+                )
+            });
         // Freeze every task before checkout hooks or a first worker can change
         // shared refs. A bad plan remains a per-task error, not a batch abort.
         let plans = if is_trusted {
@@ -380,7 +403,16 @@ pub(crate) fn run(
         let planned: Vec<_> = tasks
             .into_iter()
             .zip(plans)
-            .map(|(task, plan)| plan.map_err(|detail| Box::new(oxa_work::blocked_record(&task, detail))))
+            .map(|(task, plan)| {
+                plan.map(|plan| {
+                    if owner_selected_model {
+                        plan.with_owner_model_selection()
+                    } else {
+                        plan
+                    }
+                })
+                .map_err(|detail| Box::new(oxa_work::blocked_record(&task, detail)))
+            })
             .collect();
         let mut code = 0;
         for task in planned {
@@ -570,10 +602,35 @@ fn queue_options(args: &[String], cwd: &Path) -> Result<(PathBuf, oxa_work::Queu
     Ok((directory, options))
 }
 
+/// The level the runner's workers inherit: yolo only when the owner's own settings say so.
+/// The project layer is never read here, and it could only lower a mode anyway.
+fn runner_autonomy(settings: &oxa_config::Settings) -> oxa_proto::Autonomy {
+    if settings.default_permission_mode() == oxa_proto::PermissionMode::Yolo {
+        oxa_proto::Autonomy::Yolo
+    } else {
+        oxa_proto::Autonomy::default()
+    }
+}
+
 #[cfg(test)]
 mod registration_tests {
-    use super::registered_native_worker;
+    use super::{registered_native_worker, runner_autonomy};
     use serde_json::json;
+
+    #[test]
+    fn project_cannot_raise_worker_mode() {
+        let settings =
+            oxa_config::Settings::from_values(json!({}), json!({"permissions": {"defaultMode": "yolo"}}));
+        assert_eq!(runner_autonomy(&settings), oxa_proto::Autonomy::Standard);
+        let owner = oxa_config::Settings::from_values(
+            json!({"permissions": {"defaultMode": "yolo"}}),
+            json!({"permissions": {"defaultMode": "standard"}}),
+        );
+        assert_eq!(runner_autonomy(&owner), oxa_proto::Autonomy::Standard);
+        let owner =
+            oxa_config::Settings::from_values(json!({"permissions": {"defaultMode": "yolo"}}), json!({}));
+        assert_eq!(runner_autonomy(&owner), oxa_proto::Autonomy::Yolo);
+    }
 
     #[test]
     fn protected_registration_preserves_the_explicit_worker_and_adjacent_host() {
