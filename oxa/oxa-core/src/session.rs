@@ -166,6 +166,7 @@ struct BusyGuard(Arc<Shared>);
 
 impl Drop for BusyGuard {
     fn drop(&mut self) {
+        self.0.gate.running.store(false, Ordering::SeqCst);
         self.0.busy.store(false, Ordering::SeqCst);
     }
 }
@@ -510,7 +511,7 @@ impl Session {
         sink: &mut dyn EventSink,
         ui: &mut dyn Ui,
     ) -> Result<Option<String>, OxaError> {
-        let _guard = self.begin()?;
+        let _guard = self.begin_foreground()?;
         crate::navigate(&mut self.st, target, summarize, instructions, sink, ui)
     }
 
@@ -586,6 +587,11 @@ impl Session {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .take()
+    }
+
+    /// The model this session sends its requests to (the last model switch or the opened one).
+    pub fn model(&self) -> &str {
+        &self.st.model
     }
 
     /// Model switch = a new epoch (W3), applied now when idle. Appends `ModelChange`, then
@@ -874,6 +880,17 @@ impl Session {
     /// only while its wire is empty. Front ends call it from their idle tick before the first
     /// prompt; it claims the session like a run, so a busy session is skipped (`false`).
     pub fn preload_prefix(&mut self, sink: &mut dyn EventSink, ui: &mut dyn Ui) -> bool {
+        self.preload_prefix_if(sink, ui, || true)
+    }
+
+    /// Recheck front-end admission after claiming background work and before any engine call.
+    /// The caller arms cancellation before this call, then checks its existing command queue.
+    pub fn preload_prefix_if(
+        &mut self,
+        sink: &mut dyn EventSink,
+        ui: &mut dyn Ui,
+        should_start: impl FnOnce() -> bool,
+    ) -> bool {
         if self.preloaded {
             return false;
         }
@@ -888,6 +905,10 @@ impl Session {
         let Ok(_guard) = self.begin() else {
             return false;
         };
+        if !should_start() {
+            self.preloaded = false;
+            return false;
+        }
         // A turn an extension triggers while the preload request runs waits for the next idle
         // tick (`serve_host`) instead of being queued into a run that never comes.
         crate::host::holding_triggers(|| crate::compaction::boot_preload(&mut self.st, sink, ui))
@@ -1016,11 +1037,20 @@ impl Session {
     /// is never lost to a later reset.
     /// New prompt/extension work gets fresh run-local flags; prefill-only claims do not.
     fn begin_run(&mut self) -> Result<BusyGuard, OxaError> {
-        let guard = self.begin()?;
+        let guard = self.begin_foreground()?;
         crate::progress::notify(&self.st, crate::Progress::RunStart);
         self.st.stats.done_failed = false;
         self.st.stats.output_truncated = false;
         crate::goal::begin(&self.st);
+        Ok(guard)
+    }
+
+    /// Claim a user-facing operation which must remain cancellable even when it emits no
+    /// activity events. Unlike [`Session::begin_run`], this does not start an agent turn or
+    /// reset its outcome bookkeeping.
+    fn begin_foreground(&self) -> Result<BusyGuard, OxaError> {
+        let guard = self.begin()?;
+        self.st.shared.gate.running.store(true, Ordering::SeqCst);
         Ok(guard)
     }
 
