@@ -218,6 +218,16 @@ fn prefixed_assignment(text: &str) -> bool {
 
 /// A PuTTY private key is a line-oriented format, not PEM: `PuTTY-User-Key-File-N` and
 /// `Private-MAC` appear in a copied key under any file name.
+/// An age identity is a bare `AGE-SECRET-KEY-…` line, so a copy without its `.config/sops/age`
+/// path is otherwise invisible; the PQ format uses the same words with a `PQ-` market.
+fn age_identity(text: &str) -> bool {
+    text.split(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+        .any(|word| {
+            let upper = word.to_ascii_uppercase();
+            upper.starts_with("AGE-SECRET-KEY-1") || upper.starts_with("AGE-SECRET-KEY-PQ-")
+        })
+}
+
 fn putty_key(text: &str) -> bool {
     text.lines().any(|line| {
         let line = line.trim_start();
@@ -285,7 +295,12 @@ fn registry_auth(text: &str) -> bool {
             .expect("registry auth pattern")
     })
     .captures_iter(text)
-    .any(|found| opaque_value(&found[1]))
+    .any(|found| {
+        // A login's base64 may be letters only (`user:passphrase` encodes without digits), which
+        // the class-mixing heuristic rejects; a template placeholder is not a credential.
+        let value = found[1].trim();
+        value.len() >= 8 && !value.starts_with('$') && !value.contains("${")
+    })
 }
 
 fn env_template(path: &str) -> bool {
@@ -380,7 +395,7 @@ impl PushScan {
 
     fn secret_text(&self, text: &str) -> Option<&'static str> {
         let p = patterns();
-        if p.pem_begin.is_match(text) || putty_key(text) {
+        if p.pem_begin.is_match(text) || putty_key(text) || age_identity(text) {
             return Some("a private key");
         }
         if scheme_credential(text) {
@@ -396,6 +411,7 @@ impl PushScan {
             || quoted_secret_literal(text)
             || environment_secret_assignment(text)
             || prefixed_assignment(text)
+            || registry_auth(text)
             || block_scalar_secret(text)
             || json_split_secret(text)
             || p.bearer
@@ -468,6 +484,21 @@ mod tests {
         assert!(scan
             .check(&added("notes.txt", "Authorization: Basic ${BASIC}"))
             .is_none());
+        // An age identity and a registry login renamed to a plain file.
+        assert!(
+            scan.check(&added(
+                "notes.txt",
+                "AGE-SECRET-KEY-1QJ0J0J0J0J0J0J0J0J0J0J0J0J0J0J0J0J0J0J0J0J0J0J0J0"
+            ))
+            .is_some(),
+            "an age identity was not refused"
+        );
+        assert!(scan
+            .check(&added(
+                "registry-config.json",
+                r#"{"auths":{"registry.example.invalid":{"auth":"dXNlcjpwYXNzcGhyYXNl"}}}"#
+            ))
+            .is_some());
         // Base64 of `user:passphrase` is letters only; the class mixer would miss it.
         assert!(scan
             .check(&added("notes.txt", "Authorization: Basic dXNlcjpwYXNzcGhyYXNl"))
