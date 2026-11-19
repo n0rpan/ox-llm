@@ -105,7 +105,7 @@ impl Settings {
 
     /// `oxa.bash.maxJobs`: how many background jobs may run at once. Unset = 16; at least 1.
     pub fn bash_max_jobs(&self) -> usize {
-        (self.u32("oxa.bash.maxJobs", BASH_MAX_JOBS_DEFAULT) as usize).max(1)
+        (self.user_u32("oxa.bash.maxJobs", BASH_MAX_JOBS_DEFAULT) as usize).max(1)
     }
 }
 
@@ -195,14 +195,15 @@ mod tests {
         assert_eq!(off.bash_default_timeout(), 0);
     }
 
-    /// `oxa.bash.maxJobs` reads the owner's setting; zero is refused as one job.
+    /// The background-job cap comes from the owner. Zero is treated as one job.
     #[test]
     fn jobs_limit_from_setting() {
-        let set = Settings::from_values(json!({"oxa": {"bash": {"maxJobs": 3}}}), json!({}));
+        let project = json!({"oxa": {"bash": {"maxJobs": 32}}});
+        let set = Settings::from_values(json!({"oxa": {"bash": {"maxJobs": 3}}}), project.clone());
         assert_eq!(set.bash_max_jobs(), 3);
         let zero = Settings::from_values(json!({"oxa": {"bash": {"maxJobs": 0}}}), json!({}));
         assert_eq!(zero.bash_max_jobs(), 1);
-        let unset = Settings::from_values(json!({}), json!({}));
+        let unset = Settings::from_values(json!({}), project);
         assert_eq!(unset.bash_max_jobs(), 16);
     }
 }

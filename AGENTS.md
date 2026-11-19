@@ -45,7 +45,8 @@ maintainer, who says in the PR when a hardware check is needed.
   the user docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A review finding
   that contradicts an owner decision stated in the linked issue or PR is answered by updating these
   rules in that PR, not by changing the behaviour.
-- **Bash and subagent limits.** `oxa.bash.maxJobs` defaults to 16 running background jobs.
+- **Bash and subagent limits.** The two caps are user-only. `oxa.bash.maxJobs` defaults to 16
+  running background jobs.
   `oxa.subagent.maxChildren` defaults to 8 running or queued children per parent and 8 steps
   per call. Both settings have a minimum of 1. An explicit bash `timeout: 0` disables the
   timeout for that call, including a background job, and overrides the foreground default.

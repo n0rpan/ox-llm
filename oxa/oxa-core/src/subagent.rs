@@ -417,7 +417,8 @@ impl SubagentHooks {
     /// Read `oxa.subagent.enabled`, `oxa.subagent.softTokens`, `oxa.subagent.resultCap` and
     /// `oxa.subagent.smallContext`.
     pub fn with_settings(self, settings: &Settings) -> SubagentHooks {
-        let max_children = (settings.u32(SETTING_MAX_CHILDREN, MAX_PARALLEL_TASKS as u32) as usize).max(1);
+        let max_children =
+            (settings.user_u32(SETTING_MAX_CHILDREN, MAX_PARALLEL_TASKS as u32) as usize).max(1);
         *lock(&self.inner.config) = Config {
             soft_tokens: settings.u32(SETTING_SOFT_TOKENS, DEFAULT_SOFT_TOKENS).max(1),
             result_cap: settings.u32(SETTING_RESULT_CAP, DEFAULT_RESULT_CAP as u32) as usize,
@@ -1802,6 +1803,27 @@ fn spawn(
                 std::thread::sleep(Duration::from_millis(20));
             }
             other => return other,
+        }
+    }
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+
+    #[test]
+    fn project_cannot_raise_the_owner_child_limit() {
+        let project = json!({"oxa": {"subagent": {"maxChildren": 32, "remoteConcurrency": 32}}});
+        for (user, expected) in [
+            (json!({}), MAX_PARALLEL_TASKS),
+            (json!({"oxa": {"subagent": {"maxChildren": 3}}}), 3),
+            (json!({"oxa": {"subagent": {"maxChildren": 12}}}), 12),
+        ] {
+            let settings = Settings::from_values(user, project.clone());
+            let hooks = SubagentHooks::new(PathBuf::from("unused"), Vec::new()).with_settings(&settings);
+            let config = lock(&hooks.inner.config);
+            assert_eq!(config.max_children, expected);
+            assert_eq!(config.remote_concurrency, expected);
         }
     }
 }
