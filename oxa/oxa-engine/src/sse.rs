@@ -1,6 +1,7 @@
 //! A1: SSE parsing and the streaming POST.
 use crate::http::{build_request, connect, framing_of, header, parse_head, BodyDecoder, Conn};
 use crate::Url;
+use oxa_http::sse::{Frame, Framer};
 use oxa_proto::{codes, CancelToken, OxaError};
 
 /// One parsed SSE item.
@@ -21,14 +22,24 @@ pub enum SseEvent {
 /// as one event; a comment is delivered as soon as its line ends. Other fields (`event:`, `id:`,
 /// `retry:`) are ignored: the controller's in-stream error is `event: error` + `data: {"error":..}`
 /// and is recognised by its data (F3).
-#[derive(Debug, Default)]
+///
+/// The line machinery is the shared `oxa_http::sse::Framer`; this type decodes its frames to text.
+#[derive(Default)]
 pub struct SseParser {
-    buf: Vec<u8>,
+    framer: Framer,
     /// The last byte was `\r`, so a following `\n` belongs to the same line break.
-    pending_cr: bool,
-    /// `data:` values of the event being assembled.
-    data: Vec<String>,
+    after_cr: bool,
+    /// Bytes of the complete `data:` lines (prefix included) of the event being assembled.
     data_bytes: usize,
+}
+
+impl std::fmt::Debug for SseParser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SseParser")
+            .field("pending_line", &self.framer.pending_line())
+            .field("data_bytes", &self.data_bytes)
+            .finish()
+    }
 }
 
 impl SseParser {
@@ -40,74 +51,48 @@ impl SseParser {
     /// byte. Complete events may continue indefinitely without accumulating.
     pub fn feed_bounded(&mut self, bytes: &[u8], maximum: usize) -> Result<Vec<SseEvent>, OxaError> {
         let mut events = Vec::new();
-        for byte in bytes {
-            if self.buf.len().saturating_add(self.data_bytes) >= maximum {
+        for &byte in bytes {
+            if self.framer.pending_line().saturating_add(self.data_bytes) >= maximum {
                 return Err(broken("SSE event exceeds its buffer limit"));
             }
-            events.extend(self.feed(std::slice::from_ref(byte)));
+            events.extend(self.push(byte));
         }
         Ok(events)
     }
 
     /// Feed bytes; returns the events completed by them, in order.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<SseEvent> {
-        let mut events = Vec::new();
-        for &b in bytes {
-            match b {
-                b'\n' if self.pending_cr => self.pending_cr = false,
-                b'\r' => {
-                    self.pending_cr = true;
-                    let line = self.take_line();
-                    self.line(line, &mut events);
-                }
-                b'\n' => {
-                    self.pending_cr = false;
-                    let line = self.take_line();
-                    self.line(line, &mut events);
-                }
-                _ => {
-                    self.pending_cr = false;
-                    self.buf.push(b);
-                }
-            }
-        }
-        events
+        bytes.iter().filter_map(|&byte| self.push(byte)).collect()
     }
 
-    fn take_line(&mut self) -> String {
-        let bytes = std::mem::take(&mut self.buf);
-        String::from_utf8_lossy(&bytes).into_owned()
-    }
-
-    fn line(&mut self, line: String, events: &mut Vec<SseEvent>) {
-        if line.is_empty() {
-            self.data_bytes = 0;
-            if self.data.is_empty() {
-                return;
+    fn push(&mut self, byte: u8) -> Option<SseEvent> {
+        let line = self.framer.pending_line();
+        let data = self.framer.pending_data();
+        let continues_crlf = byte == b'\n' && self.after_cr;
+        self.after_cr = byte == b'\r';
+        let frame = self.framer.push(byte);
+        if matches!(byte, b'\r' | b'\n') && !continues_crlf {
+            if line == 0 {
+                self.data_bytes = 0;
+            } else if self.framer.pending_data() > data {
+                // The line just ended was a `data` line: count it whole, prefix included.
+                self.data_bytes = self.data_bytes.saturating_add(line);
             }
-            let joined = self.data.join("\n");
-            self.data.clear();
-            events.push(if joined == "[DONE]" {
-                SseEvent::Done
-            } else {
-                SseEvent::Data(joined)
-            });
-            return;
         }
-        if let Some(rest) = line.strip_prefix(':') {
-            events.push(SseEvent::Comment(
-                rest.strip_prefix(' ').unwrap_or(rest).to_string(),
-            ));
-            return;
-        }
-        let (field, value) = match line.split_once(':') {
-            Some((field, value)) => (field, value.strip_prefix(' ').unwrap_or(value)),
-            None => (line.as_str(), ""),
-        };
-        if field == "data" {
-            self.data_bytes = self.data_bytes.saturating_add(line.len());
-            self.data.push(value.to_string());
-        }
+        frame.map(|frame| match frame {
+            Frame::Data(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                if text == "[DONE]" {
+                    SseEvent::Done
+                } else {
+                    SseEvent::Data(text.into_owned())
+                }
+            }
+            Frame::Comment(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                SseEvent::Comment(text.strip_prefix(' ').unwrap_or(&text).to_string())
+            }
+        })
     }
 }
 
@@ -354,4 +339,50 @@ fn has_header(headers: &[(&str, String)], name: &str) -> bool {
 
 fn broken(what: &str) -> OxaError {
     OxaError::new(codes::STREAM_BROKEN, what.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SseEvent, SseParser};
+
+    fn data(text: &str) -> SseEvent {
+        SseEvent::Data(text.to_string())
+    }
+
+    #[test]
+    fn invalid_utf8_is_replaced_like_the_line_parser_did() {
+        let got = SseParser::new().feed(b"data: \xff\n\n");
+        assert_eq!(got, vec![data("\u{fffd}")]);
+    }
+
+    #[test]
+    fn events_comments_and_done() {
+        let got = SseParser::new().feed(b": prefill 10/200\r\ndata: a\ndata: b\n\ndata: [DONE]\n\n");
+        assert_eq!(
+            got,
+            vec![
+                SseEvent::Comment("prefill 10/200".into()),
+                data("a\nb"),
+                SseEvent::Done
+            ]
+        );
+    }
+
+    #[test]
+    fn bound_counts_whole_data_lines_and_resets_on_a_blank_line() {
+        let mut p = SseParser::new();
+        // "data: ab" is 8 bytes; with 3 more pending bytes the total reaches the limit of 11.
+        assert!(p.feed_bounded(b"data: ab\ndat", 11).is_ok());
+        assert!(p.feed_bounded(b"a", 11).is_err());
+        let mut p = SseParser::new();
+        assert!(p.feed_bounded(b"data: ab\n\ndata: ab\n\n", 9).is_ok());
+    }
+
+    #[test]
+    fn crlf_after_a_data_line_does_not_reset_the_bound() {
+        let mut p = SseParser::new();
+        assert!(p.feed_bounded(b"data: ab\r\n", 9).is_ok());
+        assert!(p.feed_bounded(b"x", 9).is_ok());
+        assert!(p.feed_bounded(b"y", 9).is_err());
+    }
 }

@@ -242,6 +242,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::LeadAsks
                     | CommandId::LeadChat
                     | CommandId::Goal
+                    | CommandId::Admission
                     | CommandId::Help
                     | CommandId::WorkStatus
                     | CommandId::WorkBoard
@@ -950,21 +951,24 @@ fn prepare(
             pattern: requested_model.as_deref(),
             scope: &owner_scope,
             endpoint: &endpoint.name,
-            // Model arguments delegated by a launcher cannot opt into a
-            // provider without explicit user settings, and a restored session model
-            // is provenance-less: it counts only when the owner enabled Go. A project
-            // `defaultModel` or `enabledModels` never counts, and an agent process is not
-            // the owner: tool subprocesses carry `AI_AGENT`/`OXA_CODING_AGENT`, so the
-            // check they already fail elsewhere applies to the model argument too.
-            owner_selected: !child.nested()
-                && !is_agent(env)
-                && env.get(oxa_work::PlannedTask::DELEGATED_MODEL_ENV).is_none()
-                && (a.model.is_some()
-                    || (continued_go.is_some() && user_settings.bool(crate::in_process::GO_SETTING, false))
-                    || !owner_scope.is_empty()
-                    || requested_model
-                        .as_ref()
-                        .is_some_and(|model| user_settings.string("defaultModel").as_ref() == Some(model))),
+            // An actual `--model` argument is the owner's choice of that model, also when a
+            // launcher (`oxa work`, a supervised child) passed it: the protected user key is
+            // what authorizes the Go transport. A coding-agent tool process is not the owner
+            // (it carries `AI_AGENT`/`OXA_CODING_AGENT`), a restored session model is
+            // provenance-less (it counts only when the owner enabled Go), and a project
+            // `defaultModel` or `enabledModels` never counts.
+            owner_selected: (a.model.is_some()
+                && env.get("AI_AGENT").is_none()
+                && env.get("OXA_CODING_AGENT").is_none())
+                || (!child.nested()
+                    && !is_agent(env)
+                    && env.get(oxa_work::PlannedTask::DELEGATED_MODEL_ENV).is_none()
+                    && ((continued_go.is_some()
+                        && user_settings.bool(crate::in_process::GO_SETTING, false))
+                        || !owner_scope.is_empty()
+                        || requested_model.as_ref().is_some_and(|model| {
+                            user_settings.string("defaultModel").as_ref() == Some(model)
+                        }))),
         },
         (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
         shared,
@@ -992,7 +996,11 @@ fn prepare(
     if !owner_chat && env.get(oxa_proto::names::ENV_TEST_ISOLATION) != Some("1") && !child.nested() {
         let probe = (!oxa_proto::offline()).then_some(engine.as_ref());
         let facts = crate::identity_cmd::identity_facts(Path::new("/"), probe);
-        let keep_known_models = facts.models.is_empty() && oxa_resources::read_identity(dirs).is_some();
+        // An old file is kept only when it is in the current format; one written by an older
+        // oxa (old head, cloud model lines) is rewritten with `Models: not known`.
+        let keep_known_models = facts.models.is_empty()
+            && oxa_resources::read_identity(dirs)
+                .is_some_and(|t| t.starts_with(oxa_core::prompt::IDENTITY_HEAD));
         if !keep_known_models {
             if let Err(e) = crate::identity_cmd::write_identity(dirs, &facts) {
                 notices.push((Level::Warning, e.message));
@@ -1612,6 +1620,7 @@ fn run_headless(
         continue_goal,
         ..
     } = prep;
+    oxa_core::set_headless(true);
     let mut session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
         Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),
@@ -1789,6 +1798,7 @@ fn run_headless(
         let usage = serde_json::json!({
             "type": "run_usage",
             "tokens": session.handle().run_tokens_used(),
+            "complete": !session.handle().run_usage_unreported(),
         });
         if let Some(stdout) = stdout.as_deref_mut() {
             let _ = writeln!(stdout, "{usage}");
