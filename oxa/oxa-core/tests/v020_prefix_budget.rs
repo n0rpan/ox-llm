@@ -150,8 +150,10 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// 2026-11-15: the built-in `pull-request` skill (#181) joined the skills section.
 /// 2026-11-16: issue #519 added `kill` to the `bash` schema and documented per-job cancellation
 /// and explicit background timeouts; both default tool prefixes intentionally changed.
-const DEFAULT_STABLE_SHA: &str = "2d4683b3fd6b9a30dce842f87a5cf0626e3e7639cc4ad456386e6eaad22757ea";
-const DEFAULT_STABLE_SHA_SUBAGENT: &str = "5ce26b9bd40a179b6dc68f67dea6ffd02f7ad2cf2922ee535d3fafcc639c2613";
+/// 2026-11-19: issue #1542 rewrote the `ox-llm` skill onto the native `oxa models` catalog; its
+/// description in the skills section is part of both default prefixes.
+const DEFAULT_STABLE_SHA: &str = "4be175b9adc25dba93612a710d5045ef1de0aa6f7b94610304e4416a2803acdb";
+const DEFAULT_STABLE_SHA_SUBAGENT: &str = "9f9cc8f46b26cd0cf2e5c2cd3dd8bffd17199c709c324b9b464b0d7f2379462d";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
 fn has_date(s: &str) -> bool {

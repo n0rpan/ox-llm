@@ -105,14 +105,14 @@ fn lists_the_fixture_catalog_without_a_controller_cli_on_path() {
     }
     let local = row(&out, "fixture-local");
     assert!(local.starts_with("local"), "local row: {local}");
-    assert!(local.contains("32K"), "local context: {local}");
-    assert!(local.contains("4K"), "local max-out: {local}");
+    assert!(local.contains("32.8K"), "local context: {local}");
+    assert!(local.contains("4.1K"), "local max-out: {local}");
     assert!(local.ends_with("no"), "the cloud route is the default: {local}");
     assert!(!local.ends_with(' '), "no trailing spaces: {local}");
     let cloud = row(&out, "fixture-cloud");
     assert!(cloud.starts_with("cloud · anthropic"), "cloud row: {cloud}");
     assert!(cloud.contains("200K"), "cloud context: {cloud}");
-    assert!(cloud.contains("8K"), "cloud max-out: {cloud}");
+    assert!(cloud.contains("8.2K"), "cloud max-out: {cloud}");
     assert!(cloud.ends_with("yes"), "the cloud route is the default: {cloud}");
 }
 
