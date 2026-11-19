@@ -1,10 +1,10 @@
 //! The session probe (animations design, context layer): the facts about the repo and the host
 //! that the signals need, read once per session and never in the draw path.
 //!
-//! The reads are bounded: a fixed list of existence checks ([`STAT_PATHS`]) and a fixed list of
-//! small reads ([`READ_PATHS`]), each read capped at [`READ_CAP`] bytes. A missing file or
-//! variable is a fact ("no CI file", "not a repository"), never an error. Text from the repo is
-//! reduced to flags and classes on the way in: no branch name or file content is kept.
+//! The reads are bounded: a fixed number of existence checks and small reads, each read capped at
+//! [`READ_CAP`] bytes. Git state paths may be rooted at the directory named by a `.git` pointer. A
+//! missing file or variable is a fact ("no CI file", "not a repository"), never an error. Text from
+//! the repo is reduced to flags and classes on the way in: no branch name or file content is kept.
 //! Nothing here reads a clock.
 
 use std::io::Read;
@@ -24,6 +24,7 @@ pub const STAT_PATHS: &[&str] = &[
 
 /// Small reads the probe makes: the HEAD ref, the battery level and the OS release.
 pub const READ_PATHS: &[&str] = &[
+    ".git",
     ".git/HEAD",
     "/sys/class/power_supply/BAT0/capacity",
     "/etc/os-release",
@@ -146,7 +147,8 @@ pub fn run_probe(fs: &dyn ProbeFs, env: &dyn Fn(&str) -> Option<String>) -> Prob
         .iter()
         .find(|(path, _)| fs.exists(path))
         .map(|(_, ci)| *ci);
-    let head = fs.read_capped(".git/HEAD", READ_CAP);
+    let git_dir = git_dir(fs);
+    let head = fs.read_capped(&git_path(&git_dir, "HEAD"), READ_CAP);
     let (on_default_branch, detached) = head_state(head.as_deref());
     let os_release = fs.read_capped("/etc/os-release", READ_CAP);
     let (arch, omarchy) = os_release_facts(os_release.as_deref());
@@ -162,10 +164,26 @@ pub fn run_probe(fs: &dyn ProbeFs, env: &dyn Fn(&str) -> Option<String>) -> Prob
         host,
         on_default_branch,
         detached,
-        merge_in_progress: fs.exists(".git/MERGE_HEAD"),
-        rebase_in_progress: fs.exists(".git/rebase-merge"),
+        merge_in_progress: fs.exists(&git_path(&git_dir, "MERGE_HEAD")),
+        rebase_in_progress: fs.exists(&git_path(&git_dir, "rebase-merge")),
         battery_percent: battery.as_deref().and_then(parse_percent),
     }
+}
+
+/// Resolves the per-worktree Git directory. In a normal checkout `.git` is a directory and cannot
+/// be read as text; linked worktrees and submodules instead store a `gitdir:` pointer in that file.
+fn git_dir(fs: &dyn ProbeFs) -> PathBuf {
+    fs.read_capped(".git", READ_CAP)
+        .as_deref()
+        .and_then(|text| text.trim().strip_prefix("gitdir:"))
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(".git"))
+}
+
+fn git_path(git_dir: &std::path::Path, name: &str) -> String {
+    git_dir.join(name).to_string_lossy().into_owned()
 }
 
 /// The probe of one session. The first call reads the disk; later calls return the same value
