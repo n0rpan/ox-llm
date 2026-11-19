@@ -846,8 +846,14 @@ fn tools_019() {
     let env = TestEnv::new();
     let mut lead: Vec<String> = ALL_SEVEN.iter().map(|s| s.to_string()).collect();
     lead.push("ask".to_string());
+    // K5a: the worker tool is on by default (`oxa.workers.enabled` true) in a parent session.
+    lead.push("worker".to_string());
     lead.sort();
-    assert_eq!(offered(&env, &[]), lead, "no agents: only lead built-ins");
+    assert_eq!(
+        offered(&env, &[]),
+        lead,
+        "no agents: the lead built-ins and worker"
+    );
     env.write(
         "home/.oxa/agent/agents/worker.md",
         "---\nname: worker\ndescription: Test worker\n---\nDo the assigned task.\n",
@@ -858,7 +864,7 @@ fn tools_019() {
     assert_eq!(
         offered(&env, &[]),
         all,
-        "oxa default (large, non-Flash model): eight lead built-ins and subagent"
+        "oxa default (large, non-Flash model): the lead built-ins, worker and subagent"
     );
     let flash = FakeOpts {
         model: "flash".to_string(),

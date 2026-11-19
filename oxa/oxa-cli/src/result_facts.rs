@@ -226,7 +226,7 @@ impl ProgressObserver for ResultFacts {
             Progress::Session { file } => self.session(file.map(|_| session.id.as_str())),
             Progress::RequestStart { kind, .. } => self.request_start(kind),
             Progress::RequestEnd { usage, .. } => self.request_end(usage),
-            Progress::ToolStart(name) if name == "web_search" => {
+            Progress::ToolStart("web_search") => {
                 let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
                 if !state.finished {
                     state.lookups = state.lookups.saturating_add(1);
