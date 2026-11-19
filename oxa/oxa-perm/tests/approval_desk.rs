@@ -408,6 +408,53 @@ fn desk_grants_are_bound_to_the_reviewed_directory() {
     assert_ne!(first, other, "another directory files its own request");
 }
 
+/// Answering and consuming are read-modify-write transitions on one file. Two owner processes
+/// answering the same request, or an answer racing the retry that spends it, must not resurrect
+/// a spent `once` grant: exactly one answer can win, and a spent record stays spent.
+#[test]
+fn desk_answers_and_consumption_are_serialised() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let keys = vec![KEY.to_string()];
+    let id = desk
+        .record("s1", &cwd, DANGEROUS, &[hit()], "pending")
+        .expect("pending");
+    let answers = 8;
+    let wins: usize = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..answers)
+            .map(|_| {
+                let desk = desk.clone();
+                let id = id.clone();
+                let cwd = cwd.clone();
+                let keys = keys.clone();
+                scope.spawn(move || {
+                    let answered = desk.answer(&id, "once").is_ok();
+                    // The retry spends the grant, if this thread's answer is the one that won.
+                    if answered {
+                        desk.consume("s1", &cwd, &keys);
+                    }
+                    answered
+                })
+            })
+            .collect();
+        handles.into_iter().filter(|h| h.join().unwrap_or(false)).count()
+    });
+    assert_eq!(wins, 1, "one answer wins, the rest see an answered request");
+    assert!(
+        !desk.covers("s1", &cwd, &keys),
+        "the spent grant was not resurrected"
+    );
+    let rec = desk
+        .records()
+        .expect("records")
+        .into_iter()
+        .find(|r| r.id == id)
+        .expect("the record");
+    assert!(rec.used, "the record still says used");
+    assert_eq!(rec.status, "once");
+}
+
 /// A probe that only inspects a covered request must not spend the owner's `once` approval: the
 /// retry still runs, and the final decision is what spends it.
 #[test]

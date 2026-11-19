@@ -18,6 +18,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The directory under the agent directory that holds the requests.
 const DIR_NAME: &str = "approvals";
+/// The advisory lock file of the desk, held across an answer or a consumption.
+const LOCK_NAME: &str = ".lock";
 /// The answers the owner can give (`oxa send --approve <id> <answer>`).
 const ANSWERS: &[&str] = &["once", "session", "always", "deny"];
 
@@ -116,6 +118,17 @@ pub struct ApprovalDesk {
     dir: PathBuf,
 }
 
+/// The held desk lock; dropping it closes the descriptor and releases the kernel lock.
+struct DeskLock(#[allow(dead_code)] File);
+
+impl Drop for DeskLock {
+    fn drop(&mut self) {
+        // Closing the descriptor releases the lock; the explicit unlock just makes that plain.
+        // SAFETY: the descriptor is still open here.
+        unsafe { libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(&self.0), libc::LOCK_UN) };
+    }
+}
+
 impl ApprovalDesk {
     /// Open (and create, private) the desk under `agent_dir`. Refuses a symlinked agent or desk
     /// directory, and a desk directory that another user owns.
@@ -166,6 +179,30 @@ impl ApprovalDesk {
         Ok(ApprovalDesk { dir })
     }
 
+    /// Hold the desk's exclusive advisory lock for one read-modify-write transition. `flock`
+    /// lives in the kernel, so a process that dies holding it (or is killed) releases it: a
+    /// crashed answer can never lock the desk forever. A lock file is not a record, so `all`
+    /// ignores it.
+    fn lock(&self) -> io::Result<DeskLock> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .open(self.dir.join(LOCK_NAME))?;
+        loop {
+            // SAFETY: `as_raw_fd` is a live descriptor of this process for the call's duration.
+            let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+            if rc == 0 {
+                return Ok(DeskLock(file));
+            }
+            let e = io::Error::last_os_error();
+            if e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+    }
+
     /// File a request for `hits` of `command` in `session`. A `pending` request reuses the open
     /// one with the same session and keys. Returns the request id.
     pub fn record(
@@ -179,6 +216,8 @@ impl ApprovalDesk {
         // The same key the policy grants use: the rule over the complete command line, so an
         // approval is bound to the command the owner reviewed and never to a bare segment.
         let keys: Vec<String> = hits.iter().map(|h| danger_key(h, command)).collect();
+        // Dedup and the write are one transition: two runs filing at once must not both insert.
+        let _lock = self.lock()?;
         if status == "pending" {
             let open = self.all()?.into_iter().find(|r| {
                 r.status == "pending"
@@ -214,6 +253,7 @@ impl ApprovalDesk {
         if !ANSWERS.contains(&status) {
             return Err(invalid_input("answer must be once, session, always or deny"));
         }
+        let _lock = self.lock()?;
         let mut rec = self
             .load(id)?
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such approval request"))?;
@@ -259,6 +299,9 @@ impl ApprovalDesk {
         if keys.is_empty() {
             return false;
         }
+        let Ok(_lock) = self.lock() else {
+            return false;
+        };
         let Ok(records) = self.all() else {
             return false;
         };
