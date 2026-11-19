@@ -475,7 +475,7 @@ class DevPromote(Fixture):
         self.assertEqual(self.restarts(), ['lead'])
         self.assertEqual(self.canary(), ['http://127.0.0.1:8743/chat'])
         self.assertEqual(self.running_digest(), new_digest)
-        self.assertIn('Promoted dev v0.2.0-dev.' + new[:7], result.stdout)
+        self.assertIn('Promoted dev v0.2.1-dev.' + new[:7], result.stdout)
         receipt = json.loads(self.rollout.read_text())
         self.assertEqual((receipt['action'], receipt['verification']), ('promoted', 'verified'))
         self.assertEqual((receipt['source_sha'], receipt['binary_sha256']), (new, new_digest))
