@@ -184,13 +184,16 @@ class EngineNextest(unittest.TestCase):
         self.assertIn('flash-m3 selftest', flash)
         self.assertNotIn('cargo test', job_block(build, 'flash'))
 
-    def test_wall_clock_binaries_run_alone(self):
+    def test_wall_clock_tests_run_alone_and_server_is_not_whole(self):
         self.assertRegex(self.config, r'(?m)^\[test-groups\.wall-clock\]\nmax-threads = 1$')
-        override = re.search(r"\[\[profile\.default\.overrides\]\]\nfilter = '(.*)'\ntest-group = 'wall-clock'\n"
-                             r"threads-required = 'num-test-threads'", self.config)
+        override = re.search(r"\[\[profile\.default\.overrides\]\]\nfilter = \'\'\'(.*?)\'\'\'\ntest-group = 'wall-clock'\n"
+                             r"threads-required = 'num-test-threads'", self.config, re.S)
         self.assertIsNotNone(override)
-        for binary in ('binary_id(sched)', 'binary_id(server)'):
-            self.assertIn(binary, override.group(1))
+        flt = override.group(1)
+        self.assertIn('binary_id(sched)', flt)
+        # the server lib tests run in parallel except the named elapsed-time tests
+        self.assertNotRegex(flt, r'binary_id\(server\)\s*(\||$)')
+        self.assertIn('binary_id(server) & (', flt)
 
 
 if __name__ == '__main__':

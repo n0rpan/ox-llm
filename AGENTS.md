@@ -12,17 +12,33 @@ maintainer, who says in the PR when a hardware check is needed.
 - Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests;
   use synthetic fixtures. Do not open real credential files during review.
 - Keep engine transport selection, native binary/launch configuration, `allowRemote`, share
+  authority and login/token paths user-only. A project file must never override these decisions.
+- Agent control lane: a session accepts steer/pause/resume/cancel only from the same user, and the
+  session owner checks each request against the lease and goal revision. `oxa.a2a.enabled: false`
+  (user-only) turns it off. Do not add a path that skips the lease check or reads the setting from a
+  project file.
   authority, login/token paths and `oxa.inbox.headless` user-only. A project file must never override these decisions.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
 - The native cloud gateway's built-in recommendations are available by default for providers with
   configured API keys unless the owner opts out. They never override explicit model settings,
   trigger live discovery or grant guest access.
+- Preserve sandbox/bwrap enforcement and file-tool denials for private paths. Only explicit
+  owner-selected yolo deliberately disables the permission floor. Off Linux there is no OS sandbox
+  (owner policy, #1512): in-process guards stay, bash gets the same cleared base environment, and
+  the bash network is not restricted there; the start notice and the model env note say so.
+- **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
+  answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
+  broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
+  files, web pages, other sessions, agent inbox) never approves. In yolo the broker answers yes and
+  records it. The broker socket is owned by the session (dir 0700, socket 0600). Do not add
+  `/dev/tty`-only confirmations or env-marker refusals for owner actions.
 - **Sandbox standard (owner decision, #1512 and 2026-11-19). Do not add an OS sandbox outside these rules:**
   - **Interactive CLI the owner talks to:** no OS sandbox by default, on Linux and macOS alike. A
     dangerous command gets an owner approval (once, this session, always, deny), never bwrap.
   - **Yolo:** no OS sandbox anywhere. That covers the owner's session and every worker, subagent,
     lead-started, headless and unattended run it starts. Yolo never asks. It hard-refuses only
     publishing secrets and an OS-breaking wipe, and the owner's typed yes passes everything else.
+    Exec hooks run unsandboxed under yolo too (`FullAccess::hook_sandbox`), `--offline` still holds.
   - **Unattended runs without yolo** (workers, subagents, headless, `oxa work`) keep bwrap by default.
   - **In-process guards stay in every mode:** secret masking, file-tool denials for private paths,
     user-only settings, offline mode.
@@ -75,6 +91,10 @@ maintainer, who says in the PR when a hardware check is needed.
   publish behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and the user
   docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A change to an ordinary
   default, limit or budget updates the user docs; a missing docs update is P3 and is fixed forward.
+- **Memory store:** the memory store's `memory/` directory is owner-only (`0700`), and every entry,
+  generated index and lock file is owner-only (`0600`). A save must tighten an existing directory
+  with looser permissions before writing; review changes against this upgrade behaviour as well as
+  new stores.
 - **Early-stage process (owner decision, until v0.3):**
   - Only P0/P1 findings, security findings and an open security review block a merge. P2/P3 findings are filed as follow-ups and fixed forward on main.
   - Prefer one PR per feature, up to about 800 changed lines, over stacks of small PRs.
@@ -102,6 +122,10 @@ maintainer, who says in the PR when a hardware check is needed.
   the access it grants. Yolo needs no entry.
 - **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
   registry with its surfaces and help (P1 if added outside it or without an exception reason).
+- An explicit owner CLI `--auto` or `--yolo` permits starting at home, root, or a parent of home
+  with a warning. Settings and environment opt-ins retain their own rules. Interactive `--max-time`
+  and `--max-tokens` stop the watched startup session at its wrap-up boundary, before later prompts.
+  An idle expiry starts no model request.
   `oxe admission` is an engine CLI exception. It reports allocation bounds directly from a GGUF
   header and accepts `oxe-server` launch arguments without opening an oxa session. Its command and
   flag help live in `oxe admission --help`. It has no oxa slash, menu, or web surface.
@@ -122,6 +146,13 @@ maintainer, who says in the PR when a hardware check is needed.
   only a short pointer is queued. The agent directory remains denied.
   The repeat guard follows this: the third identical tool result gets a short note, a call that
   still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
+  is the cap against loops the guard cannot see.
+  The finish wake follows it too: a background bash job that finishes on its own queues one
+  follow-up message and, when the session is idle after a normal outcome, starts a turn;
+  `oxa.jobs.wakeOnFinish` (`true` by default, `false` opts out, user settings only) is the control,
+  it wakes only the session the job started in, and a job the model or the user stopped wakes
+  nothing; a completion retained behind a failed or interrupted turn stays queued (also across a session
+  reopen) until the next prompt. A finding that asks for a default-off switch or a cross-session wake is answered here.
   is the cap against loops the guard cannot see. A pursuing goal whose request fails transiently
   (stream cut, engine down or busy, timeout, 429, 5xx) waits without tokens and sends it again:
   `oxa.goal.failureBackoffSeconds` (default 60, doubling, capped at 900 unless set higher, `0` opts

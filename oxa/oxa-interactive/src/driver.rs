@@ -13,9 +13,11 @@ use crate::selectors::{
     ScopedModelsSelector, SessionPick, SessionPicker, SettingsSelector, ThemeSelector, ThinkingSelector,
     TreeFilter, TreePick, TreeSelector,
 };
+use crate::skin::stage::{built_in, pending_of, Director};
 use crate::skin::{
-    frame_box, frame_inner_width, hot_theme, oxa_arcade_line, oxa_footer, oxa_splash, oxa_title_text,
-    oxa_yolo_banner, reduced_motion, Animation, ArcadeScene, ArcadeState, HintContext, SPRITE_FRAME_MS,
+    frame_box, frame_inner_width, hot_theme, oxa_arcade_line, oxa_footer, oxa_splash, oxa_stage_line,
+    oxa_title_text, oxa_yolo_banner, reduced_motion, scene_cells, Animation, ArcadeScene, ArcadeState,
+    HintContext, SPRITE_FRAME_MS,
 };
 use crate::{
     activity_text, choose_clip_method, compose_fullscreen, copy_text, debug_dump, dispatch_slash,
@@ -294,6 +296,9 @@ pub(crate) struct Loop<'a> {
     anim_step: u64,
     /// The arcade scene's counters of the run (coins, the closing scene).
     arcade: ArcadeState,
+    /// Design 3.2 (C4): the scene director of the activity row, used when `ui.animationScene`
+    /// is unset and the terminal does not draw pixels.
+    stage: Director,
     /// OXA's fullscreen look: the editor's suggestion panel of this frame and the editor's
     /// first row among the bottom lines (the panel floats above it, over the transcript).
     popup_overlay: Option<(usize, Vec<String>)>,
@@ -450,6 +455,7 @@ impl<'a> Loop<'a> {
             palette: None,
             anim_step: 0,
             arcade: ArcadeState::default(),
+            stage: Director::new("", built_in().scenes),
             popup_overlay: None,
             pixel: crate::skin::PixelStage::new(caps.cell_px),
             gfx_answered,
@@ -518,6 +524,15 @@ impl<'a> Loop<'a> {
                 self.gfx_answered,
                 self.gfx_placeholders,
             )
+    }
+
+    /// C4: the activity row's scene comes from the director (`skin/stage`) when the arcade plays,
+    /// no pixel scene is drawn and `ui.animationScene` is unset (an explicit scene keeps its own).
+    fn stage_on(&self) -> bool {
+        self.animation() == Animation::Arcade
+            && self.view.skin == crate::Skin::Oxa
+            && self.opts.settings.string("ui.animationScene").is_none()
+            && !self.pixels()
     }
 
     /// Delete every image of the graphics tier from the terminal, now (exit, suspend).
@@ -760,7 +775,13 @@ impl<'a> Loop<'a> {
     }
 
     pub(crate) fn animating(&self) -> bool {
-        self.running()
+        // C4: with the director, the activity row animates while the director has a deadline.
+        let running = if self.stage_on() {
+            self.stage.next_deadline_ms(now_ms()).is_some()
+        } else {
+            self.running()
+        };
+        running
             || self.dialogs.is_open()
             || self.mouse_sel.dragging
             || now_ms() < self.yolo_banner_until
@@ -866,6 +887,10 @@ impl<'a> Loop<'a> {
                         .to_string(),
                 );
             }
+            WorkerMsg::LimitExit(code) => {
+                self.push_notice(Level::Info, "Session limit or stop signal reached.".to_string());
+                self.quit = Some(code);
+            }
             WorkerMsg::Done(result) => {
                 // The wire may have changed: the same draft is a new prefill.
                 self.draft.wire_changed();
@@ -950,13 +975,24 @@ impl<'a> Loop<'a> {
         if self.session.id != info.id || self.inbox.is_none() {
             // A Reopen may have recovered an already-admitted message without a file
             // left to trigger the new watcher. Wake only the recovered destination.
-            if self.handle.has_inbox_input() && self.handle.request_inbox_wake() {
+            if self.handle.has_external_inbox_input() && self.handle.request_inbox_wake() {
                 let _ = self.cmds.send(SessionCmd::Inbox {
                     session_id: info.id.clone(),
                 });
             }
+            // A completion retained behind a stop boundary (a failed or interrupted turn) is not
+            // delivered on a reopen: the replacement session starts with no outcome, so waking
+            // it would start a model turn nobody asked for. It stays queued for the next prompt.
             // Stop the old callback before installing one bound to the current handle.
             self.inbox = None;
+            // W4: a finished background job of this session wakes it the way an inbox message does.
+            let job_cmds = self.cmds.clone();
+            self.handle
+                .set_wake_notifier(std::sync::Arc::new(move |session_id: &str| {
+                    let _ = job_cmds.send(SessionCmd::JobWake {
+                        session_id: session_id.to_string(),
+                    });
+                }));
             let handle = self.handle.clone();
             let cmds = self.cmds.clone();
             let session_id = info.id.clone();
@@ -1186,6 +1222,10 @@ impl<'a> Loop<'a> {
             animating
         };
         if self.dialogs.tick(now_ms()) || animating || self.arcade.take_expired(now_ms()) {
+            self.dirty = true;
+        }
+        // C4: the director's row changed (a new frame, a new activity or the scene taken away).
+        if self.stage_on() && self.stage.redraw_due(now_ms()) {
             self.dirty = true;
         }
         self.draft_tick();
@@ -2864,17 +2904,39 @@ impl<'a> Loop<'a> {
             } else {
                 None
             };
+            // C4: the director picks the scene of the activity (design 3.2) when the arcade plays
+            // its own scene; the closing scene after a run stays with the arcade.
+            let staged = pixel_line.is_none() && self.stage_on();
+            let now = now_ms();
+            if staged {
+                self.stage.reseed(&self.session.id);
+                let ascii = self.view.skin != crate::Skin::Oxa;
+                self.stage
+                    .update(pending_of(&status.activity, ascii), scene_cells(width), now);
+            }
             let line = pixel_line.or_else(|| {
-                oxa_arcade_line(
-                    &status,
-                    &self.opts.keymap,
-                    self.animation(),
-                    scene,
-                    &run,
-                    width,
-                    &self.theme,
-                    self.view.skin,
-                )
+                if staged && status.activity != Activity::Idle {
+                    oxa_stage_line(
+                        &self.stage,
+                        &status,
+                        &self.opts.keymap,
+                        now,
+                        width,
+                        &self.theme,
+                        self.view.skin,
+                    )
+                } else {
+                    oxa_arcade_line(
+                        &status,
+                        &self.opts.keymap,
+                        self.animation(),
+                        scene,
+                        &run,
+                        width,
+                        &self.theme,
+                        self.view.skin,
+                    )
+                }
             });
             lines.extend(line);
         } else if let Some(text) = activity_text(&status) {
