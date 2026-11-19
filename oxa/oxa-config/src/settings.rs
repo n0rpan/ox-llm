@@ -233,6 +233,27 @@ impl Settings {
             _ => user,
         }
     }
+    /// The raw entries of a list setting as the user layer wrote them, before the merge applies
+    /// its `+x` / `-x` edits to the (empty) default. `[]` when the user layer does not set it.
+    /// A caller that patches its own built-in list (`oxa.approval.dangerous`) reads this, so an
+    /// edit list is not turned into a plain list that replaces the built-ins.
+    pub fn user_list(&self, key: &str) -> Vec<String> {
+        let mut cur = &self.user;
+        for part in key.split('.') {
+            match cur.as_object().and_then(|o| o.get(part)) {
+                Some(v) => cur = v,
+                None => return Vec::new(),
+            }
+        }
+        cur.as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
     /// A string list; `+x` / `-x` patch entries are already applied over the lower layer.
     pub fn list(&self, key: &str) -> Vec<String> {
         self.get(key)
