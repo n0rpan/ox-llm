@@ -43,6 +43,11 @@ maintainer, who says in the PR when a hardware check is needed.
   the user docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A review finding
   that contradicts an owner decision stated in the linked issue or PR is answered by updating these
   rules in that PR, not by changing the behaviour.
+- **Publication scan:** `oxa work --publish` and lane pushes refuse secrets in the commits they push (keys,
+  known tokens also after a word character, opaque credential assignments and quoted literals, secret-store
+  content, configured secret values). A file is refused for its content, never its name alone: an empty
+  secret-store file and `.env.example` publish unless the content holds a secret. Flag as P1 a change that
+  weakens these refusals or adds a name-only or blanket long-value block (P2 without a doc update).
 - **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
   registry with its surfaces and help (P1 if added outside it or without an exception reason).
 - Owner policy: nothing blocks by default except the security invariants above (secrets,

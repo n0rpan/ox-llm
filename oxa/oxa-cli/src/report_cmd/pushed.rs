@@ -105,14 +105,33 @@ fn quoted_secret_literal(text: &str) -> bool {
                         .chars()
                         .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
             });
+        // Spaces inside a quoted passphrase do not make it prose: only a digit or a symbol
+        // other than a space marks it, so `"enter your password here"` is still not a literal.
         value.chars().count() >= MIN_SECRET_VALUE_CHARS
-            && !value.contains(char::is_whitespace)
             && !reference.is_match(value)
             && !upper_name
-            && value
-                .chars()
-                .any(|ch| ch.is_ascii_digit() || !(ch.is_alphabetic() || matches!(ch, '_' | '.' | ':')))
+            && value.chars().any(|ch| {
+                ch.is_ascii_digit()
+                    || !(ch.is_alphabetic() || ch.is_whitespace() || matches!(ch, '_' | '.' | ':'))
+            })
     })
+}
+
+/// Distinctive token prefixes that are matched even when a word character precedes them
+/// (`xghp_..`): the scrubber's `known` pattern needs a word boundary, which a token copied
+/// from a project file and prefixed with a letter or digit evades.
+fn embedded_known_token(text: &str) -> bool {
+    static EMBEDDED: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    EMBEDDED
+        .get_or_init(|| {
+            regex::Regex::new(concat!(
+                r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-(?:ant|proj)-[A-Za-z0-9_-]{16,}",
+                r"|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}",
+                r"|glpat-[A-Za-z0-9_-]{20,}"
+            ))
+            .expect("embedded token pattern")
+        })
+        .is_match(text)
 }
 
 fn basename(path: &str) -> String {
@@ -143,6 +162,13 @@ fn registry_auth(text: &str) -> bool {
     })
     .captures_iter(text)
     .any(|found| opaque_value(&found[1]))
+}
+
+fn env_template(path: &str) -> bool {
+    let name = basename(path);
+    [".example", ".sample", ".template", ".dist"]
+        .iter()
+        .any(|end| name.starts_with(".env.") && name.ends_with(end))
 }
 
 fn secret_store(path: &str) -> bool {
@@ -204,14 +230,17 @@ impl PushScan {
             label,
             secret_path: false,
         };
+        // A file with no added line (an empty file) holds no secret, so its name alone is
+        // not a finding; every file with content reaches the line checks below.
         if item.line.is_none() {
-            return secret_store(item.path).then(|| found("a file name used for secrets"));
+            return None;
         }
         if let Some(label) = self.secret_text(item.text) {
             return Some(found(label));
         }
         // An existing tracked secret store gains content as well as a new one.
-        if secret_store(item.path) {
+        // A template (`.env.example`) is only refused for a secret its content holds.
+        if secret_store(item.path) && !env_template(item.path) {
             return Some(found("content to a file name used for secrets"));
         }
         if registry_auth(item.text) {
@@ -234,7 +263,7 @@ impl PushScan {
         if p.pem_begin.is_match(text) {
             return Some("a private key");
         }
-        if p.known.is_match(text) {
+        if p.known.is_match(text) || embedded_known_token(text) {
             return Some("a known access token format");
         }
         // The scrubber's keyed, `Bearer ..` and URL-credential patterns, which catch
@@ -302,15 +331,88 @@ mod tests {
             "aws/credentials",
             ".netrc",
         ] {
-            assert!(scan.check(&file(name)).is_some(), "{name}");
+            // An empty file holds no secret; a non-empty one is refused by its lines.
+            assert!(scan.check(&file(name)).is_none(), "{name}");
+            assert!(scan.check(&line(name, "PLAIN=value")).is_some(), "{name}");
         }
-        assert!(scan.check(&file(".env.example")).is_some());
         let token_name = format!("notes/ghp_{}.txt", "x".repeat(36));
         let finding = scan.check(&file(&token_name)).unwrap();
         assert!(finding.secret_path);
-        assert!(!scan.check(&file(".env")).unwrap().secret_path);
         for name in ["src/env.rs", "id_ed25519.pub", "keyboard.rs", "README.md"] {
             assert!(scan.check(&file(name)).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn empty_secret_store_file_publishes() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        for name in [".env", "deploy/server.pem", ".netrc", "aws/credentials"] {
+            assert!(scan.check(&file(name)).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn env_example_without_secrets_publishes() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        for name in [".env.example", "app/.env.sample", ".env.template"] {
+            for text in [
+                "PORT=8080",
+                "API_TOKEN=",
+                "DB_PASSWORD=<your-password>",
+                "# copy to .env",
+            ] {
+                assert!(scan.check(&line(name, text)).is_none(), "{name} {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn env_example_with_a_token_is_refused() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        let token = format!("API_TOKEN=ghp_{}", "x".repeat(36));
+        let password = "DB_PASSWORD=opaque-pass-value-17".to_string();
+        for text in [token, password] {
+            assert!(scan.check(&added(".env.example", &text)).is_some(), "{text}");
+        }
+        // A real `.env` still refuses plain lines.
+        assert!(scan.check(&line(".env", "PORT=8080")).is_some());
+    }
+
+    #[test]
+    fn quoted_literal_with_spaces_is_refused() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        for text in [
+            "\"password\": \"synthetic passphrase 17\"",
+            "PASSWORD='correct horse battery #7'",
+            "token: \"two words 42\"",
+        ] {
+            assert!(scan.check(&added("notes.json", text)).is_some(), "{text}");
+        }
+        for text in [
+            "\"password\": \"enter your password here\"",
+            "password: \"<your password 1>\"",
+        ] {
+            assert!(scan.check(&added("notes.json", text)).is_none(), "{text}");
+        }
+    }
+
+    #[test]
+    fn known_token_prefix_is_matched_after_word_characters() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        let github = format!("x{}{}", "ghp_", "a1".repeat(18));
+        let pat = format!("v{}{}", "github_pat_", "A".repeat(30));
+        let aws = format!("Z{}{}", "AKIA", "X".repeat(16));
+        let slack = format!("q{}{}", "xoxb-", "1".repeat(12));
+        for text in [github, pat, aws, slack] {
+            assert!(scan.check(&added("notes.txt", &text)).is_some(), "{text}");
+        }
+        // Ordinary words that contain a prefix are not tokens.
+        for text in [
+            "disk-encryption-configuration-guide",
+            "ghp_short",
+            "taskforce-AKIA-list",
+        ] {
+            assert!(scan.check(&line("notes.txt", text)).is_none(), "{text}");
         }
     }
 

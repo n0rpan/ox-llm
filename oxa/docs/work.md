@@ -272,6 +272,25 @@ without replaying the agent. Offline mode refuses network publication.
 Before each push, the runner asks through the controlling terminal for approval
 of the accepted commit, branch and PR destination. Piped input cannot approve it.
 
+### What the publication scan refuses
+
+Before it asks for approval, `--publish` (and a lane push) scans every commit it would push
+that `origin` does not have: the commit objects, the names of added files and every added
+line. It refuses, and names only the file and line, when it finds a private key, a known
+access token format (GitHub, Anthropic, AWS, Slack, Google, GitLab; also when a letter or digit
+directly precedes the prefix), a `password`/`token`/`secret`-style assignment or quoted
+literal with an opaque value (spaces inside quotes do not hide it), a `Bearer` header or URL
+password, or the value of a secret-named environment variable or setting. Lines added to a
+secret store (`.env`, `credentials`, key and certificate files, registry logins such as
+`.docker/config.json`) are refused. An empty secret-store file and a template such as
+`.env.example` are not refused by name: they publish unless their content holds one of the
+secrets above. A path that itself contains secret text is refused and withheld.
+
+Deleting a credential in a later commit does not unblock publication, because the earlier
+commit is still pushed. Rewrite the unpublished commits (`git rebase` or a fresh branch), and
+rotate a credential that left the machine. The scan reads only git objects; it does not
+change them.
+
 `--report-problems` independently authorizes filing the task's own structured
 problem notes using the `report-issue` workflow. This flag must be launched by the
 user outside an agent tool. Each new report or comment shows its exact cleaned
