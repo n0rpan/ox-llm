@@ -315,6 +315,9 @@ Every boolean variable takes the same eight words, in any case: `1`, `true`, `ye
 | `OXA_SYSTEM_SKILLS_DIR` | system skills directory, read last. Default `/usr/share/omarchy/default/agents/skills`; empty disables it |
 | `OXA_OFFLINE` | `1`, `true`, `yes` or `on` turns offline mode on, as `--offline` does |
 | `OXA_ALLOW_HOME_CWD` | `1`, `true`, `yes` or `on` allows a start in the home directory, `/` or a parent of home, as the user setting `oxa.allowHomeCwd` does. See [security.md](security.md#starting-in-your-home-directory) |
+| `OXA_CONFIRM_MAX_REQUEST_BYTES` | largest owner confirm request a tool child may send, in bytes. Default 8 MiB |
+| `OXA_CONFIRM_READ_TIMEOUT_SECS` | seconds a tool child has to send its whole owner confirm request. Default 60 |
+| `OXA_CONFIRM_MAX_CONNECTIONS` | owner confirm requests served at once; more are answered "none" at once. Default 64 |
 | `OXA_WEB_SEARCH` | `0`, `false`, `no` or `off` disables `web_search`; `1`, `true`, `yes` or `on` says on |
 | `BRAVE_SEARCH_API_KEY` | Brave Search key for `web_search`; wins over `brave-search.key` ([tools.md](tools.md#web_search)) |
 | `OXA_CODEMODE_MAX_WORKERS` | script workers alive at once in the process. Default 2; overrides `codemode.maxWorkers` |

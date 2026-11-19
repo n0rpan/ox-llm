@@ -333,6 +333,27 @@ pub const ENV_TABLE: &[EnvVar] = &[
         kind: EnvKind::Set,
     },
     EnvVar {
+        name: "OXA_CONFIRM_MAX_REQUEST_BYTES",
+        pi_name: None,
+        description: "largest owner confirm request a tool child may send, in bytes (default 8 MiB); a value that is not a positive whole number is ignored",
+        supported: true,
+        kind: EnvKind::User,
+    },
+    EnvVar {
+        name: "OXA_CONFIRM_READ_TIMEOUT_SECS",
+        pi_name: None,
+        description: "seconds a tool child has to send its whole owner confirm request (default 60); a value that is not a positive whole number is ignored",
+        supported: true,
+        kind: EnvKind::User,
+    },
+    EnvVar {
+        name: "OXA_CONFIRM_MAX_CONNECTIONS",
+        pi_name: None,
+        description: "owner confirm requests served at once (default 64); more are answered none at once; a value that is not a positive whole number is ignored",
+        supported: true,
+        kind: EnvKind::User,
+    },
+    EnvVar {
         name: "OXA_CONFIRM_SOCK",
         pi_name: None,
         description: "oxa sets it in tool children to the path of the session's private owner confirm socket, through which oxa commands ask the owner",
