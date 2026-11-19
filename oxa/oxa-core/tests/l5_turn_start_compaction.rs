@@ -41,6 +41,7 @@ impl Tool for Read {
             return ToolOutput::error(tool_errors::ABORTED);
         }
         ToolOutput {
+            images: Vec::new(),
             text: "r".repeat(self.bytes),
             is_error: false,
             ui: Value::Null,
