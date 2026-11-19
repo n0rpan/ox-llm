@@ -34,6 +34,8 @@ pub struct EnvFacts {
     pub mode: String,
     pub bash_network: bool,
     pub offline: bool,
+    /// No OS sandbox on this platform: bash runs with the user's rights.
+    pub no_os_sandbox: bool,
 }
 
 /// The date line's `{weekday} {date}` (the key that says whether the wire already has today).
@@ -69,6 +71,12 @@ pub fn full_block(t: &LocalTime, f: &EnvFacts) -> String {
         if f.bash_network { "on" } else { "off" },
         if f.offline { "yes" } else { "no" }
     ));
+    if f.no_os_sandbox {
+        lines.push(
+            "Sandbox: none. There is no OS sandbox on this platform, so bash is disabled unless the run is yolo."
+                .to_string(),
+        );
+    }
     lines.push(
         "Use this date for \"today\", \"latest\" and \"recent\" (also for web_search freshness).".to_string(),
     );
@@ -181,6 +189,7 @@ pub fn facts(st: &SessionState) -> EnvFacts {
         mode: st.mode.as_str().to_string(),
         bash_network: st.sandbox.network(),
         offline: oxa_proto::offline(),
+        no_os_sandbox: !oxa_proto::OS_SANDBOX,
     }
 }
 
@@ -282,6 +291,7 @@ mod tests {
             mode: "workspace".into(),
             bash_network: false,
             offline: false,
+            no_os_sandbox: false,
         }
     }
 
@@ -296,6 +306,22 @@ mod tests {
              Use this date for \"today\", \"latest\" and \"recent\" (also for web_search freshness).\n</env>"
         );
         assert_eq!(time_note(&t("2026-11-14", "09:05")), "[local time 09:05 CET]");
+    }
+
+    #[test]
+    fn env_note_names_a_missing_sandbox_and_is_unchanged_with_one() {
+        let with = full_block(&t("2026-11-14", "13:42"), &f());
+        assert!(!with.contains("Sandbox:"));
+        let none = full_block(
+            &t("2026-11-14", "13:42"),
+            &EnvFacts {
+                no_os_sandbox: true,
+                ..f()
+            },
+        );
+        assert!(none.contains("Sandbox: none. There is no OS sandbox on this platform, so bash is disabled"));
+        assert_eq!(none.replace(
+            "Sandbox: none. There is no OS sandbox on this platform, so bash is disabled unless the run is yolo.\n", ""), with);
     }
 
     #[test]
