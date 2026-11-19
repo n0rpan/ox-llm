@@ -2273,7 +2273,9 @@ mod poll_tests {
 
         let (out, _) = job_call(&tool, json!({"command": "yes", "timeout": 1}));
 
-        assert!(!out.is_error, "unexpected bash result: {}", out.text);
+        // Do not echo command output from this retention test into test logs. In
+        // production that output may contain sensitive command data.
+        assert!(!out.is_error, "bash call unexpectedly failed");
         assert_eq!(out.ui["movedToBackground"], json!(true));
         assert_eq!(jobs.buffered_len("job-1"), Some(crate::jobs::BUFFER_CAP));
         tx.send(vec![b'y'; crate::jobs::BUFFER_CAP * 2]).unwrap();
