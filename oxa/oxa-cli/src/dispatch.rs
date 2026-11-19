@@ -1194,8 +1194,15 @@ fn prepare(
                 .with_engine(&engine),
         )
     });
+    let usage_log = a
+        .usage_log
+        .as_deref()
+        .map(crate::usage_log::UsageLog::create)
+        .transpose()?;
     let result_facts = Arc::new(
-        crate::result_facts::ResultFacts::new(status.clone()).with_billing(cloud_diagnostics.clone()),
+        crate::result_facts::ResultFacts::new(status.clone())
+            .with_billing(cloud_diagnostics.clone())
+            .with_usage_log(usage_log),
     );
     let built = Built {
         lead: a.lead,

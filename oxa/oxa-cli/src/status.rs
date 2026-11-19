@@ -356,6 +356,11 @@ fn write_error(e: &std::io::Error) -> OxaError {
 /// renamed over `path`. Shared by status snapshots and the worker registry, so both keep the same
 /// persistence guarantees.
 pub(crate) fn atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    atomic_file(path, bytes).map(drop)
+}
+
+/// Replace a file atomically and keep the writable handle to the newly installed inode.
+pub(crate) fn atomic_file(path: &Path, bytes: &[u8]) -> std::io::Result<fs::File> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let parent = path
         .parent()
@@ -383,7 +388,7 @@ pub(crate) fn atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         if result.is_err() {
             let _ = fs::remove_file(tmp);
         }
-        return result;
+        return result.map(|()| file);
     }
     Err(std::io::Error::other("cannot reserve a temporary file"))
 }

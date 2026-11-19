@@ -54,6 +54,7 @@ mod share_cmd;
 mod status;
 mod themes;
 mod usage_cmd;
+mod usage_log;
 mod wait_probe;
 mod wipe_cmd;
 mod work_board;

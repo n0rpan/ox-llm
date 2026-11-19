@@ -581,6 +581,11 @@ impl Session {
             .take()
     }
 
+    /// The model this session sends its requests to (the last model switch or the opened one).
+    pub fn model(&self) -> &str {
+        &self.st.model
+    }
+
     /// Model switch = a new epoch (W3), applied now when idle. Appends `ModelChange`, then
     /// re-reads the engine's metadata for the target and recomputes the compaction policy (X3,
     /// see [`refresh_budget`]) before the epoch opens.
