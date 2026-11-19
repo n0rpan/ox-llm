@@ -6,7 +6,21 @@ use oxa_proto::{HeadlessUi, ToolCall, VecSink};
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
 use oxa_session::{FsStore, Goal, GoalBudget, GoalStatus, MemStore, SessionStore};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+#[derive(Debug, Default)]
+struct GoalStatusTrace(Mutex<Vec<(String, Option<String>)>>);
+
+impl oxa_core::ProgressObserver for GoalStatusTrace {
+    fn notify(&self, _: &oxa_session::SessionRef, progress: oxa_core::Progress<'_>) {
+        if let oxa_core::Progress::GoalStatus { status, reason } = progress {
+            self.0
+                .lock()
+                .unwrap()
+                .push((status.into(), reason.map(str::to_owned)));
+        }
+    }
+}
 fn deps(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<ScriptedEngine>) -> Deps {
     Deps {
         engine,
@@ -34,6 +48,31 @@ fn deps(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<ScriptedEngine>
 
 fn objective(budget: GoalBudget) -> Goal {
     Goal::new("Review synthetic work and wait for more.".into(), budget, 1000).unwrap()
+}
+
+#[test]
+fn direct_goal_setup_and_observer_attachment_publish_the_saved_goal() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+    let trace = Arc::new(GoalStatusTrace::default());
+    session.set_progress_observer(trace.clone());
+
+    let mut goal = objective(GoalBudget::default());
+    goal.pause();
+    goal.pause_reason = Some("synthetic saved reason".into());
+    session.set_goal(Some(goal), &mut VecSink::default()).unwrap();
+    assert_eq!(
+        trace.0.lock().unwrap().last().cloned(),
+        Some(("paused".into(), Some("synthetic saved reason".into())))
+    );
+
+    let attached = Arc::new(GoalStatusTrace::default());
+    session.set_progress_observer(attached.clone());
+    assert_eq!(
+        *attached.0.lock().unwrap(),
+        vec![("paused".into(), Some("synthetic saved reason".into()))]
+    );
 }
 
 #[test]
@@ -1419,6 +1458,8 @@ fn idle_pause_records_reason() {
     let store = Arc::new(MemStore::new());
     let mut session = Session::open(deps(&env, store, engine), Open::New).unwrap();
     let mut sink = VecSink::default();
+    let statuses = Arc::new(GoalStatusTrace::default());
+    session.set_progress_observer(statuses.clone());
     session
         .set_goal(Some(objective(GoalBudget::default())), &mut sink)
         .unwrap();
@@ -1436,6 +1477,11 @@ fn idle_pause_records_reason() {
     assert_eq!(
         goal.pause_reason.as_deref(),
         Some("two replies without an action")
+    );
+    assert_eq!(
+        statuses.0.lock().unwrap().last().cloned(),
+        Some(("paused".into(), Some("two replies without an action".into()))),
+        "the durable idle checkpoint publishes the terminal status"
     );
     let notices: Vec<String> = sink
         .0

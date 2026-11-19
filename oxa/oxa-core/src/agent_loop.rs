@@ -838,7 +838,7 @@ fn run_inner(
             crate::goal::save_checkpoint(st, &snapshot, sink)?;
             if was_pursuing && snapshot.status == oxa_session::GoalStatus::Paused {
                 if let Some(reason) = snapshot.pause_reason.as_deref() {
-                    crate::goal::announce_pause(st, reason, sink);
+                    crate::goal::announce_pause(reason, sink);
                 }
             }
             if goal.pursuing() {
