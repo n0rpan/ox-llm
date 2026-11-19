@@ -184,6 +184,20 @@ pub(crate) fn committed_engine_packages(
         .collect())
 }
 
+/// Whether this committed change touches the engine workspace's shared Cargo inputs
+/// (`engine/Cargo.toml`, `engine/Cargo.lock`, `engine/.cargo/`). They select no package,
+/// but the lane still does not run the engine suites: the work stays on the hosted route.
+pub(crate) fn committed_engine_inputs(
+    policy: &RunPolicy,
+    root: &Path,
+    base: &str,
+    head: &str,
+) -> Result<bool, String> {
+    Ok(committed_selection(policy, root, base, head)?
+        .workspace_inputs
+        .contains("engine"))
+}
+
 fn committed_selection(policy: &RunPolicy, root: &Path, base: &str, head: &str) -> Result<Selected, String> {
     let diff = output(git(
         policy,
@@ -596,6 +610,11 @@ impl Manifests {
 struct Selected {
     packages: BTreeSet<(String, String)>,
     requires_hosted: bool,
+    /// The owning workspace directory of every shared workspace input the change touches
+    /// (`<workspace>/Cargo.toml`, `<workspace>/Cargo.lock`, `<workspace>/.cargo/`): these
+    /// inputs select no package, but the lane runs a workspace's suites only through its
+    /// packages, so the engine gate must see them.
+    workspace_inputs: BTreeSet<String>,
 }
 
 fn select(root: &Path, paths: &[String]) -> Result<Selected, String> {
@@ -606,10 +625,15 @@ fn select(root: &Path, paths: &[String]) -> Result<Selected, String> {
         let name = path.rsplit('/').next().unwrap_or(path.as_str());
         let dir = parent_dir(path);
         // Shared Cargo inputs can change the build without selecting a package.
-        if matches!(name, "rust-toolchain" | "rust-toolchain.toml")
-            || dir.split('/').any(|part| part == ".cargo")
-        {
+        if matches!(name, "rust-toolchain" | "rust-toolchain.toml") {
             selected.requires_hosted = true;
+            continue;
+        }
+        if dir.split('/').any(|part| part == ".cargo") {
+            selected.requires_hosted = true;
+            selected
+                .workspace_inputs
+                .insert(manifests.in_dir(root, dir, &mut budget)?);
             continue;
         }
         // A missing or unsupported package declaration cannot make a Rust edit verified.
@@ -617,6 +641,11 @@ fn select(root: &Path, paths: &[String]) -> Result<Selected, String> {
         if name == "Cargo.toml" || name == "Cargo.lock" {
             selected.requires_hosted = true;
             let manifest = manifests.at(root, dir)?;
+            if manifest.workspace {
+                selected
+                    .workspace_inputs
+                    .insert(manifests.in_dir(root, dir, &mut budget)?);
+            }
             if let Some(package) = manifest.package.clone() {
                 selected
                     .packages
@@ -1010,6 +1039,35 @@ members = ["crates/*", "tools/pinned"]
             selected.packages,
             BTreeSet::from([("solo".to_owned(), "solo".to_owned())])
         );
+    }
+
+    #[test]
+    fn shared_workspace_inputs_record_the_owning_workspace() {
+        // `engine/Cargo.toml` and `engine/.cargo/` select no package, but they change every
+        // engine crate: the engine evidence gate must see them.
+        let dir = PrivateDir::new("derived-engine-inputs");
+        manifest(
+            &dir,
+            "engine/Cargo.toml",
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        );
+        manifest(&dir, "engine/.cargo/config.toml", "[build]\n");
+        manifest(
+            &dir,
+            "engine/crates/model/Cargo.toml",
+            "[package]\nname = \"model\"\n",
+        );
+        let selected = select(
+            dir.path(),
+            &[
+                "engine/Cargo.toml".to_owned(),
+                "engine/.cargo/config.toml".to_owned(),
+            ],
+        )
+        .unwrap();
+        assert!(selected.requires_hosted);
+        assert!(selected.packages.is_empty());
+        assert_eq!(selected.workspace_inputs, BTreeSet::from(["engine".to_owned()]));
     }
 
     #[test]

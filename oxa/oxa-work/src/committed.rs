@@ -227,6 +227,17 @@ pub(crate) fn verify_commit_with(
                 engine.join(", ")
             ));
         }
+        // Shared engine inputs (engine/Cargo.toml, engine/Cargo.lock, engine/.cargo/)
+        // select no crate, so the packages gate above would miss them.
+        if derived::committed_engine_inputs(policy, &export.tree, base, head)
+            .map_err(|reason| format!("clean committed acceptance could not run: {reason}"))?
+        {
+            return Err(
+                "the lane run does not run the engine suites: shared engine inputs changed; \
+                 engine work needs the hosted route"
+                    .into(),
+            );
+        }
         if !declared.is_empty() {
             let selected = derived::committed_packages(policy, &export.tree, base, head)
                 .map_err(|reason| format!("clean committed acceptance could not run: {reason}"))?;

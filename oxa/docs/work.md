@@ -398,7 +398,9 @@ crate is covered only when the task diff selects it: a declaration the head does
 touch refuses with the uncovered crate names, and the work stays `unverified` rather
 than crediting a suite that never ran. The engine workspace never counts: the lane
 runs only the portable engine crates and defers the rest to the self-hosted route,
-so any engine change refuses lane evidence and needs the hosted route instead.
+so any engine change refuses lane evidence and needs the hosted route instead — a
+changed `engine/Cargo.toml`, `engine/Cargo.lock` or `engine/.cargo/` input refuses it too,
+although it names no crate.
 
 A `lane_ci` task's worker launches GitHub-isolated, like a runner-owned task: no
 host `gh` token is injected into its bash (and no MCP, extensions, web search or
