@@ -28,6 +28,8 @@ Tool names, descriptions and schemas are part of the system prompt. They stay th
 
 ## Choosing tools
 
+In a headless run (`-p`, `--mode json`) with the output diet on, the prompt adds one integrity rule: solve the task yourself, do not look up its ready-made solution online and do not read verifier, grader or hidden-test files. The `oxa_result` record reports `web_lookups`, the number of `web_search` calls. It is a prompt rule and a count, not a block: a tool call is never refused because of it.
+
 | Option or setting | Effect |
 |---|---|
 | `--tools a,b` (`-t`) | allowlist of names or patterns; `*` matches any characters. Only these tools are on |
