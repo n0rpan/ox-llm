@@ -105,6 +105,7 @@ fn random_body(rng: &mut Rng, ids: &[String], prefix_seen: bool) -> EntryBody {
         },
         3 => EntryBody::Msg {
             wire: WireMsg {
+                images: Vec::new(),
                 role: Role::Assistant,
                 content: Some(text(rng)),
                 reasoning: Some(text(rng)),
