@@ -141,6 +141,7 @@ const SCHEMA: &[KeyDef] = &[
     ),
     key("modelThinkingLevels", Kind::Object, "{}"),
     key("outputPad", Kind::Number, "1"),
+    key("oxa.a2a.enabled", Kind::Bool, "true"),
     key("oxa.allowHomeCwd", Kind::Bool, "false"),
     // #1512 S2: exact rule keys saved by "always allow" in a dangerous-command prompt; user
     // settings only (a project value is never read).

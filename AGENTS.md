@@ -15,6 +15,11 @@ maintainer, who says in the PR when a hardware check is needed.
   project-local targets and unsafe directory permissions are refused. Every active output
   redactor must observe newly registered tokens before forwarding output.
 - Keep engine transport selection, native binary/launch configuration, `allowRemote`, share
+  authority and login/token paths user-only. A project file must never override these decisions.
+- Agent control lane: a session accepts steer/pause/resume/cancel only from the same user, and the
+  session owner checks each request against the lease and goal revision. `oxa.a2a.enabled: false`
+  (user-only) turns it off. Do not add a path that skips the lease check or reads the setting from a
+  project file.
   authority, login/token paths and `oxa.inbox.headless` user-only. A project file must never override these decisions.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
 - **Sandbox standard (owner decision, #1512 and 2026-11-19). Do not add an OS sandbox outside these rules:**
