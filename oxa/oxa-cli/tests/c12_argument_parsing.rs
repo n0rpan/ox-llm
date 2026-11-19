@@ -459,6 +459,7 @@ fn agent_options_keep_command_words_as_prompts() {
         "update",
         "list",
         "config",
+        "local",
         "identity",
         "report-issue",
         "wipe",

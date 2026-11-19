@@ -122,6 +122,18 @@ const BASE: &[Entry] = &[
         example: "oxa config",
     },
     Entry {
+        path: &["local"],
+        summary: "Wire a local GGUF model into the native local engine settings",
+        usage: &["oxa local add <model.gguf> [options]"],
+        example: "oxa local add ~/models/model.gguf --ctx 16384 --enable",
+    },
+    Entry {
+        path: &["local", "add"],
+        summary: "Write oxa.local for a model from the engine's admission report (user settings only, with a backup)",
+        usage: &["oxa local add <model.gguf> [--name <alias>] [--ctx <positions>] [--max-output <tokens>] [--margin-bytes <n>] [--enable] [--replace] [--engine-dir <dir>] [-- <oxe-server launch arguments>]"],
+        example: "oxa local add ~/models/model.gguf --ctx 16384 --enable -- --oxe-cpus 0-7",
+    },
+    Entry {
         path: &["mcp"],
         summary: "Manage MCP servers: add, remove, list, login, logout",
         usage: &["oxa mcp <add|remove|list|login|logout>"],

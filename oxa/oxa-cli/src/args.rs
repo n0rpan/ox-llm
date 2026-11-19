@@ -56,6 +56,8 @@ pub enum Subcommand {
     Pkg(String, Vec<String>),
     /// `oxa config ..`.
     Config(Vec<String>),
+    /// `oxa local add <model.gguf> ..`: the words after `local`.
+    Local(Vec<String>),
     /// O-152: `oxa identity [--refresh] [--offline]`.
     Identity(Vec<String>),
     /// O-152: `oxa report-issue draft|submit ..`.
@@ -287,6 +289,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "Queue a session follow-up, waking its TUI or RPC owner",
     ),
     ("oxa config [-l]", "Print every setting with its value and source"),
+    (
+        "oxa local add <model.gguf> [--ctx N] [--enable] [-- <launch args>]",
+        "Wire a local GGUF into the native local engine settings from the engine's admission report",
+    ),
     (
         "oxa mcp <command>",
         "Manage MCP servers: add, remove, list, login, logout",
@@ -532,6 +538,7 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         #[cfg(not(feature = "share"))]
         "share" => return Err(usage("this build does not include sharing")),
         "config" => Subcommand::Config(rest.to_vec()),
+        "local" => Subcommand::Local(rest.to_vec()),
         "identity" => Subcommand::Identity(rest.to_vec()),
         "report-issue" => Subcommand::ReportIssue(rest.to_vec()),
         "wipe" => Subcommand::Wipe(rest.to_vec()),

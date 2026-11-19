@@ -102,6 +102,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa status <session-id\|session-file> [--session-dir <dir>]` | read a saved session's progress and stall signal without contacting an engine |
 | `oxa send <session-id> "text"` | queue one follow-up for the session's TUI or RPC owner |
 | `oxa config [-l]` | print every setting with its value and where it comes from |
+| `oxa local add <model.gguf> [--name ALIAS] [--ctx N] [--max-output N] [--margin-bytes N] [--enable] [--replace] [--engine-dir DIR] [-- LAUNCH ARGS]` | write the native local engine settings for one GGUF from the engine's own admission report, see [Local models](#local-models) |
 | `oxa mcp <command>` | manage MCP servers, see below |
 | `oxa memory <list\|show\|rm>` | list the memory index, show one memory entry, or remove one entry and its index line, see [Memory commands](#memory-commands) |
 | `oxa identity [--refresh] [--offline]` | show the identity text of the system prompt; `--refresh` rewrites it from this machine and the engine, and `--offline` skips the engine |
@@ -130,6 +131,19 @@ Metered cloud aliases need `oxa.engine.inProcessCloud`, a configured price, and 
 `oxa report-issue draft` takes `--title <text>` (required), and the notes either inline with `--notes <text>` or from a file with `--notes-file <path>` (relative paths are taken from the current directory). It writes the draft under `issue-drafts/` in the agent directory and prints its path; it posts nothing. `oxa report-issue submit <draft>` posts it after you type `yes`.
 
 `oxa config` lists the settings as oxa resolves them.
+
+### Local models
+
+`oxa local add <model.gguf>` wires one local model into the native local engine, so a Rust-only install can run it. It needs no hand-written limits:
+
+1. It finds `oxe` and `oxe-server` in the directory of the running `oxa` executable. There is no PATH or current-directory search; `--engine-dir DIR` names another installation explicitly.
+2. It runs `oxe admission --json` for the model and launch profile. The engine reads only the GGUF header and reports `kv_bytes_per_position`, `scratch_bytes`, `mtp_state_bytes` and `margin_bytes` from its own allocation code, the context window, and the complete launch arguments the numbers are valid for.
+3. It writes `oxa.local` (the `binary`, `models.<alias>.model` and `arguments`, and `limits.<alias>` with `context_window`, `max_output` and `allocation_budget`) into your **user** settings file only, after copying the existing file to `settings.json.bak-<unix seconds>` next to it (mode 0600). Project settings are never read or written.
+4. It sets `oxa.engine.inProcessLocal` to `true` only when you pass `--enable`.
+
+Options: `--name` is the model alias (default: the lowercased file name without extension), `--ctx` the context in positions (default: the model's own `context_length`), `--max-output` a narrower output limit (default: the context window, the engine's own bound), `--margin-bytes` the host margin (default: the engine's documented 1 GiB), `--replace` overwrites an existing alias. Everything after `--` is passed to the engine as launch arguments, for example `-- --oxe-cpus 0-7 --spec-type draft-mtp`. The admission report resolves them with the same rules as `oxe-server` and the written `arguments` are the resolved list.
+
+A value that the report or an option does not supply is an explained error and nothing is written: oxa never guesses a limit. The generated `oxa.local` is also checked by the same code that loads it at startup before the file is touched. At load time oxa still requires `MemAvailable` to cover the model file plus the budget; see [native local configuration](../../oxc-local/CONFIGURATION.md).
 
 ### Experimental ChatGPT sign-in
 

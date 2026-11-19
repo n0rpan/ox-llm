@@ -20,6 +20,7 @@ mod approval;
 mod args;
 mod child;
 mod config_cmd;
+mod local_cmd;
 mod dispatch;
 mod goal_cmd;
 mod help;
@@ -68,6 +69,7 @@ pub use args::{
     NO_TOOL_ALIASES,
 };
 pub use config_cmd::run_config;
+pub use local_cmd::run_local;
 pub use dispatch::{choose_mode, run, with_lead_owner, LeadOwnerBinding, RunMode, Stdio};
 pub use help::{requested, text};
 pub use hooks::{build_hooks, HookInputs, HookSets, EXTENSIONS_LOG};
