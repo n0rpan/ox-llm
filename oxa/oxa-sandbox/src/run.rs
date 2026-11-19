@@ -69,12 +69,11 @@ pub fn run_argv_stdin(
     execute(cmd, prog, Some(stdin), timeout_s, cancel, live, true)
 }
 
-/// Run `argv` (optionally feeding `stdin`) so that the child inherits `fd`, which is otherwise
-/// close-on-exec; only this child gets it.
-pub(crate) fn run_argv_fd(
+/// Run `argv` (optionally feeding `stdin`) so that only this child inherits the listed close-on-exec descriptors.
+pub(crate) fn run_argv_fds(
     argv: &[String],
     stdin: Option<&[u8]>,
-    fd: Option<i32>,
+    fds: Vec<i32>,
     timeout_s: Option<u32>,
     cancel: &CancelToken,
     live: &mut dyn FnMut(&[u8]),
@@ -85,13 +84,15 @@ pub(crate) fn run_argv_fd(
     };
     let mut cmd = Command::new(prog);
     cmd.args(args);
-    if let Some(fd) = fd {
+    if !fds.is_empty() {
         // SAFETY: runs between fork and exec; fcntl is async-signal-safe and touches only
-        // our own descriptor in the child.
+        // our own descriptors in the child.
         unsafe {
             cmd.pre_exec(move || {
-                if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
-                    return Err(std::io::Error::last_os_error());
+                for &fd in &fds {
+                    if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
                 }
                 Ok(())
             });
@@ -156,6 +157,19 @@ pub(crate) fn run_unsandboxed_stdin(
     let cmd = unsandboxed_command(s, Some(base));
     let mut r = execute(cmd, "bash", Some(stdin), s.timeout_s, cancel, live, true);
     r.unsandboxed = true;
+    r
+}
+
+/// [`run_unsandboxed_stdin`] with the process environment plus `s.env`, like bash under yolo.
+pub(crate) fn run_unsandboxed_stdin_inherit(
+    s: &ExecSpec,
+    stdin: &[u8],
+    cancel: &CancelToken,
+    live: &mut dyn FnMut(&[u8]),
+) -> ExecResult {
+    let cmd = unsandboxed_command(s, None);
+    let mut r = execute(cmd, "bash", Some(stdin), s.timeout_s, cancel, live, true);
+    r.unsandboxed = !cfg!(target_os = "linux");
     r
 }
 
@@ -418,6 +432,40 @@ impl PinnedCwd {
             dir = unsafe { std::fs::File::from_raw_fd(fd) };
         }
         Ok(Self(dir))
+    }
+
+    /// Open and validate a socket beneath an already resolved directory.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn open_socket(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::unix::{ffi::OsStrExt, fs::FileTypeExt};
+
+        let dir = Self::open(
+            path.parent()
+                .ok_or_else(|| std::io::Error::other("missing socket parent"))?,
+        )?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| std::io::Error::other("missing socket name"))?;
+        let name = std::ffi::CString::new(name.as_bytes()).map_err(std::io::Error::other)?;
+        // SAFETY: the directory FD and single-component name are valid for this call.
+        let fd = unsafe {
+            libc::openat(
+                dir.0.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: openat returned an owned descriptor.
+        let socket = unsafe { std::fs::File::from_raw_fd(fd) };
+        if socket.metadata()?.file_type().is_socket() {
+            Ok(socket)
+        } else {
+            Err(std::io::Error::other("path is no longer a Unix socket"))
+        }
     }
 
     /// Set the child's cwd to this open directory, retaining the descriptor until exec.

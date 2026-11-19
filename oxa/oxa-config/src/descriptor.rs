@@ -546,7 +546,17 @@ mod tests {
         assert!(descriptor("compaction.keepRecentTokens").is_some());
         assert_eq!(fields_of("oxa.lead.serve").count(), 9);
         assert_eq!(in_group(Group::Display).count(), 30);
-        assert_eq!(descriptors().len(), 146);
+        // main's 147 descriptors plus this branch's `oxa.emptyReplyRetries`
+        // and main's `oxa.a2a.enabled`.
+        assert_eq!(descriptors().len(), 149);
+    }
+
+    #[test]
+    fn sandbox_socket_descriptor_keeps_owner_confirmation() {
+        let sockets = descriptor("oxa.sandbox.sockets").expect("sandbox socket setting");
+        assert_eq!(sockets.group, Group::Safety);
+        assert!(sockets.user_only);
+        assert_eq!(sockets.web, WebEdit::Confirm);
     }
 
     #[test]

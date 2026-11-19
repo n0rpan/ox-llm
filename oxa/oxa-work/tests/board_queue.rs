@@ -19,6 +19,7 @@ fn board() -> Board {
             lease: None,
             attempts_today: 0,
             eligible: true,
+            evidence_incomplete: None,
         }],
     }
 }

@@ -1166,7 +1166,6 @@ dependencies = [
 name = "oxa-a2a"
 version = "0.2.0"
 dependencies = [
- "oxa-a2a",
  "oxa-http",
  "oxa-proto",
  "serde",
@@ -1178,7 +1177,7 @@ name = "oxa-cli"
 version = "0.2.0"
 dependencies = [
  "libc",
- "oxa-cli",
+ "oxa-a2a",
  "oxa-codemode",
  "oxa-compact",
  "oxa-config",
@@ -1310,7 +1309,10 @@ dependencies = [
 name = "oxa-http"
 version = "0.2.0"
 dependencies = [
+ "futures-util",
  "oxa-proto",
+ "reqwest",
+ "tokio",
 ]
 
 [[package]]
@@ -1354,7 +1356,6 @@ version = "0.2.0"
 dependencies = [
  "libc",
  "oxa-fake",
- "oxa-orchestrator",
  "oxa-proto",
  "serde",
  "serde_json",
@@ -1415,13 +1416,13 @@ dependencies = [
 name = "oxa-rpc"
 version = "0.2.0"
 dependencies = [
+ "oxa-a2a",
  "oxa-config",
  "oxa-core",
  "oxa-export",
  "oxa-fake",
  "oxa-orchestrator",
  "oxa-proto",
- "oxa-rpc",
  "oxa-session",
  "serde_json",
 ]
@@ -1463,6 +1464,7 @@ dependencies = [
 name = "oxa-tools"
 version = "0.2.0"
 dependencies = [
+ "base64 0.22.1",
  "globset",
  "ignore",
  "libc",

@@ -49,8 +49,7 @@ class Selection(unittest.TestCase):
                 matrix, _, _ = lane.select(self.packages, self.packages, [path])
                 self.assertEqual(len(matrix['include']), 2)
                 for entry in matrix['include']:
-                    expected = ['app', 'leaf', 'unrelated']
-                    self.assertEqual(entry['packages'], expected)
+                    self.assertEqual(entry['packages'], ['app', 'leaf', 'unrelated'])
 
     def test_shared_documentation_does_not_start_rust_tests(self):
         matrix, _, _ = lane.select(self.packages, self.packages,
@@ -60,8 +59,7 @@ class Selection(unittest.TestCase):
     def test_workspace_lock_expands_that_workspace_and_real_consumers(self):
         matrix, _, _ = lane.select(self.packages, self.packages, ['oxa/Cargo.lock'])
         for entry in matrix['include']:
-            expected = ['app', 'leaf', 'unrelated']
-            self.assertEqual(entry['packages'], expected)
+            self.assertEqual(entry['packages'], ['app', 'leaf', 'unrelated'])
 
     def test_lane_execution_contract_is_global_but_other_workflows_are_not(self):
         matrix, _, reasons = lane.select(self.packages, self.packages, ['tools/ci/lane_run.py'])

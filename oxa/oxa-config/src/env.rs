@@ -63,7 +63,7 @@ pub const ENV_TABLE: &[EnvVar] = &[
     EnvVar {
         name: "OXA_ENGINE_URL",
         pi_name: None,
-        description: "engine endpoint for the default models.json entry; default http://127.0.0.1:8092 (a local engine endpoint)",
+        description: "engine endpoint for the default models.json entry; default http://127.0.0.1:8080 (the oxe-server default; with no model configured oxa does not dial it)",
         supported: true,
         kind: EnvKind::User,
     },
@@ -333,6 +333,34 @@ pub const ENV_TABLE: &[EnvVar] = &[
         kind: EnvKind::Set,
     },
     EnvVar {
+        name: "OXA_CONFIRM_MAX_REQUEST_BYTES",
+        pi_name: None,
+        description: "largest owner confirm request a tool child may send, in bytes (default 8 MiB); a value that is not a positive whole number is ignored",
+        supported: true,
+        kind: EnvKind::User,
+    },
+    EnvVar {
+        name: "OXA_CONFIRM_READ_TIMEOUT_SECS",
+        pi_name: None,
+        description: "seconds a tool child has to send its whole owner confirm request (default 60); a value that is not a positive whole number is ignored",
+        supported: true,
+        kind: EnvKind::User,
+    },
+    EnvVar {
+        name: "OXA_CONFIRM_MAX_CONNECTIONS",
+        pi_name: None,
+        description: "owner confirm requests served at once (default 64); more are answered none at once; a value that is not a positive whole number is ignored",
+        supported: true,
+        kind: EnvKind::User,
+    },
+    EnvVar {
+        name: "OXA_CONFIRM_SOCK",
+        pi_name: None,
+        description: "oxa sets it in tool children to the path of the session's private owner confirm socket, through which oxa commands ask the owner",
+        supported: true,
+        kind: EnvKind::Set,
+    },
+    EnvVar {
         name: "OXA_TOOL_CALL_ID",
         pi_name: None,
         description: "oxa sets it in the environment of an extension tool call to the id of that call",
@@ -370,7 +398,7 @@ pub const ENV_TABLE: &[EnvVar] = &[
     EnvVar {
         name: "OXA_WORK_MODEL_DELEGATED",
         pi_name: None,
-        description: "oxa work sets 1 in a worker so a model argument does not count as chosen by the owner; a launcher can deny that opt-in this way, never grant it",
+        description: "oxa work sets 1 in a worker; a restored or project-selected model then never counts as chosen by the owner, while an actual model argument is still admitted by a protected Go key",
         supported: true,
         kind: EnvKind::Internal,
     },

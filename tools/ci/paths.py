@@ -21,8 +21,8 @@ def documentation(path):
 
 
 # Top-level directories and the outputs (job groups) they select. `gateway` is the in-process
-# library; the retired Python controller and its suites are gone, so oxc/ only selects it.
-# Gateway changes exercise the oxa workspace.
+# library; gateway changes exercise the oxa workspace. The Python controller suite and the
+# oxc-rs CLI are gone, so oxc/ selects only the gateway job.
 COMPONENTS = {'engine': {'engine'}, 'oxa': {'oxa'}, 'oxc': {'gateway'}}
 FUZZ = {'fuzz/oxa': {'oxa'}, 'fuzz/oxe': {'engine'}}
 OUTPUTS = ('engine', 'oxa', 'gateway')

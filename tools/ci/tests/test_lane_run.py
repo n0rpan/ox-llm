@@ -10,7 +10,7 @@ spec.loader.exec_module(lane)
 
 
 class LaneRuntime(unittest.TestCase):
-    def test_empty_unit_inventory_is_never_accepted(self):
+    def test_empty_unit_inventory_is_rejected(self):
         empty = {'rust-suites': {'native': {'status': 'listed', 'testcases': {}}}}
         for workspace in ('oxa', 'engine'):
             with self.assertRaises(ValueError):

@@ -3,8 +3,8 @@
 use crate::{Block, UiRequest, ViewModel};
 use oxa_config::Keymap;
 use oxa_proto::{
-    Access, Answer, ComponentAction, CustomOpts, KeyId, Level, Mode, Placement, ToolClass, Ui, UiComponent,
-    Value,
+    Access, Answer, ComponentAction, CustomOpts, DangerAnswer, KeyId, Level, Mode, Placement, ToolClass, Ui,
+    UiComponent, Value,
 };
 use oxa_tui::{
     frame_lines, Component, CursorPos, Editor, EditorAction, EditorOpts, Input, InputAction, Interactive,
@@ -15,10 +15,27 @@ use std::sync::mpsc::{channel, Sender};
 
 /// Rows a choice list shows before it scrolls.
 const MAX_VISIBLE: usize = 10;
+/// Publication previews are deliberately bounded independently of terminal height. Page keys
+/// expose every row, and approval remains disabled until the final page has been viewed.
+const PUBLICATION_ROWS: usize = 10;
 /// The permission prompt's choices, in display order. Deny is the default focus so that a
 /// stray Enter never grants access.
 const ACCESS_LABELS: [&str; 3] = ["Allow once", "Allow for this session", "Deny"];
 const ACCESS_ANSWERS: [Answer; 3] = [Answer::Once, Answer::Session, Answer::Deny];
+/// #1512 S2: the dangerous-command prompt's choices, in display order. Deny is the default focus
+/// (a stray Enter never runs a dangerous command); `Always` is saved to the user settings.
+pub const DANGER_LABELS: [&str; 4] = [
+    "Allow once",
+    "Allow for this session",
+    "Always allow (saved to your user settings)",
+    "Deny",
+];
+pub const DANGER_ANSWERS: [DangerAnswer; 4] = [
+    DangerAnswer::Once,
+    DangerAnswer::Session,
+    DangerAnswer::Always,
+    DangerAnswer::Deny,
+];
 const HINT_CHOICE: &str = "up/down move  enter choose  esc cancel";
 const HINT_TEXT: &str = "enter submit  esc cancel";
 
@@ -62,6 +79,18 @@ impl Ui for UiProxy {
             title: title.to_string(),
             body: body.to_string(),
             timeout_ms,
+            reply,
+        };
+        if !self.post(req) {
+            return None;
+        }
+        rx.recv().ok().flatten()
+    }
+    fn approve_publication(&mut self, title: &str, body: &str) -> Option<bool> {
+        let (reply, rx) = channel();
+        let req = UiRequest::ApprovePublication {
+            title: title.to_string(),
+            body: body.to_string(),
             reply,
         };
         if !self.post(req) {
@@ -127,6 +156,18 @@ impl Ui for UiProxy {
             return Answer::Deny;
         }
         rx.recv().unwrap_or(Answer::Deny)
+    }
+    fn ask_dangerous(&mut self, a: &Access, reasons: &[String], keys: &[String]) -> DangerAnswer {
+        let (reply, rx) = channel();
+        if !self.post(UiRequest::AskDangerous {
+            access: a.clone(),
+            reasons: reasons.to_vec(),
+            keys: keys.to_vec(),
+            reply,
+        }) {
+            return DangerAnswer::Deny;
+        }
+        rx.recv().unwrap_or(DangerAnswer::Deny)
     }
     fn editor_text(&mut self) -> String {
         let (reply, rx) = channel();
@@ -198,6 +239,9 @@ pub struct DialogHost {
     cursor_at: Option<CursorPos>,
     /// Edge consumed by the app, not by hooks. Queued permissions count only on opening.
     permission_opened: bool,
+    /// #1512 S2: an "always allow" answer waiting for the driver to save its keys and answer
+    /// (see [`DialogHost::take_danger_always`]).
+    danger_always: Option<(Vec<String>, Sender<DangerAnswer>)>,
 }
 
 impl DialogHost {
@@ -208,11 +252,19 @@ impl DialogHost {
             clock: 0,
             cursor_at: None,
             permission_opened: false,
+            danger_always: None,
         }
     }
 
     pub(crate) fn take_permission_opened(&mut self) -> bool {
         std::mem::take(&mut self.permission_opened)
+    }
+
+    /// #1512 S2: the keys and the reply of an "always allow" answer. The caller saves the keys
+    /// and then answers the reply (the driver's `finish_danger_always`); until it does, the
+    /// worker waits. `None` when no such answer is pending.
+    pub fn take_danger_always(&mut self) -> Option<(Vec<String>, Sender<DangerAnswer>)> {
+        self.danger_always.take()
     }
 
     /// Take a request: blocking ones open or queue a dialog; the others are applied to `vm`
@@ -258,6 +310,15 @@ impl DialogHost {
                     timeout_ms,
                     Reply::Bool(reply),
                 );
+                self.push(dialog, now_ms);
+            }
+            UiRequest::ApprovePublication { title, body, reply } => {
+                let mut list = choice_list(&["Approve".to_string(), "Deny".to_string()]);
+                // Deny is focused by default: a stray Enter never publishes.
+                list.set_selected_index(1);
+                let lines: Vec<String> = body.lines().map(str::to_string).collect();
+                let dialog =
+                    Dialog::choice(title, lines, list, ChoiceKind::Approve, None, Reply::Bool(reply));
                 self.push(dialog, now_ms);
             }
             UiRequest::Input {
@@ -309,6 +370,29 @@ impl DialogHost {
                     ChoiceKind::Access,
                     None,
                     Reply::Access(reply),
+                );
+                self.push(dialog, now_ms);
+            }
+            UiRequest::AskDangerous {
+                access,
+                reasons,
+                keys,
+                reply,
+            } => {
+                // The command and the reasons come from the model: strip escape sequences and
+                // other control characters so they cannot rewrite the dialog around them.
+                let mut lines = vec![sanitize_dialog_text(&access_prompt(&access).1)];
+                lines.extend(reasons.iter().map(|r| format!("- {}", sanitize_dialog_text(r))));
+                let mut list = choice_list(&DANGER_LABELS);
+                // Deny is focused by default: a stray Enter never runs a dangerous command.
+                list.set_selected_index(DANGER_ANSWERS.len() - 1);
+                let dialog = Dialog::choice(
+                    "Dangerous command".to_string(),
+                    lines,
+                    list,
+                    ChoiceKind::Danger,
+                    None,
+                    Reply::Danger(reply, keys),
                 );
                 self.push(dialog, now_ms);
             }
@@ -457,12 +541,41 @@ impl DialogHost {
         let mut body: Vec<String> = Vec::new();
         let mut cursor: Option<(usize, u16)> = None;
         match &mut dialog.body {
-            Body::Choice { lines, list, kind } => {
+            Body::Choice {
+                lines,
+                list,
+                kind,
+                scroll,
+                reviewed,
+            } => {
                 match kind {
                     // A select has no body text: its title is the question, wrapped.
                     ChoiceKind::Select => {
                         header = None;
                         body.extend(wrap(&title, inner as usize));
+                    }
+                    // Publication text is shown as it will be published: no word re-flow.
+                    ChoiceKind::Approve => {
+                        let mut preview = Vec::new();
+                        for line in lines.iter() {
+                            preview.extend(hard_wrap(line, inner as usize));
+                        }
+                        let max_scroll = preview.len().saturating_sub(PUBLICATION_ROWS);
+                        *scroll = (*scroll).min(max_scroll);
+                        let end = (*scroll + PUBLICATION_ROWS).min(preview.len());
+                        body.extend(preview[*scroll..end].iter().cloned());
+                        *reviewed |= end == preview.len();
+                        if preview.len() > PUBLICATION_ROWS {
+                            body.push(theme.fg(
+                                "muted",
+                                &format!(
+                                    "rows {}–{} of {}  pageup/pagedown review",
+                                    *scroll + 1,
+                                    end,
+                                    preview.len()
+                                ),
+                            ));
+                        }
                     }
                     _ => {
                         for line in lines.iter() {
@@ -524,6 +637,9 @@ impl DialogHost {
         while let Some(dialog) = self.queue.pop_front() {
             dialog.reply.settle(None);
         }
+        if let Some((_, tx)) = self.danger_always.take() {
+            let _ = tx.send(DangerAnswer::Deny);
+        }
         self.cursor_at = None;
         self.permission_opened = false;
     }
@@ -532,7 +648,7 @@ impl DialogHost {
     fn push(&mut self, mut dialog: Dialog, now_ms: u64) {
         if self.open.is_none() {
             dialog.arm(now_ms);
-            self.permission_opened |= matches!(dialog.reply, Reply::Access(_));
+            self.permission_opened |= matches!(dialog.reply, Reply::Access(_) | Reply::Danger(..));
             self.open = Some(dialog);
         } else {
             self.queue.push_back(dialog);
@@ -542,11 +658,17 @@ impl DialogHost {
     /// Close the open dialog with `out` (`None` = dismissed) and open the next queued one.
     fn close_open(&mut self, out: Option<Outcome>) {
         if let Some(dialog) = self.open.take() {
-            dialog.reply.settle(out);
+            match (dialog.reply, out) {
+                // The driver saves the keys first; it answers through `take_danger_always`.
+                (Reply::Danger(tx, keys), Some(Outcome::Danger(DangerAnswer::Always))) => {
+                    self.danger_always = Some((keys, tx));
+                }
+                (reply, out) => reply.settle(out),
+            }
         }
         if let Some(mut next) = self.queue.pop_front() {
             next.arm(self.clock);
-            self.permission_opened |= matches!(next.reply, Reply::Access(_));
+            self.permission_opened |= matches!(next.reply, Reply::Access(_) | Reply::Danger(..));
             self.open = Some(next);
         }
         self.cursor_at = None;
@@ -696,6 +818,24 @@ fn choice_list(labels: &[impl AsRef<str>]) -> SelectList {
     SelectList::new(items, MAX_VISIBLE)
 }
 
+/// Cut a line at `width` columns without touching its spaces, so the shown text is the exact
+/// text (an empty line stays one empty row).
+fn hard_wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    let mut line = String::new();
+    for ch in text.chars() {
+        let mut next = line.clone();
+        next.push(ch);
+        if !line.is_empty() && oxa_tui::visible_width(&next) > width {
+            out.push(std::mem::take(&mut line));
+        }
+        line.push(ch);
+    }
+    out.push(line);
+    out
+}
+
 /// Greedy word wrap by visible width. Words wider than `width` stay whole (the frame cuts them).
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
@@ -724,6 +864,7 @@ enum Outcome {
     Bool(bool),
     Text(String),
     Access(Answer),
+    Danger(DangerAnswer),
     Value(Value),
 }
 
@@ -733,6 +874,8 @@ enum Reply {
     Bool(Sender<Option<bool>>),
     Text(Sender<Option<String>>),
     Access(Sender<Answer>),
+    /// The dangerous-command answer and the rule keys it covers.
+    Danger(Sender<DangerAnswer>, Vec<String>),
     Value(Sender<Option<Value>>),
 }
 
@@ -764,6 +907,12 @@ impl Reply {
             (Reply::Access(tx), _) => {
                 let _ = tx.send(Answer::Deny);
             }
+            (Reply::Danger(tx, _), Some(Outcome::Danger(a))) => {
+                let _ = tx.send(a);
+            }
+            (Reply::Danger(tx, _), _) => {
+                let _ = tx.send(DangerAnswer::Deny);
+            }
             (Reply::Value(tx), Some(Outcome::Value(v))) => {
                 let _ = tx.send(Some(v));
             }
@@ -778,15 +927,21 @@ impl Reply {
 enum ChoiceKind {
     Select,
     Confirm,
+    /// Publication approval: Approve is index 0, the exact text is shown unwrapped-by-words.
+    Approve,
     Access,
+    Danger,
 }
 
 impl ChoiceKind {
     fn outcome(self, i: usize) -> Outcome {
         match self {
             ChoiceKind::Select => Outcome::Index(i),
-            ChoiceKind::Confirm => Outcome::Bool(i == 0),
+            ChoiceKind::Confirm | ChoiceKind::Approve => Outcome::Bool(i == 0),
             ChoiceKind::Access => Outcome::Access(ACCESS_ANSWERS.get(i).copied().unwrap_or(Answer::Deny)),
+            ChoiceKind::Danger => {
+                Outcome::Danger(DANGER_ANSWERS.get(i).copied().unwrap_or(DangerAnswer::Deny))
+            }
         }
     }
 }
@@ -797,6 +952,10 @@ enum Body {
         lines: Vec<String>,
         list: Box<SelectList>,
         kind: ChoiceKind,
+        /// Wrapped-row offset for publication review.
+        scroll: usize,
+        /// Approval is enabled only after the owner has displayed the final preview page.
+        reviewed: bool,
     },
     Text {
         input: Input,
@@ -842,6 +1001,8 @@ impl Dialog {
                 lines,
                 list: Box::new(list),
                 kind,
+                scroll: 0,
+                reviewed: false,
             },
             reply,
             timeout_ms,
@@ -870,16 +1031,43 @@ impl Dialog {
     fn key(&mut self, key: &Key, keymap: &Keymap) -> KeyFlow {
         let cancel = keymap.matches(&key.id, "tui.select.cancel");
         match &mut self.body {
-            Body::Choice { list, kind, .. } => match list.key(key, keymap) {
-                SelectAction::Selected(value) => {
-                    let out = value.parse::<usize>().ok().map(|i| kind.outcome(i));
-                    KeyFlow::Settle(out)
+            Body::Choice {
+                list,
+                kind,
+                scroll,
+                reviewed,
+                ..
+            } => {
+                if matches!(kind, ChoiceKind::Approve) && key.is("pagedown") {
+                    *scroll = scroll.saturating_add(PUBLICATION_ROWS);
+                    return KeyFlow::Pending;
                 }
-                SelectAction::Cancelled => KeyFlow::Settle(None),
-                SelectAction::Moved => KeyFlow::Pending,
-                SelectAction::Ignored if cancel => KeyFlow::Settle(None),
-                SelectAction::Ignored => KeyFlow::Pending,
-            },
+                if matches!(kind, ChoiceKind::Approve) && key.is("pageup") {
+                    *scroll = scroll.saturating_sub(PUBLICATION_ROWS);
+                    return KeyFlow::Pending;
+                }
+                match list.key(key, keymap) {
+                    SelectAction::Selected(value) => {
+                        let out = value.parse::<usize>().ok().and_then(|i| {
+                            // Denial is always available. Approval is not authority until the final
+                            // page has actually been rendered for review.
+                            if matches!(kind, ChoiceKind::Approve) && i == 0 && !*reviewed {
+                                None
+                            } else {
+                                Some(kind.outcome(i))
+                            }
+                        });
+                        if out.is_none() && matches!(kind, ChoiceKind::Approve) {
+                            return KeyFlow::Pending;
+                        }
+                        KeyFlow::Settle(out)
+                    }
+                    SelectAction::Cancelled => KeyFlow::Settle(None),
+                    SelectAction::Moved => KeyFlow::Pending,
+                    SelectAction::Ignored if cancel => KeyFlow::Settle(None),
+                    SelectAction::Ignored => KeyFlow::Pending,
+                }
+            }
             Body::Text { input } => match input.key(key, keymap) {
                 InputAction::Submit(v) => KeyFlow::Settle(Some(Outcome::Text(v))),
                 InputAction::Cancelled => KeyFlow::Settle(None),
@@ -903,9 +1091,26 @@ impl Dialog {
     }
 }
 
+/// Dialog text from model input with escape sequences and other control characters removed.
+fn sanitize_dialog_text(text: &str) -> String {
+    oxa_tui::strip_ansi(text)
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
 #[cfg(test)]
 mod notification_tests {
     use super::*;
+
+    #[test]
+    fn a_dangerous_command_cannot_rewrite_the_dialog() {
+        let hostile = "ls \u{1b}[2J\u{1b}[1;1HApproved\r\u{7}# \u{1b}[31m";
+        let clean = sanitize_dialog_text(hostile);
+        assert!(!clean.contains('\u{1b}'), "{clean:?}");
+        assert!(!clean.chars().any(|c| c.is_control()), "{clean:?}");
+        assert!(clean.contains("Approved"), "{clean:?}");
+    }
 
     #[test]
     fn queued_permissions_notify_only_when_opened_once_each() {
@@ -941,5 +1146,87 @@ mod notification_tests {
         assert!(host.take_permission_opened(), "next queued permission");
         host.close_all();
         assert!(!host.take_permission_opened());
+    }
+}
+
+#[cfg(test)]
+mod approval_tests {
+    use super::*;
+
+    fn open(host: &mut DialogHost) -> std::sync::mpsc::Receiver<Option<bool>> {
+        let (reply, rx) = channel();
+        host.handle(
+            UiRequest::ApprovePublication {
+                title: "Publish?".into(),
+                body: "Title: A  B\n    indented".into(),
+                reply,
+            },
+            &mut ViewModel::default(),
+            0,
+        );
+        rx
+    }
+
+    #[test]
+    fn deny_is_focused_and_the_text_is_shown_exactly() {
+        let mut host = DialogHost::new();
+        let rx = open(&mut host);
+        let shown = host.render(80, &Theme::plain()).join("\n");
+        assert!(
+            shown.contains("Title: A  B") && shown.contains("    indented"),
+            "{shown}"
+        );
+        host.key(&Key::press("enter"), &Keymap::defaults());
+        assert_eq!(rx.recv().unwrap(), Some(false), "a stray Enter denies");
+    }
+
+    #[test]
+    fn up_then_enter_approves_and_escape_dismisses() {
+        let mut host = DialogHost::new();
+        let rx = open(&mut host);
+        host.render(80, &Theme::plain());
+        host.key(&Key::press("up"), &Keymap::defaults());
+        host.key(&Key::press("enter"), &Keymap::defaults());
+        assert_eq!(rx.recv().unwrap(), Some(true));
+        let rx = open(&mut host);
+        host.key(&Key::press("escape"), &Keymap::defaults());
+        assert_eq!(rx.recv().unwrap(), None);
+    }
+
+    #[test]
+    fn long_lines_are_cut_not_reflowed() {
+        assert_eq!(hard_wrap("ab  cd", 4), vec!["ab  ".to_string(), "cd".to_string()]);
+        assert_eq!(hard_wrap("", 4), vec![String::new()]);
+    }
+
+    #[test]
+    fn publication_must_be_paged_to_the_end_before_approval() {
+        let mut host = DialogHost::new();
+        let (reply, rx) = channel();
+        let body = (1..=24)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        host.handle(
+            UiRequest::ApprovePublication {
+                title: "Publish?".into(),
+                body,
+                reply,
+            },
+            &mut ViewModel::default(),
+            0,
+        );
+        let first = host.render(80, &Theme::plain()).join("\n");
+        assert!(first.contains("line 1") && !first.contains("line 24"), "{first}");
+        host.key(&Key::press("up"), &Keymap::defaults());
+        host.key(&Key::press("enter"), &Keymap::defaults());
+        assert!(rx.try_recv().is_err(), "approval stayed disabled");
+
+        host.key(&Key::press("pagedown"), &Keymap::defaults());
+        host.key(&Key::press("pagedown"), &Keymap::defaults());
+        let last = host.render(80, &Theme::plain()).join("\n");
+        assert!(last.contains("line 24") && !last.contains("│ line 1 "), "{last}");
+        host.key(&Key::press("enter"), &Keymap::defaults());
+        assert_eq!(rx.recv().unwrap(), Some(true));
     }
 }

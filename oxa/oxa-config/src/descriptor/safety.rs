@@ -134,4 +134,16 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .apply(Apply::Reload)
     .web(WebEdit::Confirm)
     .widens("Gives bash write access to these extra folders."),
+    d(
+        "oxa.sandbox.sockets",
+        Group::Safety,
+        "Bash sandbox",
+        "Host sockets for bash",
+        "Runtime sockets (docker, podman) bash may reach.",
+    )
+    .control(Control::List(Item::Path))
+    .user_only()
+    .apply(Apply::Restart)
+    .web(WebEdit::Confirm)
+    .widens("Lets bash use these host sockets; the docker socket gives root on this machine."),
 ];

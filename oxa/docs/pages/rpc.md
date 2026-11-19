@@ -147,6 +147,8 @@ The value is the chosen option for `select`, a boolean for `confirm`, and the te
 
 A dialog that gets no answer in time is dismissed, and the request is treated as having no answer; a permission question is then denied. Dialogs from extensions have an optional `timeout` in milliseconds.
 
+The fork offer comes before the session starts. When `--session <id>` names a session of another directory and the client declares an owner with `OXA_RPC_OWNER_PRESENT=1`, the run sends a `confirm` request titled `Session found in different project: <dir>` with the message `Fork this session into current directory?`. Answer `"confirmed": true` to fork it. Any other answer, a cancel, or the client closing stdin declines, and the run ends without a session. Without an owner, the run refuses and names `--fork`.
+
 ## The Rust client
 
 The `oxa-rpc` crate has a client for driving `oxa --mode rpc` from Rust. It starts the process, sends commands, and reads the events. The main functions are `RpcClient::spawn` (start the process with its arguments), `request` (send a command and wait for its response, with a timeout), `next_event` and `wait_for(kind)` (read event records), `respond_ui` (answer an `extension_ui_request`) and `close`. The crate is not published; add it by path from a checkout of the source tree.

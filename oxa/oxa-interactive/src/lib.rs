@@ -55,7 +55,7 @@ pub use app::*;
 pub use chrome::*;
 pub use clipboard::*;
 pub use dialogs::*;
-pub use driver::{ask_trust_interactive, ask_trust_on};
+pub use driver::{append_always, ask_trust_interactive, ask_trust_on};
 pub use external::*;
 pub use fullscreen::*;
 pub use model::*;

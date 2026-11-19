@@ -9,8 +9,8 @@ use oxa_core::{CoreHost, Queue, SessionState, Shared, Stats, Toolset};
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
-    codes, set_net_policy, CancelToken, Engine, ExecSpec, FrozenPrefix, HeadlessUi, Host, HostAction, Mode,
-    OxaError, Policy, ThinkingLevel, Tool, Value, VecSink,
+    codes, set_net_policy, Access, Answer, Autonomy, CancelToken, Engine, ExecSpec, FrozenPrefix, HeadlessUi,
+    Host, HostAction, Mode, OxaError, Policy, ThinkingLevel, Tool, Ui, Value, VecSink, YoloSwitch,
 };
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
@@ -48,6 +48,7 @@ fn state(env: &TestEnv, turns: Vec<ScriptTurn>, settings: Settings) -> (SessionS
         modes: Mutex::new((QueueMode::All, QueueMode::OneAtATime)),
         dirty: std::sync::atomic::AtomicBool::new(false),
         gate: Default::default(),
+        wake: Default::default(),
     });
     let tools = tools();
     let st = SessionState {
@@ -154,4 +155,143 @@ fn offline_refuses_remote_fetch_and_network_exec_before_asking() {
             .starts_with("Refused: a command with network access needs the network"),
         "{e}"
     );
+}
+
+/// #1512 S2: an extension's `exec` is classified in the directory it runs in, not in the
+/// session's directory: `/…/other/victim` is outside the session's workspace but inside the
+/// directory the extension gave the command, so only the first asks.
+#[test]
+fn extension_exec_is_classified_in_its_own_directory() {
+    let env = TestEnv::new();
+    let (mut st, _eng) = state(&env, vec![ScriptTurn::text("x")], Settings::default());
+    st.policy = Box::new(
+        ModePolicy::new()
+            .with_guard(oxa_perm::PathGuard::new(
+                &env.home(),
+                &env.agent_dir(),
+                &env.tmp(),
+            ))
+            .with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new()),
+    );
+    let other = env.root().join("other");
+    std::fs::create_dir_all(other.join("victim")).unwrap();
+    let spec = |cwd: std::path::PathBuf| {
+        HostAction::Exec(ExecSpec {
+            command: format!("rm -rf {}/victim", other.display()),
+            cwd,
+            writable: true,
+            net: false,
+            timeout_s: None,
+            env: Vec::new(),
+        })
+    };
+    let e = through_host(&mut st, spec(env.work())).unwrap_err();
+    assert!(
+        e.message
+            .starts_with("Refused: dangerous command (rm-recursive-outside: "),
+        "{e}"
+    );
+    // This workspace has no OS sandbox, so the command cannot actually run here; what matters
+    // is that the classifier does not refuse it in the directory the extension gave it.
+    let e = through_host(&mut st, spec(other.clone())).unwrap_err();
+    assert!(!e.message.starts_with("Refused: dangerous command"), "{e}");
+}
+
+/// A `Ui` that answers every access question with `answer` and records the questions.
+struct AskUi {
+    answer: Answer,
+    asked: Vec<Access>,
+}
+
+impl Ui for AskUi {
+    fn select(&mut self, _t: &str, _o: &[String], _ms: Option<u32>) -> Option<usize> {
+        None
+    }
+    fn confirm(&mut self, _t: &str, _b: &str, _ms: Option<u32>) -> Option<bool> {
+        None
+    }
+    fn input(&mut self, _t: &str, _p: &str) -> Option<String> {
+        None
+    }
+    fn editor(&mut self, _t: &str, _p: &str) -> Option<String> {
+        None
+    }
+    fn notify(&mut self, _text: &str, _level: oxa_proto::Level) {}
+    fn set_status(&mut self, _k: &str, _t: Option<&str>) {}
+    fn set_widget(&mut self, _k: &str, _l: Option<&[String]>, _at: oxa_proto::Placement) {}
+    fn set_title(&mut self, _t: &str) {}
+    fn set_editor_text(&mut self, _t: &str) {}
+    fn ask_access(&mut self, a: &Access) -> Answer {
+        self.asked.push(a.clone());
+        self.answer
+    }
+}
+
+fn through_host_ui(st: &mut SessionState, action: HostAction, ui: &mut AskUi) -> Result<Value, OxaError> {
+    let (host, rx) = CoreHost::new(st.shared.clone());
+    st.host_rx = Some(rx);
+    let worker = std::thread::spawn(move || host.call(action));
+    let mut sink = VecSink::default();
+    while !worker.is_finished() {
+        oxa_core::serve_host(st, false, &mut sink, ui);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    worker.join().unwrap()
+}
+
+/// An extension's `exec` with a directory outside the session directory asks like a write
+/// outside the project (it is mounted writable); yolo does not ask, and a directory inside the
+/// session directory is unchanged. A denied ask refuses before the command runs.
+#[test]
+fn extension_exec_cwd_outside_the_session_asks_like_an_outside_write() {
+    let env = TestEnv::new();
+    let other = env.root().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let exec = |cwd: std::path::PathBuf| {
+        HostAction::Exec(ExecSpec {
+            command: "true".to_string(),
+            cwd,
+            writable: true,
+            net: false,
+            timeout_s: None,
+            env: Vec::new(),
+        })
+    };
+    let guard = || oxa_perm::PathGuard::new(&env.home(), &env.agent_dir(), &env.tmp());
+
+    // Standard mode: outside asks (once), inside does not.
+    let (mut st, _eng) = state(&env, vec![ScriptTurn::text("x")], Settings::default());
+    st.policy = Box::new(ModePolicy::new().with_guard(guard()));
+    let mut ui = AskUi {
+        answer: Answer::Once,
+        asked: Vec::new(),
+    };
+    // This workspace has no OS sandbox, so a command that passes the policy cannot run here:
+    // only the questions asked (and a refusal by the policy) matter.
+    let _ = through_host_ui(&mut st, exec(env.work()), &mut ui);
+    assert!(
+        ui.asked.is_empty(),
+        "inside the session directory: {:?}",
+        ui.asked
+    );
+    let _ = through_host_ui(&mut st, exec(other.clone()), &mut ui);
+    assert_eq!(ui.asked, vec![Access::Write(other.clone())]);
+
+    // No approver (denied): refused, the command never runs.
+    let mut ui = AskUi {
+        answer: Answer::Deny,
+        asked: Vec::new(),
+    };
+    let e = through_host_ui(&mut st, exec(other.clone()), &mut ui).unwrap_err();
+    assert_eq!(e.code, codes::DENIED, "{e}");
+
+    // Yolo: no question.
+    let switch = YoloSwitch::new(Autonomy::Yolo);
+    st.policy = Box::new(ModePolicy::new().with_guard(guard()).with_yolo(switch));
+    let mut ui = AskUi {
+        answer: Answer::Deny,
+        asked: Vec::new(),
+    };
+    let _ = through_host_ui(&mut st, exec(other), &mut ui);
+    assert!(ui.asked.is_empty(), "yolo never asks: {:?}", ui.asked);
 }
