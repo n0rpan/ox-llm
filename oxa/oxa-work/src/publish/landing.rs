@@ -173,8 +173,16 @@ impl<'a> LandingPublisher<'a> {
     }
 
     fn call(&self, args: &[&str]) -> Result<Value> {
-        json(&gh(self.gh_binary, self.policy, self.repo, self.journal, args)?)
-            .map_err(|_| "invalid GitHub landing publication response".into())
+        let token = crate::policy_token(self.policy)?;
+        json(&gh(
+            self.gh_binary,
+            self.policy,
+            token.as_deref(),
+            self.repo,
+            self.journal,
+            args,
+        )?)
+        .map_err(|_| "invalid GitHub landing publication response".into())
     }
 
     fn graphql(&self, host: &str, query: &str, fields: &[&str]) -> Result<Value> {
