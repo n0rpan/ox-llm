@@ -152,10 +152,10 @@ fn auto_keeps_bash_in_the_sandbox_and_yolo_does_not() {
     );
 }
 
-/// #602: absolute /tmp names use bash's active filesystem view, not always scratch.
+/// #602 and #1512: absolute /tmp names follow the launch sandbox for both tools.
 #[test]
 fn bash_and_file_tools_share_tmp_paths_in_auto_and_yolo() {
-    for flag in ["--auto", "--yolo"] {
+    for (flag, sandboxed) in [("--auto", true), ("--yolo", true), ("--yolo", false)] {
         let env = TestEnv::new();
         let target = env.root().join("outside/result.txt");
         assert!(target.starts_with("/tmp"));
@@ -193,7 +193,12 @@ fn bash_and_file_tools_share_tmp_paths_in_auto_and_yolo() {
             ScriptTurn::text("ok"),
         ];
         let srv = FakeServer::start(turns, FakeOpts::default()).unwrap();
-        let out = run_oxa(&env, &srv.url(), &["-p", flag, "--sandbox", "use the tools"], "");
+        let mut args = vec!["-p", flag];
+        if sandboxed {
+            args.push("--sandbox");
+        }
+        args.push("use the tools");
+        let out = run_oxa(&env, &srv.url(), &args, "");
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         let reqs = srv.requests();
         assert_eq!(reqs.len(), 7, "{flag}: the complete tool loop must run");
@@ -221,10 +226,10 @@ fn bash_and_file_tools_share_tmp_paths_in_auto_and_yolo() {
             "{flag}: bash sees write: {}",
             latest_result(6)
         );
-        if flag == "--yolo" {
-            assert_eq!(std::fs::read_to_string(&target).unwrap(), "written\n");
+        if sandboxed {
+            assert!(!target.exists(), "{flag} must leave the host namesake untouched");
         } else {
-            assert!(!target.exists(), "auto must leave the host namesake untouched");
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "written\n");
         }
     }
 }
