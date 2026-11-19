@@ -107,6 +107,9 @@ impl WrapUpReason {
 ///   the session and has not armed `bg_cancel` yet would otherwise miss the cancel).
 #[derive(Debug, Default)]
 pub struct Gate {
+    /// Set when an in-request retry wait consumed `cancel_retry`, so an outer goal recovery
+    /// does not restart the request the owner just stopped.
+    pub(crate) retry_stopped: std::sync::atomic::AtomicBool,
     /// L1: the settings files as last seen (`settings_refresh`).
     pub(crate) settings_watch: Mutex<crate::settings_refresh::Watch>,
     live_settings: Mutex<LiveSettings>,

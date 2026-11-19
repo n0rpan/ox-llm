@@ -312,7 +312,12 @@ fn boot_preload_is_generic_and_opt_out() {
     )
     .expect("prompt");
     let before = server.requests().len();
-    assert!(!s.preload_prefix(&mut VecSink::default(), &mut HeadlessUi::default()));
+    assert!(
+        !s.preload_prefix_if(&mut VecSink::default(), &mut HeadlessUi::default(), || panic!(
+            "an inapplicable preload must not claim the session"
+        ))
+    );
+    assert!(!s.handle().is_busy());
     assert_eq!(server.requests().len(), before);
 }
 

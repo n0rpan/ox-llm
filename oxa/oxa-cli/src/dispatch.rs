@@ -243,6 +243,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::LeadAsks
                     | CommandId::LeadChat
                     | CommandId::Goal
+                    | CommandId::Admission
                     | CommandId::Help
                     | CommandId::WorkStatus
                     | CommandId::WorkBoard
