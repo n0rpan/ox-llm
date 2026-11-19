@@ -25,7 +25,9 @@ use oxa_perm::{
 };
 use oxa_proto::{codes, Engine, EntryBody, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
 use oxa_resources::{discover, DiscoverOpts, Resources};
-use oxa_rpc::{run_json_outcome_with_inbox, run_print_outcome_with_inbox, serve_outcome, Out};
+use oxa_rpc::{
+    confirm_before_start, run_json_outcome_with_inbox, run_print_outcome_with_inbox, serve_outcome_gated, Out,
+};
 use oxa_sandbox::Bwrap;
 #[cfg(target_os = "linux")]
 use oxa_sandbox::NoSandbox;
@@ -200,9 +202,18 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 let binding = crate::lead_chat::local_binding(&cwd, env)?;
                 let dirs = dirs_from_env(env, None)?;
                 let mode = RunMode::Interactive;
-                let workspace = crate::home_cwd::check(mode, &cwd, env, &dirs, &mut *stdin, &mut *stdout)?;
+                let home = crate::home_cwd::check(
+                    mode,
+                    &cwd,
+                    env,
+                    &dirs,
+                    crate::home_cwd::explicit_opt_in(a.level),
+                    &mut *stdin,
+                    &mut *stdout,
+                )?;
                 let mut args = Args::default();
-                let prep = binding.prepare(&mut args, env, mode, workspace)?;
+                let mut prep = binding.prepare(&mut args, env, mode, home.workspace)?;
+                prep.notices.extend(home.warning.map(|w| (Level::Warning, w)));
                 let session = binding.open(&prep)?;
                 Ok((args, prep, session, binding))
             })();
@@ -245,6 +256,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::Goal
                     | CommandId::Admission
                     | CommandId::Help
+                    | CommandId::Status
                     | CommandId::WorkStatus
                     | CommandId::WorkBoard
                     | CommandId::Memory
@@ -365,7 +377,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         };
         let user = Settings::load(&dirs, &cwd, false);
         let (engine, catalog_notices) =
-            match crate::in_process::select_catalog(&user, &dirs, || engine_for(&endpoint)) {
+            match crate::in_process::select_catalog(&user, &dirs, || fallback_engine(&models, &endpoint)) {
                 Ok(e) => e,
                 Err(e) => return report(&mut *stderr, &e),
             };
@@ -384,37 +396,46 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     }
 
     let mode = choose_mode(&a, stdin_is_tty, stdout_is_tty);
-    if (a.max_time.is_some() || a.max_tokens.is_some()) && mode == RunMode::Interactive {
-        let flag = if a.max_tokens.is_some() {
-            "--max-tokens"
-        } else {
-            "--max-time"
-        };
-        return report(
-            &mut *stderr,
-            &OxaError::new(codes::USAGE, format!("{flag} requires print, JSON or RPC mode")),
-        );
-    }
     if mode == RunMode::Rpc && !a.files.is_empty() {
         let e = OxaError::new(codes::USAGE, "@file arguments are not supported in RPC mode")
             .with_hint(USAGE_HINT);
         return report(&mut *stderr, &e);
     }
     // Item 3 (sec-prod): a session in the home directory or above it needs the user's say-so.
-    let home_workspace = match crate::home_cwd::check(mode, &cwd, env, &dirs, &mut *stdin, &mut *stdout) {
-        Ok(w) => w,
+    let home = match crate::home_cwd::check(
+        mode,
+        &cwd,
+        env,
+        &dirs,
+        crate::home_cwd::explicit_opt_in(a.level),
+        &mut *stdin,
+        &mut *stdout,
+    ) {
+        Ok(h) => h,
         Err(e) => return report(&mut *stderr, &e),
     };
+    let home_workspace = home.workspace;
 
     // CLI-019: pi's question when `--session <id>` names a session of another directory
     // (main.ts `promptConfirm`): the notice and the question on stdout, one answer line from
     // stdin (read byte by byte, so piped prompt text after it stays unread).
     let mut a = a;
-    #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+    // `oxa.a2a.enabled` (user layer only): the local agent channel and control lane.
+    let a2a_enabled = Settings::load(&dirs, &cwd, false).a2a_enabled();
+    #[cfg(target_os = "linux")]
     let managed_steering = match mode {
         RunMode::Json => {
             use oxa_work::managed_steering::{ManagedSteering, FD_ENV};
             use std::os::fd::AsFd;
+            if !a2a_enabled && env.get(FD_ENV).is_some() {
+                return finish_outcome(
+                    Err(OxaError::new(
+                        codes::INVALID,
+                        "native steering needs the agent channel; set oxa.a2a.enabled to true in the user settings",
+                    )),
+                    &mut *stderr,
+                );
+            }
             match env
                 .get(FD_ENV)
                 .map(|fd| ManagedSteering::receive(fd, &dirs.agent_dir, std::io::stdin().as_fd()))
@@ -427,10 +448,15 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         _ => None,
     };
     let cloud_diagnostics = oxc_gateway::diagnostics::Diagnostics::default();
+    // Input the owner-question handshake read past its own answer; the RPC server replays it.
+    let mut rpc_early: Vec<u8> = Vec::new();
     let prepared = {
         let mut confirm = |notice: &str, question: &str| -> bool {
             if mode == RunMode::Rpc {
-                return false;
+                if !rpc_owner_present(mode, env) {
+                    return false;
+                }
+                return confirm_before_start(&mut *stdin, &mut *stdout, &mut rpc_early, notice, question);
             }
             let _ = writeln!(stdout, "{notice}");
             let _ = write!(stdout, "{question} [y/N] ");
@@ -453,10 +479,16 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             None,
         )
     };
-    let prep = match prepared {
+    let mut prep = match prepared {
         Ok(p) => p,
         Err(e) if e.code == FORK_DECLINED => {
-            let _ = writeln!(stdout, "Aborted.");
+            // The RPC stream carries JSON records only, and a declined offer is a normal
+            // outcome there: the sentence goes to stderr.
+            if mode == RunMode::Rpc {
+                let _ = writeln!(stderr, "Aborted.");
+            } else {
+                let _ = writeln!(stdout, "Aborted.");
+            }
             return if headless {
                 finish_outcome(Ok(oxa_core::RunOutcome::Interrupted), &mut *stderr)
             } else {
@@ -468,6 +500,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             return report(&mut *stderr, &e);
         }
     };
+    prep.notices.extend(home.warning.map(|w| (Level::Warning, w)));
     // Second pass (pi): the long flags the first pass did not know are parsed again with the
     // flags the loaded extensions registered; one that nobody registered is a usage error.
     let a = if a.unknown.is_empty() {
@@ -494,7 +527,17 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         RunMode::Interactive => run_tui(&a, env, &cwd, prep, &mut *stderr, None),
         RunMode::Rpc => {
             let dirs = prep.built.dirs.clone();
-            run_rpc(prep, a.max_time, a.max_tokens, dirs, stdin, stdout, &mut *stderr)
+            let replay = std::io::Cursor::new(rpc_early).chain(stdin);
+            run_rpc(
+                prep,
+                a.max_time,
+                a.max_tokens,
+                dirs,
+                Box::new(replay),
+                stdout,
+                &mut *stderr,
+                a2a_enabled,
+            )
         }
         RunMode::Print | RunMode::Json => {
             let stdin_text = match read_piped_stdin(&mut *stdin, stdin_is_tty) {
@@ -518,7 +561,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 prompts,
                 stdout,
                 &mut *stderr,
-                #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+                #[cfg(target_os = "linux")]
                 managed_steering,
             )
         }
@@ -924,7 +967,15 @@ fn prepare(
     };
     let (mut open, session_id) = match owner_open {
         Some((bound, _)) => (Open::Resume(bound.clone()), None),
-        None => choose_open(a, store.as_ref(), cwd, mode, &mut notices, confirm)?,
+        None => choose_open(
+            a,
+            store.as_ref(),
+            cwd,
+            mode,
+            rpc_owner_present(mode, env),
+            &mut notices,
+            confirm,
+        )?,
     };
     let continued_go = if a.model.is_none() && a.continue_ && !owner_chat && !child.nested() {
         continued_go_model(dirs, cwd, &user_settings, store.as_ref(), &mut open)?
@@ -1004,7 +1055,10 @@ fn prepare(
         },
         (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
         shared,
-        || engine_with_settings(&endpoint, &settings),
+        || {
+            no_model_check(&models)?;
+            engine_with_settings(&endpoint, &settings)
+        },
     )?;
     let engine = child.wrap(engine);
     notices.extend(catalog_notices.into_iter().map(|text| (Level::Info, text)));
@@ -1172,6 +1226,13 @@ fn prepare(
     if let Some(text) = oxa_proto::no_os_sandbox_notice() {
         notices.push((Level::Warning, text.to_string()));
     }
+    if let Some(text) = crate::netguard::yolo_net_notice(
+        level,
+        settings.string(oxa_sandbox::SETTING_SANDBOX_NET).as_deref(),
+        oxa_proto::offline(),
+    ) {
+        notices.push((Level::Warning, text));
+    }
     if !matches!(mode, RunMode::Interactive) {
         notices.push((
             Level::Info,
@@ -1185,13 +1246,16 @@ fn prepare(
         dirs.home.clone(),
         oxa_proto::offline(),
     ));
+    // Exec hooks keep the wrapped sandbox except under yolo (owner standard: no sandbox
+    // anywhere), see `FullAccess::hook_sandbox`.
+    let hook_sandbox = oxa_sandbox::FullAccess::hook_sandbox(&bash_sandbox);
     let hook_inputs = HookInputs {
         args: a,
         dirs,
         cwd,
         settings: &settings,
         resources: &resources,
-        sandbox: &sandbox,
+        sandbox: &hook_sandbox,
         trusted: direct_project_trust,
         nested: child.nested(),
         env,
@@ -1572,6 +1636,7 @@ fn choose_open(
     store: &dyn SessionStore,
     cwd: &Path,
     mode: RunMode,
+    rpc_owner: bool,
     _notices: &mut Vec<(Level, String)>,
     confirm: &mut dyn FnMut(&str, &str) -> bool,
 ) -> Result<(Open, Option<String>), OxaError> {
@@ -1591,7 +1656,9 @@ fn choose_open(
             if let Ok(header) = store.header(&sref) {
                 if header.cwd != cwd {
                     let notice = format!("Session found in different project: {}", header.cwd.display());
-                    if mode == RunMode::Rpc {
+                    // RPC asks the owner over the protocol when a client is listening; without
+                    // one the offer is an error with the way to fork it yourself.
+                    if mode == RunMode::Rpc && !rpc_owner {
                         return Err(OxaError::new(codes::INVALID, notice)
                             .with_hint("use --fork <id> to copy it into this directory"));
                     }
@@ -1640,9 +1707,7 @@ fn run_headless(
     prompts: Vec<(String, Vec<Part>)>,
     stdout: Box<dyn Write + Send>,
     stderr: &mut dyn Write,
-    #[cfg(all(target_os = "linux", feature = "managed-steering"))] managed_steering: Option<
-        oxa_work::managed_steering::ManagedSteering,
-    >,
+    #[cfg(target_os = "linux")] managed_steering: Option<oxa_work::managed_steering::ManagedSteering>,
 ) -> i32 {
     let Prep {
         built,
@@ -1653,13 +1718,15 @@ fn run_headless(
         continue_goal,
         ..
     } = prep;
+    // FH-N2: nobody watches a print or JSON run; the prefix of this session carries the
+    // autonomy block and the loop nudges once when a final reply ends on a plan.
     oxa_core::set_headless(true);
     let mut session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
         Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),
     };
     let starts_goal = built.goal.is_some();
-    #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+    #[cfg(target_os = "linux")]
     let starts_goal = if let Some(steering) = managed_steering.as_ref().filter(|_| session.goal().is_none()) {
         if let Err(error) = crate::goal_cmd::from_objective(steering.objective().into(), max_time, max_tokens)
             .and_then(|goal| session.set_goal(Some(goal), &mut oxa_proto::VecSink::default()))
@@ -1770,10 +1837,10 @@ fn run_headless(
         }
     };
     let mut stdout = Some(stdout);
-    #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+    #[cfg(target_os = "linux")]
     let mut managed_out = None;
     let result = match mode {
-        #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+        #[cfg(target_os = "linux")]
         RunMode::Json if managed_steering.is_some() => {
             use oxa_core::goal::{SteeringAuthority, SteeringLease};
             let steering = managed_steering.expect("matched managed steering");
@@ -1836,7 +1903,7 @@ fn run_headless(
         if let Some(stdout) = stdout.as_deref_mut() {
             let _ = writeln!(stdout, "{usage}");
         }
-        #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+        #[cfg(target_os = "linux")]
         if let Some(out) = managed_out {
             let _ = writeln!(out.lock().unwrap_or_else(|poison| poison.into_inner()), "{usage}");
         }
@@ -1860,6 +1927,7 @@ fn run_rpc(
     stdin: Box<dyn Read + Send>,
     stdout: Box<dyn Write + Send>,
     stderr: &mut dyn Write,
+    control_lane: bool,
 ) -> i32 {
     let Prep {
         built,
@@ -1893,7 +1961,7 @@ fn run_rpc(
     };
     let out: Out = Arc::new(Mutex::new(stdout));
     let input = Box::new(BufReader::new(stdin));
-    let result = serve_outcome(session, dirs, input, out);
+    let result = serve_outcome_gated(session, dirs, input, out, control_lane);
     let result = match &built.status {
         Some(status) => status.finish(result, stderr),
         None => result,
@@ -1934,7 +2002,7 @@ fn run_tui(
         name,
         ..
     } = prep;
-    let (session, owner) = match owner {
+    let (mut session, owner) = match owner {
         Some((session, binding)) => (session, Some(binding)),
         None => match open_named(&built, session_id, open, name.as_deref()) {
             Ok(session) => (session, None),
@@ -2027,6 +2095,19 @@ fn run_tui(
         session.set_output_schema(base.output_schema.clone());
         Ok(session)
     });
+    // S11: the interactive startup session has the same soft wrap-up as a headless run.
+    if a.max_time.is_some() || a.max_tokens.is_some() {
+        match crate::limits::StartupLimit::start(
+            session.handle(),
+            a.max_time,
+            a.max_tokens,
+            built.supervised_child,
+            built.hook_sets.subagent.clone(),
+        ) {
+            Ok(limit) => session.hold_startup_limit(limit),
+            Err(error) => return report(stderr, &error),
+        }
+    }
     let opts = InteractiveOpts {
         // `--tui-mode` over the `tuiMode` setting (default fullscreen).
         fullscreen: a
@@ -2105,6 +2186,23 @@ pub(crate) fn default_endpoint(models: &ModelsConfig) -> Result<Endpoint, OxaErr
         .or_else(|| models.endpoints.first())
         .cloned()
         .ok_or_else(|| OxaError::new(codes::NOT_FOUND, "no engine endpoint is configured"))
+}
+
+/// A fresh install has no model source: say what to configure instead of dialing a port
+/// nothing listens on.
+fn no_model_check(models: &ModelsConfig) -> Result<(), OxaError> {
+    if models.unconfigured {
+        return Err(OxaError::new(codes::ENGINE_DOWN, "no model is configured").with_hint(
+            "configure a cloud key (oxa login chatgpt --experimental, or a provider in settings) or run `oxa local add <model.gguf>`; to use an engine already running, set OXA_ENGINE_URL",
+        ));
+    }
+    Ok(())
+}
+
+/// The HTTP engine for the default endpoint, unless nothing is configured.
+fn fallback_engine(models: &ModelsConfig, endpoint: &Endpoint) -> Result<Arc<dyn Engine>, OxaError> {
+    no_model_check(models)?;
+    engine_for(endpoint)
 }
 
 pub(crate) fn engine_for(endpoint: &Endpoint) -> Result<Arc<dyn Engine>, OxaError> {
@@ -2418,6 +2516,11 @@ fn write_session_export(
 /// The error code of a declined cross-directory fork offer (CLI-019): `run` prints
 /// "Aborted." and exits 0, as pi does.
 const FORK_DECLINED: &str = "oxa_cli_fork_declined";
+
+/// An RPC client is listening for owner questions (the host sets `OXA_RPC_OWNER_PRESENT=1`).
+fn rpc_owner_present(mode: RunMode, env: &Env) -> bool {
+    mode == RunMode::Rpc && env.get("OXA_RPC_OWNER_PRESENT") == Some("1")
+}
 
 /// One line from `stdin`, read byte by byte (nothing after the newline is consumed).
 fn read_line(stdin: &mut dyn Read) -> String {
@@ -3059,7 +3162,7 @@ mod session_scratch_tests {
     /// key in the user file allows the command.
     #[test]
     fn approval_keys_are_read_from_user_layer_only() {
-        use oxa_proto::{Access, Decision, Mode, Policy};
+        use oxa_proto::{Access, Decision, Mode};
         let env = oxa_fake::TestEnv::new();
         let dirs = Dirs::under(env.root());
         let cwd = env.work();
