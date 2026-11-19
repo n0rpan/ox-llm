@@ -33,11 +33,11 @@ maintainer, who says in the PR when a hardware check is needed.
   not a local refusal (#1443/#1444).
 - Keyed Go: a Go key in the owner's own secrets file enables the Go subscription transport for
   the owner's own model choice, with `oxa.cloud.opencode.enabled: false` as the opt-out. Engine
-  transport selection stays user-only: no project setting, no delegated `oxa work` model, no
-  nested child's model (a subagent's `--model` comes from the parent's run) and no model restored
-  by `--continue` enables it; a local alias owns a request only on an exact match, and a model
+  transport selection stays user-only: a protected user key authorizes an actual Go model argument,
+  including one passed to a delegated `oxa work` worker or nested child. No project setting or model
+  restored by `--continue` enables it; a local alias owns a request only on an exact match, and a model
   scope enables Go only when it names a Go model. An explicit `oxa.cloud.opencode.enabled: true`
-  is the way a project, a worker or a restored session may use Go.
+  is the way a project-selected or restored model may use Go.
 - Go/OpenRouter parsing should tolerate compatible optional fields and stream variations,
   while validating numeric type, sign, range and finiteness before accounting or execution.
 - v0.2.1 has no Python in the product/runtime path; build/test tooling is separate.
