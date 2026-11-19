@@ -320,13 +320,25 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
             Subcommand::Send(words) => match words.as_slice() {
                 [id, text] if oxa_session::valid_inbox_id(id) => {
-                    oxa_session::send_inbox(&dirs.agent_dir, id, text)
-                        .map(|_| 0)
-                        .map_err(|e| OxaError::io("cannot send session message", &e))
+                    let mut piped = String::new();
+                    let read = if text == "-" {
+                        stdin
+                            .read_to_string(&mut piped)
+                            .map(|_| ())
+                            .map_err(|e| OxaError::io("cannot read session message from stdin", &e))
+                    } else {
+                        Ok(())
+                    };
+                    read.and_then(|()| {
+                        let message = if text == "-" { &piped } else { text };
+                        oxa_session::send_inbox(&dirs.agent_dir, id, message)
+                            .map(|_| 0)
+                            .map_err(|e| OxaError::io("cannot send session message", &e))
+                    })
                 }
                 _ => Err(OxaError::new(
                     codes::USAGE,
-                    "Usage: oxa send <session-id> \"text\"",
+                    "Usage: oxa send <session-id> <text|->",
                 )),
             },
             Subcommand::Identity(words) => crate::run_identity(&words, &dirs, env, &mut *stdout),
