@@ -8,6 +8,9 @@ use serde_json::Value;
 
 /// Shorter values are too common to identify a secret.
 const MIN_SECRET_VALUE_CHARS: usize = 8;
+/// A value under a generic `_key` / `credentials` name must be at least this long: those
+/// names also label ordinary short identifiers.
+const MIN_KEY_VALUE_CHARS: usize = 16;
 const KEY_FILE_PREFIXES: [&str; 4] = ["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"];
 const KEY_FILE_SUFFIXES: [&str; 7] = [".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".ppk"];
 const REGISTRY_FILES: [&str; 4] = [".npmrc", ".pypirc", ".yarnrc", ".yarnrc.yml"];
@@ -184,14 +187,41 @@ fn environment_secret_assignment(text: &str) -> bool {
         .any(|found| opaque_value(&found[1]))
 }
 
+/// An assignment (`NAME=value`, `name: value`, `"name": "value"`) whose name ends in a
+/// generic key or credential word (`ENCRYPTION_KEY`, `signing.key`, `db_credentials`): the
+/// shared patterns cover only `api_key`/`access_key` and need a word boundary the `_` hides.
+/// `secret_name` treats these names as secret too. Such names also label ordinary values
+/// (`sort_key: created_at_2`), so the value must be a long opaque literal, not a path or URL.
+fn key_named_assignment(text: &str) -> bool {
+    static KEYED: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    KEYED
+        .get_or_init(|| {
+            regex::Regex::new(concat!(
+                r#"(?i)(?:^|[^a-z0-9_.-])["']?[a-z0-9_.-]*(?:[_.-]key|credentials?)["']?\s*[:=]\s*"#,
+                r#"["']?([^\s"'#,;]+)"#
+            ))
+            .expect("key-named assignment pattern")
+        })
+        .captures_iter(text)
+        .any(|found| {
+            let value = found[1].trim();
+            value.chars().count() >= MIN_KEY_VALUE_CHARS
+                && opaque_value(value)
+                && !value.starts_with(['/', '~', '.'])
+                && !value.contains("://")
+        })
+}
+
 /// `Authorization: Basic …` / `Bearer …` with an encoded value: base64 of a user and a password
 /// may be letters only, which the class-mixing heuristic of `opaque_value` rejects.
 fn scheme_credential(text: &str) -> bool {
     static SCHEME: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     SCHEME
         .get_or_init(|| {
-            regex::Regex::new(r#"(?i)authorization\s*[:=]\s*["']?(?:basic|bearer)\s+([A-Za-z0-9+/=._-]{8,})"#)
-                .expect("authorization scheme pattern")
+            regex::Regex::new(
+                r#"(?i)authorization["']?\s*[:=]\s*["']?(?:basic|bearer)\s+([A-Za-z0-9+/=._-]{8,})"#,
+            )
+            .expect("authorization scheme pattern")
         })
         .captures_iter(text)
         .any(|found| {
@@ -411,6 +441,7 @@ impl PushScan {
             || quoted_secret_literal(text)
             || environment_secret_assignment(text)
             || prefixed_assignment(text)
+            || key_named_assignment(text)
             || registry_auth(text)
             || block_scalar_secret(text)
             || json_split_secret(text)
@@ -747,6 +778,40 @@ mod tests {
             "TOKEN=placeholder",
         ] {
             assert!(scan.check(&line(".env.example", text)).is_none());
+        }
+    }
+
+    /// Audit of #1264: a generic `_KEY` / `credentials` name (which `secret_name` already
+    /// treats as secret) and a quoted `"Authorization"` JSON key are refused like the other
+    /// credential assignments; short identifiers, paths and references under such names are not.
+    #[test]
+    fn generic_key_names_and_quoted_authorization_keys_are_refused() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        for (path, text) in [
+            (".env.example", "ENCRYPTION_KEY=opaque-pass-value-17"),
+            ("notes.txt", "export SIGNING_KEY=opaque-pass-value-17"),
+            ("settings.yml", "jwt.signing-key: opaque-pass-value-17"),
+            ("settings.json", "{\"db_credentials\": \"opaque-pass-value-17\"}"),
+            (
+                "settings.json",
+                "{\"Authorization\": \"Basic dXNlcjpwYXNzcGhyYXNl\"}",
+            ),
+            ("settings.yml", "'authorization': 'Bearer dXNlcjpwYXNzcGhyYXNl'"),
+        ] {
+            assert!(scan.check(&added(path, text)).is_some(), "{path}: {text}");
+        }
+        for (path, text) in [
+            (".env.example", "ENCRYPTION_KEY=${ENCRYPTION_KEY}"),
+            (".env.example", "ENCRYPTION_KEY=<encryption-key>"),
+            ("settings.yml", "sort_key: created_at_2"),
+            (
+                "settings.yml",
+                "google_application_credentials: /etc/gcp/service-account.json",
+            ),
+            ("settings.yml", "ssh_key: ~/.ssh/id_deploy_ed25519.pub"),
+            ("settings.json", "{\"monkey\":\"opaque-pass-value-17\"}"),
+        ] {
+            assert!(scan.check(&added(path, text)).is_none(), "{path}: {text}");
         }
     }
 
