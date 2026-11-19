@@ -145,6 +145,7 @@ def main():
     ap.add_argument('--config', required=True)
     ap.add_argument('--out', required=True)
     a = ap.parse_args()
+    a.oxa, a.oxe_server, a.model = (os.path.abspath(x) for x in (a.oxa, a.oxe_server, a.model))
     cfg = tomllib.loads(Path(a.config).read_text())
     out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)

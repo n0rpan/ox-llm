@@ -5,7 +5,7 @@
 [model]
 # sha256 of the file `cargo run --example e2e_tiny_model` writes (seeded filler weights: the same
 # bytes on every run). A mismatch fails the job: the model changed without this pin changing.
-sha256 = ""
+sha256 = "24b31c9d9ab22ceb033629b721f9df8fb011b3f3e5977ee06e55c50935e7bb79"
 
 [server]
 port = 18080
