@@ -45,6 +45,7 @@ pub mod loopguard;
 mod navigate;
 mod outcome;
 pub mod output_schema;
+pub mod owner_confirm;
 mod prefix;
 mod progress;
 pub mod prompt;

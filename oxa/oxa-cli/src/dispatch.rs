@@ -593,6 +593,8 @@ fn open_named(
     name: Option<&str>,
 ) -> Result<Session, OxaError> {
     let mut session = Session::open(built.deps(session_id), open)?;
+    // S1: the owner confirm broker. No broker (a bind failure) means no confirmation is possible.
+    let _ = session.enable_owner_confirm(built.yolo.clone());
     session.set_output_schema(built.output_schema.clone());
     if let Some(goal) = &built.goal {
         session.set_goal(Some(goal.clone()), &mut oxa_proto::VecSink::default())?;

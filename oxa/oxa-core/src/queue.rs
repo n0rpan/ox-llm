@@ -56,6 +56,8 @@ pub struct Shared {
     pub dirty: std::sync::atomic::AtomicBool,
     /// S1 / ENG-001 / ENG-002: the request gate and the background cancel (see [`Gate`]).
     pub gate: Gate,
+    /// The owner confirm broker of this session (`Session::enable_owner_confirm`).
+    pub owner_confirm: Mutex<Option<Arc<crate::owner_confirm::OwnerConfirm>>>,
 }
 
 /// What an extension asked for: a new session, or another one (a path or an id).
@@ -303,6 +305,19 @@ impl Shared {
             modes: Mutex::new((steering, follow_up)),
             dirty: std::sync::atomic::AtomicBool::new(false),
             gate: Gate::default(),
+            owner_confirm: Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn owner_confirm(&self) -> Option<Arc<crate::owner_confirm::OwnerConfirm>> {
+        lock(&self.owner_confirm).clone()
+    }
+
+    /// The owner typed `text`: it answers a waiting owner confirmation. Only the handle's
+    /// steer and follow-up (the owner's typed messages) call this, never the inbox path.
+    fn owner_typed(&self, text: &str) {
+        if let Some(broker) = self.owner_confirm() {
+            broker.resolve_typed(text);
         }
     }
 
@@ -461,6 +476,7 @@ impl Handle {
     /// It also cancels this instance's own background request (ENG-002); a foreground request
     /// is not touched.
     pub fn steer(&self, text: String) {
+        self.shared.owner_typed(&text);
         lock(&self.shared.queue).steering.push(text);
         self.shared.dirty.store(true, Ordering::SeqCst);
         self.shared.gate.bg_cancel.cancel();
@@ -469,6 +485,7 @@ impl Handle {
     /// Queue a follow-up (delivered when the agent would otherwise stop). Cancels this
     /// instance's own background request like [`Handle::steer`].
     pub fn follow_up(&self, text: String) {
+        self.shared.owner_typed(&text);
         lock(&self.shared.queue).follow_up.push(text);
         self.shared.dirty.store(true, Ordering::SeqCst);
         self.shared.gate.bg_cancel.cancel();

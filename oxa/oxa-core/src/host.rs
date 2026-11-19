@@ -521,6 +521,7 @@ pub(crate) fn pumped<R: Send>(
         while let Err(mpsc::RecvTimeoutError::Timeout) = done_rx.recv_timeout(pause) {
             let mut ui = LockedUi(&cell);
             let served = serve_level(st, level, sink, &mut ui);
+            serve_owner_confirm(st, sink, &mut ui);
             tick(sink);
             crate::fire::drain(st, sink, &mut ui);
             crate::fire::fire_prompts(st, &prompts, sink, &mut ui);
@@ -532,6 +533,10 @@ pub(crate) fn pumped<R: Send>(
         }
         tick(sink);
         let mut ui = LockedUi(&cell);
+        if let Some(broker) = st.shared.owner_confirm() {
+            broker.set_servable(false);
+        }
+        serve_owner_confirm(st, sink, &mut ui);
         crate::fire::drain(st, sink, &mut ui);
         crate::fire::fire_prompts(st, &prompts, sink, &mut ui);
         match helper.join() {
@@ -539,6 +544,40 @@ pub(crate) fn pumped<R: Send>(
             Err(panic) => std::panic::resume_unwind(panic),
         }
     })
+}
+
+/// Serve the owner confirm broker from the session thread while a tool runs: show the dialog
+/// of a waiting request, then report what was answered (a notice and a session record, so a
+/// yolo answer is never silent).
+fn serve_owner_confirm(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) {
+    let Some(broker) = st.shared.owner_confirm() else {
+        return;
+    };
+    broker.set_servable(true);
+    broker.serve(ui);
+    for r in broker.take_records() {
+        let text = format!(
+            "owner confirm {} ({}), preview sha256 {}",
+            r.verdict.as_str(),
+            r.origin.as_str(),
+            r.preview_sha256
+        );
+        sink.emit(&AgentEvent::Notice {
+            level: Level::Info,
+            text,
+        });
+        let data = json!({
+            "question": r.question,
+            "preview_sha256": r.preview_sha256,
+            "answer": r.verdict.as_str(),
+            "source": r.origin.as_str(),
+        });
+        let body = EntryBody::Custom {
+            custom_type: "owner_confirm".to_string(),
+            data,
+        };
+        let _ = persist(st, body, sink);
+    }
 }
 
 /// Fire one hook point on one hook set through [`pumped`].

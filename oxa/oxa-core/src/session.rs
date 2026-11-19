@@ -416,6 +416,31 @@ impl Session {
         });
     }
 
+    /// Start the owner confirm broker (a per-session unix socket, dir 0700, socket 0600) and
+    /// export it to tool children as `OXA_CONFIRM_SOCK`. `yolo` is the session's switch: in
+    /// yolo the broker answers yes and records it; otherwise the owner's dialog answer or
+    /// typed message decides. A bind failure leaves the session without a broker.
+    pub fn enable_owner_confirm(&mut self, yolo: oxa_proto::YoloSwitch) -> std::io::Result<()> {
+        let dir = self
+            .st
+            .dirs
+            .tmp_dir
+            .join(format!("confirm-{}", std::process::id()));
+        let broker = crate::owner_confirm::OwnerConfirm::start(&dir, yolo)?;
+        let old = self
+            .st
+            .shared
+            .owner_confirm
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .replace(broker);
+        if let Some(old) = old {
+            old.close();
+        }
+        refresh_tool_env(&mut self.st);
+        Ok(())
+    }
+
     /// Install a progress observer for this session and subsequent in-process switches.
     pub fn set_progress_observer(&mut self, observer: Arc<dyn crate::ProgressObserver>) {
         *self
@@ -843,6 +868,9 @@ impl Session {
             &mut sink,
             ui,
         );
+        if let Some(broker) = self.st.shared.owner_confirm() {
+            broker.close();
+        }
         self.st.host_rx = None;
         self.st.host_deferred.clear();
         self.st.jobs.kill_all();
@@ -1688,6 +1716,12 @@ pub(crate) fn refresh_tool_env(st: &mut SessionState) {
     ));
     env.push(("AI_AGENT".to_string(), names::AI_AGENT.to_string()));
     env.push(("OXA_CODING_AGENT".to_string(), "true".to_string()));
+    if let Some(broker) = st.shared.owner_confirm() {
+        env.push((
+            crate::owner_confirm::SOCK_ENV.to_string(),
+            broker.sock_path().to_string_lossy().into_owned(),
+        ));
+    }
     st.tool_env = env;
 }
 

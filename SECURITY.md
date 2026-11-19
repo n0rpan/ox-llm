@@ -30,3 +30,9 @@ in a tree with Cargo manifests. A worker declaration can add requirements to tha
 The repeat guard warns and continues by owner decision (#1448): the third identical tool result gets a notice, a call that still repeats gets one persisted warning, and the run is not stopped. A finding that asks for the old stopping behaviour is not a finding; `oxa.maxTurns` is the configured cap.
 
 Intentional removals must be stated in the PR body with a `Removes:` line; flag silent deletion of security checks as high.
+
+The owner confirm broker (`oxa-core/src/owner_confirm.rs`, `OXA_CONFIRM_SOCK`) answers an oxa
+confirmation only from the owner: yolo chosen for the session (answer yes, shown and recorded), the
+owner's answer to the session's own dialog, or the owner's typed message while a confirmation waits.
+A confirmation that a model-run command can satisfy without the broker is high. A broker answer
+derived from tool, file, web or agent-inbox text is high. A socket readable by another user is high.
