@@ -435,14 +435,23 @@ pub(crate) fn bwrap_args_homes(
             push(&mut a, &["--remount-ro", &h.to_string_lossy()]);
         }
     }
-    // The confirmation socket is pinned where the client looks for it: under the sandbox's
-    // `/tmp`, whose host directory is writable, so bwrap can create the mount point (`/run`
-    // belongs to root and `/` is bound read-only, so a mount point there cannot be created by a
-    // user). It is the last filesystem operation: a cwd of `/tmp` or `/` binds over the earlier
-    // mounts, and a socket mounted before that bind would be replaced by the host tree, letting
-    // a command put its own listener at the trusted path. The mount is read-only, so a command
-    // can never replace it afterwards.
+    // Give the socket a sandbox-owned parent before pinning it where the client looks for it.
+    // In particular, do not bind over a pathname in the host's writable `/tmp`: bwrap follows a
+    // destination symlink, after which the child could unlink that symlink and install a fake
+    // listener at the trusted name. This late `/run` tmpfs also covers all host runtime IPC after
+    // every cwd/layout bind. Restore only the resolver configuration needed by online commands.
+    // The socket bind remains the last filesystem operation, so no later mount can cover it.
     if let Some(sock) = owner_confirm {
+        push(&mut a, &["--tmpfs", "/run"]);
+        if s.net {
+            for name in ["resolv.conf", "stub-resolv.conf"] {
+                let file = Path::new("/run/systemd/resolve").join(name);
+                if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
+                    let file = file.to_string_lossy();
+                    push(&mut a, &["--ro-bind", &file, &file]);
+                }
+            }
+        }
         push(&mut a, &["--ro-bind", sock, crate::OWNER_CONFIRM_SOCK]);
     }
     push(&mut a, &["--chdir", &cwd, "--clearenv"]);
@@ -1288,6 +1297,35 @@ mod tests {
                 && window[1] == crate::OWNER_CONFIRM_SOCK_ENV
                 && window[2] == host_sock.to_string_lossy()
         }));
+        let mount_at = argv.windows(3).position(|window| window == mount).unwrap();
+        assert!(argv[..mount_at]
+            .windows(2)
+            .any(|window| window == ["--tmpfs", "/run"]));
+        assert!(!crate::OWNER_CONFIRM_SOCK.starts_with("/tmp/"));
+    }
+
+    /// A host-writable socket pathname can already be a symlink when bwrap starts. The trusted
+    /// destination must instead be created below a fresh sandbox-owned filesystem.
+    #[test]
+    fn owner_confirm_mount_does_not_use_a_symlinked_tmp_destination() {
+        let env = TestEnv::new();
+        let host_sock = env.home().join(".oxa/agent/tmp/confirm/socket");
+        let mut sp = spec(Path::new("/tmp"), false);
+        sp.env.push((
+            crate::OWNER_CONFIRM_SOCK_ENV.to_string(),
+            host_sock.to_string_lossy().into_owned(),
+        ));
+
+        let argv = bwrap_args_homes(&sp, &env.home(), &Layout::default(), None);
+        let host_sock = host_sock.to_string_lossy();
+        let mount = ["--ro-bind", host_sock.as_ref(), crate::OWNER_CONFIRM_SOCK];
+        let mount_at = argv.windows(3).position(|window| window == mount).unwrap();
+        let run_tmpfs_at = argv[..mount_at]
+            .windows(2)
+            .rposition(|window| window == ["--tmpfs", "/run"])
+            .expect("the broker parent is a private tmpfs");
+        assert!(run_tmpfs_at < mount_at);
+        assert_eq!(crate::OWNER_CONFIRM_SOCK, "/run/oxa-owner-confirm.sock");
     }
 
     /// A cwd of `/tmp` or `/` binds the host tree over the earlier mounts, so the confirmation
