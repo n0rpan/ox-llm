@@ -635,6 +635,7 @@ fn worker_loop_inner(
                     Reopen::Resume(_) => "Resumed session".to_string(),
                     Reopen::Fork(_) => "Forked to new session".to_string(),
                 };
+                let resumed = matches!(&how, Reopen::Resume(_));
                 let mut opened = false;
                 if let Some(mut old) = session.take() {
                     // The hook sets are shared with the session that replaces this one, so
@@ -680,6 +681,13 @@ fn worker_loop_inner(
                     let _ = out.send(WorkerMsg::Session(session_info(s)));
                     if opened {
                         let _ = out.send(WorkerMsg::Event(notice_event(&status)));
+                        if resumed {
+                            let run_queued =
+                                backlog.iter().any(|cmd| matches!(cmd, SessionCmd::Prompt { .. }));
+                            if let Some(text) = resumed_goal_notice(s, run_queued) {
+                                let _ = out.send(WorkerMsg::Event(notice_event(&text)));
+                            }
+                        }
                     }
                 }
             }
