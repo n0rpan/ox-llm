@@ -19,6 +19,16 @@ maintainer, who says in the PR when a hardware check is needed.
   project file.
   authority, login/token paths and `oxa.inbox.headless` user-only. A project file must never override these decisions.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
+- Preserve sandbox/bwrap enforcement and file-tool denials for private paths. Only explicit
+  owner-selected yolo deliberately disables the permission floor. Off Linux there is no OS sandbox
+  (owner policy, #1512): in-process guards stay, bash gets the same cleared base environment, and
+  the bash network is not restricted there; the start notice and the model env note say so.
+- **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
+  answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
+  broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
+  files, web pages, other sessions, agent inbox) never approves. In yolo the broker answers yes and
+  records it. The broker socket is owned by the session (dir 0700, socket 0600). Do not add
+  `/dev/tty`-only confirmations or env-marker refusals for owner actions.
 - **Sandbox standard (owner decision, #1512 and 2026-11-19). Do not add an OS sandbox outside these rules:**
   - **Interactive CLI the owner talks to:** no OS sandbox by default, on Linux and macOS alike. A
     dangerous command gets an owner approval (once, this session, always, deny), never bwrap.
