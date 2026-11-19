@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- `oxa send` never refuses the owner's text for size (yolo power plan, S14). A message over 256 KiB is kept in full in a private spill file in the session's inbox directory, and a short follow-up names that file. `oxa wipe` removes spill files with the session. See [cli.md](docs/pages/cli.md).
 - `oxa work` derives acceptance requirements from the change (#1442). The owner's `oxa.work.localChecks` defaults to `cargo check` for touched packages. Rust tests require hosted lane CI at the exact head. Workers can declare additional acceptance crates with `<oxa-acceptance>["crate"]</oxa-acceptance>`. Zero or skipped checks leave work `unverified`. Each round records check origin and verdict, and saved verification is bound to the exact commit. See [work.md](docs/work.md).
 - `oxa work` starts a new task branch at its published head (`origin/<branch>`) when that tip descends from the captured base, instead of always at the base. A task for an already pushed pull-request branch now audits and continues that head rather than redoing work from a tree that predates it; several diverging tips or an unrelated one keep the base. See [work.md](docs/work.md).
 ### Added

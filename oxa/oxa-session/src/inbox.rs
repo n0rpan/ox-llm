@@ -116,15 +116,25 @@ pub fn remove_inbox(agent_dir: &Path, id: Option<&str>) -> Result<usize, oxa_pro
     remove()
 }
 
+/// Extension of a full message too large to queue inline. The watcher never reads it.
+const SPILL_EXTENSION: &str = "spill";
+
 /// Publish exactly one message without contacting an engine or requiring a running owner.
+/// The owner's text is never refused for size: a message over the inline limit is kept in full
+/// in a private spill file in the session's inbox directory, and a short follow-up points at it.
+/// `oxa wipe` removes the spill with the rest of the session's inbox.
 pub fn send_inbox(agent_dir: &Path, id: &str, text: &str) -> io::Result<()> {
-    if text.len() > INBOX_MESSAGE_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "inbox message exceeds 256 KiB",
-        ));
+    if text.len() <= INBOX_MESSAGE_BYTES {
+        return publish(agent_dir, id, "msg", text).map(|_| ());
     }
-    publish(agent_dir, id, "msg", text)
+    let spill = publish(agent_dir, id, SPILL_EXTENSION, text)?;
+    let path = agent_dir.join("inbox").join(id).join(spill);
+    let pointer = format!(
+        "The message is {} bytes, too large to queue inline. Its full text is in the private file {}; read that file.",
+        text.len(),
+        path.display()
+    );
+    publish(agent_dir, id, "msg", &pointer).map(|_| ())
 }
 
 /// Publish a control packet for a trusted, already resolved session reference.
@@ -137,7 +147,7 @@ pub fn send_inbox_control(agent_dir: &Path, session: &SessionRef, packet: &str) 
             "inbox control packet exceeds 32 KiB",
         ));
     }
-    publish(agent_dir, &session.id, &control_extension(session), packet)
+    publish(agent_dir, &session.id, &control_extension(session), packet).map(|_| ())
 }
 
 fn control_extension(session: &SessionRef) -> String {
@@ -147,7 +157,8 @@ fn control_extension(session: &SessionRef) -> String {
     )
 }
 
-fn publish(agent_dir: &Path, id: &str, extension: &str, text: &str) -> io::Result<()> {
+/// Publish atomically and return the published file name inside the session's inbox directory.
+fn publish(agent_dir: &Path, id: &str, extension: &str, text: &str) -> io::Result<String> {
     let dir = directory(agent_dir, id)?;
     let name = format!(
         "{:032}-{}",
@@ -158,7 +169,8 @@ fn publish(agent_dir: &Path, id: &str, extension: &str, text: &str) -> io::Resul
         crate::new_entry_id(&|_| false)
     );
     let temp = dir.path().join(format!(".{name}.tmp"));
-    let ready = dir.path().join(format!("{name}.{extension}"));
+    let file_name = format!("{name}.{extension}");
+    let ready = dir.path().join(&file_name);
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -173,7 +185,7 @@ fn publish(agent_dir: &Path, id: &str, extension: &str, text: &str) -> io::Resul
     if result.is_err() {
         let _ = fs::remove_file(temp);
     }
-    result
+    result.map(|()| file_name)
 }
 
 /// Owns the event-driven receiver. Dropping it wakes and joins its thread, so an old

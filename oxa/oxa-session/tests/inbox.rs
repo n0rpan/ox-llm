@@ -230,17 +230,37 @@ fn inbox_wipe_covers_orphans_temporary_files_and_rejects_symlink_parents() {
 }
 
 #[test]
+fn inbox_large_message_spills() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    let full = "y".repeat(256 * 1024 + 1);
+    send_inbox(&agent, "spilled", &full).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let watch = Inbox::watch(&agent, "spilled", move |s| tx.send(s).is_ok()).unwrap();
+    let pointer = rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    drop(watch);
+    assert!(pointer.starts_with("The message is 262145 bytes"), "{pointer}");
+    assert!(rx.try_recv().is_err(), "exactly one pointer is queued");
+    let spill: Vec<_> = fs::read_dir(agent.join("inbox/spilled"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "spill"))
+        .collect();
+    assert_eq!(spill.len(), 1, "one private spill file holds the full text");
+    assert_eq!(fs::read_to_string(&spill[0]).unwrap(), full);
+    assert_eq!(
+        fs::metadata(&spill[0]).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(pointer.contains(&spill[0].display().to_string()), "{pointer}");
+}
+
+#[test]
 fn inbox_oversized_files_stay_on_disk_without_delivery() {
     let env = TestEnv::new();
     let agent = env.root().join("agent");
     send_inbox(&agent, "bounded", "normal").unwrap();
     let oversized = agent.join("inbox/bounded/oversized.msg");
-    assert_eq!(
-        send_inbox(&agent, "bounded", &"x".repeat(256 * 1024 + 1))
-            .unwrap_err()
-            .kind(),
-        std::io::ErrorKind::InvalidInput
-    );
     fs::write(&oversized, vec![b'x'; 256 * 1024 + 1]).unwrap();
     let (tx, rx) = mpsc::channel();
     let watch = Inbox::watch(&agent, "bounded", move |s| tx.send(s).is_ok()).unwrap();
