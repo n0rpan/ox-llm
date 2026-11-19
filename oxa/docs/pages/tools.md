@@ -71,6 +71,12 @@ A model can get stuck making the same tool call again and again. When a call (an
 
 Loops that vary too much for this guard (calls that alternate, output with a timestamp), or one that keeps repeating after the warning, are not ended by it. To bound any of them, set `oxa.maxTurns` to a number of model replies: a run that reaches it ends with a `turn_limit` error. It is off by default.
 
+## CI polling
+
+A `bash` command that waits for CI by polling is not blocked. It runs and reports its own exit status, and its result carries a note with the native call to use instead: `wait {"seconds":3600,"reason":"Wait for CI","until":{"kind":"ci","sha":"<head>","workflow":"<workflow>"}}`. The note fills in the 40-hex head commit and the workflow name when the command or its output names them, and leaves the placeholders otherwise.
+
+A polling command is a `for` / `while` / `until` loop or `watch` around `gh run`, `gh workflow` or `gh pr checks`, `gh run watch` itself, `gh pr checks --watch`, or an earlier `sleep` before the check. Quoted text is ignored, and a single `gh run view`, `gh run list`, `gh pr view` or `gh pr checks` is not polling. The `wait` tool is offered while a goal is active; without it, run one blocking check instead of a loop.
+
 ## Thinking on tool follow-ups
 
 Under `oxa.thinking.policy: auto` the first reply after your prompt thinks. The replies after tool results follow `oxa.thinking.toolFollowups`:

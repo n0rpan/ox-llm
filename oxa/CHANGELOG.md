@@ -8,6 +8,7 @@
 - `oxa work` starts a new task branch at its published head (`origin/<branch>`) when that tip descends from the captured base, instead of always at the base. A task for an already pushed pull-request branch now audits and continues that head rather than redoing work from a tree that predates it; several diverging tips or an unrelated one keep the base. See [work.md](docs/work.md).
 ### Added
 
+- A `bash` command that waits for CI by polling (a `for`/`while`/`until` loop or `watch` around `gh run`, `gh workflow` or `gh pr checks`, `gh run watch`, `gh pr checks --watch`, or an earlier `sleep` before the check) keeps its result and gets a note with the native `wait` call to use instead: `wait {"seconds":3600,"reason":"Wait for CI","until":{"kind":"ci","sha":"<head>","workflow":"<workflow>"}}` (#1540). The 40-hex head and the workflow name are filled in when the command or its output names them. The note never blocks: the command runs and reports its own exit status. See [tools.md](docs/pages/tools.md#ci-polling).
 - `oxa work --pr N --model MODEL` (#1019): the unattended packet for a pull request carries its title, body, reviews, issue comments and the names of failing checks at the current head, and the task branch is the pull request's own head branch. Review text and check names are labelled as data and bounded (reviews to 16 KiB, 40 check names); only failing checks travel, never passing ones. Malformed review or check lists are refused, never silently dropped.
 
 ### Changed
