@@ -25,10 +25,12 @@ use crate::{
     ScrollbarMode, SelectEvent, SelectorKind, SessionCmd, SessionInfo, SlashCx, SoftWrap, StatusModel,
     TranscriptSearch, TrustChoice, UiRequest, ViewCx, ViewModel, ViewSettings, Viewport, WorkerMsg,
 };
-use oxa_config::Keymap;
+use oxa_config::{Dirs, Keymap, Settings};
 use oxa_core::Handle;
 use oxa_export::default_output_name;
-use oxa_proto::{AgentEvent, Autonomy, Level, Mode, OxaError, Part, PermissionMode, ThinkingLevel, Value};
+use oxa_proto::{
+    AgentEvent, Autonomy, DangerAnswer, Level, Mode, OxaError, Part, PermissionMode, ThinkingLevel, Value,
+};
 use oxa_session::{SessionMeta, SessionRef, Tree};
 use oxa_tui::{
     detect_caps, list_themes, resolve_theme, title_sequence, CombinedProvider, Component, CursorPos, Editor,
@@ -794,6 +796,23 @@ impl<'a> Loop<'a> {
         PathBuf::from(&self.vm.status.cwd)
     }
 
+    /// #1512 S2: answer a pending "always allow": its keys are saved to the user settings first.
+    /// A failed write shows an error and answers `Session`, so the grant still holds this run.
+    fn finish_danger_always(&mut self) {
+        let Some((keys, reply)) = self.dialogs.take_danger_always() else {
+            return;
+        };
+        let cwd = self.cwd();
+        let answer = match append_always(&mut self.opts.settings, &self.opts.dirs, &cwd, &keys) {
+            Ok(()) => DangerAnswer::Always,
+            Err(e) => {
+                self.push_notice(Level::Error, e.to_string());
+                DangerAnswer::Session
+            }
+        };
+        let _ = reply.send(answer);
+    }
+
     // -----------------------------------------------------------------------------------------
     // Messages from the worker and from `Ui` calls
     // -----------------------------------------------------------------------------------------
@@ -931,13 +950,24 @@ impl<'a> Loop<'a> {
         if self.session.id != info.id || self.inbox.is_none() {
             // A Reopen may have recovered an already-admitted message without a file
             // left to trigger the new watcher. Wake only the recovered destination.
-            if self.handle.has_inbox_input() && self.handle.request_inbox_wake() {
+            if self.handle.has_external_inbox_input() && self.handle.request_inbox_wake() {
                 let _ = self.cmds.send(SessionCmd::Inbox {
                     session_id: info.id.clone(),
                 });
             }
+            // A completion retained behind a stop boundary (a failed or interrupted turn) is not
+            // delivered on a reopen: the replacement session starts with no outcome, so waking
+            // it would start a model turn nobody asked for. It stays queued for the next prompt.
             // Stop the old callback before installing one bound to the current handle.
             self.inbox = None;
+            // W4: a finished background job of this session wakes it the way an inbox message does.
+            let job_cmds = self.cmds.clone();
+            self.handle
+                .set_wake_notifier(std::sync::Arc::new(move |session_id: &str| {
+                    let _ = job_cmds.send(SessionCmd::JobWake {
+                        session_id: session_id.to_string(),
+                    });
+                }));
             let handle = self.handle.clone();
             let cmds = self.cmds.clone();
             let session_id = info.id.clone();
@@ -1407,11 +1437,14 @@ impl<'a> Loop<'a> {
             self.handle.abort();
             self.handle.abort_retry();
             self.dialogs.key(&key, &self.opts.keymap);
+            self.finish_danger_always();
             self.restore_queue();
             return;
         }
         if self.dialogs.is_open() {
-            match self.dialogs.key(&key, &self.opts.keymap) {
+            let outcome = self.dialogs.key(&key, &self.opts.keymap);
+            self.finish_danger_always();
+            match outcome {
                 DialogKey::NotOpen => {}
                 DialogKey::ExternalEditor => {
                     self.dialog_external_editor(term);
@@ -3398,6 +3431,27 @@ mod running_tests {
 // ---------------------------------------------------------------------------------------------
 // The trust question before a session exists
 // ---------------------------------------------------------------------------------------------
+
+/// The user setting that lists the keys of "always allow" (#1512 S2); user settings only.
+const APPROVAL_ALWAYS: &str = "oxa.approval.always";
+
+/// #1512 S2: save `keys` to the user settings' `oxa.approval.always`, each key once. The list is
+/// read from the user layer only, so a project's value is never copied into the user file.
+pub fn append_always(
+    settings: &mut Settings,
+    dirs: &Dirs,
+    cwd: &Path,
+    keys: &[String],
+) -> Result<(), OxaError> {
+    let mut list = Settings::load(dirs, cwd, false).list(APPROVAL_ALWAYS);
+    for key in keys {
+        if !list.contains(key) {
+            list.push(key.clone());
+        }
+    }
+    let value = Value::Array(list.into_iter().map(Value::String).collect());
+    settings.set(dirs, cwd, APPROVAL_ALWAYS, value, false)
+}
 
 /// The project trust question (D10 `ask_trust`'s question) drawn directly on `term`, for the
 /// one question asked before the session (and with it the app loop) exists. `None` when
