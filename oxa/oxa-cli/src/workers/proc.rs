@@ -488,9 +488,10 @@ fn thread_group_alive(pgid: u32) -> io::Result<bool> {
             };
             match fs::read(task.path().join("stat")) {
                 Ok(bytes) => {
-                    let (state, group) = parse_stat(&bytes)?;
-                    if group == pgid && state != 'Z' && state != 'X' {
-                        return Ok(true);
+                    if let Some((state, group)) = parse_stat(&bytes) {
+                        if group == pgid && state != 'Z' && state != 'X' {
+                            return Ok(true);
+                        }
                     }
                 }
                 Err(error) if process_gone(&error) || permission_denied(&error) => {}
@@ -568,7 +569,7 @@ const ESRCH: i32 = 3;
 #[cfg(target_os = "linux")]
 fn proc_stat(pid: u32) -> io::Result<Option<(char, u32)>> {
     match fs::read(format!("/proc/{pid}/stat")) {
-        Ok(bytes) => parse_stat(&bytes).map(Some),
+        Ok(bytes) => Ok(parse_stat(&bytes)),
         Err(error) if process_gone(&error) => Ok(None),
         Err(error) => Err(error),
     }
@@ -581,28 +582,19 @@ fn process_gone(error: &io::Error) -> bool {
 }
 
 /// Parse a `/proc/<pid>/stat` record as bytes: `comm` may hold any byte (not only UTF-8), so only
-/// the ASCII fields after the last `)` are decoded.
+/// the ASCII fields after the last `)` are decoded. `None` means there is no usable record: an
+/// exiting process can return an empty or cut read, which is the same as the process being gone.
 #[cfg(target_os = "linux")]
-fn parse_stat(bytes: &[u8]) -> io::Result<(char, u32)> {
-    let malformed = || io::Error::new(io::ErrorKind::InvalidData, "malformed /proc stat line");
+fn parse_stat(bytes: &[u8]) -> Option<(char, u32)> {
     // `pid (comm) state ppid pgrp ...`: comm may contain spaces and parentheses, so split after
     // the last `)`.
-    let close = bytes
-        .iter()
-        .rposition(|byte| *byte == b')')
-        .ok_or_else(malformed)?;
-    let rest = std::str::from_utf8(&bytes[close + 1..]).map_err(|_| malformed())?;
+    let close = bytes.iter().rposition(|byte| *byte == b')')?;
+    let rest = std::str::from_utf8(&bytes[close + 1..]).ok()?;
     let mut fields = rest.split_whitespace();
-    let state = fields
-        .next()
-        .and_then(|field| field.chars().next())
-        .ok_or_else(malformed)?;
-    let _ppid = fields.next().ok_or_else(malformed)?;
-    let group = fields
-        .next()
-        .and_then(|field| field.parse().ok())
-        .ok_or_else(malformed)?;
-    Ok((state, group))
+    let state = fields.next().and_then(|field| field.chars().next())?;
+    let _ppid = fields.next()?;
+    let group = fields.next().and_then(|field| field.parse().ok())?;
+    Some((state, group))
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -865,8 +857,20 @@ mod tests {
         let mut record = b"4242 (a".to_vec();
         record.push(0xff);
         record.extend_from_slice(b") b) S 1 777 777 0 -1\n");
-        assert_eq!(parse_stat(&record).expect("parse"), ('S', 777));
-        assert!(parse_stat(b"no close paren").is_err());
+        assert_eq!(parse_stat(&record), Some(('S', 777)));
+    }
+
+    /// An exiting process can return an empty or cut `stat` read; that is "gone", not an error.
+    #[test]
+    fn parse_stat_treats_an_empty_or_truncated_read_as_gone() {
+        assert_eq!(parse_stat(b""), None);
+        assert_eq!(parse_stat(b"no close paren"), None);
+        assert_eq!(parse_stat(b"4242 (sleep"), None);
+        assert_eq!(parse_stat(b"4242 (sleep) "), None);
+        assert_eq!(parse_stat(b"4242 (sleep) S"), None);
+        assert_eq!(parse_stat(b"4242 (sleep) S 1"), None);
+        assert_eq!(parse_stat(b"4242 (sleep) S 1 77"), Some(('S', 77)));
+        assert!(!group_alive_with(77, [4242], |_| Ok(parse_stat(b""))).expect("scan"));
     }
 
     #[test]
@@ -1149,7 +1153,7 @@ mod tests {
         tasks.flatten().any(|task| {
             matches!(
                 fs::read(task.path().join("stat")).map(|bytes| parse_stat(&bytes)),
-                Ok(Ok((state, _))) if state != 'Z' && state != 'X'
+                Ok(Some((state, _))) if state != 'Z' && state != 'X'
             )
         })
     }
