@@ -8,7 +8,7 @@
 //! bash runs with the user's rights too; the approval floor of the policy
 //! asks about dangerous commands. The owner's `oxa.sandbox.net = off` then holds: such a
 //! command goes through bwrap without network, and is refused without bwrap.
-use crate::{offline_argv, run_unsandboxed_capture, run_unsandboxed_stdin, Layout, NetSandbox};
+use crate::{run_unsandboxed_capture, run_unsandboxed_stdin, Layout, NetSandbox};
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox, YoloSwitch};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -157,7 +157,7 @@ impl FullAccess {
         }
         let argv = ["bash", "-c", s.command.as_str()].map(str::to_string).to_vec();
         if self.no_net() {
-            return offline_argv(&self.path_var, &self.home, &s.cwd, &[], &argv)
+            return crate::offline::model_offline_argv(&self.path_var, &self.home, &s.cwd, &s.command)
                 .map_err(|_| oxa_proto::offline_error("bash under full access"));
         }
         Ok(argv)
@@ -190,8 +190,7 @@ impl FullAccess {
         live: &mut dyn FnMut(&[u8]),
         capture: bool,
     ) -> ExecResult {
-        let argv = ["bash", "-c", s.command.as_str()].map(str::to_string);
-        match offline_argv(&self.path_var, &self.home, &s.cwd, &[], &argv) {
+        match crate::offline::model_offline_argv(&self.path_var, &self.home, &s.cwd, &s.command) {
             Ok(argv) => {
                 let spec = self.host_spec(s);
                 crate::run::run_argv_cleared(&argv, &spec.env, stdin, s.timeout_s, c, live, capture)

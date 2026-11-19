@@ -17,7 +17,7 @@ Treat as **high** severity:
 Attended bash can run with host rights under the owner’s interactive sandbox policy. It uses
 a cleared toolchain environment, and output still redacts the selected GitHub token.
 Unattended runs include ownerless RPC and headless runs pursuing a goal. Exec hooks
-keep their dedicated sandbox.
+keep their dedicated sandbox. Network-disabled model shells mask host runtime IPC.
 
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 

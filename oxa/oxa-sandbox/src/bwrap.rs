@@ -309,28 +309,7 @@ pub(crate) fn bwrap_args_homes(
     // sockets, and systemd-resolved (DNS with the network unshared). Mask them after every
     // bind, before the deny-list.
     if layout.mask_runtime_ipc {
-        for p in runtime_ipc_paths(&home_c) {
-            let Ok(meta) = std::fs::symlink_metadata(&p) else {
-                continue;
-            };
-            let ps = p.to_string_lossy();
-            if meta.is_dir() {
-                push(&mut a, &["--tmpfs", &ps]);
-                if s.net && p == Path::new("/run/systemd/resolve") {
-                    // Preserve only DNS configuration online; all resolver IPC stays hidden.
-                    for name in ["resolv.conf", "stub-resolv.conf"] {
-                        let file = p.join(name);
-                        if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
-                            let file = file.to_string_lossy();
-                            push(&mut a, &["--ro-bind", &file, &file]);
-                        }
-                    }
-                }
-                push(&mut a, &["--remount-ro", &ps]);
-            } else {
-                push(&mut a, &["--ro-bind", "/dev/null", &ps]);
-            }
-        }
+        mask_runtime_ipc(&mut a, runtime_ipc_paths(&home_c), s.net);
     }
     // #60: the gh token-store masks, after every bind that could cover them (the git data and the
     // cwd's `.git` above included), like the deny-list below.
@@ -772,10 +751,36 @@ reaches what a command could change, so commands are not run here"
     })
 }
 
+/// Keep IPC masks identical in both Bubblewrap launch paths.
+pub(crate) fn mask_runtime_ipc(a: &mut Vec<String>, paths: impl IntoIterator<Item = PathBuf>, net: bool) {
+    for p in paths {
+        let Ok(meta) = std::fs::symlink_metadata(&p) else {
+            continue;
+        };
+        let ps = p.to_string_lossy();
+        if meta.is_dir() {
+            push(a, &["--tmpfs", &ps]);
+            if net && p == Path::new("/run/systemd/resolve") {
+                // Preserve only DNS configuration online; all resolver IPC stays hidden.
+                for name in ["resolv.conf", "stub-resolv.conf"] {
+                    let file = p.join(name);
+                    if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
+                        let file = file.to_string_lossy();
+                        push(a, &["--ro-bind", &file, &file]);
+                    }
+                }
+            }
+            push(a, &["--remount-ro", &ps]);
+        } else {
+            push(a, &["--ro-bind", "/dev/null", &ps]);
+        }
+    }
+}
+
 /// sbx-ipc: the host runtime sockets a command must not reach. They live outside `$HOME`,
 /// so the deny-list does not cover them and `--unshare-net` does not either (a Unix socket is
 /// not a network socket).
-fn runtime_ipc_paths(home: &Path) -> Vec<PathBuf> {
+pub(crate) fn runtime_ipc_paths(home: &Path) -> Vec<PathBuf> {
     let uid = std::fs::metadata(home)
         .map(|m| m.uid())
         .unwrap_or_else(|_| unsafe { libc::geteuid() });
@@ -1599,6 +1604,26 @@ mod tests {
             "{on:?}"
         );
         assert!(!on.windows(3).any(|w| w[0] == "--bind" && w[1] == ssh), "{on:?}");
+    }
+
+    #[test]
+    fn runtime_ipc_masks_hide_synthetic_socket_and_directory() {
+        let env = TestEnv::new();
+        let socket = env.work().join("fixture.sock");
+        let _socket = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let runtime_dir = env.work().join("runtime");
+        std::fs::create_dir(&runtime_dir).unwrap();
+        let mut masked = Vec::new();
+        mask_runtime_ipc(&mut masked, [socket.clone(), runtime_dir.clone()], false);
+        let socket = socket.to_string_lossy();
+        let runtime_dir = runtime_dir.to_string_lossy();
+        assert!(masked
+            .windows(3)
+            .any(|args| args == ["--ro-bind", "/dev/null", &socket]));
+        assert!(masked.windows(2).any(|args| args == ["--tmpfs", &runtime_dir]));
+        assert!(masked
+            .windows(2)
+            .any(|args| args == ["--remount-ro", &runtime_dir]));
     }
 
     #[test]
