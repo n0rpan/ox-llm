@@ -4,5 +4,6 @@
 //! * Pure functions of their arguments (no process environment, no clock, no I/O).
 //! * Randomness comes only from a seed the caller passes in, so a session replays the same picks.
 
+pub mod context;
 pub mod pick;
 pub mod render;
