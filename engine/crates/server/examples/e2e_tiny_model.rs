@@ -32,7 +32,9 @@ fn str_array(w: &mut GgufWriter, k: &str, v: &[String]) {
 }
 
 fn main() {
-    let out = std::env::args().nth(1).expect("usage: e2e_tiny_model OUT.gguf");
+    let out = std::env::args()
+        .nth(1)
+        .expect("usage: e2e_tiny_model OUT.gguf");
     let table = tokenizer::unicode::byte_to_cpt_table();
     let mut toks: Vec<String> = table.iter().map(|c| c.to_string()).collect();
     let mut types = vec![1i32; 256];
@@ -50,21 +52,14 @@ fn main() {
     }
     let id = |s: &str| 257 + SPECIALS.iter().position(|(x, _)| *x == s).unwrap() as u32;
     let vocab = toks.len() as u64;
-    mini_model_with(
-        std::path::Path::new(&out),
-        false,
-        65_536,
-        2,
-        vocab,
-        &|w| {
-            w.str("tokenizer.ggml.model", "gpt2");
-            w.str("tokenizer.ggml.pre", "qwen2");
-            str_array(w, "tokenizer.ggml.tokens", &toks);
-            w.arr_i32("tokenizer.ggml.token_type", &types);
-            str_array(w, "tokenizer.ggml.merges", &["a b".to_string()]);
-            w.u32("tokenizer.ggml.eos_token_id", id("<|im_end|>"));
-            w.u32("tokenizer.ggml.padding_token_id", id("<|endoftext|>"));
-            w.str("tokenizer.chat_template", TEMPLATE);
-        },
-    );
+    mini_model_with(std::path::Path::new(&out), false, 65_536, 2, vocab, &|w| {
+        w.str("tokenizer.ggml.model", "gpt2");
+        w.str("tokenizer.ggml.pre", "qwen2");
+        str_array(w, "tokenizer.ggml.tokens", &toks);
+        w.arr_i32("tokenizer.ggml.token_type", &types);
+        str_array(w, "tokenizer.ggml.merges", &["a b".to_string()]);
+        w.u32("tokenizer.ggml.eos_token_id", id("<|im_end|>"));
+        w.u32("tokenizer.ggml.padding_token_id", id("<|endoftext|>"));
+        w.str("tokenizer.chat_template", TEMPLATE);
+    });
 }
