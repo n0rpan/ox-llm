@@ -61,4 +61,7 @@ baseline_fail_drop = 0.10
 baseline_warn_drop = 0.01
 
 [cache.baseline]
-# Qwen3.5-0.8B-Q8_0.gguf: fill in from the first green run of the real model on main
+# Qwen3.5-0.8B-Q8_0.gguf: cached tokens / previous prompt tokens over the 4 oxa requests of the green run
+# (PR #1889, 2026-11-19): 1.022, 1.006, 1.020 and 1.012 (above 1.0 because the cache also holds the
+# previous reply). The lowest is the baseline.
+"Qwen3.5-0.8B-Q8_0.gguf" = 1.006
