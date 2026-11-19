@@ -305,7 +305,18 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 return crate::work_cmd::run(&words, &cwd, env, &dirs, &mut *stdout, &mut *stderr)
             }
             Subcommand::Mcp(words) => run_mcp(&words, &dirs, &cwd, &mut *stdout, &mut *stderr),
-            Subcommand::Memory(words) => crate::run_memory(&words, &dirs, &mut *stdout, &mut *stderr),
+            Subcommand::Memory(words) => {
+                if is_agent(env) {
+                    return report(
+                        &mut *stderr,
+                        &OxaError::new(
+                            codes::INVALID,
+                            "Memory commands require the owner outside an agent tool",
+                        ),
+                    );
+                }
+                crate::run_memory(&words, &dirs, &mut *stdout, &mut *stderr)
+            }
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
             // #1512 S5: a follow-up, an owner answer to an approval request, or the request list.

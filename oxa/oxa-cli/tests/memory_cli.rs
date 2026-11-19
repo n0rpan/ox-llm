@@ -6,6 +6,7 @@ use oxa_cli::run_memory;
 use oxa_config::Dirs;
 use oxa_fake::TestEnv;
 use oxa_resources::memory::{self, MemoryKind};
+use std::process::Command;
 
 fn words(list: &[&str]) -> Vec<String> {
     list.iter().map(|s| s.to_string()).collect()
@@ -83,4 +84,51 @@ fn memory_rm_removes_entry_and_index_line() {
     let (code, _, err) = memory_cmd(&env, &["rm", "build-cmd"]);
     assert_eq!(code, 1);
     assert!(err.contains("build-cmd"), "{err}");
+}
+
+#[test]
+fn agent_markers_refuse_memory_access_without_disclosing_or_deleting_entries() {
+    for marker in ["AI_AGENT", "OXA_CODING_AGENT", "OXA_SUBAGENT_DEPTH"] {
+        let env = TestEnv::new();
+        let dirs = Dirs::under(env.root());
+        let dir = dirs.memory_dir();
+        memory::save(
+            &dir,
+            "private-note",
+            MemoryKind::Fact,
+            "Synthetic private note",
+            "private fixture body",
+        )
+        .unwrap();
+
+        for args in [
+            vec!["memory", "list"],
+            vec!["memory", "show", "private-note"],
+            vec!["memory", "rm", "private-note"],
+        ] {
+            let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
+                .args(args)
+                .env_clear()
+                .env("HOME", env.root())
+                .env("OXA_TEST_ISOLATION", "1")
+                .env(marker, "1")
+                .current_dir(env.root())
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1));
+            assert!(output.stdout.is_empty(), "memory contents must stay private");
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                error.contains("Memory commands require the owner outside an agent tool"),
+                "{error}"
+            );
+            assert!(!error.contains("private-note"), "arguments must not be echoed");
+            assert!(!error.contains("private fixture body"), "contents must not leak");
+        }
+
+        assert!(
+            memory::read(&dir, "private-note").unwrap().is_some(),
+            "an agent memory removal must have no effect"
+        );
+    }
 }
