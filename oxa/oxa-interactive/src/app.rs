@@ -1714,6 +1714,15 @@ fn export_html_file(s: &Session, path: &Path, sink: &mut dyn EventSink) {
     sink.emit(&event);
 }
 
+/// Whether a queued wake may start another run: only after a run that ended normally. A
+/// failed, blocked or interrupted one retains its queued input for explicit recovery.
+fn may_continue(outcome: &oxa_core::RunOutcome) -> bool {
+    matches!(
+        outcome,
+        oxa_core::RunOutcome::Done | oxa_core::RunOutcome::NothingToDo
+    )
+}
+
 /// Run one command on the session. Returns the result and whether the session switched to
 /// another file (fork, clone).
 fn execute(
@@ -1730,10 +1739,7 @@ fn execute(
             let (steering, follow_up) = handle.queued();
             // A failed/blocked/interrupted run retains queued input for explicit recovery.
             // A wake may bridge successful completion, never override that stop boundary.
-            let can_continue = matches!(
-                s.outcome(),
-                oxa_core::RunOutcome::Done | oxa_core::RunOutcome::NothingToDo
-            );
+            let can_continue = may_continue(s.outcome());
             let result = if handle.same_instance(&s.handle())
                 && can_continue
                 && (!steering.is_empty() || !follow_up.is_empty())
@@ -1749,6 +1755,17 @@ fn execute(
             // A coalesced wake may carry an older destination. Only run the
             // current session's bound input, never that destination's queue.
             let result = if s.inner().sref.id == session_id || s.handle().has_inbox_input() {
+                s.run_queued(sink, ui).map(|_| ())
+            } else {
+                Ok(())
+            };
+            (result, false)
+        }
+        SessionCmd::JobWake { session_id } => {
+            s.handle().clear_job_wake(&session_id);
+            // Same stop boundary as `QueuedInput`: the job's message stays queued after a
+            // failed run and runs with the next explicit one. Only the job's own session runs.
+            let result = if s.inner().sref.id == session_id && may_continue(s.outcome()) {
                 s.run_queued(sink, ui).map(|_| ())
             } else {
                 Ok(())
@@ -2685,3 +2702,21 @@ mod toolcall_stream_tests {
 mod goal_tests;
 #[cfg(test)]
 mod steering_tests;
+
+#[cfg(test)]
+mod job_wake_gate_tests {
+    use super::may_continue;
+    use oxa_core::RunOutcome;
+
+    /// A job's wake (or any queued wake) must not restart a run that stopped on a failure,
+    /// block or interrupt, so a hostile model cannot chain autonomous runs past `maxTurns`.
+    #[test]
+    fn a_wake_runs_only_after_a_normal_run() {
+        assert!(may_continue(&RunOutcome::Done));
+        assert!(may_continue(&RunOutcome::NothingToDo));
+        assert!(!may_continue(&RunOutcome::Failed("turn_limit")));
+        assert!(!may_continue(&RunOutcome::Blocked("x")));
+        assert!(!may_continue(&RunOutcome::Interrupted));
+        assert!(!may_continue(&RunOutcome::Stalled));
+    }
+}
