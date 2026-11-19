@@ -66,6 +66,13 @@ const LEAD_PENDING: Surfaces = Surfaces {
     menu: Availability::Exception("Lead menu integration is pending"),
     web: Availability::Exception("Lead web adapter integration is pending"),
 };
+/// The `oxa memory` verbs are a CLI-only surface: no slash, menu or web handler exists.
+const MEMORY_CLI_ONLY: Surfaces = Surfaces {
+    cli: Availability::Supported,
+    slash: Availability::Exception("The slash menu has no memory command"),
+    menu: Availability::Exception("The menu has no memory command"),
+    web: Availability::Exception("No web frontend is shipped"),
+};
 const NO_REQUIREMENTS: Requirements = Requirements {
     restart: false,
     browser: false,
@@ -181,6 +188,26 @@ commands! {
         arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
         surfaces: Surfaces { cli: Availability::Supported, ..LEAD_PENDING },
         requirements: Requirements { owner_only: true, ..NO_REQUIREMENTS },
+    },
+    Memory {
+        path: &["memory"], aliases: &[], summary: "Show the memory index, or show or remove one memory entry",
+        arguments: &[Argument { name: "verb", kind: ArgumentKind::Tail, required: false }],
+        surfaces: MEMORY_CLI_ONLY, requirements: NO_REQUIREMENTS,
+    },
+    MemoryList {
+        path: &["memory", "list"], aliases: &[], summary: "Print the memory index",
+        arguments: &[],
+        surfaces: MEMORY_CLI_ONLY, requirements: NO_REQUIREMENTS,
+    },
+    MemoryShow {
+        path: &["memory", "show"], aliases: &[], summary: "Print one memory entry",
+        arguments: &[Argument { name: "name", kind: ArgumentKind::Word, required: true }],
+        surfaces: MEMORY_CLI_ONLY, requirements: NO_REQUIREMENTS,
+    },
+    MemoryRm {
+        path: &["memory", "rm"], aliases: &[], summary: "Delete one memory entry and its index line",
+        arguments: &[Argument { name: "name", kind: ArgumentKind::Word, required: true }],
+        surfaces: MEMORY_CLI_ONLY, requirements: NO_REQUIREMENTS,
     },
     Goal {
         path: &["goal"],

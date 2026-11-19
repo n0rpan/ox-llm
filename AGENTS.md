@@ -56,6 +56,9 @@ maintainer, who says in the PR when a hardware check is needed.
   sandbox, user-only settings, offline, fork safety). Limits, budgets, retries and guards are owner
   settings with generous defaults that warn and record; a hard block exists only when the owner
   configures it. Do not ask for a new default block or for a feature to be default-off.
+  The repeat guard follows this: the third identical tool result gets a short note, a call that
+  still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
+  is the cap against loops the guard cannot see.
 - Reserve P0/P1 for violations of these invariants or concrete data loss/crash. Report only
   introduced, actionable defects with a failure scenario; skip style and speculative risks.
 - A finding is a claim to verify, not an order. Whoever acts on a review finding first shows it is
