@@ -15,6 +15,20 @@ use crate::prompt::{self, McpReach, SkillReader};
 pub struct PrefixOpts {
     pub diet_output: bool,
     pub child: bool,
+    /// A headless run (`-p`, `--mode json`): adds [`prompt::RULE_INTEGRITY`] with the diet on.
+    pub headless: bool,
+}
+
+static HEADLESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Mark this process as a headless run. Called once, before the session opens.
+pub fn set_headless(on: bool) {
+    HEADLESS.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Whether [`set_headless`] was called with true.
+pub fn is_headless() -> bool {
+    HEADLESS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// Build the prefix of an epoch under the default options (diet off, not a child). Pure: same
@@ -59,7 +73,17 @@ pub fn build_prefix_with(
                 .collect();
             let pairs: Vec<(&str, &str)> = snippets.iter().map(|(n, s)| (*n, s.as_str())).collect();
             let omit_tools = true;
-            prompt::preamble_with(&pairs, &[], omit_tools, opts.diet_output, opts.child)
+            prompt::preamble_with(
+                &pairs,
+                if opts.headless && opts.diet_output && !opts.child {
+                    &[prompt::RULE_INTEGRITY]
+                } else {
+                    &[]
+                },
+                omit_tools,
+                opts.diet_output,
+                opts.child,
+            )
         }
     };
     push(&mut sections, "preamble", preamble);

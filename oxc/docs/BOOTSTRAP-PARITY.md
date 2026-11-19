@@ -41,7 +41,7 @@ The image source audit includes relevant libwebp/libwebm and ggml submodule iden
 
 ## Implemented preparation CLI
 
-New [bootstrap.py](../src/oxc/bootstrap.py) reads the existing public manifests/examples and copies only into a **new** bundle. It does not import Studio, invoke the existing host installer, start services, enable ready/validated flags, or fetch anything. The stage contains runtime/control/panel assets, unit templates, wrapper notices, private directories, one fresh staged canonical lock, inactive OpenCode fragment, asset plan and per-file/directory identity inventory. Historical binary hashes are cleared until the new build is qualified. Default runtime profiles contain the default MoE only; the dense 27B was retired in v0.1.2 and `--include-dense` now stops with that reason.
+New bootstrap.py reads the existing public manifests/examples and copies only into a **new** bundle. It does not import Studio, invoke the existing host installer, start services, enable ready/validated flags, or fetch anything. The stage contains runtime/control/panel assets, unit templates, wrapper notices, private directories, one fresh staged canonical lock, inactive OpenCode fragment, asset plan and per-file/directory identity inventory. Historical binary hashes are cleared until the new build is qualified. Default runtime profiles contain the default MoE only; the dense 27B was retired in v0.1.2 and `--include-dense` now stops with that reason.
 
 From the source checkout:
 
