@@ -125,9 +125,9 @@ impl ProbeHooks {
             } else {
                 ""
             },
-            s("headRefName"),
+            self.scrubbed(&s("headRefName"), 200),
             s("headRefOid"),
-            s("baseRefName"),
+            self.scrubbed(&s("baseRefName"), 200),
             s("mergeable"),
             v["reviewDecision"]
                 .as_str()
@@ -267,7 +267,8 @@ impl ProbeHooks {
             if labels.is_empty() {
                 "none".to_string()
             } else {
-                labels.join(", ")
+                // A label is repository-controlled text like a body.
+                self.scrubbed(&labels.join(", "), BODY_CHARS)
             },
             self.scrubbed(v["body"].as_str().unwrap_or(""), BODY_CHARS),
         ))
@@ -465,13 +466,13 @@ mod tests {
         f.answer(
             "pr_view.json",
             &format!(
-                r#"{{"number":7,"title":"leak {token}","state":"OPEN","isDraft":false,"headRefName":"agent/x","headRefOid":"abc","baseRefName":"main","mergeable":"MERGEABLE","reviewDecision":"","url":"https://github.com/acme/widgets/pull/7","body":"pasted {token}"}}"#
+                r#"{{"number":7,"title":"leak {token}","state":"OPEN","isDraft":false,"headRefName":"agent/{token}","headRefOid":"abc","baseRefName":"main","mergeable":"MERGEABLE","reviewDecision":"","url":"https://github.com/acme/widgets/pull/7","body":"pasted {token}"}}"#
             ),
         );
         f.answer(
             "issue_view.json",
             &format!(
-                r#"{{"number":5,"title":"leak {token}","state":"OPEN","labels":[],"url":"https://github.com/acme/widgets/issues/5","body":"pasted {token}"}}"#
+                r#"{{"number":5,"title":"leak {token}","state":"OPEN","labels":[{{"name":"area {token}"}}],"url":"https://github.com/acme/widgets/issues/5","body":"pasted {token}"}}"#
             ),
         );
         for kind in ["pr_view", "issue_view"] {
