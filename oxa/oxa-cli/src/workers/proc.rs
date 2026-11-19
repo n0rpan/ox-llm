@@ -147,10 +147,11 @@ pub fn kill_helper(host_path: &std::ffi::OsStr, project: &Path, home: &Path) -> 
     crate::netguard::trusted_executable_for("kill", Some(host_path), Some(project), Some(home))
 }
 
-/// How long a stopped worker gets after SIGINT: `oxa.workers.stopGraceSeconds`, else 10 seconds.
+/// How long a stopped worker gets after SIGINT: `oxa.workers.stopGraceSeconds` from the user
+/// settings only (a project file cannot change process-control timing), else 10 seconds.
 pub fn stop_grace(settings: &Settings) -> Duration {
     settings
-        .get("oxa.workers.stopGraceSeconds")
+        .user_value("oxa.workers.stopGraceSeconds")
         .and_then(|value| value.as_f64())
         .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
         .unwrap_or(DEFAULT_STOP_GRACE)
@@ -1016,6 +1017,10 @@ mod tests {
         assert_eq!(stop_grace(&set), Duration::from_secs(3));
         let unset = Settings::from_values(json!({}), json!({}));
         assert_eq!(stop_grace(&unset), Duration::from_secs(10));
+        // A project file cannot change it.
+        let project =
+            Settings::from_values(json!({}), json!({"oxa": {"workers": {"stopGraceSeconds": 300}}}));
+        assert_eq!(stop_grace(&project), Duration::from_secs(10));
     }
 
     /// A `/proc/<pid>` read reports a process that exited between the open and the read as
