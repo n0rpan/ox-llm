@@ -1690,6 +1690,8 @@ fn run_headless(
         continue_goal,
         ..
     } = prep;
+    // FH-N2: nobody watches a print or JSON run; the prefix of this session carries the
+    // autonomy block and the loop nudges once when a final reply ends on a plan.
     oxa_core::set_headless(true);
     let mut session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
@@ -3127,7 +3129,7 @@ mod session_scratch_tests {
     /// key in the user file allows the command.
     #[test]
     fn approval_keys_are_read_from_user_layer_only() {
-        use oxa_proto::{Access, Decision, Mode, Policy};
+        use oxa_proto::{Access, Decision, Mode};
         let env = oxa_fake::TestEnv::new();
         let dirs = Dirs::under(env.root());
         let cwd = env.work();
