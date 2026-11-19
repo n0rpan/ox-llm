@@ -403,7 +403,7 @@ pub mod subagent {
         "Warning: {n} parallel tasks, above oxa.subagent.maxChildren ({max}). All of them ran.";
     /// A chain is the same count, one step after another.
     pub const TOO_MANY_CHAIN: &str =
-        "Warning: {n} chain steps, above oxa.subagent.maxChildren ({max}). All of them ran.";
+        "Warning: {n} chain steps, above oxa.subagent.maxChildren ({max}). The chain ran anyway.";
     /// The count is per parent session, over every call in flight.
     pub const TOO_MANY_SESSION: &str = "Warning: {pending} subagent tasks were already running or queued for this session and {n} more were added, above oxa.subagent.maxChildren ({max}). They were queued, not refused.";
     pub const NOT_ATTACHED: &str = "Subagent failed: the session host is not attached";
