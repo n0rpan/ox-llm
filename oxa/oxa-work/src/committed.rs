@@ -238,8 +238,7 @@ pub(crate) fn verify_commit_with(
                     .into(),
             );
         }
-        // Anything else the lane workflow never runs (engine fixtures, `fuzz/`, Rust
-        // outside `oxa/`) has no lane evidence either.
+        // Anything else the lane workflow never runs (engine fixtures, `fuzz/`) has no lane evidence either.
         let uncovered = derived::committed_uncovered_paths(policy, &export.tree, base, head)
             .map_err(|reason| format!("clean committed acceptance could not run: {reason}"))?;
         if let Some(path) = uncovered.first() {

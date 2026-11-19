@@ -198,10 +198,10 @@ pub(crate) fn committed_engine_inputs(
         .contains("engine"))
 }
 
-/// Changed paths no lane run tests: the lane covers only the `oxa` and portable `engine`
-/// workspaces, and engine suites ride the self-hosted route. So anything under `engine/`
-/// (shared fixtures and build inputs included) and any Rust, manifest or fuzz change
-/// outside `oxa/` (`fuzz/`, which only the checks workflow runs) has no lane evidence.
+/// Changed paths no lane run tests: the lane covers the `oxa` workspace and the portable
+/// `engine` crates, and engine suites ride the self-hosted route. So anything under `engine/`
+/// (shared fixtures and build inputs included) and anything under `fuzz/`, whose suite only the
+/// checks workflow runs, has no lane evidence.
 pub(crate) fn committed_uncovered_paths(
     policy: &RunPolicy,
     root: &Path,
@@ -237,16 +237,7 @@ pub(crate) fn committed_uncovered_paths(
 }
 
 fn lane_cannot_test(path: &str) -> bool {
-    if path.starts_with("engine/") {
-        return true;
-    }
-    if path.starts_with("oxa/") {
-        return false;
-    }
-    path.starts_with("fuzz/")
-        || [".rs", ".toml", ".lock"]
-            .iter()
-            .any(|suffix| path.ends_with(suffix))
+    path.starts_with("engine/") || path.starts_with("fuzz/")
 }
 
 fn committed_selection(policy: &RunPolicy, root: &Path, base: &str, head: &str) -> Result<Selected, String> {
@@ -1032,7 +1023,6 @@ mod tests {
             "engine/crates/gguf/src/lib.rs",
             "fuzz/oxa/src/lib.rs",
             "fuzz/oxa/tests/smoke.rs",
-            "somewhere/src/lib.rs",
         ] {
             assert!(lane_cannot_test(path), "{path}");
         }

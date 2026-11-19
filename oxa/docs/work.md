@@ -462,8 +462,7 @@ Because the lane workflow is the authority, a head that changes
 changes land in their own owner-reviewed change instead of qualifying themselves.
 The check covers every commit the push would add (against the destination's own
 tips), not only the diff from the saved base. A green lane run is evidence only for
-what the lane tests: a change under `engine/`, or Rust/manifest changes outside
-`oxa/` (such as `fuzz/`), stays on the hosted route.
+what the lane tests: a change under `engine/`, or under `fuzz/`, stays on the hosted route.
 A branch whose open pull request is already in the merge queue is refused too;
 use a new task branch for follow-up work.
 
