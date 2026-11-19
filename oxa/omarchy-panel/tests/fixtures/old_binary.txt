@@ -1,0 +1,5 @@
+error: unexpected argument '--json' found
+
+Usage: oxa status <SESSION_ID>
+
+For more information, try '--help'.

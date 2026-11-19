@@ -1,0 +1,11 @@
+{
+  "type": "oxa_storage", "version": 1,
+  "disk": { "free_bytes": 442000000000, "total_bytes": 1023000000000 },
+  "entries": [
+    { "kind": "model", "name": "Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf", "bytes": 22977000000, "wired": false, "folder": false },
+    { "kind": "sessions", "bytes": 1181000000 },
+    { "kind": "ledger", "bytes": 39800000 },
+    { "kind": "catalog_cache", "bytes": 420000 },
+    { "kind": "debug_log", "bytes": 169000000 }
+  ]
+}

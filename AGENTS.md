@@ -45,11 +45,19 @@ maintainer, who says in the PR when a hardware check is needed.
   the user docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A review finding
   that contradicts an owner decision stated in the linked issue or PR is answered by updating these
   rules in that PR, not by changing the behaviour.
+- **Bash and subagent limits.** The two caps are user-only. `oxa.bash.maxJobs` defaults to 16
+  running background jobs.
+  `oxa.subagent.maxChildren` defaults to 8 running or queued children per parent and 8 steps
+  per call. Both settings have a minimum of 1. An explicit bash `timeout: 0` disables the
+  timeout for that call, including a background job, and overrides the foreground default.
 - **Cargo cache mounts.** The sandbox forwards an owner-set `CARGO_TARGET_DIR` as a
   toolchain location. An external cache needs a separate user-only
   `oxa.sandbox.writePaths` entry. Review environment forwarding and writable mounts independently.
 - **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
   registry with its surfaces and help (P1 if added outside it or without an exception reason).
+  `oxe admission` is an engine CLI exception. It reports allocation bounds directly from a GGUF
+  header and accepts `oxe-server` launch arguments without opening an oxa session. Its command and
+  flag help live in `oxe admission --help`. It has no oxa slash, menu, or web surface.
 - **Work acceptance.** In `oxa work`, zero or skipped checks leave the task `Unverified`. The
   owner-only `oxa.work.localChecks` defaults to a per-package `cargo check`. A verified Rust
   acceptance receipt requires hosted test evidence at the exact head, including for changed
@@ -62,6 +70,10 @@ maintainer, who says in the PR when a hardware check is needed.
   The repeat guard follows this: the third identical tool result gets a short note, a call that
   still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
   is the cap against loops the guard cannot see.
+  Report dedupe follows it as well: `oxa.reportIssue.semanticDedupe` is the owner's consent for the
+  search and the model check, the post asks one question, and `oxa.reportIssue.dailyNew` (unset = no
+  check) only warns and records over the cap. A finding that asks for a second consent question or
+  for the cap to block is answered here.
 - Reserve P0/P1 for violations of these invariants or concrete data loss/crash. Report only
   introduced, actionable defects with a failure scenario; skip style and speculative risks.
 - A finding is a claim to verify, not an order. Whoever acts on a review finding first shows it is
@@ -136,6 +148,14 @@ Local compiler work is limited to `cargo check -p <edited-crate>`, niced with
 Do not run `cargo build`, `cargo test`, Python or end-to-end tests, or whole-workspace
 compiler sweeps on n0rpan, Air, or the maintainer's laptop. On n0rpan, run Lead and
 its worker from the dev-release binary. Do not compile binaries for deployment.
+
+**Hosted cloud agent environments are not owner machines.**
+- **Scope:** a hosted sandbox such as the Codex cloud environment for this repo. It sets `OX_HOSTED_AGENT_ENV=1` in its environment settings.
+- **What to run there:** before pushing, run `cargo fmt --check`, `cargo clippy -p <crate> -- -D warnings` and `cargo test -p <crate>` for every crate you touched.
+- **Fix what fails, then push.**
+- **Tests that need bubblewrap, user namespaces or a writable `/proc`** cannot run there. Skip them, and name them in your reply.
+- **GitHub CI is still the judge;** the local run only catches failures before they cost a CI round.
+- **The limits above still apply** on n0rpan, Air and the maintainer's laptop.
 
 Keep target directories and large scratch under your own clone or `~/.cache`; never put them under
 `/tmp` (it is RAM on the owner's machines). Use isolated HOME/XDG. Remove your finished temporary

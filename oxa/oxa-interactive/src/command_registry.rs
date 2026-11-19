@@ -122,6 +122,19 @@ commands! {
         },
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
     },
+    Usage {
+        path: &["usage"],
+        aliases: &[],
+        summary: "Print today's cloud spend and request sums per usage pool as JSON",
+        arguments: &[Argument { name: "json", kind: ArgumentKind::Flag, required: true }],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("The JSON usage report is a CLI command"),
+            menu: Availability::Exception("The JSON usage report is a CLI command"),
+            web: Availability::Exception("The panel reads this report from the CLI"),
+        },
+        requirements: NO_REQUIREMENTS,
+    },
     WorkStatus {
         path: &["work", "status"],
         aliases: &[],
@@ -226,6 +239,19 @@ commands! {
         summary: "Add a local GGUF model from the engine's admission report",
         arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: true }],
         surfaces: LOCAL_CLI_ONLY, requirements: Requirements { owner_only: true, ..NO_REQUIREMENTS },
+    },
+    Admission {
+        path: &["admission"],
+        aliases: &[],
+        summary: "Engine-only: size a model's memory before serving it (`oxe admission`)",
+        arguments: &[Argument { name: "--model|--ctx|--margin-bytes|launch options|--json", kind: ArgumentKind::Tail, required: false }],
+        surfaces: Surfaces {
+            cli: Availability::Exception("Engine-only subcommand of the oxe binary; oxa never dispatches it"),
+            slash: Availability::Exception("Not a session command"),
+            menu: Availability::Exception("Not a session command"),
+            web: Availability::Exception("No web frontend is shipped"),
+        },
+        requirements: NO_REQUIREMENTS,
     },
     Goal {
         path: &["goal"],

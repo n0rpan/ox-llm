@@ -118,7 +118,7 @@ normal permission checks remain in force.
 - Shapes: `{agent, task}` for one child; `{tasks: [...]}` for several, run one after another in order; `{chain: [...]}` for steps where each step can use `{previous}`, the output of the step before.
 - Agents are Markdown files in `~/.oxa/agent/agents/` and, in a trusted project, `.oxa/agents/`. The file has a `name` and a `description` in its front matter, and its body is the child's system prompt. A project agent with the same name replaces the user agent. A `model:` in an agent file is used when that model or the session's model runs in the cloud; with a local session and a local `model:` it is ignored with a warning (one local model is loaded) and the child uses the session's model.
 - The child is a new oxa process in JSON print mode, with the same model, permission mode and tools, and no session file. It runs on its own compaction limit ([compaction.md](compaction.md)).
-- Local children run one at a time. When children of a `tasks` call run on a cloud model, up to `oxa.subagent.remoteConcurrency` (4) run at once; results still come back in call order. A call with more than 8 tasks is refused.
+- Local children run one at a time. When children of a `tasks` call run on a cloud model, up to `oxa.subagent.remoteConcurrency` (4) run at once; results still come back in call order. A call with more tasks than `oxa.subagent.maxChildren` (8) is refused.
 - The result is the child's final text, capped at `oxa.subagent.resultCap` (6144 bytes). A longer result is cut and the full text is saved to a file under the agent directory's `tmp/`.
 - Interrupting the parent stops the child: SIGTERM to its process group, then SIGKILL after 2 seconds.
 - Plan mode refuses the tool, because it runs a process.
