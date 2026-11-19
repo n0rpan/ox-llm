@@ -200,6 +200,10 @@ impl Settings {
     pub fn bool(&self, key: &str, default: bool) -> bool {
         self.get(key).and_then(Value::as_bool).unwrap_or(default)
     }
+    /// A boolean read from the user settings file only: a project file cannot change it.
+    pub fn user_bool(&self, key: &str, default: bool) -> bool {
+        self.user_value(key).and_then(Value::as_bool).unwrap_or(default)
+    }
     pub fn u32(&self, key: &str, default: u32) -> u32 {
         self.get(key)
             .and_then(Value::as_u64)
@@ -228,6 +232,27 @@ impl Settings {
             Some(p) if p.rank() <= user.rank() => p,
             _ => user,
         }
+    }
+    /// The raw entries of a list setting as the user layer wrote them, before the merge applies
+    /// its `+x` / `-x` edits to the (empty) default. `[]` when the user layer does not set it.
+    /// A caller that patches its own built-in list (`oxa.approval.dangerous`) reads this, so an
+    /// edit list is not turned into a plain list that replaces the built-ins.
+    pub fn user_list(&self, key: &str) -> Vec<String> {
+        let mut cur = &self.user;
+        for part in key.split('.') {
+            match cur.as_object().and_then(|o| o.get(part)) {
+                Some(v) => cur = v,
+                None => return Vec::new(),
+            }
+        }
+        cur.as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
     /// A string list; `+x` / `-x` patch entries are already applied over the lower layer.
     pub fn list(&self, key: &str) -> Vec<String> {
@@ -420,6 +445,10 @@ impl Settings {
         } else {
             Source::Default
         }
+    }
+    /// True when a layer or an in-memory override sets `key`. A built-in default does not count.
+    pub(crate) fn is_explicit(&self, key: &str) -> bool {
+        self.source(key) != Source::Default || self.overrides.iter().any(|(k, _)| k == key)
     }
     /// The value `key` has in the user file, if any (not the merged value).
     pub fn user_value(&self, key: &str) -> Option<&Value> {
@@ -621,6 +650,22 @@ fn remove_path(obj: &mut Map<String, Value>, parts: &[&str]) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn headless_inbox_setting_is_user_only() {
+        let user_off = Settings::from_values(json!({"oxa": {"inbox": {"headless": false}}}), json!({}));
+        assert!(!user_off.user_bool("oxa.inbox.headless", true));
+        let project_on = Settings::from_values(
+            json!({"oxa": {"inbox": {"headless": false}}}),
+            json!({"oxa": {"inbox": {"headless": true}}}),
+        );
+        assert!(
+            !project_on.user_bool("oxa.inbox.headless", true),
+            "a project file cannot re-enable the headless inbox the user turned off"
+        );
+        let project_off = Settings::from_values(json!({}), json!({"oxa": {"inbox": {"headless": false}}}));
+        assert!(project_off.user_bool("oxa.inbox.headless", true));
+    }
 
     #[test]
     fn set_rejects_field_outside_hard_range() {

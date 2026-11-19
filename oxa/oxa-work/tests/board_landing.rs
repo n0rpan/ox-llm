@@ -90,6 +90,23 @@ fn default_off_and_latest_findings_override_approved_ready_head() {
 }
 
 #[test]
+fn incomplete_evidence_is_excluded_from_landing_plans() {
+    let mut board = board();
+    board.entries[0].evidence_incomplete = Some("review threads exceed the page".into());
+    let observations = BTreeMap::from([(
+        1,
+        Observation {
+            head: HEAD,
+            reviews: LatestReviews::Unresolved,
+            queue: Queue::Queued { since: 1 },
+        },
+    )]);
+    assert!(board
+        .plan_landing(policy(), &observations, MAIN_BEFORE)
+        .is_empty());
+}
+
+#[test]
 fn rejected_head_notifies_with_failing_tests_then_retries_once_after_main_moves() {
     let entry = ready();
     let mut rejected = rejection();
