@@ -36,14 +36,15 @@ pub(crate) struct ChildIdentity {
 impl ChildIdentity {
     /// Read the three variables. A malformed value is ignored with a warning in `notices`.
     pub fn from_env(env: &Env, notices: &mut Vec<(Level, String)>) -> ChildIdentity {
-        let mut id = ChildIdentity::default();
         // `Env::get` treats an empty value as unset, so the marker is read from the pairs.
-        id.worker = env
-            .pairs()
-            .iter()
-            .rev()
-            .find(|(k, _)| k == crate::workers::tool::ENV_WORKER_DEPTH)
-            .is_some();
+        let mut id = ChildIdentity {
+            worker: env
+                .pairs()
+                .iter()
+                .rev()
+                .any(|(k, _)| k == crate::workers::tool::ENV_WORKER_DEPTH),
+            ..ChildIdentity::default()
+        };
         if let Some(h) = env.get(SubagentHooks::ENV_SESSION_HINT) {
             if is_child_hint(h) {
                 id.hint = Some(h.to_string());

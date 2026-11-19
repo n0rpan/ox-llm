@@ -13,6 +13,7 @@
 //!   `TERM=dumb`) and `ui.animation = "off"` give the static badge and no scene at all.
 //! * No sound, ever.
 use super::chrome::{activity_line_lead, activity_style};
+use super::stage::Director;
 use super::{badge, glyphs, oxa_activity_line_with, SPRITE_FRAME_MS};
 use crate::{Activity, Block, Skin, StatusModel};
 use oxa_config::Keymap;
@@ -712,6 +713,28 @@ pub fn oxa_arcade_line(
         ));
     }
     let lead = arcade_scene(scene, st, run, cells, theme, skin);
+    activity_line_lead(st, keymap, lead, width, theme, skin)
+}
+
+/// The activity line whose scene is the director's frame (`stage`, design 3.2): the same line as
+/// [`oxa_arcade_line`] while a run is active, with the scene the director picked for the
+/// activity. The caller has already told the director the activity (`Director::update`) at
+/// `now_ms`. Waiting for the user and idle show the static badge, as before.
+pub fn oxa_stage_line(
+    stage: &Director,
+    st: &StatusModel,
+    keymap: &Keymap,
+    now_ms: u64,
+    width: u16,
+    theme: &Theme,
+    skin: Skin,
+) -> Option<String> {
+    let lead = match activity_style(&st.activity) {
+        Some((_, token)) if !matches!(st.activity, Activity::Blocked) => {
+            stage.row(now_ms, token, st.yolo, theme, skin != Skin::Oxa)
+        }
+        _ => None,
+    };
     activity_line_lead(st, keymap, lead, width, theme, skin)
 }
 

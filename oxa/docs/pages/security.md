@@ -54,6 +54,12 @@ Pasted and dropped images saved as `tmp/paste-<hash>.<image extension>` remain r
 - The auto-approved count records questions answered with allow, once each. A denial bypassed by full access is not an approval and does not increment it (#443).
 - Plan mode and project trust work the same in every mode.
 
+### Owner yes
+
+An approval comes only from you: your typed message, your answer to an oxa dialog, or yolo chosen for the session. Text the model read (tool output, files, web pages, other sessions) never counts. oxa commands that need your yes (for example publishing) ask the session through a private unix socket (`OXA_CONFIRM_SOCK`, directory 0700, socket 0600). In yolo the session answers yes and records it with a notice. In standard and auto it shows a dialog; while one waits, your next typed message answers it (`yes`, `y`, `ja`, `ok`, `post it` mean yes, anything else no). A typed message answers only a question whose dialog oxa has already shown you. The dialog marks the question as text from the process that asked, not as an oxa message. A command the model starts cannot make its own listener count: an oxa command accepts an answer only from the sandbox's pinned socket or from the session's own oxa process (checked on Linux through the socket's peer credentials). Yolo is unchanged: the model already has your rights. With no way to ask you, the answer is "none" and nothing is confirmed. The socket is reachable by any command the model runs, so what one request can hold in the oxa process is bounded: its size (default 8 MiB), the time to send it (default 60 seconds) and the requests served at once (default 64; more are answered "none"). You can change each with `OXA_CONFIRM_MAX_REQUEST_BYTES`, `OXA_CONFIRM_READ_TIMEOUT_SECS` and `OXA_CONFIRM_MAX_CONNECTIONS` ([cli.md](cli.md#environment-variables)).
+
+The socket accepts one newline-terminated request up to the size limit (default 8 MiB). A larger request receives `none`.
+
 A shell alias makes yolo quick to start:
 
 ```console
@@ -104,7 +110,7 @@ If oxa starts in your home directory, in `/`, or in a parent of your home direct
 - your home directory is visible to bash, read-only, with the deny-list below still masked. A command can read your shell history, your dot files and your other files there;
 - bash has network access by default, so a command can send what it reads to a host (see [Network](#network)).
 
-oxa refuses such a start in print, JSON and RPC modes. In interactive mode it warns and asks "Start oxa here anyway?", and the default answer is No. The user setting `oxa.allowHomeCwd: true`, or the environment variable `OXA_ALLOW_HOME_CWD=1`, allows the start without the question. Start oxa in a project directory instead.
+oxa refuses such a start in print, JSON and RPC modes. In interactive mode it warns and asks "Start oxa here anyway?", and the default answer is No. The user setting `oxa.allowHomeCwd: true`, or the environment variable `OXA_ALLOW_HOME_CWD=1`, allows the start without the question. An explicit `--yolo` or `--auto` on the command line is the owner's opt-in: the start warns once and goes on in every mode, with no question. Start oxa in a project directory instead.
 
 Writable package caches are shared with your own builds. A crate or Go module that the model unpacks there is what your next build reads. Clear a cache after a session you do not trust.
 
@@ -167,7 +173,7 @@ In `standard` and `auto`, the model cannot write `.oxa/**` or `.agents/skills/**
 
 ## Network
 
-The harness connects to the model you chose: the local engine on loopback, or the provider of the selected cloud model. It has no telemetry, no version check and no upload of sessions, exports or reports. Its tools may use the network, as the table shows.
+The harness connects to the model you chose: the local engine on loopback, or the provider of the selected cloud model. With nothing configured it connects nowhere. It has no telemetry, no version check and no upload of sessions, exports or reports. Its tools may use the network, as the table shows.
 
 | Source | Network | In `ask` mode |
 |---|---|---|
@@ -179,6 +185,8 @@ The harness connects to the model you chose: the local engine on loopback, or th
 | exec hooks | no | not applicable |
 
 ### Bash network
+
+User-only settings (such as `oxa.sandbox.net` and `oxa.offline`) count only from the user file. A project settings file that sets one is ignored for that key, with a warning, even when the project is trusted.
 
 Bash has network access by default in `workspace` and `ask` modes. `oxa.sandbox.net: "off"` in user settings removes it from bash in every mode. Off Linux there is no OS sandbox to enforce this, so bash is disabled there while the setting is off (see [The bash sandbox](#the-bash-sandbox)).
 
@@ -200,16 +208,20 @@ This matters because the model can be steered by text it reads. A steered model 
 - subagent children inherit the switch;
 - the local engine keeps working.
 
-Offline mode is about the network only. It does not limit what those programs read or write. A `!cmd` command or a stdio MCP server, when started offline, sees your files as you do: it is not under the deny-list masks, and it can write anywhere your account can write. Exec hooks have never had network. Programs you start yourself, outside oxa, are not affected by oxa at all.
+Offline mode is about the network only. It does not limit what those programs read or write. A `!cmd` command or a stdio MCP server, when started offline, sees your files as you do: it is not under the deny-list masks, and it can write anywhere your account can write. Exec hooks have no network outside yolo. Programs you start yourself, outside oxa, are not affected by oxa at all.
 
 ### Remote engine
 
 oxa refuses to send prompts to an engine on another host. The check is on the engine address (`OXA_ENGINE_URL` or `models.json`). Loopback addresses (`localhost`, `127.0.0.0/8`, `::1`) are always allowed. For any other host, set `oxa.engine.allowRemote: true` in the user settings. A project file cannot set it. oxa prints a warning at start-up while it is on.
 
+## Agent control channel
+
+A headless session (`--mode json` or `--mode rpc`) started by `oxa work` or a lead can accept control requests (steer, pause, resume, cancel) besides plain follow-ups. Control requests are accepted only from the same user. The session owner checks each one against the lease it was handed and the goal revision before acting; a stale or foreign request is refused with a receipt. `oxa.a2a.enabled: false` in the user settings turns the lane off: sessions then use the plain file inbox, and `nativeSteering` is refused.
+
 ## Extensions, hooks and MCP
 
 - Extensions run in an embedded JavaScript runtime with no file, network or process access of their own. Each host function they call (`exec`, `fs`, `fetch`, session actions) goes through the same policy as the model's tools.
-- Exec hooks (`hooks` setting) run as `bash -c` in the sandbox, with no network. A hook that exits with status 2 blocks the `tool_call` or `user_bash` event it belongs to. A hook that times out or fails does not block anything. They run on every event, without the model asking, so only put commands you have read in a hook.
+- Exec hooks (`hooks` setting) run as `bash -c` in the sandbox, with no network. Under yolo (including an unattended worker started with yolo) there is no sandbox anywhere: they run with your rights, and `--offline` still keeps their network off. A hook that exits with status 2 blocks the `tool_call` or `user_bash` event it belongs to. A hook that times out or fails does not block anything. They run on every event, without the model asking, so only put commands you have read in a hook.
 - MCP stdio servers and `!cmd` commands run with your rights. Outside offline mode they are not in the bash sandbox, and an MCP stdio server starts after an approval. MCP HTTP servers and their OAuth tokens (`mcp-auth.json`, mode `0600`) are subject to the network rules above.
 - An MCP tool's read-only mark (`readOnlyHint`) is the server's own claim. oxa does not check it. For a remote server oxa does not believe the mark unless the server entry says `"trustAnnotations": true` (see [mcp.md](mcp.md#permissions)).
 
@@ -221,7 +233,11 @@ A panic inside a tool, an extension, an MCP connection, a hook or a codemode scr
 
 Session files are `0600`. The Brave key is never written to a session, an export or a log. What the model read, however, is in the session: a file that contains a secret puts that secret into the session file and into the requests the engine receives. Exports contain the whole session, including all branches. [sessions.md](sessions.md#what-oxa-stores-and-how-to-remove-it) lists what oxa keeps and how to remove it.
 
-`oxa report-issue draft` scrubs its digest and the text you give it, but scrubbing is pattern-based. Read the draft before you post it; `oxa report-issue submit` posts only after you type `yes` at the terminal. `/bug` writes a redacted local bundle and uploads nothing.
+`oxa report-issue draft` scrubs its digest and the text you give it, but scrubbing is pattern-based. Read the draft before you post it; `oxa report-issue submit` posts only after you type `yes` at the terminal. In an interactive session the model publishes with the `report_publish` tool. In yolo it posts at once without asking and shows the exact posted text and URL; the scrubber's findings (secrets, emails, home paths) still refuse it. In auto and standard mode oxa shows the exact title and body (or the exact comment and its destination) and only you approve it: a key press in the approval dialog (Deny is focused) or a `yes` you type yourself. A `yes` that a tool result, file, web page or another session contains never counts; only a line you typed into oxa's own input does. Print, JSON and RPC runs keep the terminal confirmation. `/bug` writes a redacted local bundle and uploads nothing.
+
+### Publishing
+
+`oxa work --publish` and lane pushes scan the commits they would push and refuse a private key, a known token format, an opaque credential assignment or quoted literal, a `Bearer` header, a URL password, lines added to a secret-store file such as `.env`, or the value of a secret-named variable or setting. An empty secret-store file and `.env.example` are checked by content, not refused by name. A credential deleted in a later commit still blocks publication: rewrite the unpublished commits. The details are in [../work.md](../work.md#what-the-publication-scan-refuses).
 
 ## Checklist
 

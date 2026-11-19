@@ -1,4 +1,4 @@
-#![cfg(all(target_os = "linux", feature = "a2a"))]
+#![cfg(target_os = "linux")]
 
 use oxa_orchestrator::follow::History;
 use serde_json::{json, Value};

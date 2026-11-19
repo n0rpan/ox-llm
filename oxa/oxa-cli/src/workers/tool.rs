@@ -29,7 +29,7 @@ use oxa_proto::{
 use std::fs::{self, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -107,8 +107,10 @@ pub struct ParentScope {
 /// State shared by the tool and the hook set.
 pub struct WorkerCore {
     cwd: PathBuf,
+    /// Private copy opened from the session executable before model-controlled work starts.
     oxa_bin: PathBuf,
-    /// The identity of `oxa_bin` when this session started; `None` when it could not be read.
+    pin_error: Option<String>,
+    /// The identity of the private copy; checked before each use as a defence in depth.
     bin_id: Option<BinId>,
     agent_dir: PathBuf,
     max: usize,
@@ -255,6 +257,36 @@ impl BinId {
     }
 }
 
+/// Copy the running executable into owner-private storage before any model-controlled command can
+/// replace a workspace-built binary. Worker launches use only this copy, never reopen the original
+/// pathname. Comparing the source identity around the copy rejects a concurrent replacement.
+fn pin_executable(source: &Path, agent_dir: &Path) -> Result<PathBuf, String> {
+    let before = BinId::of(source).map_err(|e| format!("cannot pin the oxa executable: {e}"))?;
+    let mut input = fs::File::open(source).map_err(|e| format!("cannot pin the oxa executable: {e}"))?;
+    let dir = agent_dir.join("workers").join("launchers");
+    fs::create_dir_all(&dir).map_err(|e| format!("cannot create the worker launcher directory: {e}"))?;
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("cannot protect the worker launcher directory: {e}"))?;
+    let path = dir.join(format!("oxa-{}-{}", std::process::id(), now_ms()));
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o500)
+        .open(&path)
+        .map_err(|e| format!("cannot create the pinned worker executable: {e}"))?;
+    let copied =
+        io::copy(&mut input, &mut output).map_err(|e| format!("cannot copy the worker executable: {e}"))?;
+    output
+        .sync_all()
+        .map_err(|e| format!("cannot sync the pinned worker executable: {e}"))?;
+    let after = BinId::of(source).map_err(|e| format!("cannot verify the oxa executable: {e}"))?;
+    if before != after || copied != before.len {
+        let _ = fs::remove_file(&path);
+        return Err("the oxa executable changed while it was being pinned; restart oxa".into());
+    }
+    Ok(path)
+}
+
 /// Writes `text` to `path`, creating `dir` first: a fresh mode-0600 file beside it, renamed over
 /// the name. An existing goal file is replaced, never followed (a symlink there stays a symlink
 /// and its target is untouched), and broader permissions cannot survive the replace.
@@ -384,9 +416,14 @@ fn describe(rec: &WorkerRecord, sessions_dir: &Path) -> String {
 
 impl WorkerCore {
     fn new(cfg: WorkerConfig) -> WorkerCore {
+        let (oxa_bin, pin_error) = match pin_executable(&cfg.oxa_bin, &cfg.agent_dir) {
+            Ok(path) => (path, None),
+            Err(error) => (cfg.oxa_bin, Some(error)),
+        };
         WorkerCore {
-            bin_id: BinId::of(&cfg.oxa_bin).ok(),
-            oxa_bin: cfg.oxa_bin,
+            bin_id: BinId::of(&oxa_bin).ok(),
+            oxa_bin,
+            pin_error,
             cwd: cfg.cwd,
             agent_dir: cfg.agent_dir,
             max: cfg.max,
@@ -427,6 +464,9 @@ impl WorkerCore {
 
     /// Refuses to run a worker binary that is not the one this session started from.
     fn check_bin(&self) -> Result<(), String> {
+        if let Some(error) = &self.pin_error {
+            return Err(error.clone());
+        }
         match (&self.bin_id, BinId::of(&self.oxa_bin)) {
             (Some(then), Ok(now)) if *then == now => Ok(()),
             _ => Err(format!(
@@ -439,8 +479,30 @@ impl WorkerCore {
     /// Checks the empty worktree out inside the sandbox (`oxa work --supervise`, the same
     /// supervisor `oxa work` uses): hooks and credential helpers are off, there is no network,
     /// and the filters of the repository run in bwrap, never on the host.
-    fn materialize(&self, tools: &HostTools, worktree: &Path, branch: &str) -> Result<(), String> {
+    fn materialize(
+        &self,
+        tools: &HostTools,
+        git: &Path,
+        worktree: &Path,
+        branch: &str,
+        autonomy: Autonomy,
+    ) -> Result<(), String> {
         self.check_bin()?;
+        // Yolo deliberately has no OS sandbox. Non-Linux hosts have no bwrap and use the
+        // repository's supported unsandboxed path too; the in-process Git guards remain.
+        if autonomy == Autonomy::Yolo || !cfg!(target_os = "linux") {
+            let out = host_git(tools, git, worktree, &["checkout", "HEAD", "--", "."])
+                .output()
+                .map_err(|e| format!("cannot run the worktree checkout: {e}"))?;
+            return if out.status.success() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "the worktree checkout failed: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ))
+            };
+        }
         let request = oxa_work::SupervisorRequest {
             source: tools.project.clone(),
             operation: oxa_work::SupervisorOperation::Checkout {
@@ -597,7 +659,7 @@ impl WorkerCore {
         // The worktree exists with no files: materialize them inside the sandbox, where a
         // repository's smudge filters and attributes cannot reach the host. A failed checkout
         // removes the empty worktree and branch so the name can be tried again.
-        if let Err(e) = self.materialize(&tools, &worktree, &branch) {
+        if let Err(e) = self.materialize(&tools, &git, &worktree, &branch, autonomy) {
             let path = worktree.to_string_lossy().into_owned();
             let _ = host_git(
                 &tools,
@@ -1119,7 +1181,6 @@ impl Hooks for WorkerHooks {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
 
     /// A fresh directory under the system temp directory.
@@ -1179,6 +1240,16 @@ mod tests {
         parent_env: Vec<(String, String)>,
         parent_scope: ParentScope,
     ) -> WorkerHooks {
+        hooks_with_autonomy(fake, agent, parent_env, parent_scope, Autonomy::Standard)
+    }
+
+    fn hooks_with_autonomy(
+        fake: &Path,
+        agent: &Path,
+        parent_env: Vec<(String, String)>,
+        parent_scope: ParentScope,
+        autonomy: Autonomy,
+    ) -> WorkerHooks {
         let kill = ["/bin/kill", "/usr/bin/kill"]
             .into_iter()
             .map(PathBuf::from)
@@ -1193,7 +1264,7 @@ mod tests {
             sessions_dir: agent.join("sessions"),
             parent_env,
             parent_scope,
-            yolo: YoloSwitch::new(Autonomy::Standard),
+            yolo: YoloSwitch::new(autonomy),
             resume_on_start: true,
         })
     }
@@ -1675,7 +1746,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_start_refuses_a_replaced_executable() {
+    fn worker_start_uses_the_private_copy_after_the_original_is_replaced() {
         let (root, repo, agent, fake) = fixture("pin");
         let hooks = hooks(&fake, &agent);
         set_session(&hooks, "parent-1");
@@ -1694,15 +1765,56 @@ mod tests {
             Mode::Workspace,
             Autonomy::Standard,
         );
-        assert!(out.is_error, "{}", out.text);
-        assert!(
-            out.text.contains("changed since this session started"),
-            "{}",
-            out.text
-        );
+        assert!(!out.is_error, "worker start failed");
         assert!(!root.join("replacement-ran").exists(), "the replacement ran");
-        assert!(!worktree_path(&repo, "alpha").unwrap().exists());
-        assert!(registry::load(&agent, "parent-1").unwrap().is_empty());
+        assert!(worktree_path(&repo, "alpha").unwrap().exists());
+        let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn yolo_worker_materializes_without_the_sandbox_supervisor() {
+        let (root, repo, agent, fake) = fixture("yolo-checkout");
+        fs::write(repo.join("tracked.txt"), "content\n").unwrap();
+        let ok = Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success()
+            && Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "commit",
+                    "-qm",
+                    "tracked",
+                ])
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success();
+        assert!(ok, "fixture commit failed");
+        let hooks = hooks_with_autonomy(&fake, &agent, Vec::new(), ParentScope::default(), Autonomy::Yolo);
+        set_session(&hooks, "parent-1");
+        let out = hooks.core.start(
+            &json!({"action": "start", "name": "alpha", "goal": "one", "mode": "yolo"}),
+            &repo,
+            Mode::Workspace,
+            Autonomy::Yolo,
+        );
+        assert!(!out.is_error, "yolo worker start failed");
+        assert!(worktree_path(&repo, "alpha")
+            .unwrap()
+            .join("tracked.txt")
+            .is_file());
+        assert!(
+            !root.join("ran-supervise").exists(),
+            "yolo invoked the sandbox supervisor"
+        );
+        let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
         let _ = fs::remove_dir_all(&root);
     }
 
