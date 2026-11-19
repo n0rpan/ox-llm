@@ -124,6 +124,14 @@ def records(path):
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+def run_oxa_with_usage(oxa, prompt, cwd, env, usage_log, timeout, max_time, max_tokens, name, out):
+    """Run one invocation and return the records from its freshly replaced usage log."""
+    code, wall, result = run_oxa(
+        oxa, prompt, cwd, env, usage_log, timeout, max_time, max_tokens, name, out
+    )
+    return code, wall, result, records(usage_log)
+
+
 def check_ratio(name, ratio, cfg, report):
     """Reuse ratio = cached tokens / previous prompt tokens. Floor and per-model baseline from the config."""
     c = cfg['cache']
@@ -228,8 +236,10 @@ def main():
         for name, text in (('turn1', o['first_prompt']), ('turn2', o['second_prompt'])):
             # one log per run: oxa writes --usage-log for its own process (a later run replaces it)
             usage_log = out / f'usage-{name}.jsonl'
-            code, wall, result = run_oxa(a.oxa, text, work, oenv, usage_log, o['run_timeout_s'], o['max_time_s'], o['max_tokens'], name, out)
-            recs = records(usage_log)
+            code, wall, result, recs = run_oxa_with_usage(
+                a.oxa, text, work, oenv, usage_log, o['run_timeout_s'], o['max_time_s'],
+                o['max_tokens'], name, out
+            )
             runs.append({'name': name, 'exit': code, 'error_class': result.get('error_class'), 'wall_ms': wall, 'requests': recs})
             if code != 0 and result.get('error_class') not in o['accept_error_classes']:
                 fail(f"{name}: oxa -p exited {code} ({result.get('error_class')}; see {name}.stderr.txt)")

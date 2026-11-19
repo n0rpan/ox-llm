@@ -7,25 +7,40 @@ use std::process::Stdio;
 
 const EMPTY: &str = r#"{"mode":"shadow","as_of_seq":0,"proposals":[]}"#;
 
+fn shadow_print_run(env: &TestEnv, server: &FakeServer) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["lead", "--shadow", "-p", "--model", "fake-model", "check"])
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .current_dir(env.work())
+        .output()
+        .unwrap()
+}
+
 #[test]
-fn shadow_setting_is_off_and_project_settings_cannot_enable_it() {
+fn shadow_is_on_by_default_and_only_the_user_file_turns_it_off() {
+    // No setting: the explicit `oxa lead --shadow` is enough, the gate does not answer.
+    let env = TestEnv::new();
+    let server = FakeServer::start(vec![ScriptTurn::text(EMPTY)], FakeOpts::default()).unwrap();
+    let out = shadow_print_run(&env, &server);
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("oxa.lead.shadow"),
+        "the default is on: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The user's `false` turns it off, and a trusted project file cannot turn it back on.
     for project_enable in [false, true] {
         let env = TestEnv::new();
         if project_enable {
             env.write("work/.oxa/settings.json", r#"{"oxa":{"lead":{"shadow":true}}}"#);
-            env.write(
-                "home/.oxa/agent/settings.json",
-                r#"{"defaultProjectTrust":"always","oxa":{"lead":{"shadow":false}}}"#,
-            );
         }
+        env.write(
+            "home/.oxa/agent/settings.json",
+            r#"{"defaultProjectTrust":"always","oxa":{"lead":{"shadow":false}}}"#,
+        );
         let server = FakeServer::start(vec![ScriptTurn::text(EMPTY)], FakeOpts::default()).unwrap();
-        let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
-            .args(["lead", "--shadow", "-p", "--model", "fake-model", "check"])
-            .env_clear()
-            .envs(env.envs(&server.url()))
-            .current_dir(env.work())
-            .output()
-            .unwrap();
+        let out = shadow_print_run(&env, &server);
         assert!(!out.status.success());
         assert!(String::from_utf8_lossy(&out.stderr).contains("oxa.lead.shadow"));
         assert!(server.requests().is_empty(), "gate precedes provider discovery");
