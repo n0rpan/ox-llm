@@ -296,6 +296,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 &mut *stdout,
             ),
             Subcommand::Status(words) => crate::status::run(&words, &dirs, &cwd, env, &mut *stdout),
+            Subcommand::Usage(words) => crate::usage_cmd::run(&words, &dirs, &cwd, &mut *stdout),
             Subcommand::Work(words) => {
                 return crate::work_cmd::run(&words, &cwd, env, &dirs, &mut *stdout, &mut *stderr)
             }
