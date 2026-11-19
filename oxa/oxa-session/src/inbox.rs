@@ -599,6 +599,11 @@ fn scan_batch(
         } else {
             return true;
         };
+        // Entries that can never be delivered must not take slots in the bounded batch, or a
+        // retained backlog of them turns every scan into ceil(N / 64) full enumerations.
+        if !entry_eligible(dir, &name, limit) {
+            return true;
+        }
         paths.insert(name, (limit, item));
         if paths.len() > 64 {
             paths.pop_last();
@@ -634,6 +639,32 @@ fn scan_batch(
         remove_entry(dir, &name);
     }
     retry
+}
+
+/// Descriptor-relative pre-check of the delivery rules (regular file, one link, within the
+/// size limit) without following a symlink. Delivery re-checks the opened file itself.
+fn entry_eligible(dir: &Directory, name: &OsStr, limit: usize) -> bool {
+    let Ok(name) = CString::new(name.as_bytes()) else {
+        return false;
+    };
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: a single name component relative to a live descriptor; `stat` is writable.
+    let result = unsafe {
+        libc::fstatat(
+            dir.file.as_raw_fd(),
+            name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if result != 0 {
+        return false;
+    }
+    // SAFETY: fstatat succeeded and initialized `stat`.
+    let stat = unsafe { stat.assume_init() };
+    stat.st_mode & libc::S_IFMT == libc::S_IFREG
+        && stat.st_nlink == 1
+        && u64::try_from(stat.st_size).is_ok_and(|size| size <= limit as u64)
 }
 
 /// Visit names in `dir` through the pinned descriptor without first allocating the entire
@@ -773,6 +804,42 @@ mod tests {
             .map(|n| fs::read_to_string(moved.join(n)).unwrap())
             .collect();
         assert!(texts.contains(&"first".to_string()) && texts.contains(&"second".to_string()));
+    }
+
+    #[test]
+    fn undeliverable_entries_do_not_fill_the_bounded_batch() {
+        let env = oxa_fake::TestEnv::new();
+        let agent = env.root().join("agent");
+        send_inbox(&agent, "session-skip", "deliver me").unwrap();
+        let pinned = directory(&agent, "session-skip").unwrap();
+        let dir = agent.join("inbox/session-skip");
+        // One oversized message plus hard links to it: more than a batch of names, none deliverable.
+        let big = dir.join("0-big.msg");
+        fs::write(&big, vec![b'x'; INBOX_MESSAGE_BYTES + 1]).unwrap();
+        for index in 0..100 {
+            fs::hard_link(&big, dir.join(format!("0-link-{index:03}.msg"))).unwrap();
+        }
+        let stopped = AtomicBool::new(false);
+        let mut after = None;
+        let mut delivered = Vec::new();
+        let more = scan_batch(
+            &pinned,
+            None,
+            true,
+            &mut |item| {
+                delivered.push(item);
+                true
+            },
+            &stopped,
+            &mut after,
+        );
+        assert!(!more, "ineligible entries must not force another enumeration");
+        assert_eq!(delivered, vec![InboxItem::FollowUp("deliver me".into())]);
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            101,
+            "rejected entries stay on disk"
+        );
     }
 
     #[test]
