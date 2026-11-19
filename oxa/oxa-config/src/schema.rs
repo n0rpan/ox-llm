@@ -170,6 +170,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.lead.sessionId", Kind::String, "null"),
     // Read-only lead shadow preset; user settings only, default off.
     key("oxa.lead.shadow", Kind::Bool, "false"),
+    // L1: apply a changed settings file at the next run; on by default, `false` opts out.
+    key("oxa.liveSettings", Kind::Bool, "true"),
     // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
     key("oxa.local", Kind::Object, "{}"),
     key("oxa.maxTurns", Kind::Number, "null"),
@@ -224,6 +226,9 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.toolRepair", Kind::Bool, "true"),
     // The repeat guard for identical tool calls (oxa-core `repeat.rs`).
     key("oxa.toolRepeatGuard", Kind::Bool, "true"),
+    // W2: the `wait` tool's `until` conditions, answered by hook sets (`Hooks::poll_event`).
+    key("oxa.wait.maxSeconds", Kind::Number, "3600"),
+    key("oxa.wait.pollSeconds", Kind::Number, "30"),
     // O-169: `web_search` (oxa-web); declared only with a Brave key and never offline.
     key("oxa.webSearch.enabled", Kind::Bool, "true"),
     key("oxa.webSearch.maxTokens", Kind::Number, "2048"),
@@ -234,6 +239,8 @@ const SCHEMA: &[KeyDef] = &[
     ),
     // K4: seconds a worker gets after SIGINT before its process group gets SIGTERM.
     key("oxa.workers.stopGraceSeconds", Kind::Number, "10"),
+    // The worker runner reads this list from owner settings only.
+    key("oxa.work.localChecks", Kind::StringList, "[\"cargo check\"]"),
     key("packages", Kind::Any, "[]"),
     // #202: the permission mode at start; a project's value may only lower it
     // (`Settings::default_permission_mode`).

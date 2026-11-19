@@ -98,6 +98,7 @@ pub const CACHE_WRITE: &[&str] = &[
 /// Environment variables passed through when set (toolchain locations, never secrets).
 pub const TOOLCHAIN_ENV: &[&str] = &[
     "CARGO_HOME",
+    "CARGO_TARGET_DIR",
     "RUSTUP_HOME",
     "RUSTUP_TOOLCHAIN",
     "GOPATH",
@@ -148,6 +149,19 @@ pub fn is_secret_name(name: &str) -> bool {
     ]
     .iter()
     .any(|w| up.contains(w))
+}
+
+/// The variables of `env` that may reach a command: toolchain locations ([`TOOLCHAIN_ENV`],
+/// `MISE_*`), never a name that looks like a secret ([`is_secret_name`]). Everything else of the
+/// process environment stays out (bwrap `--clearenv`, the same off Linux).
+pub fn toolchain_env(env: &[(String, String)]) -> Vec<(String, String)> {
+    env.iter()
+        .filter(|(k, _)| {
+            (TOOLCHAIN_ENV.contains(&k.as_str()) || TOOLCHAIN_ENV_PREFIXES.iter().any(|p| k.starts_with(p)))
+                && !is_secret_name(k)
+        })
+        .cloned()
+        .collect()
 }
 
 /// What the sandbox shows of the machine. `Layout::default()` = the minimal layout: base
@@ -325,16 +339,7 @@ impl Layout {
             .filter(|(_, rw)| *rw)
             .map(|(p, _)| p.clone())
             .collect();
-        let mut env: Vec<(String, String)> = i
-            .env
-            .iter()
-            .filter(|(k, _)| {
-                (TOOLCHAIN_ENV.contains(&k.as_str())
-                    || TOOLCHAIN_ENV_PREFIXES.iter().any(|p| k.starts_with(p)))
-                    && !is_secret_name(k)
-            })
-            .cloned()
-            .collect();
+        let mut env = toolchain_env(&i.env);
         // Version-manager shims (mise) write state under the read-only home and warn on
         // every call; point it at the sandbox /tmp unless the caller set it.
         if !env.iter().any(|(n, _)| n == "MISE_STATE_DIR") {
@@ -459,6 +464,25 @@ mod tests {
         assert!(!l.read.contains(&bin), "{:?}", l.read);
         assert!(l.env.iter().any(|(k, _)| k == "OXA_RUNNING_BIN"));
         assert!(!l.env.iter().any(|(k, _)| k == "OXA_BIN"));
+    }
+
+    #[test]
+    fn cargo_target_is_forwarded_without_granting_a_mount() {
+        let directory = oxa_fake::TestEnv::new();
+        let target = directory.home().join(".cache/oxa-worker-target");
+        std::fs::create_dir_all(&target).unwrap();
+        let entry = ("CARGO_TARGET_DIR".to_owned(), target.display().to_string());
+        let mut inputs = LayoutInputs {
+            home: directory.home().clone(),
+            env: vec![entry.clone()],
+            ..Default::default()
+        };
+        let layout = Layout::build(&inputs);
+        assert!(layout.env.contains(&entry));
+        assert!(layout.write.iter().all(|path| !target.starts_with(path)));
+
+        inputs.write_extra.push(target.clone());
+        assert!(Layout::build(&inputs).write.contains(&target));
     }
 
     #[test]

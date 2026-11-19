@@ -263,6 +263,49 @@ mod thinking_tests {
     }
 }
 
+/// #873: the unit a budget is counted in. The HUD spells it out (`$`, `tok`), so a number is
+/// never read as the wrong kind of budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetUnit {
+    /// US dollars, two decimals.
+    Usd,
+    /// Tokens, compact (`12k`, `1.5M`).
+    Tokens,
+}
+
+/// #873: what a budget covers. The HUD spells it out (`day`, `run`, `goal`), so a used/cap
+/// pair is never read as a different scope than the one it was projected from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetScope {
+    /// The gateway's per-day cloud budget (`cloud.daily_budget_usd`).
+    Day,
+    /// One invocation's soft token budget (`--max-tokens`).
+    Run,
+    /// A stored goal's budget (`oxa.goal.v1`).
+    Goal,
+}
+
+/// #873: one authoritative budget the HUD can show: what is used against what cap, in which
+/// unit and for which scope. A front end builds it from an authoritative projection (the
+/// gateway's daily USD budget, an invocation token budget, a goal budget); the HUD never
+/// computes a budget of its own, never forecasts and never issues a request.
+///
+/// The projection is optional and may be partial: `used: None` means settlement is
+/// unavailable, and the HUD shows `?` rather than a zero. `incomplete` means some usage is
+/// not settled yet, so `used` is a lower bound and the HUD marks it (`8.10+`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BudgetMeter {
+    /// Settled usage so far, in `unit`; `None` = settlement is unavailable (never a zero).
+    pub used: Option<f64>,
+    /// The cap, or `None` when no cap is set (unlimited or not configured).
+    pub cap: Option<f64>,
+    pub unit: BudgetUnit,
+    pub scope: BudgetScope,
+    /// Some usage is not settled yet, so `used` is a lower bound. Ignored when `used` is
+    /// `None` (an unknown settlement has no lower bound to mark).
+    pub incomplete: bool,
+}
+
 /// Everything the chrome (D6) draws. Updated by [`crate::apply_event`] and by the app from
 /// `Session::state()` / `Session::stats()` after each settle.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -317,12 +360,22 @@ pub struct StatusModel {
     /// #202: the process's autonomy level (standard, auto or yolo); with `mode` it gives the
     /// permission mode the status bar shows.
     pub autonomy: oxa_proto::Autonomy,
+    /// #873: the authoritative budget the HUD shows, when a front end has one. `None` = no
+    /// budget projection is available, and the HUD shows no budget part at all (never a zero).
+    /// The projection itself is the public budget surface of #627; until it lands no front end
+    /// sets this, so the part is absent in a real session.
+    pub budget: Option<BudgetMeter>,
 }
 
 impl StatusModel {
     /// #202: the permission mode as the status bar shows it, with its theme token: `plan` and
     /// `ask` from the session mode, else the autonomy level (`standard`, `auto`, `yolo`).
     pub fn mode_label(&self) -> Option<(&'static str, &'static str)> {
+        let (label, token) = self.mode_label_base()?;
+        Some((mark_no_os_sandbox(label, oxa_proto::OS_SANDBOX), token))
+    }
+
+    fn mode_label_base(&self) -> Option<(&'static str, &'static str)> {
         use oxa_proto::Autonomy;
         Some(match self.mode? {
             Mode::Plan => ("plan", "modePlan"),
@@ -333,6 +386,22 @@ impl StatusModel {
                 Autonomy::Yolo => ("yolo", "error"),
             },
         })
+    }
+}
+
+/// The status-bar mode label, with the persistent "no OS sandbox" marker when the platform has
+/// no sandbox for bash. With a sandbox the label is returned unchanged.
+pub fn mark_no_os_sandbox(label: &'static str, os_sandbox: bool) -> &'static str {
+    if os_sandbox {
+        return label;
+    }
+    match label {
+        "plan" => "plan, no OS sandbox",
+        "ask" => "ask, no OS sandbox",
+        "standard" => "standard, no OS sandbox",
+        "auto" => "auto, no OS sandbox",
+        "yolo" => "yolo, no OS sandbox",
+        other => other,
     }
 }
 
@@ -464,6 +533,8 @@ pub enum SessionCmd {
     Compact {
         instructions: Option<String>,
     },
+    /// `/goal [text|clear|pause|resume]`: the text after the command, unparsed (G1 parses it).
+    Goal(String),
     /// `Session::navigate`; `instructions` = the custom focus of the branch summary (D-INT).
     Navigate {
         target: String,
@@ -779,4 +850,17 @@ pub struct InteractiveOpts {
     /// O-182: the process's YOLO switch, shared with the policy of every session. `None` =
     /// YOLO cannot be switched here (the policy does not listen; tests, ephemeral setups).
     pub yolo: Option<oxa_proto::YoloSwitch>,
+}
+
+#[cfg(test)]
+mod no_os_sandbox_tests {
+    use super::mark_no_os_sandbox;
+
+    #[test]
+    fn status_mode_label_marks_a_missing_sandbox_and_is_unchanged_with_one() {
+        for l in ["plan", "ask", "standard", "auto", "yolo"] {
+            assert_eq!(mark_no_os_sandbox(l, true), l);
+            assert!(mark_no_os_sandbox(l, false).ends_with("no OS sandbox"));
+        }
+    }
 }

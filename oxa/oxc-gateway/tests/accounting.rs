@@ -256,6 +256,103 @@ fn subscription_audit_failure_closes_both_classes_across_independent_instances()
 }
 
 #[test]
+fn legacy_unscoped_subscription_usd_reserves_nothing_but_its_tokens_still_count() {
+    const LEGACY: &str = "00000000000000000000000000000000";
+    // A missing hold, a token-only hold, and holds whose recorded USD is far
+    // over the entire daily cap in both legacy shapes: the pre-pool
+    // `reserved_usd` form and the bounded-pool `go_usd` form.
+    for legacy in [
+        None,
+        Some(json!({"subscription_tokens":120})),
+        Some(json!({"subscription_tokens":120,"reserved_usd":400.0})),
+        Some(json!({"subscription_tokens":120,"go_usd":400.0})),
+    ] {
+        let home = Home::new();
+        let path = home.ledger();
+        let snapshot = home.0.join("requests-synthetic.jsonl.holds");
+        if let Some(legacy) = &legacy {
+            let mut seeded = json!({"failed":false,"holds":{}});
+            seeded["holds"][LEGACY] = legacy.clone();
+            fs::write(&snapshot, seeded.to_string()).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&snapshot, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let budget = Budget::new(path.clone());
+        let cap = json!(0.01);
+        // The stored reservation USD contributes zero to the held total:
+        // metered admission proceeds even though 400 exceeds the whole cap.
+        let metered = model();
+        let Billing::Metered(price) = &metered.billing else {
+            unreachable!()
+        };
+        let expected = price
+            .reservation("openrouter", "synthetic/upstream", metered.context, 100)
+            .unwrap();
+        let mut hold = budget.reserve(&cap, true, &metered, 100).unwrap();
+        assert_eq!(hold.reserved(), expected);
+        // Subscription admission also proceeds; no USD is held for it either.
+        let subscription_hold = budget
+            .reserve_subscription(
+                Some(SubscriptionLimits::new(10, 1000).unwrap()),
+                true,
+                &subscription(),
+                20,
+            )
+            .unwrap();
+        let current: Value = serde_json::from_slice(&fs::read(&snapshot).unwrap()).unwrap();
+        let holds = current["holds"].as_object().unwrap();
+        assert_eq!(holds.len(), 2 + usize::from(legacy.is_some()));
+        if let Some(legacy) = &legacy {
+            assert_eq!(holds.get(LEGACY), Some(legacy));
+        }
+        // The new subscription hold is token-only: it records no USD at all.
+        assert!(holds
+            .values()
+            .any(|value| *value == json!({"subscription_tokens":120})));
+        subscription_hold
+            .finish(&Usage::default(), Outcome::Complete, |row| append(&path, row))
+            .unwrap();
+        // The legacy hold's tokens still count toward the subscription caps.
+        let tight = SubscriptionLimits::new(10, 130).unwrap();
+        let admission = budget.reserve_subscription(Some(tight), true, &subscription(), 20);
+        match &legacy {
+            None => drop(admission.unwrap()),
+            Some(_) => {
+                let error = admission.err().unwrap();
+                assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
+            }
+        }
+        // Actual paid usage settles normally and the legacy USD never lands in
+        // the daily total.
+        hold.mark_forwarded().unwrap();
+        let row = hold
+            .finish(
+                &Usage {
+                    prompt: Some(20),
+                    output: Some(10),
+                    ..Usage::default()
+                },
+                Outcome::Complete,
+                |row| append(&path, row),
+            )
+            .unwrap();
+        assert_eq!(row["settled"], "usage");
+        assert_eq!(row["cost_usd"].as_f64(), Some(0.00004));
+        assert_eq!(budget.spend().unwrap(), 0.00004);
+        // The stored record itself stays readable and untouched, and a fresh
+        // instance keeps admitting while it is in flight.
+        let stored: Value = serde_json::from_slice(&fs::read(&snapshot).unwrap()).unwrap();
+        assert_eq!(stored["failed"], false);
+        let holds = stored["holds"].as_object().unwrap();
+        assert_eq!(holds.len(), usize::from(legacy.is_some()));
+        if let Some(legacy) = &legacy {
+            assert_eq!(holds.get(LEGACY), Some(legacy));
+        }
+        assert!(Budget::new(path).reserve(&cap, true, &metered, 100).is_ok());
+    }
+}
+
+#[test]
 fn unfinished_tail_is_not_a_corrupt_row_and_unchanged_reads_are_constant_work() {
     let home = Home::new();
     let path = home.ledger();
@@ -747,4 +844,241 @@ fn forwarding_persistence_failure_is_returned_before_paid_bytes_can_be_sent() {
     assert!(hold.mark_forwarded().is_err());
     drop(hold);
     assert!(Budget::new(path).reserve(&json!(1), true, &model(), 32).is_ok());
+}
+
+#[test]
+fn metered_request_without_budget_is_admitted_and_recorded() {
+    let home = Home::new();
+    let path = home.ledger();
+    let budget = Budget::new(path.clone());
+    let mut hold = budget.reserve(&json!(null), true, &model(), 32).unwrap();
+    hold.mark_forwarded().unwrap();
+    let usage = Usage {
+        prompt: Some(1000),
+        output: Some(4),
+        cache_read: Some(950),
+        cache_write: Some(40),
+        finish: Some("stop".into()),
+        ..Usage::default()
+    };
+    let row = hold
+        .finish(&usage, Outcome::Complete, |row| append(&path, row))
+        .unwrap();
+    assert_eq!(row["settled"], "usage");
+    assert_eq!(row["cost_usd"], 0.000163);
+    assert!(row.get("cost_unknown").is_none());
+    assert_eq!(budget.spend().unwrap(), 0.000163);
+    // Spend never turns an unset cap into a limit.
+    assert!(budget.reserve(&json!(null), true, &model(), 32).is_ok());
+}
+
+#[test]
+fn configured_budget_still_refuses_overage() {
+    let home = Home::new();
+    let path = home.ledger();
+    let budget = Budget::new(path.clone());
+    let mut hold = budget.reserve(&json!(0.002), true, &model(), 32).unwrap();
+    hold.mark_forwarded().unwrap();
+    hold.finish(
+        &Usage {
+            prompt: Some(1000),
+            output: Some(100),
+            ..Usage::default()
+        },
+        Outcome::Complete,
+        |row| append(&path, row),
+    )
+    .unwrap();
+    assert_eq!(
+        budget
+            .reserve(&json!(0.002), true, &model(), 32)
+            .err()
+            .map(|error| (error.status, error.code)),
+        Some((429, "budget_exceeded"))
+    );
+    assert_eq!(
+        budget
+            .reserve(&json!(0), true, &model(), 32)
+            .err()
+            .map(|error| (error.status, error.code)),
+        Some((403, "budget_not_configured"))
+    );
+}
+
+#[test]
+fn unknown_price_without_budget_is_admitted() {
+    let home = Home::new();
+    let path = home.ledger();
+    let budget = Budget::new(path.clone());
+    // A context beyond the reservation bound has no computable price ceiling.
+    let mut unknown = model();
+    unknown.context = 200_000_000;
+    assert_eq!(
+        budget
+            .reserve(&json!(1), true, &unknown, 32)
+            .err()
+            .map(|error| error.code),
+        Some("budget_exceeded")
+    );
+    let mut hold = budget.reserve(&json!(null), true, &unknown, 32).unwrap();
+    assert_eq!(hold.reserved(), 0.0);
+    hold.mark_forwarded().unwrap();
+    let row = hold
+        .finish(&Usage::default(), Outcome::Complete, |row| append(&path, row))
+        .unwrap();
+    assert_eq!(row["cost_unknown"], true);
+    assert_eq!(row["usage_missing"], true);
+    assert_eq!(row["cost_usd"], 0.0);
+}
+
+#[test]
+fn pending_unknown_cost_hold_closes_later_capped_admission() {
+    let home = Home::new();
+    let path = home.ledger();
+    let mut unknown = model();
+    unknown.context = 200_000_000;
+    let budget = Budget::new(path.clone());
+    // Admitted uncapped with no computable bound, and still in flight.
+    let hold = budget.reserve(&json!(null), true, &unknown, 32).unwrap();
+    // The same daily ledger reopened (as after a restart) with a cap configured: the paid
+    // request's cost is committed but not established, so capped admission fails closed.
+    let reopened = Budget::new(path.clone());
+    assert_eq!(
+        reopened
+            .reserve(&json!(1), true, &model(), 32)
+            .err()
+            .map(|error| (error.status, error.code)),
+        Some((429, "budget_exceeded"))
+    );
+    // Uncapped requests keep working, before and after the pending hold is released.
+    assert!(reopened.reserve(&json!(null), true, &model(), 32).is_ok());
+    drop(hold);
+    assert!(Budget::new(path)
+        .reserve(&json!(null), true, &model(), 32)
+        .is_ok());
+}
+
+#[test]
+fn settled_usage_with_a_computed_cost_does_not_close_a_later_cap() {
+    let home = Home::new();
+    let path = home.ledger();
+    let mut unknown = model();
+    unknown.context = 200_000_000;
+    let budget = Budget::new(path.clone());
+    let mut hold = budget.reserve(&json!(null), true, &unknown, 32).unwrap();
+    hold.mark_forwarded().unwrap();
+    let row = hold
+        .finish(
+            &Usage {
+                prompt: Some(1_000_000),
+                output: Some(4),
+                ..Usage::default()
+            },
+            Outcome::Complete,
+            |row| append(&path, row),
+        )
+        .unwrap();
+    // Settlement priced the usage, so the row's cost is known even though the admission
+    // bound was not; a marker here would close a later cap forever.
+    assert!(row.get("cost_unknown").is_none());
+    assert_eq!(row["settled"], "usage");
+    let cost = row["cost_usd"].as_f64().unwrap();
+    assert!((cost - 1.000_008).abs() < 1e-9, "{cost}");
+    let reopened = Budget::new(path.clone());
+    assert!(reopened.reserve(&json!(10), true, &model(), 32).is_ok());
+    assert_eq!(
+        reopened
+            .reserve(&json!(1), true, &model(), 32)
+            .err()
+            .map(|error| (error.status, error.code)),
+        Some((429, "budget_exceeded"))
+    );
+}
+
+#[test]
+fn refused_uncapped_request_does_not_close_a_later_cap() {
+    let home = Home::new();
+    let path = home.ledger();
+    let mut unknown = model();
+    unknown.context = 200_000_000;
+    let budget = Budget::new(path.clone());
+    let mut hold = budget.reserve(&json!(null), true, &unknown, 32).unwrap();
+    hold.mark_forwarded().unwrap();
+    let row = hold
+        .finish(&Usage::default(), Outcome::Refused, |row| append(&path, row))
+        .unwrap();
+    assert_eq!(row["settled"], "refused");
+    assert_eq!(row["cost_usd"], 0.0);
+    assert!(row.get("cost_unknown").is_none());
+    let reopened = Budget::new(path.clone());
+    assert!(reopened.reserve(&json!(1), true, &model(), 32).is_ok());
+}
+
+#[test]
+fn cancelled_unpriced_request_keeps_cost_unknown() {
+    let home = Home::new();
+    let path = home.ledger();
+    let mut unknown = model();
+    unknown.context = 200_000_000;
+    let budget = Budget::new(path.clone());
+    let mut hold = budget.reserve(&json!(null), true, &unknown, 32).unwrap();
+    hold.mark_forwarded().unwrap();
+    let row = hold
+        .finish(
+            &Usage::default(),
+            Outcome::Cancelled {
+                request_bytes: 0,
+                streamed_bytes: 0,
+                usage_final: false,
+                elapsed: std::time::Duration::ZERO,
+            },
+            |row| append(&path, row),
+        )
+        .unwrap();
+    assert_eq!(row["cost_unknown"], true);
+    let reopened = Budget::new(path.clone());
+    assert_eq!(
+        reopened
+            .reserve(&json!(1), true, &model(), 32)
+            .err()
+            .map(|error| (error.status, error.code)),
+        Some((429, "budget_exceeded"))
+    );
+}
+
+#[test]
+fn unknown_cost_row_closes_later_capped_admission() {
+    let home = Home::new();
+    let path = home.ledger();
+    let mut unknown = model();
+    unknown.context = 200_000_000;
+    let budget = Budget::new(path.clone());
+    let mut hold = budget.reserve(&json!(null), true, &unknown, 32).unwrap();
+    hold.mark_forwarded().unwrap();
+    hold.finish(&Usage::default(), Outcome::Complete, |row| append(&path, row))
+        .unwrap();
+    // The same daily ledger, reopened (as after a restart) with a cap configured.
+    let reopened = Budget::new(path.clone());
+    assert_eq!(
+        reopened
+            .reserve(&json!(1), true, &model(), 32)
+            .err()
+            .map(|error| (error.status, error.code)),
+        Some((429, "budget_exceeded"))
+    );
+    // Uncapped requests keep working.
+    assert!(reopened.reserve(&json!(null), true, &model(), 32).is_ok());
+}
+
+#[test]
+fn budget_reserve_with_null_cap_still_refuses_when_ledger_disabled() {
+    let home = Home::new();
+    let budget = Budget::new(home.ledger());
+    assert_eq!(
+        budget
+            .reserve(&json!(null), false, &model(), 32)
+            .err()
+            .map(|error| (error.status, error.code)),
+        Some((503, "cloud_ledger_unavailable"))
+    );
 }

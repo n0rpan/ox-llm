@@ -4,6 +4,7 @@ use oxa_proto::{sh_quote, CancelToken, ExecSpec, Sandbox};
 use oxa_sandbox::Bwrap;
 use oxa_work::{SupervisorOperation, SupervisorRequest};
 use std::io::Write;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -12,6 +13,7 @@ pub(crate) fn run(
     cwd: &Path,
     env: &Env,
     dirs: &Dirs,
+    out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<i32, String> {
     let request: SupervisorRequest = serde_json::from_str(request).map_err(|e| e.to_string())?;
@@ -23,24 +25,47 @@ pub(crate) fn run(
     let committed = matches!(&request.operation, SupervisorOperation::CommittedChecks { .. });
     let mut b = Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home).map_err(|e| e.to_string())?;
     b.layout = crate::sandbox_layout::layout(env, dirs, &root, false, &mut vec![]);
-    let outputs = if committed {
-        Some(
-            root.parent()
+    // #1442: check rounds get a private writable output mount, so generated build outputs
+    // never dirty the work the round judges. Committed checks keep their export-local
+    // directory; working-tree checks get a per-task directory beside the worktree. The
+    // other supervisor operations run no project command and mount nothing extra.
+    let outputs = match &request.operation {
+        SupervisorOperation::Checks { task, .. } => {
+            if task.is_empty()
+                || task.len() > 128
+                || !task
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
+            {
+                return Err("invalid task identity for check outputs".into());
+            }
+            let scratch = root
+                .parent()
+                .ok_or("worktree has no parent for check outputs")?
+                .join(".work-output");
+            ensure_private_check_directory(&scratch)?;
+            let outputs = scratch.join(task);
+            ensure_private_check_directory(&outputs)?;
+            Some(outputs)
+        }
+        SupervisorOperation::CommittedChecks { .. } => {
+            let outputs = root
+                .parent()
                 .ok_or("committed checkout has no parent")?
-                .join(".committed-output"),
-        )
-    } else {
-        None
+                .join(".committed-output");
+            if !std::fs::symlink_metadata(&outputs).is_ok_and(|metadata| metadata.is_dir()) {
+                return Err("invalid committed-check output directory".into());
+            }
+            // No user cache/extra bind may reopen tracked inputs for writes.
+            b.layout.write.retain(|path| {
+                path.canonicalize()
+                    .is_ok_and(|path| !path.starts_with(&root) && !root.starts_with(path))
+            });
+            Some(outputs)
+        }
+        _ => None,
     };
     if let Some(outputs) = &outputs {
-        if !std::fs::symlink_metadata(outputs).is_ok_and(|metadata| metadata.is_dir()) {
-            return Err("invalid committed-check output directory".into());
-        }
-        // No user cache/extra bind may reopen tracked inputs for writes.
-        b.layout.write.retain(|path| {
-            path.canonicalize()
-                .is_ok_and(|path| !path.starts_with(&root) && !root.starts_with(path))
-        });
         b.layout.write.push(outputs.clone());
     }
     if let SupervisorOperation::CommittedChecks { index, .. }
@@ -59,7 +84,10 @@ pub(crate) fn run(
     let b = b.with_git_dirs(&root);
     b.check().map_err(|e| e.to_string())?;
     let settings = Settings::load(dirs, &source, true);
-    let commands = match request.operation {
+    let (commands, deadline_at_ms) = match request.operation {
+        SupervisorOperation::ChangedPaths { base, deadline_at_ms } => {
+            return changed_paths(&b, &root, &base, deadline_at_ms, out)
+        }
         SupervisorOperation::Inspect => return inspect(&b, &root),
         SupervisorOperation::InspectCommitted { index } => return inspect_committed(&b, &root, &index),
         SupervisorOperation::Checkout {
@@ -171,18 +199,35 @@ git --no-replace-objects commit -m {message}
             }
             return Ok(0);
         }
-        SupervisorOperation::Checks { commands } | SupervisorOperation::CommittedChecks { commands, .. } => {
-            commands
+        SupervisorOperation::Checks {
+            commands,
+            deadline_at_ms,
+            ..
         }
+        | SupervisorOperation::CommittedChecks {
+            commands,
+            deadline_at_ms,
+            ..
+        } => (commands, deadline_at_ms),
     };
     let shell = oxa_tools::ShellConfig {
         shell_path: settings.shell_path(&dirs.home),
         command_prefix: settings.shell_command_prefix(),
     };
     let sandbox = crate::netguard::without_github(Arc::new(b), &settings);
+    let scrub = crate::report_cmd::ScrubCtx::from_env(env, dirs);
     let mut failed = false;
     let mut diagnostics = Vec::new();
+    // #1442: one fact per command. The runner pairs this record with what it sent, decides
+    // each verdict itself, and keeps the list as the evidence a `done` rests on.
+    let mut evidence = Vec::new();
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_millis(
+            deadline_at_ms.saturating_sub(oxa_proto::time::now_ms()),
+        ))
+        .ok_or("invalid acceptance deadline")?;
     for entry in commands {
+        let evidence_command = crate::report_cmd::scrub(&entry, &scrub);
         let (directory, text) = match entry.strip_prefix("in ").and_then(|s| s.split_once(':')) {
             Some((dir, command)) => (Some(dir.trim()), command.trim()),
             None => (None, entry.as_str()),
@@ -224,18 +269,35 @@ git --no-replace-objects commit -m {message}
                 ("TMPDIR".into(), outputs.to_string_lossy().into_owned()),
             ]);
         }
+        let seconds = deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .as_secs();
+        if seconds == 0 {
+            failed = true;
+            evidence.push(serde_json::json!({
+                "command": evidence_command,
+                "exit": null,
+                "timed_out": true,
+            }));
+            continue;
+        }
         let spec = ExecSpec {
             command,
             cwd: root.clone(),
             writable: !committed,
             net: sandbox.network(),
-            timeout_s: Some(600),
+            timeout_s: Some(seconds.min(600) as u32),
             env: check_env,
         };
         let mut tail = Vec::new();
         let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
             keep_tail(&mut tail, bytes, 8192);
         });
+        evidence.push(serde_json::json!({
+            "command": evidence_command,
+            "exit": result.exit,
+            "timed_out": result.timed_out,
+        }));
         if result.exit != Some(0) || result.timed_out {
             failed = true;
             let header = format!("{entry}: exit {:?}, timeout {}\n", result.exit, result.timed_out);
@@ -243,16 +305,67 @@ git --no-replace-objects commit -m {message}
             keep_tail(&mut diagnostics, &tail, 16384);
         }
     }
+    let record = serde_json::json!({"type": "oxa_checks", "version": 1, "checks": evidence});
+    serde_json::to_writer(&mut *out, &record).map_err(|e| e.to_string())?;
+    writeln!(out).map_err(|e| e.to_string())?;
     if failed {
-        let ctx = crate::report_cmd::ScrubCtx::from_env(env, dirs);
-        let safe = crate::report_cmd::scrub(&String::from_utf8_lossy(&diagnostics), &ctx);
+        let safe = crate::report_cmd::scrub(&String::from_utf8_lossy(&diagnostics), &scrub);
         err.write_all(safe.as_bytes()).map_err(|e| e.to_string())?;
     }
     Ok(i32::from(failed))
 }
 
-// Exit codes are the only result: repository callbacks cannot forge a clean
-// verdict by printing JSON or diagnostics. Git failures remain distinct from dirty.
+// Exit codes remain the gate: repository callbacks cannot forge a clean verdict by printing
+// JSON or diagnostics. The supervisor reports each exit and scrubbed command in request order.
+fn changed_paths(
+    sandbox: &Bwrap,
+    root: &Path,
+    base: &str,
+    deadline_at_ms: u64,
+    out: &mut dyn Write,
+) -> Result<i32, String> {
+    if !oxa_work::board::queue::is_object_id(base) {
+        return Err("invalid base for worktree change inventory".into());
+    }
+    let seconds = deadline_at_ms.saturating_sub(oxa_proto::time::now_ms()) / 1000;
+    if seconds == 0 {
+        return Err("worktree change inventory deadline elapsed".into());
+    }
+    let git = "git --no-replace-objects --no-optional-locks -c core.fsmonitor=false";
+    let spec = ExecSpec {
+        command: format!(
+            "{git} diff --name-only --no-relative --no-renames --no-ext-diff --no-textconv --ignore-submodules=none -z {} -- 2>/dev/null && \n             {git} ls-files --others --exclude-standard -z 2>/dev/null",
+            sh_quote(base)
+        ),
+        cwd: root.into(),
+        writable: false,
+        net: false,
+        timeout_s: Some(seconds.min(600) as u32),
+        env: git_environment(),
+    };
+    const MAX_BYTES: usize = 512 * 1024;
+    let mut paths = Vec::new();
+    let mut overflow = false;
+    let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
+        if !overflow && paths.len() + bytes.len() <= MAX_BYTES {
+            paths.extend_from_slice(bytes);
+        } else {
+            overflow = true;
+        }
+    });
+    if oxa_proto::time::now_ms() >= deadline_at_ms {
+        return Err("worktree change inventory deadline elapsed".into());
+    }
+    if result.timed_out || overflow {
+        return Err("sandboxed Git change inventory exceeded its limits".into());
+    }
+    if result.exit != Some(0) {
+        return Err("sandboxed Git change inventory failed".into());
+    }
+    out.write_all(&paths).map_err(|error| error.to_string())?;
+    Ok(0)
+}
+
 fn inspect(sandbox: &Bwrap, root: &Path) -> Result<i32, String> {
     let spec = ExecSpec {
         command: r#"git --no-replace-objects --no-optional-locks -c core.fsmonitor=false status --porcelain=v1 -z | {
@@ -320,6 +433,15 @@ fn inspect_committed(sandbox: &Bwrap, root: &Path, index: &Path) -> Result<i32, 
         (Some(code @ (0 | 1)), false) => Ok(code),
         _ => Err("committed source inspection failed".into()),
     }
+}
+
+fn ensure_private_check_directory(path: &Path) -> Result<(), String> {
+    match std::fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    oxa_work::require_private_directory(path)
 }
 
 fn git_environment() -> Vec<(String, String)> {
