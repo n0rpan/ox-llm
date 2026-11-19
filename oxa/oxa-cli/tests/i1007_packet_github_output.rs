@@ -72,7 +72,7 @@ fn sessions_that_own_github_keep_the_lane_commands_below_the_rule() {
     let at = text.find(RULE).expect("the GitHub ownership rule is missing");
     for command in [
         "gh workflow run lane --ref <branch>",
-        "gh run watch <run-id> --exit-status",
+        "gh run watch <run-id> --interval 60 --exit-status",
         "gh run view <run-id> --log-failed",
     ] {
         let found = text
