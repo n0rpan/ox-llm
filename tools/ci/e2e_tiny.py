@@ -232,6 +232,9 @@ def main():
         o = cfg['oxa']
         runs = []
         for name, text in (('turn1', o['first_prompt']), ('turn2', o['second_prompt']), ('turn3', o['third_prompt'])):
+            if name == 'turn3':
+                # a fact only the file holds, so the model has to call the read tool to answer
+                (work / o['read_file']).write_text(o['read_word'] + '\n')
             # one log per run: oxa writes --usage-log for its own process (a later run replaces it)
             usage_log = out / f'usage-{name}.jsonl'
             code, wall, result = run_oxa(a.oxa, text, work, oenv, usage_log, o['run_timeout_s'], o['max_time_s'], o['max_tokens'], name, out)
@@ -286,7 +289,8 @@ def main():
         elif len(hashes) != 1 or len(sizes) != 1:
             fail(f'the system prompt + tool declaration changed within the session: {len(hashes)} distinct hashes over {len(reqs)} requests')
         # temperature-0 determinism (warn only): the first prompt again, a fresh session, same tokens?
-        det_work = out / 'work-det'
+        # same-length directory name: the cwd is a line of the system prompt, so a longer path alone shifts the prompt tokens
+        det_work = out / 'dets'
         det_work.mkdir(exist_ok=True)
         d_log = out / 'usage-det.jsonl'
         d_code, d_wall, _ = run_oxa(a.oxa, o['first_prompt'], det_work, oenv, d_log, o['run_timeout_s'], o['max_time_s'], o['max_tokens'], 'det', out, session_id='e2e-det')

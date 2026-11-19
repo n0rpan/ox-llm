@@ -34,8 +34,11 @@ task_word = "hi"
 # answered from the conversation: bash is off in the container (no usable bwrap), and a tool call
 # here sent the 0.8B model into a retry loop until --max-time (first real run)
 second_prompt = "Without using any tool, answer in one sentence: which file did you just create?"
-# a real tool result in the third run: the file is read back, so a request follows a tool result
-third_prompt = "Use the read tool to read hello.txt, then tell me in one sentence what it contains."
+# a real tool result in the third run: the file holds a word the model cannot know, so it has to read
+# it (first try: asking for hello.txt, which the model answered from its own context, without a tool)
+read_file = "notes.txt"
+read_word = "kumquat"
+third_prompt = "Read the file notes.txt with the read tool and tell me the word it contains."
 
 [budget]
 # warn above *_warn_ms; fail only above *_fail_ms.
