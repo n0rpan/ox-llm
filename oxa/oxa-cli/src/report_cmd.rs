@@ -383,7 +383,11 @@ pub(crate) fn submit_record(
         }
     } else {
         writeln!(out, "Repository: {repo}\nTitle: {title}\n\n{body}\n").map_err(w)?;
-        match confirm(&format!("Post this issue publicly to {repo}? Type yes to post: ")) {
+        // The broker displays and records this string, so keep the exact publication in the
+        // confirmation itself. The caller's stdout may be redirected or hidden from the owner.
+        match confirm(&format!(
+            "Post this issue publicly to {repo}?\n\nTitle: {title}\n\n{body}\n\nType yes to post: "
+        )) {
             Some(true) => {}
             Some(false) => {
                 writeln!(out, "Not posted.").map_err(w)?;
@@ -403,7 +407,6 @@ pub(crate) fn submit_record(
         }
         None
     };
-    let body_file = draft.with_extension("body.md");
     let body = publication
         .as_ref()
         .map_or(body.as_str(), |plan| plan.body.as_str());
@@ -422,13 +425,17 @@ pub(crate) fn submit_record(
     } else {
         vec!["issue", "create", "--repo", &repo, "--title", &title]
     };
-    let body_path = body_file.to_string_lossy();
+    // Hand `gh` exactly the bytes that were displayed and approved. The draft lives in a
+    // model-writable directory, so its pathname could be swapped between the owner's yes and
+    // `gh` opening it; the body as an argument fails past the kernel's argument size. The
+    // approved bytes go into a staged descriptor nothing else can name or change.
+    let staged =
+        ApprovedBody::stage(body).map_err(|e| OxaError::io("cannot stage the approved issue body", &e))?;
+    let body_path = staged.path();
     args.extend(["--body-file", &body_path]);
     let args: Vec<String> = args.into_iter().map(str::to_string).collect();
-    write_atomic(&body_file, body.as_bytes())
-        .map_err(|e| OxaError::io(&format!("cannot write {}", body_file.display()), &e))?;
     let result = runner("gh", &args);
-    let _ = std::fs::remove_file(&body_file);
+    drop(staged);
     match result {
         Some((0, stdout)) => {
             if let Some(plan) = &mut publication {
@@ -462,11 +469,100 @@ pub(crate) fn submit_record(
     }
 }
 
-/// The real confirmation: the question and the answer go through `/dev/tty` (never stdin, so
-/// piped input cannot confirm). `None` without a controlling terminal, or when oxa's own tools
-/// run this (`OXA_CODING_AGENT` is set: the model must not confirm for the user).
+/// The approved issue body, staged for `gh --body-file /dev/fd/N`. The descriptor has no
+/// close-on-exec flag, so the `gh` child inherits it; it is closed when this value drops.
+///
+/// On Linux it is a memfd: it has no pathname a model-run process could replace, and it is
+/// sealed against writes, growth and shrinking before `gh` starts, so nobody (not even a
+/// process that reopens it through `/proc`) can change the bytes after the owner's yes. Other
+/// platforms have no OS sandbox (commands run with the owner's full rights); there it is a
+/// private file unlinked as soon as it is created.
+pub(crate) struct ApprovedBody {
+    file: std::fs::File,
+}
+
+impl ApprovedBody {
+    pub(crate) fn stage(body: &str) -> std::io::Result<Self> {
+        Ok(Self {
+            file: stage_bytes(body.as_bytes())?,
+        })
+    }
+
+    /// The path `gh` opens: the inherited descriptor, never a file in the draft directory.
+    pub(crate) fn path(&self) -> String {
+        use std::os::fd::AsRawFd;
+        format!("/dev/fd/{}", self.file.as_raw_fd())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn stage_bytes(bytes: &[u8]) -> std::io::Result<std::fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    // No MFD_CLOEXEC: the `gh` child inherits the descriptor.
+    // SAFETY: a NUL-terminated name and valid flags; the returned descriptor is owned below.
+    let fd = unsafe { libc::memfd_create(b"oxa-approved-body\0".as_ptr().cast(), libc::MFD_ALLOW_SEALING) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is a fresh descriptor that nothing else owns.
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    file.write_all(bytes)?;
+    let seals = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
+    // SAFETY: fcntl on a descriptor this function owns.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, seals) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(file)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn stage_bytes(bytes: &[u8]) -> std::io::Result<std::fs::File> {
+    use std::io::{Seek, SeekFrom};
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let path = std::env::temp_dir().join(format!("oxa-approved-body-{}-{nanos}", std::process::id()));
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
+    std::fs::remove_file(&path)?;
+    file.write_all(bytes)?;
+    file.seek(SeekFrom::Start(0))?;
+    // SAFETY: fcntl on a descriptor this function owns; clears close-on-exec for `gh`.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFD, 0) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(file)
+}
+
+/// The real confirmation. Under oxa's own tools the session exports `OXA_CONFIRM_SOCK`: the
+/// question goes to the session's owner confirm broker, which answers from the owner (yolo, the
+/// owner's dialog answer or the owner's typed message), never from text the model read. Without a
+/// broker, a tool child (`OXA_CODING_AGENT` set) gets `None`. A manual terminal asks through
+/// `/dev/tty` (never stdin, so piped input cannot confirm) and gets `None` without one.
 pub(crate) fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
+    tty_confirm_with(env, oxa_core::owner_confirm::ask)
+}
+
+fn tty_confirm_with<'a>(
+    env: &'a Env,
+    ask: impl Fn(&Path, &str) -> Option<bool> + 'a,
+) -> impl FnMut(&str) -> Option<bool> + 'a {
     move |question: &str| {
+        if let Some(sock) = env.get(oxa_core::owner_confirm::SOCK_ENV) {
+            // A model-run shell can replace environment variables. Under the agent marker,
+            // accept only the socket that bwrap pinned at its immutable mount point; never let
+            // an environment-selected listener manufacture an owner's approval.
+            if env.get("OXA_CODING_AGENT").is_none() || sock == oxa_sandbox::OWNER_CONFIRM_SOCK {
+                return ask(Path::new(sock), question);
+            }
+            return None;
+        }
         if env.get("OXA_CODING_AGENT").is_some() {
             return None;
         }
@@ -483,6 +579,89 @@ pub(crate) fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
         let mut line = String::new();
         std::io::BufReader::new(tty).read_line(&mut line).ok()?;
         Some(line.trim().eq_ignore_ascii_case("yes"))
+    }
+}
+
+#[cfg(test)]
+mod confirm_tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+
+    /// A one-shot fake broker that answers `answer` and reports the question it saw.
+    fn broker(name: &str, answer: &'static str) -> (std::path::PathBuf, std::thread::JoinHandle<String>) {
+        let sock = std::env::temp_dir().join(format!("oxa-s2-{name}-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&sock);
+        let listener = UnixListener::bind(&sock).expect("bind");
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut line = String::new();
+            std::io::BufReader::new(&stream)
+                .read_line(&mut line)
+                .expect("read");
+            writeln!(&stream, "{{\"answer\": \"{answer}\", \"source\": \"typed\"}}").expect("write");
+            line
+        });
+        (sock, handle)
+    }
+
+    #[test]
+    fn confirm_uses_broker_under_agent_marker() {
+        let env = Env::from_pairs(&[
+            ("OXA_CODING_AGENT", "true"),
+            ("OXA_CONFIRM_SOCK", oxa_sandbox::OWNER_CONFIRM_SOCK),
+        ]);
+        let mut confirm = tty_confirm_with(&env, |sock, question| {
+            assert_eq!(sock, Path::new(oxa_sandbox::OWNER_CONFIRM_SOCK));
+            assert_eq!(question, "Post this issue? ");
+            Some(true)
+        });
+        assert_eq!(confirm("Post this issue? "), Some(true));
+
+        // The same process may override its environment, but an arbitrary listener is not the
+        // session broker mounted by the sandbox and must never count as owner approval.
+        let path = "/workspace/fake-confirm.sock";
+        let env = Env::from_pairs(&[("OXA_CODING_AGENT", "true"), ("OXA_CONFIRM_SOCK", path)]);
+        assert_eq!(tty_confirm(&env)("q"), None);
+
+        // Outside an agent tool, the private host path remains usable.
+        let (sock, _seen) = broker("no", "no");
+        let path = sock.to_string_lossy().into_owned();
+        let env = Env::from_pairs(&[("OXA_CONFIRM_SOCK", &path)]);
+        assert_eq!(tty_confirm(&env)("q"), Some(false));
+        let (sock, _seen) = broker("none", "none");
+        let path = sock.to_string_lossy().into_owned();
+        let env = Env::from_pairs(&[("OXA_CONFIRM_SOCK", &path)]);
+        assert_eq!(tty_confirm(&env)("q"), None);
+    }
+
+    #[test]
+    fn approved_body_is_staged_unchangeable_and_unbounded_by_argv() {
+        // Far past the ~128 KiB a single argument may hold.
+        let body = "\u{2603}".repeat(60_000);
+        let staged = ApprovedBody::stage(&body).expect("stage");
+        let path = staged.path();
+        assert!(path.starts_with("/dev/fd/"), "{path}");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), body);
+        #[cfg(target_os = "linux")]
+        {
+            // Sealed: neither writing through a reopened descriptor nor truncating it can
+            // change the approved bytes.
+            if let Ok(mut file) = std::fs::OpenOptions::new().write(true).open(&path) {
+                assert!(file.write_all(b"unapproved").is_err());
+            }
+            let _ = std::fs::OpenOptions::new().write(true).truncate(true).open(&path);
+            assert_eq!(std::fs::read_to_string(&path).expect("read"), body);
+        }
+        drop(staged);
+    }
+
+    #[test]
+    fn confirm_none_without_broker_or_tty() {
+        // The marker without a broker never reaches /dev/tty; a dead socket path is no answer.
+        let env = Env::from_pairs(&[("OXA_CODING_AGENT", "true")]);
+        assert_eq!(tty_confirm(&env)("q"), None);
+        let env = Env::from_pairs(&[("OXA_CONFIRM_SOCK", "/nonexistent/oxa-confirm.sock")]);
+        assert_eq!(tty_confirm(&env)("q"), None);
     }
 }
 

@@ -193,8 +193,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.lead.serve", Kind::Object, "{}"),
     // Exact protected owner Session ID for free-text Lead chat; user settings only.
     key("oxa.lead.sessionId", Kind::String, "null"),
-    // Read-only lead shadow preset; user settings only, default off.
-    key("oxa.lead.shadow", Kind::Bool, "false"),
+    // Read-only lead shadow preset; user settings only, on by default (`false` opts out).
+    key("oxa.lead.shadow", Kind::Bool, "true"),
     // L1: apply a changed settings file at the next run; on by default, `false` opts out.
     key("oxa.liveSettings", Kind::Bool, "true"),
     // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
@@ -235,7 +235,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.subagent.enabled", Kind::Bool, "null"),
     // Children per parent session (running or queued) and tasks or steps per call; at least 1.
     key("oxa.subagent.maxChildren", Kind::Number, "8"),
-    key("oxa.subagent.remoteConcurrency", Kind::Number, "4"),
+    key("oxa.subagent.remoteConcurrency", Kind::Number, "8"),
     key("oxa.subagent.resultCap", Kind::Number, "6144"),
     key("oxa.subagent.smallContext", Kind::Bool, "false"),
     key("oxa.subagent.softTokens", Kind::Number, "24000"),
@@ -257,7 +257,7 @@ const SCHEMA: &[KeyDef] = &[
     // The repeat guard for identical tool calls (oxa-core `repeat.rs`).
     key("oxa.toolRepeatGuard", Kind::Bool, "true"),
     // W2: the `wait` tool's `until` conditions, answered by hook sets (`Hooks::poll_event`).
-    key("oxa.wait.maxSeconds", Kind::Number, "3600"),
+    key("oxa.wait.maxSeconds", Kind::Number, "86400"),
     key("oxa.wait.pollSeconds", Kind::Number, "30"),
     // O-169: `web_search` (oxa-web); declared only with a Brave key and never offline.
     key("oxa.webSearch.enabled", Kind::Bool, "true"),

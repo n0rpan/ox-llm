@@ -442,6 +442,35 @@ fn set_persists_and_keeps_other_keys() {
     assert_eq!(reloaded.compaction().reserve_tokens, 9000);
 }
 
+#[test]
+fn project_edit_does_not_readopt_user_only_setting() {
+    let env = TestEnv::new();
+    let dirs = Dirs::under(env.root());
+    let cwd = env.work();
+    write_json(
+        &dirs.settings_file(),
+        &json!({"oxa": {"sandbox": {"net": "off"}}}),
+    );
+    write_json(
+        &dirs.project_settings_file(&cwd),
+        &json!({"oxa": {"sandbox": {"net": "on"}}}),
+    );
+    let mut settings = Settings::load(&dirs, &cwd, true);
+    assert_eq!(settings.string("oxa.sandbox.net").as_deref(), Some("off"));
+
+    settings
+        .set(&dirs, &cwd, "theme", json!("dark"), true)
+        .expect("set unrelated project setting");
+
+    assert_eq!(settings.string("oxa.sandbox.net").as_deref(), Some("off"));
+    assert_eq!(settings.string("theme").as_deref(), Some("dark"));
+
+    settings
+        .unset(&dirs, &cwd, "theme", true)
+        .expect("unset unrelated project setting");
+    assert_eq!(settings.string("oxa.sandbox.net").as_deref(), Some("off"));
+}
+
 /// Extra: a set with a value of the wrong type for a known key is refused and writes nothing.
 #[test]
 fn set_refuses_wrong_type_without_writing() {

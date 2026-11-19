@@ -320,13 +320,25 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
             Subcommand::Send(words) => match words.as_slice() {
                 [id, text] if oxa_session::valid_inbox_id(id) => {
-                    oxa_session::send_inbox(&dirs.agent_dir, id, text)
-                        .map(|_| 0)
-                        .map_err(|e| OxaError::io("cannot send session message", &e))
+                    let mut piped = String::new();
+                    let read = if text == "-" {
+                        stdin
+                            .read_to_string(&mut piped)
+                            .map(|_| ())
+                            .map_err(|e| OxaError::io("cannot read session message from stdin", &e))
+                    } else {
+                        Ok(())
+                    };
+                    read.and_then(|()| {
+                        let message = if text == "-" { &piped } else { text };
+                        oxa_session::send_inbox(&dirs.agent_dir, id, message)
+                            .map(|_| 0)
+                            .map_err(|e| OxaError::io("cannot send session message", &e))
+                    })
                 }
                 _ => Err(OxaError::new(
                     codes::USAGE,
-                    "Usage: oxa send <session-id> \"text\"",
+                    "Usage: oxa send <session-id> <text|->",
                 )),
             },
             Subcommand::Identity(words) => crate::run_identity(&words, &dirs, env, &mut *stdout),
@@ -859,12 +871,12 @@ fn prepare(
     // #1512 S2: the dangerous-command rules come from the user settings only.
     let (danger, danger_warnings) = dangerous_rules(&user_settings);
     notices.extend(danger_warnings.into_iter().map(|w| (Level::Warning, w)));
-    // Only user settings may enable this default-off proposal session.
-    if a.lead && !user_settings.bool(crate::lead_preset::SETTING, false) {
+    // The read-only proposal session is on by default; only the user's own `false` turns it off.
+    if a.lead && !user_settings.bool(crate::lead_preset::SETTING, true) {
         return Err(OxaError::new(
             codes::USAGE,
             format!(
-                "lead --shadow is disabled; set \"{}\": true in the user settings.json to enable it",
+                "lead --shadow is turned off; remove \"{}\": false from the user settings.json to use it",
                 crate::lead_preset::SETTING
             ),
         ));
@@ -2006,7 +2018,14 @@ fn run_tui(
         Some((session, binding)) => (session, Some(binding)),
         None => match open_named(&built, session_id, open, name.as_deref()) {
             Ok(session) => (session, None),
-            Err(e) => return report(stderr, &e),
+            Err(e) => {
+                let code = report(stderr, &e);
+                // A fresh install has no model yet: say how to get one, after the error.
+                if let Some(help) = crate::key_hints::no_model_help(&e, dirs, env) {
+                    let _ = writeln!(stderr, "{help}");
+                }
+                return code;
+            }
         },
     };
     // `--goal` in the terminal: the objective is set at open (`open_named`) and its start leads
@@ -2029,6 +2048,8 @@ fn run_tui(
         Err(error) => return report(stderr, &error),
     };
     notices.extend(startup_notices(&built, &session));
+    // First run only: which optional keys are missing and how to add each. Never blocking.
+    notices.extend(crate::key_hints::first_run_notice(dirs, env, &built.settings));
     let yolo = built.yolo.clone();
     // Its diagnostics are among the startup notices (`prepare`).
     let (keymap, _) = Keymap::load(dirs);
