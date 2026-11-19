@@ -3,6 +3,7 @@
 //! A read-only spec (plan mode) and every other level go to the wrapped sandbox unchanged.
 //! Offline stays a hard switch: the command then runs through bwrap with the network unshared
 //! and the user's file system (as `!cmd` does offline), and is refused without bwrap.
+use crate::net::redact_run;
 use crate::{offline_argv, run_argv_capture, run_unsandboxed_capture};
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox, YoloSwitch};
 use std::path::PathBuf;
@@ -84,22 +85,27 @@ impl FullAccess {
         live: &mut dyn FnMut(&[u8]),
         capture: bool,
     ) -> ExecResult {
-        if !self.offline {
-            return run_unsandboxed_capture(s, c, live, capture);
-        }
-        match self.launch_argv(s) {
-            Ok(argv) => run_argv_capture(&argv, &[], s.timeout_s, c, live, capture),
-            Err(e) => ExecResult {
-                output: if capture {
-                    e.to_string().into_bytes()
-                } else {
-                    Vec::new()
+        // Yolo bash has no sandbox, but its output still never shows the GitHub token
+        // (`gh auth token`, `cat token.txt`). Masking only; the command always runs.
+        let secret = self.inner.output_secret();
+        redact_run(secret.as_deref(), live, |live| {
+            if !self.offline {
+                return run_unsandboxed_capture(s, c, live, capture);
+            }
+            match self.launch_argv(s) {
+                Ok(argv) => run_argv_capture(&argv, &[], s.timeout_s, c, live, capture),
+                Err(e) => ExecResult {
+                    output: if capture {
+                        e.to_string().into_bytes()
+                    } else {
+                        Vec::new()
+                    },
+                    exit: None,
+                    timed_out: false,
+                    unsandboxed: false,
                 },
-                exit: None,
-                timed_out: false,
-                unsandboxed: false,
-            },
-        }
+            }
+        })
     }
 }
 
@@ -109,6 +115,9 @@ impl Sandbox for FullAccess {
             return Ok(());
         }
         self.inner.check()
+    }
+    fn output_secret(&self) -> Option<String> {
+        self.inner.output_secret()
     }
     fn network(&self) -> bool {
         if self.switch.full() {

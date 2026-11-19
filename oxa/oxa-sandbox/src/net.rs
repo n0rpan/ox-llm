@@ -91,6 +91,31 @@ impl<'a> StreamRedactor<'a> {
     }
 }
 
+/// Run `run` with every occurrence of `token` masked in the live chunks and in the final
+/// output. No token = a plain run. Output only: it never blocks or changes the command.
+pub(crate) fn redact_run(
+    token: Option<&str>,
+    live: &mut dyn FnMut(&[u8]),
+    run: impl FnOnce(&mut dyn FnMut(&[u8])) -> ExecResult,
+) -> ExecResult {
+    let Some(t) = token else {
+        return run(live);
+    };
+    let mut sr = StreamRedactor::new(t);
+    let mut r = run(&mut |b: &[u8]| {
+        let o = sr.push(b);
+        if !o.is_empty() {
+            live(&o);
+        }
+    });
+    let tail = sr.finish();
+    if !tail.is_empty() {
+        live(&tail);
+    }
+    r.output = redact(&r.output, t);
+    r
+}
+
 impl NetSandbox {
     /// `setting_on` = [`sandbox_net_setting`]; `offline` = the hard switch.
     pub fn new(inner: Arc<dyn Sandbox>, setting_on: bool, offline: bool) -> NetSandbox {
@@ -172,22 +197,8 @@ impl NetSandbox {
         // token is known, so `cat token.txt` after `gh auth token > token.txt` is scrubbed.
         // `self.token()` loads a lazy token here too: the first networked command may be
         // `cat token.txt` from an earlier session.
-        let Some(t) = s.net.then(|| self.token()).flatten() else {
-            return run(&s, live);
-        };
-        let mut sr = StreamRedactor::new(t);
-        let mut r = run(&s, &mut |b: &[u8]| {
-            let o = sr.push(b);
-            if !o.is_empty() {
-                live(&o);
-            }
-        });
-        let tail = sr.finish();
-        if !tail.is_empty() {
-            live(&tail);
-        }
-        r.output = redact(&r.output, t);
-        r
+        let t = s.net.then(|| self.token()).flatten();
+        redact_run(t.map(String::as_str), live, |live| run(&s, live))
     }
 
     fn clamp(&self, s: &ExecSpec) -> ExecSpec {
@@ -220,6 +231,9 @@ impl Sandbox for NetSandbox {
     }
     fn check(&self) -> Result<(), OxaError> {
         self.inner.check()
+    }
+    fn output_secret(&self) -> Option<String> {
+        self.net.then(|| self.token().cloned()).flatten()
     }
     fn network(&self) -> bool {
         self.net

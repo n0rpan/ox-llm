@@ -4,7 +4,7 @@
 
 use oxa_fake::TestEnv;
 use oxa_proto::{Autonomy, CancelToken, ExecSpec, Sandbox, YoloSwitch};
-use oxa_sandbox::{FullAccess, NoSandbox};
+use oxa_sandbox::{FullAccess, NetSandbox, NoSandbox};
 use std::sync::Arc;
 
 fn spec(env: &TestEnv, command: String, writable: bool) -> ExecSpec {
@@ -166,4 +166,56 @@ fn file_view_tracks_live_yolo_but_keeps_plan_and_execution_sandboxed() {
     assert_ne!(r.exit, Some(0));
     let r = files.run_with_stdin(&s, b"test", &CancelToken::new(), &mut |_| {});
     assert_ne!(r.exit, Some(0));
+}
+
+/// Yolo bash around a networked sandbox that knows the GitHub token `tok`.
+fn full_with_token(env: &TestEnv, tok: &str) -> FullAccess {
+    let inner = NetSandbox::new(Arc::new(NoSandbox), true, false).with_gh_token(Some(tok.to_string()));
+    FullAccess::new(
+        Arc::new(inner),
+        YoloSwitch::new(Autonomy::Yolo),
+        "",
+        env.home(),
+        false,
+    )
+}
+
+#[test]
+fn yolo_bash_output_redacts_gh_token() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work()).unwrap();
+    let sb = full_with_token(&env, "ghp_SYNTH_YOLO_77");
+    let s = spec(&env, "echo token=ghp_SYNTH_YOLO_77; echo plain".to_string(), true);
+    let mut live = Vec::new();
+    let r = sb.run(&s, &CancelToken::new(), &mut |b| live.extend_from_slice(b));
+    let want = "token=[redacted]\nplain\n";
+    assert_eq!(String::from_utf8_lossy(&r.output), want);
+    assert_eq!(String::from_utf8_lossy(&live), want);
+    let streamed = sb.run_streaming(&s, &CancelToken::new(), &mut |_| {});
+    assert!(streamed.output.is_empty());
+}
+
+#[test]
+fn yolo_redaction_does_not_block() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work()).unwrap();
+    let out = env.root().join("yolo-wrote.txt");
+    let sb = full_with_token(&env, "ghp_SYNTH_YOLO_77");
+    // The command that prints the token still runs, writes its file and keeps its exit code.
+    let s = spec(
+        &env,
+        format!("echo ghp_SYNTH_YOLO_77 > '{}'; exit 3", out.display()),
+        true,
+    );
+    let r = sb.run(&s, &CancelToken::new(), &mut |_| {});
+    assert_eq!(r.exit, Some(3), "{}", String::from_utf8_lossy(&r.output));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "ghp_SYNTH_YOLO_77\n");
+    // No token known: output passes through untouched.
+    let (plain, _) = full(Autonomy::Yolo, &env);
+    let r = plain.run(
+        &spec(&env, "echo ghp_SYNTH_YOLO_77".into(), true),
+        &CancelToken::new(),
+        &mut |_| {},
+    );
+    assert_eq!(String::from_utf8_lossy(&r.output), "ghp_SYNTH_YOLO_77\n");
 }

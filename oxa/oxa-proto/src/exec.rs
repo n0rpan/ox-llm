@@ -126,6 +126,12 @@ pub trait Sandbox: Send + Sync {
     fn for_session(&self) -> Option<std::sync::Arc<dyn Sandbox>> {
         None
     }
+    /// A credential this sandbox hands to its commands (the GitHub token): bash output that
+    /// would show it is masked, also for runs that bypass the sandbox (`yolo`). `None` (the
+    /// default) = nothing to mask. Output only: this never blocks a command.
+    fn output_secret(&self) -> Option<String> {
+        None
+    }
     /// The exact `bwrap` argv (without the leading `bwrap`) for `s`. Pure; golden-tested.
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String>;
     /// Run `s`, streaming output chunks to `live`. Cancel and timeout kill the process group.

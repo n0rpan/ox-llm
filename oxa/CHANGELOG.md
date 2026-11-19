@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- yolo bash output no longer shows the GitHub token: the masking that auto and standard apply (`gh auth token`, `cat token.txt`) now also covers the unsandboxed yolo run. It only replaces the token with `[redacted]` in the output; no command is blocked or changed.
 - `oxa work` derives acceptance requirements from the change (#1442). The owner's `oxa.work.localChecks` defaults to `cargo check` for touched packages. Rust tests require hosted lane CI at the exact head. Workers can declare additional acceptance crates with `<oxa-acceptance>["crate"]</oxa-acceptance>`. Zero or skipped checks leave work `unverified`. Each round records check origin and verdict, and saved verification is bound to the exact commit. See [work.md](docs/work.md).
 - `oxa work` starts a new task branch at its published head (`origin/<branch>`) when that tip descends from the captured base, instead of always at the base. A task for an already pushed pull-request branch now audits and continues that head rather than redoing work from a tree that predates it; several diverging tips or an unrelated one keep the base. See [work.md](docs/work.md).
 ### Added

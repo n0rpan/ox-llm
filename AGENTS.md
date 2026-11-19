@@ -15,7 +15,8 @@ maintainer, who says in the PR when a hardware check is needed.
   authority and login/token paths user-only. A project file must never override these decisions.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
 - Preserve sandbox/bwrap enforcement and file-tool denials for private paths. Only explicit
-  owner-selected yolo deliberately disables the permission floor. Off Linux there is no OS sandbox
+  owner-selected yolo deliberately disables the permission floor, but yolo bash output still masks
+  the GitHub token (`Sandbox::output_secret`; output only, never a block). Off Linux there is no OS sandbox
   (owner policy, #1512): in-process guards stay, bash gets the same cleared base environment, and
   the bash network is not restricted there; the start notice and the model env note say so.
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
