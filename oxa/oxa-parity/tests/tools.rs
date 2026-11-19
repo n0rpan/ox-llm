@@ -618,18 +618,20 @@ fn tools_011() {
     );
 }
 
-/// TOOLS-012 (P): a timeout kills the process tree, including background writers.
-/// pi: `packages/coding-agent/src/core/tools/bash.ts` ("Command timed out after N seconds").
+/// TOOLS-012 (A): a command past its timeout is not killed: it moves to a background job and
+/// the result names the job and the wall time (FrontierHarness N1). Deviates from pi, which kills it.
+/// The session's end still stops the process tree, including background writers.
 #[test]
 fn tools_012() {
-    // INVARIANT: W4: pi's text without the `after S seconds` clause (no timings in model-facing text)
+    // INVARIANT: the timeout hands the command to a background job; the call returns at once.
     let env = TestEnv::new();
     let started = std::time::Instant::now();
     let r = run_one(&env, "bash", r#"{"command":"sleep 30","timeout":1}"#, &[]);
-    assert_eq!(r, "Command timed out after 1 seconds", "pi: timeout text");
+    assert!(r.starts_with("Command still running after 1 s"), "{r:?}");
+    assert!(r.contains("background job job-1"), "{r:?}");
     assert!(
         started.elapsed() < std::time::Duration::from_secs(20),
-        "timeout kills the command"
+        "the call does not wait for the command"
     );
     // Background writer: the child writes a marker after 2 s; the group kill stops it.
     let bg = run_one(
@@ -638,11 +640,11 @@ fn tools_012() {
         r#"{"command":"(sleep 2; touch marker.txt) & sleep 30","timeout":1}"#,
         &[],
     );
-    assert!(bg.starts_with("Command timed out after 1 seconds"), "{bg:?}");
+    assert!(bg.starts_with("Command still running after 1 s"), "{bg:?}");
     std::thread::sleep(std::time::Duration::from_millis(2500));
     assert!(
         !env.work().join("marker.txt").exists(),
-        "the process tree was killed"
+        "the process tree was killed when the session ended"
     );
 }
 

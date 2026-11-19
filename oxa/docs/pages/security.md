@@ -78,7 +78,7 @@ What a command sees:
 | `.oxa`, `.agents/skills`, `.git/hooks`, `.git/config` inside a writable project | read-only |
 | a project's `.git` file (a worktree), `.git/config.worktree`, and a missing `.git/hooks` or `.git/config` | read-only; a missing one cannot be created (see below) |
 | the deny-list below | masked: an empty read-only tmpfs over a directory, `/dev/null` over a file |
-| host runtime IPC: `/run/user/<uid>`, `/run/dbus`, `/run/systemd/resolve`, Docker/Podman sockets, name-service sockets | masked: they are Unix sockets, not network sockets, so the network namespace does not contain them; online, only the resolver’s regular DNS configuration files remain readable |
+| host runtime IPC: `/run/user/<uid>`, `/run/dbus`, `/run/systemd/resolve`, Docker/Podman sockets, name-service sockets | masked, except the sockets you list in `oxa.sandbox.sockets` for a network-enabled command (user settings only, default none; a start notice names each, and the docker socket gives root on the host): they are Unix sockets, not network sockets, so the network namespace does not contain them; online, only the resolver’s regular DNS configuration files remain readable |
 | environment variables | none, except the short list below |
 | file ownership | only your own uid is mapped; root-owned system files (for example `/usr/bin/python3`) show as uid 65534 (`nobody`), and `id` shows your uid plus group `nobody` |
 

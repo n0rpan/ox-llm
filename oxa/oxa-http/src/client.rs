@@ -139,6 +139,7 @@ impl Client {
         let mut status = 0;
         let mut headers = Vec::new();
         let mut body: Vec<u8> = Vec::new();
+        let is_head = req.method == "HEAD";
         self.pump(req, cancel, &mut |ev| {
             match ev {
                 Event::Head(s, h) => {
@@ -146,7 +147,7 @@ impl Client {
                         .iter()
                         .find(|(k, _)| k == "content-length")
                         .and_then(|(_, v)| v.trim().parse::<usize>().ok());
-                    if declared.is_some_and(|n| n > req.max_body) {
+                    if response_has_body(is_head, s) && declared.is_some_and(|n| n > req.max_body) {
                         return Err(Error::TooLarge);
                     }
                     status = s;
@@ -240,6 +241,10 @@ impl Client {
             }
         }
     }
+}
+
+fn response_has_body(is_head: bool, status: u16) -> bool {
+    !is_head && !(100..200).contains(&status) && status != 204 && status != 304
 }
 
 /// Send with back-pressure that never blocks a runtime thread.

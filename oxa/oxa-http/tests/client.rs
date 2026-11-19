@@ -146,6 +146,29 @@ fn declared_length_over_max_is_too_large() {
 }
 
 #[test]
+fn bodyless_answers_ignore_representation_content_length() {
+    for (method, status) in [("HEAD", "200 OK"), ("GET", "304 Not Modified")] {
+        let port = serve(move |mut s| {
+            let head = read_head(&mut s);
+            assert!(head.starts_with(method), "{head}");
+            s.write_all(
+                format!("HTTP/1.1 {status}\r\nContent-Length: 1000000\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .unwrap();
+        });
+        let url = format!("http://127.0.0.1:{port}/");
+        let req = Request {
+            method,
+            max_body: 0,
+            ..get(&url)
+        };
+        let response = client().send(&req, &CancelToken::new()).unwrap();
+        assert_eq!(response.body, b"");
+    }
+}
+
+#[test]
 fn refused_connection_is_connect_error_without_url() {
     let port = TcpListener::bind("127.0.0.1:0")
         .unwrap()
