@@ -158,8 +158,10 @@ agent after it exits, even without edits. The runner also derives a local compil
 precheck from the Cargo packages touched in the diff against the captured base and
 in untracked files. The owner can configure `oxa.work.localChecks` in user settings.
 It defaults to `["cargo check"]`; the runner supplies `-p <crate>` for each selected
-package. Workspace-wide changes require hosted coverage. A successful local compile
-still leaves Rust work unverified pending tests in hosted lane CI at the exact head.
+package. Workspace-wide changes and shared inputs outside packages in a tree with
+Cargo manifests require hosted coverage. These changes do not select a package
+for a local compile check. A successful local compile still leaves Rust work
+unverified pending tests in hosted lane CI at the exact head.
 The worker can name additional acceptance crates by ending its final reply with
 `<oxa-acceptance>["crate-name"]</oxa-acceptance>`; a block that is not readable crate
 names, or a crate that is not part of the repository, keeps the task unverified.
@@ -167,7 +169,7 @@ The source project must pass the existing
 trust and executable-content approval before a task starts. Invoking `work` does
 not approve an untrusted project. Acceptance runs in the normal bwrap sandbox;
 missing or unusable bwrap blocks the task. Checkout has a ten-minute limit. Each
-check has a ten-minute ceiling within the remaining task deadline.
+check and the change inventory have a ten-minute ceiling within the remaining task deadline.
 `in subdirectory: command` selects a folder inside that sandbox. The runner rejects
 paths that escape the worktree. Each working-tree check round also
 gets a private writable output directory beside the worktree (exposed as

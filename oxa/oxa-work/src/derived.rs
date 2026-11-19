@@ -598,6 +598,12 @@ fn select(root: &Path, paths: &[String]) -> Result<Selected, String> {
             }
         }
     }
+    if !selected.requires_hosted && !paths.is_empty() {
+        // Cargo inputs can sit outside every manifest directory. A bounded search
+        // must establish that the tree has no Cargo manifests before a local-only
+        // verdict is allowed. There is still no local Cargo target for these paths.
+        selected.requires_hosted = find_manifest_dir(root, true, |_| Some(true)).unwrap_or(true);
+    }
     if selected.packages.len() > MAX_PACKAGES {
         return Err(format!(
             "the change affects more than {MAX_PACKAGES} Cargo targets, so their checks cannot be listed"
@@ -699,10 +705,13 @@ fn check_entry(in_dir: &str, command: &str, name: &str) -> String {
     )
 }
 
-/// Every crate of the tree, bounded. `None`: the walk exceeded its capacity, so declared
-/// selectors cannot be resolved and the task stays `unverified` rather than half-checked.
-pub(crate) fn discover(root: &Path) -> Option<BTreeSet<(String, String)>> {
-    let mut manifests = Manifests::default();
+/// Visit manifest directories until the predicate matches or the bounded walk finishes.
+/// An incomplete walk returns `None`.
+fn find_manifest_dir(
+    root: &Path,
+    include_generated_dirs: bool,
+    mut matches: impl FnMut(&str) -> Option<bool>,
+) -> Option<bool> {
     let mut stack = vec![String::new()];
     let mut seen = 0usize;
     while let Some(dir) = stack.pop() {
@@ -719,21 +728,33 @@ pub(crate) fn discover(root: &Path) -> Option<BTreeSet<(String, String)>> {
             }
             let entry = entry.ok()?;
             let file_type = entry.file_type().ok()?;
-            let Some(file) = entry.file_name().to_str().map(str::to_owned) else {
+            let file_name = entry.file_name();
+            let Some(file) = file_name.to_str() else {
+                if file_type.is_dir() && include_generated_dirs {
+                    return None;
+                }
                 continue;
             };
-            let full = join_dir(&dir, &file);
             if file_type.is_dir() {
-                if !matches!(file.as_str(), ".git" | "target" | "node_modules") {
-                    stack.push(full);
+                if file != ".git" && (include_generated_dirs || !matches!(file, "target" | "node_modules")) {
+                    stack.push(join_dir(&dir, file));
                 }
-            } else if file == "Cargo.toml" {
-                let manifest_dir = full.strip_suffix("/Cargo.toml").unwrap_or("").to_owned();
-                let manifest = read_manifest(root, &manifest_dir, &mut manifests.budget).ok()??;
-                manifests.root.insert(manifest_dir, manifest);
+            } else if file == "Cargo.toml" && matches(&dir)? {
+                return Some(true);
             }
         }
     }
+    Some(false)
+}
+
+/// List the tree's Cargo packages. An incomplete walk cannot resolve declared selectors.
+pub(crate) fn discover(root: &Path) -> Option<BTreeSet<(String, String)>> {
+    let mut manifests = Manifests::default();
+    find_manifest_dir(root, false, |dir| {
+        let manifest = read_manifest(root, dir, &mut manifests.budget).ok()??;
+        manifests.root.insert(dir.to_owned(), manifest);
+        Some(false)
+    })?;
     let mut packages = BTreeSet::new();
     let mut budget = MAX_GLOB_WORK;
     let dirs: Vec<String> = manifests.root.keys().cloned().collect();
@@ -992,7 +1013,7 @@ members = ["crates/*", "tools/pinned"]
         assert!(plan.commands.is_empty());
 
         let outside = from_changed_paths(dir.path(), b"docs/standalone.txt\0").unwrap();
-        assert!(!outside.requires_hosted);
+        assert!(outside.requires_hosted);
     }
 
     #[test]
@@ -1098,7 +1119,7 @@ members = ["crates/*", "tools/pinned"]
         assert!(checks.requires_hosted);
         assert!(checks.commands.is_empty());
         let outside = from_changed_paths(dir.path(), b"shared/policy.txt\0").unwrap();
-        assert!(!outside.requires_hosted);
+        assert!(outside.requires_hosted);
         assert!(outside.commands.is_empty());
     }
 
