@@ -25,7 +25,9 @@ use oxa_perm::{
 };
 use oxa_proto::{codes, Engine, EntryBody, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
 use oxa_resources::{discover, DiscoverOpts, Resources};
-use oxa_rpc::{run_json_outcome_with_inbox, run_print_outcome_with_inbox, serve_outcome_gated, Out};
+use oxa_rpc::{
+    confirm_before_start, run_json_outcome_with_inbox, run_print_outcome_with_inbox, serve_outcome_gated, Out,
+};
 use oxa_sandbox::Bwrap;
 #[cfg(target_os = "linux")]
 use oxa_sandbox::NoSandbox;
@@ -318,13 +320,25 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
             Subcommand::Send(words) => match words.as_slice() {
                 [id, text] if oxa_session::valid_inbox_id(id) => {
-                    oxa_session::send_inbox(&dirs.agent_dir, id, text)
-                        .map(|_| 0)
-                        .map_err(|e| OxaError::io("cannot send session message", &e))
+                    let mut piped = String::new();
+                    let read = if text == "-" {
+                        stdin
+                            .read_to_string(&mut piped)
+                            .map(|_| ())
+                            .map_err(|e| OxaError::io("cannot read session message from stdin", &e))
+                    } else {
+                        Ok(())
+                    };
+                    read.and_then(|()| {
+                        let message = if text == "-" { &piped } else { text };
+                        oxa_session::send_inbox(&dirs.agent_dir, id, message)
+                            .map(|_| 0)
+                            .map_err(|e| OxaError::io("cannot send session message", &e))
+                    })
                 }
                 _ => Err(OxaError::new(
                     codes::USAGE,
-                    "Usage: oxa send <session-id> \"text\"",
+                    "Usage: oxa send <session-id> <text|->",
                 )),
             },
             Subcommand::Identity(words) => crate::run_identity(&words, &dirs, env, &mut *stdout),
@@ -446,10 +460,15 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         _ => None,
     };
     let cloud_diagnostics = oxc_gateway::diagnostics::Diagnostics::default();
+    // Input the owner-question handshake read past its own answer; the RPC server replays it.
+    let mut rpc_early: Vec<u8> = Vec::new();
     let prepared = {
         let mut confirm = |notice: &str, question: &str| -> bool {
             if mode == RunMode::Rpc {
-                return false;
+                if !rpc_owner_present(mode, env) {
+                    return false;
+                }
+                return confirm_before_start(&mut *stdin, &mut *stdout, &mut rpc_early, notice, question);
             }
             let _ = writeln!(stdout, "{notice}");
             let _ = write!(stdout, "{question} [y/N] ");
@@ -475,7 +494,13 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     let mut prep = match prepared {
         Ok(p) => p,
         Err(e) if e.code == FORK_DECLINED => {
-            let _ = writeln!(stdout, "Aborted.");
+            // The RPC stream carries JSON records only, and a declined offer is a normal
+            // outcome there: the sentence goes to stderr.
+            if mode == RunMode::Rpc {
+                let _ = writeln!(stderr, "Aborted.");
+            } else {
+                let _ = writeln!(stdout, "Aborted.");
+            }
             return if headless {
                 finish_outcome(Ok(oxa_core::RunOutcome::Interrupted), &mut *stderr)
             } else {
@@ -514,12 +539,13 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         RunMode::Interactive => run_tui(&a, env, &cwd, prep, &mut *stderr, None),
         RunMode::Rpc => {
             let dirs = prep.built.dirs.clone();
+            let replay = std::io::Cursor::new(rpc_early).chain(stdin);
             run_rpc(
                 prep,
                 a.max_time,
                 a.max_tokens,
                 dirs,
-                stdin,
+                Box::new(replay),
                 stdout,
                 &mut *stderr,
                 a2a_enabled,
@@ -953,7 +979,15 @@ fn prepare(
     };
     let (mut open, session_id) = match owner_open {
         Some((bound, _)) => (Open::Resume(bound.clone()), None),
-        None => choose_open(a, store.as_ref(), cwd, mode, &mut notices, confirm)?,
+        None => choose_open(
+            a,
+            store.as_ref(),
+            cwd,
+            mode,
+            rpc_owner_present(mode, env),
+            &mut notices,
+            confirm,
+        )?,
     };
     let continued_go = if a.model.is_none() && a.continue_ && !owner_chat && !child.nested() {
         continued_go_model(dirs, cwd, &user_settings, store.as_ref(), &mut open)?
@@ -1614,6 +1648,7 @@ fn choose_open(
     store: &dyn SessionStore,
     cwd: &Path,
     mode: RunMode,
+    rpc_owner: bool,
     _notices: &mut Vec<(Level, String)>,
     confirm: &mut dyn FnMut(&str, &str) -> bool,
 ) -> Result<(Open, Option<String>), OxaError> {
@@ -1633,7 +1668,9 @@ fn choose_open(
             if let Ok(header) = store.header(&sref) {
                 if header.cwd != cwd {
                     let notice = format!("Session found in different project: {}", header.cwd.display());
-                    if mode == RunMode::Rpc {
+                    // RPC asks the owner over the protocol when a client is listening; without
+                    // one the offer is an error with the way to fork it yourself.
+                    if mode == RunMode::Rpc && !rpc_owner {
                         return Err(OxaError::new(codes::INVALID, notice)
                             .with_hint("use --fork <id> to copy it into this directory"));
                     }
@@ -2491,6 +2528,11 @@ fn write_session_export(
 /// The error code of a declined cross-directory fork offer (CLI-019): `run` prints
 /// "Aborted." and exits 0, as pi does.
 const FORK_DECLINED: &str = "oxa_cli_fork_declined";
+
+/// An RPC client is listening for owner questions (the host sets `OXA_RPC_OWNER_PRESENT=1`).
+fn rpc_owner_present(mode: RunMode, env: &Env) -> bool {
+    mode == RunMode::Rpc && env.get("OXA_RPC_OWNER_PRESENT") == Some("1")
+}
 
 /// One line from `stdin`, read byte by byte (nothing after the newline is consumed).
 fn read_line(stdin: &mut dyn Read) -> String {

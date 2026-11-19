@@ -35,7 +35,7 @@ pub use events::{
     entry_to_json, event_to_json, message_to_json, session_header_record, state_to_json, write_record,
     JsonSink,
 };
-pub use ext_ui::{RpcUi, UiRouter};
+pub use ext_ui::{confirm_before_start, RpcUi, UiRouter};
 #[cfg(target_os = "linux")]
 pub use print::run_json_outcome_with_steering_authority;
 pub use print::{
