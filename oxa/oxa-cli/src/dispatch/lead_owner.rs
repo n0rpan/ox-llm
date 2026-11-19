@@ -94,7 +94,7 @@ fn selection(dirs: &Dirs, uid: u32) -> Result<Option<String>, OxaError> {
 /// The user-only explicit model choice for the Lead conversation, read through the
 /// same owner-private settings file as the session ID. HTTP, project and prompt
 /// input never supply it; `None` keeps the ordinary startup model.
-fn lead_model(dirs: &Dirs, uid: u32) -> Result<Option<String>, OxaError> {
+pub(crate) fn lead_model(dirs: &Dirs, uid: u32) -> Result<Option<String>, OxaError> {
     let Some(settings) = user_settings(dirs, uid)? else {
         return Ok(None);
     };

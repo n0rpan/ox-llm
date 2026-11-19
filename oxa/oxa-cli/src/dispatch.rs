@@ -3,6 +3,7 @@
 mod lead_owner;
 mod mode;
 
+pub(crate) use lead_owner::lead_model;
 pub use lead_owner::{with_lead_owner, LeadOwnerBinding};
 use mode::headless_argument_error;
 pub use mode::{choose_mode, RunMode};

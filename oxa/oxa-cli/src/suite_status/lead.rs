@@ -5,7 +5,7 @@
 //! leaves this module is a state word, counts, the goal's own status word, the model id, times and
 //! the loopback address of `oxa.lead.serve`. Ask text, ask ids, the objective and entry bodies
 //! never leave it.
-use crate::dispatch::is_agent;
+use crate::dispatch::{is_agent, lead_model};
 use crate::lead_access::Config;
 use crate::LeadOwnerBinding;
 use oxa_config::{Dirs, Env, Settings};
@@ -45,11 +45,13 @@ impl Facts {
 /// The `lead` object. `state` is `off` when no Lead Session is selected, `unknown` when the
 /// selected one cannot be read, and otherwise the state of its saved goal.
 pub(super) fn section(user: &Settings, dirs: &Dirs, cwd: &Path, env: &Env) -> Value {
-    let model = user
-        .get("oxa.lead.model")
-        .and_then(Value::as_str)
-        .filter(|model| !model.is_empty() && model.len() <= 128)
-        .map(str::to_owned);
+    // Use the Lead command's owner-private settings reader and validation rather than the
+    // merged Settings value, which may include project settings.
+    let model = fs::metadata("/proc/self")
+        .map(|meta| meta.uid())
+        .ok()
+        .and_then(|uid| lead_model(dirs, uid).ok())
+        .flatten();
     let facts = facts(user, dirs, cwd, env);
     json!({
         "state": facts.state,
@@ -99,11 +101,11 @@ fn facts(user: &Settings, dirs: &Dirs, cwd: &Path, env: &Env) -> Facts {
         Some(goal) => {
             let asks = goal.lead.as_ref().map_or(0, |lead| lead.open_asks.len());
             let state = match goal.status {
+                GoalStatus::Done | GoalStatus::Canceled => "idle",
                 _ if asks > 0 => "awaiting_owner",
                 GoalStatus::Pursuing => "pursuing",
                 GoalStatus::Paused => "paused",
                 GoalStatus::Blocked => "stalled",
-                GoalStatus::Done | GoalStatus::Canceled => "idle",
             };
             (state, Some(goal.status.as_str()), asks)
         }
@@ -121,6 +123,10 @@ fn facts(user: &Settings, dirs: &Dirs, cwd: &Path, env: &Env) -> Facts {
 /// `Config::load` refuses any other bind, and the guard here keeps that rule in this module too.
 /// `settings` is false: the lead page has no settings route in this binary.
 fn serve(dirs: &Dirs, cwd: &Path) -> Value {
+    serve_with_policy(dirs, cwd, oxa_proto::offline())
+}
+
+fn serve_with_policy(dirs: &Dirs, cwd: &Path, offline: bool) -> Value {
     let off = json!({"enabled": false, "listening": false, "url": null, "settings": false});
     let Ok(config) = Config::load(dirs, cwd) else {
         return off;
@@ -133,7 +139,8 @@ fn serve(dirs: &Dirs, cwd: &Path) -> Value {
         return off;
     }
     let address = SocketAddr::new(bind, port);
-    let listening = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT).is_ok();
+    // Offline is a process-wide no-network invariant, including loopback probes.
+    let listening = !offline && TcpStream::connect_timeout(&address, CONNECT_TIMEOUT).is_ok();
     json!({
         "enabled": true,
         "listening": listening,
@@ -230,6 +237,38 @@ mod tests {
     }
 
     #[test]
+    fn lead_section_uses_the_protected_model_reader() {
+        let test = TestEnv::new();
+        let dirs = Dirs::under(test.root());
+        owner_lead(&test, &dirs, false);
+        write_settings(&dirs, &json!({"oxa": {"lead": {"model": "bad\u{0007}model"}}}));
+        assert!(section_for(&test, &dirs)["model"].is_null());
+
+        write_settings(&dirs, &json!({"oxa": {"lead": {"model": "lead-model"}}}));
+        assert_eq!(section_for(&test, &dirs)["model"], "lead-model");
+    }
+
+    #[test]
+    fn terminal_goal_with_retained_ask_is_idle() {
+        let test = TestEnv::new();
+        let dirs = Dirs::under(test.root());
+        let id = owner_lead(&test, &dirs, true);
+        let store = FsStore::new(dirs.sessions_dir.clone());
+        let session = store.resolve(&id).unwrap();
+        store.acquire(&session).unwrap();
+        store.commit_lock();
+        let entries = store.load(&session).unwrap();
+        let mut goal = Goal::latest(&entries).unwrap().unwrap();
+        goal.cancel().unwrap();
+        oxa_core::goal::checkpoint_idle_lead_goal(&store, &session, &entries, &goal).unwrap();
+
+        let value = section_for(&test, &dirs);
+        assert_eq!(value["state"], "idle");
+        assert_eq!(value["goal_status"], "canceled");
+        assert_eq!(value["open_asks"], 1);
+    }
+
+    #[test]
     fn serve_url_is_loopback_only() {
         let test = TestEnv::new();
         let dirs = Dirs::under(test.root());
@@ -252,5 +291,29 @@ mod tests {
         assert_eq!(wide["listening"], false);
         assert!(wide["url"].is_null());
         drop(listener);
+    }
+
+    #[test]
+    fn offline_serve_status_does_not_probe_listener() {
+        let test = TestEnv::new();
+        let dirs = Dirs::under(test.root());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        write_settings(
+            &dirs,
+            &json!({"oxa": {"lead": {"serve": {
+                "enabled": true, "bind": "127.0.0.1", "port": port
+            }}}}),
+        );
+
+        let value = serve_with_policy(&dirs, &test.work(), true);
+        assert_eq!(value["enabled"], true);
+        assert_eq!(value["listening"], false);
+        assert_eq!(value["url"], format!("http://127.0.0.1:{port}/"));
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
     }
 }
