@@ -329,6 +329,11 @@ while their recorded USD reserves nothing. OpenCode controls whether a call fall
 back to its paid balance; if it reports a higher charge than expected, the
 ledger records the full amount and admission continues.
 
+The repository's automated Go pull-request review checks at most 200 GitHub comment pages (20,000
+comments) for the configured daily quota and prior same-diff receipts. If GitHub history exceeds
+that bound, review is deferred before a quota reservation or provider access; incomplete history
+never permits an additional review.
+
 ### Other
 
 | Key | Type | Default | Meaning |
