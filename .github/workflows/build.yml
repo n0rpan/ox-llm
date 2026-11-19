@@ -335,7 +335,7 @@ jobs:
           persist-credentials: false
       - name: bubblewrap + unprivileged user namespaces
         run: |
-          tools/ci/apt_install.sh bubblewrap strace
+          "$GITHUB_WORKSPACE/tools/ci/apt_install.sh" bubblewrap strace
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --version
       - name: bwrap must work (else FAIL)

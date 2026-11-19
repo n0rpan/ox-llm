@@ -121,7 +121,7 @@ jobs:
           persist-credentials: false
       - name: bubblewrap + unprivileged user namespaces
         run: |
-          tools/ci/apt_install.sh bubblewrap strace
+          "$GITHUB_WORKSPACE/tools/ci/apt_install.sh" bubblewrap strace
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --unshare-all --ro-bind / / true
       - name: Toolchain
@@ -514,7 +514,7 @@ jobs:
         # (kernel.apparmor_restrict_unprivileged_userns=1); bwrap needs them. Lifted for this
         # ephemeral runner VM only.
         run: |
-          tools/ci/apt_install.sh bubblewrap python3-pip
+          "$GITHUB_WORKSPACE/tools/ci/apt_install.sh" bubblewrap python3-pip
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --unshare-all --ro-bind / / true || { echo "::error::bwrap cannot create a sandbox on this runner"; exit 1; }
       - name: Anthropic SDK for the mock-only D6 tests
@@ -664,7 +664,7 @@ jobs:
         with:
           persist-credentials: false
       - run: |
-          tools/ci/apt_install.sh bubblewrap strace
+          "$GITHUB_WORKSPACE/tools/ci/apt_install.sh" bubblewrap strace
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy --component rustfmt --no-self-update
       - name: Fetch locked workspace dependencies before offline tests

@@ -17,7 +17,7 @@ class AptInstall(unittest.TestCase):
     def test_bwrap_steps_use_the_script_and_keep_the_hard_check(self):
         for name, count in (('checks.yml', 3), ('lane.yml', 1), ('build.yml', 1)):
             text = (WORKFLOWS / name).read_text()
-            self.assertEqual(len(re.findall(r'tools/ci/apt_install\.sh bubblewrap', text)), count, name)
+            self.assertEqual(len(re.findall(r'tools/ci/apt_install\.sh"? bubblewrap', text)), count, name)
         for name in ('checks.yml', 'lane.yml', 'build.yml'):
             self.assertIn('bwrap --unshare-all --ro-bind / / true', (WORKFLOWS / name).read_text())
 
