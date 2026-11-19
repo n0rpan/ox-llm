@@ -66,6 +66,8 @@ pub(crate) struct Worker {
     pub session: Option<String>,
     pub diagnostic: String,
     pub notes: Vec<crate::ProblemNote>,
+    /// Crates the worker declared as acceptance tests in its last message (#1442).
+    pub declared: crate::derived::Declaration,
 }
 
 impl Worker {
@@ -205,12 +207,13 @@ pub(crate) fn run(
                     interruption: Some(WorkerInterruption::Deadline),
                     tokens,
                 },
-                session: session.ok().and_then(|(id, _)| id),
+                session: session.ok().and_then(|(id, _, _)| id),
                 diagnostic: "worker exceeded max_time and its wrap-up grace; worktree retained".into(),
                 notes: vec![],
+                declared: crate::derived::Declaration::Absent,
             });
         }
-        let (session, notes) = session?;
+        let (session, notes, declared) = session?;
         let (result, diagnostic) = terminal?;
         if status.code() != Some(result.exit_code) {
             return Err("worker exit code disagrees with its oxa_result".into());
@@ -223,6 +226,7 @@ pub(crate) fn run(
             session,
             diagnostic,
             notes,
+            declared,
         })
     })
 }
@@ -230,9 +234,14 @@ pub(crate) fn run(
 fn read_session(
     pipe: impl Read,
     on_session: &mut dyn FnMut(&str) -> Result<()>,
-) -> Result<(Option<String>, Vec<crate::ProblemNote>)> {
+) -> Result<(
+    Option<String>,
+    Vec<crate::ProblemNote>,
+    crate::derived::Declaration,
+)> {
     let mut reader = BufReader::new(pipe);
-    let session = line(&mut reader)?.and_then(|line| {
+    let session = record(&mut reader)?.and_then(|line| {
+        let Line::Complete(line) = line else { return None };
         let value: serde_json::Value = serde_json::from_slice(&line).ok()?;
         (value["type"] == "session")
             .then(|| value["id"].as_str().map(str::to_owned))
@@ -247,7 +256,23 @@ fn read_session(
     });
     let recorded = session.as_deref().map(on_session).transpose();
     let mut notes = vec![];
-    while let Some(bytes) = line(&mut reader)? {
+    // The worker's last message carries its declarations; a later message replaces them.
+    let mut declared = crate::derived::Declaration::Absent;
+    while let Some(record) = record(&mut reader)? {
+        let bytes = match record {
+            Line::Complete(bytes) => bytes,
+            Line::Discarded {
+                repeats_evidence: true,
+            } => continue,
+            Line::Discarded {
+                repeats_evidence: false,
+            } => {
+                // The discarded event could have supplied the final assistant reply.
+                declared = crate::derived::Declaration::Unreadable;
+                notes.clear();
+                continue;
+            }
+        };
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
             continue;
         };
@@ -263,10 +288,11 @@ fn read_session(
                 }
             }
             notes = crate::notes::parse(&text);
+            declared = crate::derived::parse_declaration(&text);
         }
     }
     recorded?;
-    Ok((session, notes))
+    Ok((session, notes, declared))
 }
 
 fn read_result(pipe: impl Read) -> Result<(WorkerResult, String)> {
@@ -301,29 +327,45 @@ fn read_result(pipe: impl Read) -> Result<(WorkerResult, String)> {
     ))
 }
 
+enum Line {
+    Complete(Vec<u8>),
+    Discarded { repeats_evidence: bool },
+}
+
+fn line(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>> {
+    Ok(record(reader)?.map(|line| match line {
+        Line::Complete(bytes) => bytes,
+        Line::Discarded { .. } => Vec::new(),
+    }))
+}
+
 // Discard an oversized record while still draining the pipe. Event/progress size
 // cannot increase the runner's memory use or block a child writing to either pipe.
-fn line(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>> {
+fn record(reader: &mut impl BufRead) -> Result<Option<Line>> {
     let mut line = Vec::new();
-    let mut oversized = false;
-    let mut read = false;
+    let mut discarded = None;
     loop {
         let bytes = reader.fill_buf().map_err(|e| e.to_string())?;
         if bytes.is_empty() {
-            return Ok(read.then_some(line));
+            return Ok(discarded.or_else(|| (!line.is_empty()).then_some(Line::Complete(line))));
         }
-        read = true;
         let end = bytes.iter().position(|b| *b == b'\n');
         let count = end.map_or(bytes.len(), |i| i + 1);
-        if !oversized && line.len() + count <= LINE_CAP {
-            line.extend_from_slice(&bytes[..count]);
-        } else {
-            line.clear();
-            oversized = true;
+        if discarded.is_none() {
+            let kept = count.min(LINE_CAP - line.len());
+            line.extend_from_slice(&bytes[..kept]);
+            if kept < count {
+                // The JSON event writer serializes the type first. These aggregates
+                // repeat records already emitted individually by that same writer.
+                let repeats_evidence = line.starts_with(br#"{"type":"agent_end","#)
+                    || line.starts_with(br#"{"type":"turn_end","#);
+                discarded = Some(Line::Discarded { repeats_evidence });
+                line.clear();
+            }
         }
         reader.consume(count);
         if end.is_some() {
-            return Ok(Some(line));
+            return Ok(Some(discarded.unwrap_or(Line::Complete(line))));
         }
     }
 }
@@ -343,6 +385,38 @@ pub(crate) fn keep_tail(tail: &mut Vec<u8>, bytes: &[u8], cap: usize) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_discarded_assistant_event_leaves_declaration_evidence_unreadable() {
+        let message = json!({
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "plain text ".repeat(LINE_CAP / 8)}],
+            }
+        });
+        let events = format!("{{\"type\":\"session\",\"id\":\"fixture\"}}\n{message}\n");
+        let (_, _, declaration) = read_session(events.as_bytes(), &mut |_| Ok(())).unwrap();
+        assert_eq!(declaration, crate::derived::Declaration::Unreadable);
+    }
+
+    #[test]
+    fn a_discarded_aggregate_keeps_a_complete_assistant_declaration() {
+        let reply = json!({
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "<oxa-acceptance>[\"one\"]</oxa-acceptance>"}],
+            }
+        });
+        let aggregate = json!({"type": "agent_end", "messages": ["plain text ".repeat(LINE_CAP / 8)]});
+        let events = format!("{{\"type\":\"session\",\"id\":\"fixture\"}}\n{reply}\n{aggregate}\n");
+        let (_, _, declaration) = read_session(events.as_bytes(), &mut |_| Ok(())).unwrap();
+        assert_eq!(
+            declaration,
+            crate::derived::Declaration::Tests(vec!["one".into()])
+        );
+    }
 
     #[test]
     fn terminal_process_usage_survives_serializing_the_worker_result() {

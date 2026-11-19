@@ -15,6 +15,8 @@ pub mod budget_policy;
 mod checkpoint;
 mod committed;
 pub use committed::{verify_saved_task, VerifiedTask};
+mod derived;
+pub use derived::{CheckOrigin, CheckRun, CheckStatus, LocalCheckCommands};
 mod execute;
 pub use execute::TaskTokens;
 pub mod helper_queue;
@@ -102,6 +104,9 @@ pub enum Outcome {
     NothingToDo,
     Red,
     Blocked,
+    /// The checks could not run (toolchain missing, timeout, unreadable evidence), so the
+    /// change is neither accepted nor failed (#1442). Never a publishable verdict.
+    Unverified,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -136,12 +141,16 @@ pub struct Record {
     pub reports: Vec<ReportRecord>,
     #[serde(default)]
     pub acceptance_outcome: Option<Outcome>,
+    /// Every check the last acceptance round ran, with its command and exit status (#1442):
+    /// what a `done` verdict rests on. Empty until checks run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<CheckRun>,
 }
 impl Record {
     pub fn failed(&self) -> bool {
         matches!(
             self.outcome,
-            Outcome::Red | Outcome::Blocked | Outcome::Interrupted
+            Outcome::Red | Outcome::Blocked | Outcome::Interrupted | Outcome::Unverified
         ) || self.reports.iter().any(|report| report.disposition == "failed")
     }
 }
@@ -710,7 +719,10 @@ fn github_json(mut command: Command, subject: &str) -> Result<serde_json::Value>
 /// Append a bounded UTF-8 prefix. Returns true when any part was omitted.
 fn append_capped(output: &mut String, parts: &[&str], limit: usize) -> bool {
     for part in parts {
-        let end = part.floor_char_boundary(limit.saturating_sub(output.len()));
+        let mut end = part.len().min(limit.saturating_sub(output.len()));
+        while !part.is_char_boundary(end) {
+            end -= 1;
+        }
         output.push_str(&part[..end]);
         if end < part.len() {
             return true;
@@ -834,11 +846,19 @@ pub enum SupervisorOperation {
         task_id: String,
     },
     Checks {
+        /// Task identity for the round's private output mount.
+        task: String,
         commands: Vec<String>,
+        deadline_at_ms: u64,
     },
     CommittedChecks {
         commands: Vec<String>,
         index: PathBuf,
+        deadline_at_ms: u64,
+    },
+    ChangedPaths {
+        base: String,
+        deadline_at_ms: u64,
     },
     Inspect,
     InspectCommitted {
@@ -883,16 +903,36 @@ fn supervise(
         .map_err(|e| format!("work supervisor: {e}"))
 }
 
+/// One acceptance round: what ran, what failed, and what could not run (#1442). Any
+/// non-empty `unrunnable` keeps the task `unverified`; a `done` verdict needs every check
+/// `passed`, and the record keeps `runs` as the evidence it rests on.
+#[derive(Default)]
+pub(crate) struct Acceptance {
+    pub runs: Vec<CheckRun>,
+    /// Scrubbed diagnostics of the checks that ran and failed.
+    pub failures: String,
+    /// The checks that could not run, with the reason each.
+    pub unrunnable: String,
+}
+
+const NO_ACCEPTANCE_CHECKS: &str =
+    "no acceptance checks were available; configure project done checks or enable local compile checks";
+const HOSTED_TEST_EVIDENCE_REQUIRED: &str = "exact-head hosted test evidence is required";
+
 fn acceptance(
     binary: &Path,
     root: &Path,
     source: &Path,
-    commands: &[String],
+    task: (&str, u64),
+    commands: &[(CheckOrigin, String)],
     policy: &RunPolicy,
     lock: &fs::File,
-) -> Result<String> {
+) -> Result<Acceptance> {
     if commands.is_empty() {
-        return Ok(String::new());
+        return Ok(Acceptance {
+            unrunnable: NO_ACCEPTANCE_CHECKS.into(),
+            ..Acceptance::default()
+        });
     }
     let out = supervise(
         binary,
@@ -900,22 +940,83 @@ fn acceptance(
         SupervisorRequest {
             source: source.to_path_buf(),
             operation: SupervisorOperation::Checks {
-                commands: commands.to_vec(),
+                task: task.0.to_owned(),
+                commands: commands.iter().map(|(_, command)| command.clone()).collect(),
+                deadline_at_ms: task.1,
             },
         },
         policy,
         lock,
     )?;
-    acceptance_result(out)
+    acceptance_result(out, commands)
 }
 
-fn acceptance_result(out: Output) -> Result<String> {
+fn acceptance_result(out: Output, commands: &[(CheckOrigin, String)]) -> Result<Acceptance> {
     let diagnostic = String::from_utf8_lossy(&out.stderr).into_owned();
     match out.status.code() {
-        Some(0) => Ok(String::new()),
-        Some(1) => Ok(diagnostic),
+        Some(0) => {
+            let runs = evidence(&out, commands)
+                .ok_or("the check evidence is missing, so the round has no complete verdict")?;
+            if runs.iter().any(|run| run.status != CheckStatus::Passed) {
+                return Err("the check evidence disagrees with a clean verdict".into());
+            }
+            Ok(Acceptance {
+                runs,
+                ..Acceptance::default()
+            })
+        }
+        Some(1) => match evidence(&out, commands) {
+            Some(runs) => {
+                let unrunnable = runs
+                    .iter()
+                    .filter(|run| run.status == CheckStatus::NotRun)
+                    .map(|run| {
+                        format!(
+                            "{} ({})",
+                            first_line(&run.command),
+                            match (run.timed_out, run.exit) {
+                                (true, _) => "timed out".to_owned(),
+                                (false, Some(code)) => format!("exit {code}"),
+                                (false, None) => "killed before finishing".to_owned(),
+                            }
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Ok(Acceptance {
+                    runs,
+                    failures: diagnostic,
+                    unrunnable,
+                })
+            }
+            None => Ok(Acceptance {
+                failures: diagnostic,
+                unrunnable: "the check evidence is missing, so no verdict can rest on this round".to_owned(),
+                ..Acceptance::default()
+            }),
+        },
         _ => Err(format!("acceptance could not run: {diagnostic}")),
     }
+}
+
+/// Pair each supervisor receipt with the request's origin. The receipt carries already
+/// scrubbed display text. The original command stays in the frozen execution plan.
+fn evidence(out: &Output, commands: &[(CheckOrigin, String)]) -> Option<Vec<CheckRun>> {
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let runs = derived::parse_evidence(&stdout, commands.len())?;
+    Some(
+        runs.into_iter()
+            .zip(commands)
+            .map(|(mut run, (origin, _))| {
+                run.origin = *origin;
+                run
+            })
+            .collect(),
+    )
+}
+
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or(text)
 }
 
 fn dirty_worktree(
@@ -993,6 +1094,7 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
         problem_notes: vec![],
         reports: vec![],
         acceptance_outcome: None,
+        checks: vec![],
     }
 }
 
@@ -1113,6 +1215,7 @@ pub struct LockedTask<'a> {
     task: &'a Task,
     policy: &'a RunPolicy,
     lock: fs::File,
+    local_checks: LocalCheckCommands,
     #[cfg(target_os = "linux")]
     managed_steering: Option<managed_steering::Launch>,
 }
@@ -1137,9 +1240,15 @@ impl<'a> LockedTask<'a> {
             task,
             policy,
             lock,
+            local_checks: LocalCheckCommands::default(),
             #[cfg(target_os = "linux")]
             managed_steering: None,
         })
+    }
+
+    /// Apply the local compile commands from the trusted frontend's owner settings.
+    pub fn set_local_checks(&mut self, commands: &LocalCheckCommands) {
+        self.local_checks = commands.clone();
     }
 
     /// The owner frontend enables steering for its exact admitted task.
@@ -1240,6 +1349,7 @@ fn run_locked(
             base: planned.base_sha.clone(),
             prompt: task.prompt.clone(),
             commands: planned.commands.clone(),
+            declared: None,
             worker_error: None,
             merge_error: None,
             failures: String::new(),
@@ -1277,6 +1387,16 @@ fn run_locked(
         }
         if completed_execution(old.record.step) {
             if !rerun && matches!(old.record.outcome, Outcome::Done | Outcome::NothingToDo) {
+                if old.record.checks.is_empty() {
+                    let mut old = old;
+                    old.record.outcome = Outcome::Unverified;
+                    old.record.detail =
+                        "saved run has no acceptance evidence; use --rerun to verify it".into();
+                    writer
+                        .save(&mut old, Step::Finished, observer)
+                        .map_err(RunError::Checkpoint)?;
+                    return Ok(old.record);
+                }
                 return Ok(old.record);
             }
             let mut new = fresh(old.record.checkpoint_revision);
@@ -1308,6 +1428,7 @@ fn run_locked(
         repo: &root,
         binary,
         policy: &policy,
+        local_checks: &locked.local_checks,
         lock: lock_file,
         writer: &mut writer,
         observer,
@@ -1345,7 +1466,7 @@ fn run_locked(
         .save(&mut state, Step::Saving, observer)
         .map_err(RunError::Checkpoint)?;
     if let Err(error) = execute::save_work(&root, binary, task, &policy, lock_file, &mut state.record) {
-        if state.record.outcome != Outcome::Interrupted {
+        if !matches!(state.record.outcome, Outcome::Interrupted | Outcome::Unverified) {
             state.record.outcome = Outcome::Blocked;
         }
         if !state.record.detail.is_empty() {
@@ -1385,7 +1506,14 @@ fn run_locked(
                 state.record.detail.clear();
             }
             Err(error) => {
-                state.record.outcome = Outcome::Blocked;
+                state.record.outcome = if error == NO_ACCEPTANCE_CHECKS
+                    || error == HOSTED_TEST_EVIDENCE_REQUIRED
+                    || error.contains("source project is not trusted")
+                {
+                    Outcome::Unverified
+                } else {
+                    Outcome::Blocked
+                };
                 state.record.detail = format!("save recovery: {error}");
             }
         }

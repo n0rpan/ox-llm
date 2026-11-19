@@ -63,7 +63,7 @@ esac
                 "state":"OPEN","body":"","isDraft":false,"reviewDecision":null,
                 "mergeable":"MERGEABLE","mergeStateStatus":"CLEAN",
                 "authorAssociation":"MEMBER","isCrossRepository":false,
-                "labels":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[]},
+                "labels":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}},
                 "comments":{"totalCount":0,"nodes":[]},"reviewThreads":{"totalCount":0,"nodes":[]},
                 "latestOpinionatedReviews":{"totalCount":0,"nodes":[]},
                 "baseRef":{"refUpdateRule":{"requiredStatusCheckContexts":["ci"]},"rules":{"totalCount":0,"nodes":[]}},
