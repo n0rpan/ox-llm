@@ -338,7 +338,9 @@ impl JobRegistry {
         let cancel = CancelToken::new();
         let output = Arc::new(Mutex::new(Out::default()));
         let status = Arc::new(Mutex::new(JobStatus::Running));
-        let stopped = Arc::new(AtomicBool::new(false));
+        // A foreground command followed to its end (`keep_all`) never wakes the session; only
+        // one that moves to the background does (see `release_to_background`).
+        let stopped = Arc::new(AtomicBool::new(keep_all));
         let unsandboxed = Arc::new(AtomicBool::new(false));
         let unsandboxed_job = unsandboxed.clone();
         state.jobs.insert(
@@ -436,6 +438,14 @@ impl JobRegistry {
             output,
             unsandboxed,
         }))
+    }
+
+    /// A followed foreground job (`keep_all`) outlived its wait and continues as a background
+    /// job: from now on its finish wakes the session like any other background job.
+    pub fn release_to_background(&self, id: &str) {
+        if let Some(job) = self.state.lock().unwrap().jobs.get(id) {
+            job.stopped.store(false, Ordering::SeqCst);
+        }
     }
 
     /// #150 (2): block for up to `max` until the job exits, prints output it has not yet shown
