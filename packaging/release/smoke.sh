@@ -54,6 +54,9 @@ tokenizer_fixture "$model"
 run() { env -i PATH=/usr/bin:/bin HOME="$sandbox" XDG_CONFIG_HOME="$sandbox/config" \
   XDG_STATE_HOME="$sandbox/state" XDG_CACHE_HOME="$sandbox/cache" XDG_DATA_HOME="$sandbox/data" \
   XDG_RUNTIME_DIR="$sandbox/runtime" "$@"; }
+run_server() { exec env -i PATH=/usr/bin:/bin HOME="$sandbox" XDG_CONFIG_HOME="$sandbox/config" \
+  XDG_STATE_HOME="$sandbox/state" XDG_CACHE_HOME="$sandbox/cache" XDG_DATA_HOME="$sandbox/data" \
+  XDG_RUNTIME_DIR="$sandbox/runtime" "$@"; }
 
 for retired in /usr/share/ox-llm/oxc /usr/bin/oxc /usr/bin/oxc-diagnostics; do
   [ ! -e "$retired" ] && [ ! -L "$retired" ] || fail "Legacy Python payload installed: $retired"
@@ -81,7 +84,7 @@ log=$fixtures/server.log
 base=
 for attempt in 1 2 3 4 5; do
   port=$((20000 + RANDOM % 20000))
-  run oxe-server --engine stub --model "$model" --alias synthetic --stub-reply ok --reasoning off \
+  run_server oxe-server --engine stub --model "$model" --alias synthetic --stub-reply ok --reasoning off \
     --host 127.0.0.1 --port "$port" > "$log" 2>&1 &
   server=$!
   for _ in $(seq 1 200); do

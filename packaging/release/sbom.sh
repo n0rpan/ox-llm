@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # CycloneDX 1.6 inventory from Cargo's locked resolver, plus shipped file hashes.
 #   packaging/release/sbom.sh PAYLOAD_DIR OUTPUT.json     (VERSION, e.g. v0.2.1, names the product version)
-# `cargo tree --workspace -e all` covers the full workspace resolution, including build and
-# test-only components; the scope is recorded on every component rather than claiming a
-# minimal runtime BOM.
+# `cargo metadata` covers the full locked workspace resolution, including build and test-only
+# components. Cargo's exact source identity is retained so equal name/version pairs do not collide.
 set -euo pipefail
 [ $# -eq 2 ] || { echo "usage: sbom.sh PAYLOAD_DIR OUTPUT.json" >&2; exit 2; }
 export LC_ALL=C
@@ -18,57 +17,62 @@ fi
 [ -n "$version" ] || { echo "sbom: cannot determine the version" >&2; exit 1; }
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-esc() { sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 
 : > "$work/components"
 scope='workspace resolution; includes build and test dependencies'
 for workspace in engine oxa oxc oxc-rs; do
   [ -f "$root/$workspace/Cargo.toml" ] || continue
-  # name<TAB>version<TAB>checksum for every locked package that has one
+  # Cargo metadata identifies packages and their sources but omits registry checksums. Key the
+  # Cargo.lock values by the same full identity; name/version alone is not unique.
   awk '
-    function flush() { if (name != "" && sum != "") print name "\t" ver "\t" sum; name = ver = sum = "" }
+    function flush() {
+      if (name != "" && sum != "") print name "\t" ver "\t" source "\t" sum
+      name = ver = source = sum = ""
+    }
     /^\[\[package\]\]/ { flush(); next }
     /^name = / { gsub(/"/, "", $3); name = $3 }
     /^version = / { gsub(/"/, "", $3); ver = $3 }
+    /^source = / { sub(/^[^=]*= "/, ""); sub(/"$/, ""); source = $0 }
     /^checksum = / { gsub(/"/, "", $3); sum = $3 }
     END { flush() }
-  ' "$root/$workspace/Cargo.lock" > "$work/sums"
-  (cd "$root/$workspace" && cargo tree --workspace --locked -e all --target all --prefix none \
-      --format '{p}|{l}') | sed -e 's/ (\*)$//' |
-    awk -F'|' -v sums="$work/sums" -v scope="$scope" '
-      BEGIN {
-        while ((getline line < sums) > 0) { split(line, f, "\t"); sum[f[1] " " f[2]] = f[3] }
-        q = "\""
-      }
-      function esc(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); return s }
-      {
-        split($1, w, " "); name = w[1]; ver = substr(w[2], 2)
-        if (name == "" || ver == "") next
-        ref = "pkg:cargo/" name "@" ver
-        item = "{\"type\": \"library\", \"bom-ref\": " q ref q ", \"name\": " q esc(name) q \
-               ", \"version\": " q esc(ver) q ", \"purl\": " q ref q \
-               ", \"properties\": [{\"name\": \"ox-llm:scope\", \"value\": " q scope q "}]"
-        lic = $2
-        if (lic != "") item = item ", \"licenses\": [{\"expression\": " q esc(lic) q "}]"
-        s = sum[name " " ver]
-        if (s != "") item = item ", \"hashes\": [{\"alg\": \"SHA-256\", \"content\": " q s q "}]"
-        print ref "\t" item "}"
-      }' >> "$work/components"
+  ' "$root/$workspace/Cargo.lock" > "$work/checksums"
+  (cd "$root/$workspace" && cargo metadata --locked --format-version 1) |
+    jq -c --arg root "$root/" --arg scope "$scope" --rawfile sums "$work/checksums" '
+      (reduce ($sums | split("\n")[] | select(length > 0) | split("\t")) as $row
+        ({}; .[$row[0] + "\u0000" + $row[1] + "\u0000" + $row[2]] = $row[3])) as $checksums |
+      .packages[] |
+      (.manifest_path | sub("/Cargo.toml$"; "")) as $directory |
+      (if .source != null then .source
+       elif $directory | startswith($root) then "path+workspace/" + ($directory | ltrimstr($root))
+       else "path+" + $directory end) as $source |
+      ($checksums[.name + "\u0000" + .version + "\u0000" + (.source // "")] // "") as $checksum |
+      ("pkg:cargo/" + (.name | @uri) + "@" + (.version | @uri) +
+       "?source=" + ($source | @uri)) as $ref |
+      {type: "library", "bom-ref": $ref, name, version, purl: $ref,
+       properties: [
+         {name: "ox-llm:scope", value: $scope},
+         {name: "ox-llm:cargo-source", value: $source}
+       ]} |
+      if (.license // "") != "" then .licenses = [{expression: .license}] else . end |
+      if $checksum != "" then .hashes = [{alg: "SHA-256", content: $checksum}] else . end
+    ' >> "$work/components"
 done
-# One component per package identity, even when several workspaces resolve it.
-sort -t "$(printf '\t')" -k1,1 -u "$work/components" > "$work/libraries"
 
-(cd "$payload" && find . -type f -print | sed 's|^\./||' | sort) | while IFS= read -r relative; do
-  hash=$(sha256sum "$payload/$relative" | cut -d' ' -f1)
-  e=$(printf '%s' "$relative" | esc)
-  printf '%s\t{"type": "file", "bom-ref": "%s", "name": "%s", "hashes": [{"alg": "SHA-256", "content": "%s"}]}\n' \
-    "$relative" "$e" "$e" "$hash"
-done > "$work/files"
+# Hash through stdin: unlike `sha256sum FILE`, this never adds a backslash marker for unusual names.
+(cd "$payload" && find . -type f -print0 | sort -z) |
+  while IFS= read -r -d '' path; do
+    relative=${path#./}
+    hash=$(sha256sum < "$payload/$relative" | awk '{print $1}')
+    jq -cn --arg name "$relative" --arg hash "$hash" \
+      '{type: "file", "bom-ref": $name, name: $name,
+        hashes: [{alg: "SHA-256", content: $hash}]}'
+  done >> "$work/components"
 
-{
-  printf '{"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1,\n'
-  printf ' "metadata": {"component": {"type": "application", "name": "ox-llm", "version": "%s"}},\n' "$version"
-  printf ' "components": [\n'
-  cat "$work/libraries" "$work/files" | sort -t "$(printf '\t')" -k1,1 | cut -f2- | sed -e '$!s/$/,/' -e 's/^/  /'
-  printf ' ]}\n'
-} > "$output"
+# `unique_by` merges the same exact Cargo PackageId reached from multiple workspaces. Parsing and
+# rewriting with jq also validates that every generated component and the final document are JSON.
+jq -s --arg version "$version" '
+  {bomFormat: "CycloneDX", specVersion: "1.6", version: 1,
+   metadata: {component: {type: "application", name: "ox-llm", version: $version}},
+   components: (sort_by(."bom-ref") | unique_by(."bom-ref"))}
+' "$work/components" > "$output"
+jq -e . "$output" > /dev/null

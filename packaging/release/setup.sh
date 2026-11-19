@@ -2,7 +2,7 @@
 # Fedora 44 supplies GCC 16, matching the documented CPU kernel compiler.
 set -euo pipefail
 dnf -y -q install --setopt=install_weak_deps=False gcc gcc-c++ binutils make cmake ninja-build \
-  git-core strace tar gzip findutils which diffutils curl ca-certificates
+  git-core strace tar gzip findutils which diffutils curl ca-certificates jq
 case $(uname -m) in
   aarch64) checksum=a9c168dbea81a84671c6b7a5c1795cb0eb699020110d107ddfca427bd797e697;;
   x86_64) checksum=5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4;;

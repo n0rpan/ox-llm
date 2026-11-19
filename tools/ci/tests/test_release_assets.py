@@ -1,5 +1,6 @@
-import re
+import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -92,6 +93,71 @@ class ReleaseAssets(unittest.TestCase):
         self.assertIn('bash /smoke.sh', arch)
         self.assertNotRegex(arch.split('pacman -Syu', 1)[1].splitlines()[0], r'\bpython\b')
         self.assertIn('(depend|makedepend|checkdepend) = python', arch)
+
+    def test_sbom_preserves_sources_and_json_encodes_payload_names(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'source'
+            scripts = root / 'packaging/release'
+            scripts.mkdir(parents=True)
+            shutil.copyfile(W.parents[1] / 'packaging/release/sbom.sh', scripts / 'sbom.sh')
+            (scripts / 'sbom.sh').chmod(0o755)
+            (root / 'engine').mkdir()
+            (root / 'engine/Cargo.toml').write_text('[workspace]\n')
+            (root / 'engine/Cargo.lock').write_text('''
+[[package]]
+name = "same"
+version = "1.0.0"
+source = "registry+https://example.invalid/index"
+checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[[package]]
+name = "same"
+version = "1.0.0"
+source = "git+https://example.invalid/repo#0123456789abcdef"
+''')
+            fakebin = root / 'fakebin'
+            fakebin.mkdir()
+            cargo = fakebin / 'cargo'
+            cargo.write_text('''#!/bin/sh
+cat <<EOF
+{"packages":[
+ {"name":"same","version":"1.0.0","source":"registry+https://example.invalid/index","manifest_path":"/cargo/one/Cargo.toml","license":"MIT"},
+ {"name":"same","version":"1.0.0","source":"git+https://example.invalid/repo#0123456789abcdef","manifest_path":"/cargo/two/Cargo.toml","license":null},
+ {"name":"not-a-feature","version":"2.0.0","source":null,"manifest_path":"$PWD/member/Cargo.toml","license":null}
+]}
+EOF
+''')
+            cargo.chmod(0o755)
+            payload = root / 'payload'
+            payload.mkdir()
+            unusual = 'back\\slash "quote"'
+            (payload / unusual).write_bytes(b'payload')
+            output = root / 'sbom.json'
+            env = os.environ.copy()
+            env['VERSION'] = 'v9.8.7'
+            env['PATH'] = f'{fakebin}:{env["PATH"]}'
+            subprocess.run([scripts / 'sbom.sh', payload, output],
+                           cwd=root, env=env, check=True)
+            document = json.loads(output.read_text())
+
+            self.assertEqual(document['metadata']['component']['version'], '9.8.7')
+            files = [item for item in document['components'] if item['type'] == 'file']
+            self.assertEqual([item['name'] for item in files], [unusual])
+            self.assertRegex(files[0]['hashes'][0]['content'], r'^[0-9a-f]{64}$')
+            libraries = [item for item in document['components'] if item['type'] == 'library']
+            self.assertFalse(any(item['version'] == 'eature' for item in libraries))
+            same = [item for item in libraries if item['name'] == 'same']
+            self.assertEqual(len(same), 2)
+            self.assertEqual(len({item['purl'] for item in same}), 2)
+            registry = next(item for item in same if 'registry%2B' in item['purl'])
+            self.assertEqual(registry['hashes'][0]['content'], 'a' * 64)
+            self.assertEqual(len({item['bom-ref'] for item in document['components']}),
+                             len(document['components']))
+
+    def test_smoke_tracks_the_execed_server_process(self):
+        smoke = (W.parents[1] / 'packaging/release/smoke.sh').read_text()
+        self.assertRegex(smoke, r'run_server\(\) \{ exec env -i ')
+        self.assertIn('run_server oxe-server --engine stub', smoke)
 
     def test_installer_check_flags_python_recipes_and_scripts(self):
         script = W.parents[1] / 'packaging/release/no-python-installers.sh'
