@@ -9,6 +9,7 @@
 ### Added
 
 - Owner confirm broker (yolo power plan S1): each session exports `OXA_CONFIRM_SOCK`, a private unix socket through which oxa commands ask the owner. Yolo answers yes and records it, standard and auto show a dialog, and the owner's typed message answers a waiting one. Commands move to it in later slices.
+- `oxa work --publish` and `--report-problems` confirm through the owner confirm broker (yolo power plan S5): a session's tool child no longer hits the agent-marker refusal when the broker is present, yolo publishes without a question, and the owner's typed yes answers it elsewhere. The head and push URL are re-checked after the yes. The read-only issue search asks nothing, and an unpublished task says why in `detail`.
 - `oxa work --pr N --model MODEL` (#1019): the unattended packet for a pull request carries its title, body, reviews, issue comments and the names of failing checks at the current head, and the task branch is the pull request's own head branch. Review text and check names are labelled as data and bounded (reviews to 16 KiB, 40 check names); only failing checks travel, never passing ones. Malformed review or check lists are refused, never silently dropped.
 
 ### Changed

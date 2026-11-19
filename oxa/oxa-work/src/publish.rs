@@ -159,6 +159,18 @@ fn publish_locked(
     if !super::completed_execution(value.record.step)
         || !matches!(accepted, Outcome::Done | Outcome::NothingToDo)
     {
+        // Say why nothing was published; the unsaved copy carries the note, the checkpoint
+        // stays as it was.
+        let why = format!(
+            "not published: only a finished task accepted as done can be published (this one is {accepted:?} at {:?})",
+            value.record.step
+        )
+        .to_lowercase();
+        value.record.detail = if value.record.detail.is_empty() {
+            why
+        } else {
+            format!("{}; {why}", value.record.detail)
+        };
         return Ok(value.record);
     }
     value.record.acceptance_outcome = Some(accepted);
@@ -248,7 +260,7 @@ fn publish_locked(
             "Push accepted commit {head} as {} to origin and create/update its PR in {name} (base {base})? Type yes to publish: ",
             task.branch
         )) != Some(true) {
-            return Err("publication requires confirmation through the controlling terminal".into());
+            return Err("not published: the owner did not confirm (a session answers through its owner confirm broker, a terminal through /dev/tty)".into());
         }
         if remote != checked(git(repo, &["remote", "get-url", "--push", "--all", "origin"]))?
             || head != checked(git(tree, &["rev-parse", "HEAD"]))?

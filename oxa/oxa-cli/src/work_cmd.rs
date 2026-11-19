@@ -242,7 +242,10 @@ pub(crate) fn run(
             }
             end -= 1;
         }
+        // A session's tool child reaches the owner through the confirm broker, which is the
+        // owner's yolo choice, dialog or typed yes; without one the marker still refuses.
         if (publish || reports)
+            && crate::owner_confirm_client::broker_socket(env).is_none()
             && env.pairs().iter().any(|(name, _)| {
                 matches!(
                     name.as_str(),
@@ -475,7 +478,7 @@ impl Context {
                 binary,
                 &gh,
                 &|_: &oxa_work::Record| Ok(()),
-                &mut crate::report_cmd::tty_confirm(env),
+                &mut crate::owner_confirm_client::owner_confirm(env),
             )?;
         }
         if reports && !record.worktree.as_os_str().is_empty() {
@@ -509,7 +512,7 @@ impl Context {
                             semantic_github,
                         )
                     };
-                    let mut confirm = crate::report_cmd::tty_confirm(env);
+                    let mut confirm = crate::owner_confirm_client::owner_confirm(env);
                     if semantic && !offline {
                         return crate::work_reports::report_semantic(
                             note,

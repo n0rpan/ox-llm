@@ -297,14 +297,20 @@ Execution preserves a saved offline restriction across restarts; later explicit
 publication uses the current network policy without changing that restriction.
 A publication failure keeps a publication checkpoint; another `--publish` retries
 without replaying the agent. Offline mode refuses network publication.
-Before each push, the runner asks through the controlling terminal for approval
-of the accepted commit, branch and PR destination. Piped input cannot approve it.
+Before each push, the runner asks the owner to approve the accepted commit, branch and
+PR destination. Inside a session the question goes to the session's owner confirm
+broker (`OXA_CONFIRM_SOCK`): yolo answers yes and records it, standard and auto show a
+dialog that the owner's typed `yes` also answers. Run from a terminal, the answer is
+typed on `/dev/tty`. Piped input and text the model read never approve it, and the
+agent marker alone still refuses when no broker is present. After the yes the runner
+re-checks the origin push URL and the task head, and refuses if either moved. When the
+task is not accepted as done, the record's `detail` says it was not published and why.
 
 `--report-problems` independently authorizes filing the task's own structured
 problem notes using the `report-issue` workflow. This flag must be launched by the
-user outside an agent tool. Each new report or comment shows its exact cleaned
-text and requires controlling-terminal confirmation, as `oxa report-issue submit`
-does. Without confirmation it stays a local draft. Reports use the user setting `oxa.reportIssue.repo`;
+user, or from a session through its owner confirm broker. Each new report or comment
+shows its exact cleaned text and asks the owner the same way as a publish; the
+read-only search of open issues and PRs asks nothing. Without confirmation it stays a local draft. Reports use the user setting `oxa.reportIssue.repo`;
 project settings cannot choose a destination. Notes, titles and queries pass
 through the existing report scrubber. The runner performs two or three symptom
 queries against open issues and PRs and reads the top matches before writing.

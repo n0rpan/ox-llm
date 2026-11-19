@@ -45,6 +45,7 @@ mod login_cmd;
 mod mcp_cmd;
 mod memory_cmd;
 mod netguard;
+mod owner_confirm_client;
 mod pkg_cmd;
 mod report_cmd;
 mod result_facts;
