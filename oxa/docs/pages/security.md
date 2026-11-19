@@ -34,7 +34,7 @@ Pasted and dropped images saved as `tmp/paste-<hash>.<image extension>` remain r
 
 ### standard, auto and yolo
 
-On top of the table, the permission mode decides who answers the questions:
+[modes.md](modes.md) is the short guide to these modes. On top of the table, the permission mode decides who answers the questions:
 
 | Mode | Prompts | Bash | File tools |
 |---|---|---|---|
@@ -130,6 +130,8 @@ The list applies to your `$HOME` and also to the home of your account from the p
 
 Exception for the GitHub CLI: in a sandbox with network access (not `--offline`), `~/.config/gh` is bound read-only so `gh` works (its host list and token file are readable there). With `--offline` there is no network and `gh` fails. A token in the system keyring is not reachable from inside the sandbox, so at start-up, when the network is on and `gh` is installed, oxa runs `gh auth token` once outside the sandbox (3 second limit; any failure is ignored). It passes the result to commands that have the network as `GH_TOKEN`, with `GH_HOST=github.com`. This happens in workspace and full modes with network only, never with `--offline` or `oxa.sandbox.net: off`. The token is not logged and is not in the session file, the transcript or the prompt. An exact copy of it in command output is replaced with `[redacted]` before the model sees it. Any command that has the network can use the token, for example to call the GitHub API, so log in with a token that has only the scopes you accept. It is handed to bwrap through a pipe, not on its command line, so other processes of your user cannot read it from the process list. Every other entry stays masked.
 
+GitHub reads without a token in the sandbox: the `wait` tool accepts the host-side read probes `pr_view`, `pr_checks`, `run_log_failed` and `issue_view`. They run `gh` outside the sandbox with your login, read only, in fixed argument vectors with a number from the call and the repository from the `origin` remote (github.com only). `gh` must be found in a trusted PATH directory. A failed-step log is cut to its last 24 KB and scrubbed of credentials before the model sees it. They refuse with `--offline` and in a runner-owned worker session. The token never enters the sandbox.
+
 Other secrets are not on the list. A project's `.env` file, a token in a project configuration file, and files outside your home directory are readable by bash, and by the file tools in the modes that allow reads. Keep such files out of the project when the model should not see them, or use `plan` or `--offline` for the session.
 
 ### Git worktrees and shared clones
@@ -169,7 +171,7 @@ In `standard` and `auto`, the model cannot write `.oxa/**` or `.agents/skills/**
 
 ## Network
 
-The harness connects to one place by default: the engine, on loopback (`127.0.0.1:8092`). It has no telemetry, no version check and no upload of sessions, exports or reports. The model talks only to the engine. Its tools may use the network, as the table shows.
+The harness connects to the model you chose: the local engine on loopback, or the provider of the selected cloud model. It has no telemetry, no version check and no upload of sessions, exports or reports. Its tools may use the network, as the table shows.
 
 | Source | Network | In `ask` mode |
 |---|---|---|

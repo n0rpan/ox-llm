@@ -125,6 +125,7 @@ fn managed_native_worker(case: ManagedCase) {
         lease: None,
         attempts_today: 0,
         eligible: true,
+        evidence_incomplete: None,
     };
     let policy = Policy {
         enabled: true,
@@ -744,6 +745,8 @@ fn a_monitor_error_drains_admitted_workers_before_returning() {
         terminate_binary: None,
         offline: true,
         runner_owns_github: false,
+        autonomy: Default::default(),
+        autonomy_now: None,
         storage: env.agent_dir().join("work/monitor-fixture"),
     };
     let result = oxa_work::run_queue(
@@ -753,6 +756,7 @@ fn a_monitor_error_drains_admitted_workers_before_returning() {
             max: 1,
             min_free_bytes: 0,
             once: true,
+            ..oxa_work::QueueOptions::default()
         },
         &policy,
         std::path::Path::new("/usr/bin/df"),
