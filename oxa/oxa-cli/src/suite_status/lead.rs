@@ -252,8 +252,10 @@ mod tests {
             json!({"oxa": {"lead": {"model": "project-model"}}}).to_string(),
         )
         .unwrap();
+        // `oxa.lead.model` is user-only: the project file cannot name the Lead's model, so the
+        // merged settings keep the owner's value and the section reports that.
         let merged = Settings::load(&dirs, &test.work(), true);
-        assert_eq!(merged.get("oxa.lead.model"), Some(&json!("project-model")));
+        assert_eq!(merged.get("oxa.lead.model"), Some(&json!("owner-model")));
         assert_eq!(
             section(&merged, &dirs, &test.work(), &Env::from_pairs(&[]))["model"],
             "owner-model"
