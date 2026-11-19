@@ -511,6 +511,7 @@ mod tests {
                 offline: true,
                 runner_owns_github: false,
                 autonomy: Default::default(),
+                autonomy_now: None,
                 storage,
             };
             checked(private_git(

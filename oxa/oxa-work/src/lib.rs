@@ -808,6 +808,9 @@ pub struct RunPolicy {
     pub runner_owns_github: bool,
     /// The owner's level for the workers this runner starts. Only `Yolo` changes the worker argv.
     pub autonomy: oxa_proto::Autonomy,
+    /// Re-read of that level at each launch. A queue started while the owner was in yolo must not
+    /// keep passing `--yolo` after the owner lowered `permissions.defaultMode`.
+    pub autonomy_now: Option<std::sync::Arc<dyn Fn() -> oxa_proto::Autonomy + Send + Sync>>,
     pub storage: PathBuf,
 }
 

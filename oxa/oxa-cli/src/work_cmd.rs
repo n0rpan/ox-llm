@@ -170,6 +170,13 @@ pub(crate) fn run(
             offline: oxa_proto::offline(),
             runner_owns_github: false,
             autonomy: runner_autonomy(&oxa_config::Settings::load(dirs, &root, false)),
+            // Re-read for every launch: lowering `permissions.defaultMode` revokes yolo for the
+            // tasks a running queue has not started yet.
+            autonomy_now: Some({
+                let (dirs, root) = (dirs.clone(), root.clone());
+                std::sync::Arc::new(move || runner_autonomy(&oxa_config::Settings::load(&dirs, &root, false)))
+                    as std::sync::Arc<dyn Fn() -> oxa_proto::Autonomy + Send + Sync>
+            }),
             storage: dirs.agent_dir.join("work").join(key),
         };
         protected_storage(&policy.storage, &root, &common)?;
