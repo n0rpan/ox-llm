@@ -34,7 +34,8 @@ maintainer, who says in the PR when a hardware check is needed.
   records it. The broker socket is owned by the session (dir 0700, socket 0600) and validates a
   complete, bounded request frame before asking. Do not add
   `/dev/tty`-only confirmations or env-marker refusals for owner actions. On Linux, sandboxed
-  tool children authenticate the broker as a peer outside their PID namespace; visible peers,
+  tool children authenticate the broker as a peer outside their PID namespace; the sandbox
+  disables nested user namespaces so a tool cannot manufacture another such boundary. Visible peers,
   including same-user ancestor wrappers, are refused. Non-Linux tool children cannot authenticate
   a Unix peer PID and therefore cannot use broker-backed owner actions; run those actions directly
   from the owner's terminal there.

@@ -97,7 +97,10 @@ pub(crate) fn bwrap_args_pinned(
     let cwd_path = cwd_c.as_path();
     let cwd = cwd_c.to_string_lossy().into_owned();
     let mut a: Vec<String> = Vec::new();
-    push(&mut a, &["--unshare-all"]);
+    // Keep a tool from manufacturing another PID/user namespace in which its own
+    // confirmation listener appears to be a host-side peer. Owner-confirm authentication
+    // relies on the session broker being outside this (single) sandbox PID namespace.
+    push(&mut a, &["--unshare-all", "--disable-userns"]);
     if s.net {
         push(&mut a, &["--share-net"]);
     }
@@ -523,6 +526,9 @@ mod confirm_socket_tests {
             env: vec![("OXA_CONFIRM_SOCK".into(), socket.to_string_lossy().into_owned())],
         };
         let args = bwrap_args(&spec, &env.home());
+        assert!(args
+            .windows(2)
+            .any(|w| w == ["--unshare-all", "--disable-userns"]));
         let socket = socket.to_string_lossy();
         assert!(args.windows(3).any(|w| w == ["--ro-bind", &*socket, &*socket]));
         let parent = private.to_string_lossy();

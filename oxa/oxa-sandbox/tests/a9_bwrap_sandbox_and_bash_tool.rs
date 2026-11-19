@@ -134,6 +134,7 @@ fn argv_golden_per_writable_net() {
         base(true, false),
         argv(&[
             "--unshare-all",
+            "--disable-userns",
             "--die-with-parent",
             "--new-session",
             "--cap-drop",
@@ -183,6 +184,7 @@ fn argv_golden_per_writable_net() {
         base(true, true),
         argv(&[
             "--unshare-all",
+            "--disable-userns",
             "--share-net",
             "--die-with-parent",
             "--new-session",
@@ -233,6 +235,7 @@ fn argv_golden_per_writable_net() {
         base(false, false),
         argv(&[
             "--unshare-all",
+            "--disable-userns",
             "--die-with-parent",
             "--new-session",
             "--cap-drop",
@@ -282,6 +285,7 @@ fn argv_golden_per_writable_net() {
         base(false, true),
         argv(&[
             "--unshare-all",
+            "--disable-userns",
             "--share-net",
             "--die-with-parent",
             "--new-session",
