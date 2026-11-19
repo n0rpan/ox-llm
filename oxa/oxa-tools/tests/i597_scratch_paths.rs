@@ -27,6 +27,7 @@ impl Sandbox for Scratchy {
             output: Vec::new(),
             exit: None,
             timed_out: false,
+            unsandboxed: false,
         }
     }
     fn scratch_dir(&self) -> Option<&Path> {

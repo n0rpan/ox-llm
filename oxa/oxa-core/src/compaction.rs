@@ -325,9 +325,10 @@ fn estimate_of(t: &oxa_session::Transcript) -> u32 {
         return base;
     };
     let wire = t.wire();
+    // B2a: image parts are not text; the estimate counts the text form only.
     let bytes: usize = wire[from.min(wire.len())..]
         .iter()
-        .map(|m| m.to_json().len())
+        .map(|m| m.text_json_len())
         .sum();
     let appended = u32::try_from(bytes.div_ceil(3)).unwrap_or(u32::MAX);
     base.saturating_add(appended)
@@ -350,6 +351,7 @@ mod estimate_tests {
 
     fn tool_result(text: &str) -> WireMsg {
         WireMsg {
+            images: Vec::new(),
             role: Role::Tool,
             content: Some(text.to_string()),
             reasoning: None,

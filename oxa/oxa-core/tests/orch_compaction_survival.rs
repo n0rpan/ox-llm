@@ -57,6 +57,7 @@ fn build(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Vec<Arc<dyn Hooks>>) -> 
         modes: Mutex::new((QueueMode::All, QueueMode::OneAtATime)),
         dirty: std::sync::atomic::AtomicBool::new(false),
         gate: Default::default(),
+        wait_wake: CancelToken::new(),
     });
     SessionState {
         goal: None,
@@ -146,6 +147,23 @@ fn compact(st: &mut SessionState) {
         &mut ui(),
     )
     .expect("compact");
+}
+
+/// How many compaction entries the session tree holds.
+fn compactions(st: &SessionState) -> usize {
+    st.tree
+        .entries()
+        .iter()
+        .filter(|e| matches!(e.body, EntryBody::Compaction { .. }))
+        .count()
+}
+
+/// Give the wire older history and a newest prompt, so that a compaction has something to
+/// summarise (an empty wire has no cut point and the compaction is skipped).
+fn seed_history(st: &mut SessionState, newest: &str) {
+    say(st, "older task");
+    push(st, WireMsg::assistant("older work"));
+    say(st, newest);
 }
 
 /// A hook set that adds one prompt section and continues everywhere.
@@ -247,8 +265,13 @@ fn queued_follow_up_survives_compaction() {
         .follow_up
         .push("follow up later".to_string());
 
+    seed_history(&mut st, "first prompt");
     compact(&mut st);
+    assert_eq!(compactions(&st), 1, "first compaction ran");
+    push(&mut st, WireMsg::assistant("more work"));
+    say(&mut st, "second prompt");
     compact(&mut st);
+    assert_eq!(compactions(&st), 2, "second compaction ran");
 
     let queue = st.shared.queue.lock().expect("queue");
     assert_eq!(
@@ -272,7 +295,9 @@ fn hook_prompt_sections_survive_compaction() {
     let before = section(&st, "hook-policy").expect("hook section in the prefix");
     assert!(before.contains("HOOK POLICY TEXT"), "{before}");
 
+    seed_history(&mut st, "newest prompt");
     compact(&mut st);
+    assert_eq!(compactions(&st), 1, "compaction ran");
 
     let after = section(&st, "hook-policy").expect("hook section after compaction");
     assert!(after.contains("HOOK POLICY TEXT"), "{after}");

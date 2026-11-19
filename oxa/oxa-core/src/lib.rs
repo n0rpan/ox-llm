@@ -57,6 +57,7 @@ mod retry;
 pub mod review_task;
 pub mod sampling;
 mod session;
+mod settings_refresh;
 mod state;
 mod subagent;
 mod think;

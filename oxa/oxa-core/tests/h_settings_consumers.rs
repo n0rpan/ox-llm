@@ -61,6 +61,7 @@ impl Sandbox for Capture {
             output: b"ok".to_vec(),
             exit: Some(0),
             timed_out: false,
+            unsandboxed: false,
         }
     }
 }

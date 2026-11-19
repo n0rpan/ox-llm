@@ -47,6 +47,8 @@ pub struct Shared {
     pub cancel: CancelToken,
     /// Cancels a pending auto-retry wait only.
     pub cancel_retry: CancelToken,
+    /// Wakes a running `wait` tool when input for the active session arrives (reset per wait).
+    pub wait_wake: CancelToken,
     /// `true` while `prompt` is running.
     pub busy: std::sync::atomic::AtomicBool,
     pub modes: Mutex<(QueueMode, QueueMode)>,
@@ -105,6 +107,9 @@ impl WrapUpReason {
 ///   the session and has not armed `bg_cancel` yet would otherwise miss the cancel).
 #[derive(Debug, Default)]
 pub struct Gate {
+    /// L1: the settings files as last seen (`settings_refresh`).
+    pub(crate) settings_watch: Mutex<crate::settings_refresh::Watch>,
+    live_settings: Mutex<LiveSettings>,
     goal_steering_enabled: std::sync::atomic::AtomicBool,
     pub(crate) lead_steering_authority: Mutex<Option<crate::goal::BoundLeadAuthority>>,
     pub(crate) advisor: Mutex<Option<Arc<crate::advice::BoundAdvisor>>>,
@@ -135,6 +140,21 @@ pub struct Gate {
     /// `true` once a front end polls `Session::take_swap_request`; without it the two
     /// extension calls answer `unsupported_in_oxa`.
     pub swap_enabled: std::sync::atomic::AtomicBool,
+}
+
+#[derive(Default)]
+struct LiveSettings {
+    subscribed: bool,
+    pending: Option<oxa_config::Settings>,
+}
+
+impl std::fmt::Debug for LiveSettings {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fmt.debug_struct("LiveSettings")
+            .field("subscribed", &self.subscribed)
+            .field("pending", &self.pending.is_some())
+            .finish()
+    }
 }
 
 /// Holds [`Gate::in_flight`] for one request; dropping it opens the gate.
@@ -205,6 +225,13 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Shared {
+    pub(crate) fn publish_live_settings(&self, settings: &oxa_config::Settings) {
+        let mut live = lock(&self.gate.live_settings);
+        if live.subscribed {
+            live.pending = Some(settings.clone());
+        }
+    }
+
     pub(crate) fn begin_literal_turn(
         self: &Arc<Self>,
         context: Option<oxa_proto::WireMsg>,
@@ -271,6 +298,7 @@ impl Shared {
             queue: Mutex::new(Queue::default()),
             cancel: CancelToken::new(),
             cancel_retry: CancelToken::new(),
+            wait_wake: CancelToken::new(),
             busy: std::sync::atomic::AtomicBool::new(false),
             modes: Mutex::new((steering, follow_up)),
             dirty: std::sync::atomic::AtomicBool::new(false),
@@ -308,10 +336,29 @@ impl Shared {
         }
     }
 
+    /// Arm the wait wakeup: reset it, then re-check the queues. Input is queued before the
+    /// handle cancels, so input admitted at any moment either is seen here or wakes the wait.
+    pub(crate) fn arm_wait_wake(&self) {
+        self.wait_wake.reset();
+        if self.has_input() {
+            self.wait_wake.cancel();
+        }
+    }
+
     /// Steering or follow-up messages for the active session are queued.
     pub fn has_input(&self) -> bool {
         let q = lock(&self.queue);
         !q.steering.is_empty() || q.follow_ups().next().is_some()
+    }
+
+    pub(crate) fn has_follow_up(&self) -> bool {
+        lock(&self.queue).follow_ups().next().is_some()
+    }
+
+    pub(crate) fn update_modes(&self, steering: Option<QueueMode>, follow_up: Option<QueueMode>) {
+        let mut modes = lock(&self.modes);
+        *modes = (steering.unwrap_or(modes.0), follow_up.unwrap_or(modes.1));
+        self.dirty.store(true, Ordering::SeqCst);
     }
 
     /// ENG-002: arm the background cancel for one background request. Returns `false` (send
@@ -377,6 +424,16 @@ pub struct Handle {
 }
 
 impl Handle {
+    /// Subscribe a local frontend to applied settings before it starts a run.
+    pub fn watch_live_settings(&self) {
+        lock(&self.shared.gate.live_settings).subscribed = true;
+    }
+
+    /// Take the latest effective settings without sending values through public events.
+    pub fn take_live_settings(&self) -> Option<oxa_config::Settings> {
+        lock(&self.shared.gate.live_settings).pending.take()
+    }
+
     /// Enable typed steering for this frontend before it starts the native run.
     pub fn enable_goal_steering(&self) {
         self.shared
@@ -407,6 +464,7 @@ impl Handle {
         lock(&self.shared.queue).steering.push(text);
         self.shared.dirty.store(true, Ordering::SeqCst);
         self.shared.gate.bg_cancel.cancel();
+        self.shared.wait_wake.cancel();
     }
     /// Queue a follow-up (delivered when the agent would otherwise stop). Cancels this
     /// instance's own background request like [`Handle::steer`].
@@ -414,6 +472,7 @@ impl Handle {
         lock(&self.shared.queue).follow_up.push(text);
         self.shared.dirty.store(true, Ordering::SeqCst);
         self.shared.gate.bg_cancel.cancel();
+        self.shared.wait_wake.cancel();
     }
     /// Whether these handles control the same ordinary input queues. Reopening creates
     /// another instance; a fork within the same instance retains its existing queue semantics.
@@ -475,6 +534,7 @@ impl Handle {
         if q.session_id == session_id {
             self.shared.dirty.store(true, Ordering::SeqCst);
             self.shared.gate.bg_cancel.cancel();
+            self.shared.wait_wake.cancel();
         }
         true
     }
@@ -635,8 +695,7 @@ impl Handle {
         self.shared.snapshot()
     }
     pub fn set_modes(&self, steering: QueueMode, follow_up: QueueMode) {
-        *lock(&self.shared.modes) = (steering, follow_up);
-        self.shared.dirty.store(true, Ordering::SeqCst);
+        self.shared.update_modes(Some(steering), Some(follow_up));
     }
 }
 
