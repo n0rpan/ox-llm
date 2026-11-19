@@ -89,7 +89,7 @@ pub fn save(agent_dir: &Path, parent_id: &str, records: &[WorkerRecord]) -> Resu
 
 /// Whether a status snapshot was written by this worker: the same session and the same process.
 /// The status writer emits both fields; a snapshot without them, or with others, is not ours.
-fn names_worker(rec: &WorkerRecord, status: &Value) -> bool {
+pub(crate) fn names_worker(rec: &WorkerRecord, status: &Value) -> bool {
     status.get("session_id").and_then(Value::as_str) == Some(rec.session_id.as_str())
         && status.get("pid").and_then(Value::as_u64) == Some(u64::from(rec.pid))
 }

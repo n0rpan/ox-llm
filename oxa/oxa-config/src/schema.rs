@@ -141,7 +141,11 @@ const SCHEMA: &[KeyDef] = &[
     ),
     key("modelThinkingLevels", Kind::Object, "{}"),
     key("outputPad", Kind::Number, "1"),
+    key("oxa.a2a.enabled", Kind::Bool, "true"),
     key("oxa.allowHomeCwd", Kind::Bool, "false"),
+    // #1512 S2: exact rule keys saved by "always allow" in a dangerous-command prompt; user
+    // settings only (a project value is never read).
+    key("oxa.approval.always", Kind::StringList, "[]"),
     // #1512: dangerous-command rules (+id/-id/cmd:..); user settings only.
     key("oxa.approval.dangerous", Kind::StringList, "[]"),
     // F5: seconds; unset = 120; 0 = none.
@@ -169,7 +173,7 @@ const SCHEMA: &[KeyDef] = &[
     // (`settings.rs` reads it via `user_u32`, the descriptor row carries `.user_only()`).
     key("oxa.emptyReplyRetries", Kind::Number, "1"),
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
-    key("oxa.engine.inProcessCloud", Kind::Bool, "false"),
+    key("oxa.engine.inProcessCloud", Kind::Bool, "null"),
     key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
@@ -178,6 +182,11 @@ const SCHEMA: &[KeyDef] = &[
     // K3: a headless print or JSON run of a persisted session with a pursuing goal takes
     // `oxa send` follow-ups from the session inbox for the run; false = off.
     key("oxa.inbox.headless", Kind::Bool, "true"),
+    // W4: a finished background bash job (not one stopped) queues one follow-up message with its
+    // exit code and last lines; true (the default, owner decision); false (opt-out) = the job's output
+    // waits for a read. User
+    // settings only: a project file cannot enable it.
+    key("oxa.jobs.wakeOnFinish", Kind::Bool, "true"),
     // The owner's explicit route for the Lead conversation: an exact model id for
     // the normal `--model` selector and the normal gateway. User settings only;
     // unset keeps the ordinary startup model.
@@ -187,8 +196,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.lead.serve", Kind::Object, "{}"),
     // Exact protected owner Session ID for free-text Lead chat; user settings only.
     key("oxa.lead.sessionId", Kind::String, "null"),
-    // Read-only lead shadow preset; user settings only, default off.
-    key("oxa.lead.shadow", Kind::Bool, "false"),
+    // Read-only lead shadow preset; user settings only, on by default (`false` opts out).
+    key("oxa.lead.shadow", Kind::Bool, "true"),
     // L1: apply a changed settings file at the next run; on by default, `false` opts out.
     key("oxa.liveSettings", Kind::Bool, "true"),
     // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
@@ -203,6 +212,8 @@ const SCHEMA: &[KeyDef] = &[
     // V020-OPTIMIZE #13 / OXA-LOCAL-FIRST F1: timing only (bytes unchanged); unset = on.
     key("oxa.prefill.paste", Kind::Bool, "null"),
     key("oxa.prefill.tools", Kind::Bool, "null"),
+    // B2b: user-only largest image and per-batch image budget; 0 = no limit.
+    key("oxa.read.maxImageBytes", Kind::Number, "20971520"),
     key("oxa.reportIssue.dailyNew", Kind::Number, "null"),
     key("oxa.reportIssue.repo", Kind::String, "null"),
     key("oxa.reportIssue.semanticDedupe", Kind::Bool, "false"),
@@ -229,7 +240,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.subagent.enabled", Kind::Bool, "null"),
     // Children per parent session (running or queued) and tasks or steps per call; at least 1.
     key("oxa.subagent.maxChildren", Kind::Number, "8"),
-    key("oxa.subagent.remoteConcurrency", Kind::Number, "4"),
+    key("oxa.subagent.remoteConcurrency", Kind::Number, "8"),
     key("oxa.subagent.resultCap", Kind::Number, "6144"),
     key("oxa.subagent.smallContext", Kind::Bool, "false"),
     key("oxa.subagent.softTokens", Kind::Number, "24000"),
@@ -251,7 +262,7 @@ const SCHEMA: &[KeyDef] = &[
     // The repeat guard for identical tool calls (oxa-core `repeat.rs`).
     key("oxa.toolRepeatGuard", Kind::Bool, "true"),
     // W2: the `wait` tool's `until` conditions, answered by hook sets (`Hooks::poll_event`).
-    key("oxa.wait.maxSeconds", Kind::Number, "3600"),
+    key("oxa.wait.maxSeconds", Kind::Number, "86400"),
     key("oxa.wait.pollSeconds", Kind::Number, "30"),
     // O-169: `web_search` (oxa-web); declared only with a Brave key and never offline.
     key("oxa.webSearch.enabled", Kind::Bool, "true"),
@@ -263,6 +274,9 @@ const SCHEMA: &[KeyDef] = &[
     ),
     // The worker runner reads this list from owner settings only.
     key("oxa.work.localChecks", Kind::StringList, "[\"cargo check\"]"),
+    // K5a: the `worker` tool (never in a worker child) and the most live workers a session runs.
+    key("oxa.workers.enabled", Kind::Bool, "true"),
+    key("oxa.workers.max", Kind::Number, "4"),
     // K4: seconds a worker gets after SIGINT before its process group gets SIGTERM.
     key("oxa.workers.stopGraceSeconds", Kind::Number, "10"),
     key("packages", Kind::Any, "[]"),

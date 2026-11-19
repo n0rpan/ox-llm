@@ -88,7 +88,7 @@ fn prepare(
             "Enable the native local engine in user settings before serving models.",
         ));
     }
-    if !config.remote_models.is_empty() && !settings.bool(crate::in_process::SETTING, false) {
+    if !config.remote_models.is_empty() && !crate::in_process::cloud_enabled(settings, dirs) {
         return Err(OxaError::new(
             codes::INVALID,
             "Enable the native cloud gateway in user settings before sharing metered models.",

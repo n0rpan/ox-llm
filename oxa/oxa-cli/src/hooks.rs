@@ -23,11 +23,15 @@
 //!   `.oxa/agents/*.md` (`discover_agents`). The child binary is this executable
 //!   (`std::env::current_exe`). It comes before codemode, so a codemode script can call it
 //!   (through the same serial gate: one child at a time).
+//! * **builtin:worker** (K5a): the `worker` tool (start, list, stop background workers in their
+//!   own git worktrees). Not built in a worker child (`OXA_WORKER_DEPTH`); `oxa.workers.enabled`
+//!   false (user settings only) switches it off. Shut down with the process (`Hooks::shutdown` stops the workers).
 //! * **codemode**: off by default, because its tool is part of the frozen prefix (W3). It is
 //!   on with the setting `codemode.enabled`, or when an enabled MCP server has codemode tools
 //!   (`McpManager::wants_codemode`, pi's `autoEnableCodemode`); `tool_search` / `call_tool`
 //!   with `codemode.toolSearch` or when a server has deferred tools. Both depend on
 //!   configuration only, never on connection state.
+use crate::workers::tool::{self as worker_tool, WorkerConfig, WorkerHooks};
 use crate::Args;
 use oxa_codemode::{CodemodeConfig, CodemodeHooks, Namespace};
 use oxa_config::{Dirs, Settings};
@@ -54,6 +58,8 @@ pub struct HookSets {
     pub mcp: Option<Arc<McpManager>>,
     /// Shared instance: the run timer publishes its exact deadline after startup.
     pub subagent: Option<Arc<SubagentHooks>>,
+    /// K5a: the `worker` tool's hook set (start, list, stop; shut down with the process).
+    pub workers: Option<Arc<WorkerHooks>>,
     /// The flags the loaded extensions registered (`registerFlag`), for the second pass of the
     /// argument parse.
     pub flags: Vec<oxa_proto::FlagSpec>,
@@ -231,6 +237,90 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
             Err(e) => notices.push((
                 Level::Warning,
                 format!("subagent: the oxa executable is not known ({e}); the tool is off"),
+            )),
+        }
+    }
+
+    // ---- builtin:worker (K5a) ----
+    // Off in a worker child (`OXA_WORKER_DEPTH` set, even to an empty value: `Env::get` treats
+    // empty as unset, so the pairs are read directly) and when `oxa.workers.enabled` is false.
+    let worker_depth = i
+        .env
+        .pairs()
+        .iter()
+        .rev()
+        .find(|(k, _)| k == worker_tool::ENV_WORKER_DEPTH)
+        .map(|(_, v)| v.as_str());
+    if !i.args.no_session && worker_tool::built(worker_depth, worker_tool::enabled(i.settings)) {
+        match std::env::current_exe() {
+            Ok(bin) => {
+                // The supervisor needs a trusted `kill` from the host PATH (never a project shim),
+                // so no worker starts without a way to stop it.
+                let host_path = std::ffi::OsString::from(i.env.get("PATH").unwrap_or(""));
+                let project = i
+                    .cwd
+                    .canonicalize()
+                    .ok()
+                    .and_then(|cwd| {
+                        cwd.ancestors()
+                            .filter(|path| path.join(".git").exists())
+                            .last()
+                            .map(Path::to_path_buf)
+                    })
+                    .unwrap_or_else(|| i.cwd.to_path_buf());
+                match crate::workers::proc::start(i.settings, &host_path, &project, &i.dirs.home) {
+                    Ok(supervisor) => {
+                        // The worker child writes its sessions where this session does.
+                        let sessions_dir = i
+                            .settings
+                            .session_dir(&i.dirs.home, i.cwd)
+                            .filter(|_| i.env.get("OXA_SESSION_DIR").is_none())
+                            .unwrap_or_else(|| i.dirs.sessions_dir.clone());
+                        // The child keeps the parent's allowance, exclusions and session
+                        // directory: a worker is not a way around them.
+                        let default_sessions = i.dirs.sessions_dir.clone();
+                        let parent_scope = worker_tool::ParentScope {
+                            max_tokens: i.args.max_tokens,
+                            exclude_tools: i.args.exclude_tools.clone(),
+                            session_dir: (sessions_dir != default_sessions).then(|| sessions_dir.clone()),
+                            narrowing: crate::workers::launch::Narrowing {
+                                offline: i.args.offline,
+                                no_approve: i.args.approve == Some(false),
+                                no_context_files: i.args.no_context_files,
+                                tools: i.args.tools.clone(),
+                                no_tools: i.args.no_tools,
+                                no_builtin_tools: i.args.no_builtin_tools,
+                                no_mcp: i.args.no_mcp,
+                                no_web_search: i.args.no_web_search,
+                                no_extensions: i.args.no_extensions,
+                                no_skills: i.args.no_skills,
+                                no_prompt_templates: i.args.no_prompt_templates,
+                            },
+                        };
+                        let agent_dir = if i.dirs.agent_dir.is_absolute() {
+                            i.dirs.agent_dir.clone()
+                        } else {
+                            i.cwd.join(&i.dirs.agent_dir)
+                        };
+                        let workers = Arc::new(WorkerHooks::new(WorkerConfig {
+                            oxa_bin: bin,
+                            agent_dir,
+                            max: worker_tool::max_workers(i.settings),
+                            supervisor,
+                            sessions_dir,
+                            parent_env: i.env.pairs().to_vec(),
+                            parent_scope,
+                            yolo: i.yolo.clone(),
+                        }));
+                        sets.hooks.push(workers.clone());
+                        sets.workers = Some(workers);
+                    }
+                    Err(e) => notices.push((Level::Warning, format!("worker: the tool is off ({e})"))),
+                }
+            }
+            Err(e) => notices.push((
+                Level::Warning,
+                format!("worker: the oxa executable is not known ({e}); the tool is off"),
             )),
         }
     }
