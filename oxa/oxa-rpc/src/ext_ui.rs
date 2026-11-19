@@ -77,6 +77,10 @@ impl UiRouter {
         // Dropping the senders disconnects the receivers the dialogs wait on.
         waiting.clear();
     }
+    /// Dismiss dialogs waiting now without closing the router to future dialogs.
+    pub fn cancel_waiting(&self) {
+        lock(&self.waiting).clear();
+    }
     /// Drop a dialog that gave up (timeout): a late answer is then not delivered to anyone.
     pub(crate) fn forget(&self, id: &str) {
         lock(&self.waiting).retain(|(w, _)| w != id);
@@ -179,6 +183,11 @@ impl Ui for RpcUi {
             return None;
         }
         v.get("confirmed")?.as_bool()
+    }
+
+    fn dialog_canceller(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        let router = self.router.clone();
+        Some(Arc::new(move || router.cancel_waiting()))
     }
 
     fn input(&mut self, title: &str, placeholder: &str) -> Option<String> {

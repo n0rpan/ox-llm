@@ -76,6 +76,7 @@ struct Pending {
     question: String,
     shown: bool,
     reply: Option<(Verdict, Origin)>,
+    cancel_dialog: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 #[derive(Default)]
@@ -145,6 +146,7 @@ impl OwnerConfirm {
 
     /// Ask the owner for the request that waits, with the session's `Ui`. Session thread only.
     pub fn serve(&self, ui: &mut dyn Ui) {
+        let canceller = ui.dialog_canceller();
         let next = {
             let mut st = lock(&self.state);
             st.pending
@@ -152,6 +154,7 @@ impl OwnerConfirm {
                 .find(|p| p.reply.is_none() && !p.shown)
                 .map(|p| {
                     p.shown = true;
+                    p.cancel_dialog = canceller;
                     (p.id, p.question.clone())
                 })
         };
@@ -208,6 +211,11 @@ impl OwnerConfirm {
             return false;
         };
         p.reply = Some((verdict, origin));
+        if origin == Origin::Typed {
+            if let Some(cancel) = p.cancel_dialog.take() {
+                cancel();
+            }
+        }
         self.cv.notify_all();
         true
     }
@@ -238,6 +246,7 @@ impl OwnerConfirm {
             question: question.clone(),
             shown: false,
             reply: None,
+            cancel_dialog: None,
         });
         let outcome = loop {
             let done = st.pending.iter().find(|p| p.id == id).and_then(|p| p.reply);
@@ -350,6 +359,40 @@ mod tests {
         }
     }
 
+    struct BlockingDialog {
+        cancelled: std::sync::mpsc::Receiver<()>,
+        cancel: std::sync::mpsc::Sender<()>,
+    }
+
+    impl Ui for BlockingDialog {
+        fn confirm(&mut self, _: &str, _: &str, _: Option<u32>) -> Option<bool> {
+            self.cancelled.recv().ok().map(|_| false)
+        }
+        fn dialog_canceller(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+            let cancel = self.cancel.clone();
+            Some(Arc::new(move || {
+                let _ = cancel.send(());
+            }))
+        }
+        fn select(&mut self, _: &str, _: &[String], _: Option<u32>) -> Option<usize> {
+            None
+        }
+        fn input(&mut self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+        fn editor(&mut self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+        fn notify(&mut self, _: &str, _: oxa_proto::Level) {}
+        fn set_status(&mut self, _: &str, _: Option<&str>) {}
+        fn set_widget(&mut self, _: &str, _: Option<&[String]>, _: oxa_proto::Placement) {}
+        fn set_title(&mut self, _: &str) {}
+        fn set_editor_text(&mut self, _: &str) {}
+        fn ask_access(&mut self, _: &oxa_proto::Access) -> oxa_proto::Answer {
+            oxa_proto::Answer::Deny
+        }
+    }
+
     /// Serve until the waiting request has been shown and answered, from the "session thread".
     fn pump(broker: &OwnerConfirm, ui: &mut dyn Ui, tries: usize) {
         for _ in 0..tries {
@@ -409,6 +452,31 @@ mod tests {
         assert_eq!(r["source"], "typed");
         assert!(!b.resolve_typed("yes"), "nothing waits any more");
         assert!(!is_affirmative("sure, why not"));
+        b.close();
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn owner_confirm_typed_reply_cancels_open_dialog() {
+        let d = dir("typed-dialog");
+        let b = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Standard)).expect("start");
+        b.set_servable(true);
+        let asking = b.clone();
+        let request = std::thread::spawn(move || ask(&asking, "post issue?"));
+        while lock(&b.state).pending.is_empty() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let resolving = b.clone();
+        let typed = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            assert!(resolving.resolve_typed("yes"));
+        });
+        let (cancel, cancelled) = std::sync::mpsc::channel();
+        b.serve(&mut BlockingDialog { cancelled, cancel });
+        typed.join().expect("typed reply");
+        let reply = request.join().expect("request");
+        assert_eq!(reply["answer"], "yes");
+        assert_eq!(reply["source"], "typed");
         b.close();
         let _ = std::fs::remove_dir_all(d);
     }
