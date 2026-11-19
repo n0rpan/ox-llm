@@ -226,6 +226,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.toolRepair", Kind::Bool, "true"),
     // The repeat guard for identical tool calls (oxa-core `repeat.rs`).
     key("oxa.toolRepeatGuard", Kind::Bool, "true"),
+    // R1: the first wait after a transient request failure of a pursuing goal; `0` opts out.
+    key("oxa.goal.failureBackoffSeconds", Kind::Number, "60"),
     // W2: the `wait` tool's `until` conditions, answered by hook sets (`Hooks::poll_event`).
     key("oxa.wait.maxSeconds", Kind::Number, "3600"),
     key("oxa.wait.pollSeconds", Kind::Number, "30"),

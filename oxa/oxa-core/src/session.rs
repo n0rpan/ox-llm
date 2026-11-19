@@ -1320,6 +1320,8 @@ fn settle_runs(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<RunEnd, OxaError> {
+    // Consecutive transient request failures of the pursuing goal; each doubles its wait.
+    let mut failures: u32 = 0;
     loop {
         if crate::goal::terminal(st) {
             return Ok(end);
@@ -1340,8 +1342,43 @@ fn settle_runs(
             end = run_loop(st, sink, ui)?;
         }
         if end != RunEnd::Stopped {
-            return Ok(end);
+            // A pursuing goal whose request failed transiently waits without tokens and sends
+            // the same request again (`oxa.goal.failureBackoffSeconds`). Other failures end the run.
+            let failure = match &end {
+                RunEnd::Failed(error) => {
+                    crate::goal::failure_backoff(st, error, failures).map(|delay| (error.code, delay))
+                }
+                _ => None,
+            };
+            let Some((code, delay)) = failure else {
+                return Ok(end);
+            };
+            failures += 1;
+            let text = format!(
+                "Goal waiting {} s after a transient request failure ({code}); no request is sent meanwhile, then the goal continues.",
+                delay.as_secs()
+            );
+            persist(
+                st,
+                oxa_proto::EntryBody::Shown {
+                    text: text.clone(),
+                    why: oxa_proto::shown_why::NOTICE,
+                },
+                sink,
+            )?;
+            sink.emit(&oxa_proto::AgentEvent::Notice {
+                level: oxa_proto::Level::Info,
+                text,
+            });
+            match crate::goal::wait_failure_backoff(st, delay) {
+                crate::goal::BackoffEnd::Elapsed => {}
+                crate::goal::BackoffEnd::Aborted => return Ok(RunEnd::Aborted),
+                crate::goal::BackoffEnd::RetryStopped => return Ok(end),
+            }
+            end = run_loop(st, sink, ui)?;
+            continue;
         }
+        failures = 0;
         crate::maybe_compact(st, true, sink, ui)?;
         if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
             return run_loop(st, sink, ui);

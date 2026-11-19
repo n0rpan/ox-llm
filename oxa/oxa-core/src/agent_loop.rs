@@ -21,6 +21,9 @@ pub enum RunEnd {
     Failed(OxaError),
 }
 
+/// The start of the stop message of a repetition loop (`stream_broken`, never a transient failure).
+pub(crate) const REPEAT_STOP: &str = "Response stopped: the model fell into a repetition loop";
+
 /// Persist `body` as a new entry under the current leaf, add it to the tree and fold it into
 /// the transcript. The only way an entry is created. Emits nothing; callers emit events.
 /// A store failure is returned and leaves tree and transcript unchanged.
@@ -283,9 +286,11 @@ fn run_inner(
                     st.shared.cancel.reset();
                     Err(OxaError::new(
                         oxa_proto::codes::STREAM_BROKEN,
-                        "Response stopped: the model fell into a repetition loop (the same block of text repeated).",
+                        format!("{REPEAT_STOP} (the same block of text repeated)."),
                     )
-                    .with_hint("Rephrase the request or try again; the partial reply is shown but not sent back."))
+                    .with_hint(
+                        "Rephrase the request or try again; the partial reply is shown but not sent back.",
+                    ))
                 }
                 other => other,
             };

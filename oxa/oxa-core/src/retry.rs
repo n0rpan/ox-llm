@@ -370,7 +370,7 @@ fn retryable(e: &OxaError, got_data: bool) -> bool {
 }
 
 /// The HTTP status in an `engine_http` message ("... HTTP 503: ...").
-fn http_status(msg: &str) -> Option<u16> {
+pub(crate) fn http_status(msg: &str) -> Option<u16> {
     let at = msg.find("HTTP ")? + "HTTP ".len();
     let digits: String = msg[at..].chars().take_while(|c| c.is_ascii_digit()).collect();
     if digits.len() != 3 {
