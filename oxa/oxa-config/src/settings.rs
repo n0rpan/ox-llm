@@ -148,13 +148,14 @@ impl Settings {
         // settings (#1449): keep the most restrictive reading of them and say so.
         if !diagnostics.is_empty() {
             user = fail_safe_user_layer();
-            diagnostics.push(warn(
-                &files.user.display().to_string(),
-                "user settings are unusable, so oxa keeps the most restrictive security settings: \
-                 offline on, bash network off, new projects not trusted. Other settings use their \
-                 defaults. Fix or restore this file (or run `oxa config` to review it) and restart \
-                 to recover.",
-            ));
+            // One warning: the read problem plus what oxa kept and how to recover.
+            for d in &mut diagnostics {
+                d.message.push_str(
+                    "; oxa keeps the most restrictive security settings (offline on, bash network \
+                     off, new projects not trusted) and uses defaults for the rest. Fix or restore \
+                     this file and restart to recover",
+                );
+            }
         }
         let (project, project_src) = match (files.project.as_deref(), keep_project) {
             (Some(path), Some(layer)) => (layer.clone(), path.display().to_string()),
