@@ -114,7 +114,8 @@ maintainer, who says in the PR when a hardware check is needed.
   is the cap against loops the guard cannot see.
   Image input follows it too: `read` attaches an image to a model that takes images, and an image
   over the user-only `oxa.read.maxImageBytes` (generous default, 0 = no limit) is not sent; that
-  setting also bounds aggregate images in one tool-call batch. The result names the limit and the
+  setting also bounds aggregate images across retained session history and the current tool-call
+  batch. A project may enable `images.blockImages` but cannot disable the owner's choice. The result names the limit and the
   setting instead. `images.blockImages` prevents transmission. Private-path and pinned-open rules
   apply to images as to any file.
   is the cap against loops the guard cannot see. A pursuing goal whose request fails transiently

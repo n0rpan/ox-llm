@@ -91,7 +91,10 @@ pub(crate) fn tune_for(settings: &Settings, n_ctx: u32, soft: u32, images: bool)
         bash_timeout_s: settings.bash_default_timeout(),
         bash_wait_cap_s: settings.bash_wait_cap(),
         output_cap_bytes: cap,
-        image_input: images && !settings.bool("images.blockImages", false),
+        // A project may tighten this opt-out, but cannot undo the owner's user-layer choice.
+        image_input: images
+            && !settings.user_bool("images.blockImages", false)
+            && !settings.bool("images.blockImages", false),
         max_image_bytes: settings.read_max_image_bytes(),
     }
 }
@@ -182,6 +185,18 @@ mod tests {
 
         let blocked = Settings::from_values(json!({"images": {"blockImages": true}}), json!({}));
         assert!(!tune_for(&blocked, 0, 0, true).image_input);
+
+        let project_cannot_enable = Settings::from_values(
+            json!({"images": {"blockImages": true}}),
+            json!({"images": {"blockImages": false}}),
+        );
+        assert!(!tune_for(&project_cannot_enable, 0, 0, true).image_input);
+
+        let project_can_disable = Settings::from_values(
+            json!({"images": {"blockImages": false}}),
+            json!({"images": {"blockImages": true}}),
+        );
+        assert!(!tune_for(&project_can_disable, 0, 0, true).image_input);
     }
 
     #[test]

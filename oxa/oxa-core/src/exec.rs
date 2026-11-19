@@ -405,7 +405,9 @@ pub(crate) fn run_calls(
     // alone, so writes and exec calls are serial.
     let n = prepared.len();
     let mut outputs: Vec<Option<(ToolOutput, Duration)>> = (0..n).map(|_| None).collect();
-    let mut image_bytes = 0u64;
+    // The same owner limit bounds retained history as well as this batch. Otherwise a model can
+    // accumulate one limit-sized image per turn and make every later request grow without bound.
+    let mut image_bytes = retained_image_bytes(st.transcript.wire());
     // F1: results shaped ahead for the tool-result prefill (reused in phase 3 when unchanged).
     let mut early: Vec<Option<Early>> = (0..n).map(|_| None).collect();
     let mut prefilled = false;
@@ -516,7 +518,23 @@ pub(crate) fn run_calls(
     out
 }
 
-/// Admit image data against one aggregate raw-byte budget for this reply's tool-call batch.
+/// Raw bytes represented by padded standard base64 (the only form accepted by `WireImage`).
+fn decoded_image_bytes(base64: &str) -> u64 {
+    let padding = u64::from(base64.ends_with('=')) + u64::from(base64.ends_with("=="));
+    (base64.len() as u64 / 4)
+        .saturating_mul(3)
+        .saturating_sub(padding)
+}
+
+fn retained_image_bytes(messages: &[WireMsg]) -> u64 {
+    messages
+        .iter()
+        .flat_map(|message| &message.images)
+        .map(|image| decoded_image_bytes(&image.base64))
+        .fold(0, u64::saturating_add)
+}
+
+/// Admit image data against one aggregate raw-byte budget for retained history and this batch.
 /// Image-producing reads are serialized above, so a refused result is dropped before the next
 /// image is allocated. A zero owner limit deliberately remains unlimited.
 fn admit_batch_images(output: &mut ToolOutput, used: &mut u64, max: u32) {
@@ -526,12 +544,12 @@ fn admit_batch_images(output: &mut ToolOutput, used: &mut u64, max: u32) {
     let bytes = output
         .images
         .iter()
-        .map(|image| (image.base64.len() as u64 / 4).saturating_mul(3))
+        .map(|image| decoded_image_bytes(&image.base64))
         .sum::<u64>();
     let limit = u64::from(max);
     if used.saturating_add(bytes) > limit {
         *output = ToolOutput::error(format!(
-            "Images not sent: this tool-call batch is over the {limit}-byte image budget (oxa.read.maxImageBytes)."
+            "Images not sent: retained session images and this tool-call batch are over the {limit}-byte image budget (oxa.read.maxImageBytes)."
         ));
     } else {
         *used += bytes;
@@ -1777,6 +1795,34 @@ mod request_messages_tests {
         assert!(second.is_error);
         assert!(second.images.is_empty());
         assert_eq!(used, 6);
+    }
+
+    #[test]
+    fn image_budget_counts_padding_and_retained_history() {
+        let image = |base64: &str| oxa_proto::WireImage {
+            mime: "image/png".into(),
+            base64: base64.into(),
+        };
+        assert_eq!(decoded_image_bytes("AQ=="), 1);
+        assert_eq!(decoded_image_bytes("AQI="), 2);
+        assert_eq!(decoded_image_bytes("AQID"), 3);
+
+        let mut retained = WireMsg::tool_result("old", "old image");
+        retained.images.push(image("AQID"));
+        let mut used = retained_image_bytes(&[retained]);
+        assert_eq!(used, 3);
+
+        let mut exact = ToolOutput::ok("new image");
+        exact.images.push(image("AQI="));
+        admit_batch_images(&mut exact, &mut used, 5);
+        assert_eq!(used, 5);
+        assert_eq!(exact.images.len(), 1);
+
+        let mut over = ToolOutput::ok("one too many");
+        over.images.push(image("AQ=="));
+        admit_batch_images(&mut over, &mut used, 5);
+        assert!(over.is_error);
+        assert!(over.images.is_empty());
     }
 }
 
