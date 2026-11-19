@@ -355,7 +355,7 @@ impl LeadOwnerBinding {
         let route = lead_model(dirs, binding.uid)?;
         args.model = route.clone();
         let interactive = mode == RunMode::Interactive;
-        let prep = prepare(
+        let mut prep = prepare(
             args,
             env,
             dirs,
@@ -382,7 +382,35 @@ impl LeadOwnerBinding {
                 ));
             }
         }
+        self.keep_workers(&mut prep, mode);
         Ok(prep)
+    }
+
+    /// The worker tool of the owner Lead session: saved workers are resumed only after the owner
+    /// binding was rechecked (`open`), and outside a terminal session the one hook set (supervisor
+    /// and children) of this process is used on every chat turn, so a worker the Lead started
+    /// outlives the turn that started it. Children stop at lead shutdown or Ctrl-C of the tree
+    /// (`stop_owner_workers`), and when the terminal session closes.
+    fn keep_workers(&self, prep: &mut Prep, mode: RunMode) {
+        let Some(made) = prep.built.hook_sets.workers.clone() else {
+            return;
+        };
+        let workers = if mode == RunMode::Interactive {
+            made
+        } else {
+            let kept = crate::workers::tool::kept_owner_workers(&self.dirs.agent_dir, made.clone());
+            if !Arc::ptr_eq(&kept, &made) {
+                let old = Arc::as_ptr(&made) as *const ();
+                for hook in &mut prep.built.hook_sets.hooks {
+                    if Arc::as_ptr(hook) as *const () == old {
+                        *hook = kept.clone();
+                    }
+                }
+                prep.built.hook_sets.workers = Some(kept.clone());
+            }
+            kept
+        };
+        workers.hold_resume();
     }
 
     pub(super) fn session_ref(&self) -> &SessionRef {
@@ -390,11 +418,16 @@ impl LeadOwnerBinding {
     }
 
     pub(super) fn open(&self, prep: &Prep) -> Result<Session, OxaError> {
+        // Verified before any session is opened; nothing starts for an unverified caller.
         self.recheck()?;
         let session = open_named(&prep.built, None, prep.open.clone(), None).map_err(|_| unavailable())?;
         self.recheck()?;
         if session.inner().sref != self.session {
             return Err(unavailable());
+        }
+        // Only now, with the binding verified, do saved workers start again.
+        if let Some(workers) = &prep.built.hook_sets.workers {
+            let _ = workers.resume_after_owner_check();
         }
         Ok(session)
     }

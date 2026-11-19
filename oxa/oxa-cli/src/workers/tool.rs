@@ -30,6 +30,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -108,6 +109,10 @@ pub struct WorkerCore {
     parent_scope: ParentScope,
     yolo: YoloSwitch,
     resume_on_start: bool,
+    /// The owner Lead session: resume waits for [`WorkerHooks::resume_after_owner_check`].
+    hold_resume: AtomicBool,
+    /// The owner Lead session over several chat turns: closing one session stops nothing.
+    persistent: AtomicBool,
     /// Parent session ids whose workers were already considered for resume in this process.
     resumed: Mutex<Vec<String>>,
     supervisor: Supervisor,
@@ -334,6 +339,8 @@ impl WorkerCore {
             parent_scope: cfg.parent_scope,
             yolo: cfg.yolo,
             resume_on_start: cfg.resume_on_start,
+            hold_resume: AtomicBool::new(false),
+            persistent: AtomicBool::new(false),
             resumed: Mutex::new(Vec::new()),
             supervisor: cfg.supervisor,
             gate: Mutex::new(()),
@@ -845,6 +852,51 @@ impl WorkerHooks {
         });
         WorkerHooks { core, tool }
     }
+
+    /// Owner Lead session: the startup resume of saved workers waits until the caller has been
+    /// verified ([`WorkerHooks::resume_after_owner_check`]); nothing is launched before.
+    pub fn hold_resume(&self) {
+        self.core.hold_resume.store(true, Ordering::SeqCst);
+    }
+
+    /// Take the workers back up, after the owner binding was rechecked. Notices for the caller.
+    pub fn resume_after_owner_check(&self) -> Vec<String> {
+        self.core.resume()
+    }
+
+    /// Keep the workers when a session closes: a worker the owner Lead started outlives one chat
+    /// turn. They stop through [`WorkerHooks::stop_all`] (lead shutdown, Ctrl-C of the tree).
+    pub fn keep_across_turns(&self) {
+        self.core.persistent.store(true, Ordering::SeqCst);
+    }
+
+    /// Stop every live worker now, whether or not the hook set is kept across turns.
+    pub fn stop_all(&self) {
+        let _ = self.core.supervisor.stop_all();
+    }
+}
+
+/// The long-lived worker hook sets of the lead serve process, one per agent directory.
+static OWNER_WORKERS: Mutex<Vec<(PathBuf, Arc<WorkerHooks>)>> = Mutex::new(Vec::new());
+
+/// The kept worker hook set for `key`: the one made earlier, else `made` (kept from now on).
+/// The workers and their supervisor are the same on every owner turn.
+pub fn kept_owner_workers(key: &Path, made: Arc<WorkerHooks>) -> Arc<WorkerHooks> {
+    let mut all = lock(&OWNER_WORKERS);
+    if let Some((_, hooks)) = all.iter().find(|(k, _)| k == key) {
+        return hooks.clone();
+    }
+    made.keep_across_turns();
+    all.push((key.to_path_buf(), made.clone()));
+    made
+}
+
+/// Lead shutdown: stop every worker the owner Lead session started.
+pub fn stop_owner_workers() {
+    let all: Vec<Arc<WorkerHooks>> = lock(&OWNER_WORKERS).iter().map(|(_, h)| h.clone()).collect();
+    for hooks in all {
+        hooks.stop_all();
+    }
 }
 
 impl Hooks for WorkerHooks {
@@ -854,6 +906,7 @@ impl Hooks for WorkerHooks {
         }
         // A session that is opened (a new process or `/resume`) takes its workers back up.
         if p == HookPoint::SessionStart
+            && !self.core.hold_resume.load(Ordering::SeqCst)
             && matches!(
                 payload.get("reason").and_then(Value::as_str),
                 Some("startup" | "resume")
@@ -900,6 +953,9 @@ impl Hooks for WorkerHooks {
     }
     /// Stops every live worker (SIGINT, then the group). Idempotent.
     fn shutdown(&self) {
+        if self.core.persistent.load(Ordering::SeqCst) {
+            return;
+        }
         let _ = self.core.supervisor.stop_all();
     }
 }
@@ -1186,6 +1242,54 @@ mod tests {
         );
         assert!(!ok.is_error, "{}", ok.text);
         assert_eq!(registry::load(&agent, "parent-1").unwrap()[0].model, "model-x");
+        let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lead_started_worker_survives_the_next_owner_turn() {
+        let (root, repo, agent, fake) = fixture("owner-turn");
+        let made = Arc::new(hooks(&fake, &agent));
+        // Turn 1: the owner Lead session starts a worker, then its session closes.
+        let first = kept_owner_workers(&agent, made.clone());
+        assert!(Arc::ptr_eq(&first, &made));
+        set_session(&first, "parent-1");
+        start_alpha(&first, &repo);
+        let rec = registry::load(&agent, "parent-1").unwrap().remove(0);
+        first.shutdown();
+        // Turn 2: a fresh hook set is built, the kept one is used, and the worker is still up.
+        let second = kept_owner_workers(&agent, Arc::new(hooks(&fake, &agent)));
+        assert!(Arc::ptr_eq(&second, &made));
+        assert!(
+            PathBuf::from(format!("/proc/{}", rec.pid)).exists(),
+            "worker died with the turn"
+        );
+        assert!(second.core.list().text.contains("alpha"));
+        // Lead shutdown stops the tree.
+        stop_owner_workers();
+        assert!(!PathBuf::from(format!("/proc/{}", rec.pid)).exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn no_resume_before_owner_binding_recheck() {
+        let (root, repo, agent, fake) = fixture("held-resume");
+        let hooks = hooks(&fake, &agent);
+        set_session(&hooks, "parent-1");
+        set_table_mode(&hooks, Mode::Workspace);
+        start_alpha(&hooks, &repo);
+        let rec = registry::load(&agent, "parent-1").unwrap().remove(0);
+        hooks.core.supervisor.stop(rec.pgid).unwrap();
+        hooks.hold_resume();
+        // The session opens (SessionStart, startup) before the owner binding is rechecked.
+        let mut ui = oxa_proto::HeadlessUi::default();
+        hooks.fire(HookPoint::SessionStart, &json!({"reason": "startup"}), &mut ui);
+        let held = registry::load(&agent, "parent-1").unwrap().remove(0);
+        assert_eq!(held.pid, rec.pid, "a worker was relaunched before the recheck");
+        // After the recheck the caller resumes explicitly.
+        let notices = hooks.resume_after_owner_check();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].contains("relaunched"), "{notices:?}");
         let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
         let _ = fs::remove_dir_all(&root);
     }

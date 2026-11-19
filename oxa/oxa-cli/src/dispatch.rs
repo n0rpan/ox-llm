@@ -1822,6 +1822,9 @@ fn run_tui(
                     "The selected Lead session changed.",
                 ));
             }
+            if let Some(workers) = &base.hook_sets.workers {
+                let _ = workers.resume_after_owner_check();
+            }
         }
         base.result_facts.attach(&mut session)?;
         session.set_output_schema(base.output_schema.clone());
