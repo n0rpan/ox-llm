@@ -55,6 +55,7 @@ struct Step {
     wait: Vec<&'static str>,
     resize: Option<(u16, u16)>,
     events: Vec<InputEvent>,
+    before_input: Option<Box<dyn FnOnce()>>,
 }
 
 fn step(name: &'static str, wait: &[&'static str], events: Vec<InputEvent>) -> Step {
@@ -63,6 +64,7 @@ fn step(name: &'static str, wait: &[&'static str], events: Vec<InputEvent>) -> S
         wait: wait.to_vec(),
         resize: None,
         events,
+        before_input: None,
     }
 }
 
@@ -132,6 +134,9 @@ impl Terminal for ScriptTerm {
             let s = self.steps.pop_front().expect("a step is ready");
             self.since.clear();
             self.raw_after.push((s.name, self.inner.out.len()));
+            if let Some(before_input) = s.before_input {
+                before_input();
+            }
             let mut events = Vec::new();
             if let Some((cols, rows)) = s.resize {
                 self.inner.resize(cols, rows);
@@ -251,13 +256,20 @@ fn run_on(
     let dirs = Dirs::under(env.root());
     let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(dirs.sessions_dir.clone()));
     let engine: Arc<dyn Engine> = Arc::new(HttpEngine::new(&url, None).expect("engine client"));
-    let session =
-        Session::open(deps(engine, store.clone(), env.root(), &env.work()), Open::New).expect("open");
+    let mut session_deps = deps(engine, store.clone(), env.root(), &env.work());
+    let ui_settings = if dirs.settings_file().is_file() {
+        let loaded = Settings::load(&dirs, &env.work(), false);
+        session_deps.settings = loaded.clone();
+        loaded
+    } else {
+        Settings::from_values(settings, json!({}))
+    };
+    let session = Session::open(session_deps, Open::New).expect("open");
     let (root, work, store2) = (env.root().to_path_buf(), env.work(), store.clone());
     let mut opts = InteractiveOpts {
         fullscreen: true,
         dirs,
-        settings: Settings::from_values(settings, json!({})),
+        settings: ui_settings,
         keymap: Keymap::defaults(),
         store,
         hooks: Vec::new(),
@@ -341,6 +353,30 @@ fn colour_params_finds_colours_only() {
         Vec::<u32>::new()
     );
     assert_eq!(colour_params("\x1b[38;5;4mx\x1b[48;2;1;2;3m"), vec![38, 48]);
+}
+
+#[test]
+fn external_theme_edit_repaints_the_interactive_session() {
+    let path = std::rc::Rc::new(std::cell::RefCell::new(std::path::PathBuf::new()));
+    let edit_path = path.clone();
+    let mut prompt = step("start", &["theme dark", "READY"], typed("hello", &["enter"]));
+    prompt.before_input = Some(Box::new(move || {
+        std::fs::write(&*edit_path.borrow(), r#"{"theme":"light","quietStartup":false}"#).unwrap();
+    }));
+    let term = run(
+        vec![ScriptTurn::text("THEME ANSWER")],
+        json!({}),
+        UTF8,
+        (110, 34),
+        vec![prompt, step("answered", &["THEME ANSWER"], vec![key("ctrl+d")])],
+        |env| {
+            let file = Dirs::under(env.root()).settings_file();
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, r#"{"theme":"dark"}"#).unwrap();
+            *path.borrow_mut() = file;
+        },
+    );
+    assert!(strip_ansi(&term.raw_since("start")).contains("theme light"));
 }
 
 #[test]

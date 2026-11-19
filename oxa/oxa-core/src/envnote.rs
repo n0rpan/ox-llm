@@ -37,6 +37,8 @@ pub struct EnvFacts {
     /// claim "off" then.
     pub network_unenforced: bool,
     pub offline: bool,
+    /// No OS sandbox on this platform: bash runs with the user's rights.
+    pub no_os_sandbox: bool,
 }
 
 /// The date line's `{weekday} {date}` (the key that says whether the wire already has today).
@@ -78,6 +80,12 @@ pub fn full_block(t: &LocalTime, f: &EnvFacts) -> String {
         },
         if f.offline { "yes" } else { "no" }
     ));
+    if f.no_os_sandbox {
+        lines.push(
+            "Sandbox: none. There is no OS sandbox on this platform: commands run with your user rights, and bash is disabled while the bash network is off."
+                .to_string(),
+        );
+    }
     lines.push(
         "Use this date for \"today\", \"latest\" and \"recent\" (also for web_search freshness).".to_string(),
     );
@@ -191,6 +199,7 @@ pub fn facts(st: &SessionState) -> EnvFacts {
         bash_network: st.sandbox.network(),
         network_unenforced: !st.sandbox.network_enforced(),
         offline: oxa_proto::offline(),
+        no_os_sandbox: !oxa_proto::OS_SANDBOX,
     }
 }
 
@@ -293,6 +302,7 @@ mod tests {
             bash_network: false,
             network_unenforced: false,
             offline: false,
+            no_os_sandbox: false,
         }
     }
 
@@ -322,6 +332,24 @@ mod tests {
         assert!(!block.contains("bash network off"), "{block}");
         facts.bash_network = true;
         assert!(full_block(&t("2026-11-14", "13:42"), &facts).contains("bash network on"));
+    }
+
+    #[test]
+    fn env_note_names_a_missing_sandbox_and_is_unchanged_with_one() {
+        let with = full_block(&t("2026-11-14", "13:42"), &f());
+        assert!(!with.contains("Sandbox:"));
+        let none = full_block(
+            &t("2026-11-14", "13:42"),
+            &EnvFacts {
+                no_os_sandbox: true,
+                ..f()
+            },
+        );
+        assert!(none.contains(
+            "Sandbox: none. There is no OS sandbox on this platform: commands run with your user rights"
+        ));
+        assert_eq!(none.replace(
+            "Sandbox: none. There is no OS sandbox on this platform: commands run with your user rights, and bash is disabled while the bash network is off.\n", ""), with);
     }
 
     #[test]
