@@ -54,6 +54,10 @@ fn parse_with(runtime: &mut Runtime, value: &Value, exit: i64) -> Value {
     js(runtime, &format!("parseStatus({text}, {exit}, false)"))
 }
 
+fn assert_js_number(value: &Value, expected: f64) {
+    assert_eq!(value.as_f64(), Some(expected));
+}
+
 #[test]
 fn status_fixture_parses() {
     let mut rt = model_runtime();
@@ -72,9 +76,9 @@ fn status_fixture_parses() {
     assert_eq!(s["cloud"]["keyFile"], json!("present"));
     assert_eq!(s["cloud"]["chatgptLogin"], json!("missing"));
     assert_eq!(s["lead"]["state"], json!("awaiting_owner"));
-    assert_eq!(s["lead"]["openAsks"], json!(2));
+    assert_js_number(&s["lead"]["openAsks"], 2.0);
     assert_eq!(s["lead"]["serve"]["url"], json!("http://127.0.0.1:8743/"));
-    assert_eq!(s["sessions"]["working"], json!(3));
+    assert_js_number(&s["sessions"]["working"], 3.0);
     assert_eq!(s["workers"]["rows"][0]["name"], json!("lander-1"));
     assert_eq!(s["workers"]["rows"][0]["state"], json!("working"));
     assert_eq!(s["usageState"], json!("low"));
