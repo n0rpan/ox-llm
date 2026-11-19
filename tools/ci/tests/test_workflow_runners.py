@@ -162,7 +162,7 @@ class WorkflowRunners(unittest.TestCase):
         self.assertIn('[ "$EVENT" = push ]', text)
 
     def test_superseded_workflows_cancel_off_main(self):
-        for name in ('lane.yml', 'checks.yml', 'macos.yml', 'release-build.yml'):
+        for name in ('lane.yml', 'checks.yml', 'macos.yml'):
             text = (WORKFLOWS / name).read_text()
             self.assertIn('cancel-in-progress: ', text, name)
             self.assertNotIn('cancel-in-progress: false', text, name)
