@@ -102,6 +102,9 @@ mod autonomy_tests {
             git_binary: std::path::PathBuf::from("/bin/true"),
             host_path: std::ffi::OsString::new(),
             terminate_binary: None,
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
             offline: false,
             runner_owns_github: false,
             autonomy: oxa_proto::Autonomy::Yolo,
@@ -461,6 +464,8 @@ mod tests {
             content_scan: None,
             offline: true,
             runner_owns_github: false,
+            autonomy: oxa_proto::Autonomy::default(),
+            autonomy_now: None,
             storage: std::env::temp_dir(),
         };
         let mut task = Task {
