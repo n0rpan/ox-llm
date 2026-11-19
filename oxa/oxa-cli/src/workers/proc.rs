@@ -7,16 +7,22 @@
 //!
 //! Identity: the leader stays unreaped (a zombie is enough) until its group is confirmed empty.
 //! While the leader is unreaped its pid, and therefore its process group number, cannot be
-//! reused, so every signal the supervisor sends reaches the group it started. Group membership
-//! is read from `/proc`, which skips zombies, so an exited leader does not look like a live group.
+//! reused, so every signal the supervisor sends reaches the group it started. Live members are
+//! read from Linux `/proc`. Platforms without procfs are rejected before the
+//! supervisor thread starts, so they can never admit a worker that the supervisor cannot stop.
+//!
+//! Environment: a worker gets exactly the environment its caller passes (`env_clear` first), so the
+//! launch policy in `launch::child_env` is applied by the caller and never bypassed by inheritance.
 //!
 //! Stopping a worker: SIGINT to its pid while it runs, a grace period (`oxa.workers.stopGraceSeconds`),
 //! SIGTERM to the whole process group, SIGKILL to the group after 2 seconds. Only when the group is
-//! confirmed empty is the leader reaped. Every signal goes through the `kill` executable the caller
+//! confirmed empty a last SIGKILL sweeps threads that outlived their leader thread (shown as `Z`),
+//! then the leader is reaped. Every signal goes through the `kill` executable the caller
 //! resolved with [`kill_helper`]; a failed signal or probe is an error and keeps the worker tracked.
 
 use oxa_config::Settings;
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use std::fs;
 use std::io;
 use std::os::unix::process::CommandExt;
@@ -32,12 +38,17 @@ const KILL_AFTER: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(50);
 /// How often the idle thread reaps workers that exited on their own.
 const REAP_EVERY: Duration = Duration::from_millis(200);
+/// The most a single `kill` helper run may take before it is killed and counted as a failed signal.
+const SIGNAL_DEADLINE: Duration = Duration::from_secs(5);
+/// Generous cap on what the `kill` helper may print; it prints nothing in normal use.
+const SIGNAL_OUTPUT_BYTES: usize = 64 * 1024;
 /// The default for `oxa.workers.stopGraceSeconds`.
 const DEFAULT_STOP_GRACE: Duration = Duration::from_secs(10);
 
 enum Msg {
     Spawn {
         argv: Vec<String>,
+        env: Vec<(String, String)>,
         log: PathBuf,
         reply: Sender<io::Result<u32>>,
     },
@@ -46,7 +57,7 @@ enum Msg {
         reply: Sender<io::Result<Option<ExitStatus>>>,
     },
     StopAll {
-        reply: Sender<()>,
+        reply: Sender<io::Result<()>>,
     },
 }
 
@@ -66,6 +77,7 @@ impl Supervisor {
                 "the kill helper must be an absolute path",
             ));
         }
+        require_procfs(cfg!(target_os = "linux"))?;
         let (tx, rx) = mpsc::channel();
         thread::Builder::new()
             .name("oxa-workers".into())
@@ -74,11 +86,14 @@ impl Supervisor {
     }
 
     /// Start `argv[0]` with `argv[1..]` in a new process group, stdin null, stdout and stderr
-    /// appended to the owner-private `log`. Returns the process group id, which is the leader's pid.
-    pub fn spawn(&self, argv: &[&str], log: &Path) -> io::Result<u32> {
+    /// appended to the owner-private `log`. The child gets exactly `env` (the environment is
+    /// cleared first): callers pass `launch::child_env` output so the worker launch policy applies.
+    /// Returns the process group id, which is the leader's pid.
+    pub fn spawn(&self, argv: &[&str], env: &[(String, String)], log: &Path) -> io::Result<u32> {
         let (reply, rx) = mpsc::channel();
         self.send(Msg::Spawn {
             argv: argv.iter().map(|s| s.to_string()).collect(),
+            env: env.to_vec(),
             log: log.to_path_buf(),
             reply,
         })?;
@@ -94,15 +109,29 @@ impl Supervisor {
         rx.recv().map_err(|_| gone())?
     }
 
-    /// Stop every live worker, one after another.
+    /// Stop every live worker, one after another. Every worker is attempted; when any teardown
+    /// fails the first error is returned and those workers stay tracked for a later retry.
     pub fn stop_all(&self) -> io::Result<()> {
         let (reply, rx) = mpsc::channel();
         self.send(Msg::StopAll { reply })?;
-        rx.recv().map_err(|_| gone())
+        rx.recv().map_err(|_| gone())?
     }
 
     fn send(&self, msg: Msg) -> io::Result<()> {
         self.tx.send(msg).map_err(|_| gone())
+    }
+}
+
+/// Refuse supervision where the process membership probe is unavailable. This check happens in
+/// `Supervisor::new`, before its thread starts and therefore before it can spawn a child.
+fn require_procfs(available: bool) -> io::Result<()> {
+    if available {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "worker supervision requires Linux procfs",
+        ))
     }
 }
 
@@ -122,7 +151,7 @@ pub fn kill_helper(host_path: &std::ffi::OsStr, project: &Path, home: &Path) -> 
 /// settings only (a project file cannot change process-control timing), else 10 seconds.
 pub fn stop_grace(settings: &Settings) -> Duration {
     settings
-        .user_get("oxa.workers.stopGraceSeconds")
+        .user_value("oxa.workers.stopGraceSeconds")
         .and_then(|value| value.as_f64())
         .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
         .unwrap_or(DEFAULT_STOP_GRACE)
@@ -154,23 +183,34 @@ fn run(rx: Receiver<Msg>, grace: Duration, kill: PathBuf) {
         live: HashMap::new(),
         done: HashMap::new(),
     };
+    let mut last_reap = Instant::now();
     loop {
-        match rx.recv_timeout(REAP_EVERY) {
-            Ok(Msg::Spawn { argv, log, reply }) => {
-                let _ = reply.send(table.spawn(&argv, &log));
+        // Reaping runs on its own deadline, so a steady stream of requests cannot starve it.
+        let wait = REAP_EVERY.saturating_sub(last_reap.elapsed());
+        match rx.recv_timeout(wait) {
+            Ok(Msg::Spawn {
+                argv,
+                env,
+                log,
+                reply,
+            }) => {
+                let _ = reply.send(table.spawn(&argv, &env, &log));
             }
             Ok(Msg::Stop { pgid, reply }) => {
                 let _ = reply.send(table.stop(pgid));
             }
             Ok(Msg::StopAll { reply }) => {
-                table.stop_all();
-                let _ = reply.send(());
+                let _ = reply.send(table.stop_all());
             }
-            Err(RecvTimeoutError::Timeout) => table.reap(),
+            Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
-                table.stop_all();
+                let _ = table.stop_all();
                 return;
             }
+        }
+        if last_reap.elapsed() >= REAP_EVERY {
+            table.reap();
+            last_reap = Instant::now();
         }
     }
 }
@@ -186,7 +226,7 @@ struct Table {
 }
 
 impl Table {
-    fn spawn(&mut self, argv: &[String], log: &Path) -> io::Result<u32> {
+    fn spawn(&mut self, argv: &[String], env: &[(String, String)], log: &Path) -> io::Result<u32> {
         let (program, args) = argv
             .split_first()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty argv"))?;
@@ -194,6 +234,7 @@ impl Table {
         let err = out.try_clone()?;
         let mut cmd = Command::new(program);
         cmd.args(args);
+        cmd.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::from(out));
         cmd.stderr(Stdio::from(err));
@@ -208,11 +249,22 @@ impl Table {
     /// Reap the leaders whose group is empty. A leader whose group still has members stays
     /// unreaped, which keeps its group number reserved. A probe error keeps the worker tracked.
     fn reap(&mut self) {
+        let empty: Vec<u32> = self
+            .live
+            .keys()
+            .copied()
+            .filter(|pgid| matches!(group_alive(*pgid), Ok(false)))
+            .collect();
         let mut finished = Vec::new();
-        for (pgid, child) in self.live.iter_mut() {
-            if let Ok(false) = group_alive(*pgid) {
-                if let Ok(Some(status)) = child.try_wait() {
-                    finished.push((*pgid, status));
+        for pgid in empty {
+            // The process probe skips zombie thread-group leaders. Do not reap the identity anchor
+            // until the sweep has either landed or a thread-aware probe independently proves that
+            // nothing remains. In particular, a broken helper leaves the worker tracked to retry.
+            if self.sweep(pgid).is_ok() {
+                if let Some(child) = self.live.get_mut(&pgid) {
+                    if let Ok(Some(status)) = child.try_wait() {
+                        finished.push((pgid, status));
+                    }
                 }
             }
         }
@@ -239,15 +291,21 @@ impl Table {
 
     /// The signal sequence for one group. Returns once the group has no live member.
     fn teardown(&self, pgid: u32) -> io::Result<()> {
+        // A grace the monotonic clock cannot reach is a configuration error (`oxa.workers.
+        // stopGraceSeconds` takes any whole number): report it instead of panicking in the one
+        // supervisor thread, which would drop every later request and the tracked children.
+        let grace = Instant::now()
+            .checked_add(self.grace)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "worker stop grace is too large"))?;
         if leader_running(pgid)? {
             signal(&self.kill, &pgid.to_string(), "INT")?;
         }
-        if settle(pgid, Instant::now() + self.grace)? {
-            return Ok(());
+        if settle(pgid, grace)? {
+            return self.sweep(pgid);
         }
         signal(&self.kill, &format!("-{pgid}"), "TERM")?;
         if settle(pgid, Instant::now() + KILL_AFTER)? {
-            return Ok(());
+            return self.sweep(pgid);
         }
         signal(&self.kill, &format!("-{pgid}"), "KILL")?;
         if settle(pgid, Instant::now() + KILL_AFTER)? {
@@ -259,12 +317,53 @@ impl Table {
         ))
     }
 
-    fn stop_all(&mut self) {
+    /// A group the probe reads as empty can still hold threads: when a member's thread-group
+    /// leader exited while other threads run, `/proc/<pid>/stat` shows `Z`. The leader of our
+    /// group is unreaped, so the group number is ours: one last SIGKILL to the whole group is safe.
+    /// "No such process" (the usual case, the group really is empty) is not an error; the group is
+    /// then probed again.
+    fn sweep(&self, pgid: u32) -> io::Result<()> {
+        let sent = signal(&self.kill, &format!("-{pgid}"), "KILL");
+        // The ordinary process probe intentionally ignores zombie thread-group leaders. Check
+        // every task before accepting a failed signal as the normal "group already gone" case.
+        if !thread_group_alive(pgid)? {
+            Ok(())
+        } else if let Err(error) = sent {
+            Err(error)
+        } else if settle_threads(pgid, Instant::now() + KILL_AFTER)? {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("worker group {pgid} survived SIGKILL"),
+            ))
+        }
+    }
+
+    /// Attempt every live worker. Returns the first teardown error; failed workers stay in `live`.
+    fn stop_all(&mut self) -> io::Result<()> {
         let pgids: Vec<u32> = self.live.keys().copied().collect();
+        let mut first = None;
         for pgid in pgids {
-            let _ = self.stop(pgid);
+            if let Err(error) = self.stop(pgid) {
+                first.get_or_insert(error);
+            }
         }
         self.done.clear();
+        first.map_or(Ok(()), Err)
+    }
+}
+
+/// Poll until no live thread remains in the group (true) or `until` passes (false).
+fn settle_threads(pgid: u32, until: Instant) -> io::Result<bool> {
+    loop {
+        if !thread_group_alive(pgid)? {
+            return Ok(true);
+        }
+        if Instant::now() >= until {
+            return Ok(false);
+        }
+        thread::sleep(POLL);
     }
 }
 
@@ -285,30 +384,89 @@ fn settle(pgid: u32, until: Instant) -> io::Result<bool> {
 /// `target` is a pid, or `-<pgid>` for a whole group. A signal that does not land is an error,
 /// never read as the worker being gone.
 fn signal(kill: &Path, target: &str, sig: &str) -> io::Result<()> {
-    let status = Command::new(kill)
-        .env_clear()
-        .arg(format!("-{sig}"))
-        .arg("--")
-        .arg(target)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!("kill -{sig} {target} failed: {status}")))
+    let mut command = Command::new(kill);
+    command.env_clear().arg(format!("-{sig}")).arg("--").arg(target);
+    // Bounded: a stalled helper is killed at the deadline and reported as a failed signal, so it
+    // can never hold the supervisor thread back from escalating.
+    match oxa_work::command_runner(command, Some(SIGNAL_OUTPUT_BYTES), SIGNAL_DEADLINE) {
+        Some((0, _)) => Ok(()),
+        Some((code, _)) => Err(io::Error::other(format!(
+            "kill -{sig} {target} failed: exit {code}"
+        ))),
+        None => Err(io::Error::other(format!(
+            "kill -{sig} {target} did not finish within {SIGNAL_DEADLINE:?}"
+        ))),
     }
 }
 
-/// Whether the leader `pid` is still running (not a zombie).
+/// Whether the leader `pid` is still running (not a zombie), from its procfs state.
+#[cfg(target_os = "linux")]
 fn leader_running(pid: u32) -> io::Result<bool> {
     Ok(matches!(proc_stat(pid)?, Some((state, _)) if state != 'Z' && state != 'X'))
 }
 
+/// Whether the leader `pid` is still running. Without procfs the unreaped leader is observed
+/// with `waitid(WNOWAIT)`, which reports its exit without reaping it.
+#[cfg(not(target_os = "linux"))]
+fn leader_running(pid: u32) -> io::Result<bool> {
+    Ok(!leader_exited(pid)?)
+}
+
+/// Whether our unreaped leader `pid` has already exited. `waitid` with `WNOWAIT` observes the
+/// exit and leaves the pid reserved, so the group number cannot be reused. `ECHILD` means the
+/// process is no longer an unreaped child of this thread: it is not a zombie we hold.
+#[cfg(not(target_os = "linux"))]
+fn leader_exited(pid: u32) -> io::Result<bool> {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: waitid fills the siginfo we own; WNOWAIT leaves the child unreaped.
+    let rc = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if rc != 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ECHILD) {
+            return Ok(false);
+        }
+        return Err(error);
+    }
+    // SAFETY: waitid succeeded, so the union holds this child's id.
+    Ok(unsafe { info.si_pid() } == pid as libc::pid_t)
+}
+
 /// Whether any process of group `pgid` is running. Zombies do not count. Errors are returned,
-/// never read as absence.
+/// never read as absence, except that a pid whose stat cannot be read for permission reasons is
+/// not ours (see [`group_alive_with`]).
+///
+/// Linux reads every pid's procfs record. A platform without procfs asks the kernel whether the
+/// group still has a member (`killpg(0)`) and whether our unreaped leader is a zombie: either way
+/// a member that outlived the leader is caught by the group SIGKILL sweep the caller runs next
+/// (`Table::sweep`, `Table::reap`), so nothing escapes.
+#[cfg(target_os = "linux")]
 fn group_alive(pgid: u32) -> io::Result<bool> {
+    let mut pids = Vec::new();
+    for entry in fs::read_dir("/proc")? {
+        let entry = entry?;
+        if let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        {
+            pids.push(pid);
+        }
+    }
+    group_alive_with(pgid, pids, proc_stat)
+}
+
+/// Whether any non-zombie thread belongs to `pgid`. Unlike [`group_alive`], this walks each
+/// process's task directory, so a process whose main thread is a zombie cannot hide surviving
+/// threads. Inaccessible processes are unrelated (our workers have the supervisor's uid).
+#[cfg(target_os = "linux")]
+fn thread_group_alive(pgid: u32) -> io::Result<bool> {
     for entry in fs::read_dir("/proc")? {
         let entry = entry?;
         let Some(pid) = entry
@@ -318,27 +476,123 @@ fn group_alive(pgid: u32) -> io::Result<bool> {
         else {
             continue;
         };
-        if let Some((state, group)) = proc_stat(pid)? {
-            if group == pgid && state != 'Z' && state != 'X' {
-                return Ok(true);
+        let tasks = match fs::read_dir(format!("/proc/{pid}/task")) {
+            Ok(tasks) => tasks,
+            Err(error) if process_gone(&error) || permission_denied(&error) => continue,
+            Err(error) => return Err(error),
+        };
+        for task in tasks {
+            let task = match task {
+                Ok(task) => task,
+                Err(error) if process_gone(&error) => continue,
+                Err(error) => return Err(error),
+            };
+            match fs::read(task.path().join("stat")) {
+                Ok(bytes) => {
+                    let (state, group) = parse_stat(&bytes)?;
+                    if group == pgid && state != 'Z' && state != 'X' {
+                        return Ok(true);
+                    }
+                }
+                Err(error) if process_gone(&error) || permission_denied(&error) => {}
+                Err(error) => return Err(error),
             }
         }
     }
     Ok(false)
 }
 
+/// [`group_alive`] without procfs: ask the kernel whether the group has a member. `ESRCH` is an
+/// empty group; `EPERM` is a member we may not signal, which the Linux path treats the same way.
+/// This probe must not be short-circuited by the leader's exit: another member can survive it.
+#[cfg(not(target_os = "linux"))]
+fn group_alive(pgid: u32) -> io::Result<bool> {
+    // SAFETY: killpg only inspects the group; signal 0 delivers nothing.
+    if unsafe { libc::killpg(pgid as libc::pid_t, 0) } == 0 {
+        return group_alive_from_probe(Ok(()), libc::ESRCH, libc::EPERM);
+    }
+    group_alive_from_probe(Err(io::Error::last_os_error()), libc::ESRCH, libc::EPERM)
+}
+
+/// Interpret the portable signal-0 process-group probe.
+#[cfg(any(test, not(target_os = "linux")))]
+fn group_alive_from_probe(probe: io::Result<()>, missing: i32, denied: i32) -> io::Result<bool> {
+    let Err(error) = probe else {
+        return Ok(true);
+    };
+    match error.raw_os_error() {
+        Some(code) if code == missing => Ok(false),
+        Some(code) if code == denied => Ok(true),
+        _ => Err(error),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn thread_group_alive(pgid: u32) -> io::Result<bool> {
+    group_alive(pgid)
+}
+
+/// [`group_alive`] over the given pids with an injectable stat reader. A pid that answers EPERM or
+/// EACCES (another user's process under `hidepid`) is not in our group: workers run as our own
+/// uid, and a same-uid process is always readable.
+#[cfg(target_os = "linux")]
+fn group_alive_with(
+    pgid: u32,
+    pids: impl IntoIterator<Item = u32>,
+    stat: impl Fn(u32) -> io::Result<Option<(char, u32)>>,
+) -> io::Result<bool> {
+    for pid in pids {
+        match stat(pid) {
+            Ok(Some((state, group))) if group == pgid && state != 'Z' && state != 'X' => return Ok(true),
+            Ok(_) => {}
+            Err(error) if permission_denied(&error) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(false)
+}
+
+/// True for EPERM (1) and EACCES (13), however the error was classified.
+#[cfg(target_os = "linux")]
+fn permission_denied(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::PermissionDenied || matches!(error.raw_os_error(), Some(1 | 13))
+}
+
+/// `ESRCH`: the pid exited between the open and the read. Linux returns this from a
+/// `/proc/<pid>` read rather than `NotFound`, and `group_alive` scans unrelated processes, so
+/// ordinary host churn hits it.
+#[cfg(target_os = "linux")]
+const ESRCH: i32 = 3;
+
 /// The state letter and process group of `pid` from `/proc/<pid>/stat`, or `None` once the
 /// process is gone.
+#[cfg(target_os = "linux")]
 fn proc_stat(pid: u32) -> io::Result<Option<(char, u32)>> {
-    let text = match fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(text) => text,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
+    match fs::read(format!("/proc/{pid}/stat")) {
+        Ok(bytes) => parse_stat(&bytes).map(Some),
+        Err(error) if process_gone(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// True for the two ways a `/proc/<pid>` read reports that the process is gone.
+#[cfg(target_os = "linux")]
+fn process_gone(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(ESRCH)
+}
+
+/// Parse a `/proc/<pid>/stat` record as bytes: `comm` may hold any byte (not only UTF-8), so only
+/// the ASCII fields after the last `)` are decoded.
+#[cfg(target_os = "linux")]
+fn parse_stat(bytes: &[u8]) -> io::Result<(char, u32)> {
     let malformed = || io::Error::new(io::ErrorKind::InvalidData, "malformed /proc stat line");
     // `pid (comm) state ppid pgrp ...`: comm may contain spaces and parentheses, so split after
     // the last `)`.
-    let rest = text.rsplit_once(')').ok_or_else(malformed)?.1;
+    let close = bytes
+        .iter()
+        .rposition(|byte| *byte == b')')
+        .ok_or_else(malformed)?;
+    let rest = std::str::from_utf8(&bytes[close + 1..]).map_err(|_| malformed())?;
     let mut fields = rest.split_whitespace();
     let state = fields
         .next()
@@ -349,10 +603,10 @@ fn proc_stat(pid: u32) -> io::Result<Option<(char, u32)>> {
         .next()
         .and_then(|field| field.parse().ok())
         .ok_or_else(malformed)?;
-    Ok(Some((state, group)))
+    Ok((state, group))
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -360,6 +614,11 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     const GRACE: Duration = Duration::from_millis(200);
+
+    /// The test process's own environment, as the caller would pass it.
+    fn host_env() -> Vec<(String, String)> {
+        std::env::vars().collect()
+    }
 
     /// A fresh scratch directory for one test.
     fn scratch(name: &str) -> PathBuf {
@@ -409,6 +668,7 @@ mod tests {
         let pgid = sup
             .spawn(
                 &["/bin/sh", "-c", &group_with_background(&pidfile)],
+                &host_env(),
                 &dir.join("worker.log"),
             )
             .expect("spawn");
@@ -425,6 +685,13 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// On platforms without procfs, an exited leader must not override the kernel's report that
+    /// its process group still contains a surviving child.
+    #[test]
+    fn successful_group_probe_reports_survivors_after_leader_exit() {
+        assert!(group_alive_from_probe(Ok(()), ESRCH, 1).expect("group probe"));
+    }
+
     #[test]
     fn leader_stays_unreaped_while_group_has_members() {
         let dir = scratch("unreaped");
@@ -434,6 +701,7 @@ mod tests {
         let pgid = sup
             .spawn(
                 &["/bin/sh", "-c", &group_with_background(&pidfile)],
+                &host_env(),
                 &dir.join("worker.log"),
             )
             .expect("spawn");
@@ -466,10 +734,10 @@ mod tests {
         let sup = Supervisor::new(GRACE, real_kill()).expect("supervisor");
         let log = dir.join("worker.log");
         let a = sup
-            .spawn(&["/bin/sh", "-c", "sleep 60 & wait"], &log)
+            .spawn(&["/bin/sh", "-c", "sleep 60 & wait"], &host_env(), &log)
             .expect("spawn a");
         let b = sup
-            .spawn(&["/bin/sh", "-c", "sleep 60 & wait"], &log)
+            .spawn(&["/bin/sh", "-c", "sleep 60 & wait"], &host_env(), &log)
             .expect("spawn b");
         thread::sleep(Duration::from_millis(300));
         sup.stop_all().expect("stop_all");
@@ -498,6 +766,7 @@ mod tests {
         let pgid = sup
             .spawn(
                 &["/bin/sh", "-c", &group_with_background(&pidfile)],
+                &host_env(),
                 &dir.join("worker.log"),
             )
             .expect("spawn");
@@ -534,6 +803,7 @@ mod tests {
         let pgid = sup
             .spawn(
                 &["/bin/sh", "-c", &group_with_background(&pidfile)],
+                &host_env(),
                 &dir.join("worker.log"),
             )
             .expect("spawn");
@@ -558,8 +828,135 @@ mod tests {
     }
 
     #[test]
+    fn stop_all_reports_a_worker_that_could_not_be_stopped() {
+        let dir = scratch("stop-all-error");
+        let allow = dir.join("allow");
+        let helper = dir.join("kill");
+        script(
+            &helper,
+            &format!(
+                "[ -e '{}' ] || exit 2\nexec '{}' \"$@\"",
+                allow.display(),
+                real_kill().display()
+            ),
+        );
+        let sup = Supervisor::new(GRACE, helper).expect("supervisor");
+        let pidfile = dir.join("bg.pid");
+        let pgid = sup
+            .spawn(
+                &["/bin/sh", "-c", &group_with_background(&pidfile)],
+                &host_env(),
+                &dir.join("worker.log"),
+            )
+            .expect("spawn");
+        background_pid(&pidfile);
+        assert!(
+            sup.stop_all().is_err(),
+            "stop_all returned Ok although the worker is still running"
+        );
+        assert!(group_alive(pgid).expect("probe"), "the worker was lost");
+        fs::write(&allow, "").expect("allow");
+        sup.stop_all().expect("retry stop_all");
+        assert!(!group_alive(pgid).expect("probe"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_stat_accepts_a_non_utf8_process_name() {
+        let mut record = b"4242 (a".to_vec();
+        record.push(0xff);
+        record.extend_from_slice(b") b) S 1 777 777 0 -1\n");
+        assert_eq!(parse_stat(&record).expect("parse"), ('S', 777));
+        assert!(parse_stat(b"no close paren").is_err());
+    }
+
+    #[test]
+    fn a_non_utf8_process_name_does_not_block_stop() {
+        let dir = scratch("non-utf8-comm");
+        let sup = Supervisor::new(GRACE, real_kill()).expect("supervisor");
+        let pidfile = dir.join("bg.pid");
+        let body = format!(
+            "printf '\\377' > /proc/$$/comm; {}",
+            group_with_background(&pidfile)
+        );
+        let pgid = sup
+            .spawn(&["/bin/sh", "-c", &body], &host_env(), &dir.join("worker.log"))
+            .expect("spawn");
+        background_pid(&pidfile);
+        assert!(group_alive(pgid).expect("probe"));
+        assert!(sup.stop(pgid).expect("stop").is_some());
+        assert!(!group_alive(pgid).expect("probe"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stuck_signal_helper_cannot_hold_the_supervisor() {
+        let dir = scratch("stuck-helper");
+        let helper = dir.join("kill");
+        // Stalls far past the deadline before doing anything.
+        script(&helper, "sleep 60");
+        let sup = Supervisor::new(GRACE, helper).expect("supervisor");
+        let pgid = sup
+            .spawn(
+                &["/bin/sh", "-c", "sleep 60 & wait"],
+                &host_env(),
+                &dir.join("worker.log"),
+            )
+            .expect("spawn");
+        let started = Instant::now();
+        assert!(
+            sup.stop(pgid).is_err(),
+            "a stalled helper must read as a failed signal"
+        );
+        assert!(
+            started.elapsed() < SIGNAL_DEADLINE + Duration::from_secs(4),
+            "the stalled helper blocked the supervisor"
+        );
+        // The supervisor still answers.
+        assert!(sup
+            .spawn(&["/bin/sh", "-c", "true"], &host_env(), &dir.join("b.log"))
+            .is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exited_workers_are_reaped_while_requests_keep_arriving() {
+        let dir = scratch("reap-busy");
+        let sup = Supervisor::new(GRACE, real_kill()).expect("supervisor");
+        let log = dir.join("worker.log");
+        let first = sup
+            .spawn(&["/bin/sh", "-c", "true"], &host_env(), &log)
+            .expect("spawn");
+        // Requests arrive well inside REAP_EVERY, so the receive never times out.
+        let mut reaped = false;
+        let until = Instant::now() + REAP_EVERY * 4;
+        while Instant::now() < until {
+            sup.spawn(&["/bin/sh", "-c", "true"], &host_env(), &log)
+                .expect("spawn");
+            thread::sleep(Duration::from_millis(20));
+            if proc_stat(first).expect("stat").is_none() {
+                reaped = true;
+                break;
+            }
+        }
+        assert!(
+            reaped,
+            "an exited worker stayed unreaped under a steady request stream"
+        );
+        let _ = sup.stop_all();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn kill_helper_must_be_an_absolute_path() {
         assert!(Supervisor::new(GRACE, PathBuf::from("kill")).is_err());
+    }
+
+    #[test]
+    fn a_platform_without_procfs_is_rejected_before_supervision() {
+        let error = require_procfs(false).expect_err("a platform without procfs was admitted");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(error.to_string(), "worker supervision requires Linux procfs");
     }
 
     #[test]
@@ -583,7 +980,7 @@ mod tests {
         let link = dir.join("worker.log");
         std::os::unix::fs::symlink(&target, &link).expect("symlink");
         let sup = Supervisor::new(GRACE, real_kill()).expect("supervisor");
-        assert!(sup.spawn(&["/bin/sh", "-c", "true"], &link).is_err());
+        assert!(sup.spawn(&["/bin/sh", "-c", "true"], &host_env(), &link).is_err());
         assert!(
             fs::read(&target).expect("target").is_empty(),
             "the symlink target was written"
@@ -596,7 +993,9 @@ mod tests {
         let dir = scratch("log-mode");
         let log = dir.join("worker.log");
         let sup = Supervisor::new(GRACE, real_kill()).expect("supervisor");
-        let pgid = sup.spawn(&["/bin/sh", "-c", "true"], &log).expect("spawn");
+        let pgid = sup
+            .spawn(&["/bin/sh", "-c", "true"], &host_env(), &log)
+            .expect("spawn");
         let mode = fs::metadata(&log).expect("log").permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "the worker log is not owner-only");
         let _ = sup.stop(pgid);
@@ -622,5 +1021,217 @@ mod tests {
         let project =
             Settings::from_values(json!({}), json!({"oxa": {"workers": {"stopGraceSeconds": 300}}}));
         assert_eq!(stop_grace(&project), Duration::from_secs(10));
+    }
+
+    /// A `/proc/<pid>` read reports a process that exited between the open and the read as
+    /// `ESRCH`, not `NotFound`; scanning the host hits that, and it must not abort a stop.
+    #[test]
+    fn a_proc_read_that_reports_esrch_is_a_gone_process() {
+        assert!(process_gone(&io::Error::from_raw_os_error(ESRCH)));
+        assert!(process_gone(&io::Error::from(io::ErrorKind::NotFound)));
+        assert!(
+            !process_gone(&io::Error::from_raw_os_error(13)),
+            "EPERM stays an error"
+        );
+        assert!(proc_stat(u32::MAX)
+            .expect("a missing pid is not an error")
+            .is_none());
+    }
+
+    /// `oxa.workers.stopGraceSeconds` takes any whole number, including one the clock cannot
+    /// reach: stopping must report that instead of panicking in the supervisor thread.
+    #[test]
+    fn an_unreachable_stop_grace_is_an_error_not_a_panic() {
+        let dir = scratch("grace-overflow");
+        let kill = dir.join("kill");
+        script(&kill, "exit 0");
+        let sup = Supervisor::new(Duration::from_secs(u64::MAX / 2), kill).expect("supervisor");
+        let pgid = sup
+            .spawn(&["/bin/sh", "-c", "true"], &host_env(), &dir.join("worker.log"))
+            .expect("spawn");
+        let refused = sup.stop(pgid).expect_err("an unreachable grace is refused");
+        assert!(
+            refused.to_string().contains("stop grace is too large"),
+            "{refused}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+        // The supervisor thread survives to serve later stops.
+        let _ = sup.stop(pgid);
+    }
+
+    #[test]
+    fn spawn_applies_exact_child_env() {
+        let dir = scratch("env");
+        let sup = Supervisor::new(GRACE, real_kill()).expect("supervisor");
+        let out = dir.join("env.out");
+        let body = format!("/usr/bin/env > {}", out.display());
+        // The parent carries the vars the launch policy strips; the child env omits them.
+        std::env::set_var("OXA_TRUST_PROJECT", "1");
+        std::env::set_var("OXA_SESSION_HINT", "abc.s1");
+        let env = vec![("OXA_WORKER_DEPTH".to_string(), "1".to_string())];
+        let pgid = sup
+            .spawn(&["/bin/sh", "-c", &body], &env, &dir.join("worker.log"))
+            .expect("spawn");
+        for _ in 0..100 {
+            if matches!(group_alive(pgid), Ok(false)) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let text = fs::read_to_string(&out).expect("env output");
+        std::env::remove_var("OXA_TRUST_PROJECT");
+        std::env::remove_var("OXA_SESSION_HINT");
+        let mut lines: Vec<&str> = text
+            .lines()
+            .filter(|line| {
+                !line.starts_with("PWD=") && !line.starts_with("_=") && !line.starts_with("SHLVL=")
+            })
+            .collect();
+        lines.sort();
+        assert_eq!(
+            lines,
+            vec!["OXA_WORKER_DEPTH=1"],
+            "the child saw more than the given env"
+        );
+        sup.stop(pgid).expect("stop");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn group_alive_skips_unreadable_unrelated_pids() {
+        let stat = |pid: u32| match pid {
+            1 => Err(io::Error::from_raw_os_error(13)),
+            2 => Err(io::Error::from_raw_os_error(1)),
+            3 => Ok(Some(('S', 7))),
+            _ => Ok(Some(('S', 99))),
+        };
+        assert!(
+            group_alive_with(99, [1, 2, 4], stat).expect("probe"),
+            "pid 4 is in the group"
+        );
+        assert!(
+            !group_alive_with(55, [1, 2, 3], stat).expect("probe"),
+            "unreadable pids are not ours"
+        );
+        // Any other error is still an error, not absence.
+        let broken = |_: u32| Err(io::Error::from_raw_os_error(5));
+        assert!(group_alive_with(99, [1], broken).is_err());
+    }
+
+    #[test]
+    fn stop_kills_threads_left_after_the_leader_thread_exits() {
+        let python = Path::new("/usr/bin/python3");
+        if !python.exists() {
+            return;
+        }
+        let dir = scratch("threads");
+        let sup = Supervisor::new(GRACE, real_kill()).expect("supervisor");
+        // The main thread exits through pthread_exit while a second thread keeps running: the
+        // process shows state Z in /proc, though it still executes.
+        let code = "import ctypes,threading,time\nthreading.Thread(target=lambda: time.sleep(60)).start()\nctypes.CDLL(None).pthread_exit(None)";
+        let pgid = sup
+            .spawn(
+                &["/usr/bin/python3", "-c", code],
+                &host_env(),
+                &dir.join("worker.log"),
+            )
+            .expect("spawn");
+        thread::sleep(Duration::from_millis(500));
+        let started = Instant::now();
+        sup.stop(pgid).expect("stop");
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "stop waited for the surviving thread instead of killing the group"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Whether any thread of `pid` still runs (a task whose state is neither `Z` nor `X`).
+    fn thread_survives(pid: u32) -> bool {
+        let Ok(tasks) = fs::read_dir(format!("/proc/{pid}/task")) else {
+            return false;
+        };
+        tasks.flatten().any(|task| {
+            matches!(
+                fs::read(task.path().join("stat")).map(|bytes| parse_stat(&bytes)),
+                Ok(Ok((state, _))) if state != 'Z' && state != 'X'
+            )
+        })
+    }
+
+    #[test]
+    fn a_descendant_thread_outliving_its_exited_leader_is_swept() {
+        let python = Path::new("/usr/bin/python3");
+        if !python.exists() {
+            return;
+        }
+        let dir = scratch("descendant");
+        let sup = Supervisor::new(GRACE, real_kill()).expect("supervisor");
+        let pidfile = dir.join("bg.pid");
+        // The leader shell exits at once. Its background python keeps one thread running after
+        // its main thread called pthread_exit, so the group probe reads as empty while a thread
+        // still executes. Without the reap sweep that thread would outlive the supervisor's
+        // ownership of the worker.
+        let code = "import ctypes,threading,time\nthreading.Thread(target=lambda: time.sleep(60)).start()\nctypes.CDLL(None).pthread_exit(None)";
+        let script = format!("/usr/bin/python3 -c '{code}' & echo $! > {}", pidfile.display());
+        let _pgid = sup
+            .spawn(&["/bin/sh", "-c", &script], &host_env(), &dir.join("worker.log"))
+            .expect("spawn");
+        let descendant = background_pid(&pidfile);
+        let until = Instant::now() + Duration::from_secs(10);
+        while thread_survives(descendant) && Instant::now() < until {
+            thread::sleep(POLL);
+        }
+        assert!(
+            !thread_survives(descendant),
+            "a thread of a retired worker kept running: the reaper did not sweep its group"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_final_sweep_keeps_a_worker_for_retry() {
+        let python = Path::new("/usr/bin/python3");
+        if !python.exists() {
+            return;
+        }
+        let dir = scratch("failed-sweep");
+        let allow = dir.join("allow");
+        let helper = dir.join("kill");
+        script(
+            &helper,
+            &format!(
+                "[ -e '{}' ] || exit 2\nexec '{}' \"$@\"",
+                allow.display(),
+                real_kill().display()
+            ),
+        );
+        let sup = Supervisor::new(GRACE, helper).expect("supervisor");
+        let pidfile = dir.join("bg.pid");
+        let code = "import ctypes,threading,time\nthreading.Thread(target=lambda: time.sleep(60)).start()\nctypes.CDLL(None).pthread_exit(None)";
+        let body = format!("/usr/bin/python3 -c '{code}' & echo $! > {}", pidfile.display());
+        let pgid = sup
+            .spawn(&["/bin/sh", "-c", &body], &host_env(), &dir.join("worker.log"))
+            .expect("spawn");
+        let descendant = background_pid(&pidfile);
+        thread::sleep(Duration::from_millis(500));
+
+        assert!(thread_survives(descendant), "the fixture thread exited early");
+        assert!(
+            sup.stop(pgid).is_err(),
+            "a failed sweep retired a worker with a surviving thread"
+        );
+        assert!(
+            thread_survives(descendant),
+            "the failed helper somehow killed the thread"
+        );
+
+        fs::write(&allow, "").expect("allow");
+        assert!(
+            sup.stop(pgid).expect("retry stop").is_some(),
+            "the failed sweep lost the worker's identity anchor"
+        );
+        assert!(!thread_survives(descendant), "the retry did not sweep the thread");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

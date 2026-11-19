@@ -225,7 +225,10 @@ fn cli_conversation_error(error: OxaError) -> OxaError {
     // Keep the typed internal failure for the journal, and render only fixed text here.
     let message = match error.code {
         "budget_not_configured" => {
-            "Cloud models need a positive oxa.cloud.daily_budget_usd in oxa user settings."
+            "oxa.cloud.daily_budget_usd must be a positive number in oxa user settings, or unset for no USD limit."
+        }
+        "cost_unknown_history" => {
+            "The daily cloud budget cannot be checked: earlier requests today have an unknown cost."
         }
         "budget_exceeded" | codes::BUDGET_EXHAUSTED => "The daily cloud budget is exhausted.",
         codes::LITERAL_OUTPUT_EXHAUSTED => {

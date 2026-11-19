@@ -6,10 +6,11 @@
 //! * Not built in a worker child: `OXA_WORKER_DEPTH` set means nested (see [`built`]).
 //! * `start` checks, in order: the name, the goal, the parent session id, a worker of that name in
 //!   this session, `oxa.workers.max` live workers, an existing branch `agent/<name>`. Then it makes
-//!   the worktree (`git worktree add`), writes the goal file (mode 0600), and spawns the child.
-//! * The child runs under `env -C <worktree>`: its cwd is the worktree and its environment is
-//!   `launch::child_env`. Only the removed names and the changed or new values reach argv (the
-//!   worker marker, never a value the parent already has), so no secret is listed in `ps`.
+//!   the worktree (`git worktree add --no-checkout` on the host, then the checkout inside the
+//!   sandbox through `oxa work --supervise`, so no repository filter runs on the host), writes the goal file (mode 0600), and spawns the child.
+//! * The child runs under `env -C <worktree>`: its cwd is the worktree. Its environment is exactly
+//!   `launch::child_env` with the trusted `PATH`, passed to the supervisor (which clears the
+//!   environment first), so no value reaches argv and no secret is listed in `ps`.
 //! * `Hooks::shutdown` stops every worker through the supervisor.
 //! * K5b: `send {name, text}` publishes `text` to the worker's session inbox (the writer behind
 //!   `oxa send`) and reports the delivery and the worker's phase. The child id is read from the
@@ -26,8 +27,9 @@ use oxa_proto::{
     OxaError, Source, Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec, Ui, Value, YoloSwitch,
 };
 use std::fs::{self, OpenOptions};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -71,6 +73,8 @@ pub fn built(worker_depth: Option<&str>, enabled: bool) -> bool {
 
 /// What [`WorkerHooks::new`] needs.
 pub struct WorkerConfig {
+    /// The parent workspace used to resolve trusted host tools for resume.
+    pub cwd: PathBuf,
     /// The binary a worker runs: this executable in production.
     pub oxa_bin: PathBuf,
     pub agent_dir: PathBuf,
@@ -97,11 +101,16 @@ pub struct ParentScope {
     pub exclude_tools: Vec<String>,
     /// Set when the parent's session directory is not the child's own default.
     pub session_dir: Option<PathBuf>,
+    /// The parent's other narrowing switches.
+    pub narrowing: super::launch::Narrowing,
 }
 
 /// State shared by the tool and the hook set.
 pub struct WorkerCore {
+    cwd: PathBuf,
     oxa_bin: PathBuf,
+    /// The identity of `oxa_bin` when this session started; `None` when it could not be read.
+    bin_id: Option<BinId>,
     agent_dir: PathBuf,
     max: AtomicUsize,
     sessions_dir: PathBuf,
@@ -161,17 +170,94 @@ pub(super) fn parse_mode(text: &str) -> Option<WorkerMode> {
     }
 }
 
-/// Whether `git <args>` run in `dir` succeeds; its output is dropped.
-fn git_succeeds(dir: &Path, args: &[&str]) -> bool {
-    Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+/// The host tools a worker launch runs outside the sandbox: a `PATH` free of the project (and of
+/// worker worktrees), the project root and the home directory they were resolved against.
+struct HostTools {
+    path: std::ffi::OsString,
+    project: PathBuf,
+    home: PathBuf,
+}
+
+impl HostTools {
+    /// Resolved from the session `cwd` exactly like `oxa work`: the project is the Git root of
+    /// the session directory and the `PATH` is trusted against the outermost one, so no
+    /// repository-supplied shim is ever found.
+    fn resolve(parent_env: &[(String, String)], cwd: &Path) -> Result<HostTools, String> {
+        let value = |name: &str| {
+            parent_env
+                .iter()
+                .rev()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.clone())
+        };
+        let cwd_c = cwd
+            .canonicalize()
+            .map_err(|e| format!("cannot resolve {}: {e}", cwd.display()))?;
+        let project = cwd_c
+            .ancestors()
+            .find(|p| p.join(".git").exists())
+            .ok_or("this directory is not in a git repository")?
+            .to_path_buf();
+        let host_project = project
+            .ancestors()
+            .filter(|p| p.join(".git").exists())
+            .last()
+            .unwrap_or(&project)
+            .to_path_buf();
+        let home = value("HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .ok_or("HOME is not set")?;
+        let path = value("PATH")
+            .map(std::ffi::OsString::from)
+            .or_else(|| std::env::var_os("PATH"))
+            .unwrap_or_default();
+        let path = crate::netguard::trusted_work_path(&path, &host_project, &home)
+            .ok_or("cannot resolve a trusted PATH")?;
+        Ok(HostTools { path, project, home })
+    }
+
+    fn program(&self, name: &str) -> Option<PathBuf> {
+        crate::netguard::trusted_executable_for(
+            name,
+            Some(self.path.as_os_str()),
+            Some(&self.project),
+            Some(&self.home),
+        )
+    }
+}
+
+/// `git <args>` for the host: the trusted binary through `oxa_work::metadata_git` (no replace
+/// objects, no filesystem monitor, `GIT_*` isolation, no protocols), run in `dir`.
+fn host_git(tools: &HostTools, git: &Path, dir: &Path, args: &[&str]) -> Command {
+    let mut command = oxa_work::metadata_git(git, &tools.path, dir, args);
+    command.stdin(Stdio::null());
+    command
+}
+
+/// The identity of the executable a worker runs. Any rename over it or write to it changes the
+/// inode or the change time, so a binary replaced after this session started (the sandbox leaves
+/// a workspace-built `oxa` writable) is never executed outside the sandbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BinId {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+
+impl BinId {
+    fn of(path: &Path) -> io::Result<BinId> {
+        let m = fs::metadata(path)?;
+        Ok(BinId {
+            dev: m.dev(),
+            ino: m.ino(),
+            len: m.len(),
+            mtime: (m.mtime(), m.mtime_nsec()),
+            ctime: (m.ctime(), m.ctime_nsec()),
+        })
+    }
 }
 
 /// Writes `text` to `path`, creating `dir` first: a fresh mode-0600 file beside it, renamed over
@@ -199,32 +285,23 @@ fn write_private(dir: &Path, path: &Path, text: &str) -> io::Result<()> {
     })
 }
 
-/// The argv prefix that runs the child in `cwd` with environment `child`, given the process
-/// environment `parent`: `-u NAME` for each name the child lacks, `NAME=value` for each new or
-/// changed one. Everything else is inherited.
-fn env_wrapper(
-    program: &Path,
-    cwd: &Path,
-    parent: &[(String, String)],
-    child: &[(String, String)],
-) -> Vec<String> {
-    let mut argv = vec![
+/// The argv prefix that runs the child in `cwd`. The environment is not set here: the supervisor
+/// clears it and applies exactly [`worker_env`], so the policy lives in one place.
+fn cwd_wrapper(program: &Path, cwd: &Path) -> Vec<String> {
+    vec![
         program.to_string_lossy().into_owned(),
         "-C".to_string(),
         cwd.to_string_lossy().into_owned(),
-    ];
-    for (name, _) in parent {
-        if !child.iter().any(|(c, _)| c == name) {
-            argv.push("-u".to_string());
-            argv.push(name.clone());
-        }
-    }
-    for (name, value) in child {
-        if !parent.iter().any(|(p, v)| p == name && v == value) {
-            argv.push(format!("{name}={value}"));
-        }
-    }
-    argv
+    ]
+}
+
+/// The exact environment of a worker: `launch::child_env` (no trust or session hint,
+/// `OXA_WORKER_DEPTH=1`, the parent's offline policy) with `PATH` set to the trusted one.
+fn worker_env(parent: &[(String, String)], offline: bool, path: &std::ffi::OsStr) -> Vec<(String, String)> {
+    let mut env = child_env(parent, offline);
+    env.retain(|(k, _)| k != "PATH");
+    env.push(("PATH".into(), path.to_string_lossy().into_owned()));
+    env
 }
 
 /// A single safe path component for a parent session id (`workers/<slug>/`): session ids are
@@ -245,6 +322,12 @@ fn artifact_slug(parent: &str) -> String {
     } else {
         slug
     }
+}
+
+fn child_session_id(parent: &str, name: &str, started: u64) -> String {
+    let mut hasher = DefaultHasher::new();
+    parent.hash(&mut hasher);
+    format!("worker-{:016x}-{name}-{started}", hasher.finish())
 }
 
 /// The status file of the worker session `session_id` that ran in `worktree`: the sibling
@@ -274,30 +357,6 @@ fn live_state(rec: &WorkerRecord, sessions_dir: &Path) -> WorkerState {
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
     let alive = PathBuf::from(format!("/proc/{}", rec.pid)).exists();
     registry::state(rec, status.as_ref(), alive)
-}
-
-/// How many log lines a finished worker's probe text carries.
-const LOG_LINES: usize = 20;
-/// The most bytes read from the end of a log for its tail.
-const LOG_TAIL_BYTES: u64 = 64 * 1024;
-
-/// The last [`LOG_LINES`] lines of the log at `path` (empty text when it cannot be read).
-fn log_tail(path: &Path) -> String {
-    use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut file) = fs::File::open(path) else {
-        return String::new();
-    };
-    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let start = len.saturating_sub(LOG_TAIL_BYTES);
-    let mut bytes = Vec::new();
-    if file.seek(SeekFrom::Start(start)).is_err()
-        || file.take(LOG_TAIL_BYTES).read_to_end(&mut bytes).is_err()
-    {
-        return String::new();
-    }
-    let text = String::from_utf8_lossy(&bytes);
-    let lines: Vec<&str> = text.lines().collect();
-    lines[lines.len().saturating_sub(LOG_LINES)..].join("\n")
 }
 
 fn is_live(rec: &WorkerRecord, sessions_dir: &Path) -> bool {
@@ -331,7 +390,9 @@ fn describe(rec: &WorkerRecord, sessions_dir: &Path) -> String {
 impl WorkerCore {
     fn new(cfg: WorkerConfig) -> WorkerCore {
         WorkerCore {
+            bin_id: BinId::of(&cfg.oxa_bin).ok(),
             oxa_bin: cfg.oxa_bin,
+            cwd: cfg.cwd,
             agent_dir: cfg.agent_dir,
             max: AtomicUsize::new(cfg.max),
             sessions_dir: cfg.sessions_dir,
@@ -354,21 +415,6 @@ impl WorkerCore {
         lock(&self.session).clone()
     }
 
-    /// A host program the worker launch runs, from a trusted PATH directory only.
-    fn trusted_program(&self, program: &str, cwd: &Path) -> Option<PathBuf> {
-        let value = |name: &str| {
-            self.parent_env
-                .iter()
-                .find(|(k, _)| k == name)
-                .map(|(_, v)| v.clone())
-        };
-        let path = value("PATH")
-            .map(std::ffi::OsString::from)
-            .or_else(|| std::env::var_os("PATH"));
-        let home = value("HOME").map(PathBuf::from);
-        crate::netguard::trusted_executable_for(program, path.as_deref(), Some(cwd), home.as_deref())
-    }
-
     /// Learn the parent session id and model through the host (`HostAction::EngineLimits`).
     fn learn(&self) {
         let Some(host) = lock(&self.host).clone() else {
@@ -383,6 +429,59 @@ impl WorkerCore {
                 let model = v.get("model").and_then(Value::as_str).unwrap_or("");
                 *lock(&self.session) = (id.to_string(), model.to_string());
             }
+        }
+    }
+
+    /// Refuses to run a worker binary that is not the one this session started from.
+    fn check_bin(&self) -> Result<(), String> {
+        match (&self.bin_id, BinId::of(&self.oxa_bin)) {
+            (Some(then), Ok(now)) if *then == now => Ok(()),
+            _ => Err(format!(
+                "the oxa executable {} changed since this session started (or cannot be read); restart oxa before starting workers",
+                self.oxa_bin.display()
+            )),
+        }
+    }
+
+    /// Checks the empty worktree out inside the sandbox (`oxa work --supervise`, the same
+    /// supervisor `oxa work` uses): hooks and credential helpers are off, there is no network,
+    /// and the filters of the repository run in bwrap, never on the host.
+    fn materialize(&self, tools: &HostTools, worktree: &Path, branch: &str) -> Result<(), String> {
+        self.check_bin()?;
+        let request = oxa_work::SupervisorRequest {
+            source: tools.project.clone(),
+            operation: oxa_work::SupervisorOperation::Checkout {
+                branch: branch.to_string(),
+                create: false,
+                adopted: true,
+                normalize: None,
+            },
+        };
+        let json = serde_json::to_string(&request).map_err(|e| e.to_string())?;
+        let mut command = Command::new(&self.oxa_bin);
+        command.env_clear();
+        for (k, v) in &self.parent_env {
+            if k != "PATH" && !k.starts_with("GIT_") {
+                command.env(k, v);
+            }
+        }
+        let out = command
+            .env("PATH", &tools.path)
+            .env("GIT_NO_REPLACE_OBJECTS", "1")
+            .current_dir(worktree)
+            .args(["work", "--supervise", json.as_str()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|e| format!("cannot run the sandboxed checkout: {e}"))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "the sandboxed worktree checkout failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))
         }
     }
 
@@ -445,9 +544,26 @@ impl WorkerCore {
                 max
             ));
         }
+        let tools = match HostTools::resolve(&self.parent_env, cwd) {
+            Ok(tools) => tools,
+            Err(e) => return ToolOutput::error(format!("worker: {e}")),
+        };
+        let Some(git) = tools.program("git") else {
+            return ToolOutput::error("worker: git was not found in a trusted PATH directory");
+        };
         let branch = format!("agent/{name}");
         let refname = format!("refs/heads/{branch}");
-        if git_succeeds(cwd, &["rev-parse", "--verify", "--quiet", refname.as_str()]) {
+        if host_git(
+            &tools,
+            &git,
+            cwd,
+            &["rev-parse", "--verify", "--quiet", refname.as_str()],
+        )
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+        {
             return ToolOutput::error(format!(
                 "worker: branch {branch} already exists; another owner has this name"
             ));
@@ -466,16 +582,16 @@ impl WorkerCore {
                 "worker: cannot plan the worktree; the directory must be a git repository with a UTF-8 path",
             );
         }
+        if let Err(e) = self.check_bin() {
+            return ToolOutput::error(format!("worker: {e}"));
+        }
         for step in &steps {
-            let Some((program, rest)) = step.split_first() else {
+            // Step 0 is the program name (`git`); the trusted binary runs in its place.
+            let Some((_, rest)) = step.split_first() else {
                 continue;
             };
-            match Command::new(program)
-                .args(rest)
-                .current_dir(cwd)
-                .stdin(Stdio::null())
-                .output()
-            {
+            let rest: Vec<&str> = rest.iter().map(String::as_str).collect();
+            match host_git(&tools, &git, cwd, &rest).output() {
                 Ok(out) if out.status.success() => {}
                 Ok(out) => {
                     return ToolOutput::error(format!(
@@ -485,6 +601,26 @@ impl WorkerCore {
                 }
                 Err(e) => return ToolOutput::error(format!("worker: cannot run git: {e}")),
             }
+        }
+        // The worktree exists with no files: materialize them inside the sandbox, where a
+        // repository's smudge filters and attributes cannot reach the host. A failed checkout
+        // removes the empty worktree and branch so the name can be tried again.
+        if let Err(e) = self.materialize(&tools, &worktree, &branch) {
+            let path = worktree.to_string_lossy().into_owned();
+            let _ = host_git(
+                &tools,
+                &git,
+                cwd,
+                &["worktree", "remove", "--force", path.as_str()],
+            )
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+            let _ = host_git(&tools, &git, cwd, &["branch", "-D", branch.as_str()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            return ToolOutput::error(format!("worker: {e}"));
         }
 
         // Artifacts are per parent session: two sessions of one agent directory may start a
@@ -496,7 +632,9 @@ impl WorkerCore {
         }
 
         let started = now_ms();
-        let session_id = format!("{parent}-{name}-{started}");
+        // Session-store identifiers are limited to 128 bytes. The registry already records the
+        // full parent relationship, so a bounded digest-shaped component is sufficient here.
+        let session_id = child_session_id(&parent, name, started);
         let spec = WorkerSpec {
             name: name.to_string(),
             session_id: session_id.clone(),
@@ -506,23 +644,27 @@ impl WorkerCore {
             max_tokens: self.parent_scope.max_tokens,
             exclude_tools: self.parent_scope.exclude_tools.clone(),
             session_dir: self.parent_scope.session_dir.clone(),
+            narrowing: self.parent_scope.narrowing.clone(),
         };
         let (argv, notice) = match child_argv(&spec, mode, autonomy) {
             Ok(v) => v,
             Err(e) => return ToolOutput::error(format!("worker: {e}")),
         };
-        let env = child_env(&self.parent_env, oxa_proto::offline());
-        // `env` runs outside the sandbox: resolve it like every other host tool, never from a
-        // project-controlled PATH entry.
-        let Some(env_bin) = self.trusted_program("env", &worktree) else {
+        let env = worker_env(&self.parent_env, oxa_proto::offline(), &tools.path);
+        // `env` runs outside the sandbox: resolved from the session's project like every other
+        // host tool, never from a project-controlled PATH entry.
+        let Some(env_bin) = tools.program("env") else {
             return ToolOutput::error("worker: env was not found in a trusted PATH directory");
         };
-        let mut command = env_wrapper(&env_bin, &worktree, &self.parent_env, &env);
+        if let Err(e) = self.check_bin() {
+            return ToolOutput::error(format!("worker: {e}"));
+        }
+        let mut command = cwd_wrapper(&env_bin, &worktree);
         command.push(self.oxa_bin.to_string_lossy().into_owned());
         command.extend(argv.iter().cloned());
         let refs: Vec<&str> = command.iter().map(String::as_str).collect();
         let log = dir.join(format!("{name}.log"));
-        let pgid = match self.supervisor.spawn(&refs, &log) {
+        let pgid = match self.supervisor.spawn(&refs, &env, &log) {
             Ok(pgid) => pgid,
             Err(e) => return ToolOutput::error(format!("worker: cannot start the process: {e}")),
         };
@@ -566,6 +708,13 @@ impl WorkerCore {
             text.push('\n');
             text.push_str(&notice);
         }
+        // Owner policy: budgets warn and record, they never block. Each worker gets the parent's
+        // whole allowance, so say so where the model and the owner can see it.
+        if let Some(tokens) = self.parent_scope.max_tokens {
+            text.push_str(&format!(
+                "\nbudget: this worker may use up to {tokens} tokens (--max-tokens, the same allowance as this session; the session and its workers together may use more)"
+            ));
+        }
         ToolOutput::ok(text)
     }
 
@@ -604,8 +753,14 @@ impl WorkerCore {
         if records[index].stopped {
             return ToolOutput::ok(format!("worker {name} is already stopped"));
         }
-        if let Err(e) = self.supervisor.stop(records[index].pgid) {
-            return ToolOutput::error(format!("worker: cannot stop {name}: {e}"));
+        match self.supervisor.stop(records[index].pgid) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return ToolOutput::error(format!(
+                    "worker: cannot stop {name}: this process does not own that worker"
+                ))
+            }
+            Err(e) => return ToolOutput::error(format!("worker: cannot stop {name}: {e}")),
         }
         records[index].stopped = true;
         if let Err(e) = registry::save(&self.agent_dir, &parent, &records) {
@@ -645,7 +800,8 @@ impl WorkerCore {
     }
 
     /// The wait probe for `worker {name}`: `Ok(None)` while the worker runs, `Ok(Some(text))` when
-    /// it finished or its process is gone, with the outcome and the last 20 log lines.
+    /// it finished or its process is gone. Only the typed outcome is returned: child logs can
+    /// contain credentials or other private diagnostics and must not become parent-model input.
     pub fn probe(&self, args: &Value) -> Result<Option<String>, String> {
         let name = str_arg(args, "name").unwrap_or("");
         let (parent, _) = self.session();
@@ -664,10 +820,7 @@ impl WorkerCore {
             WorkerState::Stopped => "stopped".to_string(),
             _ => return Ok(None),
         };
-        Ok(Some(format!(
-            "worker {name}: {outcome}\nlast {LOG_LINES} log lines:\n{}",
-            log_tail(&rec.log_file)
-        )))
+        Ok(Some(format!("worker {name}: {outcome}")))
     }
 
     /// Relaunch each dead, unfinished worker of the parent session (once per session id in this
@@ -696,10 +849,9 @@ impl WorkerCore {
         let autonomy = lock(&self.yolo).level();
         // An unknown table mode is taken as the most restrictive one, never a wider one.
         let table_mode = (*lock(&self.table_mode)).unwrap_or(Mode::Plan);
-        let env = child_env(&self.parent_env, oxa_proto::offline());
         let mut live = records.iter().filter(|r| is_live(r, &self.sessions_dir)).count();
         let mut notices = Vec::new();
-        let mut launched: Vec<u32> = Vec::new();
+        let mut launched: Vec<(u32, String)> = Vec::new();
         for rec in records.iter_mut() {
             let alive = PathBuf::from(format!("/proc/{}", rec.pid)).exists();
             if !resume::due(rec, &live_state(rec, &self.sessions_dir), alive) {
@@ -727,27 +879,41 @@ impl WorkerCore {
                 ));
                 continue;
             }
-            let Some(env_bin) = self.trusted_program("env", &rec.worktree) else {
+            let tools = match HostTools::resolve(&self.parent_env, &self.cwd) {
+                Ok(tools) => tools,
+                Err(e) => {
+                    notices.push(format!("worker {}: not resumed: {e}", rec.name));
+                    continue;
+                }
+            };
+            let Some(env_bin) = tools.program("env") else {
                 notices.push(format!(
                     "worker {}: not resumed, env was not found in a trusted PATH directory",
                     rec.name
                 ));
                 continue;
             };
-            let mut command = env_wrapper(&env_bin, &rec.worktree, &self.parent_env, &env);
+            if let Err(e) = self.check_bin() {
+                notices.push(format!("worker {}: not resumed: {e}", rec.name));
+                continue;
+            }
+            let env = worker_env(&self.parent_env, oxa_proto::offline(), &tools.path);
+            let mut command = cwd_wrapper(&env_bin, &rec.worktree);
             command.push(self.oxa_bin.to_string_lossy().into_owned());
             command.extend(argv);
             let refs: Vec<&str> = command.iter().map(String::as_str).collect();
-            match self.supervisor.spawn(&refs, &rec.log_file) {
+            match self.supervisor.spawn(&refs, &env, &rec.log_file) {
                 Ok(pgid) => {
                     rec.pid = pgid;
                     rec.pgid = pgid;
-                    launched.push(pgid);
-                    live += 1;
-                    notices.push(format!(
-                        "worker {}: relaunched with --continue={}",
-                        rec.name, rec.session_id
+                    launched.push((
+                        pgid,
+                        format!(
+                            "worker {}: relaunched with --continue={}",
+                            rec.name, rec.session_id
+                        ),
                     ));
+                    live += 1;
                     notices.extend(notice);
                 }
                 Err(e) => notices.push(format!("worker {}: cannot relaunch: {e}", rec.name)),
@@ -756,12 +922,24 @@ impl WorkerCore {
         if !launched.is_empty() {
             if let Err(e) = registry::save(&self.agent_dir, &parent, &records) {
                 // Not recorded, so nothing would ever stop them: stop them now, as `start` does.
-                for pgid in &launched {
-                    let _ = self.supervisor.stop(*pgid);
+                let mut retained = Vec::new();
+                for (pgid, _) in &launched {
+                    if let Err(error) = self.supervisor.stop(*pgid) {
+                        retained.push(format!("{pgid} ({error})"));
+                    }
                 }
-                notices.push(format!(
-                    "worker: relaunched workers were not recorded and were stopped: {e}"
-                ));
+                if retained.is_empty() {
+                    notices.push(format!(
+                        "worker: relaunched workers were not recorded and were stopped: {e}"
+                    ));
+                } else {
+                    notices.push(format!(
+                        "worker: registry update failed ({e}); cleanup failed for process groups {}; they remain tracked by this session and require another stop attempt",
+                        retained.join(", ")
+                    ));
+                }
+            } else {
+                notices.extend(launched.into_iter().map(|(_, notice)| notice));
             }
         }
         notices
@@ -793,33 +971,65 @@ struct WorkerTool {
     core: Arc<WorkerCore>,
 }
 
+fn worker_access(args: &Value, cwd: &Path) -> Result<Vec<Access>, String> {
+    match str_arg(args, "action") {
+        // Listing only reads the worker registry and status through this trusted built-in. It
+        // neither launches a command nor asks the network permission gate, including in plan mode.
+        Some("list") => Ok(Vec::new()),
+        Some("start") => {
+            let name = str_arg(args, "name").unwrap_or("");
+            let Some(path) = worktree_path(cwd, name) else {
+                return Err(format!("worker: invalid name {name:?}"));
+            };
+            Ok(vec![
+                Access::Exec {
+                    command: COMMAND.to_string(),
+                    net: true,
+                },
+                Access::Write(path),
+            ])
+        }
+        // Stopping owns a host process operation, but needs no network access.
+        _ => Ok(vec![Access::Exec {
+            command: COMMAND.to_string(),
+            net: false,
+        }]),
+    }
+}
+
+fn approved_worktree_is_unchanged(path: &Path, approved: &Path) -> bool {
+    oxa_perm::resolve_real(path).as_deref() == Some(approved)
+}
+
 impl Tool for WorkerTool {
     fn spec(&self) -> &ToolSpec {
         &self.spec
     }
 
     /// `start` runs `git worktree add` and a child session, so it asks for the command with the
-    /// network on and for the worktree it writes. `list` and `stop` only name the command.
+    /// network on and for the worktree it writes. `stop` names a network-free command; `list` is
+    /// an internal read-only query and requires no external access.
     fn access(&self, args: &Value, cx: &ToolCtx) -> Result<Vec<Access>, String> {
-        let mut out = vec![Access::Exec {
-            command: COMMAND.to_string(),
-            net: true,
-        }];
-        if str_arg(args, "action") == Some("start") {
-            let name = str_arg(args, "name").unwrap_or("");
-            let Some(path) = worktree_path(cx.cwd, name) else {
-                return Err(format!("worker: invalid name {name:?}"));
-            };
-            out.push(Access::Write(path));
-        }
-        Ok(out)
+        worker_access(args, cx.cwd)
     }
 
     fn run(&self, args: &Value, cx: &ToolCtx, _live: &mut dyn FnMut(&str)) -> ToolOutput {
         match str_arg(args, "action") {
-            Some("start") => self
-                .core
-                .start(args, cx.cwd, cx.mode, lock(&self.core.yolo).level()),
+            Some("start") => {
+                let name = str_arg(args, "name").unwrap_or("");
+                let Some(path) = worktree_path(cx.cwd, name) else {
+                    return ToolOutput::error(format!("worker: invalid name {name:?}"));
+                };
+                if let Some(approved) = cx.checked_real(&path) {
+                    if !approved_worktree_is_unchanged(&path, approved) {
+                        return ToolOutput::error(
+                            "worker: worktree destination changed after permission approval",
+                        );
+                    }
+                }
+                self.core
+                    .start(args, cx.cwd, cx.mode, lock(&self.core.yolo).level())
+            }
             Some("list") => self.core.list(),
             Some("stop") => self.core.stop(args),
             Some("send") => self.core.send(args),
@@ -1014,12 +1224,29 @@ mod tests {
         git(&["init", "-q"]);
         git(&["commit", "-q", "--allow-empty", "-m", "init"]);
         let fake = root.join("fake-oxa");
-        fs::write(&fake, "#!/bin/sh\nsleep 30\n").unwrap();
+        // `work --supervise` is the sandboxed checkout: it records its argv and returns.
+        fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = work ]; then echo \"$@\" >> '{}/ran-supervise'; exit 0; fi\nsleep 30\n",
+                root.display()
+            ),
+        )
+        .unwrap();
         fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
         (root, repo, agent, fake)
     }
 
     fn hooks(fake: &Path, agent: &Path) -> WorkerHooks {
+        hooks_with(fake, agent, Vec::new(), ParentScope::default())
+    }
+
+    fn hooks_with(
+        fake: &Path,
+        agent: &Path,
+        parent_env: Vec<(String, String)>,
+        parent_scope: ParentScope,
+    ) -> WorkerHooks {
         let kill = ["/bin/kill", "/usr/bin/kill"]
             .into_iter()
             .map(PathBuf::from)
@@ -1027,12 +1254,13 @@ mod tests {
             .expect("a kill executable");
         WorkerHooks::new(WorkerConfig {
             oxa_bin: fake.to_path_buf(),
+            cwd: agent.parent().unwrap().join("repo"),
             agent_dir: agent.to_path_buf(),
             max: 4,
             supervisor: Supervisor::new(Duration::from_secs(1), kill).expect("supervisor"),
             sessions_dir: agent.join("sessions"),
-            parent_env: Vec::new(),
-            parent_scope: ParentScope::default(),
+            parent_env,
+            parent_scope,
             yolo: YoloSwitch::new(Autonomy::Standard),
             resume_on_start: true,
         })
@@ -1040,6 +1268,166 @@ mod tests {
 
     fn set_table_mode(hooks: &WorkerHooks, mode: Mode) {
         *lock(&hooks.core.table_mode) = Some(mode);
+    }
+
+    /// A project that ships `env` and `git` shims in `<repo>/shim`, first on the parent's PATH.
+    /// A shim that runs leaves `<root>/ran-<name>`.
+    fn shim_env(root: &Path, repo: &Path) -> Vec<(String, String)> {
+        let shim = repo.join("shim");
+        fs::create_dir_all(&shim).unwrap();
+        for name in ["env", "git"] {
+            let file = shim.join(name);
+            fs::write(
+                &file,
+                format!("#!/bin/sh\ntouch '{}/ran-{name}'\nexit 1\n", root.display()),
+            )
+            .unwrap();
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        vec![
+            ("PATH".into(), format!("{}:/usr/bin:/bin", shim.display())),
+            ("HOME".into(), root.display().to_string()),
+        ]
+    }
+
+    #[test]
+    fn project_env_shim_is_refused() {
+        let (root, repo, agent, fake) = fixture("envshim");
+        let env = shim_env(&root, &repo);
+        let tools = HostTools::resolve(&env, &repo).unwrap();
+        let env_bin = tools.program("env").expect("a trusted env");
+        assert!(!env_bin.starts_with(&repo), "{}", env_bin.display());
+        // Resolved from the worktree as the project, the shim would have been accepted.
+        let hooks = hooks_with(&fake, &agent, env, ParentScope::default());
+        set_session(&hooks, "parent-1");
+        let out = hooks.core.start(
+            &json!({"action": "start", "name": "alpha", "goal": "one"}),
+            &repo,
+            Mode::Workspace,
+            Autonomy::Standard,
+        );
+        assert!(!out.is_error, "{}", out.text);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!root.join("ran-env").exists(), "the project env shim ran");
+        let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_git_shim_is_refused() {
+        let (root, repo, agent, fake) = fixture("gitshim");
+        let env = shim_env(&root, &repo);
+        assert!(!HostTools::resolve(&env, &repo)
+            .unwrap()
+            .program("git")
+            .unwrap()
+            .starts_with(&repo));
+        let hooks = hooks_with(&fake, &agent, env, ParentScope::default());
+        set_session(&hooks, "parent-1");
+        let out = hooks.core.start(
+            &json!({"action": "start", "name": "alpha", "goal": "one"}),
+            &repo,
+            Mode::Workspace,
+            Autonomy::Standard,
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(!root.join("ran-git").exists(), "the project git shim ran");
+        assert!(worktree_path(&repo, "alpha").unwrap().is_dir());
+        let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn worker_start_and_resume_get_the_same_child_env() {
+        let (root, repo, agent, _) = fixture("exactenv");
+        let out_file = root.join("env.out");
+        let fake = root.join("env-oxa");
+        fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\n[ \"$1\" = work ] && exit 0\n/usr/bin/env > '{}'\nsleep 30\n",
+                out_file.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let env = vec![
+            ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+            ("HOME".to_string(), root.display().to_string()),
+            ("OXA_TRUST_PROJECT".to_string(), "1".to_string()),
+            ("OXA_SESSION_HINT".to_string(), "abc.s1".to_string()),
+            ("KEEP_ME".to_string(), "yes".to_string()),
+        ];
+        let hooks = hooks_with(&fake, &agent, env, ParentScope::default());
+        set_session(&hooks, "parent-1");
+        set_table_mode(&hooks, Mode::Workspace);
+        let out = hooks.core.start(
+            &json!({"action": "start", "name": "alpha", "goal": "one"}),
+            &repo,
+            Mode::Workspace,
+            Autonomy::Standard,
+        );
+        assert!(!out.is_error, "{}", out.text);
+        let capture_env = || {
+            for _ in 0..100 {
+                if let Ok(text) = fs::read_to_string(&out_file) {
+                    if text.contains("KEEP_ME=yes\n") {
+                        return text;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            panic!("missing env output");
+        };
+        let text = capture_env();
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(
+            !lines.iter().any(|l| l.starts_with("OXA_TRUST_PROJECT=")),
+            "{text}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.starts_with("OXA_SESSION_HINT=")),
+            "{text}"
+        );
+        assert!(lines.contains(&"OXA_WORKER_DEPTH=1"), "{text}");
+        assert!(lines.contains(&"KEEP_ME=yes"), "{text}");
+        assert!(lines.iter().any(|l| l.starts_with("PATH=")), "{text}");
+        let rec = registry::load(&agent, "parent-1").unwrap().remove(0);
+        hooks.core.supervisor.stop(rec.pgid).unwrap();
+        fs::remove_file(&out_file).unwrap();
+        let notices = hooks.core.resume();
+        assert!(
+            notices.iter().any(|notice| notice.contains("relaunched")),
+            "{notices:?}"
+        );
+        let resumed = capture_env();
+        assert_eq!(
+            resumed.lines().collect::<std::collections::BTreeSet<_>>(),
+            text.lines().collect::<std::collections::BTreeSet<_>>()
+        );
+        let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn worker_start_notice_shows_the_budget() {
+        let (root, repo, agent, fake) = fixture("budget");
+        let scope = ParentScope {
+            max_tokens: Some(4242),
+            ..ParentScope::default()
+        };
+        let hooks = hooks_with(&fake, &agent, Vec::new(), scope);
+        set_session(&hooks, "parent-1");
+        let out = hooks.core.start(
+            &json!({"action": "start", "name": "alpha", "goal": "one"}),
+            &repo,
+            Mode::Workspace,
+            Autonomy::Standard,
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("4242 tokens"), "{}", out.text);
+        let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        let _ = fs::remove_dir_all(&root);
     }
 
     fn set_session(hooks: &WorkerHooks, id: &str) {
@@ -1152,7 +1540,7 @@ mod tests {
             hooks.poll_event("pr", &args, std::time::Duration::from_secs(5)),
             None
         );
-        // The worker reports its outcome; the log has more than 20 lines.
+        // The worker reports its typed outcome without forwarding its potentially secret log.
         let status = json!({"session_id": rec.session_id, "pid": rec.pid, "phase": "finished",
             "outcome": {"type": "oxa_result", "outcome": "done", "error_class": null, "exit_code": 0}});
         fs::create_dir_all(rec.status_file.parent().unwrap()).unwrap();
@@ -1165,8 +1553,7 @@ mod tests {
             .unwrap()
             .expect("done");
         assert!(text.contains("outcome done"), "{text}");
-        assert!(text.contains("line 25") && text.contains("line 6"), "{text}");
-        assert!(!text.contains("line 5\n") && !text.ends_with("line 5"), "{text}");
+        assert!(!text.contains("line 25") && !text.contains("log lines"), "{text}");
         // An unknown worker is a probe failure.
         assert!(hooks
             .poll_event(
@@ -1359,6 +1746,56 @@ mod tests {
     }
 
     #[test]
+    fn worker_start_never_runs_a_checkout_filter_on_the_host() {
+        let (root, repo, agent, fake) = fixture("filter");
+        let git = |args: &[&str]| {
+            let ok = Command::new("git")
+                .arg("-c")
+                .arg("user.name=test")
+                .arg("-c")
+                .arg("user.email=test@example.invalid")
+                .args(args)
+                .current_dir(&repo)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        fs::write(repo.join("a.txt"), "content\n").unwrap();
+        fs::write(repo.join(".gitattributes"), "a.txt filter=probe\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "files"]);
+        // A smudge filter that leaves a marker outside the worktree when it runs.
+        let marker = root.join("filter-ran");
+        git(&[
+            "config",
+            "filter.probe.smudge",
+            &format!("sh -c 'touch {}; cat'", marker.display()),
+        ]);
+        let hooks = hooks(&fake, &agent);
+        set_session(&hooks, "parent-1");
+        let out = hooks.core.start(
+            &json!({"action": "start", "name": "alpha", "goal": "one"}),
+            &repo,
+            Mode::Workspace,
+            Autonomy::Standard,
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(!marker.exists(), "a repository filter ran on the host");
+        // The checkout was handed to the sandboxed supervisor as a checkout request.
+        let ran = fs::read_to_string(root.join("ran-supervise")).unwrap_or_default();
+        assert!(
+            ran.contains("--supervise") && ran.contains("\"kind\":\"checkout\""),
+            "supervisor argv: {ran}"
+        );
+        let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn resume_stops_relaunched_workers_when_registry_write_fails() {
         let (root, repo, agent, fake) = fixture("rollback");
         let hooks = hooks(&fake, &agent);
@@ -1379,6 +1816,38 @@ mod tests {
             let now = registry::load(&agent, "parent-1").unwrap().remove(0);
             assert_eq!(now.pid, rec.pid);
         }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn worker_start_refuses_a_replaced_executable() {
+        let (root, repo, agent, fake) = fixture("pin");
+        let hooks = hooks(&fake, &agent);
+        set_session(&hooks, "parent-1");
+        // Another file renamed over the binary after the session started.
+        let other = root.join("other-oxa");
+        fs::write(
+            &other,
+            format!("#!/bin/sh\ntouch '{}/replacement-ran'\n", root.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&other, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::rename(&other, &fake).unwrap();
+        let out = hooks.core.start(
+            &json!({"action": "start", "name": "alpha", "goal": "one"}),
+            &repo,
+            Mode::Workspace,
+            Autonomy::Standard,
+        );
+        assert!(out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("changed since this session started"),
+            "{}",
+            out.text
+        );
+        assert!(!root.join("replacement-ran").exists(), "the replacement ran");
+        assert!(!worktree_path(&repo, "alpha").unwrap().exists());
+        assert!(registry::load(&agent, "parent-1").unwrap().is_empty());
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1409,6 +1878,25 @@ mod tests {
     }
 
     #[test]
+    fn worker_controls_read_the_user_file_only() {
+        use oxa_config::Settings;
+        // The user turned workers off and capped them: a trusted project cannot undo that.
+        let user = Settings::from_values(
+            json!({"oxa": {"workers": {"enabled": false, "max": 1}}}),
+            json!({"oxa": {"workers": {"enabled": true, "max": 99}}}),
+        );
+        assert!(!enabled(&user));
+        assert_eq!(max_workers(&user), 1);
+        // A project alone cannot change the defaults either way.
+        let project = Settings::from_values(
+            json!({}),
+            json!({"oxa": {"workers": {"enabled": false, "max": 99}}}),
+        );
+        assert!(enabled(&project));
+        assert_eq!(max_workers(&project), 4);
+    }
+
+    #[test]
     fn worker_tool_absent_in_worker_child() {
         // A worker child sets OXA_WORKER_DEPTH: the hook set (and so the tool) is not built,
         // whatever the setting says. Outside a worker it is built unless switched off.
@@ -1416,5 +1904,54 @@ mod tests {
         assert!(!built(Some("1"), true));
         assert!(!built(Some(""), true));
         assert!(!built(None, false));
+    }
+
+    #[test]
+    fn worker_list_declares_no_command_or_network_access() {
+        let cwd = Path::new("/example/project");
+        assert_eq!(
+            worker_access(&json!({"action": "list"}), cwd).unwrap(),
+            Vec::new()
+        );
+
+        let stop = worker_access(&json!({"action": "stop", "name": "alpha"}), cwd).unwrap();
+        assert_eq!(
+            stop,
+            vec![Access::Exec {
+                command: COMMAND.to_string(),
+                net: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn approved_new_worktree_keeps_its_nonexistent_tail() {
+        let root = scratch("pin-new");
+        let path = root.join("missing-parent").join("repo").join("alpha");
+        let approved = oxa_perm::resolve_real(&path).expect("permission pin");
+
+        assert!(approved_worktree_is_unchanged(&path, &approved));
+
+        let elsewhere = root.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("missing-parent")).unwrap();
+        assert!(!approved_worktree_is_unchanged(&path, &approved));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn child_session_id_is_bounded_for_the_longest_parent_id() {
+        let parent = "p".repeat(128);
+        let id = child_session_id(&parent, "forty-character-worker-name-000000000000", u64::MAX);
+        // Session identifiers are treated as private metadata by the log scanners. Keep assertion
+        // failures useful without copying the generated identifier into test output.
+        assert!(id.len() <= 128, "generated child session id is too long");
+        assert!(id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+        let other = child_session_id(
+            &format!("{parent}x"),
+            "forty-character-worker-name-000000000000",
+            u64::MAX,
+        );
+        assert!(id != other, "distinct parents must produce distinct child ids");
     }
 }

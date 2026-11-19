@@ -14,7 +14,7 @@ pub mod check_recovery;
 mod intake;
 pub mod landing;
 pub mod queue;
-pub use intake::{ImportState, Issue, Snapshot};
+pub use intake::{ImportState, Incomplete, Issue, Snapshot};
 mod goal_plan;
 pub mod review;
 pub use goal_plan::GoalStep;
@@ -33,6 +33,8 @@ pub enum Action {
     WaitMergeability,
     WaitReview,
     WaitIssue,
+    /// The PR's evidence exceeded a GitHub read page; its row is shown and never eligible.
+    EvidenceIncomplete,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -94,6 +96,7 @@ pub trait GitHub {
         Ok(Snapshot {
             pull_requests: self.open_pull_requests()?,
             issues: vec![],
+            incomplete: vec![],
         })
     }
 }
@@ -123,6 +126,8 @@ pub struct AttemptState {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Policy {
     pub enabled: bool,
+    /// Advisory daily attempt threshold. A claim past it proceeds and warns the
+    /// operator; zero, or `enabled: false`, admits nothing.
     pub max_attempts_per_day: u32,
 }
 
@@ -132,6 +137,44 @@ impl Default for Policy {
             enabled: false,
             max_attempts_per_day: 3,
         }
+    }
+}
+
+/// One operator warning for a claim taken past the configured daily attempt
+/// threshold. The UTC day and attempt ordinal come from the returned lease's
+/// generation, written under the Claims lock, so the notice reflects the
+/// authoritative count rather than a separate read. Free-form release reasons
+/// stay out of it: no approved surface guarantees scrubbed output.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttemptAdvisory {
+    /// The attempt ordinal just reserved.
+    pub attempt: u32,
+    /// The configured advisory threshold; zero warns from the first attempt.
+    pub limit: u32,
+    /// The UTC day window that owns the ordinal.
+    pub utc_day: u64,
+}
+
+impl AttemptAdvisory {
+    /// The claim passed the threshold exactly when the reserved ordinal is past
+    /// the limit, so a limit of zero warns from the first attempt.
+    pub fn at(lease: &Lease, policy: &Policy) -> Option<Self> {
+        let (utc_day, attempt) = lease.generation;
+        (attempt > policy.max_attempts_per_day).then(|| Self {
+            attempt,
+            limit: policy.max_attempts_per_day,
+            utc_day,
+        })
+    }
+
+    /// One warning line for the claim of `number`.
+    pub fn line(&self, number: u64) -> String {
+        let start = self.utc_day.saturating_mul(86_400);
+        let end = start.saturating_add(86_400);
+        format!(
+            "board item {number}: advisory attempt {} of {} in the UTC window {start}..{end}",
+            self.attempt, self.limit
+        )
     }
 }
 
@@ -145,6 +188,9 @@ pub struct Entry {
     pub lease: Option<Lease>,
     pub attempts_today: u32,
     pub eligible: bool,
+    /// Why this row's evidence is incomplete; such a row is never eligible for any action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_incomplete: Option<String>,
 }
 
 impl Entry {
@@ -273,9 +319,15 @@ impl Board {
                 pr.release_pinned,
                 action,
                 state.get(&pr.number),
-                policy,
                 now,
             ));
+        }
+        for item in snapshot.incomplete {
+            if item.number == 0 || item.head.is_empty() || !seen.insert(item.number) {
+                return Err("invalid or duplicate incomplete item in board snapshot".into());
+            }
+            let saved = state.get(&item.number);
+            board.entries.push(intake::incomplete_entry(item, saved, now));
         }
         for issue in snapshot.issues {
             if issue.number == 0 || issue.revision.is_empty() || !seen.insert(issue.number) {
@@ -292,7 +344,6 @@ impl Board {
                 issue.release_pinned,
                 action,
                 state.get(&issue.number),
-                policy,
                 now,
             ));
         }

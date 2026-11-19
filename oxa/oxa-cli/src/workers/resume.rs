@@ -75,6 +75,7 @@ pub fn resume_argv(
         scope.max_tokens,
         &scope.exclude_tools,
         scope.session_dir.as_deref(),
+        &scope.narrowing,
     )?);
     Ok((args, notice))
 }
@@ -145,12 +146,30 @@ mod tests {
             max_tokens: Some(900),
             exclude_tools: vec!["bash".into()],
             session_dir: Some("/work/sessions".into()),
+            narrowing: super::super::launch::Narrowing {
+                offline: true,
+                no_context_files: true,
+                tools: Some(vec!["read".into()]),
+                no_tools: true,
+                no_builtin_tools: true,
+                no_mcp: true,
+                no_web_search: true,
+                no_extensions: true,
+            },
         };
         let (args, _) = resume_argv(&rec("workspace"), Mode::Workspace, Autonomy::Standard, &scope).unwrap();
         for expected in [
             "--max-tokens=900",
             "--exclude-tools=bash",
             "--session-dir=/work/sessions",
+            "--offline",
+            "--no-context-files",
+            "--tools=read",
+            "--no-tools",
+            "--no-builtin-tools",
+            "--no-mcp",
+            "--no-web-search",
+            "--no-extensions",
         ] {
             assert!(args.iter().any(|a| a == expected), "{expected}: {args:?}");
         }

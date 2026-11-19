@@ -37,9 +37,11 @@ fn proposal(board: &Board, revision: u64) -> Option<OpenGoalAsk> {
         Action::BuildIssue => "start the admitted issue",
         Action::PromoteDraft => "review the draft for promotion",
         Action::Ready => "review the pull request for the merge queue",
-        Action::WaitRequiredCi | Action::WaitMergeability | Action::WaitReview | Action::WaitIssue => {
-            return None
-        }
+        Action::WaitRequiredCi
+        | Action::WaitMergeability
+        | Action::WaitReview
+        | Action::WaitIssue
+        | Action::EvidenceIncomplete => return None,
     };
     Some(OpenGoalAsk {
         id: format!("lead:board:{}", entry.number),
