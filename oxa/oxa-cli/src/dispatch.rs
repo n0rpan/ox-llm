@@ -1790,7 +1790,7 @@ fn run_tui(
         name,
         ..
     } = prep;
-    let (session, owner) = match owner {
+    let (mut session, owner) = match owner {
         Some((session, binding)) => (session, Some(binding)),
         None => match open_named(&built, session_id, open, name.as_deref()) {
             Ok(session) => (session, None),
@@ -1874,22 +1874,19 @@ fn run_tui(
         session.set_output_schema(base.output_schema.clone());
         Ok(session)
     });
-    // S11: `--max-time` and `--max-tokens` also bound an interactive session, with the same soft
-    // wrap-up as a headless run. The watcher lives until the TUI returns.
-    let _limit = if a.max_time.is_some() || a.max_tokens.is_some() {
-        match crate::limits::LimitWatcher::start(
+    // S11: the interactive startup session has the same soft wrap-up as a headless run.
+    if a.max_time.is_some() || a.max_tokens.is_some() {
+        match crate::limits::StartupLimit::start(
             session.handle(),
             a.max_time,
             a.max_tokens,
             built.supervised_child,
-            built.hook_sets.subagent.as_deref(),
+            built.hook_sets.subagent.clone(),
         ) {
-            Ok(limit) => limit,
+            Ok(limit) => session.hold_startup_limit(limit),
             Err(error) => return report(stderr, &error),
         }
-    } else {
-        None
-    };
+    }
     let opts = InteractiveOpts {
         // `--tui-mode` over the `tuiMode` setting (default fullscreen).
         fullscreen: a

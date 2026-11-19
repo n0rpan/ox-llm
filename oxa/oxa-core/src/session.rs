@@ -125,6 +125,7 @@ pub struct Session {
     pub(crate) st: SessionState,
     /// O-152: the boot preload ran (or was skipped) for the session entered last.
     preloaded: bool,
+    startup_limit: Option<Box<dyn Send>>,
 }
 
 /// The CLI-level choices of [`Session::open`]. `None` in [`enter`] means a switch inside a
@@ -303,7 +304,11 @@ impl Session {
         let mut sink = VecSink::default();
         let mut ui = HeadlessUi::default();
         enter(&mut st, how, Some(&cli), &mut sink, &mut ui)?;
-        Ok(Session { st, preloaded: false })
+        Ok(Session {
+            st,
+            preloaded: false,
+            startup_limit: None,
+        })
     }
 
     /// Run one user prompt to settlement (blocks). A line naming an extension command runs it
@@ -515,6 +520,7 @@ impl Session {
         let mut ui = HeadlessUi::default();
         let r = crate::fork_at(&mut self.st, entry, &mut ui);
         if r.is_ok() {
+            drop(self.startup_limit.take());
             self.st.jobs.reset();
         }
         r
@@ -526,6 +532,7 @@ impl Session {
         let mut ui = HeadlessUi::default();
         let r = crate::clone_current(&mut self.st, &mut ui);
         if r.is_ok() {
+            drop(self.startup_limit.take());
             self.st.jobs.reset();
         }
         r
@@ -541,6 +548,7 @@ impl Session {
         crate::fire::session_shutdown(&mut self.st, reason, target.as_deref(), sink, ui);
         self.st.jobs.reset();
         enter(&mut self.st, how, None, sink, ui)?;
+        drop(self.startup_limit.take());
         self.preloaded = false;
         Ok(())
     }
@@ -830,10 +838,16 @@ impl Session {
         &self.st
     }
 
+    /// Keep the startup limit armed until this session closes or switches files.
+    pub fn hold_startup_limit(&mut self, limit: impl Send + 'static) {
+        self.startup_limit = Some(Box::new(limit));
+    }
+
     /// Leave this session without stopping the hook sets: fire `SessionShutdown` and drop the
     /// host. For a front end that replaces the session object by another one built from the
     /// same hook sets (`/new`, `/resume`, fork): the new session attaches its own host.
     pub fn close(&mut self, ui: &mut dyn Ui) {
+        drop(self.startup_limit.take());
         crate::progress::notify(&self.st, crate::Progress::Closing);
         let mut sink = VecSink::default();
         observe_hooks(
