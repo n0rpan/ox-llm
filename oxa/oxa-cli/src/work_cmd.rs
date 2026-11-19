@@ -171,6 +171,15 @@ pub(crate) fn run(
             runner_owns_github: false,
             autonomy: runner_autonomy(&oxa_config::Settings::load(dirs, &root, false)),
             worker_github: runner_worker_github(&oxa_config::Settings::load(dirs, &root, false)),
+            // Re-read for every launch, like the autonomy level: lowering
+            // `permissions.defaultMode` (or pinning `runner`) revokes worker GitHub for the
+            // tasks a running queue has not started yet.
+            worker_github_now: Some({
+                let (dirs, root) = (dirs.clone(), root.clone());
+                std::sync::Arc::new(move || {
+                    runner_worker_github(&oxa_config::Settings::load(&dirs, &root, false))
+                }) as std::sync::Arc<dyn Fn() -> oxa_work::WorkerGithub + Send + Sync>
+            }),
             // Re-read for every launch: lowering `permissions.defaultMode` revokes yolo for the
             // tasks a running queue has not started yet.
             autonomy_now: Some({

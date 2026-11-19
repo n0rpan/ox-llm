@@ -105,6 +105,7 @@ mod autonomy_tests {
             offline: false,
             runner_owns_github: false,
             worker_github: crate::WorkerGithub::default(),
+            worker_github_now: None,
             autonomy: oxa_proto::Autonomy::Yolo,
             autonomy_now: Some(now),
             storage: std::path::PathBuf::from("/tmp/storage"),
@@ -161,7 +162,14 @@ pub(crate) fn run(
     #[cfg(target_os = "linux")] managed_steering: Option<&crate::managed_steering::Launch>,
     on_session: &mut (dyn FnMut(&str) -> Result<()> + Send),
 ) -> Result<Worker> {
-    let prompt = &*crate::worker_prompt(prompt, policy.worker_github);
+    // The owner's GitHub authority is read at launch, like the autonomy level: lowering
+    // `permissions.defaultMode` (or pinning `runner`) revokes worker GitHub for the tasks
+    // a running queue has not started yet.
+    let worker_github = policy
+        .worker_github_now
+        .as_ref()
+        .map_or(policy.worker_github, |now| now());
+    let prompt = &*crate::worker_prompt(prompt, worker_github);
     let terminate = policy
         .terminate_binary
         .as_deref()
@@ -202,7 +210,7 @@ pub(crate) fn run(
     if policy.offline {
         command.arg("--offline");
     }
-    github_access(&mut command, policy.runner_owns_github, policy.worker_github);
+    github_access(&mut command, policy.runner_owns_github, worker_github);
     if let Some(id) = session {
         command.arg(format!("--continue={id}"));
     }
@@ -496,6 +504,43 @@ mod tests {
     fn yolo_worker_keeps_mcp_web_subagent() {
         let mut command = Command::new("oxa");
         github_access(&mut command, true, crate::WorkerGithub::Worker);
+        assert!(args_of(&command).is_empty());
+    }
+
+    #[test]
+    fn a_lowered_owner_level_revokes_worker_github() {
+        // The launch reads the current authority, exactly as it reads the current autonomy
+        // level: a queue that started while the owner was in yolo must not keep handing
+        // out GitHub credentials after the owner lowered the mode or pinned `runner`.
+        let level = std::sync::Arc::new(std::sync::Mutex::new(crate::WorkerGithub::Worker));
+        let now = {
+            let level = level.clone();
+            std::sync::Arc::new(move || *level.lock().unwrap())
+                as std::sync::Arc<dyn Fn() -> crate::WorkerGithub + Send + Sync>
+        };
+        let mut command = Command::new("oxa");
+        let worker_github = now();
+        github_access(&mut command, true, worker_github);
+        assert!(
+            args_of(&command).is_empty() && env_of(&command, crate::RUNNER_GITHUB_ENV).is_none(),
+            "while the owner is in yolo the worker keeps its GitHub environment"
+        );
+        *level.lock().unwrap() = crate::WorkerGithub::Runner;
+        let mut command = Command::new("oxa");
+        let worker_github = now();
+        github_access(&mut command, true, worker_github);
+        assert_eq!(env_of(&command, crate::RUNNER_GITHUB_ENV), Some(Some("1".into())));
+        assert_eq!(
+            args_of(&command),
+            ["--no-mcp", "--no-extensions", "--no-web-search", "--no-subagent"]
+        );
+        // Without a resolver the snapshot stands (single-shot callers and tests).
+        let mut command = Command::new("oxa");
+        let worker_github =
+            std::option::Option::<std::sync::Arc<dyn Fn() -> crate::WorkerGithub + Send + Sync>>::None
+                .as_ref()
+                .map_or(crate::WorkerGithub::Worker, |_| unreachable!());
+        github_access(&mut command, true, worker_github);
         assert!(args_of(&command).is_empty());
     }
 

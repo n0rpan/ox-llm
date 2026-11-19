@@ -235,6 +235,7 @@ mod tests {
             runner_owns_github: true,
             autonomy: Default::default(),
             worker_github: Default::default(),
+            worker_github_now: None,
             autonomy_now: None,
             storage: directory.path().into(),
         };
