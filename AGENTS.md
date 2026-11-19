@@ -53,6 +53,9 @@ maintainer, who says in the PR when a hardware check is needed.
 - **Worker mode.** An `oxa work` worker is started with `--yolo` only when the owner's user-layer
   `permissions.defaultMode` is `yolo`; otherwise it keeps the sandboxed default. Project settings
   cannot raise it. See `oxa/docs/work.md`.
+- **Worker GitHub access.** The owner-only `oxa.work.workerGithub` is `worker` in yolo (the worker keeps
+  its own GitHub environment, `gh`, MCP, web search and subagents), `broker` in auto (no token, host-side
+  tools) and `runner` in standard mode, unless the owner sets it. A project setting is ignored.
 - **Work acceptance.** In `oxa work`, zero or skipped checks leave the task `Unverified`. The
   owner-only `oxa.work.localChecks` defaults to a per-package `cargo check`. A verified Rust
   acceptance receipt requires hosted test evidence at the exact head, including for changed
@@ -119,7 +122,7 @@ maintainer, who says in the PR when a hardware check is needed.
   own GitHub access, as a Codex lane does. They may use authenticated `gh` and Git to read issues,
   reviews and remote refs, push `agent/**` branches, open PRs, and read CI results. Follow the
   normal publication, review, and landing rules.
-- **Sandboxed `oxa work` workers have no GitHub access.** Their runner owns GitHub access. From the
+- **Sandboxed `oxa work` workers (standard mode, or the `runner` / `broker` setting) have no direct GitHub access.** Their runner owns GitHub access. From the
   worker, make no `gh` call at all and make no other GitHub request, including through Git. This
   includes `gh pr view`, `gh pr checks` and `gh run view`. The issue text, review findings and CI
   result supplied by the runner are your task packet.

@@ -27,6 +27,8 @@ acceptance receipt. Project files and worker replies cannot change the owner-onl
 requires hosted test evidence for the exact head, including for changed inputs outside packages
 in a tree with Cargo manifests. A worker declaration can add requirements to that evidence.
 
+The GitHub access of an `oxa work` worker is the owner-only `oxa.work.workerGithub` setting (a project value is ignored): unset, yolo workers keep their own GitHub environment by owner policy (a finding that calls that a defect is not a finding), auto workers get no token and use host-side tools, standard workers get the runner's packet only.
+
 The repeat guard warns and continues by owner decision (#1448): the third identical tool result gets a notice, a call that still repeats gets one persisted warning, and the run is not stopped. A finding that asks for the old stopping behaviour is not a finding; `oxa.maxTurns` is the configured cap.
 
 Intentional removals must be stated in the PR body with a `Removes:` line; flag silent deletion of security checks as high.

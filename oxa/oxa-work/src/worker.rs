@@ -94,6 +94,19 @@ pub(crate) fn mode_args(autonomy: oxa_proto::Autonomy) -> &'static [&'static str
     }
 }
 
+/// GitHub access of a worker child. Without runner ownership nothing changes. With it, only
+/// `Worker` (yolo) keeps its environment, MCP, web search and subagents; the other levels
+/// remove every credential and the adapters that could reach GitHub.
+pub(crate) fn github_access(command: &mut Command, runner_owns_github: bool, mode: crate::WorkerGithub) {
+    if !runner_owns_github || mode == crate::WorkerGithub::Worker {
+        return;
+    }
+    // The provider connection is host-side. The worker's tool sandbox and
+    // independent tool adapters have no GitHub access.
+    crate::restrict_child_github(command);
+    command.args(["--no-mcp", "--no-extensions", "--no-web-search", "--no-subagent"]);
+}
+
 pub(crate) fn run(
     binary: &Path,
     source: &Path,
@@ -107,6 +120,7 @@ pub(crate) fn run(
     #[cfg(target_os = "linux")] managed_steering: Option<&crate::managed_steering::Launch>,
     on_session: &mut (dyn FnMut(&str) -> Result<()> + Send),
 ) -> Result<Worker> {
+    let prompt = &*crate::worker_prompt(prompt, policy.worker_github);
     let terminate = policy
         .terminate_binary
         .as_deref()
@@ -141,12 +155,7 @@ pub(crate) fn run(
     if policy.offline {
         command.arg("--offline");
     }
-    if policy.runner_owns_github {
-        // The provider connection is host-side. The worker's tool sandbox and
-        // independent tool adapters have no GitHub access.
-        crate::restrict_child_github(&mut command);
-        command.args(["--no-mcp", "--no-extensions", "--no-web-search", "--no-subagent"]);
-    }
+    github_access(&mut command, policy.runner_owns_github, policy.worker_github);
     if let Some(id) = session {
         command.arg(format!("--continue={id}"));
     }
@@ -410,6 +419,79 @@ mod tests {
     fn worker_argv_has_no_yolo_by_default() {
         assert_eq!(Autonomy::default(), Autonomy::Standard);
         assert!(mode_args(Autonomy::default()).is_empty());
+    }
+
+    fn env_of(command: &Command, name: &str) -> Option<Option<String>> {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value.map(|v| v.to_string_lossy().into_owned()))
+    }
+
+    fn args_of(command: &Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn yolo_worker_keeps_github_env() {
+        let mut command = Command::new("oxa");
+        github_access(&mut command, true, crate::WorkerGithub::Worker);
+        assert_eq!(env_of(&command, crate::RUNNER_GITHUB_ENV), None);
+        assert_eq!(env_of(&command, "GH_TOKEN"), None);
+        assert_eq!(env_of(&command, "GITHUB_TOKEN"), None);
+        assert_eq!(env_of(&command, "GH_CONFIG_DIR"), None);
+    }
+
+    #[test]
+    fn yolo_worker_keeps_mcp_web_subagent() {
+        let mut command = Command::new("oxa");
+        github_access(&mut command, true, crate::WorkerGithub::Worker);
+        assert!(args_of(&command).is_empty());
+    }
+
+    #[test]
+    fn runner_owned_stays_default_without_yolo() {
+        use crate::WorkerGithub::*;
+        assert_eq!(crate::WorkerGithub::default(), Runner);
+        for mode in [Runner, Broker] {
+            let mut command = Command::new("oxa");
+            github_access(&mut command, true, mode);
+            assert_eq!(env_of(&command, crate::RUNNER_GITHUB_ENV), Some(Some("1".into())));
+            assert_eq!(env_of(&command, "GH_TOKEN"), Some(None));
+            assert_eq!(env_of(&command, "GITHUB_TOKEN"), Some(None));
+            assert_eq!(
+                args_of(&command),
+                ["--no-mcp", "--no-extensions", "--no-web-search", "--no-subagent"]
+            );
+        }
+        assert_eq!(
+            crate::WorkerGithub::resolve(None, oxa_proto::PermissionMode::Standard),
+            Runner
+        );
+        // A task the runner does not own is untouched in every mode.
+        let mut command = Command::new("oxa");
+        github_access(&mut command, false, Broker);
+        assert!(args_of(&command).is_empty());
+    }
+
+    #[test]
+    fn yolo_packet_guidance_allows_gh() {
+        let packet = format!("{}ISSUE BODY", crate::github_runner_guidance("issue"));
+        let yolo = crate::worker_prompt(&packet, crate::WorkerGithub::Worker);
+        assert!(yolo.ends_with("ISSUE BODY"));
+        assert!(yolo.contains("`gh`") && !yolo.contains("Do not invoke gh"));
+        assert!(!yolo.starts_with(crate::GITHUB_RUNNER_LEAD));
+        let broker = crate::worker_prompt(&packet, crate::WorkerGithub::Broker);
+        assert!(broker.contains("brokered") && broker.ends_with("ISSUE BODY"));
+        assert_eq!(crate::worker_prompt(&packet, crate::WorkerGithub::Runner), packet);
+        // A prompt without the runner lead is never rewritten.
+        assert_eq!(
+            crate::worker_prompt("plain", crate::WorkerGithub::Worker),
+            "plain"
+        );
     }
 
     #[test]

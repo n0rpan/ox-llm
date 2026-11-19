@@ -61,6 +61,7 @@ fn policy(root: &Path) -> oxa_work::RunPolicy {
         terminate_binary: Some("/usr/bin/kill".into()),
         runner_owns_github: false,
         autonomy: Default::default(),
+        worker_github: Default::default(),
         offline: false,
         storage: root.join("home/.oxa/agent/work/native-handoff"),
     }
