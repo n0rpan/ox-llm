@@ -1578,11 +1578,15 @@ mod tests {
         let fake = root.join("argv-oxa");
         fs::write(
             &fake,
-            "#!/bin/sh\nif [ \"$1\" = work ]; then exit 0; fi\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/argv.txt\"\nsleep 30\n",
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = work ]; then exit 0; fi\nprintf '%s\\n' \"$@\" > '{}'\nexec /bin/sleep 30\n",
+                root.join("argv.txt").display()
+            ),
         )
         .unwrap();
         fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
-        let hooks = hooks(&fake, &agent);
+        let env = vec![("PATH".to_string(), "/usr/bin:/bin".to_string())];
+        let hooks = hooks_with(&fake, &agent, env, ParentScope::default());
         set_session(&hooks, "parent-1");
         set_table_mode(&hooks, Mode::Workspace);
         start_alpha(&hooks, &repo);
