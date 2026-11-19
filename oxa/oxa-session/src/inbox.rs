@@ -309,6 +309,26 @@ fn publish_into(dir: &Directory, extension: &str, text: &str) -> io::Result<()> 
     result
 }
 
+/// The retry signal of a running [`Inbox`]: cheap to clone and to call from any thread.
+#[derive(Clone)]
+pub struct InboxRetry {
+    #[cfg(target_os = "linux")]
+    fd: Arc<File>,
+}
+impl InboxRetry {
+    /// Same effect as [`Inbox::retry`]; calls after the watcher stopped are harmless.
+    #[cfg(target_os = "linux")]
+    pub fn retry(&self) {
+        let value = 1u64;
+        // SAFETY: the eventfd stays open while this clone exists, and value points to eight initialized bytes.
+        unsafe { libc::write(self.fd.as_raw_fd(), (&value as *const u64).cast(), 8) };
+    }
+
+    /// Off Linux the polling receiver rescans on its own timeout, so there is nothing to wake.
+    #[cfg(not(target_os = "linux"))]
+    pub fn retry(&self) {}
+}
+
 /// Owns the event-driven receiver. Dropping it wakes and joins its thread, so an old
 /// session's callback cannot enqueue anything after a frontend has rebound to a new one.
 pub struct Inbox {
@@ -332,6 +352,15 @@ impl Inbox {
     /// without a wakeup.
     #[cfg(not(target_os = "linux"))]
     pub fn retry(&self) {}
+
+    /// A clone of this watcher's retry signal, for an owner that learns of a queue drain
+    /// somewhere other than its own run loop (a headless event sink).
+    pub fn retry_handle(&self) -> InboxRetry {
+        InboxRetry {
+            #[cfg(target_os = "linux")]
+            fd: self.retry.clone(),
+        }
+    }
 
     pub fn watch(
         agent_dir: &Path,
