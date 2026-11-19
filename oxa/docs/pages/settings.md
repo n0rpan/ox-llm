@@ -345,6 +345,7 @@ never permits an additional review.
 | `oxa.builtinSkills` | bool | `true` | include the skills built into oxa |
 | `oxa.share.remoteModels` | string list | `[]` | user-only allowlist of metered cloud aliases eligible for explicit LAN sharing; personal subscriptions are excluded |
 | `oxa.skills.includeSynced` | bool | `false` | also list the skills another product synced into `~/.agents/skills` (a `synced/` folder, or a folder whose `manifest.json` lists `skillId`s); they are written for that product's tools, so oxa skips them by default |
+| `oxa.workers.stopGraceSeconds` | number (seconds) | `10` | how long a stopped worker gets after SIGINT before its whole process group gets SIGTERM; SIGKILL follows 2 seconds later if the group is still alive |
 
 ## Example
 
