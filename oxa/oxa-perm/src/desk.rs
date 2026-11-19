@@ -211,13 +211,12 @@ impl ApprovalDesk {
         let keys: Vec<String> = hits.iter().map(|h| danger_key(h, command)).collect();
         // Dedup and the write are one transition: two runs filing at once must not both insert.
         let _lock = self.lock()?;
+        let dir = dir_key(cwd);
         if status == "pending" {
-            let open = self.all()?.into_iter().find(|r| {
-                r.status == "pending"
-                    && r.session == session
-                    && r.cwd == cwd.display().to_string()
-                    && r.keys == keys
-            });
+            let open = self
+                .all()?
+                .into_iter()
+                .find(|r| r.status == "pending" && r.session == session && r.cwd == dir && r.keys == keys);
             if let Some(open) = open {
                 return Ok(open.id);
             }
@@ -225,7 +224,7 @@ impl ApprovalDesk {
         let rec = Record {
             id: random_hex(8),
             session: session.to_string(),
-            cwd: cwd.display().to_string(),
+            cwd: dir,
             command: command.to_string(),
             keys,
             reasons: hits.iter().map(|h| format!("{}: {}", h.rule, h.reason)).collect(),
@@ -234,8 +233,30 @@ impl ApprovalDesk {
             created_ms: now_ms(),
             answered_ms: None,
         };
+        if status == "refused" {
+            self.rotate_refused()?;
+        }
         self.write(&rec)?;
         Ok(rec.id)
+    }
+
+    /// Make room for one more `refused` record: delete the oldest ones beyond [`REFUSED_KEEP`].
+    /// Called with the desk lock held.
+    fn rotate_refused(&self) -> io::Result<()> {
+        let refused: Vec<Record> = self
+            .all()?
+            .into_iter()
+            .filter(|r| r.status == "refused")
+            .collect();
+        let excess = (refused.len() + 1).saturating_sub(REFUSED_KEEP);
+        for rec in refused.iter().take(excess) {
+            match fs::remove_file(self.dir.join(format!("{}.json", rec.id))) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     }
 
     /// The owner's answer to a `pending` request. Any other status is refused.
@@ -283,7 +304,7 @@ impl ApprovalDesk {
         let Ok(records) = self.all() else {
             return false;
         };
-        let dir = cwd.display().to_string();
+        let dir = dir_key(cwd);
         records.iter().any(|rec| {
             rec.session == session
                 && rec.cwd == dir
@@ -306,7 +327,7 @@ impl ApprovalDesk {
         let Ok(records) = self.all() else {
             return false;
         };
-        let dir = cwd.display().to_string();
+        let dir = dir_key(cwd);
         for mut rec in records {
             if rec.session != session || rec.cwd != dir || !keys.iter().all(|k| rec.keys.contains(k)) {
                 continue;
@@ -359,6 +380,9 @@ impl ApprovalDesk {
     }
 
     fn forget(&self, doomed: impl Fn(&Record) -> bool) -> io::Result<usize> {
+        // The same lock as an answer or a consumption: an update already running cannot rename
+        // its copy of a record back into place after this wipe removed it.
+        let _lock = self.lock()?;
         let mut removed = 0;
         for rec in self.all()? {
             if !doomed(&rec) {
@@ -484,6 +508,20 @@ fn invalid_input(text: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, text)
 }
 
+/// The directory identity a grant binds to: the canonical path, so a symlink retargeted after
+/// the owner approved no longer matches the directory the command will run in. A directory that
+/// cannot be resolved keeps its given path.
+fn dir_key(cwd: &Path) -> String {
+    fs::canonicalize(cwd)
+        .unwrap_or_else(|_| cwd.to_path_buf())
+        .display()
+        .to_string()
+}
+
+/// How many `refused` records the desk keeps. A refusal needs no answer, so older ones rotate out
+/// instead of growing the directory without bound when a model repeats refused commands.
+const REFUSED_KEEP: usize = 500;
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -508,4 +546,103 @@ fn random_hex(bytes: usize) -> String {
         buf = digest.iter().take(bytes).copied().collect();
     }
     buf.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("oxa-desk-{tag}-{}", random_hex(6)));
+        fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    fn hit() -> DangerHit {
+        DangerHit {
+            rule: "force-push".into(),
+            reason: "overwrites remote history".into(),
+            segment: "git push --force".into(),
+        }
+    }
+
+    /// A wipe waits for the desk lock, so it cannot interleave with an answer that has already
+    /// loaded a record and is about to write it back.
+    #[test]
+    fn forgetting_records_waits_for_the_desk_lock() {
+        let root = temp_dir("lock");
+        let desk = ApprovalDesk::open(&root).expect("desk");
+        let cwd = temp_dir("lockcwd");
+        desk.record("s1", &cwd, "git push --force", &[hit()], "pending")
+            .expect("record");
+        let guard = desk.lock().expect("lock");
+        let (tx, rx) = mpsc::channel();
+        let other = desk.clone();
+        let wipe = std::thread::spawn(move || {
+            let removed = other.forget_all().expect("forget");
+            tx.send(removed).expect("send");
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "forget must wait while another update holds the lock"
+        );
+        drop(guard);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(10)).expect("removed"), 1);
+        wipe.join().expect("thread");
+    }
+
+    /// A symlink retargeted after approval is another directory: the grant no longer matches.
+    #[test]
+    fn a_grant_follows_the_canonical_directory_not_a_symlink_name() {
+        let root = temp_dir("link");
+        let desk = ApprovalDesk::open(&root).expect("desk");
+        let (a, b) = (temp_dir("linka"), temp_dir("linkb"));
+        let link = root.join("work");
+        std::os::unix::fs::symlink(&a, &link).expect("link");
+        let command = "git push --force";
+        let keys = vec![danger_key(&hit(), command)];
+        let id = desk
+            .record("s1", &link, command, &[hit()], "pending")
+            .expect("record");
+        desk.answer(&id, "session").expect("answer");
+        assert!(desk.covers("s1", &link, &keys));
+        fs::remove_file(&link).expect("unlink");
+        std::os::unix::fs::symlink(&b, &link).expect("relink");
+        assert!(
+            !desk.covers("s1", &link, &keys),
+            "the retargeted link is another directory"
+        );
+        assert!(!desk.granted("s1", &link, &keys));
+        assert!(
+            desk.covers("s1", &a, &keys),
+            "the reviewed directory still is covered"
+        );
+    }
+
+    /// Refused records rotate: repeating refused commands cannot grow the desk without bound.
+    #[test]
+    fn refused_records_rotate_at_a_fixed_count() {
+        let root = temp_dir("rotate");
+        let desk = ApprovalDesk::open(&root).expect("desk");
+        let cwd = temp_dir("rotatecwd");
+        for i in 0..REFUSED_KEEP + 25 {
+            desk.record(
+                "s1",
+                &cwd,
+                &format!("git push --force origin b{i}"),
+                &[hit()],
+                "refused",
+            )
+            .expect("record");
+        }
+        let kept = desk.records().expect("records");
+        assert_eq!(kept.len(), REFUSED_KEEP);
+        assert!(kept.iter().all(|r| r.status == "refused"));
+        let pending = desk
+            .record("s1", &cwd, "git push --force origin main", &[hit()], "pending")
+            .expect("pending");
+        assert!(desk.pending().expect("pending").iter().any(|r| r.id == pending));
+    }
 }

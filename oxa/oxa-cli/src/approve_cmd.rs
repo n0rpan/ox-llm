@@ -105,13 +105,29 @@ fn one_line(text: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            c if c.is_control() => {
+            c if c.is_control() || is_invisible_format(c) => {
                 let _ = write!(out, "\\u{{{:x}}}", c as u32);
             }
             c => out.push(c),
         }
     }
     out
+}
+
+/// Unicode format characters that render as nothing or reorder the text around them: bidi marks,
+/// embeddings, overrides and isolates, zero-width characters and the byte-order mark. A hostile
+/// command could use them to make the owner read different text than the shell will run.
+fn is_invisible_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061c}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206f}'
+            | '\u{feff}'
+    )
 }
 
 /// `oxa send <session> --approve <request> <answer>`. The request must belong to `session`.
@@ -158,6 +174,17 @@ pub(crate) fn approve(
 mod tests {
     use super::*;
     use oxa_perm::DangerHit;
+
+    #[test]
+    fn listings_escape_bidi_and_zero_width_format_characters() {
+        let hostile = "echo '\u{202e}\u{2066}x\u{2069}\u{200b}' ; rm \u{feff}-rf";
+        let shown = one_line(hostile);
+        for c in ['\u{202e}', '\u{2066}', '\u{2069}', '\u{200b}', '\u{feff}'] {
+            assert!(!shown.contains(c), "{c:?} must be escaped: {shown}");
+        }
+        assert!(shown.contains("\\u{202e}"), "{shown}");
+        assert_eq!(one_line("plain ünï text"), "plain ünï text");
+    }
 
     fn words(text: &str) -> Vec<String> {
         text.split_whitespace().map(str::to_string).collect()
