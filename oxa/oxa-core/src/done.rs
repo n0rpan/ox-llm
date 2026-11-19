@@ -5,7 +5,9 @@
 //! of the session folder, instead of in the session folder itself.
 use crate::exec::CallResult;
 use crate::SessionState;
-use oxa_proto::{shown_why, AgentEvent, EntryBody, EventMessage, EventSink, ExecSpec, Level, OxaError, Ui};
+use oxa_proto::{
+    shown_why, AgentEvent, EntryBody, EventMessage, EventSink, ExecSpec, Level, OxaError, ToolCall, Ui,
+};
 use oxa_tools::strip_ansi;
 use std::path::{Component, Path, PathBuf};
 
@@ -33,6 +35,73 @@ pub(crate) struct DoneState {
     pub(crate) observation: Option<CheckObservation>,
     /// Fingerprint of the work folder at the last look (`None`: too big to look at).
     tree: Option<u64>,
+    /// The "prove it" state of the run (B4a).
+    pub(crate) proof: Proof,
+}
+
+/// Whether the run changed files and no check has passed since the last change (B4a). Only
+/// tracks the state: nothing is asked from here.
+#[derive(Default)]
+pub(crate) struct Proof {
+    /// A file changed in this run: a successful edit or write, or a bash-like call that changed
+    /// the work folder.
+    edited: bool,
+    /// A passing check ran after the last change.
+    checked: bool,
+}
+
+impl Proof {
+    fn changed(&mut self) {
+        self.edited = true;
+        self.checked = false;
+    }
+
+    fn passed(&mut self) {
+        self.checked = true;
+    }
+
+    /// The run changed files and no check has passed since the last change. Read by the
+    /// "prove it" turn (B4b); until then only the tests read it.
+    #[allow(dead_code)]
+    pub(crate) fn unproven(&self) -> bool {
+        self.edited && !self.checked
+    }
+}
+
+/// Commands that run a project's tests or checks. Matched on whole words after the shell
+/// separators are blanked, so `make testdata` and `cat tsc.log` do not count.
+const CHECK_COMMANDS: &[&str] = &[
+    "cargo test",
+    "cargo check",
+    "cargo clippy",
+    "go test",
+    "pytest",
+    "npm test",
+    "npm run test",
+    "pnpm test",
+    "yarn test",
+    "bun test",
+    "deno test",
+    "make test",
+    "make check",
+    "jest",
+    "vitest",
+    "ctest",
+    "mvn test",
+    "gradle test",
+    "dotnet test",
+    "ruff check",
+    "mypy",
+    "pyright",
+    "tsc",
+];
+
+fn is_check_command(command: &str) -> bool {
+    let spaced = command
+        .to_lowercase()
+        .replace(['&', '|', ';', '(', ')', '\n'], " ");
+    let padded = format!(" {} ", spaced.split_whitespace().collect::<Vec<_>>().join(" "));
+    CHECK_COMMANDS.iter().any(|c| padded.contains(&format!(" {c} ")))
 }
 
 /// Seconds a git probe may run before the fingerprint gives up (`None`: checks stay as they were).
@@ -175,6 +244,29 @@ impl DoneState {
         }
     }
 
+    /// One batch, in call order (`calls` and `results` line up): a successful edit or write is a
+    /// change; a successful bash call that runs a test or check after the last change proves it.
+    pub(crate) fn note_proof(&mut self, calls: &[ToolCall], results: &[CallResult]) {
+        for (call, res) in calls.iter().zip(results) {
+            if res.is_error {
+                continue;
+            }
+            match res.tool_name.as_str() {
+                "edit" | "write" => self.proof.changed(),
+                "bash" => {
+                    let command = serde_json::from_str::<serde_json::Value>(&call.args_raw)
+                        .ok()
+                        .and_then(|args| args["command"].as_str().map(str::to_owned));
+                    let exited_zero = res.ui["exit"].as_i64() == Some(0) && res.ui["timedOut"] != true;
+                    if exited_zero && command.is_some_and(|c| is_check_command(&c)) {
+                        self.proof.passed();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Start of a run: remember the tree, so a later `bash` change can be told apart.
     pub(crate) fn begin(&mut self, st: &SessionState) {
         if !st.settings.done_commands().is_empty() {
@@ -186,7 +278,8 @@ impl DoneState {
     /// tools; not the read-only built-ins): a changed work folder counts as an edit.
     pub(crate) fn note_bash(&mut self, st: &SessionState, results: &[CallResult]) {
         const READ_ONLY: [&str; 4] = ["read", "grep", "find", "ls"];
-        if self.dirty
+        // Already dirty and unproven: a look at the tree cannot change the answer.
+        if (self.dirty && !self.proof.checked)
             || self.tree.is_none()
             || results.iter().all(|r| READ_ONLY.contains(&r.tool_name.as_str()))
         {
@@ -195,6 +288,7 @@ impl DoneState {
         let now = tree_fingerprint(&st.cwd);
         if now != self.tree {
             self.dirty = true;
+            self.proof.changed();
             self.tree = now;
         }
     }
@@ -258,6 +352,7 @@ pub(crate) fn check(
     if failed.is_empty() {
         state.observation = Some(CheckObservation::Passed);
         state.rounds = 0;
+        state.proof.passed();
         return None;
     }
     state.rounds = state.rounds.saturating_add(1);
@@ -604,5 +699,53 @@ mod tests {
             .unwrap();
         assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), modified);
         assert_ne!(walk_fingerprint(&env.work()), Some(before));
+    }
+
+    #[test]
+    fn edited_without_a_passing_check_is_unproven() {
+        let mut proof = Proof::default();
+        proof.changed();
+        assert!(proof.unproven());
+    }
+
+    #[test]
+    fn a_passing_check_after_the_last_edit_is_proven() {
+        let mut proof = Proof::default();
+        proof.changed();
+        proof.passed();
+        assert!(!proof.unproven());
+        // A new edit after the check makes the run unproven again.
+        proof.changed();
+        assert!(proof.unproven());
+    }
+
+    #[test]
+    fn a_check_before_the_last_edit_does_not_prove_it() {
+        let mut proof = Proof::default();
+        proof.changed();
+        proof.passed();
+        proof.changed();
+        assert!(proof.unproven());
+    }
+
+    #[test]
+    fn read_only_runs_are_never_asked() {
+        let mut proof = Proof::default();
+        assert!(!proof.unproven());
+        proof.passed();
+        assert!(!proof.unproven());
+    }
+
+    #[test]
+    fn check_commands_match_whole_words() {
+        assert!(is_check_command("cargo test -p oxa-core"));
+        assert!(is_check_command(
+            "cd oxa && cargo clippy -p oxa-core -- -D warnings"
+        ));
+        assert!(is_check_command("npm test;echo done"));
+        assert!(is_check_command("pytest -q"));
+        assert!(!is_check_command("make testdata"));
+        assert!(!is_check_command("cat tsc.log"));
+        assert!(!is_check_command("echo cargo-tester"));
     }
 }
