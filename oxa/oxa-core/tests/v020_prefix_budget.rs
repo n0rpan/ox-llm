@@ -30,6 +30,7 @@ const SUBAGENT_RULE: &str =
 const SUBAGENT_CHECK_RULE: &str =
     "A subagent's summary can be wrong: before you rely on a claim from it for an edit, read the cited lines yourself";
 /// 2026-11-19: the done check, added with the output diet when `bash` is declared.
+const WAIT_RULE: &str = "Use wait, never sleep-poll";
 const VERIFY_RULE: &str =
     "Before you call a task done, run the project's own tests or checks and report the result; if you ran none, say so";
 const SHOW_PATHS: &str = "Show file paths clearly when working with files";
@@ -291,7 +292,8 @@ fn prefix_bytes_and_the_anchor() {
         let (on, off) = (get("diet on"), get("diet off"));
         let line = |t: &str| t.len() + 3;
         let mut cost: i64 = DIET_RULES.iter().map(|r| line(r) as i64).sum::<i64>() - line(CONCISE) as i64
-            + line(VERIFY_RULE) as i64;
+            + line(VERIFY_RULE) as i64
+            + line(WAIT_RULE) as i64;
         if subagent {
             cost += line(SUBAGENT_RULE) as i64 + line(SUBAGENT_CHECK_RULE) as i64;
         }
