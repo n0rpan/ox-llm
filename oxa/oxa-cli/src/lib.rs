@@ -21,6 +21,7 @@ mod args;
 mod child;
 mod config_cmd;
 mod dispatch;
+mod gh_probe;
 mod goal_cmd;
 mod help;
 mod home_cwd;
