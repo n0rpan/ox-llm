@@ -898,8 +898,7 @@ fn tree_009() {
         .pty
         .wait_for_named("thinking changed", |s| model_row(s) != before, WAIT)
         .unwrap();
-    let level = s
-        .row(29)
+    let level = model_row(&s)
         .rsplit('•')
         .next()
         .unwrap_or_default()
@@ -917,9 +916,9 @@ fn tree_009() {
     pick(&rig, "assistant: beta answer", Some(0));
     let s = navigated(&rig, |s| !s.contains("gamma answer"));
     assert!(
-        s.row(29).ends_with(&level),
+        model_row(&s).ends_with(&level),
         "the level stays in force: {:?}",
-        s.row(29)
+        model_row(&s)
     );
     // The beta branch recorded `off`: the current level is appended on it, below beta answer.
     let lines = the_session(&rig);

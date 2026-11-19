@@ -450,23 +450,24 @@ impl Source {
         let github_quotas = sample.as_ref().and_then(|(board, app_quota)| {
             crate::lead_quota::GitHubQuotas::from_app_sample((*app_quota)?, board.observed_at, now)
         });
-        let owner = self.owner.as_ref().filter(|owner| {
-            matches!(page, crate::lead_page::Page::Chat(_)) && owner.binding.recheck().is_ok()
-        });
+        use crate::lead_page::Page;
+        let approvals_page = matches!(page, Page::Home | Page::Board | Page::BoardQuery(_));
+        let chat_page = matches!(page, Page::Chat(_));
+        // Owner chat is configured only for a single verified Tailscale identity.
+        let bound_owner = self
+            .owner
+            .as_ref()
+            .filter(|owner| (approvals_page || chat_page) && owner.binding.recheck().is_ok());
+        let owner = bound_owner.filter(|_| chat_page);
         let latest = owner.and_then(|owner| owner.latest.try_lock().ok());
-        // Pending approvals show on the home and board pages; a missing or unreadable desk is None.
-        let waiting = match (page, self.desk.as_ref()) {
-            (
-                crate::lead_page::Page::Home
-                | crate::lead_page::Page::Board
-                | crate::lead_page::Page::BoardQuery(_),
-                Some(desk),
-            ) => desk.pending().ok(),
-            _ => None,
+        let waiting = if approvals_page && bound_owner.is_some() {
+            self.desk.as_ref().and_then(|desk| desk.pending().ok())
+        } else {
+            None
         };
         let view = crate::lead_page::View {
             approvals: waiting.as_deref(),
-            approval_csrf: self.owner.as_ref().map(|owner| owner.csrf.as_str()),
+            approval_csrf: bound_owner.map(|owner| owner.csrf.as_str()),
             owner_chat: owner
                 .zip(latest.as_deref())
                 .map(|(owner, latest)| crate::lead_page::OwnerChatView {
@@ -967,6 +968,23 @@ mod approval_answer_tests {
     }
 
     #[test]
+    fn board_without_owner_binding_does_not_render_approval_details() {
+        let (test, _dirs, desk) = fixture();
+        file(&test, &desk);
+        let mut source = Source::new(&Env::from_pairs(&[]), 0).unwrap();
+        source.desk = Some(desk);
+        for (page, fragment) in [
+            (crate::lead_page::Page::Home, false),
+            (crate::lead_page::Page::Home, true),
+            (crate::lead_page::Page::Board, false),
+        ] {
+            let html = source.render(page, fragment);
+            assert!(!html.contains("Waiting for your approval"));
+            assert!(!html.contains("/srv/data"));
+        }
+    }
+
+    #[test]
     fn approval_post_once_answers_pending_request() {
         let (test, dirs, desk) = fixture();
         let id = file(&test, &desk);
@@ -1015,6 +1033,54 @@ mod approval_answer_tests {
                 "lead chat refusal status=404 stage=approval reason=not_pending fix=answer a request still listed as waiting for approval",
             ]
         );
+    }
+
+    #[test]
+    fn cli_and_web_answers_share_the_desk_lock() {
+        use std::sync::{mpsc, Barrier};
+        use std::time::Duration;
+
+        let (test, dirs, desk) = fixture();
+        let id = file(&test, &desk);
+        let keys = desk.pending().unwrap()[0].keys.clone();
+        let cwd = test.work();
+        let (journal, _) = captured();
+        let web = owner_answers(&test, &dirs, &desk, journal);
+        let guard = std::fs::File::open(dirs.agent_dir.join("approvals")).unwrap();
+        guard.lock().unwrap();
+        let start = Barrier::new(3);
+
+        std::thread::scope(|scope| {
+            let (tx, rx) = mpsc::channel();
+            let web_tx = tx.clone();
+            let start_ref = &start;
+            let request = &id;
+            scope.spawn(move || {
+                start_ref.wait();
+                web_tx
+                    .send(("session", web.post(request, "session").is_ok()))
+                    .unwrap();
+            });
+            let cli_dirs = &dirs;
+            let cli_cwd = &cwd;
+            scope.spawn(move || {
+                start_ref.wait();
+                let result =
+                    crate::approve_cmd::approve(cli_dirs, cli_cwd, "s1", request, "deny", &mut Vec::new());
+                tx.send(("deny", result.is_ok())).unwrap();
+            });
+            start.wait();
+            let early = rx.recv_timeout(Duration::from_millis(400));
+            drop(guard);
+            assert!(matches!(early, Err(mpsc::RecvTimeoutError::Timeout)));
+            let results = [rx.recv().unwrap(), rx.recv().unwrap()];
+            assert_eq!(results.iter().filter(|(_, ok)| *ok).count(), 1);
+            assert_eq!(
+                desk.granted("s1", &keys),
+                results.contains(&("session", true)),
+                "the stored decision is the winning answer"
+            );
+        });
     }
 
     #[test]

@@ -11,16 +11,13 @@ Private situation data needs browser proof separate from tool UIDs; absent input
 
 ## Waiting for your approval
 
-The board and home pages show a "Waiting for your approval" panel. It lists the
-dangerous-command requests the approval desk still holds: the request id, the
-session, the working directory's basename, the command text (escaped), the rule
-reasons and how long the request has waited. The panel is read-only and follows
-the same GET authorization as the rest of the pages. Answered requests
-leave it.
+The verified owner can see "Waiting for your approval" on the board and home pages.
+The panel shows each pending request's ID, session, directory basename, command,
+rule reasons and age. The page masks credentials in the command and rule reasons.
 
-Answering needs owner chat. Set the user-only `oxa.lead.serve.owner_chat` to
-`true` with the Tailscale identity and exactly one allowed identity; without it
-the panel shows the requests but serves no answer forms. Each answer is a
+Viewing and answering require owner chat. Enable the user-only
+`oxa.lead.serve.owner_chat` with Tailscale and exactly one allowed identity.
+Each answer is a
 same-origin, CSRF-checked form POST to `/approvals` with the fields `id` and
 `answer` (`once`, `session`, `always` or `deny`), then a redirect to `/`.
 
