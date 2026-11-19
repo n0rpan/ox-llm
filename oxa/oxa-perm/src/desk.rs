@@ -279,6 +279,51 @@ impl ApprovalDesk {
         true
     }
 
+    /// Remove the records of `session` (all of them when `None`) from the desk under
+    /// `agent_dir`, without creating it: a directory that does not exist holds nothing, so a
+    /// wipe leaves no empty approval directory behind.
+    pub fn wipe(agent_dir: &Path, session: Option<&str>) -> io::Result<usize> {
+        if !agent_dir.join(DIR_NAME).is_dir() {
+            return Ok(0);
+        }
+        let desk = ApprovalDesk::open(agent_dir)?;
+        match session {
+            Some(id) => desk.forget_session(id),
+            None => desk.forget_all(),
+        }
+    }
+
+    /// Remove every record of `session`: a wiped session keeps no copy of its commands, working
+    /// directories or ids. Returns how many records were removed.
+    pub fn forget_session(&self, session: &str) -> io::Result<usize> {
+        self.forget(|rec| rec.session == session)
+    }
+
+    /// Remove every record, for `oxa wipe --all`.
+    pub fn forget_all(&self) -> io::Result<usize> {
+        self.forget(|_| true)
+    }
+
+    fn forget(&self, doomed: impl Fn(&Record) -> bool) -> io::Result<usize> {
+        let mut removed = 0;
+        for rec in self.all()? {
+            if !doomed(&rec) {
+                continue;
+            }
+            match fs::remove_file(self.dir.join(format!("{}.json", rec.id))) {
+                Ok(()) => removed += 1,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Every record, pending or answered.
+    pub fn records(&self) -> io::Result<Vec<Record>> {
+        self.all()
+    }
+
     /// Every request still waiting for the owner, oldest first.
     pub fn pending(&self) -> io::Result<Vec<Record>> {
         Ok(self

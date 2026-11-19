@@ -1022,7 +1022,8 @@ fn gate_pinned_in(
                 // #1512 S5: an extension's exec takes the same unattended answer as the bash
                 // tool: refused, or filed at the approval desk for the owner, never paused for.
                 if !ui.interactive() {
-                    if let Some(text) = st.policy.danger_unattended(a, &st.cwd) {
+                    // Classified, and filed, in the directory the command actually runs in.
+                    if let Some(text) = st.policy.danger_unattended(a, cwd) {
                         return Err(OxaError::new(codes::DENIED, text));
                     }
                 }
@@ -1557,6 +1558,39 @@ mod tests {
             err.message
         );
         assert_eq!(desk.pending().expect("pending").len(), 1);
+    }
+
+    /// #1512 S5: an extension may run in a directory other than the session's. The unattended
+    /// classification and the filed request use that directory, so the request describes what
+    /// will actually run.
+    #[test]
+    fn extension_exec_unattended_files_the_request_in_the_execution_directory() {
+        let mut f = fixture();
+        let desk =
+            Arc::new(oxa_perm::ApprovalDesk::open(&f.env.root().join("agent")).expect("approval desk"));
+        f.st.policy = Box::new(
+            oxa_perm::ModePolicy::new()
+                .with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new())
+                .with_desk(
+                    desk.clone(),
+                    "s1".into(),
+                    oxa_perm::UnattendedMode::Request,
+                    false,
+                ),
+        );
+        let exec_dir = f.env.work().join("deep");
+        std::fs::create_dir_all(&exec_dir).expect("exec dir");
+        let dangerous = Access::Exec {
+            command: "git push --force origin main".into(),
+            net: false,
+        };
+        let mut headless = HeadlessUi::default();
+        let err =
+            super::gate_pinned_in(&mut f.st, &dangerous, &exec_dir, &mut headless).expect_err("not run");
+        assert_eq!(err.code, codes::DENIED);
+        let filed = desk.pending().expect("pending");
+        assert_eq!(filed.len(), 1, "one request");
+        assert_eq!(filed[0].cwd, exec_dir.display().to_string());
     }
 
     /// #1512 S5: a dangerous exec in a run with no one to ask is not paused for. The tool error

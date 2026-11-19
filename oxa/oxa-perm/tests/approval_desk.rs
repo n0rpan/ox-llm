@@ -184,6 +184,30 @@ fn desk_session_grant_is_scoped_to_session() {
 /// A reusable grant is bound to the command line the owner reviewed. Approving a compound
 /// command must not authorize its bare segment, and a target the shell computes at run time is
 /// never covered by a reusable grant at all.
+/// A wipe removes one session's records, or all of them, and leaves no desk behind when there
+/// was none.
+#[test]
+fn desk_wipe_removes_one_session_or_all_and_creates_nothing() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    assert_eq!(ApprovalDesk::wipe(&agent, Some("s1")).expect("wipe"), 0);
+    assert!(!agent.join("approvals").exists(), "wipe created the desk");
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let one = desk
+        .record("s1", &cwd, DANGEROUS, &[hit()], "pending")
+        .expect("pending");
+    let two = desk
+        .record("s2", &cwd, DANGEROUS, &[hit()], "session")
+        .expect("session");
+    assert_eq!(ApprovalDesk::wipe(&agent, Some("s1")).expect("wipe"), 1);
+    let left = desk.records().expect("records");
+    assert!(!left.iter().any(|r| r.id == one));
+    assert!(left.iter().any(|r| r.id == two));
+    assert_eq!(ApprovalDesk::wipe(&agent, None).expect("wipe all"), 1);
+    assert!(desk.records().expect("records").is_empty());
+}
+
 #[test]
 fn desk_grants_cover_only_the_reviewed_command_line() {
     let env = TestEnv::new();
