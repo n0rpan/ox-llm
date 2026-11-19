@@ -404,6 +404,164 @@ async fn malformed_oversized_and_unauthenticated_http_is_bounded() {
     r.close().await;
 }
 
+/// Malformed heads: status, and whether the request reached the per-key stage (a valid key was
+/// found and its request budget spent) or the backend. One request per minute per key makes the
+/// follow-up `GET /v1/models` answer 429 exactly when the malformed head got that far.
+#[tokio::test(flavor = "current_thread")]
+async fn malformed_head_table_is_refused_with_stable_status_before_key_stage() {
+    type Build = Box<dyn Fn(&str) -> String>;
+    let rows: Vec<(&str, Build, u16, bool)> = vec![
+        (
+            "bare LF",
+            Box::new(|b| {
+                format!("GET /v1/models HTTP/1.1\nHost: localhost\nAuthorization: Bearer {b}\n\r\n\r\n")
+            }),
+            404,
+            false,
+        ),
+        (
+            "missing version",
+            Box::new(|b| format!("GET /v1/models\r\nHost: localhost\r\nAuthorization: Bearer {b}\r\n\r\n")),
+            404,
+            false,
+        ),
+        (
+            "HTTP/1.0",
+            Box::new(|b| {
+                format!("GET /v1/models HTTP/1.0\r\nHost: localhost\r\nAuthorization: Bearer {b}\r\n\r\n")
+            }),
+            404,
+            false,
+        ),
+        (
+            "header without colon",
+            Box::new(|b| {
+                format!("GET /v1/models HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {b}\r\nNoColon\r\n\r\n")
+            }),
+            400,
+            false,
+        ),
+        (
+            "bad header name",
+            Box::new(|b| {
+                format!("GET /v1/models HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {b}\r\nBad Name: x\r\n\r\n")
+            }),
+            400,
+            false,
+        ),
+        (
+            "duplicate authorization",
+            Box::new(|b| {
+                format!("GET /v1/models HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {b}\r\nAuthorization: Bearer {b}\r\n\r\n")
+            }),
+            400,
+            false,
+        ),
+        (
+            "duplicate content-length",
+            Box::new(|b| {
+                format!("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {b}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\n{{}}")
+            }),
+            400,
+            false,
+        ),
+        (
+            "plus content-length",
+            Box::new(|b| {
+                format!("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {b}\r\nContent-Type: application/json\r\nContent-Length: +2\r\n\r\n{{}}")
+            }),
+            400,
+            false,
+        ),
+        (
+            "empty content-length",
+            Box::new(|b| {
+                format!("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {b}\r\nContent-Type: application/json\r\nContent-Length:\r\n\r\n{{}}")
+            }),
+            400,
+            false,
+        ),
+        (
+            "overflowing content-length",
+            Box::new(|b| {
+                format!("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {b}\r\nContent-Type: application/json\r\nContent-Length: 99999999999999999999999\r\n\r\n{{}}")
+            }),
+            413,
+            false,
+        ),
+        (
+            "transfer-encoding",
+            Box::new(|b| {
+                format!("GET /v1/models HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {b}\r\nTransfer-Encoding: chunked\r\n\r\n")
+            }),
+            400,
+            false,
+        ),
+        (
+            "control byte in value",
+            Box::new(|b| {
+                format!("GET /v1/models HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {b}\r\nX-A: a\u{1}b\r\n\r\n")
+            }),
+            400,
+            false,
+        ),
+        (
+            "oversized head",
+            Box::new(|b| {
+                format!("GET /v1/models HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {b}\r\nX-Large: {}\r\n\r\n", "x".repeat(17000))
+            }),
+            413,
+            false,
+        ),
+        (
+            "too many headers",
+            Box::new(|b| {
+                let many: String = (0..63).map(|i| format!("X-{i}: v\r\n")).collect();
+                format!(
+                    "GET /v1/models HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {b}\r\n{many}\r\n"
+                )
+            }),
+            413,
+            false,
+        ),
+        // Leading zero: the old parser accepted it and spent the key budget before the body
+        // read timed out; the shared parser refuses it before the key stage.
+        (
+            "leading-zero content-length",
+            Box::new(|b| {
+                format!("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {b}\r\nContent-Type: application/json\r\nContent-Length: 010\r\n\r\n{{}}")
+            }),
+            400,
+            true,
+        ),
+    ];
+    for (name, build, status, reaches_key_stage) in rows {
+        let config = Config {
+            max_body: 128,
+            requests_per_minute: 1,
+            ..config()
+        };
+        let r = Running::start(config, limits(), false).await;
+        let reply = exchange(r.address, build(&r.bearer)).await;
+        assert!(
+            reply.starts_with(&format!("HTTP/1.1 {status}")),
+            "{name}: {}",
+            reply.lines().next().unwrap_or("")
+        );
+        let expected = if reaches_key_stage {
+            "HTTP/1.1 429"
+        } else {
+            "HTTP/1.1 200"
+        };
+        assert!(
+            r.models().await.starts_with(expected),
+            "{name}: key stage reached should be {reaches_key_stage}"
+        );
+        assert_eq!(r.fake.calls.load(Ordering::SeqCst), 0, "{name}");
+        r.close().await;
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn shutdown_and_deadline_join_model_cleanup_instead_of_dropping_ownership() {
     for deadline in [false, true] {
