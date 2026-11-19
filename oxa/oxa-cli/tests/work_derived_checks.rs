@@ -313,7 +313,7 @@ fn a_declared_acceptance_crate_does_not_add_a_local_command() {
     let env = TestEnv::new();
     setup_with_files(&env, "[]", &crate_files());
     let tools = tools_with_cargo(&env, RECORDING_CARGO);
-    let record = run_args(
+    let (record, requests) = run_observed(
         &env,
         vec![
             write_turn("crates/one/src/lib.rs"),
@@ -322,6 +322,15 @@ fn a_declared_acceptance_crate_does_not_add_a_local_command() {
         &["work", "../tasks.json"],
         Some(path_with(&tools)),
     );
+    let prompt = requests[0]
+        .messages
+        .iter()
+        .find(|message| message.role == oxa_proto::Role::User)
+        .and_then(|message| message.content.as_deref())
+        .expect("worker received its task prompt");
+    assert!(prompt.contains("run tests through hosted lane CI"));
+    assert!(prompt.contains("<oxa-acceptance>"));
+    assert!(!prompt.contains("runner independently runs tests and clippy"));
     assert_eq!(record["outcome"], "unverified", "{record}");
     assert_eq!(
         record["checks"],
