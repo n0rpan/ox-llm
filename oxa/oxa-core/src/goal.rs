@@ -335,10 +335,18 @@ impl GoalRuntime {
         state.last_tokens = tokens;
         Ok(state.goal.clone())
     }
-    pub(crate) fn stopped(&self) -> Goal {
+    /// The assistant stopped without a tool call. `pause_idle` is the owner's
+    /// `oxa.goal.idlePause`; the bool is true when this reply made the second idle one and
+    /// pursuit goes on (a notice, not a stop).
+    pub(crate) fn stopped(&self, pause_idle: bool) -> (Goal, bool) {
         let mut state = self.lock();
-        state.goal.stopped(false);
-        state.goal.clone()
+        let before = state.goal.idle_stops;
+        state.goal.stopped_with(false, pause_idle);
+        let noted = !pause_idle
+            && before < 2
+            && state.goal.idle_stops == 2
+            && state.goal.status == GoalStatus::Pursuing;
+        (state.goal.clone(), noted)
     }
     pub(crate) fn note_tools(&self) {
         self.lock().goal.idle_stops = 0;
@@ -361,17 +369,20 @@ impl GoalRuntime {
     pub(crate) fn finish_completion(&self, evidence: String) -> Result<(), oxa_proto::OxaError> {
         self.lock().goal.finish(GoalStatus::Done, evidence)
     }
-    pub(crate) fn uncertain_request(&self) -> Result<(), oxa_proto::OxaError> {
-        if self.engaged() {
-            self.lock().goal.charge(None, 0, false)?;
-            self.enforce_budget();
+    /// Record a request whose spend is unknown. It never ends the goal: the count is kept and
+    /// shown. Returns true for the first one under an owner token cap, so the caller warns once.
+    pub(crate) fn uncertain_request(&self) -> Result<bool, oxa_proto::OxaError> {
+        if !self.engaged() {
+            return Ok(false);
         }
-        Ok(())
+        let mut state = self.lock();
+        state.goal.charge(None, 0, false)?;
+        Ok(state.goal.unknown_requests == 1 && state.goal.budget.max_tokens.is_some())
     }
     pub(crate) fn enforce_budget(&self) {
         let mut state = self.lock();
         if state.goal.status == GoalStatus::Pursuing && state.goal.exhausted() {
-            state.goal.stopped(true);
+            state.goal.stopped_with(true, true);
         }
     }
     pub(crate) fn tools(
@@ -667,6 +678,22 @@ pub(crate) fn announce_pause(reason: &str, sink: &mut dyn oxa_proto::EventSink) 
     sink.emit(&oxa_proto::AgentEvent::Notice {
         level: oxa_proto::Level::Warning,
         text: format!("Goal paused: {reason}; /goal resume"),
+    });
+}
+
+/// The warning for a request with unknown token usage under an owner token budget.
+pub(crate) fn announce_unknown_usage(sink: &mut dyn oxa_proto::EventSink) {
+    sink.emit(&oxa_proto::AgentEvent::Notice {
+        level: oxa_proto::Level::Warning,
+        text: "Goal: a request reported no token usage; its spend is unknown and recorded as uncertain. The token budget keeps counting known usage and does not stop the goal for it".into(),
+    });
+}
+
+/// The notice for a second reply without an action when the owner did not ask for a pause.
+pub(crate) fn announce_idle(sink: &mut dyn oxa_proto::EventSink) {
+    sink.emit(&oxa_proto::AgentEvent::Notice {
+        level: oxa_proto::Level::Warning,
+        text: "Goal: two replies without an action; still pursuing (oxa.goal.idlePause pauses here, /goal pause pauses now)".into(),
     });
 }
 

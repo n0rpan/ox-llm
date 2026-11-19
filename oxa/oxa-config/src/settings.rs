@@ -281,7 +281,7 @@ impl Settings {
     pub fn retry(&self) -> RetrySettings {
         RetrySettings {
             enabled: self.bool("retry.enabled", true),
-            max_retries: self.u32("retry.maxRetries", 3),
+            max_retries: self.u32("retry.maxRetries", 5),
             base_delay_ms: self.u64("retry.baseDelayMs", 2000),
             max_delay_ms: self.u64("retry.maxAgentDelayMs", 60000),
         }

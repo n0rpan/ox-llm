@@ -190,12 +190,12 @@ fn page_cap(tune: &ToolTune) -> usize {
 }
 
 /// L4: the byte cap of `grep`, `find`, `ls` and a `read` with `offset` / `limit`: the tool
-/// output cap of the tuning (`output_cap_bytes`, never above pi's 16 KiB), or pi's 16 KiB when
-/// the tuning sets none. The output cap of `shape` stays the last word on every result.
+/// output cap of the tuning (`output_cap_bytes`, which an owner setting or a cloud window may
+/// raise above pi's 16 KiB), or pi's 16 KiB when the tuning sets none. The output cap of `shape` stays the last word on every result.
 pub(crate) fn output_cap(tune: &ToolTune) -> usize {
     match tune.output_cap_bytes {
         0 => limits::TOOL_OUTPUT_CAP_DEFAULT,
-        b => (b as usize).min(limits::TOOL_OUTPUT_CAP_DEFAULT),
+        b => b as usize,
     }
 }
 

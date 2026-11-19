@@ -890,8 +890,11 @@ fn run_inner(
                 return Ok(RunEnd::Stopped);
             }
             let was_pursuing = goal.pursuing();
-            let snapshot = goal.stopped();
+            let (snapshot, idle_noted) = goal.stopped(st.settings.user_bool("oxa.goal.idlePause", false));
             crate::goal::save_checkpoint(st, &snapshot, sink)?;
+            if idle_noted {
+                crate::goal::announce_idle(sink);
+            }
             if was_pursuing && snapshot.status == oxa_session::GoalStatus::Paused {
                 if let Some(reason) = snapshot.pause_reason.as_deref() {
                     crate::goal::announce_pause(reason, sink);

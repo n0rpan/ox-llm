@@ -100,25 +100,26 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `defaultTools` | list | `["read","bash","edit","write","grep","find","ls"]` | tools on by default; names may include `subagent`, `web_search`, `codemode` and `tool_search` |
 | `oxa.bash.defaultTimeout` | number (seconds) | unset | timeout of a bash call that names none; unset is 120; `0` is no timeout. A command still running at its timeout is not killed: it moves to a background job (the result gives the job id and the wall time). A call's own `timeout: 0` is no timeout too, and beats this default |
 | `oxa.bash.waitCap` | number (seconds) | `300` | the longest a bash job read (`wait_s`) blocks; a larger `wait_s` is cut to it. User settings only. At least 1 |
-| `oxa.bash.maxJobs` | number | `16` | background jobs (`bash` with `background: true`) that may run at once; a further start is refused and names the oldest running job to stop with `kill`. User settings only. At least 1 |
+| `oxa.bash.maxJobs` | number | `16` | background jobs (`bash` with `background: true`) that may run at once; above it a start still goes ahead and the result warns, naming this key. User settings only. At least 1 |
 | `oxa.diet.output` | bool | unset | the system prompt's "be concise" rule is replaced by rules on tool use and a final answer of at most 6 lines. Unset is on |
 | `oxa.diet.tools` | bool | unset | shorter `grep` and `bash` output: `grep` prints each path once, and runs of three or more blank lines in bash output become two. Unset is on |
 | `oxa.jobs.wakeOnFinish` | bool | `true` | user settings only (a project file cannot turn it on). When `true`, a background bash job that finishes on its own (not one stopped by the model or the user) queues one follow-up message with the command as written, its exit code and last lines; when the session is idle and its last run ended normally it starts a turn. A job wakes only the session it started in. `false` (opt-out): the output waits for a read |
 | `oxa.liveSettings` | bool | `true` | on by default; `false` opts out. When on, a changed settings file is applied at the start of the next run without `/reload` (one `stat` per file; keys that feed the prompt rebuild it). Read from the settings the session holds, so turning it on takes effect at the next `/reload` or start. A file that no longer parses keeps the previous settings |
 | `oxa.maxTurns` | number | unset | end a run after this many model replies with a `turn_limit` error (a cap against loops the repeat guard cannot see, such as alternating calls). Unset or `0` is no limit |
-| `oxa.toolOutputCap` | number (bytes) | `16384` | cap on one tool output sent to the model. When `oxa.compaction.softTokens` is set or the engine publishes a compaction point, one tool result is at most a quarter of it (never below 2048 bytes), unless this is set; `grep`, `find`, `ls` and a `read` with `offset` or `limit` are cut at that cap, the first page of `read` at 8 KiB within it; see [tools-context.md](tools-context.md) |
+| `oxa.toolOutputCap` | number (bytes) | `16384` | cap on one tool output sent to the model; on a cloud model with a known window and no value set it is 3/16 of the window in bytes (at least 16384), and a higher value you set applies to `read`, `grep`, `find` and `ls` too. When `oxa.compaction.softTokens` is set or the engine publishes a compaction point, one tool result is at most a quarter of it (never below 2048 bytes), unless this is set; `grep`, `find`, `ls` and a `read` with `offset` or `limit` are cut at that cap, the first page of `read` at 8 KiB within it; see [tools-context.md](tools-context.md) |
 | `oxa.toolRepair` | bool | `true` | repair a malformed tool call with one extra turn ([tools.md](tools.md#repair-turn)) |
 | `oxa.work.localChecks` | list of strings | `["cargo check"]` | owner-only local compile commands for `oxa work`. The runner adds `-p <crate>` for a touched crate. The hosted lane supplies the test verdict. |
 | `oxa.toolRepeatGuard` | bool | `true` | answer a tool call that returned the same result three times in a row with a short note, and warn once (shown and kept in the session) if it goes on; the run continues ([tools.md](tools.md#repeated-calls)) |
+| `oxa.goal.idlePause` | boolean | `false` | `true` pauses a goal after two replies without a tool call (with a notice and `/goal resume`); by default the second such reply only shows a warning and the goal keeps pursuing. User settings only |
 | `oxa.goal.failureBackoffSeconds` | number (seconds) | `60` | a pursuing goal whose request fails transiently (stream cut, engine down or busy, timeout, 429 or 5xx) notes it, waits this long without a model request, and sends the same request again; each further consecutive failure doubles the wait, capped at 900 s unless this is set higher. There is no attempt cap. `0` opts out: the run ends as before. Auth errors, refusals, a repetition stop, an abort and an owner-set budget still stop the goal with the reason shown |
 | `oxa.wait.maxSeconds` | number (seconds) | `3600` | cap on one `wait` call's `seconds` (schema maximum 86400); a longer request is cut to it |
 | `oxa.wait.pollSeconds` | number (seconds) | `30` | how often a `wait` with an `until` condition asks the hook sets for its state; no model request is made meanwhile |
 | `oxa.subagent.enabled` | bool | unset | the `subagent` tool; unset is on unless the model is Flash or its window is below 32K |
 | `oxa.subagent.smallContext` | bool | `false` | declare `subagent` on a model with a window below 32K |
-| `oxa.subagent.softTokens` | number | `24000` | compaction point of a child agent |
-| `oxa.subagent.maxChildren` | number | `8` | children one parent session runs or queues over every call in flight, and the most `tasks` or `chain` steps one call takes. User settings only. At least 1 |
+| `oxa.subagent.softTokens` | number | `24000` | compaction point of a child agent; on a cloud model with a known window and no value set it is half the window (at least 24000) |
+| `oxa.subagent.maxChildren` | number | `8` | children one parent session runs or queues over every call in flight, and the most `tasks` or `chain` steps one call takes. A warning threshold: above it the children still run (queued) and the result ends with a warning. User settings only. At least 1 |
 | `oxa.subagent.remoteConcurrency` | number | `4` | children of one `tasks` call that run at once when some run on a cloud model (local children run one at a time) |
-| `oxa.subagent.resultCap` | number (bytes) | `6144` | cap on the text a child returns |
+| `oxa.subagent.resultCap` | number (bytes) | `6144` | cap on the text a child returns; on a cloud model with a known window and no value set it is 3/32 of the window in bytes (at least 6144) |
 | `oxa.webSearch.enabled` | bool | `true` | the `web_search` tool, when a key exists |
 | `oxa.webSearch.provider` | `brave` / `none` | `brave` | search provider; `none` turns the tool off |
 | `oxa.webSearch.maxTokens` | number | `2048` | size of the search result the provider returns |
@@ -163,7 +164,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `retry.enabled` | bool | `true` | retry a failed request; off sends each request once, with no provider retry |
-| `retry.maxRetries` | number | `3` | retries of an agent request |
+| `retry.maxRetries` | number | `5` | retries of an agent request (2 s, 4 s, 8 s, 16 s, 32 s: about a minute before the request fails) |
 | `retry.baseDelayMs` | number | `2000` | first delay, doubled each retry |
 | `retry.maxAgentDelayMs` | number | `60000` | longest delay the agent loop waits |
 | `retry.provider.maxRetries` | number | `0` | silent retries of one HTTP request, before the first byte of the reply; `retry.enabled` false disables them |

@@ -190,8 +190,11 @@ pub fn request(
         Err(error) => {
             if crate::goal::uncertain_on(st.info.caps.remote, &error, generated, pre_cancelled) {
                 if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
-                    goal.uncertain_request()?;
+                    let first = goal.uncertain_request()?;
                     crate::goal::checkpoint(st, false, sink)?;
+                    if first {
+                        crate::goal::announce_unknown_usage(sink);
+                    }
                 }
             }
             return Err(error);
@@ -206,9 +209,11 @@ pub fn request(
     .account_usage(turn.usage);
     if turn.usage.unreported {
         // The reply carried no usage: its spend is unknown, not zero. The goal records an
-        // uncertain request so its token cap still applies (the answer itself is kept).
+        // uncertain request, shown as a warning and never a stop (the answer itself is kept).
         if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
-            goal.uncertain_request()?;
+            if goal.uncertain_request()? {
+                crate::goal::announce_unknown_usage(sink);
+            }
         }
     }
     if opts.events {

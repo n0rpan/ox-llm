@@ -63,7 +63,12 @@ fn gather(st: &SessionState) -> Inputs {
     let (mut active, warnings) = resolve_toolset(&all, &sel);
     crate::toolset::apply_codemode_mode(&mut active, &st.settings);
     let specs = active.specs();
-    let tune = crate::tune::tune_for(&st.settings, st.info.n_ctx, crate::tune::budget_soft(st));
+    let tune = crate::tune::tune_for_model(
+        &st.settings,
+        st.info.n_ctx,
+        crate::tune::budget_soft(st),
+        st.info.caps.remote,
+    );
     Inputs {
         all,
         active,

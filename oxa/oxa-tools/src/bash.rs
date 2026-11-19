@@ -512,7 +512,11 @@ impl BashTool {
             Ok(id) => ToolOutput {
                 images: Vec::new(),
                 text: format!(
-                    "Started background job {id}. Read its status and output with bash {{\"job\": \"{id}\"}}.\n{JOB_PROCESS_VISIBILITY}"
+                    "Started background job {id}. Read its status and output with bash {{\"job\": \"{id}\"}}.\n{JOB_PROCESS_VISIBILITY}{}",
+                    self.jobs
+                        .over_limit_note()
+                        .map(|n| format!("\n{n}"))
+                        .unwrap_or_default()
                 ),
                 is_error: false,
                 ui: json!({ "job": id }),
@@ -651,7 +655,7 @@ impl BashTool {
                             res
                         }
                     },
-                    // The job limit is reached: run it the old way, in this call.
+                    // The job could not start: run it the old way, in this call.
                     Err(_) => self.sandbox(cx).run(&spec, cx.cancel, &mut sink),
                 }
             }
@@ -1863,7 +1867,7 @@ echo '\''a'\'''"#
     }
 
     #[test]
-    fn job_beyond_default_limit_is_refused() {
+    fn job_beyond_default_limit_starts_with_a_warning() {
         let limit = crate::jobs::MAX_JOBS;
         let jobs = Arc::new(JobRegistry::new());
         let sb = Arc::new(Blocking {
@@ -1876,12 +1880,9 @@ echo '\''a'\'''"#
             assert!(!out.is_error, "{:?}", out.text);
         }
         let out = run_job_tool(&tool, &*sb, json!({"command": "sleep 100", "background": true}));
-        assert!(out.is_error);
-        assert!(
-            out.text.contains(&format!("At most {limit} background jobs")),
-            "{:?}",
-            out.text
-        );
+        assert!(!out.is_error, "{:?}", out.text);
+        assert!(out.text.contains("Started background job"), "{:?}", out.text);
+        assert!(out.text.contains("oxa.bash.maxJobs"), "{:?}", out.text);
         jobs.kill_all();
     }
 

@@ -30,8 +30,10 @@ messages with `oxa.inbox.headless` set to `true` by default. This user-only sett
 project settings cannot enable or disable it. Non-persisted sessions, sessions without a pursuing
 goal, and the managed-steering path do not mount the plain inbox watcher.
 
-The background-job and per-parent child limits are configurable through `oxa.bash.maxJobs`
-(default 16) and `oxa.subagent.maxChildren` (default 8). Read both caps from the user file.
+The background-job and per-parent child limits are warning thresholds, by owner decision
+(2026-11-19): `oxa.bash.maxJobs` (default 16) and `oxa.subagent.maxChildren` (default 8). Above
+either, the start goes ahead (extra children queue) and the tool result carries a warning that
+names the setting; nothing is refused. Read both from the user file, so a project cannot change them.
 Project settings for remote concurrency remain bounded by the user’s child cap. An explicit
 bash `timeout: 0` opts out of the call timeout. Sandbox and permission checks still apply.
 
@@ -63,6 +65,7 @@ in a tree with Cargo manifests. A worker declaration can add requirements to tha
 The repeat guard warns and continues by owner decision (#1448): the third identical tool result gets a notice, a call that still repeats gets one persisted warning, and the run is not stopped. A finding that asks for the old stopping behaviour is not a finding; `oxa.maxTurns` is the configured cap.
 
 A background bash job that finishes on its own queues one follow-up message with the command as written, its exit code and last lines, by owner decision (#1448 W4): `oxa.jobs.wakeOnFinish` (default `true`, `false` opts out, user settings only so a project file cannot turn it on) is the control, and it wakes only the session the job started in. A job the model or the user stopped wakes nothing, and a completion retained behind a failed or interrupted turn stays queued, also across a session reopen, until the next prompt. A finding that asks for a default-off switch, for the output to stay silent, or for a cross-session wake is not a finding; it is answered here.
+Limits warn and record instead of blocking, by owner decision (2026-11-19). A goal token budget (`--max-tokens`) counts known usage only: a request with unknown usage (a reply without usage, a failed cloud request) is recorded as `unknown_requests` with one warning, and is not an exhausted budget; the owner's time and turn budgets still stop the goal. Two replies without a tool call give one warning and the goal keeps pursuing; `oxa.goal.idlePause` (default `false`, user settings only) restores the pause. `retry.maxRetries` defaults to 5. `oxa.toolOutputCap`, `oxa.subagent.resultCap` and `oxa.subagent.softTokens` scale with the window of a cloud model when the owner left them unset (the local profile and owner values are unchanged). A finding that asks for these to refuse, stop or stay fixed is answered here.
 A pursuing goal whose request fails transiently (stream cut, engine down or busy, timeout, 429, 5xx) waits without a model request and then sends the same request again, by owner decision (#1448): `oxa.goal.failureBackoffSeconds` (default 60, doubling, capped at 900 unless set higher, `0` opts out) is the only control, and there is no attempt cap. Auth errors, refusals, a repetition stop, an abort and an owner-set budget still stop the goal with the reason shown. A finding that asks for an attempt cap, a default-off switch or a new terminal exception is not a finding; it is answered here.
 
 Board evidence limits degrade only the affected pull request. A connection that cannot be read

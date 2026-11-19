@@ -176,6 +176,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.envNote", Kind::Bool, "null"),
     // R1: the first wait after a transient request failure of a pursuing goal; `0` opts out.
     key("oxa.goal.failureBackoffSeconds", Kind::Number, "60"),
+    key("oxa.goal.idlePause", Kind::Bool, "false"),
     // K3: a headless print or JSON run of a persisted session with a pursuing goal takes
     // `oxa send` follow-ups from the session inbox for the run; false = off.
     key("oxa.inbox.headless", Kind::Bool, "true"),
@@ -287,7 +288,7 @@ const SCHEMA: &[KeyDef] = &[
     key("retry.baseDelayMs", Kind::Number, "2000"),
     key("retry.enabled", Kind::Bool, "true"),
     key("retry.maxAgentDelayMs", Kind::Number, "60000"),
-    key("retry.maxRetries", Kind::Number, "3"),
+    key("retry.maxRetries", Kind::Number, "5"),
     key("retry.provider.maxRetries", Kind::Number, "0"),
     key("retry.provider.maxRetryDelayMs", Kind::Number, "60000"),
     key("retry.provider.timeoutMs", Kind::Number, "null"),
