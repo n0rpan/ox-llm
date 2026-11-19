@@ -178,9 +178,17 @@ pub(super) fn catalog_owns(pattern: &str, endpoint: &str, models: impl IntoItera
         }
     }
     let available = model_refs(endpoint, models);
-    let want = bare(pattern);
+    // `oxe/opencode/x` and `opencode/x` name the same model: the resolver returns the latter.
+    let without_endpoint = |model: &str| {
+        let bare = bare(model);
+        match bare.strip_prefix(&format!("{}/", endpoint.to_ascii_lowercase())) {
+            Some(rest) if !endpoint.is_empty() => rest.to_string(),
+            _ => bare,
+        }
+    };
+    let want = without_endpoint(pattern);
     oxa_config::resolve_scoped(&[pattern.to_string()], &available)
         .0
         .iter()
-        .any(|model| bare(&model.model) == want)
+        .any(|model| without_endpoint(&model.model) == want)
 }

@@ -319,12 +319,16 @@ fn select_for(
         || !scope.is_empty() && scope.iter().all(|pattern| requests_go(pattern)),
         requests_go,
     );
+    // A scope enables Go only when it names a Go model: an owner (or project) scope of local
+    // models must not open the gateway beside a native local engine.
+    let scope_go = !scope.is_empty()
+        && routing::scope_includes_go(scope, endpoint, cloud_models.iter().cloned().collect());
     // A keyed catalog is available for inventory and owner model selection.
     // A project default alone cannot choose a new cloud transport.
     let native_cloud = explicit_cloud
         || (go_enabled
             && (show_status
-                || owner_selected && (!requested_local || explicit_go)
+                || owner_selected && (requested.is_some() && (!requested_local || explicit_go) || scope_go)
                 || explicit_go && (requested.is_none() || go_requested)));
     let availability_notice = || {
         if show_status {
