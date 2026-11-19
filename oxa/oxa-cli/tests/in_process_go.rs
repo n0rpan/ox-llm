@@ -2529,7 +2529,12 @@ fn a_fuzzy_local_alias_does_not_shadow_the_exact_go_model() {
     let path = env.agent_dir().join("settings.json");
     let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     settings.as_object_mut().unwrap().remove("defaultModel");
-    settings["oxa"]["engine"] = json!({"inProcessLocal":true, "inProcessCloud":false});
+    // No cloud switch and no Go enablement: the stored key is the only Go fact in play.
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
     let alias = format!("{MODEL}-local");
     settings["oxa"]["local"] = json!({
         "binary":"/synthetic/not-launched-oxe",
@@ -2548,4 +2553,49 @@ fn a_fuzzy_local_alias_does_not_shadow_the_exact_go_model() {
         "the Go model must not be shadowed by {alias}: {stderr}"
     );
     assert!(!stderr.contains(&alias), "{stderr}");
+}
+
+/// #1435: an endpoint-qualified spelling (`oxe/opencode/x`) names the same local alias, so it
+/// stays local instead of being refused as an unavailable Go model.
+#[test]
+fn an_endpoint_qualified_local_alias_stays_local() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"synthetic plan reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    settings["oxa"]["engine"] = json!({"inProcessLocal":true, "inProcessCloud":false});
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    let alias = "opencode/custom-local".to_string();
+    settings["oxa"]["local"] = json!({
+        "binary":"/synthetic/not-launched-oxe",
+        "models":{(alias.clone()):{"model":"/synthetic/missing.gguf"}},
+        "limits":{(alias.clone()):{"context_window":4096,"max_output":64,"thinking":true,
+            "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,
+                                "mtp_state_bytes":0,"margin_bytes":1044480}}}
+    });
+    fs::write(&path, settings.to_string()).unwrap();
+    let output = run(
+        &env,
+        &[
+            "--model",
+            "oxe/opencode/custom-local",
+            "--no-tools",
+            "-p",
+            "Synthetic task",
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Local weights are missing"), "{stderr}");
+    assert!(!stderr.contains("OpenCode Go"), "{stderr}");
+    mock.assert_healthy();
 }
