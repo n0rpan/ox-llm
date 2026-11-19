@@ -333,6 +333,13 @@ pub const ENV_TABLE: &[EnvVar] = &[
         kind: EnvKind::Set,
     },
     EnvVar {
+        name: "OXA_CONFIRM_SOCK",
+        pi_name: None,
+        description: "oxa sets it in tool children to the path of the session's private owner confirm socket, through which oxa commands ask the owner",
+        supported: true,
+        kind: EnvKind::Set,
+    },
+    EnvVar {
         name: "OXA_TOOL_CALL_ID",
         pi_name: None,
         description: "oxa sets it in the environment of an extension tool call to the id of that call",
@@ -377,7 +384,7 @@ pub const ENV_TABLE: &[EnvVar] = &[
     EnvVar {
         name: "OXA_WORK_MODEL_DELEGATED",
         pi_name: None,
-        description: "oxa work sets 1 in a worker so a model argument does not count as chosen by the owner; a launcher can deny that opt-in this way, never grant it",
+        description: "oxa work sets 1 in a worker; a restored or project-selected model then never counts as chosen by the owner, while an actual model argument is still admitted by a protected Go key",
         supported: true,
         kind: EnvKind::Internal,
     },

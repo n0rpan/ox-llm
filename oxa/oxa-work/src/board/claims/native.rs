@@ -114,7 +114,7 @@ impl Claims {
             return Ok(None);
         }
         let now = now();
-        if !lease.claimed_at.is_some_and(|start| start <= now)
+        if lease.claimed_at.is_none_or(|start| start > now)
             || row.lease_expiry().is_none_or(|expiry| now >= expiry)
         {
             return Ok(None);

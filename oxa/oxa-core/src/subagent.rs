@@ -1570,6 +1570,13 @@ fn wait_child(
                         let _ = host.call(HostAction::AccountRunTokens(extra));
                         charged = charged.saturating_add(extra);
                     }
+                    if v["complete"] == false {
+                        // The child could not size its own spend: charge the rest of the
+                        // allowance it was given so the parent wraps up, never above it.
+                        let rest = remaining.unwrap_or(0).saturating_sub(charged);
+                        let _ = host.call(HostAction::AccountRunTokens(rest));
+                        charged = charged.saturating_add(rest);
+                    }
                 }
             }
         }
