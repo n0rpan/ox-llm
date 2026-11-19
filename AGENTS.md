@@ -103,13 +103,10 @@ maintainer, who says in the PR when a hardware check is needed.
   content, configured secret values). A file is refused for its content, never its name alone: an empty
   secret-store file and `.env.example` publish unless the content holds a secret. Flag as P1 a change that
   weakens these refusals or adds a name-only or blanket long-value block (P2 without a doc update).
-- **Bash and subagent limits.** The two limits are user-only warning thresholds (owner decision
-  2026-11-19), never refusals. `oxa.bash.maxJobs` defaults to 16 running background jobs; the
-  17th starts and the result says so. `oxa.subagent.maxChildren` defaults to 8 running or queued
-  children per parent and 8 steps per call; more run queued with a warning in the result. Both
-  settings have a minimum of 1. A goal token budget counts known usage only (unknown usage is
-  recorded and warned, not exhausted) and two idle replies only warn unless `oxa.goal.idlePause`
-  is set. An explicit bash `timeout: 0` disables the
+- **Bash and subagent limits.** `oxa.bash.maxJobs` (16) and `oxa.subagent.maxChildren` (8, also
+  steps per call) are user-only warning thresholds, never refusals (owner decision 2026-11-19):
+  above them a job starts or children queue, with a warning in the result. A goal token budget
+  counts known usage only; two idle replies warn unless `oxa.goal.idlePause`. Both limits are at least 1. An explicit bash `timeout: 0` disables the
   timeout for that call, including a background job, and overrides the foreground default.
   A foreground command that passes its timeout is not killed: it moves to a background job
   (counted toward the `oxa.bash.maxJobs` warning). `oxa.bash.waitCap` (user-only, default 300 s) caps `wait_s`.
