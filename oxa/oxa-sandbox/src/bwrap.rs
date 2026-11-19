@@ -98,6 +98,18 @@ pub(crate) fn bwrap_args_homes(
         &mut a,
         &["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"],
     );
+    // The broker lives below the private agent directory, which the home tmpfs below hides.
+    // Pin that exact socket first at a fixed, read-only mount point. A command can replace its
+    // environment, but it cannot replace this mount or make the client trust another listener.
+    let owner_confirm = s
+        .env
+        .iter()
+        .rev()
+        .find(|(key, _)| key == crate::OWNER_CONFIRM_SOCK_ENV)
+        .map(|(_, value)| value);
+    if let Some(sock) = owner_confirm {
+        push(&mut a, &["--ro-bind", sock, crate::OWNER_CONFIRM_SOCK]);
+    }
     // #457: the session directory, or a fresh tmpfs. Before the home and every mask (N28).
     match &layout.scratch {
         Some(sc) => push(&mut a, &["--bind", &sc.path().to_string_lossy(), "/tmp"]),
@@ -426,7 +438,10 @@ pub(crate) fn bwrap_args_homes(
         }
     }
     push(&mut a, &["--chdir", &cwd, "--clearenv"]);
-    for (k, v) in base_env(s, &home_s, layout) {
+    for (k, mut v) in base_env(s, &home_s, layout) {
+        if k == crate::OWNER_CONFIRM_SOCK_ENV {
+            v = crate::OWNER_CONFIRM_SOCK.to_string();
+        }
         push(&mut a, &["--setenv", &k, &v]);
     }
     push(&mut a, &["--", "bash", "-c", &s.command]);
@@ -1237,6 +1252,35 @@ fn probe(bwrap: &Path) -> Result<(), OxaError> {
 mod tests {
     use super::*;
     use oxa_fake::TestEnv;
+
+    #[test]
+    fn owner_confirm_socket_is_pinned_and_environment_uses_mount() {
+        let env = TestEnv::new();
+        let mut sp = spec(&env.work(), false);
+        let host_sock = env.home().join(".oxa/agent/tmp/confirm/socket");
+        sp.env.push((
+            crate::OWNER_CONFIRM_SOCK_ENV.to_string(),
+            host_sock.to_string_lossy().into_owned(),
+        ));
+
+        let argv = bwrap_args_homes(&sp, &env.home(), &Layout::default(), None);
+        let host_sock_s = host_sock.to_string_lossy().into_owned();
+        let mount = ["--ro-bind", host_sock_s.as_str(), crate::OWNER_CONFIRM_SOCK];
+        assert!(argv.windows(3).any(|window| window == mount));
+        assert!(argv.windows(3).any(|window| {
+            window
+                == [
+                    "--setenv",
+                    crate::OWNER_CONFIRM_SOCK_ENV,
+                    crate::OWNER_CONFIRM_SOCK,
+                ]
+        }));
+        assert!(!argv.windows(3).any(|window| {
+            window[0] == "--setenv"
+                && window[1] == crate::OWNER_CONFIRM_SOCK_ENV
+                && window[2] == host_sock.to_string_lossy()
+        }));
+    }
 
     /// #528: a refused check and the argv of a home workspace list `$HOME` once, not once per
     /// branch.

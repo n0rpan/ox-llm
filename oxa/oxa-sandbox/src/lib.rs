@@ -45,6 +45,14 @@ pub use unsandboxed::Unsandboxed;
 pub const NO_OS_SANDBOX_NOTICE: &str =
     "no OS sandbox on this platform: commands run with your full user rights";
 
+/// The pinned location of the session-owned confirmation socket inside bwrap.
+///
+/// Tool commands may change their environment, so confirmation clients must trust this mount
+/// point rather than an arbitrary path supplied through `OXA_CONFIRM_SOCK`.
+pub const OWNER_CONFIRM_SOCK: &str = "/run/oxa-owner-confirm.sock";
+/// Environment variable carrying the host confirmation socket into the sandbox builder.
+pub const OWNER_CONFIRM_SOCK_ENV: &str = "OXA_CONFIRM_SOCK";
+
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

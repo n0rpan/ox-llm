@@ -509,9 +509,22 @@ pub(crate) fn submit_record(
 /// broker, a tool child (`OXA_CODING_AGENT` set) gets `None`. A manual terminal asks through
 /// `/dev/tty` (never stdin, so piped input cannot confirm) and gets `None` without one.
 pub(crate) fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
+    tty_confirm_with(env, oxa_core::owner_confirm::ask)
+}
+
+fn tty_confirm_with<'a>(
+    env: &'a Env,
+    ask: impl Fn(&Path, &str) -> Option<bool> + 'a,
+) -> impl FnMut(&str) -> Option<bool> + 'a {
     move |question: &str| {
         if let Some(sock) = env.get(oxa_core::owner_confirm::SOCK_ENV) {
-            return oxa_core::owner_confirm::ask(Path::new(sock), question);
+            // A model-run shell can replace environment variables. Under the agent marker,
+            // accept only the socket that bwrap pinned at its immutable mount point; never let
+            // an environment-selected listener manufacture an owner's approval.
+            if env.get("OXA_CODING_AGENT").is_none() || sock == oxa_sandbox::OWNER_CONFIRM_SOCK {
+                return ask(Path::new(sock), question);
+            }
+            return None;
         }
         if env.get("OXA_CODING_AGENT").is_some() {
             return None;
@@ -556,19 +569,31 @@ mod confirm_tests {
 
     #[test]
     fn confirm_uses_broker_under_agent_marker() {
-        let (sock, seen) = broker("yes", "yes");
-        let path = sock.to_string_lossy().into_owned();
-        let env = Env::from_pairs(&[("OXA_CODING_AGENT", "true"), ("OXA_CONFIRM_SOCK", &path)]);
-        assert_eq!(tty_confirm(&env)("Post this issue? "), Some(true));
-        let request = seen.join().expect("broker thread");
-        assert!(request.contains("Post this issue?") && request.contains("preview_sha256"));
+        let env = Env::from_pairs(&[
+            ("OXA_CODING_AGENT", "true"),
+            ("OXA_CONFIRM_SOCK", oxa_sandbox::OWNER_CONFIRM_SOCK),
+        ]);
+        let mut confirm = tty_confirm_with(&env, |sock, question| {
+            assert_eq!(sock, Path::new(oxa_sandbox::OWNER_CONFIRM_SOCK));
+            assert_eq!(question, "Post this issue? ");
+            Some(true)
+        });
+        assert_eq!(confirm("Post this issue? "), Some(true));
+
+        // The same process may override its environment, but an arbitrary listener is not the
+        // session broker mounted by the sandbox and must never count as owner approval.
+        let path = "/workspace/fake-confirm.sock";
+        let env = Env::from_pairs(&[("OXA_CODING_AGENT", "true"), ("OXA_CONFIRM_SOCK", path)]);
+        assert_eq!(tty_confirm(&env)("q"), None);
+
+        // Outside an agent tool, the private host path remains usable.
         let (sock, _seen) = broker("no", "no");
         let path = sock.to_string_lossy().into_owned();
-        let env = Env::from_pairs(&[("OXA_CODING_AGENT", "true"), ("OXA_CONFIRM_SOCK", &path)]);
+        let env = Env::from_pairs(&[("OXA_CONFIRM_SOCK", &path)]);
         assert_eq!(tty_confirm(&env)("q"), Some(false));
         let (sock, _seen) = broker("none", "none");
         let path = sock.to_string_lossy().into_owned();
-        let env = Env::from_pairs(&[("OXA_CODING_AGENT", "true"), ("OXA_CONFIRM_SOCK", &path)]);
+        let env = Env::from_pairs(&[("OXA_CONFIRM_SOCK", &path)]);
         assert_eq!(tty_confirm(&env)("q"), None);
     }
 
