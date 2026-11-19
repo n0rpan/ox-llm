@@ -1027,6 +1027,7 @@ mod tests {
                     output: Vec::new(),
                     exit: None,
                     timed_out: false,
+                    unsandboxed: false,
                 };
             }
             for i in 1..=25 {
@@ -1036,6 +1037,7 @@ mod tests {
                 output: Vec::new(),
                 exit: Some(3),
                 timed_out: false,
+                unsandboxed: false,
             }
         }
     }
