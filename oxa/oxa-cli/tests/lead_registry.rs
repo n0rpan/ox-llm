@@ -130,8 +130,8 @@ fn chat_status_reads_the_protected_board_without_calling_the_provider() {
             lease: None,
             attempts_today: 0,
             eligible: true,
+            evidence_incomplete: None,
         }],
-        ..Default::default()
     };
     fs::write(
         &sample,

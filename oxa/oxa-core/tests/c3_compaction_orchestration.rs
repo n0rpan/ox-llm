@@ -1,6 +1,4 @@
 //! C3 acceptance tests: Compaction orchestration.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_compact::prompt::{self, SummaryKind};
@@ -80,6 +78,7 @@ fn build_with_store(
         modes: Mutex::new((QueueMode::All, QueueMode::OneAtATime)),
         dirty: std::sync::atomic::AtomicBool::new(false),
         gate: Default::default(),
+        wake: Default::default(),
     });
     SessionState {
         goal: None,
@@ -179,6 +178,7 @@ fn run(st: &mut SessionState) -> RunEnd {
 /// An assistant message that calls tools (text empty).
 fn calls(list: Vec<(&str, &str, &str)>) -> WireMsg {
     WireMsg {
+        images: Vec::new(),
         role: Role::Assistant,
         content: Some(String::new()),
         reasoning: None,
@@ -395,6 +395,7 @@ fn mid_run_above_hard() {
         completion: 0,
         cached: 0,
         cached_missing: false,
+        unreported: false,
     });
 
     let mut sink = VecSink::default();

@@ -1,6 +1,4 @@
 //! C10 acceptance tests: RPC server, run-control commands.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 //!
 //! The server runs in a thread over an OS pipe, so a test can send a command while a run is
@@ -124,7 +122,53 @@ fn session_deps(env: &TestEnv, engine: Arc<dyn Engine>) -> Deps {
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+#[cfg(target_os = "linux")]
+#[test]
+fn control_files_are_not_consumed_when_the_control_lane_is_off() {
+    use oxa_session::send_inbox_control;
+
+    fn control_files(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| {
+                        let path = entry.path();
+                        if path.is_dir() {
+                            control_files(&path)
+                        } else {
+                            usize::from(path.to_string_lossy().contains(".control-"))
+                        }
+                    })
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let owner = open_session(&env, engine);
+    let bound = owner.inner().sref.clone();
+    let agent = Dirs::under(env.root()).agent_dir;
+    let mut rpc = Rpc::start_with(owner, &env, |session, dirs, input, out| {
+        oxa_rpc::serve_outcome_gated(session, dirs, input, out, false)
+    });
+    rpc.call("ready", json!({"type":"get_state"}));
+    let packet = json!({"method":"cancel","id":"off","revision":1});
+    send_inbox_control(&agent, &bound, &packet.to_string()).unwrap();
+    assert_eq!(control_files(&agent), 1);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(control_files(&agent), 1, "the control file must stay unread");
+    assert!(
+        !rpc.records()
+            .iter()
+            .any(|record| record["type"] == "goal_control_receipt"),
+        "no receipt without the control lane"
+    );
+    rpc.finish();
+}
+
+#[cfg(target_os = "linux")]
 #[test]
 fn file_control_receipts_report_revisioned_and_durable_owner_transitions() {
     use oxa_orchestrator::control::Request;
@@ -372,7 +416,7 @@ fn has_settled(records: &[Value], aborted: bool) -> bool {
         .any(|r| r["type"] == "agent_settled" && r["aborted"] == aborted)
 }
 
-#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+#[cfg(target_os = "linux")]
 mod live_steering {
     use super::*;
     use oxa_core::goal::SteeringLease;
@@ -1427,6 +1471,36 @@ fn wrap_up_retains_queued_errors_without_running_later_commands() {
                 && record["message"]["content"][0]["text"] == "final summary"));
         }
     }
+}
+
+#[test]
+fn a_wrap_up_while_the_session_thread_waits_is_served_before_the_tick() {
+    // O-386: the session thread waits up to RPC_IDLE_TICK (250 ms) for a job. A wrap-up
+    // requested while it waits is served at once by the session's attention waker, not at the
+    // tick: the server returns without any job being sent and without stdin closing. Before
+    // O-386 the tick was 20 ms, so this is the regression guard for the wake, not a
+    // failing-before test.
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(Vec::new()));
+    let session = open_session(&env, engine);
+    let handle = session.handle();
+    let mut rpc = Rpc::start(session, &env);
+    // No command is sent: the session thread is in its wait.
+    let start = Instant::now();
+    handle.request_wrap_up(oxa_core::WrapUpReason::Signal);
+    let outcome = rpc
+        .thread
+        .take()
+        .expect("the server thread")
+        .join()
+        .expect("the server thread does not panic")
+        .expect("serve returns Ok");
+    let waited = start.elapsed();
+    assert_eq!(outcome, RunOutcome::Interrupted);
+    assert!(
+        waited < Duration::from_millis(100),
+        "the wrap-up is served at once, not at the tick: {waited:?}"
+    );
 }
 
 #[test]

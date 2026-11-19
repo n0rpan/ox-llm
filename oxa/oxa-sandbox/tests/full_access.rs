@@ -103,19 +103,49 @@ fn tempdir_outside(env: &TestEnv) -> std::path::PathBuf {
     dir
 }
 
-/// Review of #314: `run_with_stdin` is only used for exec hooks (`oxa-ext/src/exec_hooks.rs`),
-/// which the user configured, not the model's bash. They stay in the wrapped sandbox under
-/// every level, `yolo` included: the full-access bypass belongs to the bash tool alone.
+/// Owner standard: yolo = no sandbox anywhere. Exec hooks (inline and with stdin) run with the
+/// user's rights while the switch is at yolo, also live; outside yolo both stay in the wrapped
+/// sandbox (the raw `FullAccess` stdin path always does).
 #[test]
-fn hooks_with_stdin_keep_the_sandbox_under_yolo() {
+fn yolo_hooks_run_unsandboxed_and_non_yolo_hooks_stay_sandboxed() {
     let env = TestEnv::new();
     std::fs::create_dir_all(env.work()).unwrap();
-    let target = env.root().join("hook-wrote.txt");
-    let (sb, _switch) = full(Autonomy::Yolo, &env);
-    let s = spec(&env, format!("cat > '{}'", target.display()), true);
-    let r = sb.run_with_stdin(&s, b"payload", &CancelToken::new(), &mut |_| {});
+    let inline = env.root().join("hook-inline.txt");
+    let piped = env.root().join("hook-stdin.txt");
+    let (sb, switch) = full(Autonomy::Standard, &env);
+    let hooks = FullAccess::hook_sandbox(&Arc::new(sb));
+    let run = |hooks: &Arc<dyn Sandbox>| {
+        let s = spec(&env, format!("echo x > '{}'", inline.display()), true);
+        let a = hooks.run(&s, &CancelToken::new(), &mut |_| {});
+        let s = spec(&env, format!("cat > '{}'", piped.display()), true);
+        let b = hooks.run_with_stdin(&s, b"payload", &CancelToken::new(), &mut |_| {});
+        (a, b)
+    };
+    let (a, b) = run(&hooks);
+    assert_eq!(a.exit, None, "{}", String::from_utf8_lossy(&a.output));
+    assert_eq!(b.exit, None, "{}", String::from_utf8_lossy(&b.output));
+    assert!(
+        !inline.exists() && !piped.exists(),
+        "a non-yolo hook left the sandbox"
+    );
+
+    switch.set_level(Autonomy::Yolo);
+    assert!(hooks.check().is_ok(), "yolo hooks need no bwrap");
+    let (a, b) = run(&hooks);
+    assert_eq!(a.exit, Some(0), "{}", String::from_utf8_lossy(&a.output));
+    assert_eq!(b.exit, Some(0), "{}", String::from_utf8_lossy(&b.output));
+    assert_eq!(std::fs::read_to_string(&inline).unwrap(), "x\n");
+    assert_eq!(std::fs::read_to_string(&piped).unwrap(), "payload");
+
+    // The raw FullAccess stdin path is not the hooks' view.
+    let (raw, _switch) = full(Autonomy::Yolo, &env);
+    let _ = std::fs::remove_file(&piped);
+    let s = spec(&env, format!("cat > '{}'", piped.display()), true);
+    let r = raw.run_with_stdin(&s, b"payload", &CancelToken::new(), &mut |_| {});
     assert_eq!(r.exit, None, "{}", String::from_utf8_lossy(&r.output));
-    assert!(!target.exists(), "the hook ran outside the wrapped sandbox");
+    assert!(!piped.exists());
+    let _ = std::fs::remove_file(&inline);
+    let _ = std::fs::remove_file(&piped);
 }
 
 /// #602: changing autonomy changes file identity, not exec-hook/extension confinement.
@@ -166,4 +196,25 @@ fn file_view_tracks_live_yolo_but_keeps_plan_and_execution_sandboxed() {
     assert_ne!(r.exit, Some(0));
     let r = files.run_with_stdin(&s, b"test", &CancelToken::new(), &mut |_| {});
     assert_ne!(r.exit, Some(0));
+}
+
+/// RP6: yolo bash has no sandbox, so a host socket (the docker socket) is reachable without
+/// any `oxa.sandbox.sockets` entry.
+#[test]
+fn yolo_bash_sees_the_docker_socket() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work()).unwrap();
+    let dir = tempdir_outside(&env);
+    let sock = dir.join("docker.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind socket");
+    let (sb, _switch) = full(Autonomy::Yolo, &env);
+    let s = spec(
+        &env,
+        format!("test -S '{}' && echo reachable", sock.display()),
+        true,
+    );
+    let r = sb.run(&s, &CancelToken::new(), &mut |_| {});
+    assert_eq!(r.exit, Some(0), "{}", String::from_utf8_lossy(&r.output));
+    assert_eq!(String::from_utf8_lossy(&r.output), "reachable\n");
+    let _ = std::fs::remove_dir_all(&dir);
 }

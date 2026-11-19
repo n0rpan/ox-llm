@@ -28,6 +28,7 @@ pub(crate) fn resync(st: &SessionState) {
 }
 
 #[derive(Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Refresh {
     /// Same stamps: nothing was read.
     Unchanged,
@@ -83,6 +84,7 @@ pub(crate) fn check(
 }
 
 /// Everything that feeds the prefix from the settings (see `epoch::gather`, `prefix_opts`).
+#[allow(clippy::type_complexity)]
 fn prompt_inputs(s: &Settings) -> (bool, Option<Vec<String>>, Option<Vec<String>>, Option<String>) {
     (
         s.diet_output(),
@@ -174,6 +176,7 @@ pub(crate) fn refresh_at_run_start(st: &mut SessionState, sink: &mut dyn EventSi
         } => {
             if changed.is_empty() {
                 st.settings = settings;
+                crate::session::sync_job_wake(st);
                 return;
             }
             let prev_enabled = st.settings.compaction().enabled;
@@ -197,6 +200,7 @@ pub(crate) fn refresh_at_run_start(st: &mut SessionState, sink: &mut dyn EventSi
                 let _ = write!(message, "\n{}: {}", diagnostic.source, diagnostic.message);
             }
             st.settings = settings;
+            crate::session::sync_job_wake(st);
             st.shared.publish_live_settings(&st.settings);
             notice(sink, level, message);
             if prompt {

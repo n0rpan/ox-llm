@@ -115,6 +115,19 @@ commands! {
         },
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
     },
+    Usage {
+        path: &["usage"],
+        aliases: &[],
+        summary: "Print today's cloud spend and request sums per usage pool as JSON",
+        arguments: &[Argument { name: "json", kind: ArgumentKind::Flag, required: true }],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("The JSON usage report is a CLI command"),
+            menu: Availability::Exception("The JSON usage report is a CLI command"),
+            web: Availability::Exception("The panel reads this report from the CLI"),
+        },
+        requirements: NO_REQUIREMENTS,
+    },
     WorkStatus {
         path: &["work", "status"],
         aliases: &[],
@@ -140,6 +153,23 @@ commands! {
             web: Availability::Exception("No web frontend is shipped"),
         },
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
+    },
+    Status {
+        path: &["status"],
+        aliases: &[],
+        summary: "Show session status, or print suite status as JSON",
+        arguments: &[
+            Argument { name: "session-id|session-file", kind: ArgumentKind::Word, required: false },
+            Argument { name: "json", kind: ArgumentKind::Flag, required: false },
+            Argument { name: "session-dir", kind: ArgumentKind::Flag, required: false },
+        ],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("The slash menu has no status command"),
+            menu: Availability::Exception("The menu has no status command"),
+            web: Availability::Exception("No web frontend is shipped"),
+        },
+        requirements: NO_REQUIREMENTS,
     },
     Lead {
         path: &["lead"], aliases: &[], summary: "Chat with the dedicated Lead session",
@@ -208,6 +238,19 @@ commands! {
         path: &["memory", "rm"], aliases: &[], summary: "Delete one memory entry and its index line",
         arguments: &[Argument { name: "name", kind: ArgumentKind::Word, required: true }],
         surfaces: MEMORY_CLI_ONLY, requirements: NO_REQUIREMENTS,
+    },
+    Admission {
+        path: &["admission"],
+        aliases: &[],
+        summary: "Engine-only: size a model's memory before serving it (`oxe admission`)",
+        arguments: &[Argument { name: "--model|--ctx|--margin-bytes|launch options|--json", kind: ArgumentKind::Tail, required: false }],
+        surfaces: Surfaces {
+            cli: Availability::Exception("Engine-only subcommand of the oxe binary; oxa never dispatches it"),
+            slash: Availability::Exception("Not a session command"),
+            menu: Availability::Exception("Not a session command"),
+            web: Availability::Exception("No web frontend is shipped"),
+        },
+        requirements: NO_REQUIREMENTS,
     },
     Goal {
         path: &["goal"],
@@ -344,6 +387,21 @@ mod tests {
         assert_eq!(parsed.args, &cli[2..]);
         assert!(parse_cli(&words("unknown help")).is_none());
         assert!(dispatch_slash(&words("unknown")).is_none());
+    }
+
+    #[test]
+    fn status_json_is_declared_for_the_cli_surface() {
+        let input = words("status --json");
+        let parsed = parse_cli(&input).expect("status resolves as a CLI command");
+        assert_eq!(parsed.command.id, CommandId::Status);
+        assert_eq!(parsed.args, &input[1..]);
+        assert!(parsed
+            .command
+            .arguments
+            .iter()
+            .any(|argument| argument.name == "json" && argument.kind == ArgumentKind::Flag));
+        assert!(dispatch_slash(&input).is_none());
+        assert!(entries(Surface::Cli).any(|entry| entry.id == CommandId::Status));
     }
 
     #[test]

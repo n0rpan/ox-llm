@@ -296,6 +296,16 @@ fn unknown_prices_stay_unknown_and_explicit_free_models_cost_zero() {
             Some(0.0)
         );
     }
+
+    let unpriced = Price::unpriced();
+    assert_eq!(
+        unpriced.reservation("openrouter", "synthetic/model", 1000, 32),
+        None
+    );
+    assert_eq!(
+        unpriced.cost("openrouter", "synthetic/model", 1000, 4, Cache::Invalid),
+        None
+    );
 }
 
 #[test]

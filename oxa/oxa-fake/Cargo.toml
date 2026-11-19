@@ -17,6 +17,7 @@ name = "oxa-fake"
 path = "src/main.rs"
 
 [dependencies]
+oxa-http.workspace = true
 oxa-proto.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

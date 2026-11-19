@@ -8,7 +8,6 @@ mod skeleton;
 #[path = "common/openai.rs"]
 mod upstream;
 use oxc_gateway::{
-    billing::SubscriptionLimits,
     catalog::Access,
     gateway::Gateway,
     opencode::{
@@ -68,7 +67,6 @@ fn go_gateway(fixture: &Fixture, access: Access) -> Gateway {
         fixture.ledger_dir.clone(),
         Options {
             access,
-            subscription_limits: Some(SubscriptionLimits::new(20, 2_000_000).unwrap()),
             ..Options::default()
         },
     )

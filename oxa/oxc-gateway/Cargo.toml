@@ -20,9 +20,10 @@ policy = ["dep:serde_json"]
 secrets = ["dep:serde_json", "dep:nix"]
 anthropic-client = ["transport", "secrets", "upstream-anthropic-request", "upstream-anthropic-stream", "dep:oxa-proto"]
 anthropic-gateway = ["cloud-only", "ledger", "anthropic-client", "dep:oxa-config"]
-transport = ["dep:reqwest", "dep:tokio", "dep:futures-util", "dep:url"]
+transport = ["dep:reqwest", "dep:tokio", "dep:futures-util", "dep:url", "oxa-http/client"]
 
 [dependencies]
+oxa-http.workspace = true
 oxa-config = { workspace = true, optional = true }
 oxa-proto = { workspace = true, optional = true }
 bigdecimal = { version = "0.4", optional = true }
