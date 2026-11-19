@@ -119,17 +119,6 @@ pub enum DangerAnswer {
     Deny,
 }
 
-/// The answer to the dangerous-command prompt (#1512 S2). `Once` runs the command this time;
-/// `Session` and `Always` also remember its rule keys (`Always` also saves them to the user's
-/// settings); `Deny` refuses it. Deny is the answer of every `Ui` that cannot ask.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DangerAnswer {
-    Once,
-    Session,
-    Always,
-    Deny,
-}
-
 /// The non-interactive `Ui`: dialogs answer `None`, permission asks answer `Deny`, notifications
 /// are collected for the caller to print to stderr.
 #[derive(Debug, Default)]
