@@ -109,6 +109,7 @@ fn wire_from_value(m: &Value) -> Result<WireMsg, OxaError> {
         Some(_) => return Err(invalid("message content must be a string or null")),
     };
     let mut out = WireMsg {
+        images: Vec::new(),
         role,
         content,
         reasoning: None,
