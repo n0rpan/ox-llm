@@ -6,6 +6,7 @@
 //! permits explicitly close-delimited SSE; chunked encoding is not supported.
 use crate::sse::SseReader;
 use crate::wire::*;
+use oxa_http::server as http;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -527,7 +528,7 @@ impl Head {
     }
 }
 
-pub(crate) fn read_head(reader: &mut impl BufRead) -> io::Result<Head> {
+fn read_head(reader: &mut impl BufRead) -> io::Result<Head> {
     let mut bytes = Vec::new();
     loop {
         let buf = reader.fill_buf()?;
@@ -569,12 +570,65 @@ pub(crate) fn read_head(reader: &mut impl BufRead) -> io::Result<Head> {
     Ok(Head { first, headers })
 }
 
-pub(crate) fn authorized(head: &Head, capability: &Capability) -> bool {
+/// A request head read by a hand-written server (this crate's listener and the mock).
+/// Framing and parsing are `oxa_http::server`; this keeps the stricter rules of the A2A
+/// listeners: every header name at most once (ASCII case-insensitive).
+pub(crate) struct RequestHead(Vec<u8>);
+
+fn head_error(error: http::HeadError) -> io::Error {
+    match error {
+        http::HeadError::Io(kind) => io::Error::new(kind, "HTTP read failed"),
+        http::HeadError::Closed => invalid("truncated HTTP headers"),
+        http::HeadError::TooLarge => invalid("HTTP header size limit exceeded"),
+        _ => invalid("invalid or duplicate HTTP header"),
+    }
+}
+
+impl RequestHead {
+    pub(crate) fn read(reader: &mut impl Read) -> io::Result<Self> {
+        let raw = http::read_head(reader, HEADER_LIMIT).map_err(head_error)?;
+        let (_, block) = http::split_head(&raw).map_err(head_error)?;
+        let headers = http::parse_headers(block).map_err(head_error)?;
+        if headers.iter().any(|(name, _)| headers.count(name) > 1) {
+            return Err(invalid("invalid or duplicate HTTP header"));
+        }
+        Ok(Self(raw))
+    }
+
+    fn parts(&self) -> (&str, Option<http::Headers<'_>>) {
+        match http::split_head(&self.0) {
+            Ok((line, block)) => (line, http::parse_headers(block).ok()),
+            Err(_) => ("", None),
+        }
+    }
+
+    /// (method, target, version) of a well-formed request line.
+    pub(crate) fn request_line(&self) -> Option<(&str, &str, &str)> {
+        let line = http::parse_request_line(self.parts().0).ok()?;
+        Some((line.method, line.target, line.version))
+    }
+
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
+        self.parts().1?.get(name)
+    }
+
+    pub(crate) fn length(&self, max: usize) -> io::Result<usize> {
+        let headers = self.parts().1.ok_or_else(|| invalid("invalid HTTP header"))?;
+        if headers.get("transfer-encoding").is_some() {
+            return Err(invalid("transfer encoding is unsupported"));
+        }
+        match http::content_length(&headers) {
+            Ok(Some(length)) if length <= max => Ok(length),
+            Ok(Some(_)) => Err(invalid("HTTP body size limit exceeded")),
+            Ok(None) => Err(invalid("missing content length")),
+            Err(_) => Err(invalid("invalid content length")),
+        }
+    }
+}
+
+pub(crate) fn authorized(head: &RequestHead, capability: &Capability) -> bool {
     let expected = format!("Bearer {}", capability.0);
-    let actual = head
-        .headers
-        .get("authorization")
-        .map_or(&[][..], |s| s.as_bytes());
+    let actual = head.header("authorization").map_or(&[][..], |s| s.as_bytes());
     let mut difference = expected.len() ^ actual.len();
     for (i, byte) in expected.bytes().enumerate() {
         difference |= (byte ^ actual.get(i).copied().unwrap_or(0)) as usize;

@@ -1,6 +1,4 @@
 //! C9 acceptance tests: JSON records, print and json modes.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_config::{Dirs, Settings};
@@ -158,6 +156,7 @@ fn every_json_md_record_roundtrips() {
             completion: 1,
             cached: 0,
             cached_missing: false,
+            unreported: false,
         },
         StopReason::Stop,
         ts,
@@ -198,6 +197,7 @@ fn every_json_md_record_roundtrips() {
                     completion: 1,
                     cached: 0,
                     cached_missing: false,
+                    unreported: false,
                 },
                 delta: MessageDelta::TextDelta {
                     index: 0,
@@ -303,6 +303,7 @@ fn every_json_md_record_roundtrips() {
                         completion: 1,
                         cached: 0,
                         cached_missing: false,
+                        unreported: false,
                     }),
                     details: json!({}),
                 }),
@@ -465,6 +466,7 @@ fn message_update_is_delta_only() {
         completion: 1,
         cached: 0,
         cached_missing: false,
+        unreported: false,
     };
     let deltas = vec![
         MessageDelta::TextStart { index: 0 },
@@ -760,6 +762,7 @@ fn usage_mapping() {
         completion: 20,
         cached: 100,
         cached_missing: false,
+        unreported: false,
     };
     let m = assistant_msg("x", usage, StopReason::Stop, 1);
     let v = message_to_json(&m);

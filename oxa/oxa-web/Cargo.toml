@@ -9,7 +9,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-oxa-http.workspace = true
+oxa-http = { workspace = true, features = ["client"] }
 oxa-proto.workspace = true
 oxa-tools.workspace = true
 # The shared user-facing boolean parser (`OXA_WEB_SEARCH` is one of the eight-word variables).

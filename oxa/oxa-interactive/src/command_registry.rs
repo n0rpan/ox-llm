@@ -222,6 +222,19 @@ commands! {
         arguments: &[Argument { name: "name", kind: ArgumentKind::Word, required: true }],
         surfaces: MEMORY_CLI_ONLY, requirements: NO_REQUIREMENTS,
     },
+    Admission {
+        path: &["admission"],
+        aliases: &[],
+        summary: "Engine-only: size a model's memory before serving it (`oxe admission`)",
+        arguments: &[Argument { name: "--model|--ctx|--margin-bytes|launch options|--json", kind: ArgumentKind::Tail, required: false }],
+        surfaces: Surfaces {
+            cli: Availability::Exception("Engine-only subcommand of the oxe binary; oxa never dispatches it"),
+            slash: Availability::Exception("Not a session command"),
+            menu: Availability::Exception("Not a session command"),
+            web: Availability::Exception("No web frontend is shipped"),
+        },
+        requirements: NO_REQUIREMENTS,
+    },
     Goal {
         path: &["goal"],
         aliases: &[],
