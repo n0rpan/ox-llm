@@ -121,12 +121,12 @@ jobs:
           cp "$RUNNER_TEMP/oracle/report.json" "$RUNNER_TEMP/oracle/ref/manifest.json" oracle-report/ 2>/dev/null || true
       - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         # Only main seeds caches (PR refs would only evict main's entries).
-        if: github.ref == 'refs/heads/main' && steps.mrestore.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.mrestore.outputs.cache-hit != 'true'
         with:
           path: ~/models/${{ env.MODEL_FILE }}
           key: model-${{ env.MODEL_SHA256 }}
       - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
-        if: github.ref == 'refs/heads/main' && steps.lrestore.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.lrestore.outputs.cache-hit != 'true'
         with:
           path: engine/tools/oracle/bin/dump_ref
           key: ${{ steps.lkey.outputs.key }}
