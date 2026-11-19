@@ -8,8 +8,7 @@ import re
 import subprocess
 import tempfile
 
-ROOTS = {'oxa': ('oxa-cli', []), 'engine': ('server', []),
-         'oxc-rs': ('oxc', ['native-controller'])}
+ROOTS = {'oxa': ('oxa-cli', []), 'engine': ('server', [])}
 NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]*\Z')
 FEATURE = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.+-]*\Z')
 
@@ -62,7 +61,7 @@ def rust_test_count(inventory, workspace):
     if any(suite['status'] != 'listed' for suite in suites):
         raise ValueError('unlisted Rust test binary')
     count = sum(len(suite['testcases']) for suite in suites)
-    if not count and workspace != 'oxc-rs':
+    if not count:
         raise ValueError('expected nonempty Rust test inventory')
     return count
 
@@ -115,8 +114,6 @@ def main():
     inventory = artifact / 'tests.json'
     if fixtures:
         run(['cargo', 'build', '--locked', '--profile', profile, '-p', 'oxa-cli', '-p', 'oxa-fake'], cwd=workspace)
-    if workspace == 'oxc-rs':
-        run(['cargo', 'build', '--locked', '--profile', profile, *arguments, '--bin', 'oxc-native'], cwd=workspace)
     archive_profile = 'ci' if fixtures else 'default'
     run(['cargo', 'nextest', 'archive', '--locked', '--profile', archive_profile,
          '--cargo-profile', profile, *arguments, '--archive-file', str(archive)], cwd=workspace)
