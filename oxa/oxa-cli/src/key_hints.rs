@@ -15,7 +15,7 @@ const CHATGPT_RECORD: &str = ".config/oxc/llm/chatgpt-auth.json";
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct Missing {
     web_search: bool,
-    /// Names of the cloud providers without an entry in the cloud key file.
+    /// The key-file entry names of the cloud providers that have no key.
     cloud: Vec<&'static str>,
     chatgpt: bool,
 }
@@ -60,15 +60,16 @@ fn detect(dirs: &Dirs, env: &Env, settings: &Settings) -> Missing {
     let web_key = env.get(oxa_web::ENV_KEY).is_some_and(|key| !key.is_empty())
         || dirs.agent_dir.join(oxa_web::KEY_FILE).exists();
     let secrets = crate::in_process::credential_path(dirs);
+    // The entry names of the key file, for the providers that have none.
     let cloud = [
-        (Provider::OpenCode, "OpenCode Go"),
-        (Provider::OpenRouter, "OpenRouter"),
-        (Provider::OpenAi, "OpenAI"),
-        (Provider::Anthropic, "Anthropic"),
+        Provider::OpenCode,
+        Provider::OpenRouter,
+        Provider::OpenAi,
+        Provider::Anthropic,
     ]
     .into_iter()
-    .filter(|(provider, _)| oxc_gateway::secrets::read(&secrets, provider.as_str()).is_err())
-    .map(|(_, name)| name)
+    .map(Provider::as_str)
+    .filter(|entry| oxc_gateway::secrets::read(&secrets, entry).is_err())
     .collect();
     Missing {
         web_search: web_wanted && !web_key,
@@ -89,25 +90,20 @@ fn text(missing: &Missing, agent_dir: &str) -> Option<String> {
     if !missing.web_search && missing.cloud.is_empty() && !missing.chatgpt {
         return None;
     }
-    let mut lines = vec!["Optional keys not set up yet (shown once; nothing is blocked):".to_string()];
+    let mut lines = vec!["Optional keys not set up yet (shown once, nothing is blocked):".to_string()];
     if missing.web_search {
-        lines.push(format!(
-            "- web_search is not offered without a Brave Search key: {agent_dir}/{} (mode 0600)",
-            oxa_web::KEY_FILE
-        ));
+        lines.push(format!("- web_search: {agent_dir}/{}", oxa_web::KEY_FILE));
     }
     if !missing.cloud.is_empty() {
         lines.push(format!(
-            "- cloud models ({}): ~/.config/oxc/llm/cloud-secrets.json (mode 0600)",
+            "- cloud keys ({}): ~/.config/oxc/llm/cloud-secrets.json",
             missing.cloud.join(", ")
         ));
     }
     if missing.chatgpt {
         lines.push("- ChatGPT plan: oxa login chatgpt --experimental".to_string());
     }
-    lines.push(
-        "How to add a key without showing it: quickstart, \"Keys\". Never in settings.json.".to_string(),
-    );
+    lines.push("Key files are mode 0600. Hidden-input steps: quickstart, \"Keys\".".to_string());
     Some(lines.join("\n"))
 }
 
@@ -130,10 +126,10 @@ mod tests {
         assert_eq!(level, Level::Info);
         for name in [
             "web_search",
-            "OpenCode Go",
-            "OpenRouter",
-            "OpenAI",
-            "Anthropic",
+            "opencode",
+            "openrouter",
+            "openai",
+            "anthropic",
             "ChatGPT",
         ] {
             assert!(first.contains(name), "{name} is missing from: {first}");
