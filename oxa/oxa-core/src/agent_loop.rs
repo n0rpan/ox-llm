@@ -618,7 +618,7 @@ fn run_inner(
         }
         run_msgs.push(reply.clone());
         account_reply(st, turn.timings, usage);
-        st.last_usage = Some(usage);
+        st.last_usage = usage.reported();
         crate::goal::checkpoint(st, true, sink)?;
         // F4: capabilities that only a loaded engine reports (`/props` `oxe_hints`): re-read
         // once after the first reply while `prefill_only` is still false, and after a request

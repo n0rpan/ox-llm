@@ -230,7 +230,7 @@ fn connection_fixed(
         Err(_) => Err("400 Bad Request"),
     };
     let allowed = parsed
-        .map_err(|status| {
+        .inspect_err(|status| {
             // Framing failures precede identity and any fact read: one fixed
             // early-parse line, with no request bytes.
             refuse(
@@ -242,7 +242,6 @@ fn connection_fixed(
                     fix: "send well-formed HTTP request framing",
                 },
             );
-            status
         })
         .and_then(|(r, fields)| {
             // Answers to approval requests need the owner form; the fixed prompts never reach them.

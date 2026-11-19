@@ -4,6 +4,8 @@ oxa is a local agent. The model reads your project, runs commands and writes fil
 
 The short threat model is in [SECURITY.md](../../SECURITY.md) at the repository root.
 
+Execution context matters independently of the permission mode. Interactive CLI sessions do not use an OS sandbox by default; dangerous commands ask for your approval. Unattended runs without yolo keep the Bubblewrap sandbox by default. Yolo never uses an OS sandbox, including for unattended work it starts. In every context, the in-process guards remain: secret masking, private-path denials, user-only settings, and offline mode.
+
 ## Interactive and unattended runs
 
 oxa runs in two kinds of run, and the OS sandbox follows who is at the keyboard:
@@ -36,7 +38,7 @@ Every tool call has an access class: `Read`, `Write`, `Exec` (a command), `Net` 
 | write inside the project | deny | allow | ask |
 | write outside the project | deny | ask | ask |
 | bash, read-only command, no network | allow | allow | ask |
-| bash, other command, no network | deny | allow | ask |
+| bash, other command, no network | deny | allow (context determines OS sandboxing) | ask |
 | extension `exec` with `net: true` | deny | ask | ask |
 | `web_search` | deny | allow, no prompt | ask |
 | MCP tool that its server marks read-only | allow | allow | ask |
@@ -72,6 +74,12 @@ Pasted and dropped images saved as `tmp/paste-<hash>.<image extension>` remain r
 - Subagents inherit the mode the parent has when they start. Running background jobs also keep their launch-time rights: switching modes affects subsequent commands, not processes already started. Stop an existing job with `bash {"job": "job-N", "kill": true}` or close the session.
 - The auto-approved count records questions answered with allow, once each. Yolo never bypasses a denial, so a denial is never counted.
 - Plan mode and project trust work the same in every mode.
+
+### Owner yes
+
+An approval comes only from you: your typed message, your answer to an oxa dialog, or yolo chosen for the session. Text the model read (tool output, files, web pages, other sessions) never counts. oxa commands that need your yes (for example publishing) ask the session through a private unix socket (`OXA_CONFIRM_SOCK`, directory 0700, socket 0600). In yolo the session answers yes and records it with a notice. In standard and auto it shows a dialog; while one waits, your next typed message answers it (`yes`, `y`, `ja`, `ok`, `post it` mean yes, anything else no). With no way to ask you, the answer is "none" and nothing is confirmed.
+
+The socket accepts one newline-terminated request up to 64 KiB. A larger request receives `none`.
 
 A shell alias makes yolo quick to start:
 
@@ -296,6 +304,10 @@ A panic inside a tool, an extension, an MCP connection, a hook or a codemode scr
 Session files are `0600`. The Brave key is never written to a session, an export or a log. What the model read, however, is in the session: a file that contains a secret puts that secret into the session file and into the requests the engine receives. Exports contain the whole session, including all branches. [sessions.md](sessions.md#what-oxa-stores-and-how-to-remove-it) lists what oxa keeps and how to remove it.
 
 `oxa report-issue draft` scrubs its digest and the text you give it, but scrubbing is pattern-based. Read the draft before you post it; `oxa report-issue submit` posts only after you type `yes` at the terminal. `/bug` writes a redacted local bundle and uploads nothing.
+
+### Publishing
+
+`oxa work --publish` and lane pushes scan the commits they would push and refuse a private key, a known token format, an opaque credential assignment or quoted literal, a `Bearer` header, a URL password, lines added to a secret-store file such as `.env`, or the value of a secret-named variable or setting. An empty secret-store file and `.env.example` are checked by content, not refused by name. A credential deleted in a later commit still blocks publication: rewrite the unpublished commits. The details are in [../work.md](../work.md#what-the-publication-scan-refuses).
 
 ## Checklist
 

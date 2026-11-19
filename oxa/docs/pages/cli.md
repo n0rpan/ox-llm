@@ -191,6 +191,8 @@ $ oxa memory rm <name>
 ```
 
 - The store is one Markdown file per entry under the agent directory's `memory/` folder, with a generated `MEMORY.md` index.
+- The store is owner-only: the `memory/` folder is `0700` (an existing looser folder is tightened on the next save); entries and `MEMORY.md` are `0600`, written through a synced private temporary and renamed into place, and the lock file is created `0600`.
+- An entry body is at most 8 KiB and its frontmatter (kind and description) at most 4 KiB; a longer save is refused and nothing is written. The index reads each entry only that far, so a larger hand-written file is never read whole.
 - `list` prints the index. `show` prints an entry's kind, description and body. `rm` deletes the entry file and its index line.
 - A name with no entry exits with 1. A usage error exits with 2.
 
@@ -336,6 +338,7 @@ Every boolean variable takes the same eight words, in any case: `1`, `true`, `ye
 | `OXA_SESSION_ID`, `OXA_SESSION_FILE` | *set*: the current session id, and the session file (unset when the session is ephemeral) |
 | `OXA_PROVIDER`, `OXA_MODEL`, `OXA_REASONING_LEVEL` | *set*: the provider (always `oxe`), the model id and the effective thinking level |
 | `OXA_CODING_AGENT`, `AI_AGENT` | *set*: process markers; `OXA_CODING_AGENT` is `true` and `AI_AGENT` is `oxa` in child processes |
+| `OXA_CONFIRM_SOCK` | *set*: the path of the session's private owner confirm socket (directory 0700, socket 0600), through which oxa commands ask you for a yes |
 | `OXA_TOOL_CALL_ID` | *set*: the id of the running tool call, in the environment of an extension tool |
 | `OXA_WORK_OUTPUT_DIR` | *set*: `oxa work` sets it for done-check commands to the task's private output directory, when it has one |
 | `OXA_RUNNING_BIN` | *set*: inside the bash sandbox, the absolute path of the running `oxa` binary, when that file is readable there |
@@ -349,7 +352,7 @@ These are set by oxa for its own child processes, or are test hooks. They are no
 - `OXA_CHILD_SOFT_TOKENS`: a parent may set the soft compaction limit of a subagent child; it overrides `oxa.compaction.softTokens`.
 - `OXA_WORKER_DEPTH`: oxa sets `1` in the environment of a lead worker session.
 - `OXA_UNATTENDED`: oxa sets `1` in the environment of a worker it launches; the run counts as unattended and keeps the OS sandbox by default.
-- `OXA_WORK_MODEL_DELEGATED`: `oxa work` sets `1` in a worker, so a model argument does not count as chosen by the owner.
+- `OXA_WORK_MODEL_DELEGATED`: `oxa work` sets `1` in a worker; a restored or project-selected model then never counts as chosen by the owner, while an actual model argument is still admitted by a protected Go key.
 - `OXA_WORKTREE_TRUST_SOURCE`: `oxa work` names the trusted source checkout of a managed worktree; it counts only in `--mode json`, and only when the checkout, the trust record and the approved resources verify.
 - `OXA_RUNNER_OWNS_GITHUB`: `oxa work` sets `1` in a worker: the runner owns GitHub access, so the worker runs no `gh`.
 - `OXA_NATIVE_STEERING_FD`: `oxa work` passes the inherited descriptor of the steering lease to a native worker.

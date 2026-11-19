@@ -123,14 +123,21 @@ fn engine_models(engine: &dyn Engine) -> Vec<IdentityModel> {
     aliases
         .into_iter()
         .map(|alias| {
-            let (context, max_output) = match engine.info(Some(&alias)) {
-                Ok(i) if i.limits_for == alias => (i.n_ctx, i.max_output),
-                _ => (0, 0),
+            let (context, max_output, remote, remote_provider) = match engine.info(Some(&alias)) {
+                Ok(i) if i.limits_for == alias => (
+                    i.n_ctx,
+                    i.max_output,
+                    i.caps.remote,
+                    i.caps.remote_provider.map(str::to_string),
+                ),
+                _ => (0, 0, false, None),
             };
             IdentityModel {
                 alias,
                 context,
                 max_output,
+                remote,
+                remote_provider,
             }
         })
         .collect()
