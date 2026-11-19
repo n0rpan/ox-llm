@@ -103,6 +103,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa send <session-id> "text"` | queue one follow-up for the session's TUI or RPC owner |
 | `oxa config [-l]` | print every setting with its value and where it comes from |
 | `oxa mcp <command>` | manage MCP servers, see below |
+| `oxa memory <list\|show\|rm>` | list the memory index, show one memory entry, or remove one entry and its index line, see [Memory commands](#memory-commands) |
 | `oxa identity [--refresh] [--offline]` | show the identity text of the system prompt; `--refresh` rewrites it from this machine and the engine, and `--offline` skips the engine |
 | `oxa share serve --model ALIAS` | start the authenticated streaming OpenAI-compatible listener for explicitly selected native local models in a build with the `share` feature |
 | `oxa share key <add\|list\|revoke>` | owner-only guest key and daily limit management, in a build compiled with the `share` feature |
@@ -122,7 +123,7 @@ $ oxa share key list
 
 Start an interactive owner session with `oxa --share-model ALIAS` to share that session's native engine. A queued owner request goes before a waiting guest, and an active guest keeps its lease through cleanup. The startup notice gives the guest API address. Use `/engine status` to see live guest activity and per-key usage for the UTC day. Exiting the owner session drains the listener.
 
-Metered cloud aliases need `oxa.engine.inProcessCloud`, a configured price and daily USD cap, and an entry in the user-only `oxa.share.remoteModels` allowlist. Choose each guest alias with `--model` for foreground serving or `--share-model` for an owner session. Personal subscription routes are excluded.
+Metered cloud aliases need `oxa.engine.inProcessCloud`, a configured price, and an entry in the user-only `oxa.share.remoteModels` allowlist. Choose each guest alias with `--model` for foreground serving or `--share-model` for an owner session. Personal subscription routes are excluded. Without `oxa.cloud.daily_budget_usd` there is no USD limit on guest spending (usage is still recorded, and guest request and token quotas apply); `oxa share` and the session status show a warning while that is the case.
 
 `oxa update --self`, `--all` and `--models` report that they are not supported: oxa does not update itself and does not refresh model catalogues. Update oxa by installing a new build.
 
@@ -168,6 +169,18 @@ $ oxa mcp logout <name>
 - `--exposure` takes `codemode` (default), `deferred`, `direct` or `hidden`. See [mcp.md](mcp.md).
 - `list` connects to every enabled server and reports its state, transport and tools. `--json` prints the same as JSON.
 - `login` connects to the server and runs the OAuth sign-in. The default timeout is 300 seconds. `logout` deletes the stored credentials.
+
+### Memory commands
+
+```console
+$ oxa memory list
+$ oxa memory show <name>
+$ oxa memory rm <name>
+```
+
+- The store is one Markdown file per entry under the agent directory's `memory/` folder, with a generated `MEMORY.md` index.
+- `list` prints the index. `show` prints an entry's kind, description and body. `rm` deletes the entry file and its index line.
+- A name with no entry exits with 1. A usage error exits with 2.
 
 ## Options
 

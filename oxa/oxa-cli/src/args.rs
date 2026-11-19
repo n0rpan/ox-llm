@@ -50,6 +50,8 @@ pub enum Subcommand {
     Work(Vec<String>),
     /// `oxa mcp add|remove|list|login|logout ..`: the words after `mcp`.
     Mcp(Vec<String>),
+    /// M3: `oxa memory list|show <name>|rm <name>`: the words after `memory`.
+    Memory(Vec<String>),
     /// `oxa install|remove|update|list ..`: the verb and the words after it.
     Pkg(String, Vec<String>),
     /// `oxa config ..`.
@@ -74,7 +76,18 @@ impl std::fmt::Debug for RegistryArgs {
 
 pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -> bool {
     use oxa_interactive::command_registry::CommandId;
-    !matches!(id, CommandId::Help | CommandId::WorkStatus | CommandId::WorkBoard)
+    // Declared in the registry for discovery, help and surfaces, but parsed and handled by the
+    // legacy path below; the registry route must not take them over.
+    !matches!(
+        id,
+        CommandId::Help
+            | CommandId::WorkStatus
+            | CommandId::WorkBoard
+            | CommandId::Memory
+            | CommandId::MemoryList
+            | CommandId::MemoryShow
+            | CommandId::MemoryRm
+    )
 }
 
 /// Login words can contain a mistakenly pasted callback. Never expose them
@@ -279,6 +292,10 @@ const COMMANDS: &[(&str, &str)] = &[
     (
         "oxa mcp <command>",
         "Manage MCP servers: add, remove, list, login, logout",
+    ),
+    (
+        "oxa memory <list|show|rm>",
+        "Show the memory index, or show or remove one memory entry",
     ),
     (
         "oxa identity [--refresh]",
@@ -512,6 +529,7 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         "login" => Subcommand::Login(false, LoginArgs(rest.to_vec())),
         "logout" => Subcommand::Login(true, LoginArgs(rest.to_vec())),
         "mcp" => Subcommand::Mcp(rest.to_vec()),
+        "memory" => Subcommand::Memory(rest.to_vec()),
         "install" | "remove" | "uninstall" | "update" | "list" => {
             Subcommand::Pkg(word.to_string(), rest.to_vec())
         }

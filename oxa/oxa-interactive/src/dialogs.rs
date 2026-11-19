@@ -355,8 +355,10 @@ impl DialogHost {
                 keys,
                 reply,
             } => {
-                let mut lines = vec![access_prompt(&access).1];
-                lines.extend(reasons.iter().map(|r| format!("- {r}")));
+                // The command and the reasons come from the model: strip escape sequences and
+                // other control characters so they cannot rewrite the dialog around them.
+                let mut lines = vec![sanitize_dialog_text(&access_prompt(&access).1)];
+                lines.extend(reasons.iter().map(|r| format!("- {}", sanitize_dialog_text(r))));
                 let mut list = choice_list(&DANGER_LABELS);
                 // Deny is focused by default: a stray Enter never runs a dangerous command.
                 list.set_selected_index(DANGER_ANSWERS.len() - 1);
@@ -983,9 +985,26 @@ impl Dialog {
     }
 }
 
+/// Dialog text from model input with escape sequences and other control characters removed.
+fn sanitize_dialog_text(text: &str) -> String {
+    oxa_tui::strip_ansi(text)
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
 #[cfg(test)]
 mod notification_tests {
     use super::*;
+
+    #[test]
+    fn a_dangerous_command_cannot_rewrite_the_dialog() {
+        let hostile = "ls \u{1b}[2J\u{1b}[1;1HApproved\r\u{7}# \u{1b}[31m";
+        let clean = sanitize_dialog_text(hostile);
+        assert!(!clean.contains('\u{1b}'), "{clean:?}");
+        assert!(!clean.chars().any(|c| c.is_control()), "{clean:?}");
+        assert!(clean.contains("Approved"), "{clean:?}");
+    }
 
     #[test]
     fn queued_permissions_notify_only_when_opened_once_each() {
