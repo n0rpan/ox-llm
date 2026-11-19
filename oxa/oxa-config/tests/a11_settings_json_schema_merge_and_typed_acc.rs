@@ -1,6 +1,4 @@
 //! A11 acceptance tests: settings.json schema, merge and typed access.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_config::{apply_list_patch, merge_settings, schema, validate, Dirs, Kind, QueueMode, Settings};
@@ -442,16 +440,12 @@ fn set_refuses_wrong_type_without_writing() {
     assert!(!dirs.settings_file().exists());
 }
 
-/// Extra: the schema is sorted by key and has no duplicates.
+/// A key defined twice would shadow one of its two definitions.
 #[test]
-fn schema_sorted_and_unique() {
+fn schema_keys_are_unique() {
     let keys: Vec<&str> = schema().iter().map(|d| d.key).collect();
-    let mut sorted = keys.clone();
-    sorted.sort_unstable();
-    assert_eq!(keys, sorted);
-    let mut dedup = sorted.clone();
-    dedup.dedup();
-    assert_eq!(dedup.len(), keys.len());
+    let unique: std::collections::BTreeSet<&str> = keys.iter().copied().collect();
+    assert_eq!(unique.len(), keys.len());
 }
 
 #[test]

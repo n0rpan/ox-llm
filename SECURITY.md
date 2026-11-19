@@ -21,6 +21,10 @@ Host runtime sockets (docker, podman) stay masked in sandboxed bash unless the o
 through an FD-based bind (user settings only; the docker socket gives root on the host, so it is noted
 at start, not blocked).
 
+`oxa send` keeps owner messages over the 256 KiB inline inbox limit in the receiving session's
+private spill directory and queues a short pointer. The sandbox exposes that spill directory only
+to the receiving session and sessions inheriting its history; the private agent directory remains
+denied to model tools.
 Persisted headless print and JSON runs with a pursuing goal consume plain `oxa send` inbox
 messages with `oxa.inbox.headless` set to `true` by default. This user-only setting can opt out;
 project settings cannot enable or disable it. Non-persisted sessions, sessions without a pursuing
@@ -35,6 +39,11 @@ Automated Go review reads at most 200 GitHub comment pages (20,000 comments) whe
 configured daily quota and prior same-diff receipts. If either listing is incomplete, review is
 deferred before quota reservation, provider authentication, or provider I/O. An incomplete history
 cannot authorize another token-spending review.
+
+The memory store (`memory/` under the agent directory) is owner-only: folder `0700`, tightened by a
+save when an existing one is looser; entries and `MEMORY.md` `0600` via a private synced temporary;
+lock created `0600`. A save is bounded (8 KiB body, 4 KiB frontmatter) and the index scan reads each
+file only that far.
 
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 
@@ -58,6 +67,13 @@ unobserved pull request has unknown queue state and cannot trigger a queue actio
 Semantic report verification is one consent, by owner decision (#1448): opting into `oxa.reportIssue.semanticDedupe` is the owner's consent to send the scrubbed report, a public source excerpt and candidate summaries to the configured model and to search the repository for matching issues, so the post asks one question — the final preview. New issues are limited to one per task, and the per-worker daily count is the owner setting `oxa.reportIssue.dailyNew`: unset means no check, and at or over a configured cap the preview warns, the ledger records it and the owner's yes still posts. A finding that asks for a second consent question, for a built-in daily cap, or for the cap to block is answered here.
 
 Intentional removals must be stated in the PR body with a `Removes:` line; flag silent deletion of security checks as high.
+
+The owner confirm broker (`oxa-core/src/owner_confirm.rs`, `OXA_CONFIRM_SOCK`) answers an oxa
+confirmation only from the owner: yolo chosen for the session (answer yes, shown and recorded), the
+owner's answer to the session's own dialog, or the owner's typed message while a confirmation waits.
+A confirmation that a model-run command can satisfy without the broker is high. A broker answer
+derived from tool, file, web or agent-inbox text is high. A socket readable by another user is high.
+The broker bounds each newline-terminated request to 64 KiB before accepting it for confirmation.
 
 ## Sandbox standard (owner decision)
 
