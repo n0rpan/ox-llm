@@ -100,6 +100,23 @@ pub trait Ui: Send {
     fn interactive(&self) -> bool {
         false
     }
+    /// A handle that dismisses dialogs currently waiting in this UI. RPC uses this so an
+    /// owner reply delivered through another authenticated input path can release a session
+    /// thread waiting in [`Ui::confirm`].
+    fn dialog_canceller(&self) -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
+        None
+    }
+}
+
+/// The answer to the dangerous-command prompt (#1512 S2). `Once` runs the command this time;
+/// `Session` and `Always` also remember its rule keys (`Always` also saves them to the user's
+/// settings); `Deny` refuses it. Deny is the answer of every `Ui` that cannot ask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DangerAnswer {
+    Once,
+    Session,
+    Always,
+    Deny,
 }
 
 /// The answer to the dangerous-command prompt (#1512 S2). `Once` runs the command this time;

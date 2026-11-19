@@ -125,6 +125,8 @@ pub struct Gate {
     /// Coalesce worker wakes for ordinary editor queues, independently of bound inbox wakes.
     pub queued_wake_pending: std::sync::atomic::AtomicBool,
     pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
+    /// The owner confirm broker of this session (`Session::enable_owner_confirm`).
+    pub(crate) owner_confirm: Mutex<Option<Arc<crate::owner_confirm::OwnerConfirm>>>,
     pub in_flight: std::sync::atomic::AtomicBool,
     /// Sticky headless interruption: abort now, without a final wrap-up turn.
     pub interrupted: std::sync::atomic::AtomicBool,
@@ -135,6 +137,8 @@ pub struct Gate {
     literal_turn: Mutex<Option<LiteralTurn>>,
     /// Total charged usage, including non-chat requests and final-turn overspend.
     pub run_tokens_used: Mutex<u64>,
+    /// A request under an explicit token budget finished without usage: the tally is a lower bound.
+    pub usage_unreported: std::sync::atomic::AtomicBool,
     pub bg_cancel: CancelToken,
     pub reread_info: std::sync::atomic::AtomicBool,
     pub info_rechecked: std::sync::atomic::AtomicBool,
@@ -346,6 +350,18 @@ impl Shared {
         }
     }
 
+    pub(crate) fn owner_confirm(&self) -> Option<Arc<crate::owner_confirm::OwnerConfirm>> {
+        lock(&self.gate.owner_confirm).clone()
+    }
+
+    /// The owner typed `text`: it answers a waiting owner confirmation. Only the handle's
+    /// steer and follow-up (the owner's typed messages) call this, never the inbox path.
+    fn owner_typed(&self, text: &str) {
+        if let Some(broker) = self.owner_confirm() {
+            broker.resolve_typed(text);
+        }
+    }
+
     /// ENG-001: claim the request gate of this instance, or `busy` when a request is already in
     /// flight (only reachable through re-entrancy: a host request served during a request's
     /// hooks that would itself call the engine).
@@ -501,6 +517,7 @@ impl Handle {
     /// It also cancels this instance's own background request (ENG-002); a foreground request
     /// is not touched.
     pub fn steer(&self, text: String) {
+        self.shared.owner_typed(&text);
         lock(&self.shared.queue).steering.push(text);
         self.shared.dirty.store(true, Ordering::SeqCst);
         self.shared.gate.bg_cancel.cancel();
@@ -509,6 +526,7 @@ impl Handle {
     /// Queue a follow-up (delivered when the agent would otherwise stop). Cancels this
     /// instance's own background request like [`Handle::steer`].
     pub fn follow_up(&self, text: String) {
+        self.shared.owner_typed(&text);
         lock(&self.shared.queue).follow_up.push(text);
         self.shared.dirty.store(true, Ordering::SeqCst);
         self.shared.gate.bg_cancel.cancel();
@@ -640,10 +658,36 @@ impl Handle {
         *lock(&self.shared.gate.token_budget)
     }
 
+    /// Whether a budgeted request finished without usage, so `run_tokens_used` undercounts.
+    pub fn run_usage_unreported(&self) -> bool {
+        self.shared.gate.usage_unreported.load(Ordering::SeqCst)
+    }
+
     /// Invocation-wide uncached prompt + completion usage, not capped at the budget.
     /// Includes compaction and tool prefill, which emit no assistant message events.
     pub fn run_tokens_used(&self) -> u64 {
         *lock(&self.shared.gate.run_tokens_used)
+    }
+
+    pub(crate) fn account_usage(&self, usage: oxa_proto::Usage) {
+        if usage.unreported {
+            // An explicit budget can no longer establish headroom. Finish the active work
+            // through the usual wrap-up without adding an invented token count to the tally.
+            // The remaining allowance drops to zero so tools and children started in the
+            // current batch cannot spend headroom that no longer has a known size.
+            let capped = {
+                let mut budget = lock(&self.shared.gate.token_budget);
+                budget.as_mut().map(|left| *left = 0).is_some()
+            };
+            if capped {
+                self.shared.gate.usage_unreported.store(true, Ordering::SeqCst);
+                self.request_wrap_up(WrapUpReason::TokenLimit);
+            }
+        } else {
+            self.account_tokens(
+                u64::from(usage.prompt.saturating_sub(usage.cached)) + u64::from(usage.completion),
+            );
+        }
     }
 
     pub(crate) fn account_tokens(&self, tokens: u64) {
@@ -806,6 +850,21 @@ mod tests {
         Handle {
             shared: Arc::new(Shared::new(steer, follow)),
         }
+    }
+
+    #[test]
+    fn only_unreported_usage_under_an_explicit_token_cap_requests_wrap_up() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.account_usage(oxa_proto::Usage::unreported());
+        assert_eq!(h.wrap_up_reason(), None);
+        h.set_token_budget(Some(10));
+        h.account_usage(oxa_proto::Usage::default());
+        assert_eq!(h.wrap_up_reason(), None);
+        h.account_usage(oxa_proto::Usage::unreported());
+        assert_eq!(h.wrap_up_reason(), Some(WrapUpReason::TokenLimit));
+        assert_eq!(h.run_tokens_used(), 0);
+        assert_eq!(h.remaining_tokens(), Some(0));
+        assert!(h.run_usage_unreported());
     }
 
     #[test]

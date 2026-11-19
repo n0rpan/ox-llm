@@ -40,7 +40,7 @@ mod trust;
 
 pub use danger::{DangerHit, DangerRules, BUILTIN_RULES, SETTING_DANGEROUS};
 pub use desk::{ApprovalDesk, Record as ApprovalRecord, UnattendedMode};
-pub use paths::{is_inside, is_read_only_command, normalize};
+pub use paths::{is_inside, is_read_only_command, normalize, resolve_real};
 pub use policy::{deny_reasons, HiddenPaths, ModePolicy, PathGuard};
 pub use trust::{
     approval_files, gated_resources, manifest, resolve_trust, summary, Approval, Changed, DefaultTrust,

@@ -97,7 +97,8 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `defaultTools` | list | `["read","bash","edit","write","grep","find","ls"]` | tools on by default; names may include `subagent`, `web_search`, `codemode` and `tool_search` |
-| `oxa.bash.defaultTimeout` | number (seconds) | unset | timeout of a bash call that names none; unset is 120; `0` is no timeout. A call's own `timeout: 0` is no timeout too, and beats this default |
+| `oxa.bash.defaultTimeout` | number (seconds) | unset | timeout of a bash call that names none; unset is 120; `0` is no timeout. A command still running at its timeout is not killed: it moves to a background job (the result gives the job id and the wall time). A call's own `timeout: 0` is no timeout too, and beats this default |
+| `oxa.bash.waitCap` | number (seconds) | `300` | the longest a bash job read (`wait_s`) blocks; a larger `wait_s` is cut to it. User settings only. At least 1 |
 | `oxa.bash.maxJobs` | number | `16` | background jobs (`bash` with `background: true`) that may run at once; a further start is refused and names the oldest running job to stop with `kill`. User settings only. At least 1 |
 | `oxa.diet.output` | bool | unset | the system prompt's "be concise" rule is replaced by rules on tool use and a final answer of at most 6 lines. Unset is on |
 | `oxa.diet.tools` | bool | unset | shorter `grep` and `bash` output: `grep` prints each path once, and runs of three or more blank lines in bash output become two. Unset is on |
@@ -184,6 +185,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.local` | object | `{}` | literal native binary/model/arguments/environment and model limits; user settings only; see [native local configuration](../../oxc-local/CONFIGURATION.md) |
 | `oxa.lead.shadow` | bool | `false` | enable the read-only `oxa lead --shadow` proposal preset; user settings only; no live runner actions |
 | `oxa.engine.inProcessCloud` | bool | `false` | select the in-process Rust cloud gateway for sessions and model discovery; user settings only |
+| `oxa.cloud.opencode.enabled` | bool | on when a key exists | OpenCode Go is on when the `opencode` key exists in the protected cloud key file and the run has an actual `--model` argument naming a Go model (including a delegated worker or nested child), or an owner model scope that is not a local alias; `false` opts out everywhere; project settings and restored sessions cannot enable it; offline mode refuses; user settings only |
 | `oxa.cloud` | object | `{}` | native cloud models, prices, USD budget and subscription caps; user settings only; see below |
 | `oxa.lead.serve` | object | `{}` | the lead web access scaffold: `enabled`, `identity` (`local` or `tailscale`), `bind` (a loopback address), `port`, `allowed_identities`. Off by default and no listener is installed yet; user settings only. See [lead-web.md](lead-web.md) |
 | `oxa.lead.sessionId` | string | unset | exact ID of the dedicated Lead Session created by the native owner operation, from owner-private user settings. Free text is disabled when unset. |
@@ -208,11 +210,11 @@ directly. Project settings cannot enable this transport or change its cloud poli
 
 The OpenCode Go subscription is the exception to that switch: a Go key in the
 owner's secrets file (`~/.config/oxc/llm/cloud-secrets.json`, the `opencode`
-entry) already enables the Go transport for the owner's own model choice, without
-`inProcessCloud`. `oxa.cloud.opencode.enabled: false` in the user settings opts
-out again, and `true` enables Go even for a delegated or restored model. Transport
-selection stays user-only: a project settings file, a model a launcher delegated
-through `oxa work`'s task file, and a model restored by `--continue` never turn
+entry) already enables the Go transport for an actual Go model argument, including
+a delegated worker or nested child, without `inProcessCloud`.
+`oxa.cloud.opencode.enabled: false` in the user settings opts out again, and `true`
+enables Go even for a project-selected or restored model. Transport selection stays
+user-only: a project settings file and a model restored by `--continue` never turn
 the transport on by themselves. A configured local alias keeps a request local
 only when the alias owns the asked model exactly; a fuzzy local match does not
 hide the Go model of that name.
@@ -351,7 +353,11 @@ never permits an additional review.
 | `oxa.builtinSkills` | bool | `true` | include the skills built into oxa |
 | `oxa.share.remoteModels` | string list | `[]` | user-only allowlist of metered cloud aliases eligible for explicit LAN sharing; personal subscriptions are excluded |
 | `oxa.skills.includeSynced` | bool | `false` | also list the skills another product synced into `~/.agents/skills` (a `synced/` folder, or a folder whose `manifest.json` lists `skillId`s); they are written for that product's tools, so oxa skips them by default |
-| `oxa.workers.stopGraceSeconds` | number (seconds) | `10` | how long a stopped worker gets after SIGINT before its whole process group gets SIGTERM; SIGKILL follows 2 seconds later if the group is still alive |
+| `oxa.workers.enabled` | bool | `true` | user settings only (a project file cannot change it). The `worker` tool (start, list, stop background workers, each in its own git worktree); `false` removes it. Never offered inside a worker |
+| `oxa.workers.max` | number | `4` | user settings only (a project file cannot change it). Most live workers one session may run; a `start` past this limit is refused |
+| `oxa.workers.stopGraceSeconds` | number (seconds) | `10` | user settings only (a project file cannot change it). How long a stopped worker gets after SIGINT before its whole process group gets SIGTERM; SIGKILL follows 2 seconds later if the group is still alive |
+
+A worker is never wider than its parent session. It runs with the parent's permission ceiling, `--exclude-tools` and `--no-<tool>` exclusions, `--tools`, `--no-tools`, `--no-builtin-tools`, `--no-mcp`, `--no-web-search`, `--no-extensions`, `--offline` and session directory. `git` and `env` for the launch come from a trusted `PATH` directory outside the project, never from a project shim. The worktree is created without a checkout and its files are written inside the sandbox (`oxa work --supervise`), so a repository's smudge filters never run on the host; a launch is refused when the `oxa` executable changed after the session started. Token budgets warn and record; they never block: with `--max-tokens N` each worker gets the parent's whole allowance `N` (the start notice says so), so a session with `max` live workers can use up to (1 + `max`) times `N` in total.
 
 ## Example
 

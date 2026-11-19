@@ -159,6 +159,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.bash.defaultTimeout", Kind::Number, "null"),
     // Background jobs that may run at once (`bash {background: true}`); at least 1.
     key("oxa.bash.maxJobs", Kind::Number, "16"),
+    // Longest a bash job read blocks, in seconds (default 300; at least 1).
+    key("oxa.bash.waitCap", Kind::Number, "300"),
     key("oxa.bootPreload", Kind::Bool, "true"),
     key("oxa.builtinSkills", Kind::Bool, "true"),
     key("oxa.cloud", Kind::Object, "{}"),
@@ -273,6 +275,9 @@ const SCHEMA: &[KeyDef] = &[
     ),
     // The worker runner reads this list from owner settings only.
     key("oxa.work.localChecks", Kind::StringList, "[\"cargo check\"]"),
+    // K5a: the `worker` tool (never in a worker child) and the most live workers a session runs.
+    key("oxa.workers.enabled", Kind::Bool, "true"),
+    key("oxa.workers.max", Kind::Number, "4"),
     // K4: seconds a worker gets after SIGINT before its process group gets SIGTERM.
     key("oxa.workers.stopGraceSeconds", Kind::Number, "10"),
     key("packages", Kind::Any, "[]"),

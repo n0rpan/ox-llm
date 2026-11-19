@@ -1401,7 +1401,7 @@ fn set_017() {
     // untrusted project's replacement ["ls"].
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["ask", "bash", "edit", "find", "grep", "ls", "read", "write"],
+        ["ask", "bash", "edit", "find", "grep", "ls", "read", "worker", "write"],
         "the project's defaultTools is not applied"
     );
 }
@@ -1424,8 +1424,8 @@ fn set_018() {
     ok(&rig.print(&[]));
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["ask", "bash", "edit", "find", "grep", "ls", "read", "subagent", "write"],
-        "the default set on a large non-Flash model: eight lead built-ins and subagent"
+        ["ask", "bash", "edit", "find", "grep", "ls", "read", "subagent", "worker", "write"],
+        "the default set on a large non-Flash model: the lead built-ins, worker and subagent"
     );
     let flash = ["--model", "flash", "--model-row", "flash:65536:2048:flash"];
     let small = ["--n-ctx", "16384"];
@@ -1434,8 +1434,8 @@ fn set_018() {
         ok(&rig.print(&[]));
         assert_eq!(
             tools(&rig.bodies()[0]),
-            ["ask", "bash", "edit", "find", "grep", "ls", "read", "write"],
-            "{what}: the default set is the eight lead built-ins"
+            ["ask", "bash", "edit", "find", "grep", "ls", "read", "worker", "write"],
+            "{what}: the default set is the lead built-ins and worker"
         );
     }
 
@@ -1445,7 +1445,7 @@ fn set_018() {
     ok(&rig.print(&[]));
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["ask", "edit", "find", "grep", "ls", "read", "subagent", "write"],
+        ["ask", "edit", "find", "grep", "ls", "read", "subagent", "worker", "write"],
         "-name removes"
     );
     let rig = with_agent(&small);
@@ -1453,7 +1453,7 @@ fn set_018() {
     ok(&rig.print(&[]));
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["ask", "edit", "find", "grep", "ls", "read", "write"],
+        ["ask", "edit", "find", "grep", "ls", "read", "worker", "write"],
         "-name removes (below 32K)"
     );
 
