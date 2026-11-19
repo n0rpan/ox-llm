@@ -184,8 +184,22 @@ fn environment_secret_assignment(text: &str) -> bool {
         .any(|found| opaque_value(&found[1]))
 }
 
-/// A JSON credential key at the end of one added line with its value on the next:
-/// `"password":` / `"opaque-pass-value-17"`. Each line alone looks harmless.
+/// `Authorization: Basic …` / `Bearer …` with an encoded value: base64 of a user and a password
+/// may be letters only, which the class-mixing heuristic of `opaque_value` rejects.
+fn scheme_credential(text: &str) -> bool {
+    static SCHEME: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    SCHEME
+        .get_or_init(|| {
+            regex::Regex::new(r#"(?i)authorization\s*[:=]\s*["']?(?:basic|bearer)\s+([A-Za-z0-9+/=._-]{8,})"#)
+                .expect("authorization scheme pattern")
+        })
+        .captures_iter(text)
+        .any(|found| {
+            let value = found[1].trim();
+            !value.starts_with('$') && !value.contains("${")
+        })
+}
+
 /// A YAML/TOML assignment whose key merely *contains* a credential word: `database_password:`
 /// or `svc.api_token =` — the shared keyed pattern needs a boundary the underscore hides.
 fn prefixed_assignment(text: &str) -> bool {
@@ -213,6 +227,8 @@ fn putty_key(text: &str) -> bool {
     })
 }
 
+/// A JSON credential key at the end of one added line with its value on the next:
+/// `"password":` / `"opaque-pass-value-17"`. Each line alone looks harmless.
 fn json_split_secret(text: &str) -> bool {
     static SPLIT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     SPLIT
@@ -367,6 +383,9 @@ impl PushScan {
         if p.pem_begin.is_match(text) || putty_key(text) {
             return Some("a private key");
         }
+        if scheme_credential(text) {
+            return Some("an authorization credential");
+        }
         if p.known.is_match(text) || embedded_known_token(text) {
             return Some("a known access token format");
         }
@@ -442,10 +461,17 @@ mod tests {
                 "not refused: {text}"
             );
         }
-        // A placeholder is still allowed.
+        // A placeholder is still allowed, and so is a Basic credential's placeholder.
         assert!(scan
             .check(&added("notes.txt", "database_password: ${DB_PASSWORD}"))
             .is_none());
+        assert!(scan
+            .check(&added("notes.txt", "Authorization: Basic ${BASIC}"))
+            .is_none());
+        // Base64 of `user:passphrase` is letters only; the class mixer would miss it.
+        assert!(scan
+            .check(&added("notes.txt", "Authorization: Basic dXNlcjpwYXNzcGhyYXNl"))
+            .is_some());
     }
 
     #[test]

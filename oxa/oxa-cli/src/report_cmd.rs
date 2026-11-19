@@ -14,7 +14,6 @@ use oxa_config::{Dirs, Env, Settings};
 use oxa_proto::{codes, OxaError};
 use oxa_resources::{read_identity, write_atomic};
 use regex::Regex;
-use serde_json::Value as Json;
 use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
 use std::io::{BufRead, Write};

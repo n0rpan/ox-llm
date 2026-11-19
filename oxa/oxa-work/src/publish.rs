@@ -439,6 +439,15 @@ fn scan_patch(
                 }
             }
             previous_added = Some(rest.to_string());
+            // A line at or above the header's indentation leaves the block scalar: a later
+            // key must not be scanned against this header.
+            let indent = |text: &str| text.len() - text.trim_start().len();
+            if block_scalar_header
+                .as_deref()
+                .is_some_and(|header| indent(rest) <= indent(header))
+            {
+                block_scalar_header = None;
+            }
             if opens_block_scalar(rest) {
                 block_scalar_header = Some(rest.to_string());
             }
@@ -1212,8 +1221,12 @@ mod scan_tests {
         scan_patch(
             text,
             &|item| {
-                seen.borrow_mut()
-                    .push((item.path.to_string(), item.line, item.text.to_string()));
+                // Pair and block-scalar contexts join lines with a newline; only the lines
+                // themselves are listed here.
+                if !item.text.contains('\n') {
+                    seen.borrow_mut()
+                        .push((item.path.to_string(), item.line, item.text.to_string()));
+                }
                 None
             },
             &|_, _| None,
@@ -1264,6 +1277,30 @@ mod scan_tests {
         assert!(
             scan_patch(split, &containing("opaque-pass-value-17"), &|_, _| None).is_err(),
             "a JSON credential split over two lines was not scanned"
+        );
+    }
+
+    /// A later key at the header's own indentation leaves the block scalar, so a placeheld
+    /// password cannot refuse an ordinary description line below it.
+    #[test]
+    fn a_block_scalar_ends_at_the_next_key() {
+        let patch = "\0aaaa\n\ndiff --git a/settings.yml b/settings.yml\nnew file mode 100644\n--- /dev/null\n+++ b/settings.yml\n@@ -0,0 +1,3 @@\n+password: |-\n+  ${DB_PASSWORD}\n+description: release-notes-17\n";
+        let scanned = std::cell::RefCell::new(vec![]);
+        scan_patch(
+            patch,
+            &|item| {
+                scanned.borrow_mut().push(item.text.to_string());
+                None
+            },
+            &|_, _| None,
+        )
+        .expect("a placeholder is not a credential");
+        let texts = scanned.into_inner();
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.contains("description: release-notes-17") && !text.contains("password")),
+            "the description line was still scanned against the password header: {texts:?}"
         );
     }
 
