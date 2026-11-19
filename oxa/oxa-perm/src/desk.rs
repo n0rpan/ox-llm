@@ -198,6 +198,10 @@ impl ApprovalDesk {
         if !ANSWERS.contains(&status) {
             return Err(invalid_input("answer must be once, session, always or deny"));
         }
+        // CLI and web callers share this private directory. Hold its lock across
+        // the pending check and atomic replacement so a second answer sees the first.
+        let lock = File::open(&self.dir)?;
+        lock.lock()?;
         let mut rec = self
             .load(id)?
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such approval request"))?;
