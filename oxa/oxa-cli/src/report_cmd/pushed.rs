@@ -370,7 +370,7 @@ mod tests {
     fn env_example_with_a_token_is_refused() {
         let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
         let token = format!("API_TOKEN=ghp_{}", "x".repeat(36));
-        let password = "DB_PASSWORD=opaque-pass-value-17".to_string();
+        let password = "PASSWORD=opaque-pass-value-17".to_string();
         for text in [token, password] {
             assert!(scan.check(&added(".env.example", &text)).is_some(), "{text}");
         }
@@ -422,9 +422,15 @@ mod tests {
         // base64 of a synthetic `user:password`, built at run time.
         let auth = format!("{}{}", "dXNlcjpwYXNz", "d29yZA==");
         let entry = format!("{{\"auths\":{{\"registry.example.invalid\":{{\"auth\":\"{auth}\"}}}}}}");
-        assert!(scan.check(&file(".docker/config.json")).is_some());
-        assert!(scan.check(&file("deploy/.docker/config.json")).is_some());
-        assert!(scan.check(&file(".kube/config")).is_some());
+        // An empty copy holds nothing; any content in them is refused.
+        assert!(scan.check(&file(".docker/config.json")).is_none());
+        for path in [
+            ".docker/config.json",
+            "deploy/.docker/config.json",
+            ".kube/config",
+        ] {
+            assert!(scan.check(&line(path, "{}")).is_some(), "{path}");
+        }
         assert!(scan.check(&added(".docker/config.json", &entry)).is_some());
         // The field is recognised in any file, but a plain word or a package file is not.
         assert!(scan
