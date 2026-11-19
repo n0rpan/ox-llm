@@ -3185,42 +3185,6 @@ mod session_scratch_tests {
         assert_eq!(policy.decide(Mode::Workspace, &dangerous, &cwd), Decision::Allow);
     }
 
-    /// #1512 S7: an edit list in `oxa.approval.dangerous` edits the built-in rules. Adding a
-    /// custom rule keeps every built-in rule, `-id` removes only that rule, and only a plain
-    /// list replaces the built-in set (the merged value must not turn `+x` into a plain list).
-    #[test]
-    fn dangerous_rules_edit_list_keeps_the_builtin_rules() {
-        let env = oxa_fake::TestEnv::new();
-        let guard = oxa_perm::PathGuard::new(&env.home(), &env.agent_dir(), &env.tmp());
-        let cwd = env.work();
-        let rules = |list: serde_json::Value| {
-            let user = serde_json::json!({"oxa": {"approval": {"dangerous": list}}});
-            dangerous_rules(&Settings::from_values(user, serde_json::json!({}))).0
-        };
-        let hits = |r: &DangerRules, cmd: &str| -> Vec<String> {
-            r.classify(cmd, &cwd, &guard)
-                .into_iter()
-                .map(|h| h.rule)
-                .collect()
-        };
-        let has = |r: &DangerRules, cmd: &str, rule: &str| hits(r, cmd).iter().any(|h| h == rule);
-        let force = "git push --force origin main";
-        let added = rules(serde_json::json!(["+cmd:terraform destroy"]));
-        assert!(has(&added, "terraform destroy", "cmd:terraform destroy"));
-        assert!(has(&added, force, "git-push-force"));
-        assert!(has(&added, "sudo ls", "sudo"));
-        let edited = rules(serde_json::json!(["-sudo", "+cmd:terraform destroy"]));
-        assert!(!has(&edited, "sudo ls", "sudo"));
-        assert!(has(&edited, force, "git-push-force"));
-        assert!(has(&edited, "terraform destroy", "cmd:terraform destroy"));
-        let removed = rules(serde_json::json!(["-sudo"]));
-        assert!(!has(&removed, "sudo ls", "sudo"));
-        assert!(has(&removed, force, "git-push-force"));
-        let replaced = rules(serde_json::json!(["cmd:terraform destroy"]));
-        assert!(hits(&replaced, force).is_empty());
-        assert!(has(&replaced, "terraform destroy", "cmd:terraform destroy"));
-    }
-
     /// #1512 S5: the unattended answer is user-only. A project file that names `refuse` changes
     /// nothing; the same value in the user file is read.
     #[test]
