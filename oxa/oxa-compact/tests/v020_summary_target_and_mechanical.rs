@@ -23,6 +23,7 @@ fn transcript(msgs: &[WireMsg]) -> Transcript {
 
 fn call(id: &str, name: &str, path: &str) -> WireMsg {
     WireMsg {
+        images: Vec::new(),
         role: Role::Assistant,
         content: Some(String::new()),
         reasoning: None,
