@@ -24,6 +24,7 @@
 mod builtin;
 mod context;
 mod frontmatter;
+pub mod memory;
 mod packages;
 mod resources;
 mod skills;

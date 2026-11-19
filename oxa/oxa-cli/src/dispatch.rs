@@ -241,7 +241,11 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::Goal
                     | CommandId::Help
                     | CommandId::WorkStatus
-                    | CommandId::WorkBoard => Err(OxaError::new(
+                    | CommandId::WorkBoard
+                    | CommandId::Memory
+                    | CommandId::MemoryList
+                    | CommandId::MemoryShow
+                    | CommandId::MemoryRm => Err(OxaError::new(
                         codes::USAGE,
                         "registered command handler or arguments are unavailable",
                     )),
@@ -294,6 +298,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 return crate::work_cmd::run(&words, &cwd, env, &dirs, &mut *stdout, &mut *stderr)
             }
             Subcommand::Mcp(words) => run_mcp(&words, &dirs, &cwd, &mut *stdout, &mut *stderr),
+            Subcommand::Memory(words) => crate::run_memory(&words, &dirs, &mut *stdout, &mut *stderr),
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
             Subcommand::Send(words) => match words.as_slice() {
@@ -1024,6 +1029,9 @@ fn prepare(
         (None, oxa_proto::PermissionMode::Plan) => Some(Mode::Plan),
         (m, _) => m,
     };
+    if let Some(text) = oxa_proto::no_os_sandbox_notice() {
+        notices.push((Level::Warning, text.to_string()));
+    }
     if !matches!(mode, RunMode::Interactive) {
         notices.push((
             Level::Info,
