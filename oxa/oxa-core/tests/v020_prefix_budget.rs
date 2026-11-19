@@ -154,10 +154,11 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// 2026-11-16: issue #519 added `kill` to the `bash` schema and documented per-job cancellation
 /// and explicit background timeouts; both default tool prefixes intentionally changed.
 /// 2026-11-19: S12 documents explicit zero in the bash timeout schema.
-/// 2026-11-19: new identity text (Rust-only suite, cloud models as one provider line) and the
-/// done-check rule; hashes copied from the `stable sha256` lines of this test in CI.
-const DEFAULT_STABLE_SHA: &str = "1bfbe797b2d277d4e383ae501af1a58765aa333a6c2ce805ea3159215ac698b6";
-const DEFAULT_STABLE_SHA_SUBAGENT: &str = "d629ff43a995fe1b717ebe27a354fa86495b3a2cb37455f2ca27e1ed5512dcc9";
+/// 2026-11-19: R2 rewrote the built-in `ox-llm` skill description (no controller), and the
+/// new identity text (Rust-only suite, cloud models as one provider line) and the done-check
+/// rule; hashes copied from the `stable sha256` lines of this test in CI.
+const DEFAULT_STABLE_SHA: &str = "f0c43ac3c282929ee61851e75cf1d041c876fa3a6e9fb847fd5d515e8beaad72";
+const DEFAULT_STABLE_SHA_SUBAGENT: &str = "568c0649fbfa760413db74a88a571a3c471a3737d886933a83bb679e8995adf7";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
 fn has_date(s: &str) -> bool {
