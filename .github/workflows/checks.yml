@@ -118,8 +118,7 @@ jobs:
           persist-credentials: false
       - name: bubblewrap + unprivileged user namespaces
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends bubblewrap strace
+          "$GITHUB_WORKSPACE/tools/ci/apt_install.sh" bubblewrap strace
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --unshare-all --ro-bind / / true
       - name: Toolchain
@@ -506,7 +505,8 @@ jobs:
         # --user '': the user-name rule matches the account that RUNS the scrub (the maintainer's,
         # when receipts are scrubbed locally). Here that is the hosted runner's account, `runner`,
         # which only matches the English word "runner" in receipts. The other rules still run.
-        run: git ls-files -z benchmarks experiments | xargs -0 -r timeout 300 python3 -I tools/scrub_receipts.py --check --user ''
+        # The controller is retired; the scrubber is build/CI tooling and the gate stays.
+        run: git ls-files -z benchmarks experiments | xargs -0 -r timeout 300 python3 -I ../tools/ci/scrub_receipts.py --check --user ''
 
   gateway:
     # Moved from cloud-gateway.yml (fmt + conformance, same steps and matrix) so the gate covers it.
@@ -526,8 +526,7 @@ jobs:
         with:
           persist-credentials: false
       - run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends bubblewrap strace
+          "$GITHUB_WORKSPACE/tools/ci/apt_install.sh" bubblewrap strace
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy --component rustfmt --no-self-update
       - name: Fetch locked workspace dependencies before offline tests

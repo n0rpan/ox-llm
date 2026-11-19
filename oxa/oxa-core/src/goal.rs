@@ -311,6 +311,16 @@ impl GoalRuntime {
                     < u128::from(cap)
             })
     }
+    /// Whether a wait of `delay` ends inside the owner's time budget (no time budget: always).
+    pub(crate) fn time_allows_wait(&self, delay: Duration) -> bool {
+        let state = self.lock();
+        state.goal.budget.max_time_ms.is_none_or(|cap| {
+            u128::from(state.goal.elapsed_ms)
+                + state.clock.map_or(0, |clock| clock.elapsed().as_millis())
+                + delay.as_millis()
+                < u128::from(cap)
+        })
+    }
     pub(crate) fn charge(&self, tokens: u64, turn: bool) -> Result<Goal, oxa_proto::OxaError> {
         let mut state = self.lock();
         let now = Instant::now();
@@ -675,6 +685,91 @@ pub(crate) fn terminal(st: &crate::SessionState) -> bool {
     st.goal.as_ref().is_some_and(|g| g.engaged() && !g.pursuing())
 }
 
+/// `oxa.goal.failureBackoffSeconds` default: the first wait after a transient request failure.
+const FAILURE_BACKOFF_SECS: u32 = 60;
+/// The longest wait between goal retries unless the owner set a longer first wait.
+const FAILURE_BACKOFF_CAP_SECS: u64 = 900;
+
+/// How a wait between goal retries ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackoffEnd {
+    Elapsed,
+    /// The run was aborted: the goal stops.
+    Aborted,
+    /// `abort_retry`: the owner stops the retries, so the goal stops with the failure.
+    RetryStopped,
+}
+
+/// Whether a failed request is transient, so a pursuing goal may wait and send it again: a stream
+/// cut, engine down or busy, a timeout, a rate limit or a 5xx. Auth errors, refusals, the
+/// repetition stop, aborts, budgets and every other class stop the run.
+pub(crate) fn transient_failure(error: &oxa_proto::OxaError) -> bool {
+    use oxa_proto::codes;
+    if error.message.starts_with(oxa_proto::CUT_BY_REFUSAL)
+        || error.message.starts_with(crate::agent_loop::REPEAT_STOP)
+    {
+        return false;
+    }
+    match error.code {
+        codes::ENGINE_DOWN
+        | codes::ENGINE_BUSY
+        | codes::STREAM_BROKEN
+        | codes::TIMEOUT
+        | "cloud_rate_limited" => true,
+        codes::ENGINE_HTTP => {
+            matches!(crate::retry::http_status(&error.message), Some(s) if s >= 500 || s == 429)
+        }
+        _ => false,
+    }
+}
+
+/// The wait before the next attempt of a pursuing goal after `error`, or `None` when the run stops
+/// with it. `failures` counts the consecutive transient failures before this one. The wait is
+/// `oxa.goal.failureBackoffSeconds` (`0` opts out), doubled per failure and capped at 900 s unless
+/// the owner set a longer first wait. A pending abort or wrap-up stops the run, and so does a time
+/// budget that would run out during the wait.
+pub(crate) fn failure_backoff(
+    st: &crate::SessionState,
+    error: &oxa_proto::OxaError,
+    failures: u32,
+) -> Option<Duration> {
+    let goal = st
+        .goal
+        .as_ref()
+        .filter(|goal| goal.engaged() && goal.pursuing())?;
+    if !transient_failure(error)
+        || st.shared.cancel.is_cancelled()
+        || st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0
+    {
+        return None;
+    }
+    let base = u64::from(
+        st.settings
+            .user_u32("oxa.goal.failureBackoffSeconds", FAILURE_BACKOFF_SECS),
+    );
+    if base == 0 {
+        return None;
+    }
+    let cap = FAILURE_BACKOFF_CAP_SECS.max(base);
+    let delay = Duration::from_secs(base.saturating_mul(1u64 << failures.min(32)).min(cap));
+    goal.time_allows_wait(delay).then_some(delay)
+}
+
+/// Wait `delay` without a model request. An abort ends the wait as `Aborted`; `abort_retry` ends
+/// it as `RetryStopped` and resets that token, as a retry wait does.
+pub(crate) fn wait_failure_backoff(st: &crate::SessionState, delay: Duration) -> BackoffEnd {
+    let no_wake = oxa_proto::CancelToken::new();
+    wait_cancelled(&st.shared.cancel, &st.shared.cancel_retry, &no_wake, delay);
+    if st.shared.cancel.is_cancelled() {
+        BackoffEnd::Aborted
+    } else if st.shared.cancel_retry.is_cancelled() {
+        st.shared.cancel_retry.reset();
+        BackoffEnd::RetryStopped
+    } else {
+        BackoffEnd::Elapsed
+    }
+}
+
 /// Without terminal usage, a failed attempted generation has no exact spend.
 /// Only stable pre-admission classes prove no generation, unless output was
 /// already observed. Transport failures remain uncertain even before output.
@@ -699,9 +794,45 @@ pub(crate) fn uncertain(error: &oxa_proto::OxaError, output: bool, pre_cancelled
             | codes::INVALID
             | codes::USAGE
             | codes::UNSUPPORTED_IN_OXA
+            | "cost_unknown_history"
             | "cloud_credentials_unavailable"
             | "cloud_sdk_unavailable"
     )
+}
+
+/// [`uncertain`] for a request on `remote` or local engine. A remote upstream's 503 is
+/// normalized to `ENGINE_BUSY`, which only proves a local engine refused before generating;
+/// a forwarded cloud call may have spent tokens, so it stays uncertain. Goal recovery retries
+/// that class, and the owner's token budget must fail closed instead of being bypassed.
+pub(crate) fn uncertain_on(
+    remote: bool,
+    error: &oxa_proto::OxaError,
+    output: bool,
+    pre_cancelled: bool,
+) -> bool {
+    uncertain(error, output, pre_cancelled)
+        || (remote && error.code == oxa_proto::codes::ENGINE_BUSY && !pre_cancelled)
+}
+
+#[cfg(test)]
+mod uncertain_tests {
+    use super::{uncertain, uncertain_on};
+
+    #[test]
+    fn a_remote_busy_reply_may_have_spent_tokens_but_a_local_one_has_not() {
+        let busy = oxa_proto::OxaError::new(oxa_proto::codes::ENGINE_BUSY, "upstream 503");
+
+        assert!(uncertain_on(true, &busy, false, false));
+        assert!(!uncertain_on(false, &busy, false, false));
+    }
+
+    #[test]
+    fn unknown_cost_history_is_known_pre_admission_usage() {
+        let error = oxa_proto::OxaError::new("cost_unknown_history", "prior usage has no known cost");
+
+        assert!(!uncertain(&error, false, false));
+        assert!(uncertain(&error, true, false));
+    }
 }
 
 /// A parsed `/goal` command.

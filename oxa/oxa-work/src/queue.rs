@@ -976,6 +976,7 @@ mod tests {
                     lease: None,
                     attempts_today: 0,
                     eligible: true,
+                    evidence_incomplete: None,
                 };
                 let receipt = claims
                     .claim_item_for(&entry, &assignment, &worker, "host-a", (now, 600), |_| Ok(None))

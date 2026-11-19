@@ -1,7 +1,7 @@
 //! Authenticated loopback JSON-RPC/SSE server for owned agent backends.
 //! Backends are trusted local code: methods must return bounded snapshots and
 //! must not block indefinitely. Models never implement this trait directly.
-use crate::loopback::{authorized, read_head, Capability, Client, DeadlineStream, Limits};
+use crate::loopback::{authorized, Capability, Client, DeadlineStream, Limits, RequestHead};
 use crate::wire::*;
 use oxa_proto::bounded_io::BoundedWriter;
 use serde::Serialize;
@@ -229,7 +229,7 @@ fn serve<B: Backend>(
         deadline,
         budget: None,
     });
-    let head = read_head(&mut reader)?;
+    let head = RequestHead::read(&mut reader)?;
     if !authorized(&head, auth) {
         return http_json(
             reader.get_mut(),
@@ -238,7 +238,8 @@ fn serve<B: Backend>(
             limits.body_bytes,
         );
     }
-    if head.first == "GET /.well-known/agent-card.json HTTP/1.1" {
+    let line = head.request_line();
+    if line == Some(("GET", "/.well-known/agent-card.json", "HTTP/1.1")) {
         let mut card = backend.card(&format!("http://{address}/"));
         card.url = format!("http://{address}/");
         card.protocol_version = PROTOCOL_VERSION.into();
@@ -250,8 +251,8 @@ fn serve<B: Backend>(
         card.security = vec![BTreeMap::from([("capability".into(), vec![])])];
         return http_json(reader.get_mut(), "200 OK", &card, limits.body_bytes);
     }
-    if head.first != "POST / HTTP/1.1"
-        || head.headers.get("content-type").and_then(|v| v.split(';').next()) != Some("application/json")
+    if line != Some(("POST", "/", "HTTP/1.1"))
+        || head.header("content-type").and_then(|v| v.split(';').next()) != Some("application/json")
     {
         return http_json(reader.get_mut(), "400 Bad Request", &json!({}), limits.body_bytes);
     }
@@ -482,8 +483,7 @@ impl Events<'_> {
 
 fn http_json(writer: &mut impl Write, status: &str, value: &impl Serialize, max: usize) -> io::Result<()> {
     let bytes = encode(value, max)?;
-    write!(writer,"HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len())?;
-    writer.write_all(&bytes)
+    oxa_http::server::write_response(writer, status, &[("Content-Type", "application/json")], &bytes)
 }
 
 fn encode(value: &impl Serialize, max: usize) -> io::Result<Vec<u8>> {
