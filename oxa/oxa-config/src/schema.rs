@@ -242,6 +242,8 @@ const SCHEMA: &[KeyDef] = &[
         Kind::Enum(&["brave", "none"]),
         "\"brave\"",
     ),
+    // The worker runner reads this list from owner settings only.
+    key("oxa.work.localChecks", Kind::StringList, "[\"cargo check\"]"),
     key("packages", Kind::Any, "[]"),
     // #202: the permission mode at start; a project's value may only lower it
     // (`Settings::default_permission_mode`).

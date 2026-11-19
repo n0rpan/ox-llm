@@ -522,6 +522,7 @@ mod tests {
                 output: b"started\n".to_vec(),
                 exit: None,
                 timed_out: false,
+                unsandboxed: false,
             }
         }
     }
@@ -617,6 +618,7 @@ mod tests {
                     output: b"done\n".to_vec(),
                     exit: Some(self.0),
                     timed_out: false,
+                    unsandboxed: false,
                 }
             }
         }
@@ -654,6 +656,7 @@ mod tests {
                     output: b"ok\n".to_vec(),
                     exit: Some(0),
                     timed_out: false,
+                    unsandboxed: false,
                 }
             }
         }
@@ -698,6 +701,7 @@ mod tests {
                     output: Vec::new(),
                     exit: Some(0),
                     timed_out: false,
+                    unsandboxed: false,
                 }
             }
         }
@@ -778,6 +782,7 @@ mod tests {
                     output: Vec::new(),
                     exit: Some(0),
                     timed_out: false,
+                    unsandboxed: false,
                 }
             }
         }

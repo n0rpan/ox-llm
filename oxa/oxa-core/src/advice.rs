@@ -256,5 +256,9 @@ fn scrub_field(advisor: &BoundAdvisor, text: &str, limit: usize) -> String {
 }
 
 fn clip(text: &str, limit: usize) -> &str {
-    &text[..text.floor_char_boundary(limit.min(text.len()))]
+    let mut end = text.len().min(limit);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }

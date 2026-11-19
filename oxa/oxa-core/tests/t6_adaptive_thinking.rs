@@ -43,6 +43,7 @@ impl Sandbox for ShSandbox {
             output,
             exit: out.status.code(),
             timed_out: false,
+            unsandboxed: false,
         }
     }
 }
