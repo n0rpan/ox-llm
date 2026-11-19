@@ -11,6 +11,9 @@ import "Model.js" as Model
 Ui.Panel {
     id: root
 
+    implicitWidth: button.implicitWidth
+    implicitHeight: button.implicitHeight
+
     moduleName: "snapdragon.local-ai"
     ipcTarget: "snapdragon.local-ai"
 
