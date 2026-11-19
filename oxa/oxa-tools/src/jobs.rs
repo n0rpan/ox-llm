@@ -272,6 +272,12 @@ impl JobRegistry {
                 }
             };
             let res: ExecResult = sandbox.run_streaming(&spec, &cancel, &mut sink);
+            // Streaming executors normally return an empty `output`, but launch failures can
+            // happen before there is a process whose pipes feed `sink`. Preserve any such
+            // diagnostic in the job buffer so foreground callers following the job receive it.
+            if !res.output.is_empty() {
+                sink(&res.output);
+            }
             unsandboxed_job.store(res.unsandboxed, Ordering::SeqCst);
             let final_status = match res.exit {
                 Some(code) => JobStatus::Exited(code),
