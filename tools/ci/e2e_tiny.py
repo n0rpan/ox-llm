@@ -220,13 +220,13 @@ def main():
 
         oenv = dict(os.environ, HOME=str(home), OXA_AGENT_DIR=str(home / 'agent'),
                     OXA_ENGINE_URL=f'http://127.0.0.1:{port}')
-        usage_log = out / 'usage.jsonl'
         o = cfg['oxa']
         runs = []
         for name, text in (('turn1', o['first_prompt']), ('turn2', o['second_prompt'])):
-            before = len(records(usage_log))
+            # one log per run: oxa writes --usage-log for its own process (a later run replaces it)
+            usage_log = out / f'usage-{name}.jsonl'
             code, wall, result = run_oxa(a.oxa, text, work, oenv, usage_log, o['run_timeout_s'], o['max_time_s'], o['max_tokens'], name, out)
-            recs = records(usage_log)[before:]
+            recs = records(usage_log)
             runs.append({'name': name, 'exit': code, 'error_class': result.get('error_class'), 'wall_ms': wall, 'requests': recs})
             if code != 0 and result.get('error_class') not in o['accept_error_classes']:
                 fail(f"{name}: oxa -p exited {code} ({result.get('error_class')}; see {name}.stderr.txt)")
