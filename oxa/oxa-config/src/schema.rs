@@ -165,7 +165,9 @@ const SCHEMA: &[KeyDef] = &[
     // V020-OPTIMIZE #1 / #2: unset = on.
     key("oxa.diet.output", Kind::Bool, "null"),
     key("oxa.diet.tools", Kind::Bool, "null"),
-    verdict_o("oxa.emptyReplyRetries", Kind::Number, "1"),
+    // Cloud resilience: a reply with no text and no tool call is retried; user settings only
+    // (`settings.rs` reads it via `user_u32`, the descriptor row carries `.user_only()`).
+    key("oxa.emptyReplyRetries", Kind::Number, "1"),
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
     key("oxa.engine.inProcessCloud", Kind::Bool, "false"),
     key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
