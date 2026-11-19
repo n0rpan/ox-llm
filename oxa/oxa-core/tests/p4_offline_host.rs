@@ -156,9 +156,9 @@ fn offline_refuses_remote_fetch_and_network_exec_before_asking() {
     );
 }
 
-/// #1512 S2: an extension's `exec` is classified in the directory it runs in, not in the
-/// session's directory: `/…/other/victim` is outside the session's workspace but inside the
-/// directory the extension gave the command, so only the first asks.
+/// #1512 S2: an extension's `exec` is classified where it runs, against the session's
+/// workspace: `/…/other/victim` is outside the workspace whichever `cwd` the extension gives
+/// the command, and so is a relative `victim` when that `cwd` is `/…/other`.
 #[test]
 fn extension_exec_is_classified_in_its_own_directory() {
     let env = TestEnv::new();
@@ -174,9 +174,9 @@ fn extension_exec_is_classified_in_its_own_directory() {
     );
     let other = env.root().join("other");
     std::fs::create_dir_all(other.join("victim")).unwrap();
-    let spec = |cwd: std::path::PathBuf| {
+    let spec = |command: String, cwd: std::path::PathBuf| {
         HostAction::Exec(ExecSpec {
-            command: format!("rm -rf {}/victim", other.display()),
+            command,
             cwd,
             writable: true,
             net: false,
@@ -184,14 +184,17 @@ fn extension_exec_is_classified_in_its_own_directory() {
             env: Vec::new(),
         })
     };
-    let e = through_host(&mut st, spec(env.work())).unwrap_err();
-    assert!(
-        e.message
-            .starts_with("Refused: dangerous command (rm-recursive-outside: "),
-        "{e}"
-    );
-    // This workspace has no OS sandbox, so the command cannot actually run here; what matters
-    // is that the classifier does not refuse it in the directory the extension gave it.
-    let e = through_host(&mut st, spec(other.clone())).unwrap_err();
-    assert!(!e.message.starts_with("Refused: dangerous command"), "{e}");
+    let absolute = format!("rm -rf {}/victim", other.display());
+    for (command, cwd) in [
+        (absolute.clone(), env.work()),
+        (absolute, other.clone()),
+        ("rm -rf victim".to_string(), other.clone()),
+    ] {
+        let e = through_host(&mut st, spec(command.clone(), cwd)).unwrap_err();
+        assert!(
+            e.message
+                .starts_with("Refused: dangerous command (rm-recursive-outside: "),
+            "{command}: {e}"
+        );
+    }
 }
