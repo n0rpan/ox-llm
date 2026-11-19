@@ -186,6 +186,8 @@ The harness connects to the model you chose: the local engine on loopback, or th
 
 ### Bash network
 
+User-only settings (such as `oxa.sandbox.net` and `oxa.offline`) count only from the user file. A project settings file that sets one is ignored for that key, with a warning, even when the project is trusted.
+
 Bash has network access by default in `workspace` and `ask` modes. `oxa.sandbox.net: "off"` in user settings removes it from bash in every mode. Off Linux there is no OS sandbox to enforce this, so bash is disabled there while the setting is off (see [The bash sandbox](#the-bash-sandbox)).
 
 This matters because the model can be steered by text it reads. A steered model can run a command that sends what bash can read to any host. Bash can read the project, the system files, and the parts of your home directory that the deny-list does not mask. In `ask` mode you approve each command, but the approval does not show where the command sends its output. When the project holds secrets, set `oxa.sandbox.net: "off"`, use `ask` mode, or run with `--offline`.
