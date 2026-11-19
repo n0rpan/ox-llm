@@ -90,23 +90,6 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         cwd,
     } = io;
 
-    if let Some(invocation) = oxa_interactive::command_registry::parse_cli(crate::help::command_words(argv)) {
-        if invocation.command.id == oxa_interactive::command_registry::CommandId::Lead
-            && invocation.args.is_empty()
-        {
-            let menu = oxa_interactive::command_menu::menu(
-                invocation.command.id,
-                oxa_interactive::command_registry::Surface::Cli,
-            )
-            .unwrap_or_default();
-            return if stdout.write_all(menu.as_bytes()).is_ok() {
-                0
-            } else {
-                2
-            };
-        }
-    }
-
     if let Some(help) = crate::help::from_argv(argv) {
         return match help {
             Ok(text) => {
@@ -195,17 +178,45 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     }
 
     if let Some(sub) = a.subcommand.clone() {
-        if let Subcommand::Registered(id, words) = &sub {
-            use oxa_interactive::command_registry::CommandId;
-            // The one-shot `oxa lead <text>` and every `lead chat` form share the
-            // one bounded owner conversation path; the bare `lead` menu was
-            // answered before parsing.
-            if id == &CommandId::LeadChat || (id == &CommandId::Lead && !words.0.is_empty()) {
+        if let Subcommand::Registered(oxa_interactive::command_registry::CommandId::Lead, words) = &sub {
+            if !words.0.is_empty() {
                 return finish(
-                    crate::lead_chat::run(&words.0, &cwd, env, &mut *stdout),
+                    crate::lead_chat::run_direct(&words.0, &cwd, env, &mut *stdout),
                     &mut *stderr,
                 );
             }
+            if !(stdin_is_tty && stdout_is_tty) {
+                return report(
+                    &mut *stderr,
+                    &OxaError::new(
+                        codes::USAGE,
+                        "Lead needs a terminal. Use oxa lead -p <prompt> for print mode.",
+                    ),
+                );
+            }
+            let result = (|| {
+                let binding = crate::lead_chat::local_binding(&cwd, env)?;
+                let dirs = dirs_from_env(env, None)?;
+                let mode = RunMode::Interactive;
+                let workspace = crate::home_cwd::check(mode, &cwd, env, &dirs, &mut *stdin, &mut *stdout)?;
+                let mut args = Args::default();
+                let prep = binding.prepare(&mut args, env, mode, workspace)?;
+                let session = binding.open(&prep)?;
+                Ok((args, prep, session, binding))
+            })();
+            return match result {
+                Ok((args, prep, session, binding)) => {
+                    run_tui(&args, env, &cwd, prep, &mut *stderr, Some((session, binding)))
+                }
+                Err(error) => report(&mut *stderr, &error),
+            };
+        }
+
+        if let Subcommand::Registered(oxa_interactive::command_registry::CommandId::LeadChat, words) = &sub {
+            return finish(
+                crate::lead_chat::run(&words.0, &cwd, env, &mut *stdout),
+                &mut *stderr,
+            );
         }
         let dirs = match dirs_from_env(env, None) {
             Ok(d) => d,
@@ -228,11 +239,16 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::LeadStatus
                     | CommandId::LeadAsks
                     | CommandId::LeadChat
+                    | CommandId::Goal
                     | CommandId::Help
                     | CommandId::WorkStatus
                     | CommandId::WorkBoard
                     | CommandId::Send
-                    | CommandId::SendApprovals => Err(OxaError::new(
+                    | CommandId::SendApprovals
+                    | CommandId::Memory
+                    | CommandId::MemoryList
+                    | CommandId::MemoryShow
+                    | CommandId::MemoryRm => Err(OxaError::new(
                         codes::USAGE,
                         "registered command handler or arguments are unavailable",
                     )),
@@ -285,6 +301,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 return crate::work_cmd::run(&words, &cwd, env, &dirs, &mut *stdout, &mut *stderr)
             }
             Subcommand::Mcp(words) => run_mcp(&words, &dirs, &cwd, &mut *stdout, &mut *stderr),
+            Subcommand::Memory(words) => crate::run_memory(&words, &dirs, &mut *stdout, &mut *stderr),
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
             // #1512 S5: a follow-up, an owner answer to an approval request, or the request list.
@@ -470,10 +487,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     };
 
     match mode {
-        RunMode::Interactive => {
-            let dirs = prep.built.dirs.clone();
-            run_tui(&a, env, &dirs, &cwd, prep, &mut *stderr)
-        }
+        RunMode::Interactive => run_tui(&a, env, &cwd, prep, &mut *stderr, None),
         RunMode::Rpc => {
             let dirs = prep.built.dirs.clone();
             run_rpc(prep, a.max_time, a.max_tokens, dirs, stdin, stdout, &mut *stderr)
@@ -727,13 +741,15 @@ impl Built {
 }
 
 /// #1512 S2: the dangerous-command rules of the user settings. `[]` (the default) is every
-/// built-in rule; a plain entry replaces the built-ins and `+id` / `-id` patch them.
+/// built-in rule; a plain entry replaces the built-ins and `+id` / `-id` patch them. The raw
+/// user entries are read: the merged value has already applied a `+x` / `-x` list to the empty
+/// default, which would turn `["+cmd:x"]` into a plain list that drops every built-in rule.
 fn dangerous_rules(user_settings: &Settings) -> (DangerRules, Vec<String>) {
     let builtin_ids: Vec<String> = oxa_perm::BUILTIN_RULES
         .iter()
         .map(|row| row.0.to_string())
         .collect();
-    let patch = user_settings.list(oxa_perm::SETTING_DANGEROUS);
+    let patch = user_settings.user_list(oxa_perm::SETTING_DANGEROUS);
     let entries = if patch.is_empty() {
         builtin_ids
     } else {
@@ -1076,6 +1092,9 @@ fn prepare(
         (None, oxa_proto::PermissionMode::Plan) => Some(Mode::Plan),
         (m, _) => m,
     };
+    if let Some(text) = oxa_proto::no_os_sandbox_notice() {
+        notices.push((Level::Warning, text.to_string()));
+    }
     if !matches!(mode, RunMode::Interactive) {
         notices.push((
             Level::Info,
@@ -1085,7 +1104,7 @@ fn prepare(
     // The owner's `oxa.sandbox.net = off` (or a runner that owns GitHub) holds for unsandboxed
     // commands too (#1512 S3).
     let net_off = env.get(oxa_work::RUNNER_GITHUB_ENV) == Some("1")
-        || !oxa_sandbox::sandbox_net_setting(settings.string(oxa_sandbox::SETTING_SANDBOX_NET).as_deref());
+        || crate::run_kind::sandbox_net_off(&settings, &user_settings);
     let bash_sandbox = Arc::new(
         oxa_sandbox::FullAccess::new(
             sandbox.clone(),
@@ -1097,9 +1116,9 @@ fn prepare(
         )
         .with_os_sandbox(os_sandbox),
     );
-    // Exec hooks go through the same switch: without the OS sandbox they run with the user's
-    // rights (#1512 S3); with it they stay in `sandbox` as before.
-    let hook_sandbox: Arc<dyn Sandbox> = bash_sandbox.clone();
+    // Exec hooks: without the OS sandbox they run with the user's rights (#1512 S3); with it
+    // they stay in `sandbox` as before, also when yolo is switched on later.
+    let hook_sandbox = oxa_sandbox::FullAccess::hook_sandbox(&bash_sandbox);
     let hook_inputs = HookInputs {
         args: a,
         dirs,
@@ -1756,7 +1775,15 @@ fn run_rpc(
 
 /// The interactive terminal: the first prompt and the further messages come from the command
 /// line; `reopen` builds the sessions of `/new`, `/resume`, fork, clone and import.
-fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mut dyn Write) -> i32 {
+fn run_tui(
+    a: &Args,
+    env: &Env,
+    cwd: &Path,
+    prep: Prep,
+    stderr: &mut dyn Write,
+    owner: Option<(Session, LeadOwnerBinding)>,
+) -> i32 {
+    let dirs = &prep.built.dirs.clone();
     let prompts = match build_prompts(a, dirs, cwd, None) {
         Ok(p) => p,
         Err(e) => return report(stderr, &e),
@@ -1779,9 +1806,12 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         name,
         ..
     } = prep;
-    let session = match open_named(&built, session_id, open, name.as_deref()) {
-        Ok(s) => s,
-        Err(e) => return report(stderr, &e),
+    let (session, owner) = match owner {
+        Some((session, binding)) => (session, Some(binding)),
+        None => match open_named(&built, session_id, open, name.as_deref()) {
+            Ok(session) => (session, None),
+            Err(e) => return report(stderr, &e),
+        },
     };
     #[cfg(feature = "share")]
     let guest_listener = match sharing.map(crate::share_cmd::Prepared::start).transpose() {
@@ -1790,6 +1820,7 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
                 Level::Info,
                 format!("Guest OpenAI API listening at http://{address}/v1"),
             ));
+            notices.extend(running.status.warning().map(|w| (Level::Warning, w.to_string())));
             Some(running)
         }
         Ok(None) => None,
@@ -1818,7 +1849,17 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
     let settings = built.settings.clone();
     let store = built.store.clone();
     let base = built.clone();
+    let pinned = owner.is_some();
     let reopen: ReopenFn = Box::new(move |request, carry| {
+        if let Some(binding) = &owner {
+            if !matches!(&request, Reopen::Resume(session) if session == binding.session_ref()) {
+                return Err(OxaError::new(
+                    codes::INVALID,
+                    "Lead is attached to its dedicated session.",
+                ));
+            }
+            binding.recheck()?;
+        }
         let mut deps = base.deps(None);
         // `/new` keeps the model and thinking level of the session it leaves (a `/model`
         // switch is present in the status bar but only as a `ModelChange` entry of the old
@@ -1836,6 +1877,15 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
             Reopen::Fork(sref) => Open::Fork(sref),
         };
         let mut session = Session::open(deps, how)?;
+        if let Some(binding) = &owner {
+            binding.recheck()?;
+            if &session.inner().sref != binding.session_ref() {
+                return Err(OxaError::new(
+                    codes::INVALID,
+                    "The selected Lead session changed.",
+                ));
+            }
+        }
         base.result_facts.attach(&mut session)?;
         session.set_output_schema(base.output_schema.clone());
         Ok(session)
@@ -1881,7 +1931,11 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         yolo: Some(yolo),
         os_sandbox: built.os_sandbox,
     };
-    let result = run_interactive(session, opts);
+    let result = if pinned {
+        oxa_interactive::run_pinned(session, opts, "oxa lead")
+    } else {
+        run_interactive(session, opts)
+    };
     let result = match &built.status {
         Some(status) => status.finish_interactive(result, stderr),
         None => result,
@@ -2833,6 +2887,41 @@ mod session_scratch_tests {
         assert!(!b.exists(), "the second session's scratch outlived it");
     }
 
+    /// #1512 S7: an edit list in `oxa.approval.dangerous` edits the built-in rules. Adding a
+    /// custom rule keeps every built-in rule, `-id` removes only that rule, and only a plain
+    /// list replaces the built-in set (the merged value must not turn `+x` into a plain list).
+    #[test]
+    fn dangerous_rules_edit_list_keeps_the_builtin_rules() {
+        let env = oxa_fake::TestEnv::new();
+        let guard = oxa_perm::PathGuard::new(&env.home(), &env.agent_dir(), &env.tmp());
+        let cwd = env.work();
+        let rules = |list: serde_json::Value| {
+            let user = serde_json::json!({"oxa": {"approval": {"dangerous": list}}});
+            dangerous_rules(&Settings::from_values(user, serde_json::json!({}))).0
+        };
+        let hits = |r: &DangerRules, cmd: &str| -> Vec<String> {
+            r.classify(cmd, &cwd, &guard)
+                .into_iter()
+                .map(|h| h.rule)
+                .collect()
+        };
+        let has = |r: &DangerRules, cmd: &str, rule: &str| hits(r, cmd).iter().any(|h| h == rule);
+        let force = "git push --force origin main";
+        let added = rules(serde_json::json!(["+cmd:terraform destroy"]));
+        assert!(has(&added, "terraform destroy", "cmd:terraform destroy"));
+        assert!(has(&added, force, "git-push-force"));
+        assert!(has(&added, "sudo ls", "sudo"));
+        let edited = rules(serde_json::json!(["-sudo", "+cmd:terraform destroy"]));
+        assert!(!has(&edited, "sudo ls", "sudo"));
+        assert!(has(&edited, force, "git-push-force"));
+        assert!(has(&edited, "terraform destroy", "cmd:terraform destroy"));
+        let removed = rules(serde_json::json!(["-sudo"]));
+        assert!(!has(&removed, "sudo ls", "sudo"));
+        assert!(has(&removed, force, "git-push-force"));
+        let replaced = rules(serde_json::json!(["cmd:terraform destroy"]));
+        assert!(hits(&replaced, force).is_empty());
+        assert!(has(&replaced, "terraform destroy", "cmd:terraform destroy"));
+    }
     /// #1512 S2: the dangerous-command rules and the always keys come from the user settings
     /// only. A project file that replaces the rules and lists the key changes nothing; the same
     /// key in the user file allows the command.

@@ -54,6 +54,17 @@ impl FullAccess {
         self
     }
 
+    /// #1512 S3: the sandbox of the exec hooks. With the OS sandbox on they stay in the wrapped
+    /// sandbox at every level, also for the inline `run` path (a full-access switch never lets
+    /// them out); without it they go through `full` and run with the user's rights.
+    pub fn hook_sandbox(full: &Arc<FullAccess>) -> Arc<dyn Sandbox> {
+        if full.os_sandbox {
+            full.inner.clone()
+        } else {
+            full.clone() as Arc<dyn Sandbox>
+        }
+    }
+
     /// Reuse the process's switch and launch settings with the session's own sandbox.
     /// In particular, auto/plan bash and the rest of the session must share one scratch dir.
     pub fn with_inner(&self, inner: Arc<dyn Sandbox>) -> FullAccess {

@@ -982,19 +982,42 @@ fn gate(st: &mut SessionState, a: &Access, ui: &mut dyn Ui) -> Result<(), OxaErr
     gate_pinned(st, a, ui).map(|_| ())
 }
 
+/// [`gate`] for a command that runs in `cwd` rather than in the session's directory: an
+/// extension may pass its own `cwd` to `oxa.exec`, and a relative operand is classified against
+/// the directory the sandbox actually runs it in.
+fn gate_at(
+    st: &mut SessionState,
+    a: &Access,
+    cwd: &std::path::Path,
+    ui: &mut dyn Ui,
+) -> Result<(), OxaError> {
+    gate_pinned_in(st, a, cwd, ui).map(|_| ())
+}
+
 /// [`gate`], returning the real location the verdict covers (#518, `Policy::decide_pinned`).
 fn gate_pinned(
     st: &mut SessionState,
     a: &Access,
     ui: &mut dyn Ui,
 ) -> Result<Option<std::path::PathBuf>, OxaError> {
-    let (decision, pin) = st.policy.decide_pinned(st.mode, a, &st.cwd);
+    let cwd = st.cwd.clone();
+    gate_pinned_in(st, a, &cwd, ui)
+}
+
+/// [`gate_pinned`] in an explicit directory.
+fn gate_pinned_in(
+    st: &mut SessionState,
+    a: &Access,
+    cwd: &std::path::Path,
+    ui: &mut dyn Ui,
+) -> Result<Option<std::path::PathBuf>, OxaError> {
+    let (decision, pin) = st.policy.decide_pinned(st.mode, a, cwd);
     match decision {
         Decision::Allow => Ok(pin),
         Decision::Deny(reason) => Err(OxaError::new(codes::DENIED, reason)),
         Decision::Ask => {
             // #1512 S2: a dangerous command asks first; its answer covers only its rule keys.
-            let danger = st.policy.danger_ask(a, &st.cwd);
+            let danger = st.policy.danger_ask(a, cwd);
             if !danger.is_empty() {
                 // #1512 S5: an extension's exec takes the same unattended answer as the bash
                 // tool: refused, or filed at the approval desk for the owner, never paused for.
@@ -1038,12 +1061,13 @@ fn exec_gated(st: &mut SessionState, spec: ExecSpec, ui: &mut dyn Ui) -> Result<
     if spec.net {
         oxa_proto::check_online("a command with network access")?; // P4: no network grant offline
     }
-    gate(
+    gate_at(
         st,
         &Access::Exec {
             command: spec.command.clone(),
             net: spec.net,
         },
+        &spec.cwd,
         ui,
     )?;
     st.sandbox.check()?;

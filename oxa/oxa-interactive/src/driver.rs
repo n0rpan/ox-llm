@@ -564,6 +564,40 @@ impl<'a> Loop<'a> {
         self.dirty = true;
     }
 
+    fn refresh_view_settings(&mut self) {
+        let tools_expanded = self.view.tools_expanded;
+        self.view = view_settings(&*self.opts, &self.caps);
+        self.view.tools_expanded = tools_expanded;
+        self.viewport.scrollbar = ScrollbarMode::parse(&self.view.scrollbar);
+        self.viewport.wheel_lines = self.view.wheel_lines;
+        self.wheel = wheel_accel(&self.opts.settings, &self.opts.env);
+    }
+
+    fn apply_live_settings(&mut self, settings: oxa_config::Settings) {
+        let old_theme = theme_name(&*self.opts);
+        let old_skin = self.view.skin;
+        let old_hidden = self.opts.settings.get("hideThinkingBlock");
+        let keep_hidden = old_hidden == settings.get("hideThinkingBlock");
+        let hidden = self.view.hide_thinking;
+        self.opts.settings = settings;
+        self.refresh_view_settings();
+        if keep_hidden {
+            self.view.hide_thinking = hidden;
+        }
+        self.editor_opts = editor_opts_from(&self.opts.settings);
+        let new_theme = theme_name(&*self.opts);
+        if new_theme != old_theme || self.view.skin != old_skin {
+            match resolve_ui_theme(&*self.opts, &new_theme, self.caps, self.term_colors.as_ref()) {
+                Ok(theme) => {
+                    self.theme_name = new_theme;
+                    self.palette = None;
+                    self.install_theme(theme);
+                }
+                Err(error) => self.push_notice(Level::Warning, error.to_string()),
+            }
+        }
+    }
+
     /// The theme line of the splash: the theme's name, with the desktop theme it follows.
     fn label_of_theme(&self) -> String {
         if self.cool_theme.is_plain() {
@@ -791,6 +825,9 @@ impl<'a> Loop<'a> {
     // -----------------------------------------------------------------------------------------
 
     pub(crate) fn worker_msg(&mut self, msg: WorkerMsg) {
+        if let Some(settings) = self.handle.take_live_settings() {
+            self.apply_live_settings(settings);
+        }
         self.dirty = true;
         match msg {
             // SET-010: cache-miss notices only with `showCacheMissNotices` (pi's default is
@@ -2581,12 +2618,7 @@ impl<'a> Loop<'a> {
                     .set(&self.opts.dirs, &cwd, &key, value, scope_project)
                 {
                     Ok(()) => {
-                        let tools_expanded = self.view.tools_expanded;
-                        self.view = view_settings(&*self.opts, &self.caps);
-                        self.view.tools_expanded = tools_expanded;
-                        self.viewport.scrollbar = ScrollbarMode::parse(&self.view.scrollbar);
-                        self.viewport.wheel_lines = self.view.wheel_lines;
-                        self.wheel = wheel_accel(&self.opts.settings, &self.opts.env);
+                        self.refresh_view_settings();
                         self.push_notice(Level::Info, format!("Saved {key}"));
                     }
                     Err(e) => self.push_notice(Level::Error, e.to_string()),

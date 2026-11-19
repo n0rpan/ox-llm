@@ -135,6 +135,7 @@ Type a slash command at the start of the editor and press Enter. Commands with a
 | `/compact [instructions]` | compact the context now, with optional guidance for the summary |
 | `/new` | start a new session |
 | `/resume` | open the sessions picker |
+| `/goal [text\|clear\|pause\|resume]` | show the session goal; with text, set it and start a run that pursues it until complete or blocked; `clear`, `pause` or `resume` control it |
 | `/tree` | navigate the session tree; choose a branch or summarise the one you leave |
 | `/fork` | start a new session from an earlier user message |
 | `/clone` | duplicate the current session at the current point |
@@ -175,12 +176,13 @@ With the default `oxa` skin the footer is a single-line HUD instead of two lines
 - The model, with the thinking level and the thinking note.
 - `CTX` — a meter and the percentage of the window used, and `used/n_ctx` when the window is known.
 - `CACHE` — a meter and the percentage of the last request, when a cache hit is known.
+- `BUDGET` — the authoritative budget, when a front end has one: the scope (`day`, `run` or `goal`), the unit (`$` or `tok`), `used/cap` and the percentage. An unavailable settlement shows `?` instead of a zero, and an incomplete one marks the used value as a lower bound (`8.10+`). From 80 % the part carries a steady `near cap` warning, and at or above the cap `over cap`; nothing flashes, nothing is forecast and the HUD never counts a budget of its own.
 - Decode speed (`tok/s`), only while the engine reports timings.
 - The activity badge, always present; `READY` when idle.
 - `repairs N` and `no summary`, only when they apply.
 - The permission mode (`standard`, `auto`, `yolo`, `plan` or `ask`), always shown, and the profile word when set.
 
-Parts with no data are hidden, and on a narrow terminal parts are dropped in this order until the line fits: the profile word, the decode speed, the cache meter, the `used/n_ctx` figures, `repairs N` / `no summary`, then the context meter shrinks to 5 cells, then the thinking note, the whole `CACHE` part, the thinking level. The permission mode, the model name, the `CTX` percentage, the activity badge and `OXA` are kept; the model name is only cut when nothing else is left.
+Parts with no data are hidden, and on a narrow terminal parts are dropped in this order until the line fits: the profile word, the decode speed, the cache meter, the `used/n_ctx` figures, `repairs N` / `no summary`, then the context meter shrinks to 5 cells, then the thinking note, the whole `CACHE` part, the thinking level, the whole `BUDGET` part. The permission mode, the model name, the `CTX` percentage, the activity badge and `OXA` are kept; the model name is only cut when nothing else is left.
 
 ## Selectors
 

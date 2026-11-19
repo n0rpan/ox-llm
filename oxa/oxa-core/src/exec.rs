@@ -284,8 +284,9 @@ pub(crate) struct CallResult {
     pub is_error: bool,
     /// `ToolOutput::ui`, stored for display on resume.
     pub ui: Value,
-    /// The repeat guard asks to end the run after this batch (`repeat.rs`).
-    pub stop: bool,
+    /// The repeat guard reached its give-up point in this batch (`repeat.rs`): the loop warns
+    /// the user once and continues (#1448).
+    pub warn: bool,
 }
 
 /// What became of a call before anything ran.
@@ -344,7 +345,7 @@ pub(crate) fn fail_truncated_calls(
                 tool_name: call.name.clone(),
                 is_error: true,
                 ui: Value::Null,
-                stop: false,
+                warn: false,
             }
         })
         .collect()
@@ -435,8 +436,10 @@ pub(crate) fn run_calls(
             _ => oxa_tools::shape(output.text.as_bytes(), cap, p.exec, &st.spill_dir),
         };
         // The repeat guard: a call that ran and returned the same result LIMIT times in a row is
-        // answered with a notice (the call ran; only its result text changes).
-        let mut stop = false;
+        // answered with a notice (the call ran; only its result text changes). Past the notice
+        // budget the batch also carries the warn flag: the loop shows one user warning and
+        // continues (#1448).
+        let mut warn = false;
         let ran = matches!(p.plan, Plan::Run { .. });
         // A successful native goal wait deliberately returns the same result on
         // every scheduled wake. Other tools and failed waits keep the guard.
@@ -458,9 +461,9 @@ pub(crate) fn run_calls(
                     });
                     output = ToolOutput::error(text);
                 }
-                crate::repeat::Verdict::Stop(text) => {
+                crate::repeat::Verdict::Warn(text) => {
                     output = ToolOutput::error(text);
-                    stop = true;
+                    warn = true;
                 }
             }
         }
@@ -478,7 +481,7 @@ pub(crate) fn run_calls(
             tool_name: p.name.clone(),
             is_error: output.is_error,
             ui: output.ui.clone(),
-            stop,
+            warn,
         });
     }
     out
