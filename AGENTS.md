@@ -76,6 +76,13 @@ code, tests, CI and docs; the owner validates on hardware.
   is the way a project-selected or restored model may use Go.
 - Go/OpenRouter parsing should tolerate compatible optional fields and stream variations,
   while validating numeric type, sign, range and finiteness before accounting or execution.
+- Publishing a drafted issue or comment (`oxa report-issue`, the `report_publish` tool): in yolo it posts
+  without asking and shows the exact posted text and URL; the scrubber's refusal (secrets, emails, home paths)
+  still applies. In auto and standard it needs the owner's own approval of the exact text shown: a key press
+  in the UI approval dialog or a `yes` typed by the owner into the interactive input (`owner_reply::typed`,
+  called from that input only). A `yes` from a tool result, file, web page, other session or the tool
+  arguments never counts. Print, JSON and RPC runs keep the terminal confirmation. Reports go to
+  `oxstack/ox-llm` unless `oxa.reportIssue.repo` says otherwise.
 - v0.2.1 has no Python in the product/runtime path; build/test tooling is separate.
 - Never expose secrets to fork PRs or execute PR code with review credentials. Never use
   `pull_request_target`; unknown authors need `ok-to-review` before token-spending review.

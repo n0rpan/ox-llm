@@ -433,6 +433,10 @@ impl Ui for LockedUi<'_, '_> {
     fn confirm(&mut self, title: &str, body: &str, timeout_ms: Option<u32>) -> Option<bool> {
         self.with(|u| u.confirm(title, body, timeout_ms))
     }
+    fn approve_publication(&mut self, title: &str, body: &str) -> Option<bool> {
+        self.with(|u| u.approve_publication(title, body))
+    }
+
     fn dialog_canceller(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
         self.with(|u| u.dialog_canceller())
     }
