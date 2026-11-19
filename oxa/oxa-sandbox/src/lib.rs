@@ -262,6 +262,32 @@ impl Bwrap {
             .iter()
             .map(|(path, file)| (*path, file.as_raw_fd()))
             .collect();
+        // Offline, a listed socket is masked at its path rather than bound by fd. A mask
+        // under a writable mount can be moved away by renaming its parent, which would
+        // expose the real host socket through the read-only root bind: refuse such a
+        // configuration instead of emitting a mask that can drift (read-only areas, like
+        // the remounted runtime-IPC directories, keep the mask stable).
+        if !public.net {
+            for socket in &self.layout.sockets {
+                if socket.starts_with(&public.cwd)
+                    || socket.starts_with(&self.home)
+                    || socket.starts_with(std::path::Path::new("/tmp"))
+                    || self.layout.write.iter().any(|w| socket.starts_with(w))
+                {
+                    let mut result = refused(format!(
+                        "the configured sandbox socket {} lies under a writable mount; its \
+                         offline mask could be moved, so the sandbox refuses. Relocate the \
+                         socket or remove it from oxa.sandbox.sockets.",
+                        socket.display()
+                    ));
+                    if !capture {
+                        live(&result.output);
+                        result.output.clear();
+                    }
+                    return result;
+                }
+            }
+        }
         let mut argv = vec![self.bwrap.to_string_lossy().into_owned()];
         argv.extend(bwrap::bwrap_args_pinned(
             &public,
@@ -351,6 +377,41 @@ mod secret_tests {
             "{}",
             String::from_utf8_lossy(&result.output)
         );
+    }
+
+    #[test]
+    fn offline_socket_under_a_writable_mount_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let env = oxa_fake::TestEnv::new();
+        let socket = env.work().join("socket");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let socket = socket.canonicalize().unwrap();
+        // The refusal happens before any bwrap execution: a stub that must never run.
+        let fake = env.write("bin/mock-bwrap", "#!/bin/sh\necho ran >&2\nexit 1\n");
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sandbox = Bwrap {
+            bwrap: fake,
+            home: env.home(),
+            layout: Layout {
+                sockets: vec![socket],
+                ..Layout::default()
+            },
+        };
+        let spec = ExecSpec {
+            command: "true".into(),
+            cwd: env.work(),
+            writable: true,
+            net: false,
+            timeout_s: Some(10),
+            env: Vec::new(),
+        };
+        let result = sandbox.run(&spec, &CancelToken::new(), &mut |_| {});
+        let out = String::from_utf8_lossy(&result.output).into_owned();
+        assert!(
+            out.contains("under a writable mount"),
+            "the driftable mask must be refused, not launched: {out}"
+        );
+        assert!(!out.contains("ran"), "no bwrap may run for a driftable mask");
     }
 
     #[test]
