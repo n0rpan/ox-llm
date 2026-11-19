@@ -442,11 +442,18 @@ impl LeadOwnerBinding {
     pub(super) fn open(&self, prep: &Prep) -> Result<Session, OxaError> {
         // Verified before any session is opened; nothing starts for an unverified caller.
         self.recheck()?;
-        let session = open_named(&prep.built, None, prep.open.clone(), None).map_err(|_| unavailable())?;
+        let mut session =
+            open_named(&prep.built, None, prep.open.clone(), None).map_err(|_| unavailable())?;
         self.recheck()?;
         if session.inner().sref != self.session {
             return Err(unavailable());
         }
+        // The dedicated session keeps one history across surfaces, but a one-shot chat declares no
+        // tools while the terminal declares `worker`: a replayed stored prefix would keep the
+        // other surface's tool set, so the terminal asks for its own before the first prompt.
+        session
+            .sync_tools(&mut oxa_proto::NullSink)
+            .map_err(|_| unavailable())?;
         // Only now, with the binding verified, do saved workers start again.
         if let Some(workers) = &prep.built.hook_sets.workers {
             let _ = workers.resume_after_owner_check();
