@@ -6,8 +6,10 @@
 //!   wider than its parent: a requested mode above the parent's ceiling is clamped to it and a
 //!   notice is returned. `yolo` is passed only when the parent runs in yolo and `yolo` was asked
 //!   for explicitly; a worker without a requested mode runs in `workspace`.
-//! * **Worktrees.** `git -c core.hooksPath=/dev/null worktree add -b agent/<name>
-//!   <repo-parent>/.oxa-worktrees/<repo>/<name> <base>`: hooks are off for the checkout.
+//! * **Worktrees.** `git -c core.hooksPath=/dev/null worktree add --no-checkout -b agent/<name>
+//!   <repo-parent>/.oxa-worktrees/<repo>/<name> <base>`: metadata only on the host, so no hook,
+//!   smudge filter or `.gitattributes` callback of the repository runs outside the sandbox. The
+//!   caller materializes the files inside the sandbox (`oxa work --supervise`, checkout).
 //! * **Child env.** `OXA_WORKER_DEPTH=1`; the parent's `OXA_TRUST_PROJECT` and `OXA_SESSION_HINT`
 //!   are not inherited.
 //! * **Integration boundary (K4).** `child_env` copies whatever GitHub token variables the caller
@@ -225,6 +227,7 @@ pub fn worktree_argv(repo: &Path, name: &str, base: &str) -> Vec<Vec<String>> {
         "core.hooksPath=/dev/null".into(),
         "worktree".into(),
         "add".into(),
+        "--no-checkout".into(),
         "-b".into(),
         format!("agent/{name}"),
         path,
@@ -464,6 +467,7 @@ mod tests {
                 "core.hooksPath=/dev/null",
                 "worktree",
                 "add",
+                "--no-checkout",
                 "-b",
                 "agent/k2-slice",
                 "/home/u/Work/.oxa-worktrees/ox-llm/k2-slice",

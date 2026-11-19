@@ -6,7 +6,8 @@
 //! * Not built in a worker child: `OXA_WORKER_DEPTH` set means nested (see [`built`]).
 //! * `start` checks, in order: the name, the goal, the parent session id, a worker of that name in
 //!   this session, `oxa.workers.max` live workers, an existing branch `agent/<name>`. Then it makes
-//!   the worktree (`git worktree add`), writes the goal file (mode 0600), and spawns the child.
+//!   the worktree (`git worktree add --no-checkout` on the host, then the checkout inside the
+//!   sandbox through `oxa work --supervise`, so no repository filter runs on the host), writes the goal file (mode 0600), and spawns the child.
 //! * The child runs under `env -C <worktree>`: its cwd is the worktree. Its environment is exactly
 //!   `launch::child_env` with the trusted `PATH`, passed to the supervisor (which clears the
 //!   environment first), so no value reaches argv and no secret is listed in `ps`.
@@ -21,7 +22,7 @@ use oxa_proto::{
 use std::fs::{self, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -84,6 +85,8 @@ pub struct ParentScope {
 /// State shared by the tool and the hook set.
 pub struct WorkerCore {
     oxa_bin: PathBuf,
+    /// The identity of `oxa_bin` when this session started; `None` when it could not be read.
+    bin_id: Option<BinId>,
     agent_dir: PathBuf,
     max: usize,
     sessions_dir: PathBuf,
@@ -197,6 +200,31 @@ fn host_git(tools: &HostTools, git: &Path, dir: &Path, args: &[&str]) -> Command
     let mut command = oxa_work::metadata_git(git, &tools.path, dir, args);
     command.stdin(Stdio::null());
     command
+}
+
+/// The identity of the executable a worker runs. Any rename over it or write to it changes the
+/// inode or the change time, so a binary replaced after this session started (the sandbox leaves
+/// a workspace-built `oxa` writable) is never executed outside the sandbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BinId {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+
+impl BinId {
+    fn of(path: &Path) -> io::Result<BinId> {
+        let m = fs::metadata(path)?;
+        Ok(BinId {
+            dev: m.dev(),
+            ino: m.ino(),
+            len: m.len(),
+            mtime: (m.mtime(), m.mtime_nsec()),
+            ctime: (m.ctime(), m.ctime_nsec()),
+        })
+    }
 }
 
 /// Writes `text` to `path`, creating `dir` first: a fresh mode-0600 file beside it, renamed over
@@ -329,6 +357,7 @@ fn describe(rec: &WorkerRecord, sessions_dir: &Path) -> String {
 impl WorkerCore {
     fn new(cfg: WorkerConfig) -> WorkerCore {
         WorkerCore {
+            bin_id: BinId::of(&cfg.oxa_bin).ok(),
             oxa_bin: cfg.oxa_bin,
             agent_dir: cfg.agent_dir,
             max: cfg.max,
@@ -358,6 +387,59 @@ impl WorkerCore {
                 let model = v.get("model").and_then(Value::as_str).unwrap_or("");
                 *lock(&self.session) = (id.to_string(), model.to_string());
             }
+        }
+    }
+
+    /// Refuses to run a worker binary that is not the one this session started from.
+    fn check_bin(&self) -> Result<(), String> {
+        match (&self.bin_id, BinId::of(&self.oxa_bin)) {
+            (Some(then), Ok(now)) if *then == now => Ok(()),
+            _ => Err(format!(
+                "the oxa executable {} changed since this session started (or cannot be read); restart oxa before starting workers",
+                self.oxa_bin.display()
+            )),
+        }
+    }
+
+    /// Checks the empty worktree out inside the sandbox (`oxa work --supervise`, the same
+    /// supervisor `oxa work` uses): hooks and credential helpers are off, there is no network,
+    /// and the filters of the repository run in bwrap, never on the host.
+    fn materialize(&self, tools: &HostTools, worktree: &Path, branch: &str) -> Result<(), String> {
+        self.check_bin()?;
+        let request = oxa_work::SupervisorRequest {
+            source: tools.project.clone(),
+            operation: oxa_work::SupervisorOperation::Checkout {
+                branch: branch.to_string(),
+                create: false,
+                adopted: true,
+                normalize: None,
+            },
+        };
+        let json = serde_json::to_string(&request).map_err(|e| e.to_string())?;
+        let mut command = Command::new(&self.oxa_bin);
+        command.env_clear();
+        for (k, v) in &self.parent_env {
+            if k != "PATH" && !k.starts_with("GIT_") {
+                command.env(k, v);
+            }
+        }
+        let out = command
+            .env("PATH", &tools.path)
+            .env("GIT_NO_REPLACE_OBJECTS", "1")
+            .current_dir(worktree)
+            .args(["work", "--supervise", json.as_str()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|e| format!("cannot run the sandboxed checkout: {e}"))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "the sandboxed worktree checkout failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))
         }
     }
 
@@ -457,6 +539,9 @@ impl WorkerCore {
                 "worker: cannot plan the worktree; the directory must be a git repository with a UTF-8 path",
             );
         }
+        if let Err(e) = self.check_bin() {
+            return ToolOutput::error(format!("worker: {e}"));
+        }
         for step in &steps {
             // Step 0 is the program name (`git`); the trusted binary runs in its place.
             let Some((_, rest)) = step.split_first() else {
@@ -473,6 +558,26 @@ impl WorkerCore {
                 }
                 Err(e) => return ToolOutput::error(format!("worker: cannot run git: {e}")),
             }
+        }
+        // The worktree exists with no files: materialize them inside the sandbox, where a
+        // repository's smudge filters and attributes cannot reach the host. A failed checkout
+        // removes the empty worktree and branch so the name can be tried again.
+        if let Err(e) = self.materialize(&tools, &worktree, &branch) {
+            let path = worktree.to_string_lossy().into_owned();
+            let _ = host_git(
+                &tools,
+                &git,
+                cwd,
+                &["worktree", "remove", "--force", path.as_str()],
+            )
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+            let _ = host_git(&tools, &git, cwd, &["branch", "-D", branch.as_str()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            return ToolOutput::error(format!("worker: {e}"));
         }
 
         // Artifacts are per parent session: two sessions of one agent directory may start a
@@ -508,6 +613,9 @@ impl WorkerCore {
         let Some(env_bin) = tools.program("env") else {
             return ToolOutput::error("worker: env was not found in a trusted PATH directory");
         };
+        if let Err(e) = self.check_bin() {
+            return ToolOutput::error(format!("worker: {e}"));
+        }
         let mut command = cwd_wrapper(&env_bin, &worktree);
         command.push(self.oxa_bin.to_string_lossy().into_owned());
         command.extend(argv.iter().cloned());
@@ -817,7 +925,15 @@ mod tests {
         git(&["init", "-q"]);
         git(&["commit", "-q", "--allow-empty", "-m", "init"]);
         let fake = root.join("fake-oxa");
-        fs::write(&fake, "#!/bin/sh\nsleep 30\n").unwrap();
+        // `work --supervise` is the sandboxed checkout: it records its argv and returns.
+        fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = work ]; then echo \"$@\" >> '{}/ran-supervise'; exit 0; fi\nsleep 30\n",
+                root.display()
+            ),
+        )
+        .unwrap();
         fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
         (root, repo, agent, fake)
     }
@@ -1066,6 +1182,88 @@ mod tests {
         assert!(!ok.is_error, "{}", ok.text);
         assert_eq!(registry::load(&agent, "parent-1").unwrap()[0].model, "model-x");
         let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn worker_start_never_runs_a_checkout_filter_on_the_host() {
+        let (root, repo, agent, fake) = fixture("filter");
+        let git = |args: &[&str]| {
+            let ok = Command::new("git")
+                .arg("-c")
+                .arg("user.name=test")
+                .arg("-c")
+                .arg("user.email=test@example.invalid")
+                .args(args)
+                .current_dir(&repo)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        fs::write(repo.join("a.txt"), "content\n").unwrap();
+        fs::write(repo.join(".gitattributes"), "a.txt filter=probe\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "files"]);
+        // A smudge filter that leaves a marker outside the worktree when it runs.
+        let marker = root.join("filter-ran");
+        git(&[
+            "config",
+            "filter.probe.smudge",
+            &format!("sh -c 'touch {}; cat'", marker.display()),
+        ]);
+        let hooks = hooks(&fake, &agent);
+        set_session(&hooks, "parent-1");
+        let out = hooks.core.start(
+            &json!({"action": "start", "name": "alpha", "goal": "one"}),
+            &repo,
+            Mode::Workspace,
+            Autonomy::Standard,
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(!marker.exists(), "a repository filter ran on the host");
+        // The checkout was handed to the sandboxed supervisor as a checkout request.
+        let ran = fs::read_to_string(root.join("ran-supervise")).unwrap_or_default();
+        assert!(
+            ran.contains("--supervise") && ran.contains("\"kind\":\"checkout\""),
+            "supervisor argv: {ran}"
+        );
+        let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn worker_start_refuses_a_replaced_executable() {
+        let (root, repo, agent, fake) = fixture("pin");
+        let hooks = hooks(&fake, &agent);
+        set_session(&hooks, "parent-1");
+        // Another file renamed over the binary after the session started.
+        let other = root.join("other-oxa");
+        fs::write(
+            &other,
+            format!("#!/bin/sh\ntouch '{}/replacement-ran'\n", root.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&other, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::rename(&other, &fake).unwrap();
+        let out = hooks.core.start(
+            &json!({"action": "start", "name": "alpha", "goal": "one"}),
+            &repo,
+            Mode::Workspace,
+            Autonomy::Standard,
+        );
+        assert!(out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("changed since this session started"),
+            "{}",
+            out.text
+        );
+        assert!(!root.join("replacement-ran").exists(), "the replacement ran");
+        assert!(!worktree_path(&repo, "alpha").unwrap().exists());
+        assert!(registry::load(&agent, "parent-1").unwrap().is_empty());
         let _ = fs::remove_dir_all(&root);
     }
 
