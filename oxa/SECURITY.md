@@ -29,8 +29,7 @@ What oxa defends against:
 What oxa does not defend against:
 
 - Commands you run yourself. `!cmd` runs with your rights and outside the bash sandbox.
-- Stdio MCP servers and extensions you install. A stdio MCP server runs with your rights, outside the bash sandbox. Extensions have no ambient file, network or process access of their own. Exec hooks always run in their dedicated sandbox, without network.
-- Model bash in an attended run unless you select `--sandbox` or `oxa.sandbox.interactive`. It has your filesystem and network rights, subject to the permission prompts and `oxa.sandbox.net`; use the sandbox option for untrusted content.
+- Stdio MCP servers and extensions you install. A stdio MCP server runs with your rights, outside the bash sandbox. Extensions have no ambient file, network or process access of their own. Exec hooks run in the sandbox, without network, except under yolo (also a yolo-started unattended worker), where they run with your rights like bash.
 - Network use by the model's tools. With the default `oxa.sandbox.net: "on"`, a command the model runs in bash can send what bash can read to any host, and `web_search` sends its query to Brave. Offline mode, `oxa.sandbox.net: "off"` or `ask` mode limit this; none of them stops a steered model from reading what it can reach.
 - Files the deny-list does not cover, such as the `.env` file of a project. Bash and the file tools can read them.
 - Actions you allow: an "Allow for this session" grant applies until the run ends, and `--approve` trusts a project for one run.

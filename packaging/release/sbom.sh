@@ -46,6 +46,7 @@ for workspace in engine oxa oxc oxc-rs; do
        elif $directory | startswith($root) then "path+workspace/" + ($directory | ltrimstr($root))
        else "path+" + $directory end) as $source |
       ($checksums[.name + "\u0000" + .version + "\u0000" + (.source // "")] // "") as $checksum |
+      (.license // "") as $license |
       ("pkg:cargo/" + (.name | @uri) + "@" + (.version | @uri) +
        "?source=" + ($source | @uri)) as $ref |
       {type: "library", "bom-ref": $ref, name, version, purl: $ref,
@@ -53,7 +54,7 @@ for workspace in engine oxa oxc oxc-rs; do
          {name: "ox-llm:scope", value: $scope},
          {name: "ox-llm:cargo-source", value: $source}
        ]} |
-      if (.license // "") != "" then .licenses = [{expression: .license}] else . end |
+      if $license != "" then .licenses = [{expression: $license}] else . end |
       if $checksum != "" then .hashes = [{alg: "SHA-256", content: $checksum}] else . end
     ' >> "$work/components"
 done

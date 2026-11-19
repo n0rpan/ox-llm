@@ -179,8 +179,9 @@ pub(crate) fn run_unsandboxed_stdin_env(
     r
 }
 
-/// [`run_unsandboxed`] with `stdin` written to the command's standard input and then closed
-/// Used by explicitly host-side callers that must provide standard input.
+/// [`run_unsandboxed`] with `stdin` written to the command's standard input and then closed.
+/// Used by explicitly host-side callers that must provide standard input. The child starts from
+/// an empty environment plus `s.env`, like every other unsandboxed model command.
 pub fn run_unsandboxed_stdin(
     s: &ExecSpec,
     stdin: &[u8],
@@ -194,6 +195,19 @@ pub fn run_unsandboxed_stdin(
         .env_clear()
         .envs(s.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     execute(cmd, "bash", Some(stdin), s.timeout_s, cancel, live, true)
+}
+
+/// [`run_unsandboxed_stdin`] with the process environment plus `s.env`, like bash under yolo.
+pub(crate) fn run_unsandboxed_stdin_inherit(
+    s: &ExecSpec,
+    stdin: &[u8],
+    cancel: &CancelToken,
+    live: &mut dyn FnMut(&[u8]),
+) -> ExecResult {
+    let cmd = unsandboxed_command(s, None);
+    let mut r = execute(cmd, "bash", Some(stdin), s.timeout_s, cancel, live, true);
+    r.unsandboxed = !cfg!(target_os = "linux");
+    r
 }
 
 /// Bounded capture: the first and last `cap / 2` bytes, with a count of what was dropped.

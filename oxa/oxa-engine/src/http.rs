@@ -38,7 +38,7 @@ impl Url {
             _ => {
                 return Err(bad(
                     format!("engine URL must start with http://: {s}"),
-                    "use http://host:port, for example http://127.0.0.1:8092",
+                    "use http://host:port, for example http://127.0.0.1:8080",
                 ))
             }
         };
