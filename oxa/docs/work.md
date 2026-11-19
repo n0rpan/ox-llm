@@ -1,5 +1,12 @@
 # Unattended work
 
+## Worker mode
+
+`oxa work` workers start in their default mode inside the tool sandbox. When the owner's
+own settings (`permissions.defaultMode` in the user layer) say `yolo`, the runner starts
+every worker with `--yolo`: no prompts and no tool sandbox. Without yolo nothing changes.
+A project's settings are not read for this and cannot raise the worker mode.
+
 `oxa work board --shadow --repo OWNER/REPO --once` captures a read-only GitHub sample.
 For continuous five-minute sampling use `--token-stdin`: the caller supplies a fresh
 newline-terminated App token on a private pipe before each sample. No token is
