@@ -6,9 +6,7 @@
 //! A crash can lose an admitted message or replay one whose file wasn't removed yet.
 use crate::SessionRef;
 use sha2::{Digest, Sha256};
-#[cfg(not(target_os = "linux"))]
-use std::ffi::CString;
-use std::ffi::{OsStr, OsString};
+use std::ffi::{CString, OsStr, OsString};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
