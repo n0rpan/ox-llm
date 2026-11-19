@@ -74,12 +74,6 @@ The source package provides read-only diagnostics and installation tooling; it i
 live-user installer. Start with [the sandbox bootstrap](docs/BOOTSTRAP-INSTALL.md) for its supported
 source-install and rollback boundary, and [reproduction](docs/REPRODUCE.md) for engine setup.
 
-Model-free checks run anywhere with Python 3:
-
-```sh
-PYTHONPATH=src python3 -B -m oxc doctor
-```
-
 ## Supported models
 
 | Model | Role | Engine | Context |
