@@ -127,11 +127,45 @@ fn embedded_known_token(text: &str) -> bool {
             regex::Regex::new(concat!(
                 r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-(?:ant|proj)-[A-Za-z0-9_-]{16,}",
                 r"|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}",
-                r"|glpat-[A-Za-z0-9_-]{20,}"
+                r"|glpat-[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9]{30,}"
             ))
             .expect("embedded token pattern")
         })
         .is_match(text)
+}
+
+/// An unquoted environment assignment whose (possibly prefixed) name denotes a
+/// credential. The shared scrubber pattern deliberately uses word boundaries,
+/// which do not split `DB_PASSWORD` or `API_TOKEN`.
+fn environment_secret_assignment(text: &str) -> bool {
+    static ASSIGNMENT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    ASSIGNMENT
+        .get_or_init(|| {
+            regex::Regex::new(concat!(
+                r"(?i)(?:^|[^A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*",
+                r"(?:password|passwd|passphrase|secret|token|api_?key|access_?key)",
+                r"[A-Za-z0-9_]*\s*=\s*([^\s#]+)"
+            ))
+            .expect("environment secret assignment pattern")
+        })
+        .captures_iter(text)
+        .any(|found| opaque_value(&found[1]))
+}
+
+/// A YAML secret key followed by a block-scalar marker and one of its added
+/// value lines. `scan_patch` supplies this bounded two-line context.
+fn block_scalar_secret(text: &str) -> bool {
+    static BLOCK: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    BLOCK
+        .get_or_init(|| {
+            regex::Regex::new(concat!(
+                r"(?i)(?:^|[^a-z])(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|token",
+                r"|secret|password|passwd|passphrase|authorization|key)\s*:\s*[|>]\d?[+-]?\s*\n[^\n]*?([^\s].*)$"
+            ))
+            .expect("YAML secret block pattern")
+        })
+        .captures_iter(text)
+        .any(|found| opaque_value(found[1].trim()))
 }
 
 fn basename(path: &str) -> String {
@@ -271,6 +305,8 @@ impl PushScan {
         let value_of = |text: &str| text.split_whitespace().last().unwrap_or_default().to_string();
         if p.keyed.captures_iter(text).any(|found| opaque_value(&found[2]))
             || quoted_secret_literal(text)
+            || environment_secret_assignment(text)
+            || block_scalar_secret(text)
             || p.bearer
                 .find_iter(text)
                 .any(|found| opaque_value(&value_of(found.as_str())))
@@ -372,7 +408,7 @@ mod tests {
         let token = format!("API_TOKEN=ghp_{}", "x".repeat(36));
         let password = "PASSWORD=opaque-pass-value-17".to_string();
         for text in [token, password] {
-            assert!(scan.check(&added(".env.example", &text)).is_some(), "{text}");
+            assert!(scan.check(&added(".env.example", &text)).is_some());
         }
         // A real `.env` still refuses plain lines.
         assert!(scan.check(&line(".env", "PORT=8080")).is_some());
@@ -403,8 +439,9 @@ mod tests {
         let pat = format!("v{}{}", "github_pat_", "A".repeat(30));
         let aws = format!("Z{}{}", "AKIA", "X".repeat(16));
         let slack = format!("q{}{}", "xoxb-", "1".repeat(12));
-        for text in [github, pat, aws, slack] {
-            assert!(scan.check(&added("notes.txt", &text)).is_some(), "{text}");
+        let hugging_face = format!("x{}{}", "hf_", "a1".repeat(15));
+        for text in [github, pat, aws, slack, hugging_face] {
+            assert!(scan.check(&added("notes.txt", &text)).is_some());
         }
         // Ordinary words that contain a prefix are not tokens.
         for text in [
@@ -540,6 +577,36 @@ mod tests {
         ] {
             assert!(scan.check(&line("src/main.rs", text)).is_none(), "{text}");
         }
+    }
+
+    #[test]
+    fn prefixed_environment_assignments_are_refused() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        for text in [
+            "DB_PASSWORD=opaque-pass-value-17",
+            "API_TOKEN=opaque-pass-value-17",
+            "SERVICE_API_KEY=opaque-pass-value-17",
+        ] {
+            assert!(scan.check(&line(".env.example", text)).is_some());
+        }
+        for text in [
+            "API_TOKEN=${TOKEN}",
+            "DB_PASSWORD=<password>",
+            "TOKEN=placeholder",
+        ] {
+            assert!(scan.check(&line(".env.example", text)).is_none());
+        }
+    }
+
+    #[test]
+    fn yaml_block_scalar_context_is_refused() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        assert!(scan
+            .check(&line("settings.yml", "password: |-\n  opaque-pass-value-17"))
+            .is_some());
+        assert!(scan
+            .check(&line("settings.yml", "description: |-\n  opaque-pass-value-17"))
+            .is_none());
     }
 
     #[test]

@@ -272,6 +272,7 @@ fn scan_commit_object(commit: &str, raw: &str, scan: ContentScan<'_>) -> Result<
 /// Pass every added file name and added line of `git log --patch --cc -U0` output to `scan`.
 fn scan_patch(text: &str, scan: ContentScan<'_>) -> Result<()> {
     let (mut path, mut added, mut hunk, mut parents, mut line) = (None::<String>, false, false, 1, 0);
+    let mut block_scalar_header: Option<String> = None;
     for row in text.lines() {
         if row.starts_with('\0') || row.starts_with("diff --") {
             parents = if row.starts_with("diff --cc ") || row.starts_with("diff --combined ") {
@@ -280,6 +281,7 @@ fn scan_patch(text: &str, scan: ContentScan<'_>) -> Result<()> {
                 1
             };
             (path, added, hunk) = (None, false, false);
+            block_scalar_header = None;
             continue;
         }
         if row.starts_with("@@") {
@@ -292,6 +294,7 @@ fn scan_patch(text: &str, scan: ContentScan<'_>) -> Result<()> {
                 .and_then(|start| start.parse().ok())
                 .ok_or("publishing refused: cannot scan the commits to publish")?;
             hunk = true;
+            block_scalar_header = None;
             continue;
         }
         if !hunk {
@@ -319,6 +322,7 @@ fn scan_patch(text: &str, scan: ContentScan<'_>) -> Result<()> {
             continue;
         };
         if marks.contains('-') || row.starts_with('\\') {
+            block_scalar_header = None;
             continue;
         }
         if marks.contains('+') {
@@ -336,7 +340,30 @@ fn scan_patch(text: &str, scan: ContentScan<'_>) -> Result<()> {
                 if let Some(finding) = scan(&item) {
                     return Err(refusal(name, Some(line), finding));
                 }
+                if let Some(header) = block_scalar_header.as_deref() {
+                    let context = format!("{header}\n{text}");
+                    let item = PushedContent {
+                        path: name,
+                        line: Some(line),
+                        text: &context,
+                    };
+                    if let Some(finding) = scan(&item) {
+                        return Err(refusal(name, Some(line), finding));
+                    }
+                }
             }
+            let trimmed = rest.trim_end();
+            if trimmed.ends_with('|')
+                || trimmed.ends_with("|-")
+                || trimmed.ends_with("|+")
+                || trimmed.ends_with('>')
+                || trimmed.ends_with(">-")
+                || trimmed.ends_with(">+")
+            {
+                block_scalar_header = Some(rest.to_string());
+            }
+        } else {
+            block_scalar_header = None;
         }
         line += 1;
     }
