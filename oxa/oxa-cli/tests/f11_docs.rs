@@ -440,7 +440,12 @@ fn user_pages_name_no_internal_id() {
 #[test]
 fn settings_page_lists_every_schema_key() {
     let root = repo_root();
-    let keys: Vec<&str> = oxa_config::schema().iter().map(|d| d.key).collect();
+    // Accepted-and-ignored keys (`supported: false`) are not documented rows.
+    let keys: Vec<&str> = oxa_config::schema()
+        .iter()
+        .filter(|d| d.supported)
+        .map(|d| d.key)
+        .collect();
     assert!(keys.len() > 50, "the schema has {} keys", keys.len());
     let page = fs::read_to_string(root.join("docs/pages/settings.md")).expect("read settings.md");
     let missing: Vec<&&str> = keys
