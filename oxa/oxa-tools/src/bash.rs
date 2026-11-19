@@ -2228,10 +2228,16 @@ mod poll_tests {
         let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone())
             .with_sandbox(Arc::new(Slow { ms: 60_000 }));
         let (out, streamed) = job_call(&tool, json!({"command": "sleep 99", "timeout": 1}));
-        assert!(!out.is_error, "{}", out.text);
-        assert!(out.text.contains("still running after 1 s"), "{}", out.text);
-        assert!(out.text.contains("background job job-1"), "{}", out.text);
-        assert!(out.text.contains("start"), "{}", out.text);
+        assert!(!out.is_error, "unexpected bash result");
+        assert!(
+            out.text.contains("still running after 1 s"),
+            "unexpected bash result"
+        );
+        assert!(
+            out.text.contains("background job job-1"),
+            "unexpected bash result"
+        );
+        assert!(out.text.contains("start"), "unexpected bash result");
         assert_eq!(out.ui["job"], json!("job-1"));
         assert_eq!(out.ui["movedToBackground"], json!(true));
         assert!(streamed.contains("start"), "{streamed}");
@@ -2251,7 +2257,7 @@ mod poll_tests {
             },
             &mut |_| {},
         );
-        assert!(read.text.contains("killed"), "{}", read.text);
+        assert!(read.text.contains("killed"), "unexpected kill result");
     }
 
     #[test]
@@ -2260,7 +2266,7 @@ mod poll_tests {
         let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone())
             .with_sandbox(Arc::new(Slow { ms: 20 }));
         let (out, streamed) = job_call(&tool, json!({"command": "true", "timeout": 30}));
-        assert!(!out.is_error, "{}", out.text);
+        assert!(!out.is_error, "unexpected bash result");
         assert_eq!(out.text, "start\nend\n");
         assert_eq!(out.ui, json!({"exit": 0, "timedOut": false}));
         assert_eq!(streamed, "start\nend\n");
