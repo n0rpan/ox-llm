@@ -301,6 +301,14 @@ impl Gateway {
         }
         Ok(())
     }
+    #[cfg(feature = "upstream-openai")]
+    fn catalog_plan(&self) -> Option<crate::catalog_discovery::Plan<'_>> {
+        self.runtime.plan()
+    }
+    #[cfg(not(feature = "upstream-openai"))]
+    fn catalog_plan(&self) -> Option<crate::catalog_discovery::Plan<'_>> {
+        None
+    }
     fn fetch_catalog(
         &self,
         source: &Source,
@@ -314,8 +322,13 @@ impl Gateway {
             .enable_all()
             .build()
             .map_err(|_| Error::Upstream(anthropic_client::Error::Setup))?;
-        let result =
-            driver.block_on(source.fetch(&self.client, key, timeout, self.runtime.catalog_cache_dir()));
+        let result = driver.block_on(source.fetch(
+            &self.client,
+            key,
+            timeout,
+            self.runtime.catalog_cache_dir(),
+            self.catalog_plan(),
+        ));
         driver.shutdown_timeout(Duration::from_secs(1));
         result.map_err(Error::Upstream)
     }

@@ -23,6 +23,13 @@ impl Key {
         &self.0
     }
 
+    /// Cache-binding key for a sign-in that has no API key: derived from the account, so a
+    /// catalog saved for one account is never served to another. It authorizes nothing.
+    #[cfg(feature = "upstream-openai")]
+    pub(crate) fn for_account(account_id: &str) -> Self {
+        Self(format!("chatgpt-account:{account_id}"))
+    }
+
     #[cfg(feature = "anthropic-gateway")]
     pub(crate) fn account_scope(&self) -> [u8; 32] {
         use sha2::{Digest, Sha256};

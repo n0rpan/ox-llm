@@ -109,7 +109,7 @@ Sign in once, in your own terminal:
 $ oxa login chatgpt --experimental
 ```
 
-That opens the gateway; plan models are not listed automatically yet, so add a `chatgpt` route under `oxa.cloud.models` for each model you want (see the settings reference). To add your own route or advisory daily limits (a warning at 80% and 100%, never a refusal), use:
+That opens the gateway and lists the models your plan offers, live, the way the Codex CLI does (`chatgpt/<model>`); the list is cached and refreshed in the background, so no route is needed in your settings. To add your own route or advisory daily limits (a warning at 80% and 100%, never a refusal), use:
 
 ```json
 {

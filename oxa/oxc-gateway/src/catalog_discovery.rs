@@ -18,6 +18,15 @@ const MAX_LISTED_MODELS: usize = 8192;
 
 pub use crate::catalog_cache::State;
 
+/// What a ChatGPT-plan list needs besides the cache key: the owner's token file and the refresh
+/// settings. Held by the gateway's runtime; the token itself is read only inside the transport.
+pub struct Plan<'a> {
+    pub token_path: &'a Path,
+    pub refresh_endpoint: &'a str,
+    pub client_id: &'a str,
+    pub timeout: Duration,
+}
+
 pub struct Status {
     pub state: State,
     pub missing_price: usize,
@@ -47,10 +56,15 @@ impl Source {
             Provider::Anthropic => "anthropic-catalog-cache.json",
             #[cfg(feature = "upstream-openai")]
             Provider::OpenAi => "openai-catalog-cache.json",
+            #[cfg(feature = "upstream-openai")]
+            Provider::ChatGpt => "chatgpt-catalog-cache.json",
             _ => return None,
         };
-        let metadata_base = matches!(provider, Provider::OpenAi | Provider::Anthropic)
-            .then(|| PUBLIC_METADATA_BASE.to_owned());
+        let metadata_base = matches!(
+            provider,
+            Provider::OpenAi | Provider::ChatGpt | Provider::Anthropic
+        )
+        .then(|| PUBLIC_METADATA_BASE.to_owned());
         Some(Self {
             provider,
             base: base.to_owned(),
@@ -81,12 +95,14 @@ impl Source {
         Some((state, parse(&snapshot["data"]).ok()?))
     }
 
+    #[cfg_attr(not(feature = "upstream-openai"), allow(unused_variables))]
     pub(crate) async fn fetch(
         &self,
         client: &Client,
         key: &Key,
         timeout: Duration,
         directory: &Path,
+        plan: Option<Plan<'_>>,
     ) -> Result<Vec<Offer>, Error> {
         let rows: Vec<Value> = match self.provider {
             Provider::OpenRouter => crate::openrouter::Client::from_messages_transport(
@@ -118,15 +134,34 @@ impl Source {
             Provider::OpenAi => crate::openai::client::Client::from_messages_transport(client)
                 .models(&self.base, key, timeout)
                 .await
-                .map_err(|error| match error {
-                    crate::openai::client::Error::Http {status,..} => Error::Http(status),
-                    crate::openai::client::Error::Endpoint => Error::Endpoint,
-                    crate::openai::client::Error::TooLarge => Error::TooLarge,
-                    _ => Error::Transport,
-                })?
+                .map_err(openai_error)?
                 .into_iter()
                 .map(|id| json!({"id": id}))
                 .collect(),
+            #[cfg(feature = "upstream-openai")]
+            Provider::ChatGpt => {
+                let plan = plan.ok_or(Error::Request("subscription"))?;
+                crate::openai::client::Client::from_messages_transport(client)
+                    .plan_models(
+                        &self.base,
+                        plan.token_path,
+                        crate::openai::client::Refresh {
+                            endpoint: plan.refresh_endpoint,
+                            client_id: plan.client_id,
+                            timeout: plan.timeout,
+                        },
+                        timeout,
+                    )
+                    .await
+                    .map_err(openai_error)?
+                    .into_iter()
+                    // A window outside the accepted range stays unknown, never a refusal.
+                    .map(|(id, context)| {
+                        let context = context.filter(|n| *n > 0 && *n <= u64::from(u32::MAX));
+                        json!({"id": id, "context": context})
+                    })
+                    .collect()
+            }
             _ => return Err(Error::Request("provider")),
         };
         let mut rows = rows;
@@ -145,6 +180,16 @@ impl Source {
     }
 }
 
+#[cfg(feature = "upstream-openai")]
+fn openai_error(error: crate::openai::client::Error) -> Error {
+    match error {
+        crate::openai::client::Error::Http { status, .. } => Error::Http(status),
+        crate::openai::client::Error::Endpoint => Error::Endpoint,
+        crate::openai::client::Error::TooLarge => Error::TooLarge,
+        _ => Error::Transport,
+    }
+}
+
 impl Source {
     /// Fill the limits and prices the provider's own list lacks from the public catalog, matched
     /// by upstream id. Anything the provider already gave stays; a failed fetch changes nothing.
@@ -152,7 +197,7 @@ impl Source {
         let (Some(base), Some(prefix)) = (
             &self.metadata_base,
             match self.provider {
-                Provider::OpenAi => Some("openai/"),
+                Provider::OpenAi | Provider::ChatGpt => Some("openai/"),
                 Provider::Anthropic => Some("anthropic/"),
                 _ => None,
             },
@@ -184,7 +229,8 @@ impl Source {
             };
             fill("context", Some(model.context_length));
             fill("output", model.max_completion_tokens);
-            if row["pricing"].is_null() {
+            // A plan route is a subscription: it never carries a per-token price.
+            if row["pricing"].is_null() && self.provider != Provider::ChatGpt {
                 let prices = price_fields(model);
                 if !prices.is_empty() {
                     row["pricing"] = Value::Object(prices);
@@ -369,6 +415,21 @@ mod tests {
         assert_eq!(offers[0].context, Some(4096));
         assert_eq!(offers[0].max_output, Some(64));
         assert!(offers[0].price.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_plan_model_gets_its_output_limit_but_never_a_price() {
+        let rows = fill(
+            Provider::ChatGpt,
+            200,
+            CATALOG,
+            vec![json!({"id": "gpt-6.2-sol", "context": 272000})],
+        )
+        .await;
+        let offers = parse(&Value::Array(rows)).unwrap();
+        assert_eq!(offers[0].context, Some(272_000));
+        assert_eq!(offers[0].max_output, Some(128_000));
+        assert!(offers[0].price.is_none());
     }
 
     #[tokio::test]

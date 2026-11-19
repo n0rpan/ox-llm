@@ -541,7 +541,12 @@ fn open_gateway_with_go(
         };
         routes.push((model, billing));
     }
-    let (subscription, subscription_limits) = subscription_options(cloud, needs_subscription)?;
+    // The ChatGPT plan's model list needs the sign-in refresh settings too.
+    let signed_in = credential_path(dirs)
+        .parent()
+        .is_some_and(|dir| dir.join("chatgpt-auth.json").is_file());
+    let (subscription, subscription_limits) =
+        subscription_options(cloud, needs_subscription || (discover && signed_in))?;
     let cap = match cloud.get("daily_budget_usd") {
         None | Some(Value::Null) => None,
         Some(value) => Some(value.as_f64().ok_or_else(invalid)?),
@@ -551,6 +556,7 @@ fn open_gateway_with_go(
         for (provider, default) in [
             (Provider::OpenRouter, "https://openrouter.ai/api/v1"),
             (Provider::OpenAi, oxc_gateway::openai::client::API_BASE),
+            (Provider::ChatGpt, oxc_gateway::openai::client::SUBSCRIPTION_BASE),
             (Provider::Anthropic, "https://api.anthropic.com"),
         ] {
             let mut configured = routes.iter().filter_map(|(model, _)| {

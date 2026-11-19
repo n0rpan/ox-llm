@@ -298,11 +298,32 @@ impl Runtime {
         {
             return Err(catalog_error(error));
         }
+        #[cfg(feature = "upstream-openai")]
+        if provider == Provider::ChatGpt {
+            // The plan has no API key: a usable sign-in and refresh settings are the credential.
+            return Ok(self.subscription.as_ref().and_then(|_| {
+                crate::openai::chatgpt_tokens::read(&self.token_path)
+                    .ok()
+                    .map(|record| Key::for_account(record.account_id()))
+            }));
+        }
         Ok(self
             .key_file
             .as_ref()
             .ok()
             .and_then(|file| file.read(provider.as_str()).ok()))
+    }
+
+    /// The token file and refresh settings a ChatGPT-plan model list needs.
+    #[cfg(feature = "upstream-openai")]
+    pub(crate) fn plan(&self) -> Option<crate::catalog_discovery::Plan<'_>> {
+        let subscription = self.subscription.as_ref()?;
+        Some(crate::catalog_discovery::Plan {
+            token_path: &self.token_path,
+            refresh_endpoint: &subscription.refresh_endpoint,
+            client_id: &subscription.client_id,
+            timeout: subscription.timeout,
+        })
     }
 
     pub(crate) fn apply_provider_catalog(
@@ -358,6 +379,24 @@ impl Runtime {
                     (None, Some(output)) => Some((UNKNOWN_CONTEXT.max(output), output)),
                     _ => None,
                 };
+                if source.provider() == Provider::ChatGpt {
+                    // A plan model is an unpriced subscription route with advisory limits.
+                    missing_limits += usize::from(limits.is_none());
+                    let (context, output) = limits.unwrap_or((UNKNOWN_CONTEXT, UNKNOWN_OUTPUT));
+                    let Ok(model) = Model::new(
+                        alias,
+                        source.provider(),
+                        &offer.id,
+                        source.base(),
+                        context,
+                        output,
+                    ) else {
+                        continue;
+                    };
+                    billings.insert(alias.into(), Billing::Subscription);
+                    routes.push(model);
+                    continue;
+                }
                 let price = match (self.billings.get(alias), offer.price.as_ref()) {
                     (Some(Billing::Metered(configured)), live) if configured.is_estimated() => live.cloned(),
                     (Some(Billing::Metered(configured)), Some(live)) => {
