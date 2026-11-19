@@ -12,7 +12,8 @@ use oxa_sandbox::NoSandbox;
 use oxa_session::{MemStore, SessionStore};
 use std::sync::Arc;
 
-const SEVEN: [&str; 7] = ["bash", "edit", "find", "grep", "ls", "read", "write"];
+// The seven built-ins plus `wait`, which every session declares.
+const SEVEN: [&str; 8] = ["bash", "edit", "find", "grep", "ls", "read", "wait", "write"];
 
 fn write_settings(env: &TestEnv, json: &str) {
     let path = Dirs::under(env.root()).settings_file();
