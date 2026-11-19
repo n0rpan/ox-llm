@@ -4,10 +4,13 @@
 //! * Pure functions of their arguments (no process environment, no clock, no I/O).
 //! * Randomness comes only from a seed the caller passes in, so a session replays the same picks.
 
+pub mod director;
 pub mod pick;
 pub mod render;
 
 pub mod data;
+
+pub use director::{pending_of, Director, Pending};
 
 pub use data::{
     ascii_text, glyph_allowed, load_pack, Frame, Intensity, Loaded, Looping, Scene, Skip, Tier, CAPTION_LONG,
