@@ -173,9 +173,7 @@ impl FullAccess {
         if !self.no_net() {
             let spec = self.host_spec(s);
             if let Some(net) = &self.host_net {
-                return net.redact_output(s.net, live, |live| {
-                    run_unsandboxed_capture(&spec, c, live, capture)
-                });
+                return net.redact_host_output(live, |live| run_unsandboxed_capture(&spec, c, live, capture));
             }
             return run_unsandboxed_capture(&spec, c, live, capture);
         }
@@ -193,7 +191,14 @@ impl FullAccess {
         match crate::offline::model_offline_argv(&self.path_var, &self.home, &s.cwd, &s.command) {
             Ok(argv) => {
                 let spec = self.host_spec(s);
-                crate::run::run_argv_cleared(&argv, &spec.env, stdin, s.timeout_s, c, live, capture)
+                let run = |live: &mut dyn FnMut(&[u8])| {
+                    crate::run::run_argv_cleared(&argv, &spec.env, stdin, s.timeout_s, c, live, capture)
+                };
+                // The network-disabled path still reads the same token files: scrub them too.
+                match &self.host_net {
+                    Some(net) => net.redact_host_output(live, run),
+                    None => run(live),
+                }
             }
             Err(_) => {
                 let message = oxa_proto::offline_error("bash under full access")
@@ -268,7 +273,7 @@ impl Sandbox for FullAccess {
         if !self.no_net() {
             let spec = self.host_spec(s);
             if let Some(net) = &self.host_net {
-                return net.redact_output(s.net, live, |live| run_unsandboxed_stdin(&spec, stdin, c, live));
+                return net.redact_host_output(live, |live| run_unsandboxed_stdin(&spec, stdin, c, live));
             }
             return run_unsandboxed_stdin(&spec, stdin, c, live);
         }

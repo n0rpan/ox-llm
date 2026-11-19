@@ -25,6 +25,11 @@ pub struct NetSandbox {
     /// once per process, and redaction knows it in every later session.
     gh_token: Arc<std::sync::OnceLock<Option<String>>>,
     gh_source: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    /// Every credential the owner's GitHub CLI holds (all accounts and hosts), found lazily
+    /// once for output redaction on host-rights paths. Unlike `gh_token` this does not depend
+    /// on the bash network: a token file is readable with the network off too.
+    host_secrets: Arc<std::sync::OnceLock<Vec<String>>>,
+    host_source: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
 }
 
 /// The replacement for a redacted token in tool output.
@@ -50,14 +55,25 @@ fn redact(bytes: &[u8], token: &str) -> Vec<u8> {
 /// A streaming redactor: holds back at most `token.len() - 1` bytes (a suffix that could be the
 /// start of the token) between chunks; [`StreamRedactor::finish`] flushes them at EOF.
 struct StreamRedactor<'a> {
-    token: &'a [u8],
+    tokens: Vec<&'a [u8]>,
     pending: Vec<u8>,
 }
 
 impl<'a> StreamRedactor<'a> {
     fn new(token: &'a str) -> Self {
+        Self::many(&[token])
+    }
+
+    /// Several secrets at once; the longest is tried first at every position.
+    fn many(tokens: &[&'a str]) -> Self {
+        let mut tokens: Vec<&[u8]> = tokens
+            .iter()
+            .map(|t| t.as_bytes())
+            .filter(|t| !t.is_empty())
+            .collect();
+        tokens.sort_by_key(|t| std::cmp::Reverse(t.len()));
         StreamRedactor {
-            token: token.as_bytes(),
+            tokens,
             pending: Vec::new(),
         }
     }
@@ -65,16 +81,15 @@ impl<'a> StreamRedactor<'a> {
     /// Feed a chunk; returns the bytes now safe to show.
     fn push(&mut self, chunk: &[u8]) -> Vec<u8> {
         self.pending.extend_from_slice(chunk);
-        let t = self.token;
         let mut out = Vec::new();
         let mut i = 0;
         let buf = &self.pending;
         while i < buf.len() {
             let rest = &buf[i..];
-            if rest.starts_with(t) {
+            if let Some(t) = self.tokens.iter().find(|t| rest.starts_with(t)) {
                 out.extend_from_slice(REDACTED.as_bytes());
                 i += t.len();
-            } else if t.starts_with(rest) {
+            } else if self.tokens.iter().any(|t| t.starts_with(rest)) {
                 break; // maybe the start of the token: wait for more
             } else {
                 out.push(buf[i]);
@@ -99,7 +114,22 @@ impl NetSandbox {
             net: setting_on && !offline,
             gh_token: Arc::new(std::sync::OnceLock::new()),
             gh_source: None,
+            host_secrets: Arc::new(std::sync::OnceLock::new()),
+            host_source: None,
         }
+    }
+
+    /// The credentials to scrub from the output of commands that run with the user's own
+    /// rights (no OS sandbox), whatever the bash network setting: `source` runs lazily, once,
+    /// at the first such command, and returns every GitHub CLI token on the machine (all
+    /// accounts, all hosts), so `gh auth token --user other` or a read of the token file is
+    /// scrubbed too.
+    pub fn with_host_secrets_lazy(
+        mut self,
+        source: impl Fn() -> Vec<String> + Send + Sync + 'static,
+    ) -> NetSandbox {
+        self.host_source = Some(Arc::new(source));
+        self
     }
 
     /// #52: the GitHub token (from `gh auth token`, read outside the sandbox) to pass to
@@ -201,6 +231,54 @@ impl NetSandbox {
         r
     }
 
+    /// The secrets to scrub on a host-rights path: the session token (when the network is on)
+    /// and every GitHub CLI credential, found once. Never empty-handed for a missing `gh`.
+    fn host_redaction_secrets(&self) -> Vec<String> {
+        let mut all: Vec<String> = self.token().cloned().into_iter().collect();
+        let found = self.host_secrets.get_or_init(|| match &self.host_source {
+            Some(source) => source(),
+            None => Vec::new(),
+        });
+        for t in found {
+            let t = t.trim();
+            if !t.is_empty() && !all.iter().any(|x| x == t) {
+                all.push(t.to_string());
+            }
+        }
+        all
+    }
+
+    /// [`redact_output`](Self::redact_output) for commands that run with the user's rights:
+    /// scrubs every GitHub credential, whether or not the command has the network (a file-backed
+    /// token reads the same with the network off). The environment stays cleared; nothing is
+    /// injected.
+    pub(crate) fn redact_host_output(
+        &self,
+        live: &mut dyn FnMut(&[u8]),
+        run: impl FnOnce(&mut dyn FnMut(&[u8])) -> ExecResult,
+    ) -> ExecResult {
+        let secrets = self.host_redaction_secrets();
+        if secrets.is_empty() {
+            return run(live);
+        }
+        let refs: Vec<&str> = secrets.iter().map(String::as_str).collect();
+        let mut sr = StreamRedactor::many(&refs);
+        let mut r = run(&mut |b: &[u8]| {
+            let o = sr.push(b);
+            if !o.is_empty() {
+                live(&o);
+            }
+        });
+        let tail = sr.finish();
+        if !tail.is_empty() {
+            live(&tail);
+        }
+        for t in &refs {
+            r.output = redact(&r.output, t);
+        }
+        r
+    }
+
     fn clamp(&self, s: &ExecSpec) -> ExecSpec {
         let mut s = s.clone();
         s.net = s.net && self.net;
@@ -227,6 +305,8 @@ impl Sandbox for NetSandbox {
             net: self.net,
             gh_token: self.gh_token.clone(),
             gh_source: self.gh_source.clone(),
+            host_secrets: self.host_secrets.clone(),
+            host_source: self.host_source.clone(),
         }))
     }
     fn check(&self) -> Result<(), OxaError> {
@@ -441,6 +521,32 @@ mod tests {
                 unsandboxed: false,
             }
         }
+    }
+
+    /// Host-rights output is scrubbed of every GitHub credential with the network off too: a
+    /// file-backed token reads the same offline, and another account's token is a secret too.
+    #[test]
+    fn host_output_redacts_every_account_with_the_network_off() {
+        let inner: Arc<dyn Sandbox> = Arc::new(Echo(Mutex::new(vec![])));
+        let n = NetSandbox::new(inner, false, true)
+            .with_host_secrets_lazy(|| vec!["SYNTH_ACCOUNT_A".into(), "SYNTH_ACCOUNT_B".into()]);
+        let mut live = Vec::new();
+        let r = n.redact_host_output(&mut |b| live.extend_from_slice(b), |live| {
+            live(b"a=SYNTH_ACCOUNT_A b=SYNTH_ACC");
+            live(b"OUNT_B end");
+            ExecResult {
+                output: b"a=SYNTH_ACCOUNT_A b=SYNTH_ACCOUNT_B end".to_vec(),
+                exit: Some(0),
+                timed_out: false,
+                unsandboxed: false,
+            }
+        });
+        let live = String::from_utf8(live).unwrap();
+        assert_eq!(live, "a=[redacted] b=[redacted] end");
+        assert_eq!(
+            String::from_utf8(r.output).unwrap(),
+            "a=[redacted] b=[redacted] end"
+        );
     }
 
     /// Streaming like a background job: records env, emits the token in the live stream only.
