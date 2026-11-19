@@ -329,13 +329,20 @@ fn scan_patch(text: &str, scan: ContentScan<'_>) -> Result<()> {
             continue;
         }
         if marks.contains('+') {
-            let item = PushedContent {
-                path: name,
-                line: Some(line),
-                text: rest,
-            };
-            if let Some(finding) = scan(&item) {
-                return Err(refusal(name, Some(line), finding));
+            // `--text` passes UTF-16/UTF-32 files through as NUL-interleaved bytes, in
+            // which no pattern matches; the line is also checked with its NULs removed,
+            // which is the ASCII text those encodings carry.
+            let stripped = rest.replace('\0', "");
+            let decoded = (stripped.len() != rest.len()).then_some(stripped.as_str());
+            for text in std::iter::once(rest).chain(decoded) {
+                let item = PushedContent {
+                    path: name,
+                    line: Some(line),
+                    text,
+                };
+                if let Some(finding) = scan(&item) {
+                    return Err(refusal(name, Some(line), finding));
+                }
             }
             // `--text` hands the raw bytes of a binary file through, and a UTF-16 file
             // interleaves every character with a NUL: its bytes never spell the text the
@@ -936,6 +943,40 @@ mod scan_tests {
         )
         .unwrap_err();
         assert!(error.contains("root.txt:1"), "{error}");
+    }
+
+    #[test]
+    fn utf16_additions_are_scanned_as_decoded_text() {
+        let secret = format!("synthetic-{}-secret", "utf16");
+        for (name, big_endian) in [("le.txt", false), ("be.txt", true)] {
+            let (dir, policy) = repo();
+            let text = format!("first line\n{secret}\nlast line\n");
+            let mut bytes = if big_endian {
+                vec![0xfe, 0xff]
+            } else {
+                vec![0xff, 0xfe]
+            };
+            for unit in text.encode_utf16() {
+                bytes.extend(if big_endian {
+                    unit.to_be_bytes()
+                } else {
+                    unit.to_le_bytes()
+                });
+            }
+            std::fs::write(dir.path().join(name), bytes).unwrap();
+            git_ok(dir.path(), &["add", name]);
+            git_ok(dir.path(), &["commit", "-q", "-m", name]);
+            let head = git_ok(dir.path(), &["rev-parse", "HEAD"]);
+            let error = scan_pushed(
+                &policy,
+                dir.path(),
+                &[head.as_str()],
+                &containing("synthetic-utf16-secret"),
+            )
+            .unwrap_err();
+            assert!(error.contains(name), "{error}");
+            assert!(!error.contains(secret.as_str()), "{error}");
+        }
     }
 
     fn items(text: &str) -> Vec<(String, Option<usize>, String)> {
