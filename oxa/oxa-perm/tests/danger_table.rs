@@ -827,6 +827,18 @@ const ROWS: &[Row] = &[
         expect: RM,
     },
     Row {
+        name: "last_pipeline_cd_does_not_move_the_parent",
+        cmd: "cd /; printf x | cd /workspace/ox-llm; rm -rf var/tmp/victim",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
+        name: "eval_cd_moves_the_parent",
+        cmd: "eval 'cd /'; rm -rf var/tmp/victim",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
         name: "glob_then_traversal_is_outside",
         cmd: "rm -rf oxa/oxa-per?/../../../victim",
         cwd: ".",
@@ -835,6 +847,12 @@ const ROWS: &[Row] = &[
     Row {
         name: "env_chdir_moves_the_wrapped_command",
         cmd: "env -C /var/tmp rm -rf victim",
+        cwd: ".",
+        expect: RM,
+    },
+    Row {
+        name: "env_chdir_equals_moves_the_wrapped_command",
+        cmd: "env --chdir=/ rm -rf var/tmp/victim",
         cwd: ".",
         expect: RM,
     },
@@ -949,6 +967,24 @@ const ROWS: &[Row] = &[
     Row {
         name: "sql_keyword_inside_quoted_literal_is_safe",
         cmd: "sqlite3 app.db \"SELECT 'label; truncate sample';\"",
+        cwd: ".",
+        expect: NONE,
+    },
+    Row {
+        name: "chmod_repeated_symbolic_actions",
+        cmd: "chmod -R a+r+w build",
+        cwd: ".",
+        expect: CHMOD,
+    },
+    Row {
+        name: "git_push_empty_source_deletes_remote_ref",
+        cmd: "git push origin :refs/heads/topic",
+        cwd: ".",
+        expect: GIT,
+    },
+    Row {
+        name: "git_push_matching_refspec_is_safe",
+        cmd: "git push origin :",
         cwd: ".",
         expect: NONE,
     },

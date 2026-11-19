@@ -254,10 +254,11 @@ impl DangerRules {
                 }
             }
             // `cd X | cat` runs `cd` in a subshell: the parent keeps its directory.
-            let piped = stages
-                .get(index + 1)
-                .filter(|next| next.mark.is_none())
-                .is_some_and(|next| next.pipe_in);
+            let piped = stage.pipe_in
+                || stages
+                    .get(index + 1)
+                    .filter(|next| next.mark.is_none())
+                    .is_some_and(|next| next.pipe_in);
             if !piped && !stage.background {
                 let mut changed = Vec::new();
                 let mut is_cd = false;
@@ -692,7 +693,11 @@ impl DangerRules {
                 || a == "--delete"
                 || (!a.starts_with("--") && a.starts_with('-') && (short_has(a, 'f') || short_has(a, 'd')))
         });
-        let refspec = rest.iter().any(|a| a.starts_with('+'));
+        let refspec = rest.iter().any(|a| {
+            a.starts_with('+')
+                || a.split_once(':')
+                    .is_some_and(|(source, destination)| source.is_empty() && !destination.is_empty())
+        });
         if force || refspec {
             self.push(hits, "git-push-force", seg);
         }
@@ -1438,6 +1443,33 @@ fn cd_target(words: &[String], ctx: &Ctx<'_>) -> Option<Option<PathBuf>> {
     let peeled = peel(words, false);
     let argv: &[String] = words.get(peeled.start..).unwrap_or(&[]);
     let name = base_name(argv.first()?);
+    if name == "eval" {
+        let script = argv.get(1..)?.join(" ");
+        if script.is_empty() || has_dynamic(&script) {
+            return None;
+        }
+        let stages = parse_line(&script)?;
+        let mut current = ctx.cwd.to_path_buf();
+        let mut changed = false;
+        for stage in stages {
+            if stage.mark.is_some() || stage.conditional || stage.background || stage.pipe_in {
+                return Some(None);
+            }
+            let nested = Ctx {
+                cwd: &current,
+                root: ctx.root,
+                guard: ctx.guard,
+            };
+            if let Some(target) = cd_target(&stage.words, &nested) {
+                changed = true;
+                match target {
+                    Some(dir) => current = dir,
+                    None => return Some(None),
+                }
+            }
+        }
+        return changed.then_some(Some(current));
+    }
     if !matches!(name, "cd" | "pushd") {
         return None;
     }
@@ -1487,6 +1519,11 @@ fn skip_env(words: &[String], from: usize, inline: &mut Vec<String>, dir: &mut O
     let mut i = from;
     while i < words.len() {
         let w = words[i].as_str();
+        if let Some(value) = w.strip_prefix("--chdir=") {
+            *dir = Some(value.to_string());
+            i += 1;
+            continue;
+        }
         if matches!(w, "-C" | "--chdir") && i + 1 < words.len() {
             // The wrapped command runs in this directory, not in the current one.
             *dir = Some(words[i + 1].clone());
@@ -1633,22 +1670,27 @@ fn symbolic_grants_other_write(mode: &str) -> bool {
             who_seen = true;
             i += 1;
         }
-        if i >= chars.len() || !matches!(chars[i], '+' | '-' | '=') {
-            return false;
-        }
-        let op = chars[i];
-        i += 1;
-        let start = i;
-        while i < chars.len() && matches!(chars[i], 'r' | 'w' | 'x' | 'X' | 's' | 't' | 'u' | 'g' | 'o') {
+        loop {
+            if i >= chars.len() || !matches!(chars[i], '+' | '-' | '=') {
+                return false;
+            }
+            let op = chars[i];
             i += 1;
-        }
-        if start == i {
-            return false;
-        }
-        // No `who` means all, like `a`.
-        let adds_write = op != '-' && chars[start..i].contains(&'w');
-        if adds_write && (who_other || !who_seen) {
-            return true;
+            let start = i;
+            while i < chars.len() && matches!(chars[i], 'r' | 'w' | 'x' | 'X' | 's' | 't' | 'u' | 'g' | 'o') {
+                i += 1;
+            }
+            if start == i {
+                return false;
+            }
+            // No `who` means all, like `a`.
+            let adds_write = op != '-' && chars[start..i].contains(&'w');
+            if adds_write && (who_other || !who_seen) {
+                return true;
+            }
+            if i >= chars.len() || !matches!(chars[i], '+' | '-' | '=') {
+                break;
+            }
         }
         // A clause list continues with `,`.
         if i < chars.len() {
