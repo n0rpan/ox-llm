@@ -917,9 +917,10 @@ fn prepare(
             endpoint: &endpoint.name,
             // Delegated model arguments still need a user-enabled provider:
             // a key or `true` in user settings, never a project file.
-            // A restored session model is provenance-less as well: only an argument the owner
-            // typed (and no launcher passed) may use the key-only path.
+            // A restored session model and a nested child are provenance-less as well: only an
+            // argument the owner typed in this run may use the key-only path.
             model_argument: a.model.is_some()
+                && !child.nested()
                 && env.get(oxa_work::PlannedTask::DELEGATED_MODEL_ENV).is_none(),
             owner_selected: !child.nested()
                 && env.get(oxa_work::PlannedTask::DELEGATED_MODEL_ENV).is_none()

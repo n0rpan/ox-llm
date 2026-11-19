@@ -310,7 +310,7 @@ fn run_go_work_taskfile(env: &TestEnv, mock: &MockOpenAi, explicit: Option<bool>
 }
 
 #[test]
-fn supervised_child_model_argument_uses_keyed_go() {
+fn a_nested_child_model_argument_does_not_use_keyed_go() {
     let env = TestEnv::new();
     let mock = served_mock();
     setup(&env, &format!("http://{}", mock.address()));
@@ -333,13 +333,15 @@ fn supervised_child_model_argument_uses_keyed_go() {
         .stdin(Stdio::null())
         .output()
         .unwrap();
+    // A nested child's model comes from the parent's run, not from the owner typing it here:
+    // a stored key alone does not switch it to the Go transport.
+    assert!(!output.status.success());
     assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        mock.requests().iter().all(|request| request.method != "POST"),
+        "{:?}",
+        mock.requests()
     );
-    assert_eq!(mock.requests().iter().filter(|r| r.method == "POST").count(), 1);
-    assert_eq!(rows(&env)[0]["remote_provider"], "opencode");
+    assert!(!env.agent_dir().join("cloud-ledger").exists());
     mock.assert_healthy();
 }
 
