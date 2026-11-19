@@ -304,6 +304,7 @@ impl LeadOwnerBinding {
 pub fn with_lead_owner<T>(
     binding: &LeadOwnerBinding,
     env: &Env,
+    workers: bool,
     run: impl FnOnce(&mut Session) -> Result<T, OxaError>,
 ) -> Result<T, OxaError> {
     let home_workspace = crate::home_cwd::check(
@@ -315,7 +316,7 @@ pub fn with_lead_owner<T>(
         &mut std::io::sink(),
     )?;
     let mut args = Args::default();
-    let prep = binding.prepare(&mut args, env, RunMode::Print, home_workspace)?;
+    let prep = binding.prepare_inner(&mut args, env, RunMode::Print, home_workspace, workers)?;
     let mut session = binding.open(&prep)?;
     let result = run(&mut session);
     session.shutdown(&mut oxa_proto::HeadlessUi::default());
@@ -329,6 +330,17 @@ impl LeadOwnerBinding {
         env: &Env,
         mode: RunMode,
         home_workspace: bool,
+    ) -> Result<Prep, OxaError> {
+        self.prepare_inner(args, env, mode, home_workspace, true)
+    }
+
+    fn prepare_inner(
+        &self,
+        args: &mut Args,
+        env: &Env,
+        mode: RunMode,
+        home_workspace: bool,
+        workers: bool,
     ) -> Result<Prep, OxaError> {
         let binding = self;
         let dirs = &binding.dirs;
@@ -348,7 +360,11 @@ impl LeadOwnerBinding {
         args.no_tools = true;
         // Nothing but the worker tool (M1): `no_tools` drops every other tool and the worker
         // tool is the one named exception.
-        args.tools = Some(vec![crate::workers::tool::TOOL_NAME.to_string()]);
+        args.tools = Some(if workers {
+            vec![crate::workers::tool::TOOL_NAME.to_string()]
+        } else {
+            Vec::new()
+        });
         args.no_skills = true;
         // Prepare through the ordinary gateway, then require the configured Lead
         // route to match its resolved model ID exactly.
@@ -382,7 +398,13 @@ impl LeadOwnerBinding {
                 ));
             }
         }
-        self.keep_workers(&mut prep, mode);
+        if workers {
+            self.keep_workers(&mut prep, mode);
+        } else if let Some(workers) = &prep.built.hook_sets.workers {
+            // A one-shot process cannot supervise work after returning. It has no tool and must
+            // not briefly relaunch a saved child during SessionStart either.
+            workers.hold_resume();
+        }
         Ok(prep)
     }
 

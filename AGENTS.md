@@ -18,6 +18,9 @@ maintainer, who says in the PR when a hardware check is needed.
   owner-selected yolo deliberately disables the permission floor. Off Linux there is no OS sandbox
   (owner policy, #1512): in-process guards stay, bash gets the same cleared base environment, and
   the bash network is not restricted there; the start notice and the model env note say so.
+- The live owner-authorized Lead service may launch and steer background workers through its sole
+  `worker` tool. The shadow Lead preset and one-shot `oxa lead chat` stay tool-free; user-only
+  worker enablement, limits and the current permission ceiling govern every new launch.
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
   in the ledger (an unknown cost is recorded as unknown). Limits are owner configuration: with no cap

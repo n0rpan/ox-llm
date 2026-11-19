@@ -85,12 +85,12 @@ fn owner_turn_uses_the_selected_writer_and_sends_slash_and_shell_text_literally(
     let writer = FsStore::new(dirs.sessions_dir.clone());
     writer.acquire(&owner).unwrap();
     writer.commit_lock();
-    let busy = with_lead_owner::<()>(&binding, &env, |_| panic!("locked Session opened")).unwrap_err();
+    let busy = with_lead_owner::<()>(&binding, &env, true, |_| panic!("locked Session opened")).unwrap_err();
     assert_eq!(busy.code, "busy");
     assert!(server.requests().is_empty());
     drop(writer);
     let offline = Env::from_pairs(&[("OXA_OFFLINE", "1")]);
-    let error = with_lead_owner::<()>(&binding, &offline, |_| {
+    let error = with_lead_owner::<()>(&binding, &offline, true, |_| {
         panic!("uninstalled offline policy accepted")
     })
     .unwrap_err();
@@ -98,14 +98,14 @@ fn owner_turn_uses_the_selected_writer_and_sends_slash_and_shell_text_literally(
     assert!(server.requests().is_empty());
 
     let inputs = ["/reload", "!printf synthetic"];
-    with_lead_owner(&binding, &env, |session| {
+    with_lead_owner(&binding, &env, true, |session| {
         assert_eq!(session.inner().sref, owner);
         assert!(session.goal().is_none());
         session.set_goal(Some(goal.clone()), &mut VecSink::default())
     })
     .unwrap();
     assert!(!cwd.join("trust-fired.txt").exists());
-    with_lead_owner(&binding, &env, |session| {
+    with_lead_owner(&binding, &env, true, |session| {
         assert_eq!(session.goal(), Some(goal));
         for text in inputs {
             session.prompt_literal(text.into(), &mut VecSink::default(), &mut HeadlessUi::default())?;
@@ -131,7 +131,8 @@ fn owner_turn_uses_the_selected_writer_and_sends_slash_and_shell_text_literally(
     let original = owner.path.with_extension("previous");
     fs::rename(&owner.path, &original).unwrap();
     fs::copy(original, &owner.path).unwrap();
-    let error = with_lead_owner::<()>(&binding, &env, |_| panic!("replaced Session opened")).unwrap_err();
+    let error =
+        with_lead_owner::<()>(&binding, &env, true, |_| panic!("replaced Session opened")).unwrap_err();
     assert_eq!(error.code, "lead_owner_unavailable");
     assert_eq!(server.requests().len(), requests.len());
 }
@@ -170,7 +171,7 @@ fn owner_turn_resolves_the_user_only_explicit_lead_model_route() {
             .collect::<Vec<_>>(),
     );
     let prompt = |binding: &LeadOwnerBinding| {
-        with_lead_owner(binding, &env, |session| {
+        with_lead_owner(binding, &env, true, |session| {
             session.prompt_literal(
                 "route question".into(),
                 &mut VecSink::default(),
