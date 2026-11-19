@@ -67,6 +67,9 @@ maintainer, who says in the PR when a hardware check is needed.
   The repeat guard follows this: the third identical tool result gets a short note, a call that
   still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
   is the cap against loops the guard cannot see.
+  Image input follows it too: `read` attaches an image to a model that takes images, and an image
+  over `oxa.read.maxImageBytes` (generous default, 0 = no limit) is not sent; the result names the
+  limit and the setting instead. Private-path and pinned-open rules apply to images as to any file.
   Report dedupe follows it as well: `oxa.reportIssue.semanticDedupe` is the owner's consent for the
   search and the model check, the post asks one question, and `oxa.reportIssue.dailyNew` (unset = no
   check) only warns and records over the cap. A finding that asks for a second consent question or

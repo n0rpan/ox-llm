@@ -85,6 +85,8 @@ fn default_tune(read_page_lines: u32, read_page_bytes: u32) -> ToolTune {
         } else {
             16_384
         },
+        // B2b: no image input in these windows (the tool default).
+        ..Default::default()
     }
 }
 

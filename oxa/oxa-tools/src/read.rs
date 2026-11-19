@@ -1,7 +1,8 @@
 //! A6: the `read` tool.
 // ported from pi packages/coding-agent/src/core/tools/read.ts
 use crate::descriptions::{self, diet, errors, limits};
-use oxa_proto::{image_placeholder, Access, Tool, ToolCtx, ToolOutput, ToolSpec, ToolTune, Value};
+use base64::Engine as _;
+use oxa_proto::{image_placeholder, Access, Tool, ToolCtx, ToolOutput, ToolSpec, ToolTune, Value, WireImage};
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
 
@@ -17,7 +18,7 @@ const SCAN_CHUNK: usize = 64 * 1024;
 /// Model-facing text of an argument error. Not in `descriptions`: pi has no fixed text for it.
 const INVALID_PATH_ARG: &str = "Invalid arguments: path must be a string";
 
-/// `read {path, offset?, limit?}`: text with pi's paging (`offset` 1-based, `limit` lines; 2000 lines / 50 KB per call with pi's continuation notice). Large files are streamed, never loaded whole. A binary file is refused with pi's text. An image returns `oxa_proto::image_placeholder` (name, width, height read from the header) and nothing else.
+/// `read {path, offset?, limit?}`: text with pi's paging (`offset` 1-based, `limit` lines; 2000 lines / 50 KB per call with pi's continuation notice). Large files are streamed, never loaded whole. A binary file is refused with pi's text. An image (PNG, JPEG, GIF, WebP) returns `oxa_proto::image_placeholder` (name, width, height read from the header) and nothing else, unless the model takes images (`ToolTune::image_input`): then the image is returned as an image part, within `ToolTune::max_image_bytes`.
 #[derive(Debug, Clone)]
 pub struct ReadTool {
     spec: ToolSpec,
@@ -47,10 +48,7 @@ impl Tool for ReadTool {
         Ok(vec![Access::Read(crate::resolve_tool_path(cx, path))])
     }
     fn run(&self, args: &Value, cx: &ToolCtx, _live: &mut dyn FnMut(&str)) -> ToolOutput {
-        match read_file(args, cx) {
-            Ok(text) => ToolOutput::ok(text),
-            Err(text) => ToolOutput::error(text),
-        }
+        read_file(args, cx).unwrap_or_else(ToolOutput::error)
     }
 }
 
@@ -72,8 +70,9 @@ fn arg_number(args: &Value, key: &str) -> Result<Option<f64>, String> {
     }
 }
 
-/// The whole read. `Ok` is the text for the model (pi's notices included); `Err` is a tool error.
-fn read_file(args: &Value, cx: &ToolCtx) -> Result<String, String> {
+/// The whole read. `Ok` is the output for the model (pi's notices included, an image part for an
+/// image the model takes); `Err` is a tool error.
+fn read_file(args: &Value, cx: &ToolCtx) -> Result<ToolOutput, String> {
     let path = arg_path(args)?;
     let offset = arg_number(args, "offset")?;
     let limit = arg_number(args, "limit")?;
@@ -93,7 +92,7 @@ fn read_file(args: &Value, cx: &ToolCtx) -> Result<String, String> {
     // Images first: their headers contain NUL bytes, so the binary test must not see them.
     let probe = read_probe(&abs, path, cx)?;
     if let Some((w, h)) = image_size(&abs, &probe, cx).map_err(|e| read_io_error(path, &e))? {
-        return Ok(image_placeholder(path, w, h));
+        return read_image(&abs, path, &probe, (w, h), meta.len(), cx);
     }
     if probe.contains(&0) {
         return Err(errors::read_binary_refused(path));
@@ -146,12 +145,12 @@ fn read_file(args: &Value, cx: &ToolCtx) -> Result<String, String> {
     }
     if shown.first_exceeds {
         // The limit named is the room the line had (pi: the cap itself).
-        return Ok(errors::read_line_too_long(
+        return Ok(ToolOutput::ok(errors::read_line_too_long(
             start + 1,
             sc.kept[0].len,
             content,
             path,
-        ));
+        )));
     }
     let mut text = shown.content;
     let last = start + shown.lines;
@@ -177,7 +176,58 @@ fn read_file(args: &Value, cx: &ToolCtx) -> Result<String, String> {
             }
         }
     }
-    Ok(text)
+    Ok(ToolOutput::ok(text))
+}
+
+/// B2b: the result of `read` on an image. The placeholder line, unless the model takes images
+/// (`tune.image_input`) and the file is a type it takes (PNG, JPEG, GIF, WebP): then the image is
+/// returned as an image part. An image over `tune.max_image_bytes` (0 = no limit) is not sent;
+/// the line names the size, the limit and the setting. The bytes come through the same pinned
+/// open as any read, so a private path or a swapped link is refused before any byte is sent.
+fn read_image(
+    abs: &Path,
+    shown: &str,
+    head: &[u8],
+    (w, h): (u32, u32),
+    size: u64,
+    cx: &ToolCtx,
+) -> Result<ToolOutput, String> {
+    let placeholder = image_placeholder(shown, w, h);
+    let Some(mime) = image_mime(head).filter(|_| cx.tune.image_input) else {
+        return Ok(ToolOutput::ok(placeholder));
+    };
+    let max = u64::from(cx.tune.max_image_bytes);
+    if max > 0 && size > max {
+        return Ok(ToolOutput::ok(format!(
+            "[image {shown} {w}x{h}: not sent, {size} bytes is over the limit of {max} (oxa.read.maxImageBytes)]"
+        )));
+    }
+    let mut bytes = Vec::new();
+    crate::checked::open(cx, abs)
+        .and_then(|mut file| file.read_to_end(&mut bytes))
+        .map_err(|e| read_io_error(shown, &e))?;
+    let mut out = ToolOutput::ok(format!("[image {shown} {w}x{h}: shown to the model]"));
+    out.images = vec![WireImage {
+        mime: mime.to_string(),
+        base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+    }];
+    Ok(out)
+}
+
+/// The media type of an image the model takes (PNG, JPEG, GIF or WebP), from its first bytes.
+/// `None` for any other file (a BMP is a placeholder).
+fn image_mime(head: &[u8]) -> Option<&'static str> {
+    if head.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if head.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if head.starts_with(b"GIF87a") || head.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if head.starts_with(b"RIFF") && head.get(8..12) == Some(&b"WEBP"[..]) {
+        Some("image/webp")
+    } else {
+        None
+    }
 }
 
 /// L4: the byte cap of the first page of `read`: the tuned page cap (`read_page_bytes`, at

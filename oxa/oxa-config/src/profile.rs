@@ -39,6 +39,8 @@ pub const SUMMARY_TARGET_DEFAULT: u32 = 700;
 pub const BASH_TIMEOUT_DEFAULT: u32 = 120;
 /// The default of `oxa.bash.maxJobs`: background jobs that may run at once.
 pub const BASH_MAX_JOBS_DEFAULT: u32 = 16;
+/// The default of `oxa.read.maxImageBytes`: 20 MiB per image.
+pub const READ_MAX_IMAGE_BYTES_DEFAULT: u32 = 20 * 1024 * 1024;
 
 impl Settings {
     /// `oxa.thinking.policy` as set by a layer; `None` = unset (the default decides).
@@ -106,6 +108,11 @@ impl Settings {
     /// `oxa.bash.maxJobs`: how many background jobs may run at once. Unset = 16; at least 1.
     pub fn bash_max_jobs(&self) -> usize {
         (self.user_u32("oxa.bash.maxJobs", BASH_MAX_JOBS_DEFAULT) as usize).max(1)
+    }
+
+    /// `oxa.read.maxImageBytes` (B2b): the largest image `read` sends. Unset = 20 MiB; 0 = no limit.
+    pub fn read_max_image_bytes(&self) -> u32 {
+        self.u32("oxa.read.maxImageBytes", READ_MAX_IMAGE_BYTES_DEFAULT)
     }
 }
 

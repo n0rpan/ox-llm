@@ -26,6 +26,8 @@ Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursio
 
 Do not report: style, pre-existing issues outside the diff, test-only code that never runs in production, or hypothetical risks without a concrete path.
 
+Image input (B2b): `read` sends an image to a model that takes images only through the same pinned, private-path-checked open as text, and only when the engine says it takes images. An image over `oxa.read.maxImageBytes` (default 20 MiB, `0` = no limit) is not sent; the result warns and names the limit. An image read that skips the pinned open or the private-path rules is high severity.
+
 For `oxa work`, a task with zero or skipped checks remains `Unverified` and lacks a publishable
 acceptance receipt. Project files and worker replies cannot change the owner-only
 `oxa.work.localChecks` setting, which defaults to per-package `cargo check`. Rust acceptance

@@ -477,7 +477,11 @@ pub(crate) fn run_calls(
         let ms = Some(dur.as_millis() as u64);
         crate::fire::tool_end(st, &p.id, &p.name, &output, ms, sink, ui);
         out.push(CallResult {
-            msg: WireMsg::tool_result(p.id.clone(), output.text.clone()),
+            // B2b: the images a tool returned (`read` of an image) ride on its result message.
+            msg: WireMsg {
+                images: output.images.clone(),
+                ..WireMsg::tool_result(p.id.clone(), output.text.clone())
+            },
             tool_name: p.name.clone(),
             is_error: output.is_error,
             ui: output.ui.clone(),
@@ -724,7 +728,10 @@ fn start_tool_prefill(
         }
         let shaped = &early[k].as_ref().expect("shaped above").shaped;
         bytes += shaped.len();
-        msgs.push(WireMsg::tool_result(prepared[k].id.clone(), shaped.clone()));
+        msgs.push(WireMsg {
+            images: out.images.clone(),
+            ..WireMsg::tool_result(prepared[k].id.clone(), shaped.clone())
+        });
     }
     if bytes < TOOL_PREFILL_MIN_BYTES {
         return false;

@@ -61,6 +61,7 @@ fn tuned(cap: u32) -> ToolTune {
         read_page_bytes: cap.min(8_192),
         bash_timeout_s: 120,
         output_cap_bytes: cap,
+        ..Default::default()
     }
 }
 
