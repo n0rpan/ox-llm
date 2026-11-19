@@ -88,7 +88,11 @@ pub struct HookInputs<'a> {
 /// One builder for every session that starts workers: the ordinary one and the live owner Lead
 /// session ([`build_owner_hooks`]), so both use the same launch, limits (`oxa.workers.max`) and
 /// supervisor.
-fn build_worker_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Option<Arc<WorkerHooks>> {
+fn build_worker_hooks(
+    i: &HookInputs<'_>,
+    notices: &mut Vec<(Level, String)>,
+    inherit_tool_scope: bool,
+) -> Option<Arc<WorkerHooks>> {
     // Off in a worker child (`OXA_WORKER_DEPTH` set, even to an empty value: `Env::get` treats
     // empty as unset, so the pairs are read directly), under `--no-session` (a worker persists
     // its own session) and when `oxa.workers.enabled` is false (user settings only).
@@ -134,8 +138,11 @@ fn build_worker_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) ->
                             narrowing: crate::workers::launch::Narrowing {
                                 offline: i.args.offline,
                                 no_context_files: i.args.no_context_files,
-                                tools: i.args.tools.clone(),
-                                no_tools: i.args.no_tools,
+                                // The live Lead's worker-only allowlist describes the tools exposed
+                                // to Lead, not the tools its coding workers may use. Ordinary parent
+                                // sessions still narrow their children exactly as before.
+                                tools: inherit_tool_scope.then_some(i.args.tools.clone()).flatten(),
+                                no_tools: inherit_tool_scope && i.args.no_tools,
                                 no_builtin_tools: i.args.no_builtin_tools,
                                 no_mcp: i.args.no_mcp,
                                 no_web_search: i.args.no_web_search,
@@ -178,7 +185,7 @@ fn build_worker_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) ->
 /// (`args.lead`) never reaches this and stays read-only.
 pub(crate) fn build_owner_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> HookSets {
     let mut sets = HookSets::default();
-    if let Some(workers) = build_worker_hooks(i, notices) {
+    if let Some(workers) = build_worker_hooks(i, notices, false) {
         sets.hooks.push(workers.clone());
         sets.workers = Some(workers);
     }
@@ -344,7 +351,7 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
     }
 
     // ---- builtin:worker (K5a) ----
-    if let Some(workers) = build_worker_hooks(i, notices) {
+    if let Some(workers) = build_worker_hooks(i, notices, true) {
         sets.hooks.push(workers.clone());
         sets.workers = Some(workers);
     }
@@ -523,7 +530,11 @@ mod tests {
         let resources = Resources::default();
         let sandbox: Arc<dyn Sandbox> = Arc::new(oxa_sandbox::NoSandbox);
         let env = oxa_config::Env::from_pairs(&[("PATH", "/usr/bin:/bin")]);
-        let args = Args::default();
+        let args = Args {
+            tools: Some(vec![worker_tool::TOOL_NAME.to_string()]),
+            no_tools: true,
+            ..Args::default()
+        };
         let cwd = test.work();
         let mut notices = Vec::new();
         let sets = build_owner_hooks(
@@ -532,6 +543,12 @@ mod tests {
         );
         assert!(sets.workers.is_some(), "{notices:?}");
         assert_eq!(tool_names(&sets), vec!["worker".to_string()]);
+        let child_scope = sets.workers.as_ref().unwrap().parent_narrowing();
+        assert_eq!(child_scope.tools, None, "Lead's allowlist leaked into its worker");
+        assert!(
+            !child_scope.no_tools,
+            "Lead's no-tools baseline leaked into its worker"
+        );
         // Only the worker hook set: no extensions, MCP or subagent in the owner session.
         assert!(sets.extensions.is_none() && sets.mcp.is_none() && sets.subagent.is_none());
         // The same off switches as everywhere: a worker child gets none.

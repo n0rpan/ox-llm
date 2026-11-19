@@ -120,6 +120,8 @@ pub struct WorkerCore {
     resume_on_start: bool,
     /// The owner Lead session: resume waits for [`WorkerHooks::resume_after_owner_check`].
     hold_resume: AtomicBool,
+    /// Explicit owner opt-out: even the post-binding-check resume stays disabled.
+    resume_allowed: AtomicBool,
     /// The owner Lead session over several chat turns: closing one session stops nothing.
     persistent: AtomicBool,
     /// Parent session ids whose workers were already considered for resume in this process.
@@ -401,6 +403,7 @@ impl WorkerCore {
             yolo: Mutex::new(cfg.yolo),
             resume_on_start: cfg.resume_on_start,
             hold_resume: AtomicBool::new(false),
+            resume_allowed: AtomicBool::new(true),
             persistent: AtomicBool::new(false),
             resumed: Mutex::new(Vec::new()),
             supervisor: cfg.supervisor,
@@ -1072,9 +1075,19 @@ impl WorkerHooks {
         self.core.hold_resume.store(true, Ordering::SeqCst);
     }
 
+    /// Disable both startup and explicit post-binding-check resume for a one-shot owner.
+    pub fn suppress_resume(&self) {
+        self.hold_resume();
+        self.core.resume_allowed.store(false, Ordering::SeqCst);
+    }
+
     /// Take the workers back up, after the owner binding was rechecked. Notices for the caller.
     pub fn resume_after_owner_check(&self) -> Vec<String> {
-        self.core.resume()
+        if self.core.resume_allowed.load(Ordering::SeqCst) {
+            self.core.resume()
+        } else {
+            Vec::new()
+        }
     }
 
     /// Keep the workers when a session closes: a worker the owner Lead started outlives one chat
@@ -1095,6 +1108,11 @@ impl WorkerHooks {
     /// Stop every live worker now, whether or not the hook set is kept across turns.
     pub fn stop_all(&self) {
         let _ = self.core.supervisor.stop_all();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn parent_narrowing(&self) -> super::launch::Narrowing {
+        self.core.parent_scope.narrowing.clone()
     }
 }
 
@@ -1646,8 +1664,11 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    static OWNER_WORKERS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn lead_started_worker_survives_the_next_owner_turn() {
+        let _serial = lock(&OWNER_WORKERS_TEST_LOCK);
         let (root, repo, agent, fake) = fixture("owner-turn");
         let made = Arc::new(hooks(&fake, &agent));
         // Turn 1: the owner Lead session starts a worker, then its session closes.
@@ -1673,6 +1694,7 @@ mod tests {
 
     #[test]
     fn retained_owner_workers_refresh_the_current_launch_ceiling() {
+        let _serial = lock(&OWNER_WORKERS_TEST_LOCK);
         let (root, repo, agent, fake) = fixture("owner-authority");
         let first = Arc::new(hooks(&fake, &agent));
         let kept = kept_owner_workers(&agent, first.clone());
@@ -1720,6 +1742,23 @@ mod tests {
         assert_eq!(notices.len(), 1, "{notices:?}");
         assert!(notices[0].contains("relaunched"), "{notices:?}");
         let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn one_shot_owner_suppresses_explicit_resume() {
+        let (root, repo, agent, fake) = fixture("suppressed-resume");
+        let hooks = hooks(&fake, &agent);
+        set_session(&hooks, "parent-1");
+        set_table_mode(&hooks, Mode::Workspace);
+        start_alpha(&hooks, &repo);
+        let rec = registry::load(&agent, "parent-1").unwrap().remove(0);
+        hooks.core.supervisor.stop(rec.pgid).unwrap();
+        hooks.suppress_resume();
+
+        assert!(hooks.resume_after_owner_check().is_empty());
+        let held = registry::load(&agent, "parent-1").unwrap().remove(0);
+        assert_eq!(held.pid, rec.pid, "one-shot owner relaunched a saved worker");
         let _ = fs::remove_dir_all(&root);
     }
 

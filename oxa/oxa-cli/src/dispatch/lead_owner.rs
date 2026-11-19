@@ -403,7 +403,7 @@ impl LeadOwnerBinding {
         } else if let Some(workers) = &prep.built.hook_sets.workers {
             // A one-shot process cannot supervise work after returning. It has no tool and must
             // not briefly relaunch a saved child during SessionStart either.
-            workers.hold_resume();
+            workers.suppress_resume();
         }
         Ok(prep)
     }
