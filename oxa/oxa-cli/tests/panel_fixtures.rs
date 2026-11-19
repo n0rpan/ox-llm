@@ -16,6 +16,16 @@ fn fixtures_dir() -> PathBuf {
         .join("fixtures")
 }
 
+fn panel_source(name: &str) -> String {
+    let path = fixtures_dir()
+        .parent()
+        .expect("fixtures directory has a tests parent")
+        .parent()
+        .expect("tests directory has a panel parent")
+        .join(name);
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
 fn read_fixture(name: &str) -> String {
     let path = fixtures_dir().join(name);
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
@@ -106,4 +116,17 @@ fn panel_old_binary_fixture_is_text_and_not_an_object() {
 #[test]
 fn panel_empty_fixture_is_empty() {
     assert!(read_fixture("empty.txt").is_empty(), "empty.txt has no bytes");
+}
+
+#[test]
+fn panel_root_forwards_the_bar_button_implicit_size() {
+    let panel = panel_source("Panel.qml");
+    assert!(
+        panel.contains("implicitWidth: button.implicitWidth"),
+        "Panel.qml must forward the bar button's implicit width"
+    );
+    assert!(
+        panel.contains("implicitHeight: button.implicitHeight"),
+        "Panel.qml must forward the bar button's implicit height"
+    );
 }

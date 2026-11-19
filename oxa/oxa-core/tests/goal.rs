@@ -880,6 +880,29 @@ fn goal_command_pause_resume_returns_continue_prompt() {
     assert_eq!(session.goal().unwrap().status, GoalStatus::Pursuing);
 }
 
+/// G3 fix: the resumed-goal notice advertises `/goal resume` for a pursuing goal, so resume
+/// continues it without a status transition (the revision does not move).
+#[test]
+fn goal_command_resume_continues_a_pursuing_goal() {
+    use oxa_core::goal::{parse_goal_command, GoalCommand};
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .apply_goal_command(parse_goal_command("Keep the tests green"), 1000, &mut sink)
+        .unwrap();
+    let revision = session.goal_revision();
+
+    let (lines, prompt) = session
+        .apply_goal_command(GoalCommand::Resume, 2000, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["Goal resumed.".to_string()]);
+    assert_eq!(prompt, Some(oxa_core::prompt::GOAL_CONTINUE.to_string()));
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Pursuing);
+    assert_eq!(session.goal_revision(), revision);
+}
+
 #[test]
 fn goal_command_set_is_refused_while_busy() {
     use oxa_core::goal::{parse_goal_command, GoalCommand};

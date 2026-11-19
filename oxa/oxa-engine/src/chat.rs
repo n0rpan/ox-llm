@@ -371,6 +371,7 @@ impl ReplyAssembler {
         }
         Ok(AssistantTurn {
             msg: WireMsg {
+                images: Vec::new(),
                 role: oxa_proto::Role::Assistant,
                 content: self.content,
                 reasoning: self.reasoning,
