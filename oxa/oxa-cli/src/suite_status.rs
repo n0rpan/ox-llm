@@ -2,10 +2,13 @@
 //!
 //! Read-only: no model, no network request and no write. Key files are checked by `stat` only;
 //! their contents and their paths never leave this module. The object carries the envelope and
-//! the `local` and `cloud` sections. `lead`, `sessions`, `workers` and `usage_state` arrive with
-//! their own slices, so a reader must treat an absent section as "not reported yet".
+//! the `local` and `cloud` sections, and `sessions` and `workers` (see `sessions.rs`). `lead` and
+//! `usage_state` arrive with their own slices, so a reader must treat an absent section as "not
+//! reported yet".
+mod sessions;
+
 use crate::in_process;
-use oxa_config::{Dirs, Settings};
+use oxa_config::{Dirs, Env, Settings};
 use oxa_proto::OxaError;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -22,10 +25,20 @@ const CAPABILITIES: &[&str] = &[];
 /// The provider names `oxa.cloud.models` may use: the same set the in-process gateway accepts.
 const PROVIDERS: [&str; 4] = ["anthropic", "openai", "openrouter", "chatgpt"];
 
-pub(crate) fn run(dirs: &Dirs, cwd: &Path, out: &mut dyn Write) -> Result<i32, OxaError> {
+pub(crate) fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i32, OxaError> {
     // Project settings are not trusted here: cloud routes and local binaries are user-only.
     let user = Settings::load(dirs, cwd, false);
-    let value = suite_value(&user, dirs, engine_binary(&user).is_file(), now_ms());
+    let generated = now_ms();
+    let mut value = suite_value(&user, dirs, engine_binary(&user).is_file(), generated);
+    // The same session folder as `oxa status <session>`: the environment variable, then `sessionDir`.
+    let sessions_dir = match user.session_dir(&dirs.home, cwd) {
+        Some(configured) if env.get("OXA_SESSION_DIR").is_none() => configured,
+        _ => dirs.sessions_dir.clone(),
+    };
+    sessions::attach(
+        &mut value,
+        sessions::scan(&sessions_dir, &dirs.agent_dir, generated),
+    );
     writeln!(out, "{value}").map_err(|e| OxaError::io("cannot write suite status", &e))?;
     Ok(0)
 }
@@ -202,7 +215,6 @@ fn cloud_section(user: &Settings, dirs: &Dirs) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxa_config::Env;
     use oxa_fake::TestEnv;
     use oxa_proto::codes;
 
