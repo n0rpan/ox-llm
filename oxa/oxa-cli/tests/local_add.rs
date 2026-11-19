@@ -47,13 +47,17 @@ fn engine_dir(env: &TestEnv, report: &Value) -> PathBuf {
     fs::canonicalize(dir).unwrap()
 }
 
-fn run(env: &TestEnv, args: &[&str]) -> Output {
+fn command(env: &TestEnv, args: &[&str]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
     cmd.args(args).current_dir(env.work()).env_clear();
     for (key, value) in env.envs("http://127.0.0.1:9") {
         cmd.env(key, value);
     }
-    cmd.output().unwrap()
+    cmd
+}
+
+fn run(env: &TestEnv, args: &[&str]) -> Output {
+    command(env, args).output().unwrap()
 }
 
 fn add(env: &TestEnv, dir: &Path, extra: &[&str]) -> Output {
@@ -77,6 +81,27 @@ fn read(path: &Path) -> Value {
 
 fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+#[test]
+fn local_add_requires_owner_before_admission() {
+    let env = TestEnv::new();
+    let original = r#"{"defaultProjectTrust":"never"}"#;
+    let settings = env.write("home/.oxa/agent/settings.json", original);
+    for marker in ["AI_AGENT", "OXA_CODING_AGENT", "OXA_SUBAGENT_DEPTH"] {
+        let out = command(&env, &["local", "add", "missing.gguf"])
+            .env(marker, "")
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{marker}");
+        assert!(
+            stderr(&out).contains("Local model setup requires the owner outside an agent tool"),
+            "{marker}: {}",
+            stderr(&out)
+        );
+        assert!(out.stdout.is_empty(), "{marker}");
+        assert_eq!(fs::read_to_string(&settings).unwrap(), original, "{marker}");
+    }
 }
 
 #[test]

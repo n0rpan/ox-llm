@@ -134,7 +134,7 @@ Metered cloud aliases need `oxa.engine.inProcessCloud`, a configured price, and 
 
 ### Local models
 
-`oxa local add <model.gguf>` wires one local model into the native local engine, so a Rust-only install can run it. It needs no hand-written limits:
+`oxa local add <model.gguf>` lets the owner wire one local model into the native local engine. Run it outside an agent tool. It needs no hand-written limits:
 
 1. It finds `oxe` and `oxe-server` in the directory of the running `oxa` executable. There is no PATH or current-directory search; `--engine-dir DIR` names another installation explicitly.
 2. It runs `oxe admission --json` for the model and launch profile. The engine reads only the GGUF header and reports `kv_bytes_per_position`, `scratch_bytes`, `mtp_state_bytes` and `margin_bytes` from its own allocation code, the context window, and the complete launch arguments the numbers are valid for.
