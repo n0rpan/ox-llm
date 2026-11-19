@@ -602,11 +602,8 @@ fn install_sync(
     recover_interrupted_publish(&dir)?;
     // Inspect the entry without following links; do not mistake an unsafe or
     // malformed existing record for an absent record.
-    let present = match nix::sys::stat::fstatat(
-        &dir.file,
-        dir.name.as_os_str(),
-        nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
-    ) {
+    let present = match nix::sys::stat::fstatat(&dir.file, dir.name.as_os_str(), AtFlags::AT_SYMLINK_NOFOLLOW)
+    {
         Ok(_) => true,
         Err(nix::errno::Errno::ENOENT) => false,
         Err(_) => return Err(Error::Unavailable),
@@ -644,11 +641,7 @@ pub fn try_logout(path: &Path) -> Result<Option<()>, Error> {
         return Ok(None);
     };
     recover_interrupted_publish(&dir)?;
-    match nix::sys::stat::fstatat(
-        &dir.file,
-        dir.name.as_os_str(),
-        nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
-    ) {
+    match nix::sys::stat::fstatat(&dir.file, dir.name.as_os_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
         Err(nix::errno::Errno::ENOENT) => return Ok(Some(())),
         Err(_) => return Err(Error::Unavailable),
         Ok(_) => {}
