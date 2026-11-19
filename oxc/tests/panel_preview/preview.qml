@@ -3,8 +3,8 @@
 import QtQuick
 import qs.Commons
 import qs.Commons as Commons
-import "../../src/oxc/omarchy_plugin" as Plugin
-import "../../src/oxc/omarchy_plugin/Model.js" as Model
+import "../../../oxa/omarchy-panel" as Plugin
+import "../../../oxa/omarchy-panel/Model.js" as Model
 
 Rectangle {
   id: root
@@ -26,21 +26,11 @@ Rectangle {
   property var cache: Model.parseCache(read(fixtures + "cache.json"))
   width: 1320; height: Math.max(a.height, b.height, c.height) + 40
   color: "#0e0e14"
-  Commons.Translations { id: localAiStrings; catalog: JSON.parse(root.read(Qt.resolvedUrl("../../src/oxc/omarchy_plugin/i18n/en.json"))) }
+  Commons.Translations { id: localAiStrings; catalog: JSON.parse(root.read(Qt.resolvedUrl("../../../oxa/omarchy-panel/i18n/en.json"))) }
   component Card: Rectangle {
     default property alias content: inner.data
     width: 420; height: inner.height + 28; color: Commons.Color.background; y: 20
     Column { id: inner; x: 14; y: 14; width: parent.width - 28; spacing: Style.space(10) }
-  }
-  Card { id: a; x: 20
-    Plugin.NowCard { width: parent.width; vm: root.vm; strings: localAiStrings; foreground: Commons.Color.foreground; accent: Commons.Color.accent; urgent: Commons.Color.urgent; face: Style.font.family; remainingSeconds: root.vm.idle.remainingSeconds; loadingSeconds: 12; speedTokS: root.answer ? root.answer.tokS : -1; notice: root.vm.hasError ? "start" : "" }
-    Plugin.ModelsView { width: parent.width; vm: root.vm; strings: localAiStrings; foreground: Commons.Color.foreground; accent: Commons.Color.accent; urgent: Commons.Color.urgent; face: Style.font.family; preparing: ["pi"] }
-  }
-  Card { id: b; x: 450
-    Plugin.ActivityView { width: parent.width; vm: root.vm; ledger: root.ledger; strings: localAiStrings; foreground: Commons.Color.foreground; accent: Commons.Color.accent; urgent: Commons.Color.urgent; face: Style.font.family }
-  }
-  Card { id: c; x: 880
-    Plugin.StorageView { width: parent.width; vm: root.vm; storage: root.storage; cache: root.cache; strings: localAiStrings; foreground: Commons.Color.foreground; accent: Commons.Color.accent; urgent: Commons.Color.urgent; face: Style.font.family }
   }
   Timer { interval: 600; running: true; onTriggered: root.grabToImage(function(r) { r.saveToFile(root.outFile); Qt.quit() }) }
 }

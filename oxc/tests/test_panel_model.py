@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-MODEL_JS = ROOT / 'src/oxc/omarchy_plugin/Model.js'
+MODEL_JS = ROOT.parent / 'oxa/omarchy-panel/Model.js'
 FIXTURES = ROOT / 'tests/fixtures/panel'
 
 DRIVER = r"""
@@ -499,7 +499,7 @@ class PanelModel(unittest.TestCase):
         for unknown in ('halting', 'Stopping', '', None):
             vm = self.parse({**base, 'chat_state': unknown})
             self.assertEqual((vm['service'], vm['phase'], vm['canLoad'], vm['stopReason']), ('offline', 'offline', False, ''))
-        strings = json.loads((ROOT / 'src/oxc/omarchy_plugin/i18n/en.json').read_text())
+        strings = json.loads((ROOT.parent / 'oxa/omarchy-panel/i18n/en.json').read_text())
         for key in ('bar.stopping', 'bar.stoppingReason', 'now.stopping', 'now.stoppingDetail', 'now.stoppingReason',
                     'now.blocked.stopping', 'model.state.stopping'):
             self.assertIn(key, strings)

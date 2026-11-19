@@ -7,12 +7,11 @@ import pwd
 import subprocess
 import tempfile
 import unittest
-from importlib import resources
 from pathlib import Path
 
 from oxc.plugin_install import PLUGIN_ID, RESTART_COMMAND, code_files, install, restart_needed
 
-PACKAGED = resources.files('oxc').joinpath('omarchy_plugin')
+PACKAGED = Path(__file__).resolve().parents[2]/'oxa'/'omarchy-panel'
 
 
 class PluginRestart(unittest.TestCase):
@@ -55,16 +54,16 @@ class PluginRestart(unittest.TestCase):
 
     def test_changed_code_reports_the_restart_and_does_not_run_it_by_default(self):
         self.call()
-        (self.target / 'NowCard.qml').write_text('import QtQuick\nItem {}\n')
+        (self.target / 'Callout.qml').write_text('import QtQuick\nItem {}\n')
         preview = self.call(dry_run=True)
         self.assertTrue(preview['restart_required'])
         self.assertIn('omarchy restart shell', preview['next_step'])
-        self.assertEqual((self.target / 'NowCard.qml').read_text(), 'import QtQuick\nItem {}\n')  # dry run wrote nothing
+        self.assertEqual((self.target / 'Callout.qml').read_text(), 'import QtQuick\nItem {}\n')  # dry run wrote nothing
         result = self.call()
         self.assertEqual((result['restart_required'], result['shell_restarted']), (True, False))
         self.assertIn('omarchy restart shell', result['next_step'])
         self.assertEqual(self.restarts(), [])
-        self.assertEqual((self.target / 'NowCard.qml').read_bytes(), PACKAGED.joinpath('NowCard.qml').read_bytes())
+        self.assertEqual((self.target / 'Callout.qml').read_bytes(), PACKAGED.joinpath('Callout.qml').read_bytes())
 
     def test_each_kind_of_code_change_counts(self):
         self.call()
@@ -130,7 +129,7 @@ class PluginRestart(unittest.TestCase):
 
     def test_code_files_cover_what_the_shell_compiles(self):
         files = code_files(PACKAGED)
-        for name in ('Panel.qml', 'NowCard.qml', 'ModelsView.qml', 'ActivityView.qml', 'StorageView.qml', 'Model.js'):
+        for name in ('Panel.qml', 'Callout.qml', 'Model.js'):
             self.assertIn(name, files)
         self.assertFalse([name for name in files if name.endswith('.json')])
         self.assertFalse(restart_needed(self.target, PACKAGED))  # nothing installed yet

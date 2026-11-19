@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import unittest
 
-PANEL = Path(__file__).resolve().parents[1] / 'src/oxc/omarchy_plugin/Panel.qml'
+PANEL = Path(__file__).resolve().parents[2] / 'oxa/omarchy-panel/Panel.qml'
 
 
 class SharePoll(unittest.TestCase):

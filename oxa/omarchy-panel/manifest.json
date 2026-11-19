@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "id": "snapdragon.local-ai",
+  "name": "ox AI",
+  "version": "0.2.0",
+  "author": "Snapdragon Local AI Lab contributors",
+  "license": "MIT",
+  "description": "ox AI: the state of the ox Rust suite on Omarchy (models, usage, lead, workers, storage), read from oxa.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "ox AI",
+    "description": "See the state of the ox suite; open chat, code, Studio or the lead page.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "pollEnabled": true,
+      "oxaPath": "",
+      "codeDir": "",
+      "leadUrl": ""
+    },
+    "schema": [
+      {
+        "key": "pollEnabled",
+        "type": "boolean",
+        "label": "Refresh status every five seconds",
+        "defaultValue": true
+      },
+      {
+        "key": "oxaPath",
+        "type": "string",
+        "label": "Path to oxa (set by oxa panel install)",
+        "defaultValue": ""
+      },
+      {
+        "key": "codeDir",
+        "type": "string",
+        "label": "Folder for Code (empty asks each time)",
+        "defaultValue": ""
+      },
+      {
+        "key": "leadUrl",
+        "type": "string",
+        "label": "Lead page address (loopback or Tailscale)",
+        "defaultValue": ""
+      }
+    ]
+  }
+}

@@ -9,7 +9,7 @@ import subprocess
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN = ROOT / 'src/oxc/omarchy_plugin'
+PLUGIN = ROOT.parent / 'oxa/omarchy-panel'
 NAMES = ('parse', 'parseLedger', 'parseStorage', 'notice', 'ownFailure', 'preloadPhase', 'contextOf',
          'preloadOf', 'failureOf', 'parseShare')
 DRIVER = r"""

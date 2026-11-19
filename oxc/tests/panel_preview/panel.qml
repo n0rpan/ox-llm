@@ -10,7 +10,7 @@
 import QtQuick
 import Quickshell
 import qs.Commons as Commons
-import "../../src/oxc/omarchy_plugin" as Plugin
+import "../../../oxa/omarchy-panel" as Plugin
 
 Item {
   id: root

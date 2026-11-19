@@ -18,7 +18,7 @@ from oxc.runtime import classic_beta, controller, model_catalog, storage_view
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / 'src/oxc/runtime'
-PLUGIN = ROOT / 'src/oxc/omarchy_plugin'
+PLUGIN = ROOT.parent / 'oxa/omarchy-panel'
 loader = importlib.machinery.SourceFileLoader('ui_data_oxc', str(RUNTIME / 'oxc'))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 cli = importlib.util.module_from_spec(spec); loader.exec_module(cli)

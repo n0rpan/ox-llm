@@ -1,6 +1,5 @@
 """Install the optional Omarchy panel after explicit platform preflight."""
 from datetime import datetime, timezone
-from importlib import resources
 import os
 import json
 import re
@@ -12,6 +11,7 @@ import tempfile
 from .platform_support import detect
 
 PLUGIN_ID='snapdragon.local-ai'
+PANEL_DIR=Path(__file__).resolve().parents[3]/'oxa'/'omarchy-panel'
 # The shell re-reads a replaced plugin's texts at once but keeps its compiled QML and JavaScript
 # until it restarts, so new panel code over a running shell needs this (WR-1).
 RESTART_COMMAND=('omarchy','restart','shell')
@@ -114,7 +114,7 @@ def install(*,dry_run=False,allow_unsupported=False,replace_plugin=None,config_r
     if old is not None:
         if old.is_symlink() or not old.is_dir():raise RuntimeError('Replacement must be an existing non-symlink user plugin directory')
         replacement=migration_layout((root/'shell.json').read_bytes(),replace_plugin)
-    restart=restart_needed(target,resources.files('oxc').joinpath('omarchy_plugin'))
+    restart=restart_needed(target,PANEL_DIR)
     result={'plugin_id':PLUGIN_ID,'section':'right','dry_run':dry_run,
             'snapdragon_x_detected':bool(info.get('snapdragon_x_detected')),
             'replaces_existing_plugin':target.exists(),'starts_models':False,
@@ -134,7 +134,7 @@ def install(*,dry_run=False,allow_unsupported=False,replace_plugin=None,config_r
     try:
         with tempfile.TemporaryDirectory(prefix='.local-ai-plugin-stage-',dir=root) as directory:
             staged=Path(directory)/PLUGIN_ID
-            copy_assets(resources.files('oxc').joinpath('omarchy_plugin'),staged)
+            copy_assets(PANEL_DIR,staged)
             target.parent.mkdir(parents=True,exist_ok=True)
             if target.exists():shutil.move(str(target),str(backup/'plugin'));moved=True
             staged.replace(target);installed=True

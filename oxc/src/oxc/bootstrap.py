@@ -131,8 +131,8 @@ def stage(destination,home,project=None,image=DEFAULT_IMAGE,oxa_binary=None):
         put('.local/bin/oxa',data,0o700)
     for source in sorted((project/'examples/runtime/units').glob('*.service')):
         put('.config/systemd/user/'+source.name,source.read_bytes())
-    for source in sorted((project/'src/oxc/omarchy_plugin').rglob('*')):
-        if source.is_file():put('.config/omarchy/plugins/snapdragon.local-ai/'+source.relative_to(project/'src/oxc/omarchy_plugin').as_posix(),source.read_bytes())
+    for source in sorted((project.parent/'oxa'/'omarchy-panel').rglob('*')):
+        if source.is_file():put('.config/omarchy/plugins/snapdragon.local-ai/'+source.relative_to(project.parent/'oxa'/'omarchy-panel').as_posix(),source.read_bytes())
     put('.config/oxc/npu-status.json',encode({'ready':False,'state':'disabled','bootstrap_qualified':False}))
     put('.local/state/oxc/inference.lock',b'')
     for name in ['LICENSE','NOTICE']:put('.local/share/ai-stack/notices/wrapper/'+name,(project/name).read_bytes())

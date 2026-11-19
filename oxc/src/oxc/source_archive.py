@@ -4,7 +4,7 @@ import argparse, gzip, hashlib, io, json, os, re, selectors, subprocess, tarfile
 
 TOP = {'.github','benchmarks','bootstrap','dependencies','docs','examples','experiments','patches','src','tests','third_party','tools'}
 ROOT_FILES = {'.gitignore','README.md','CONTRIBUTING.md','LICENSE','NOTICE','pyproject.toml'}
-REQUIRED = {'README.md','LICENSE','NOTICE','pyproject.toml','dependencies/model-artifacts.json','patches/manifest.json','bootstrap/source-recipes.json','examples/runtime/llm-runtime.json','src/oxc/bootstrap.py','src/oxc/runtime/controller.py','src/oxc/runtime/prefix_plan.py','src/oxc/runtime/prefix_store.py','src/oxc/runtime/studio','src/oxc/runtime/oxc','src/oxc/omarchy_plugin/Panel.qml'}
+REQUIRED = {'README.md','LICENSE','NOTICE','pyproject.toml','dependencies/model-artifacts.json','patches/manifest.json','bootstrap/source-recipes.json','examples/runtime/llm-runtime.json','src/oxc/bootstrap.py','src/oxc/runtime/controller.py','src/oxc/runtime/prefix_plan.py','src/oxc/runtime/prefix_store.py','src/oxc/runtime/studio','src/oxc/runtime/oxc'}
 MAX_FILE=16*1024**2; MAX_TOTAL=256*1024**2; MAX_FILES=10000
 MANIFEST='SOURCE-ARCHIVE.json'
 MAX_METADATA=64*1024; MAX_METADATA_TOTAL=16*1024**2; MAX_TAR=MAX_TOTAL+32*1024**2

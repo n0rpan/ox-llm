@@ -19,7 +19,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 RENDER = ROOT / 'tests/panel_preview/render_panel.sh'
 SCENARIOS = ROOT / 'tests/fixtures/panel/v013'
-CATALOG = json.loads((ROOT / 'src/oxc/omarchy_plugin/i18n/en.json').read_text(encoding='utf-8'))
+CATALOG = json.loads((ROOT.parent / 'oxa/omarchy-panel/i18n/en.json').read_text(encoding='utf-8'))
 TABS = ('models', 'activity', 'storage')
 QUIET = ('qml: Qt ', 'qml: Using built-in', 'qml: PANEL-TEXTS ')
 RAW_KEY = re.compile(r'^(now|mode|bar|model|notice|activity|storage|cache|clear|flash|harness|launch|unit|stat|tab|footer|chip|ram|share|empty)'

@@ -48,7 +48,7 @@ class PanelPreview(unittest.TestCase):
 
     def test_plugin_qml_has_no_rich_text_sink_or_hex_colour(self):
         import re
-        for path in sorted((ROOT / 'src/oxc/omarchy_plugin').glob('*.qml')):
+        for path in sorted((ROOT.parent / 'oxa/omarchy-panel').glob('*.qml')):
             text = path.read_text()
             with self.subTest(path.name):
                 self.assertEqual(len(re.findall(r'^\s*(?:Ui\.)?Text \{', text, re.M)),
@@ -60,7 +60,7 @@ class PanelPreview(unittest.TestCase):
 
     def test_every_string_the_panel_asks_for_is_in_the_catalog_and_none_is_left_over(self):
         import re
-        plugin = ROOT / 'src/oxc/omarchy_plugin'
+        plugin = ROOT.parent / 'oxa/omarchy-panel'
         catalog = json.loads((plugin / 'i18n/en.json').read_text(encoding='utf-8'))
         source = '\n'.join(path.read_text() for path in sorted(plugin.glob('*.qml')))
         literal = set(re.findall(r'\b(?:t|tn|word)\("([a-z][A-Za-z0-9_.-]*)"', source))
