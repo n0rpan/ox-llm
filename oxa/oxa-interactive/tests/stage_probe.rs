@@ -73,16 +73,18 @@ fn probe_reads_at_most_the_listed_paths() {
     let stats = fs.stats.borrow();
     let reads = fs.reads.borrow();
     assert!(stats.len() <= 12, "too many existence checks: {}", stats.len());
-    assert!(reads.len() <= 4, "too many reads: {}", reads.len());
+    assert!(reads.len() <= 5, "too many reads: {}", reads.len());
     for path in stats.iter() {
         assert!(
-            STAT_PATHS.iter().any(|listed| *listed == path.as_str()),
+            STAT_PATHS.iter().any(|listed| *listed == path.as_str())
+                || path.ends_with("/MERGE_HEAD")
+                || path.ends_with("/rebase-merge"),
             "unlisted existence check: {path}"
         );
     }
     for path in reads.iter() {
         assert!(
-            READ_PATHS.iter().any(|listed| *listed == path.as_str()),
+            READ_PATHS.iter().any(|listed| *listed == path.as_str()) || path.ends_with("/HEAD"),
             "unlisted read: {path}"
         );
     }
@@ -132,6 +134,26 @@ fn main_branch_is_default_and_a_commit_id_is_detached() {
 fn merge_and_rebase_are_read_from_the_git_dir() {
     let fs = FakeFs::with(&[".git/MERGE_HEAD", ".git/rebase-merge"], &[]);
     let probe = run_probe(&fs, &no_env);
+    assert!(probe.merge_in_progress);
+    assert!(probe.rebase_in_progress);
+}
+
+#[test]
+fn git_file_points_to_the_per_worktree_git_dir() {
+    let fs = FakeFs::with(
+        &[
+            "../repo/.git/worktrees/linked/MERGE_HEAD",
+            "../repo/.git/worktrees/linked/rebase-merge",
+        ],
+        &[
+            (".git", "gitdir: ../repo/.git/worktrees/linked\n"),
+            ("../repo/.git/worktrees/linked/HEAD", "0123abcd\n"),
+        ],
+    );
+
+    let probe = run_probe(&fs, &no_env);
+
+    assert!(probe.detached);
     assert!(probe.merge_in_progress);
     assert!(probe.rebase_in_progress);
 }
