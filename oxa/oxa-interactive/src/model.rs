@@ -601,6 +601,8 @@ pub enum WorkerMsg {
     Event(oxa_proto::AgentEvent),
     /// A command finished; `Err` is shown as an error notice.
     Done(Result<(), OxaError>),
+    /// The watched session reached its terminal wrap-up boundary.
+    LimitExit(i32),
     /// A session switch overtook explicit recovery input; return it without sending it.
     UnsentPrompt {
         text: String,

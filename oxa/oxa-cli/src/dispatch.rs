@@ -200,9 +200,18 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 let binding = crate::lead_chat::local_binding(&cwd, env)?;
                 let dirs = dirs_from_env(env, None)?;
                 let mode = RunMode::Interactive;
-                let workspace = crate::home_cwd::check(mode, &cwd, env, &dirs, &mut *stdin, &mut *stdout)?;
+                let home = crate::home_cwd::check(
+                    mode,
+                    &cwd,
+                    env,
+                    &dirs,
+                    crate::home_cwd::explicit_opt_in(a.level),
+                    &mut *stdin,
+                    &mut *stdout,
+                )?;
                 let mut args = Args::default();
-                let prep = binding.prepare(&mut args, env, mode, workspace)?;
+                let mut prep = binding.prepare(&mut args, env, mode, home.workspace)?;
+                prep.notices.extend(home.warning.map(|w| (Level::Warning, w)));
                 let session = binding.open(&prep)?;
                 Ok((args, prep, session, binding))
             })();
@@ -245,6 +254,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::Goal
                     | CommandId::Admission
                     | CommandId::Help
+                    | CommandId::Status
                     | CommandId::WorkStatus
                     | CommandId::WorkBoard
                     | CommandId::Memory
@@ -365,7 +375,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         };
         let user = Settings::load(&dirs, &cwd, false);
         let (engine, catalog_notices) =
-            match crate::in_process::select_catalog(&user, &dirs, || engine_for(&endpoint)) {
+            match crate::in_process::select_catalog(&user, &dirs, || fallback_engine(&models, &endpoint)) {
                 Ok(e) => e,
                 Err(e) => return report(&mut *stderr, &e),
             };
@@ -384,27 +394,25 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     }
 
     let mode = choose_mode(&a, stdin_is_tty, stdout_is_tty);
-    if (a.max_time.is_some() || a.max_tokens.is_some()) && mode == RunMode::Interactive {
-        let flag = if a.max_tokens.is_some() {
-            "--max-tokens"
-        } else {
-            "--max-time"
-        };
-        return report(
-            &mut *stderr,
-            &OxaError::new(codes::USAGE, format!("{flag} requires print, JSON or RPC mode")),
-        );
-    }
     if mode == RunMode::Rpc && !a.files.is_empty() {
         let e = OxaError::new(codes::USAGE, "@file arguments are not supported in RPC mode")
             .with_hint(USAGE_HINT);
         return report(&mut *stderr, &e);
     }
     // Item 3 (sec-prod): a session in the home directory or above it needs the user's say-so.
-    let home_workspace = match crate::home_cwd::check(mode, &cwd, env, &dirs, &mut *stdin, &mut *stdout) {
-        Ok(w) => w,
+    let home = match crate::home_cwd::check(
+        mode,
+        &cwd,
+        env,
+        &dirs,
+        crate::home_cwd::explicit_opt_in(a.level),
+        &mut *stdin,
+        &mut *stdout,
+    ) {
+        Ok(h) => h,
         Err(e) => return report(&mut *stderr, &e),
     };
+    let home_workspace = home.workspace;
 
     // CLI-019: pi's question when `--session <id>` names a session of another directory
     // (main.ts `promptConfirm`): the notice and the question on stdout, one answer line from
@@ -464,7 +472,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             None,
         )
     };
-    let prep = match prepared {
+    let mut prep = match prepared {
         Ok(p) => p,
         Err(e) if e.code == FORK_DECLINED => {
             let _ = writeln!(stdout, "Aborted.");
@@ -479,6 +487,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             return report(&mut *stderr, &e);
         }
     };
+    prep.notices.extend(home.warning.map(|w| (Level::Warning, w)));
     // Second pass (pi): the long flags the first pass did not know are parsed again with the
     // flags the loaded extensions registered; one that nobody registered is a usage error.
     let a = if a.unknown.is_empty() {
@@ -1024,7 +1033,10 @@ fn prepare(
         },
         (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
         shared,
-        || engine_with_settings(&endpoint, &settings),
+        || {
+            no_model_check(&models)?;
+            engine_with_settings(&endpoint, &settings)
+        },
     )?;
     let engine = child.wrap(engine);
     notices.extend(catalog_notices.into_iter().map(|text| (Level::Info, text)));
@@ -1191,6 +1203,13 @@ fn prepare(
     };
     if let Some(text) = oxa_proto::no_os_sandbox_notice() {
         notices.push((Level::Warning, text.to_string()));
+    }
+    if let Some(text) = crate::netguard::yolo_net_notice(
+        level,
+        settings.string(oxa_sandbox::SETTING_SANDBOX_NET).as_deref(),
+        oxa_proto::offline(),
+    ) {
+        notices.push((Level::Warning, text));
     }
     if !matches!(mode, RunMode::Interactive) {
         notices.push((
@@ -1671,6 +1690,8 @@ fn run_headless(
         continue_goal,
         ..
     } = prep;
+    // FH-N2: nobody watches a print or JSON run; the prefix of this session carries the
+    // autonomy block and the loop nudges once when a final reply ends on a plan.
     oxa_core::set_headless(true);
     let mut session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
@@ -1953,7 +1974,7 @@ fn run_tui(
         name,
         ..
     } = prep;
-    let (session, owner) = match owner {
+    let (mut session, owner) = match owner {
         Some((session, binding)) => (session, Some(binding)),
         None => match open_named(&built, session_id, open, name.as_deref()) {
             Ok(session) => (session, None),
@@ -2046,6 +2067,19 @@ fn run_tui(
         session.set_output_schema(base.output_schema.clone());
         Ok(session)
     });
+    // S11: the interactive startup session has the same soft wrap-up as a headless run.
+    if a.max_time.is_some() || a.max_tokens.is_some() {
+        match crate::limits::StartupLimit::start(
+            session.handle(),
+            a.max_time,
+            a.max_tokens,
+            built.supervised_child,
+            built.hook_sets.subagent.clone(),
+        ) {
+            Ok(limit) => session.hold_startup_limit(limit),
+            Err(error) => return report(stderr, &error),
+        }
+    }
     let opts = InteractiveOpts {
         // `--tui-mode` over the `tuiMode` setting (default fullscreen).
         fullscreen: a
@@ -2124,6 +2158,23 @@ pub(crate) fn default_endpoint(models: &ModelsConfig) -> Result<Endpoint, OxaErr
         .or_else(|| models.endpoints.first())
         .cloned()
         .ok_or_else(|| OxaError::new(codes::NOT_FOUND, "no engine endpoint is configured"))
+}
+
+/// A fresh install has no model source: say what to configure instead of dialing a port
+/// nothing listens on.
+fn no_model_check(models: &ModelsConfig) -> Result<(), OxaError> {
+    if models.unconfigured {
+        return Err(OxaError::new(codes::ENGINE_DOWN, "no model is configured").with_hint(
+            "configure a cloud key (oxa login chatgpt --experimental, or a provider in settings) or run `oxa local add <model.gguf>`; to use an engine already running, set OXA_ENGINE_URL",
+        ));
+    }
+    Ok(())
+}
+
+/// The HTTP engine for the default endpoint, unless nothing is configured.
+fn fallback_engine(models: &ModelsConfig, endpoint: &Endpoint) -> Result<Arc<dyn Engine>, OxaError> {
+    no_model_check(models)?;
+    engine_for(endpoint)
 }
 
 pub(crate) fn engine_for(endpoint: &Endpoint) -> Result<Arc<dyn Engine>, OxaError> {
@@ -3078,7 +3129,7 @@ mod session_scratch_tests {
     /// key in the user file allows the command.
     #[test]
     fn approval_keys_are_read_from_user_layer_only() {
-        use oxa_proto::{Access, Decision, Mode, Policy};
+        use oxa_proto::{Access, Decision, Mode};
         let env = oxa_fake::TestEnv::new();
         let dirs = Dirs::under(env.root());
         let cwd = env.work();

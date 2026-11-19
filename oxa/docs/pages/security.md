@@ -56,7 +56,7 @@ Pasted and dropped images saved as `tmp/paste-<hash>.<image extension>` remain r
 
 ### Owner yes
 
-An approval comes only from you: your typed message, your answer to an oxa dialog, or yolo chosen for the session. Text the model read (tool output, files, web pages, other sessions) never counts. oxa commands that need your yes (for example publishing) ask the session through a private unix socket (`OXA_CONFIRM_SOCK`, directory 0700, socket 0600). In yolo the session answers yes and records it with a notice. In standard and auto it shows a dialog; while one waits, your next typed message answers it (`yes`, `y`, `ja`, `ok`, `post it` mean yes, anything else no). With no way to ask you, the answer is "none" and nothing is confirmed.
+An approval comes only from you: your typed message, your answer to an oxa dialog, or yolo chosen for the session. Text the model read (tool output, files, web pages, other sessions) never counts. oxa commands that need your yes (for example publishing) ask the session through a private unix socket (`OXA_CONFIRM_SOCK`, directory 0700, socket 0600). In yolo the session answers yes and records it with a notice. In standard and auto it shows a dialog; while one waits, your next typed message answers it (`yes`, `y`, `ja`, `ok`, `post it` mean yes, anything else no). With no way to ask you, the answer is "none" and nothing is confirmed. The socket is reachable by any command the model runs, so what one request can hold in the oxa process is bounded: its size (default 8 MiB), the time to send it (default 60 seconds) and the requests served at once (default 64; more are answered "none"). You can change each with `OXA_CONFIRM_MAX_REQUEST_BYTES`, `OXA_CONFIRM_READ_TIMEOUT_SECS` and `OXA_CONFIRM_MAX_CONNECTIONS` ([cli.md](cli.md#environment-variables)).
 
 The socket accepts one newline-terminated request up to 64 KiB. A larger request receives `none`.
 
@@ -110,7 +110,7 @@ If oxa starts in your home directory, in `/`, or in a parent of your home direct
 - your home directory is visible to bash, read-only, with the deny-list below still masked. A command can read your shell history, your dot files and your other files there;
 - bash has network access by default, so a command can send what it reads to a host (see [Network](#network)).
 
-oxa refuses such a start in print, JSON and RPC modes. In interactive mode it warns and asks "Start oxa here anyway?", and the default answer is No. The user setting `oxa.allowHomeCwd: true`, or the environment variable `OXA_ALLOW_HOME_CWD=1`, allows the start without the question. Start oxa in a project directory instead.
+oxa refuses such a start in print, JSON and RPC modes. In interactive mode it warns and asks "Start oxa here anyway?", and the default answer is No. The user setting `oxa.allowHomeCwd: true`, or the environment variable `OXA_ALLOW_HOME_CWD=1`, allows the start without the question. An explicit `--yolo` or `--auto` on the command line is the owner's opt-in: the start warns once and goes on in every mode, with no question. Start oxa in a project directory instead.
 
 Writable package caches are shared with your own builds. A crate or Go module that the model unpacks there is what your next build reads. Clear a cache after a session you do not trust.
 
@@ -173,7 +173,7 @@ In `standard` and `auto`, the model cannot write `.oxa/**` or `.agents/skills/**
 
 ## Network
 
-The harness connects to the model you chose: the local engine on loopback, or the provider of the selected cloud model. It has no telemetry, no version check and no upload of sessions, exports or reports. Its tools may use the network, as the table shows.
+The harness connects to the model you chose: the local engine on loopback, or the provider of the selected cloud model. With nothing configured it connects nowhere. It has no telemetry, no version check and no upload of sessions, exports or reports. Its tools may use the network, as the table shows.
 
 | Source | Network | In `ask` mode |
 |---|---|---|
