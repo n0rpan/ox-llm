@@ -65,7 +65,7 @@ separate analysis rather than generating reusable runtime objects. Production AR
 cannot replace x86_64 CI test executables. The artifact reuse is between identical test builds.
 
 Drafts retain the classifier, scans and formatting only. Ready PRs and the merge queue run
-the same path-selected set (`tools/ci/paths.py`: `engine`, `oxa`, `lab`, `cli`, `gateway`, `md`);
+the same path-selected set (`tools/ci/paths.py`: `engine`, `oxa`, `gateway`, `md`);
 unknown paths select every component, and the scans run on every change. A push on main, the
 nightly run and manual runs select every component, so main runs the full set after each merge.
 Caches are restored everywhere and saved only on main, once per dependency-level key prefix. The

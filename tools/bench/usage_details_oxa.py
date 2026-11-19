@@ -118,7 +118,7 @@ def summarize(records, prices=PRICE_PER_MILLION):
     input_total = sum(record["prompt"] for record in records) if all_reported else None
     output_total = sum(record["output"] for record in records) if all_reported else None
     cached_total = sum(record["cached"] for record in records) if cached_known else None
-    first_cached = records[0]["cached"] if cached_known else None
+    first_cached = records[0]["cached"]
     durations = [record["duration_ms"] for record in records]
     duration_total = sum(durations) if all(d is not None for d in durations) else None
 

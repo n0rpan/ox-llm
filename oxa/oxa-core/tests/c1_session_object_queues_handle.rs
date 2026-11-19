@@ -569,7 +569,7 @@ fn a_user_bash_command_is_foreground_work_until_it_ends() {
     assert!(!handle.is_busy());
 }
 
-/// #877: `/tree` branch-summary generation emits no agent activity events, but it is still
+/// #1693: `/tree` branch-summary generation emits no agent activity events, but it is still
 /// foreground work and must remain cancellable from the interactive front end.
 #[test]
 fn a_branch_summary_is_foreground_work_until_navigation_ends() {
@@ -638,6 +638,7 @@ fn a_branch_summary_is_foreground_work_until_navigation_ends() {
         .id
         .clone();
 
+    let navigation_events = sink.0.len();
     session
         .navigate(&target, true, None, &mut sink, &mut ui)
         .expect("navigate with a branch summary");
@@ -645,6 +646,13 @@ fn a_branch_summary_is_foreground_work_until_navigation_ends() {
     assert!(
         hook.seen.load(Ordering::SeqCst),
         "branch-summary navigation is foreground while it holds the session"
+    );
+    assert!(
+        !sink.0[navigation_events..].iter().any(|event| matches!(
+            event,
+            AgentEvent::AgentStart | AgentEvent::TurnStart | AgentEvent::MessageStart { .. }
+        )),
+        "branch-summary navigation must not rely on activity events"
     );
     assert!(!handle.is_running(), "the signal ends with navigation");
     assert!(!handle.is_busy());

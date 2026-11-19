@@ -81,14 +81,16 @@ class UsageDetailsTests(unittest.TestCase):
         records = [_record(1, 1000, 0, 50), _record(2, None, None, None, usage_reported=False)]
         details = parser.summarize(records)
         self.assertEqual(details["unreported_calls"], 1)
+        self.assertEqual(details["first_call_cached"], 0)
         self.assertIsNone(details["input"])
         self.assertIsNone(details["cached"])
         self.assertIsNone(details["cache_hit_rate_normalized"])
         self.assertIsNone(details["cost_first_cold_usd"])
 
     def test_omitted_cached_count_leaves_cache_and_cost_null(self):
-        records = [_record(1, 1000, None, 50), _record(2, 1000, 500, 40)]
+        records = [_record(1, 1000, 800, 50), _record(2, 1000, None, 40)]
         details = parser.summarize(records)
+        self.assertEqual(details["first_call_cached"], 800)
         self.assertIsNone(details["cached"])
         self.assertIsNone(details["cache_hit_rate_normalized"])
         self.assertIsNone(details["cost_first_cold_usd"])
