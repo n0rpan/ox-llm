@@ -445,6 +445,7 @@ impl BashTool {
                     text.push_str(&read.output);
                 }
                 ToolOutput {
+                    images: Vec::new(),
                     text,
                     is_error: false,
                     ui: json!({ "job": id, "status": status }),
@@ -464,6 +465,7 @@ impl BashTool {
                     text.push_str(" (already finished)");
                 }
                 ToolOutput {
+                    images: Vec::new(),
                     text,
                     is_error: false,
                     ui: json!({ "job": id, "status": status }),
@@ -494,6 +496,7 @@ impl BashTool {
         };
         match self.jobs.spawn(spec) {
             Ok(id) => ToolOutput {
+                images: Vec::new(),
                 text: format!(
                     "Started background job {id}. Read its status and output with bash {{\"job\": \"{id}\"}}.\n{JOB_PROCESS_VISIBILITY}"
                 ),
@@ -608,6 +611,7 @@ impl BashTool {
         if res.timed_out {
             let secs = spec.timeout_s.unwrap_or(0);
             return ToolOutput {
+                images: Vec::new(),
                 text: errors::bash_with_status(&output, &errors::bash_timed_out(secs)),
                 is_error: true,
                 ui,
@@ -615,6 +619,7 @@ impl BashTool {
         }
         if cx.cancel.is_cancelled() {
             return ToolOutput {
+                images: Vec::new(),
                 text: errors::bash_with_status(&output, errors::BASH_ABORTED),
                 is_error: true,
                 ui,
@@ -622,16 +627,19 @@ impl BashTool {
         }
         match res.exit {
             None => ToolOutput {
+                images: Vec::new(),
                 text: errors::bash_with_status(&shown, errors::BASH_NO_EXIT_CODE),
                 is_error: true,
                 ui,
             },
             Some(0) => ToolOutput {
+                images: Vec::new(),
                 text: shown,
                 is_error: false,
                 ui,
             },
             Some(code) => ToolOutput {
+                images: Vec::new(),
                 text: errors::bash_with_status(&shown, &errors::bash_exit(code)),
                 is_error: true,
                 ui,
