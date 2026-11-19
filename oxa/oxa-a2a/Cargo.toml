@@ -12,6 +12,7 @@ default = []
 agent-host = ["dep:oxa-proto"]
 
 [dependencies]
+oxa-http.workspace = true
 oxa-proto = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true

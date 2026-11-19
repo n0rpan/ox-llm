@@ -326,6 +326,44 @@ fn native_unknown_cost_survives_reopen_and_closes_capped_admission() {
             .err()
             .unwrap(),
         429,
-        "budget_exceeded",
+        "cost_unknown_history",
     );
+}
+
+#[test]
+fn unpriced_model_admitted_without_cap() {
+    for (cap, admitted) in [(None, true), (Some(1.0), false)] {
+        let mock = anthropic::MockAnthropic::start(vec![]);
+        let fixture = skeleton::Fixture::new(&mock);
+        let model = Model::new(
+            skeleton::MODEL,
+            Provider::Anthropic,
+            skeleton::UPSTREAM,
+            fixture.config["cloud"]["models"][skeleton::MODEL]["base_url"]
+                .as_str()
+                .unwrap(),
+            1024,
+            16,
+        )
+        .unwrap();
+        let rt = Runtime::new(
+            [(model, None)],
+            fixture.key_path.clone(),
+            fixture.ledger_dir.clone(),
+            Options {
+                access: Access::Enabled,
+                daily_budget_usd: cap,
+                ledger_enabled: true,
+                subscription: None,
+                subscription_limits: None,
+            },
+        )
+        .unwrap();
+        let result = rt.begin(&json!({"model":skeleton::MODEL}), Context::default());
+        if admitted {
+            assert!(result.is_ok());
+        } else {
+            refusal(result.err().unwrap(), 400, "cloud_pricing_unavailable");
+        }
+    }
 }
