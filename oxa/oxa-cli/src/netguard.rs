@@ -280,6 +280,29 @@ mod tests {
         d
     }
 
+    /// #1449: an unusable user settings file keeps the process offline policy and the bash
+    /// network decision restricted, separately; a missing file keeps the normal defaults.
+    #[test]
+    fn unusable_user_settings_keep_process_and_bash_network_restricted() {
+        let env = Env::from_pairs(&[]);
+        for (tag, content) in [("badjson", Some("{ \"oxa\": {\"offline\": ")), ("absent", None)] {
+            let home = tmp(tag);
+            let dirs = oxa_config::Dirs::under(&home);
+            if let Some(text) = content {
+                std::fs::create_dir_all(dirs.settings_file().parent().unwrap()).unwrap();
+                std::fs::write(dirs.settings_file(), text).unwrap();
+            }
+            let user = Settings::load(&dirs, &home, false);
+            let (offline, allow_remote) = policy_from(false, &env, &user);
+            let bash_net = sandbox_net_setting(user.string(SETTING_SANDBOX_NET).as_deref());
+            let restricted = content.is_some();
+            assert_eq!(offline, restricted, "{tag}: process offline policy");
+            assert!(!allow_remote, "{tag}");
+            assert_eq!(!bash_net, restricted, "{tag}: bash network decision");
+            assert_eq!(user.diagnostics().is_empty(), !restricted, "{tag}");
+        }
+    }
+
     #[test]
     fn a_helper_that_leaves_the_pipe_open_cannot_stall_startup() {
         let d = tmp("pipe");

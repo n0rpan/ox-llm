@@ -21,7 +21,7 @@ Settings can be nested or dotted. These two files are the same:
 
 ## Validation
 
-A setting that is not in the list below is kept in the file, ignored, and reported as a warning at start-up: `unknown setting ...`. A setting with the wrong type is also reported, and the default is used. A file that is not valid JSON, or whose top level is not an object, is ignored with a warning (`settings file is not valid JSON ...; ignored`). Nothing in a settings file stops oxa from starting.
+A setting that is not in the list below is kept in the file, ignored, and reported as a warning at start-up: `unknown setting ...`. A setting with the wrong type is also reported, and the default is used. A project file that is not valid JSON, or whose top level is not an object, is ignored with a warning (`settings file is not valid JSON ...; ignored`). Nothing in a settings file stops oxa from starting. Your user file is different: if it exists but cannot be read, is empty, is not valid JSON or its top level is not an object, oxa fails safe. It keeps the most restrictive security settings (`oxa.offline` on, `oxa.sandbox.net` off, `oxa.engine.allowRemote` off, `defaultProjectTrust` never), uses defaults for everything else, and warns at start-up with how to recover: fix or restore the file and restart. A missing file (first launch) and `{}` are normal and use the usual defaults. A live edit that fails to load keeps the settings already in use.
 
 Settings that older files may contain but oxa does not implement are not listed here. Their use is reported as a warning: `setting ... is accepted but ignored in oxa`.
 
