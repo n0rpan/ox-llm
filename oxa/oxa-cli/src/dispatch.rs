@@ -678,7 +678,8 @@ struct Built {
     /// #202: the sandbox of the bash tool and its background jobs: the session's sandbox,
     /// bypassed while the switch is at yolo (full access).
     bash_sandbox: Arc<oxa_sandbox::FullAccess>,
-    /// #1512 S3: this run has the OS sandbox (`run_kind::os_sandbox_wanted`); the HUD shows it.
+    /// #1512 S3: this run requests the OS sandbox (`run_kind::os_sandbox_wanted`). The HUD
+    /// combines this policy with platform support before showing it.
     os_sandbox: bool,
     /// #1512 S2: the dangerous-command rules of the user settings, shared by every session.
     danger: Arc<DangerRules>,
@@ -2175,7 +2176,7 @@ fn run_tui(
         #[cfg(not(feature = "share"))]
         engine_status: None,
         yolo: Some(yolo),
-        os_sandbox: built.os_sandbox,
+        os_sandbox: crate::run_kind::os_sandbox_active(built.os_sandbox, oxa_proto::OS_SANDBOX),
     };
     let result = if pinned {
         oxa_interactive::run_pinned(session, opts, "oxa lead")
