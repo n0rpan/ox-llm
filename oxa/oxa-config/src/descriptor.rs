@@ -424,6 +424,8 @@ pub(crate) fn all_rows() -> &'static [Descriptor] {
     ROWS.get_or_init(|| {
         [
             display::ENTRIES,
+            budgets::ENTRIES,
+            tools::ENTRIES,
             models::ENTRIES,
             compaction::ENTRIES,
             lead::ENTRIES,

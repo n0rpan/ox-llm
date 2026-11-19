@@ -101,6 +101,7 @@ oxa.webSearch.enabled|Bool|true|true
 oxa.webSearch.maxTokens|Number|2048|true
 oxa.webSearch.provider|Enum(["brave", "none"])|"brave"|true
 oxa.work.localChecks|StringList|["cargo check"]|true
+oxa.workers.stopGraceSeconds|Number|10|true
 packages|Any|[]|true
 permissions.defaultMode|Enum(["standard", "auto", "yolo", "plan"])|"auto"|true
 prompts|StringList|[]|true
@@ -191,6 +192,43 @@ Models|retry.provider.maxRetries
 Models|retry.provider.maxRetryDelayMs
 Models|httpIdleTimeoutMs
 Models|retry.provider.timeoutMs
+Budgets|oxa.cloud
+Budgets|oxa.cloud.daily_budget_usd
+Budgets|oxa.cloud.subscription_limits.daily_requests
+Budgets|oxa.cloud.subscription_limits.daily_tokens
+Budgets|oxa.cloud.discover_models
+Budgets|oxa.cloud.models
+Budgets|oxa.cloud.unpriced_discovered_pricing
+Budgets|oxa.cloud.discovery
+Budgets|oxa.cloud.subscription
+Budgets|oxa.maxTurns
+Tools|defaultTools
+Tools|oxa.toolOutputCap
+Tools|oxa.toolRepair
+Tools|oxa.toolRepeatGuard
+Tools|oxa.diet.output
+Tools|oxa.diet.tools
+Tools|oxa.envNote
+Tools|oxa.bash.defaultTimeout
+Tools|shellPath
+Tools|shellCommandPrefix
+Tools|oxa.webSearch.enabled
+Tools|oxa.webSearch.provider
+Tools|oxa.webSearch.maxTokens
+Tools|done
+Tools|hooks
+Tools|oxa.builtinSkills
+Tools|oxa.skills.includeSynced
+Tools|skills
+Tools|prompts
+Tools|extensions
+Tools|oxa.reportIssue.repo
+Tools|oxa.reportIssue.semanticDedupe
+Tools|oxa.subagent.enabled
+Tools|oxa.subagent.smallContext
+Tools|oxa.subagent.remoteConcurrency
+Tools|oxa.subagent.softTokens
+Tools|oxa.subagent.resultCap
 Compaction|compaction.profile
 Compaction|compaction.enabled
 Compaction|oxa.compaction.softTokens
