@@ -107,8 +107,16 @@ Commands take the place of the message. They do not start a session.
 | `oxa identity [--refresh] [--offline]` | show the identity text of the system prompt; `--refresh` rewrites it from this machine and the engine, and `--offline` skips the engine |
 | `oxa share serve --model ALIAS` | start the authenticated streaming OpenAI-compatible listener for explicitly selected native local models in a build with the `share` feature |
 | `oxa share key <add\|list\|revoke>` | owner-only guest key and daily limit management, in a build compiled with the `share` feature |
+
 | `oxa report-issue <draft\|submit>` | draft a scrubbed issue for the ox-llm repository, or post a draft after confirmation |
 | `oxa wipe --session <id> \| --all [--yes] [--engine]` | remove the stored session files and spill files of one session or of all sessions. See [sessions.md](sessions.md#what-oxa-stores-and-how-to-remove-it) |
+
+`oxa work board` keeps a snapshot usable when one pull request exceeds a 100-item GitHub
+evidence page: that pull request is shown as **Evidence incomplete**, with the connection and
+configured page limit in its reason, and is excluded from all board, review, landing, and refill
+actions. Other pull requests are still published. If the merge-queue connection exceeds its page,
+observed queue entries remain usable; unobserved pull requests have unknown queue state and take
+no queue action. Both cases are reported on standard error.
 
 `-l` (`--local`) writes to the project's `.oxa/settings.json` instead of the user settings. Package sources must be git URLs or local paths. npm sources are refused.
 

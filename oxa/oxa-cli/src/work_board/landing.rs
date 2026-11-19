@@ -21,7 +21,10 @@ pub(super) fn review_decisions(
     let entries: Vec<_> = board
         .entries
         .iter()
-        .filter(|entry| !matches!(entry.action, Action::BuildIssue | Action::WaitIssue))
+        .filter(|entry| {
+            entry.evidence_incomplete.is_none()
+                && !matches!(entry.action, Action::BuildIssue | Action::WaitIssue)
+        })
         .collect();
     let mut observations = BTreeMap::new();
     let mut exact_holds = BTreeMap::new();

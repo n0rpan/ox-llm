@@ -70,7 +70,16 @@ impl<'a> Input<'a> {
 impl GitHub for Input<'_> {
     fn snapshot(&mut self) -> Result<Snapshot, String> {
         self.existing.clear();
-        let pull_requests = self.reader.open_pull_requests()?;
+        let Snapshot {
+            pull_requests,
+            issues: _,
+            incomplete,
+        } = self.reader.snapshot()?;
+        let expected: BTreeMap<_, _> = pull_requests
+            .iter()
+            .map(|pr| (pr.number, pr.head.as_str()))
+            .chain(incomplete.iter().map(|pr| (pr.number, pr.head.as_str())))
+            .collect();
         let mut issue_fields = String::new();
         for packet in self.packets.iter().filter(|p| p.action == Action::BuildIssue) {
             issue_fields.push_str(&format!(
@@ -98,7 +107,7 @@ impl GitHub for Input<'_> {
             let (page, read) = self.reader.repository_read(&fields)?;
             super::charge(&mut bytes, read)?;
             let connection = &page["pullRequests"];
-            if connection["totalCount"].as_u64() != Some(pull_requests.len() as u64) {
+            if connection["totalCount"].as_u64() != Some(expected.len() as u64) {
                 return Err("board membership changed; retry later".into());
             }
             let batch = connection["nodes"].as_array().ok_or("missing metadata page")?;
@@ -106,7 +115,7 @@ impl GitHub for Input<'_> {
                 return Err("oversized metadata page".into());
             }
             rows.extend(batch.iter().cloned());
-            if rows.len() > pull_requests.len() {
+            if rows.len() > expected.len() {
                 return Err("oversized metadata snapshot".into());
             }
             if metadata.is_null() {
@@ -135,10 +144,10 @@ impl GitHub for Input<'_> {
             .map(|p| (p["number"].as_u64(), p["headRefOid"].as_str()))
             .collect();
         if heads.len() != rows.len()
-            || heads.len() != pull_requests.len()
-            || pull_requests
+            || heads.len() != expected.len()
+            || expected
                 .iter()
-                .any(|p| heads.get(&Some(p.number)) != Some(&Some(p.head.as_str())))
+                .any(|(number, head)| heads.get(&Some(*number)) != Some(&Some(*head)))
         {
             return Err("board membership or head changed; retry later".into());
         }
@@ -210,14 +219,14 @@ impl GitHub for Input<'_> {
                 number: packet.number,
                 revision: text(issue, "updatedAt")?.into(),
                 release_pinned: false,
-                approved: self.intake && pull_requests.len() < 40 && text(issue, "state")? == "OPEN",
+                approved: self.intake && expected.len() < 40 && text(issue, "state")? == "OPEN",
                 has_open_pull_request: closing.contains(&packet.number),
             });
         }
         Ok(Snapshot {
             pull_requests,
             issues,
-            incomplete: vec![],
+            incomplete,
         })
     }
 }

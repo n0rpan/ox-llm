@@ -29,4 +29,9 @@ in a tree with Cargo manifests. A worker declaration can add requirements to tha
 
 The repeat guard warns and continues by owner decision (#1448): the third identical tool result gets a notice, a call that still repeats gets one persisted warning, and the run is not stopped. A finding that asks for the old stopping behaviour is not a finding; `oxa.maxTurns` is the configured cap.
 
+Board evidence limits degrade only the affected pull request. A connection that cannot be read
+completely produces a visible, ineligible row and cannot trigger review, landing, or refill actions;
+the other rows remain usable. An over-page merge queue retains its observed entries, while every
+unobserved pull request has unknown queue state and cannot trigger a queue action.
+
 Intentional removals must be stated in the PR body with a `Removes:` line; flag silent deletion of security checks as high.

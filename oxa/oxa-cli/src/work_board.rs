@@ -397,7 +397,7 @@ fn complete_changed_files(
         let continuation = &next[format!("p{number}")];
         let (seen, seen_head) = identity(continuation)?;
         if seen != number {
-            return Err(SnapshotError::from("mismatched PR number"));
+            return Err(SnapshotError::Changed("mismatched PR details; retry later"));
         }
         if seen_head != head || continuation["files"]["totalCount"].as_u64() != Some(total) {
             return Err(SnapshotError::Changed("mismatched PR details; retry later"));
@@ -430,6 +430,7 @@ const PAGE_ITEMS: u64 = 100;
 fn over_page_limit(row: &Value, reviews: bool) -> Option<&'static str> {
     let mut connections: Vec<(&'static str, &Value)> = vec![
         ("labels", &row["labels"]),
+        ("changed files", &row["files"]),
         ("review threads", &row["reviewThreads"]),
         ("latest reviews", &row["latestOpinionatedReviews"]),
         ("base rules", &row["baseRef"]["rules"]),
@@ -445,7 +446,13 @@ fn over_page_limit(row: &Value, reviews: bool) -> Option<&'static str> {
     connections.into_iter().find_map(|(name, connection)| {
         let total = connection["totalCount"].as_u64()?;
         let shown = connection["nodes"].as_array()?.len() as u64;
-        (total > shown).then_some(name)
+        (total > shown).then(|| {
+            eprintln!(
+                "oxa work: PR #{} {name} exceed the {PAGE_ITEMS}-item GitHub page ({total} items); the item is not evaluated",
+                row["number"].as_u64().unwrap_or_default()
+            );
+            name
+        })
     })
 }
 
@@ -557,7 +564,14 @@ impl Reader<'_> {
                     head.to_owned()
                 };
                 let row = &mut page[format!("p{n}")];
-                complete_changed_files(self, *n, &head, row)?;
+                if let Err(error) = complete_changed_files(self, *n, &head, row) {
+                    match error {
+                        SnapshotError::Changed(_) => return Err(error),
+                        SnapshotError::Terminal(message) => {
+                            eprintln!("oxa work: PR #{n} changed-file evidence is incomplete: {message}")
+                        }
+                    }
+                }
                 details[format!("p{n}")] = row.clone();
             }
             offset = end;

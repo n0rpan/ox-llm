@@ -955,6 +955,32 @@ fn opt_in_review_policy_observes_pinned_diff_and_authenticated_reviews() {
     }
 }
 
+#[test]
+fn review_policy_preserves_an_incomplete_pr_row() {
+    let (env, mut detail) = fixture();
+    env.write(
+        "home/review.json",
+        r#"{"requester":"review-bot","codex":"code-reviewer","security":"security-reviewer","owner":"owner-reviewer","core":["engine"],"protected":["docs/protected"]}"#,
+    );
+    let row = &mut detail["data"]["repository"]["p42"];
+    row["comments"] = serde_json::json!({"totalCount":101,"nodes":[]});
+    row["reviews"] = serde_json::json!({"totalCount":0,"nodes":[]});
+    fs::write(env.work().join("detail.json"), detail.to_string()).unwrap();
+    fs::write(env.work().join("first.json"), detail.to_string()).unwrap();
+    fs::write(env.work().join("review.json"), detail.to_string()).unwrap();
+
+    let out = invoke(
+        &env,
+        "work board --shadow --repo example/repo --once --review-policy ../home/review.json",
+    );
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let log = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
+    let sample: serde_json::Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+    assert_eq!(sample["board"]["entries"][0]["number"], 42);
+    assert_eq!(sample["board"]["entries"][0]["action"], "evidence_incomplete");
+    assert!(sample["reviews"].get("42").is_none());
+}
+
 fn queue_rejection(group: &str) -> serde_json::Value {
     serde_json::json!({"data":{"repository":{
         "mergeQueue":{"id":"queue-1"},
