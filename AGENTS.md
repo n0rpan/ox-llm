@@ -346,6 +346,11 @@ read its result; they never launch builds or tests.
 - Prefer deleting and merging code over adding it. Measure before and after when a change is about speed or size.
 - Write names as they are on `main`. Use short, plain sentences in docs, comments, PR text and user messages.
 - No person names, session links or internal decision ids in code, docs, commits, PR text or issues.
+- **Online data is fetched, never hard-coded (owner rule).** Model lists, context windows, max output, prices,
+  plan and rate limits, latest versions and release assets come from the live source (the provider's API or a
+  public catalog), cached from the last successful fetch and refreshed in the background. No built-in copies: an
+  online service needs the network anyway; an unknown value warns, never refuses. Protocol constants (API paths,
+  header names) and security pins (checksums, action SHAs) stay in code. Never fill such values from memory.
 - An issue filed by an agent states how the problem was observed (command, run or log line). Verify an agent-filed
   issue against current main before building on it; close it with the evidence if it does not reproduce.
 
