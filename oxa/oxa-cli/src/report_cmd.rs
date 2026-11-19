@@ -444,7 +444,6 @@ pub(crate) fn submit_record(
         }
         None
     };
-    let body_file = draft.with_extension("body.md");
     let body = publication
         .as_ref()
         .map_or(body.as_str(), |plan| plan.body.as_str());
@@ -463,13 +462,12 @@ pub(crate) fn submit_record(
     } else {
         vec!["issue", "create", "--repo", &repo, "--title", &title]
     };
-    let body_path = body_file.to_string_lossy();
-    args.extend(["--body-file", &body_path]);
+    // Keep the bytes that were displayed and approved in this process. A draft lives in a
+    // model-writable directory, so handing `gh` a pathname would let another process replace
+    // the file between confirmation and the time `gh` opens it.
+    args.extend(["--body", body]);
     let args: Vec<String> = args.into_iter().map(str::to_string).collect();
-    write_atomic(&body_file, body.as_bytes())
-        .map_err(|e| OxaError::io(&format!("cannot write {}", body_file.display()), &e))?;
     let result = runner("gh", &args);
-    let _ = std::fs::remove_file(&body_file);
     match result {
         Some((0, stdout)) => {
             if let Some(plan) = &mut publication {

@@ -336,16 +336,15 @@ fn submit_posts_the_exact_text_after_yes() {
         &ctx(),
         &mut |_: &str| Some(true),
         &mut |p: &str, args: &[String]| {
-            let file = args
+            let posted = args
                 .iter()
-                .position(|a| a == "--body-file")
+                .position(|a| a == "--body")
                 .map(|i| args[i + 1].clone())
                 .unwrap();
-            calls.push((
-                p.to_string(),
-                args.to_vec(),
-                std::fs::read_to_string(&file).unwrap(),
-            ));
+            // Replacing the model-writable draft after approval cannot change the bytes passed
+            // to `gh`: the approved body is an owned argument, not a pathname that `gh` reopens.
+            std::fs::write(&draft, "Title: Replaced\n\nunapproved body\n").unwrap();
+            calls.push((p.to_string(), args.to_vec(), posted));
             Some((0, "https://github.com/owner/ox-llm/issues/1\n".to_string()))
         },
         &mut out,
@@ -367,10 +366,7 @@ fn submit_posts_the_exact_text_after_yes() {
         ]
     );
     assert_eq!(posted, body, "the body posted is the body shown");
-    assert!(
-        !draft.with_extension("body.md").exists(),
-        "the temporary body file is removed"
-    );
+    assert!(!args.iter().any(|arg| arg == "--body-file"));
     assert!(String::from_utf8(out)
         .unwrap()
         .contains("Posted: https://github.com/owner/ox-llm/issues/1"));
