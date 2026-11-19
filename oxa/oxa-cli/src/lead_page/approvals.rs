@@ -72,22 +72,43 @@ fn record(html: &mut String, csrf: &str, rec: &ApprovalRecord, now: u64, scrub_c
 /// Credential masking that keeps the command's shell syntax: each run of text between shell
 /// operators (`&`, `|`, `;`, `<`, `>`, parentheses, line breaks) is scrubbed on its own, so a
 /// masked value never swallows the operator after it. `echo token=demo&&rm -rf /srv/data` shows
-/// as `echo token=<secret>&&rm -rf /srv/data`, not with the second command hidden.
+/// as `echo token=<secret>&&rm -rf /srv/data`, not with the second command hidden. Only an
+/// operator the shell acts on splits the text: one inside single or double quotes, or escaped
+/// with a backslash, is part of a word, so `password="&value"` stays one masked value.
 fn scrub_shell(command: &str, ctx: &ScrubCtx) -> String {
     let is_op = |c: char| matches!(c, '&' | '|' | ';' | '<' | '>' | '(' | ')' | '\n' | '\r');
     let mut out = String::with_capacity(command.len());
-    let mut rest = command;
-    while !rest.is_empty() {
-        let end = rest.find(is_op).unwrap_or(rest.len());
-        if end > 0 {
-            out.push_str(&scrub(&rest[..end], ctx));
+    let (mut word, mut ops) = (String::new(), String::new());
+    let (mut single, mut double, mut escaped) = (false, false, false);
+    for c in command.chars() {
+        let operator = !single && !double && !escaped && is_op(c);
+        if operator {
+            if !word.is_empty() {
+                out.push_str(&scrub(&word, ctx));
+                word.clear();
+            }
+            ops.push(c);
+            continue;
         }
-        let ops = rest[end..]
-            .find(|c: char| !is_op(c))
-            .map_or(rest.len(), |n| end + n);
-        out.push_str(&rest[end..ops]);
-        rest = &rest[ops..];
+        if !ops.is_empty() {
+            out.push_str(&ops);
+            ops.clear();
+        }
+        word.push(c);
+        if escaped {
+            escaped = false;
+        } else if c == '\\' && !single {
+            escaped = true;
+        } else if c == '\'' && !double {
+            single = !single;
+        } else if c == '"' && !single {
+            double = !double;
+        }
     }
+    if !word.is_empty() {
+        out.push_str(&scrub(&word, ctx));
+    }
+    out.push_str(&ops);
     out
 }
 
@@ -213,5 +234,45 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains("token=demo"), "{html}");
+    }
+
+    /// A shell metacharacter inside a quoted or escaped credential value is part of the value:
+    /// the whole value stays masked.
+    #[test]
+    fn approval_panel_masking_respects_shell_quoting() {
+        for (command, secret) in [
+            (
+                r#"password="&opaque-example" git push --force origin main"#,
+                "opaque-example",
+            ),
+            (
+                r#"password=x\&opaque-example git push --force origin main"#,
+                "opaque-example",
+            ),
+        ] {
+            let waiting = vec![ApprovalRecord {
+                id: "0123456789abcdef".into(),
+                session: "s1".into(),
+                cwd: "/work/proj".into(),
+                command: command.into(),
+                keys: vec!["git-push-force".into()],
+                reasons: vec![],
+                status: "pending".into(),
+                used: false,
+                created_ms: 0,
+                answered_ms: None,
+            }];
+            let owner = View {
+                approvals: Some(&waiting),
+                approval_csrf: Some("tok"),
+                ..Default::default()
+            };
+            let html = content_for(Page::Board, &owner, 120);
+            assert!(!html.contains(secret), "{command}: {html}");
+            assert!(
+                html.contains("git push --force origin main</pre>"),
+                "{command}: {html}"
+            );
+        }
     }
 }
