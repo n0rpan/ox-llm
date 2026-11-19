@@ -365,7 +365,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         };
         let user = Settings::load(&dirs, &cwd, false);
         let (engine, catalog_notices) =
-            match crate::in_process::select_catalog(&user, &dirs, || engine_for(&endpoint)) {
+            match crate::in_process::select_catalog(&user, &dirs, || fallback_engine(&models, &endpoint)) {
                 Ok(e) => e,
                 Err(e) => return report(&mut *stderr, &e),
             };
@@ -1024,7 +1024,10 @@ fn prepare(
         },
         (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
         shared,
-        || engine_with_settings(&endpoint, &settings),
+        || {
+            no_model_check(&models)?;
+            engine_with_settings(&endpoint, &settings)
+        },
     )?;
     let engine = child.wrap(engine);
     notices.extend(catalog_notices.into_iter().map(|text| (Level::Info, text)));
@@ -2124,6 +2127,23 @@ pub(crate) fn default_endpoint(models: &ModelsConfig) -> Result<Endpoint, OxaErr
         .or_else(|| models.endpoints.first())
         .cloned()
         .ok_or_else(|| OxaError::new(codes::NOT_FOUND, "no engine endpoint is configured"))
+}
+
+/// A fresh install has no model source: say what to configure instead of dialing a port
+/// nothing listens on.
+fn no_model_check(models: &ModelsConfig) -> Result<(), OxaError> {
+    if models.unconfigured {
+        return Err(OxaError::new(codes::ENGINE_DOWN, "no model is configured").with_hint(
+            "configure a cloud key (oxa login chatgpt --experimental, or a provider in settings) or run `oxa local add <model.gguf>`; to use an engine already running, set OXA_ENGINE_URL",
+        ));
+    }
+    Ok(())
+}
+
+/// The HTTP engine for the default endpoint, unless nothing is configured.
+fn fallback_engine(models: &ModelsConfig, endpoint: &Endpoint) -> Result<Arc<dyn Engine>, OxaError> {
+    no_model_check(models)?;
+    engine_for(endpoint)
 }
 
 pub(crate) fn engine_for(endpoint: &Endpoint) -> Result<Arc<dyn Engine>, OxaError> {

@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn url_hosts() {
-        assert_eq!(url_host("http://127.0.0.1:8092/v1").as_deref(), Some("127.0.0.1"));
+        assert_eq!(url_host("http://127.0.0.1:8080/v1").as_deref(), Some("127.0.0.1"));
         assert_eq!(
             url_host("https://u:p@example.com/x").as_deref(),
             Some("example.com")

@@ -173,7 +173,7 @@ In `standard` and `auto`, the model cannot write `.oxa/**` or `.agents/skills/**
 
 ## Network
 
-The harness connects to the model you chose: the local engine on loopback, or the provider of the selected cloud model. It has no telemetry, no version check and no upload of sessions, exports or reports. Its tools may use the network, as the table shows.
+The harness connects to the model you chose: the local engine on loopback, or the provider of the selected cloud model. With nothing configured it connects nowhere. It has no telemetry, no version check and no upload of sessions, exports or reports. Its tools may use the network, as the table shows.
 
 | Source | Network | In `ask` mode |
 |---|---|---|
