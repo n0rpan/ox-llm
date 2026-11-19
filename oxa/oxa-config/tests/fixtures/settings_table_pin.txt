@@ -1,0 +1,248 @@
+# schema: key|kind|default|supported
+$schema|String|null|true
+autocompleteMaxVisible|Number|5|true
+branchSummary.reserveTokens|Number|16384|true
+branchSummary.skipPrompt|Bool|false|true
+cacheWarming|Enum(["off", "streaming", "idle"])|"idle"|true
+codemode.enabled|Bool|false|true
+codemode.maxWorkers|Number|0|true
+codemode.mode|Enum(["on", "only"])|"on"|true
+codemode.toolSearch|Bool|false|true
+compaction.enabled|Bool|true|true
+compaction.keepRecentTokens|Number|4000|true
+compaction.modelOverrides|Object|null|true
+compaction.profile|Enum(["auto", "local", "cloud"])|"auto"|true
+compaction.reserveTokens|Number|16384|true
+defaultModel|String|null|true
+defaultProjectTrust|Enum(["ask", "always", "never"])|"ask"|true
+defaultProvider|String|null|false
+defaultThinkingLevel|Enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"])|"medium"|true
+defaultTools|StringList|["read","bash","edit","write","grep","find","ls"]|true
+done|StringList|[]|true
+doubleEscapeAction|Enum(["tree", "fork", "none"])|"tree"|true
+editorPaddingX|Number|0|true
+enableAnalytics|Bool|false|false
+enableInstallTelemetry|Bool|true|false
+enableSkillCommands|Bool|true|true
+enabledModels|StringList|null|true
+extensions|StringList|[]|true
+externalEditor|String|null|true
+followUpMode|Enum(["all", "one-at-a-time"])|"one-at-a-time"|true
+fullscreenCopyOnSelect|Bool|true|true
+fullscreenExitOutput|Enum(["transcript", "resume-hint"])|"transcript"|true
+fullscreenScrollbar|Enum(["auto", "always", "hidden"])|"auto"|true
+fullscreenWheelScrollLines|Any|"auto"|true
+hideThinkingBlock|Bool|false|true
+hooks|Object|{}|true
+httpIdleTimeoutMs|Any|300000|true
+httpProxy|String|null|true
+images.autoResize|Bool|true|false
+images.blockImages|Bool|false|true
+markdown.codeBlockIndent|String|"  "|true
+markdown.mermaid|Enum(["off", "final", "streaming"])|"streaming"|true
+modelThinkingLevels|Object|{}|true
+outputPad|Number|1|true
+oxa.allowHomeCwd|Bool|false|true
+oxa.bash.defaultTimeout|Number|null|true
+oxa.bash.maxJobs|Number|16|true
+oxa.bootPreload|Bool|true|true
+oxa.builtinSkills|Bool|true|true
+oxa.cloud|Object|{}|true
+oxa.compaction.idleSummary|Bool|null|true
+oxa.compaction.midRun|Bool|null|true
+oxa.compaction.softTokens|Number|null|true
+oxa.compaction.summaryTarget|Number|null|true
+oxa.compaction.turnStart|Bool|null|true
+oxa.diet.output|Bool|null|true
+oxa.diet.tools|Bool|null|true
+oxa.engine.allowRemote|Bool|false|true
+oxa.engine.inProcessCloud|Bool|false|true
+oxa.engine.inProcessLocal|Bool|false|true
+oxa.envNote|Bool|null|true
+oxa.inbox.headless|Bool|true|true
+oxa.lead.model|String|null|true
+oxa.lead.serve|Object|{}|true
+oxa.lead.sessionId|String|null|true
+oxa.lead.shadow|Bool|false|true
+oxa.liveSettings|Bool|true|true
+oxa.local|Object|{}|true
+oxa.maxTurns|Number|null|true
+oxa.mode|Enum(["plan", "workspace", "ask"])|"workspace"|true
+oxa.offline|Bool|false|true
+oxa.prefill.paste|Bool|null|true
+oxa.prefill.tools|Bool|null|true
+oxa.reportIssue.dailyNew|Number|null|true
+oxa.reportIssue.repo|String|null|true
+oxa.reportIssue.semanticDedupe|Bool|false|true
+oxa.sampling.mode|Enum(["greedy", "model"])|"greedy"|true
+oxa.sampling.seed|Number|null|true
+oxa.sandbox.allowHomeWrite|Bool|false|true
+oxa.sandbox.net|Enum(["on", "off"])|"on"|true
+oxa.sandbox.readPaths|StringList|[]|true
+oxa.sandbox.writePaths|StringList|[]|true
+oxa.share.remoteModels|StringList|[]|true
+oxa.skills.includeSynced|Bool|false|true
+oxa.subagent.enabled|Bool|null|true
+oxa.subagent.maxChildren|Number|8|true
+oxa.subagent.remoteConcurrency|Number|4|true
+oxa.subagent.resultCap|Number|6144|true
+oxa.subagent.smallContext|Bool|false|true
+oxa.subagent.softTokens|Number|24000|true
+oxa.thinking.budget|Number|null|true
+oxa.thinking.escalation.fruitlessCalls|Number|6|true
+oxa.thinking.policy|Enum(["fixed", "auto"])|null|true
+oxa.thinking.toolFollowups|Enum(["auto", "on", "off"])|"auto"|true
+oxa.toolOutputCap|Number|16384|true
+oxa.toolRepair|Bool|true|true
+oxa.toolRepeatGuard|Bool|true|true
+oxa.wait.maxSeconds|Number|3600|true
+oxa.wait.pollSeconds|Number|30|true
+oxa.webSearch.enabled|Bool|true|true
+oxa.webSearch.maxTokens|Number|2048|true
+oxa.webSearch.provider|Enum(["brave", "none"])|"brave"|true
+oxa.work.localChecks|StringList|["cargo check"]|true
+packages|Any|[]|true
+permissions.defaultMode|Enum(["standard", "auto", "yolo", "plan"])|"auto"|true
+prompts|StringList|[]|true
+quietStartup|Any|false|true
+retry.baseDelayMs|Number|2000|true
+retry.enabled|Bool|true|true
+retry.maxAgentDelayMs|Number|60000|true
+retry.maxRetries|Number|3|true
+retry.provider.maxRetries|Number|0|true
+retry.provider.maxRetryDelayMs|Number|60000|true
+retry.provider.timeoutMs|Number|null|true
+selfUpdateCommand|StringList|null|false
+sessionDir|String|null|true
+sessionShareDestination|Enum(["auto", "gist", "radius"])|"auto"|false
+shellCommandPrefix|String|null|true
+shellPath|String|null|true
+showCacheMissNotices|Bool|false|true
+skills|StringList|[]|true
+steeringMode|Enum(["all", "one-at-a-time"])|"one-at-a-time"|true
+terminal.clearOnShrink|Bool|false|true
+terminal.imageWidthCells|Number|60|true
+terminal.showImages|Bool|true|true
+theme|String|"system"|true
+themes|StringList|[]|true
+transport|Enum(["auto", "sse", "websocket", "websocket-cached"])|"auto"|false
+treeFilterMode|Enum(["default", "no-tools", "user-only", "labeled-only", "all"])|"default"|true
+tuiMode|Enum(["regular", "fullscreen"])|"fullscreen"|true
+ui.animation|Enum(["arcade", "minimal", "off"])|"arcade"|true
+ui.animationGraphics|Enum(["auto", "off"])|"auto"|true
+ui.animationScene|Enum(["graphics", "stack", "stars", "charge"])|null|true
+ui.notify|Enum(["off", "unfocused", "always"])|"unfocused"|true
+ui.reducedMotion|Bool|false|true
+ui.skin|Enum(["auto", "pi", "oxa", "ascii"])|"auto"|true
+warnings.anthropicExtraUsage|Bool|true|false
+websocketConnectTimeoutMs|Any|15000|false
+# descriptors: group|key, in display order (group order, then table order)
+Display|theme
+Display|ui.skin
+Display|tuiMode
+Display|quietStartup
+Display|hideThinkingBlock
+Display|showCacheMissNotices
+Display|outputPad
+Display|editorPaddingX
+Display|markdown.codeBlockIndent
+Display|themes
+Display|ui.animation
+Display|ui.animationScene
+Display|ui.animationGraphics
+Display|ui.reducedMotion
+Display|ui.notify
+Display|fullscreenScrollbar
+Display|fullscreenWheelScrollLines
+Display|fullscreenCopyOnSelect
+Display|fullscreenExitOutput
+Display|terminal.clearOnShrink
+Display|terminal.showImages
+Display|terminal.imageWidthCells
+Display|images.blockImages
+Display|autocompleteMaxVisible
+Display|enableSkillCommands
+Display|doubleEscapeAction
+Display|treeFilterMode
+Display|followUpMode
+Display|steeringMode
+Display|externalEditor
+Models|defaultModel
+Models|enabledModels
+Models|oxa.engine.inProcessCloud
+Models|oxa.engine.inProcessLocal
+Models|defaultThinkingLevel
+Models|modelThinkingLevels
+Models|oxa.thinking.policy
+Models|oxa.thinking.toolFollowups
+Models|oxa.thinking.escalation.fruitlessCalls
+Models|oxa.thinking.budget
+Models|oxa.sampling.mode
+Models|oxa.sampling.seed
+Models|cacheWarming
+Models|oxa.bootPreload
+Models|oxa.prefill.paste
+Models|oxa.prefill.tools
+Models|retry.enabled
+Models|retry.maxRetries
+Models|retry.baseDelayMs
+Models|retry.maxAgentDelayMs
+Models|retry.provider.maxRetries
+Models|retry.provider.maxRetryDelayMs
+Models|httpIdleTimeoutMs
+Models|retry.provider.timeoutMs
+Compaction|compaction.profile
+Compaction|compaction.enabled
+Compaction|oxa.compaction.softTokens
+Compaction|compaction.reserveTokens
+Compaction|compaction.keepRecentTokens
+Compaction|compaction.modelOverrides
+Compaction|oxa.compaction.midRun
+Compaction|oxa.compaction.turnStart
+Compaction|oxa.compaction.idleSummary
+Compaction|oxa.compaction.summaryTarget
+Compaction|branchSummary.reserveTokens
+Compaction|branchSummary.skipPrompt
+Codemode|codemode.enabled
+Codemode|codemode.mode
+Codemode|codemode.toolSearch
+Codemode|codemode.maxWorkers
+Lead|oxa.lead.model
+Lead|oxa.lead.shadow
+Lead|oxa.lead.serve
+Lead|oxa.share.remoteModels
+Lead|oxa.lead.serve.enabled
+Lead|oxa.lead.serve.owner_chat
+Lead|oxa.lead.serve.fixed_prompts
+Lead|oxa.lead.serve.owner_settings
+Lead|oxa.lead.serve.identity
+Lead|oxa.lead.serve.allowed_identities
+Lead|oxa.lead.serve.bind
+Lead|oxa.lead.serve.port
+Lead|oxa.lead.serve.proxy
+Safety|permissions.defaultMode
+Safety|oxa.mode
+Safety|defaultProjectTrust
+Safety|oxa.allowHomeCwd
+Safety|oxa.offline
+Safety|oxa.engine.allowRemote
+Safety|httpProxy
+Safety|oxa.sandbox.net
+Safety|oxa.sandbox.allowHomeWrite
+Safety|oxa.sandbox.readPaths
+Safety|oxa.sandbox.writePaths
+Advanced|sessionDir
+Advanced|oxa.local
+Advanced|oxa.lead.sessionId
+Advanced|packages
+Advanced|$schema
+Advanced|markdown.mermaid
+Advanced|defaultProvider
+Advanced|enableAnalytics
+Advanced|enableInstallTelemetry
+Advanced|images.autoResize
+Advanced|selfUpdateCommand
+Advanced|sessionShareDestination
+Advanced|transport
+Advanced|warnings.anthropicExtraUsage
+Advanced|websocketConnectTimeoutMs
