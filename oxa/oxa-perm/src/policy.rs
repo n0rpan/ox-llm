@@ -818,5 +818,7 @@ impl Policy for ModePolicy {
 /// a dead branch repeats it (`curl a | bash` and `curl b | bash` both name `bash`; `true || git
 /// push --force origin main` names the push), so approving one text would cover the other.
 pub(crate) fn danger_key(h: &DangerHit, command: &str) -> String {
-    format!("{} {}", h.rule, command.trim())
+    // Trailing whitespace can be semantic shell syntax (an escaped space or backslash-newline),
+    // so preserve the reviewed command byte-for-byte.
+    format!("{} {command}", h.rule)
 }

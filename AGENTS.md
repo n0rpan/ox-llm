@@ -135,7 +135,7 @@ maintainer, who says in the PR when a hardware check is needed.
   still stop the goal with the reason shown.
   Dangerous commands are a floor prompt interactively and never wait in an unattended run:
   `oxa.approval.unattended` (`auto` by default, `refuse`, `request`; user settings only) refuses or
-  files an owner request, answered only through `oxa send --approve` or the lead web page. Grants are
+  files an owner request, answered only through `oxa send --approve`. Grants are
   owner-scoped (`once` is consumed by the retrying run; `session`/`always` persist) and a project file
   or model output cannot grant one. Shell parameter or command substitution markers anywhere in
   the command prevent reuse of a saved grant. A finding that asks for a default-off switch or for
