@@ -1573,11 +1573,12 @@ mod tests {
     #[test]
     fn reopen_relaunches_unfinished_worker_with_continue() {
         let (root, repo, agent, _fake) = fixture("resume");
-        // A fake oxa that records its argv next to itself, then sleeps.
+        // A fake oxa that records its argv next to itself, then sleeps. The worktree step
+        // (`oxa work --supervise`) just succeeds.
         let fake = root.join("argv-oxa");
         fs::write(
             &fake,
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/argv.txt\"\nsleep 30\n",
+            "#!/bin/sh\nif [ \"$1\" = work ]; then exit 0; fi\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/argv.txt\"\nsleep 30\n",
         )
         .unwrap();
         fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
