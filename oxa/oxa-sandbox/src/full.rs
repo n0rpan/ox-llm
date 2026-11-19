@@ -137,12 +137,6 @@ impl FullAccess {
         spec
     }
 
-    /// Exec hooks are trusted project configuration, but retain their dedicated no-network,
-    /// private-path sandbox independently of the interactive bash policy.
-    pub fn hook_sandbox(full: &Arc<FullAccess>) -> Arc<dyn Sandbox> {
-        full.inner.clone()
-    }
-
     /// Reuse the process's switch and launch settings with the session's own sandbox.
     /// In particular, auto/plan bash and the rest of the session must share one scratch dir.
     pub fn with_inner(&self, inner: Arc<dyn Sandbox>) -> FullAccess {
