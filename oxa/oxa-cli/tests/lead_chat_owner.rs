@@ -549,7 +549,13 @@ fn normal_lead_tui_and_direct_print_use_one_dedicated_session() {
         .content
         .as_deref()
         .is_some_and(|text| text.contains("Terminal follow-up."))));
-    assert!(requests.iter().all(|request| request.tools_json == "[]"));
+    // M1: the live owner Lead session declares the worker tool and nothing else.
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.tools_json.contains("\"worker\"")
+                && !request.tools_json.contains("\"bash\""))
+    );
     let sessions = FsStore::new(test.agent_dir().join("sessions")).list(None);
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].sref.id, id.trim());
