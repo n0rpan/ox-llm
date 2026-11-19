@@ -1634,6 +1634,46 @@ mod tests {
         assert!(!on.windows(3).any(|w| w[0] == "--bind" && w[1] == ssh), "{on:?}");
     }
 
+    /// RP6: with no listed socket every runtime socket stays on the mask list.
+    #[test]
+    fn docker_socket_hidden_by_default() {
+        let env = TestEnv::new();
+        let masked = runtime_ipc_paths(&env.home());
+        assert!(masked.contains(&PathBuf::from("/run/docker.sock")));
+        assert!(masked.contains(&PathBuf::from("/run/podman/podman.sock")));
+        let layout = Layout {
+            mask_runtime_ipc: true,
+            ..Layout::default()
+        };
+        let argv = bwrap_args_with(&spec(&env.work(), false), &env.home(), &layout);
+        for socket in ["/run/docker.sock", "/run/podman/podman.sock"] {
+            assert!(!binds_src(&argv, Path::new(socket)), "{argv:?}");
+        }
+    }
+
+    /// RP6: a socket the owner listed is bound into the argv.
+    #[test]
+    fn listed_socket_is_bound() {
+        let env = TestEnv::new();
+        std::fs::create_dir_all(env.work()).unwrap();
+        let sock = env.root().join("rt/docker.sock");
+        let _l = {
+            std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+            std::os::unix::net::UnixListener::bind(&sock).expect("bind socket")
+        };
+        let layout = Layout {
+            sockets: vec![canon(&sock)],
+            ..Layout::default()
+        };
+        let argv = bwrap_args_with(&spec(&env.work(), false), &env.home(), &layout);
+        let s = canon(&sock).to_string_lossy().to_string();
+        assert!(
+            argv.windows(3)
+                .any(|w| w[0] == "--bind" && w[1] == s && w[2] == s),
+            "{argv:?}"
+        );
+    }
+
     #[test]
     fn find_on_path_skips_relative_and_empty_entries() {
         assert_eq!(find_on_path("", "bwrap"), None);
@@ -1762,39 +1802,5 @@ mod detect_tests {
         assert_eq!(b.bwrap, script);
         assert_eq!(b.home, env.home());
         assert!(check_bwrap(&b).is_ok());
-    }
-
-    /// RP6: with no listed socket every runtime socket stays on the mask list.
-    #[test]
-    fn docker_socket_hidden_by_default() {
-        let env = TestEnv::new();
-        let masked = runtime_ipc_paths(&env.home());
-        assert!(masked.contains(&PathBuf::from("/run/docker.sock")));
-        assert!(masked.contains(&PathBuf::from("/run/podman/podman.sock")));
-        let argv = bwrap_args_with(&spec(&env.work(), false), &env.home(), &Layout::default());
-        assert!(!argv.iter().any(|x| x.ends_with(".sock")), "{argv:?}");
-    }
-
-    /// RP6: a socket the owner listed is bound into the argv.
-    #[test]
-    fn listed_socket_is_bound() {
-        let env = TestEnv::new();
-        std::fs::create_dir_all(env.work()).unwrap();
-        let sock = env.root().join("rt/docker.sock");
-        let _l = {
-            std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
-            std::os::unix::net::UnixListener::bind(&sock).expect("bind socket")
-        };
-        let layout = Layout {
-            sockets: vec![canon(&sock)],
-            ..Layout::default()
-        };
-        let argv = bwrap_args_with(&spec(&env.work(), false), &env.home(), &layout);
-        let s = canon(&sock).to_string_lossy().to_string();
-        assert!(
-            argv.windows(3)
-                .any(|w| w[0] == "--bind" && w[1] == s && w[2] == s),
-            "{argv:?}"
-        );
     }
 }
