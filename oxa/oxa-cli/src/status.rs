@@ -417,6 +417,11 @@ pub(crate) fn run(
             "usage: oxa status <session-id|session-file> [--session-dir <dir>]",
         )
     };
+    // `oxa status --json` is the suite's status object for the panel. The session form below is
+    // unchanged; `--json` is never a session id.
+    if matches!(words, [flag] if flag == "--json") {
+        return crate::suite_status::run(dirs, cwd, out);
+    }
     let Some(id) = words.first().filter(|id| !id.starts_with('-')) else {
         return Err(usage());
     };

@@ -785,6 +785,20 @@ impl Handle {
         *lock(&self.shared.gate.token_budget) = tokens;
     }
 
+    /// Remove startup-only limits after their watcher has stopped, preserving
+    /// any wrap-up already requested by a process signal.
+    pub fn clear_startup_limits(&self) {
+        self.set_token_budget(None);
+        for reason in [WrapUpReason::TimeLimit, WrapUpReason::TokenLimit] {
+            let _ = self.shared.gate.wrap_up.compare_exchange(
+                reason as u8,
+                0,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+        }
+    }
+
     pub(crate) fn remaining_tokens(&self) -> Option<u64> {
         *lock(&self.shared.gate.token_budget)
     }
@@ -1050,6 +1064,21 @@ mod tests {
         assert_eq!(h.wrap_up_reason(), Some(WrapUpReason::Signal));
         h.interrupt();
         assert!(h.interrupted());
+    }
+
+    #[test]
+    fn clearing_startup_limits_releases_the_token_budget_but_preserves_signal_wrap_up() {
+        let handle = handle(QueueMode::All, QueueMode::All);
+        handle.set_token_budget(Some(10));
+        handle.account_tokens(10);
+        assert_eq!(handle.wrap_up_reason(), Some(WrapUpReason::TokenLimit));
+        handle.clear_startup_limits();
+        assert_eq!(handle.remaining_tokens(), None);
+        assert_eq!(handle.wrap_up_reason(), None);
+
+        handle.request_wrap_up(WrapUpReason::Signal);
+        handle.clear_startup_limits();
+        assert_eq!(handle.wrap_up_reason(), Some(WrapUpReason::Signal));
     }
 
     #[test]

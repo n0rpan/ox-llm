@@ -573,6 +573,9 @@ impl BashTool {
             let expired = limit.is_some_and(|l| started.elapsed() >= Duration::from_secs(u64::from(l)));
             if expired {
                 let secs = limit.unwrap_or(0);
+                // This job is no longer a foreground result, so retain only the normal
+                // background tail before returning control to the caller.
+                let _ = self.jobs.bound_output(id);
                 let mut text = format!(
                     "Command still running after {} (wall time); it was not stopped. It continues as background job {id}. Wait for it with bash {{\"job\": \"{id}\", \"wait_s\": 60}}, read its output with bash {{\"job\": \"{id}\"}}, or stop it with bash {{\"job\": \"{id}\", \"kill\": true}}.",
                     fmt_wall(started.elapsed())
@@ -2262,6 +2265,30 @@ mod poll_tests {
             &mut |_| {},
         );
         assert!(read.text.contains("killed"), "unexpected kill result");
+    }
+
+    #[test]
+    fn command_past_its_timeout_keeps_bounded_output() {
+        let (tx, rx) = channel();
+        tx.send(vec![b'x'; crate::jobs::BUFFER_CAP * 2]).unwrap();
+        let jobs = Arc::new(JobRegistry::new());
+        let sandbox = Arc::new(Chunks { rx: Mutex::new(rx) });
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone()).with_sandbox(sandbox);
+
+        let (out, _) = job_call(&tool, json!({"command": "yes", "timeout": 1}));
+
+        // Do not echo command output from this retention test into test logs. In
+        // production that output may contain sensitive command data.
+        assert!(!out.is_error, "bash call unexpectedly failed");
+        assert_eq!(out.ui["movedToBackground"], json!(true));
+        assert_eq!(jobs.buffered_len("job-1"), Some(crate::jobs::BUFFER_CAP));
+        tx.send(vec![b'y'; crate::jobs::BUFFER_CAP * 2]).unwrap();
+        while jobs.read("job-1").unwrap().total != (crate::jobs::BUFFER_CAP * 4) as u64 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(jobs.buffered_len("job-1"), Some(crate::jobs::BUFFER_CAP));
+        drop(tx);
+        jobs.kill_all();
     }
 
     #[test]
