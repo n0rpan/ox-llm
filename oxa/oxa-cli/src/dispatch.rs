@@ -1027,7 +1027,11 @@ fn prepare(
     let yolo_level = matches!(level, oxa_proto::PermissionMode::Yolo);
     let os_sandbox = crate::run_kind::os_sandbox_wanted(kind, a, &user_settings, yolo_level);
     if let Some(text) = crate::run_kind::no_sandbox_notice(kind, os_sandbox, yolo_level) {
-        notices.push((Level::Info, text.to_string()));
+        // The interactive footer already carries `no sandbox · dangerous commands ask`; the extra
+        // start line is for print, JSON and RPC runs, where nothing else says it.
+        if mode != RunMode::Interactive {
+            notices.push((Level::Info, text.to_string()));
+        }
     }
     let sandbox: Arc<dyn Sandbox> = match Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home) {
         Ok(mut b) => {
