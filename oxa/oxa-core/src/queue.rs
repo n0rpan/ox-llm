@@ -128,6 +128,8 @@ pub struct Gate {
     literal_turn: Mutex<Option<LiteralTurn>>,
     /// Total charged usage, including non-chat requests and final-turn overspend.
     pub run_tokens_used: Mutex<u64>,
+    /// A request under an explicit token budget finished without usage: the tally is a lower bound.
+    pub usage_unreported: std::sync::atomic::AtomicBool,
     pub bg_cancel: CancelToken,
     pub reread_info: std::sync::atomic::AtomicBool,
     pub info_rechecked: std::sync::atomic::AtomicBool,
@@ -582,6 +584,11 @@ impl Handle {
         *lock(&self.shared.gate.token_budget)
     }
 
+    /// Whether a budgeted request finished without usage, so `run_tokens_used` undercounts.
+    pub fn run_usage_unreported(&self) -> bool {
+        self.shared.gate.usage_unreported.load(Ordering::SeqCst)
+    }
+
     /// Invocation-wide uncached prompt + completion usage, not capped at the budget.
     /// Includes compaction and tool prefill, which emit no assistant message events.
     pub fn run_tokens_used(&self) -> u64 {
@@ -592,7 +599,14 @@ impl Handle {
         if usage.unreported {
             // An explicit budget can no longer establish headroom. Finish the active work
             // through the usual wrap-up without adding an invented token count to the tally.
-            if self.remaining_tokens().is_some() {
+            // The remaining allowance drops to zero so tools and children started in the
+            // current batch cannot spend headroom that no longer has a known size.
+            let capped = {
+                let mut budget = lock(&self.shared.gate.token_budget);
+                budget.as_mut().map(|left| *left = 0).is_some()
+            };
+            if capped {
+                self.shared.gate.usage_unreported.store(true, Ordering::SeqCst);
                 self.request_wrap_up(WrapUpReason::TokenLimit);
             }
         } else {
@@ -734,6 +748,8 @@ mod tests {
         h.account_usage(oxa_proto::Usage::unreported());
         assert_eq!(h.wrap_up_reason(), Some(WrapUpReason::TokenLimit));
         assert_eq!(h.run_tokens_used(), 0);
+        assert_eq!(h.remaining_tokens(), Some(0));
+        assert!(h.run_usage_unreported());
     }
 
     #[test]

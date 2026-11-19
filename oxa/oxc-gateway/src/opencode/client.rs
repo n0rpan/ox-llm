@@ -453,7 +453,6 @@ where
                 .unwrap()
                 .remove("usage")
                 .filter(|v| !v.is_null());
-            let supplied_usage_on_finish = ending.is_some() && supplied_usage.is_some();
             if let Some(value) = supplied_usage {
                 if let Some(diagnostics) = diagnostics {
                     diagnostics
@@ -463,7 +462,8 @@ where
                     return Err(terminal(TerminalCheck::UsageRecordInvalid));
                 }
                 let parsed = Usage::parse(&value).map_err(|_| terminal(TerminalCheck::UsageRecordInvalid))?;
-                if finish.is_some() {
+                if finish.is_some() || ending.is_some() {
+                    // An explicit terminal report survives a cancelled callback below.
                     *terminal_usage = Some(parsed.clone());
                 }
                 pending_usage = Some((parsed, value));
@@ -529,11 +529,6 @@ where
                     if cancel.is_cancelled() || on(Event::Chunk(chunk)) == Control::Stop {
                         return Err(Error::Cancelled);
                     }
-                }
-                if supplied_usage_on_finish {
-                    // An explicit terminal report may settle a cut delivery once the finish
-                    // has validated. Never give an earlier GLM snapshot that authority.
-                    *terminal_usage = pending_usage.as_ref().map(|(usage, _)| usage.clone());
                 }
                 let chunk = json!({"model":alias,"choices":[{"index":0,"delta":{},"finish_reason":reason}]});
                 if cancel.is_cancelled() || on(Event::Chunk(chunk)) == Control::Stop {

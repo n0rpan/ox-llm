@@ -1673,6 +1673,7 @@ fn run_headless(
         let usage = serde_json::json!({
             "type": "run_usage",
             "tokens": session.handle().run_tokens_used(),
+            "complete": !session.handle().run_usage_unreported(),
         });
         if let Some(stdout) = stdout.as_deref_mut() {
             let _ = writeln!(stdout, "{usage}");
