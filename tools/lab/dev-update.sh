@@ -75,7 +75,7 @@ fetch() {
 fetch "https://api.github.com/repos/$repo/releases/tags/dev" "$work/release.json" 5242880
 sha=$(jq -er 'select(.tag_name=="dev" and .prerelease and (.draft|not)) | .target_commitish | select(test("^[0-9a-f]{40}$"))' "$work/release.json")
 archive=$(jq -er --arg suffix "-dev.${sha:0:7}-linux-$arch.tar.gz" \
-  '[.assets[]|select(.state=="uploaded" and (.name|startswith("ox-llm-v")) and (.name|endswith($suffix)))|.name] | select(length==1) | .[0]' "$work/release.json")
+  '[.assets[]|select(.state=="uploaded" and (.name|startswith("ox-llm-v")) and (.name|endswith($suffix)))|.name] | select(length>0) | sort_by(sub("^ox-llm-v";"")|split("-")[0]|split(".")|map(tonumber)) | .[-1]' "$work/release.json")
 version=${archive#ox-llm-}; version=${version%-linux-"$arch".tar.gz}
 [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*-dev\.[0-9a-f]{7}$ ]]
 download() {

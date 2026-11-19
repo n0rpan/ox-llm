@@ -3,6 +3,11 @@
 Every main push runs `dev-build.yml`, reusing the full two-architecture release recipe,
 including two-build reproducibility and exact-artifact no-Python tests. Only successful,
 native-only payloads are published to the rolling `dev` prerelease; it is never `latest`.
+The dev version is a pre-release of the next version: the latest stable `vX.Y.Z` tag bumped to
+`X.Y.(Z+1)`, plus `-dev.<sha7>` (so `v0.2.1-dev.<sha7>` after `v0.2.0`, `v0.2.2-dev.<sha7>` once
+`v0.2.1` is tagged). It is computed in one place, `tools/ci/dev_version.py`; without a stable tag
+the workspace version is used. `dev-update*.sh` accept the older `vX.Y.Z-dev.<sha7>` names and pick
+the highest semver for the `dev` release commit.
 Archives, SBOMs and proof receipts include the package version and seven-character source
 SHA. SHA256SUMS and downloadable provenance accompany them. The workflow moves only the
 `dev` tag; normal release tags and installs are untouched. Python controller payloads fail
