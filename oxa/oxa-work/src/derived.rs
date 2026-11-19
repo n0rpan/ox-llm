@@ -1103,6 +1103,20 @@ members = ["crates/*", "tools/pinned"]
     }
 
     #[test]
+    fn external_inputs_in_a_repository_with_a_standalone_crate_require_hosted_checks() {
+        let rust = PrivateDir::new("derived-standalone-with-shared-inputs");
+        manifest(&rust, "app/Cargo.toml", "[package]\nname = \"app\"\n");
+        let checks = from_changed_paths(rust.path(), b"shared/catalog.txt\0").unwrap();
+        assert!(checks.commands.is_empty());
+        assert!(checks.requires_hosted);
+
+        let non_rust = PrivateDir::new("derived-shared-inputs-without-cargo");
+        let checks = from_changed_paths(non_rust.path(), b"shared/catalog.txt\0").unwrap();
+        assert!(checks.commands.is_empty());
+        assert!(!checks.requires_hosted);
+    }
+
+    #[test]
     fn an_excluded_member_uses_its_own_check_directory() {
         let dir = PrivateDir::new("derived-excluded");
         manifest(
