@@ -990,7 +990,6 @@ pub(crate) fn decode_wire_value(w: &Value) -> Result<WireMsg, OxaError> {
             return Err(replay_invalid("Provider history requires an assistant message."));
         }
         Ok(WireMsg {
-            images: Vec::new(),
             role,
             content: opt_str(w, "content")?,
             reasoning: opt_str(w, "reasoning_content")?,
