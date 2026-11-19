@@ -341,10 +341,11 @@ mod tests {
             sandbox_net_off(&merged, &user(user_off)),
             "a project cannot relax net = off"
         );
+        // `oxa.sandbox.net` is user-only now: a project file can neither relax nor tighten it.
         let merged = Settings::from_values(json!({}), json!({"oxa": {"sandbox": {"net": "off"}}}));
         assert!(
-            sandbox_net_off(&merged, &user(json!({}))),
-            "a project may turn it off"
+            !sandbox_net_off(&merged, &user(json!({}))),
+            "a project cannot turn it off either"
         );
         assert!(
             !sandbox_net_off(&user(json!({})), &user(json!({}))),
