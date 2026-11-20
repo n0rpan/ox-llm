@@ -3257,26 +3257,6 @@ mod session_scratch_tests {
     use super::*;
     use oxa_proto::ExecSpec;
     use oxa_sandbox::{Layout, NetSandbox};
-    use std::os::unix::fs::FileTypeExt;
-
-    fn socket_count(dir: &Path) -> usize {
-        std::fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path())
-            .map(|path| {
-                if path.symlink_metadata().is_ok_and(|m| m.file_type().is_socket()) {
-                    1
-                } else if path.is_dir() {
-                    socket_count(&path)
-                } else {
-                    0
-                }
-            })
-            .sum()
-    }
-
     /// The host directory a session's sandbox mounts at `/tmp` (`None` = a fresh tmpfs).
     fn tmp_dir(d: &Deps, cwd: &Path) -> Option<PathBuf> {
         let spec = ExecSpec {
@@ -3443,13 +3423,18 @@ mod session_scratch_tests {
         };
 
         let first = open_interactive_session(&built, built.deps(None), Open::New).unwrap();
-        assert_eq!(socket_count(&built.dirs.tmp_dir), 1);
+        let door = first
+            .owner_confirm_door()
+            .expect("the first session has an owner confirm door");
+        assert!(oxa_sandbox::door::is_datagram_socket(door));
         drop(first);
-        assert_eq!(socket_count(&built.dirs.tmp_dir), 0);
 
         // The worker calls the same closure a second time when the requested switch fails.
         let recovered = open_interactive_session(&built, built.deps(None), Open::New).unwrap();
-        assert_eq!(socket_count(&built.dirs.tmp_dir), 1);
+        let door = recovered
+            .owner_confirm_door()
+            .expect("the recovered session has a fresh door");
+        assert!(oxa_sandbox::door::is_datagram_socket(door));
         drop(recovered);
     }
 
