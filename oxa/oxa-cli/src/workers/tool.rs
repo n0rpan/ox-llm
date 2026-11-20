@@ -1161,10 +1161,14 @@ impl WorkerHooks {
     /// Apply the current owner's launch ceiling to a supervisor retained from an earlier turn.
     /// Existing children keep their original mode; every new start or resume uses this ceiling.
     fn refresh_authority_from(&self, current: &WorkerHooks) {
-        self.core
-            .max
-            .store(current.core.max.load(Ordering::SeqCst), Ordering::SeqCst);
-        *lock(&self.core.yolo) = lock(&current.core.yolo).clone();
+        let max = current.core.max.load(Ordering::SeqCst);
+        let yolo = lock(&current.core.yolo).clone();
+        self.refresh_authority(max, &yolo);
+    }
+
+    fn refresh_authority(&self, max: usize, yolo: &YoloSwitch) {
+        self.core.max.store(max, Ordering::SeqCst);
+        *lock(&self.core.yolo) = yolo.clone();
     }
 
     /// Stop every live worker now, whether or not the hook set is kept across turns.
@@ -1181,13 +1185,31 @@ impl WorkerHooks {
 /// The long-lived worker hook sets of the lead serve process, one per agent directory.
 static OWNER_WORKERS: Mutex<Vec<(PathBuf, Arc<WorkerHooks>)>> = Mutex::new(Vec::new());
 
+/// Return an owner hook set already retained by this process, updating the authority used for
+/// future launches. Looking it up before building hooks avoids pinning a throwaway executable on
+/// every HTTP owner message.
+pub fn retained_owner_workers(key: &Path, max: usize, yolo: &YoloSwitch) -> Option<Arc<WorkerHooks>> {
+    let all = lock(&OWNER_WORKERS);
+    let hooks = all.iter().find(|(k, _)| k == key)?.1.clone();
+    drop(all);
+    hooks.refresh_authority(max, yolo);
+    Some(hooks)
+}
+
 /// The kept worker hook set for `key`: the one made earlier, else `made` (kept from now on).
 /// The workers and their supervisor are the same on every owner turn.
 pub fn kept_owner_workers(key: &Path, made: Arc<WorkerHooks>) -> Arc<WorkerHooks> {
     let mut all = lock(&OWNER_WORKERS);
-    if let Some((_, hooks)) = all.iter().find(|(k, _)| k == key) {
-        hooks.refresh_authority_from(&made);
-        return hooks.clone();
+    if let Some(hooks) = all.iter().find(|(k, _)| k == key).map(|(_, hooks)| hooks.clone()) {
+        drop(all);
+        // `retained_owner_workers` returns this same Arc to the next HTTP owner session after
+        // applying its current authority. Do not read and rewrite its mutex-protected authority:
+        // besides being redundant, doing both used to relock the same non-reentrant mutex and
+        // deadlock the owner service. Authority refresh never needs the registry lock either.
+        if !Arc::ptr_eq(&hooks, &made) {
+            hooks.refresh_authority_from(&made);
+        }
+        return hooks;
     }
     made.keep_across_turns();
     all.push((key.to_path_buf(), made.clone()));
@@ -1766,8 +1788,9 @@ mod tests {
         start_alpha(&first, &repo);
         let rec = registry::load(&agent, "parent-1").unwrap().remove(0);
         first.shutdown();
-        // Turn 2: a fresh hook set is built, the kept one is used, and the worker is still up.
-        let second = kept_owner_workers(&agent, Arc::new(hooks(&fake, &agent)));
+        // Turn 2: the kept hook set is found before another one (and its pinned launcher) is built.
+        let second = retained_owner_workers(&agent, 4, &YoloSwitch::new(Autonomy::Standard))
+            .expect("the owner hooks should be retained");
         assert!(Arc::ptr_eq(&second, &made));
         assert!(
             PathBuf::from(format!("/proc/{}", rec.pid)).exists(),
@@ -1794,9 +1817,13 @@ mod tests {
         set_session(&kept, "parent-authority");
         start_alpha(&kept, &repo);
 
-        let current = Arc::new(hooks(&fake, &agent));
-        current.core.max.store(1, Ordering::SeqCst);
-        *lock(&current.core.yolo) = YoloSwitch::new(Autonomy::Standard);
+        let current = retained_owner_workers(&agent, 1, &YoloSwitch::new(Autonomy::Standard))
+            .expect("the owner hooks should be retained");
+        assert!(Arc::ptr_eq(&current, &first));
+
+        // LeadOwner::keep_workers passes the hook found above back through this function. Both
+        // arguments consequently share one core, so authority refresh must not hold its source
+        // mutex while locking the destination mutex.
         let reused = kept_owner_workers(&agent, current);
         assert!(Arc::ptr_eq(&reused, &first));
         assert_eq!(reused.core.max.load(Ordering::SeqCst), 1);

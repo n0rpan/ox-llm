@@ -186,6 +186,12 @@ impl Source {
     }
 }
 
+#[cfg(all(test, not(feature = "upstream-openai")))]
+#[test]
+fn chatgpt_catalog_source_requires_the_openai_upstream() {
+    assert!(Source::new(Provider::ChatGpt, "https://example.invalid").is_none());
+}
+
 #[cfg(feature = "upstream-openai")]
 fn openai_error(error: crate::openai::client::Error) -> Error {
     match error {
@@ -408,6 +414,7 @@ mod tests {
         assert!(offers[1].context.is_none() && offers[1].price.is_none() && !offers[1].public);
     }
 
+    #[cfg(feature = "upstream-openai")]
     #[tokio::test]
     async fn provider_values_win_over_the_public_catalog() {
         let rows = fill(
@@ -423,6 +430,7 @@ mod tests {
         assert!(offers[0].price.is_some());
     }
 
+    #[cfg(feature = "upstream-openai")]
     #[tokio::test]
     async fn a_plan_model_gets_its_output_limit_but_never_a_price() {
         let rows = fill(
@@ -438,6 +446,7 @@ mod tests {
         assert!(offers[0].price.is_none());
     }
 
+    #[cfg(feature = "upstream-openai")]
     #[tokio::test]
     async fn a_failed_public_fetch_changes_nothing() {
         let rows = fill(Provider::OpenAi, 500, "{}", vec![json!({"id": "gpt-6.2-sol"})]).await;

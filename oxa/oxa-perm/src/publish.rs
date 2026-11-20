@@ -3,8 +3,8 @@
 //! line that publish or mutate GitHub beyond that, and the floor prompt of `danger.rs` asks (or
 //! routes to the lead's approvals desk) for them. Yolo is unchanged: it never reaches this rule.
 //!
-//! Allowed without a question (they produce no hit): `git push [origin [HEAD|<branch>|
-//! HEAD:<branch>]]` of the session repo's current non-default branch with only `-u`/`-q`/`-v`
+//! Allowed without a question (they produce no hit): `git push origin <HEAD|branch|
+//! HEAD:branch>` of the session repo's current non-default branch with only `-u`/`-q`/`-v`
 //! flags; `gh pr create|edit|comment` with no PR argument, repo override, head override or
 //! body file; read-only `gh` (`pr view|checks|diff|status|list`, `run view|watch|list`,
 //! `issue view|list`, `repo view`, `api` GET). A line that mixes such a command with any other
@@ -196,6 +196,18 @@ fn kind_of(words: &[String], cwd: &Path, moved: bool) -> Kind {
         "gh" => gh_kind(words, &args, cwd, moved),
         // A wrapper or interpreter that carries git push / gh in its words hides it.
         _ => {
+            // Preserve git's argv boundaries when a wrapper such as `env` passes them
+            // through. Besides ordinary `git push`, this catches global options that
+            // can turn an otherwise unknown subcommand into a push (for example `-c`
+            // with a command alias).
+            if args
+                .iter()
+                .enumerate()
+                .skip(1)
+                .any(|(i, w)| base(w) == "git" && git_kind(words, &args[i..], cwd, moved) != Kind::Other)
+            {
+                return Kind::Unsafe;
+            }
             let hides = args.iter().skip(1).any(|w| {
                 // Quotes and backslashes can split a word (`pu''sh`); compare the plain text.
                 let plain = w.replace(['\'', '"', '\\'], "");
@@ -205,6 +217,8 @@ fn kind_of(words: &[String], cwd: &Path, moved: bool) -> Kind {
                     || (plain.contains("git") && plain.contains("push"))
                     || (plain.contains("git") && w.contains(['$', '`']))
             }) || args.iter().enumerate().any(|(i, w)| {
+                // A wrapper may rewrite argv before it invokes git. Keep this
+                // conservative scan when the argv-shaped parse above is inconclusive.
                 base(w) == "git"
                     && args[i + 1..]
                         .iter()
@@ -238,6 +252,11 @@ fn git_globals(rest: &[String]) -> (usize, Vec<String>, bool) {
                 opaque = true;
             }
             k += 2;
+        } else if a.starts_with("--config-env=") {
+            // Unlike most `--option=value` spellings this value is not just an
+            // argument: Git reads the named variable and installs it as config.
+            opaque = true;
+            k += 1;
         } else if matches!(
             a,
             "-c" | "--config-env" | "--git-dir" | "--work-tree" | "--namespace"
@@ -260,6 +279,14 @@ fn git_globals(rest: &[String]) -> (usize, Vec<String>, bool) {
 fn git_sub(rest: &[String]) -> Option<String> {
     let (k, _, _) = git_globals(rest);
     rest.get(k).cloned()
+}
+
+/// Apply `git -C` options in command-line order, as Git does. Relative paths after the first
+/// option are relative to the directory selected by the preceding option, not to `cwd`.
+fn git_working_dir(cwd: &Path, dirs: &[String]) -> PathBuf {
+    dirs.iter().fold(cwd.to_path_buf(), |dir, next| {
+        crate::paths::normalize(Path::new(next), &dir)
+    })
 }
 
 fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
@@ -285,10 +312,7 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
     let wd = if dirs.is_empty() {
         cwd.to_path_buf()
     } else {
-        let mut p = cwd.to_path_buf();
-        for d in &dirs {
-            p = crate::paths::normalize(Path::new(d), &p);
-        }
+        let p = git_working_dir(cwd, &dirs);
         if !crate::paths::is_inside(&p, cwd) {
             return Kind::Unsafe;
         }
@@ -313,12 +337,10 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
             s => pos.push(s),
         }
     }
-    if config_risky(&wd, &current, pos.len() < 2) || !urls_unchanged(cwd, &wd) {
+    if config_risky(&wd, &current, false) || !urls_unchanged(cwd, &wd) {
         return Kind::Unsafe;
     }
     let ok = match pos.as_slice() {
-        [] => true,
-        ["origin"] => true,
         ["origin", spec] => {
             if let Some((src, dst)) = spec.split_once(':') {
                 let src = src.strip_prefix("refs/heads/").unwrap_or(src);
@@ -458,16 +480,7 @@ fn gh_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
                     || ["--field", "--raw-field", "--input"]
                         .iter()
                         .any(|l| a.as_str() == *l || a.starts_with(&format!("{l}=")))
-            }) || api_short_method_is_mutating(rest)
-                || rest
-                    .windows(2)
-                    .any(|w| matches!(w[0].as_str(), "-X" | "--method") && !w[1].eq_ignore_ascii_case("GET"))
-                || rest.iter().any(|a| {
-                    a.strip_prefix("--method=")
-                        .is_some_and(|m| !m.eq_ignore_ascii_case("GET"))
-                        || a.strip_prefix("-X")
-                            .is_some_and(|m| !m.is_empty() && !m.eq_ignore_ascii_case("GET"))
-                });
+            }) || api_method_is_mutating(rest);
             if mutating {
                 Kind::Unsafe
             } else {
@@ -486,9 +499,16 @@ fn gh_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
     }
 }
 
-/// `gh` accepts clusters such as `-iXDELETE`; locate the method option inside a short cluster.
-fn api_short_method_is_mutating(rest: &[String]) -> bool {
+/// `gh` accepts clusters such as `-iXDELETE`; locate the method option before deciding that the
+/// request is read-only. A missing method value is unsafe too.
+fn api_method_is_mutating(rest: &[String]) -> bool {
     rest.iter().enumerate().any(|(i, arg)| {
+        if arg == "--method" {
+            return rest.get(i + 1).is_none_or(|m| !m.eq_ignore_ascii_case("GET"));
+        }
+        if let Some(method) = arg.strip_prefix("--method=") {
+            return !method.eq_ignore_ascii_case("GET");
+        }
         let Some(short) = arg.strip_prefix('-').filter(|s| !s.starts_with('-')) else {
             return false;
         };
@@ -808,10 +828,7 @@ fn is_alias(globals: &[String], name: &str, cwd: &Path, dirs: &[String]) -> bool
         }
     }
     let mut files: Vec<PathBuf> = Vec::new();
-    let mut wd = cwd.to_path_buf();
-    for d in dirs {
-        wd = crate::paths::normalize(Path::new(d), &wd);
-    }
+    let wd = git_working_dir(cwd, dirs);
     for dir in [cwd, wd.as_path()] {
         match git_dirs(dir) {
             Some((_, common)) => files.push(common.join("config")),
