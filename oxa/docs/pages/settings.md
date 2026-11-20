@@ -434,6 +434,8 @@ never permits an additional review.
 | `oxa.workers.stopGraceSeconds` | number (seconds) | `10` | user settings only (a project file cannot change it). How long a stopped worker gets after SIGINT before its whole process group gets SIGTERM; SIGKILL follows 2 seconds later if the group is still alive |
 <!-- /generated:other -->
 
+Pass `model` to `worker start` to select the worker's model. Omit it to inherit the parent session's current model. Reopening the same parent session resumes unfinished workers with the model recorded at their launch, even if the parent has switched models. The child resolves the model using the normal CLI routing and the owner's transport and credential settings.
+
 A worker is never wider than its parent session. It runs with the parent's permission ceiling, `--exclude-tools` and `--no-<tool>` exclusions, `--tools`, `--no-tools`, `--no-builtin-tools`, `--no-mcp`, `--no-web-search`, `--no-extensions`, `--no-skills`, `--no-prompt-templates`, `--no-context-files`, `--no-approve`, `--offline` and session directory. `git` and `env` for the launch come from a trusted `PATH` directory outside the project, never from a project shim. The worktree is created without a checkout and its files are written inside the sandbox (`oxa work --supervise`), so a repository's smudge filters never run on the host; a launch is refused when the `oxa` executable changed after the session started. Token budgets warn and record; they never block: with `--max-tokens N` each worker gets the parent's whole allowance `N` (the start notice says so), so a session with `max` live workers can use up to (1 + `max`) times `N` in total.
 
 ## Example
