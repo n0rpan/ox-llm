@@ -439,6 +439,12 @@ pub(crate) fn all_rows() -> &'static [Descriptor] {
     .as_slice()
 }
 
+/// Whether `key` is a user-only setting, hidden schema-only rows included: a project file
+/// cannot set it.
+pub(crate) fn is_user_only(key: &str) -> bool {
+    all_rows().iter().any(|d| d.key == key && d.user_only)
+}
+
 /// The rows the menus show, in display order: [`all_rows`] without the hidden ones.
 fn table() -> &'static [Descriptor] {
     static TABLE: OnceLock<Vec<Descriptor>> = OnceLock::new();
