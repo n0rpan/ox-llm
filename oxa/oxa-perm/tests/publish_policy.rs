@@ -212,6 +212,7 @@ fn gh_spellings_cannot_hide_a_mutation() {
         "bash -c 'git -C . push origin HEAD:main'",
         "bash -c 'git pu\"\"sh origin HEAD:main'",
         "git --config-env=remote.origin.url=TARGET_URL push origin HEAD",
+        "TARGET_URL=https://example.invalid/other git --config-env=remote.origin.url=TARGET_URL push origin HEAD",
         "git --exec-path=/tmp/x push origin HEAD",
     ] {
         assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{c}");
