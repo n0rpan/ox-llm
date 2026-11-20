@@ -1049,6 +1049,17 @@ fn prepare(st: &mut SessionState, call: &ToolCall, sink: &mut dyn EventSink, ui:
                 // #1512 S2: a dangerous command asks first; its answer covers only its rule keys.
                 let danger = st.policy.danger_ask(a, &st.cwd);
                 if !danger.is_empty() {
+                    // #1512 S5: no one to ask: refuse or file a request now, never pause. The
+                    // text is the tool error and a Warning notice in the JSON stream.
+                    if !ui.interactive() {
+                        if let Some(text) = st.policy.danger_unattended(a, &st.cwd) {
+                            sink.emit(&AgentEvent::Notice {
+                                level: Level::Warning,
+                                text: text.clone(),
+                            });
+                            return mk(args, exec, Plan::Done(ToolOutput::error(text)));
+                        }
+                    }
                     let (keys, reasons): (Vec<String>, Vec<String>) = danger.into_iter().unzip();
                     match crate::fire::ask_dangerous(st, a, &keys, &reasons, sink, ui) {
                         DangerAnswer::Once => continue,

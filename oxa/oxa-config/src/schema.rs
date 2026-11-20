@@ -148,6 +148,14 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.approval.always", Kind::StringList, "[]"),
     // #1512: dangerous-command rules (+id/-id/cmd:..); user settings only.
     key("oxa.approval.dangerous", Kind::StringList, "[]"),
+    // #1512 S5: what an unattended run does with a dangerous command (no one to ask): refuse it,
+    // file an approval request, or `auto` (refuse under the OS sandbox, request without it).
+    // User settings only.
+    key(
+        "oxa.approval.unattended",
+        Kind::Enum(&["auto", "refuse", "request"]),
+        "\"auto\"",
+    ),
     // F5: seconds; unset = 120; 0 = none.
     key("oxa.bash.defaultTimeout", Kind::Number, "null"),
     // Background jobs that may run at once (`bash {background: true}`); at least 1.

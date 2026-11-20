@@ -21,8 +21,8 @@ use oxa_interactive::{
     TrustChoice,
 };
 use oxa_perm::{
-    gated_resources, resolve_trust, DangerRules, DefaultTrust, ModePolicy, TrustInputs, TrustOutcome,
-    TrustStore,
+    gated_resources, resolve_trust, ApprovalDesk, DangerRules, DefaultTrust, ModePolicy, TrustInputs,
+    TrustOutcome, TrustStore, UnattendedMode,
 };
 use oxa_proto::{codes, Engine, EntryBody, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
 use oxa_resources::{discover, DiscoverOpts, Resources};
@@ -259,6 +259,8 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::Status
                     | CommandId::WorkStatus
                     | CommandId::WorkBoard
+                    | CommandId::Send
+                    | CommandId::SendApprovals
                     | CommandId::Memory
                     | CommandId::MemoryList
                     | CommandId::MemoryShow
@@ -320,6 +322,11 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Subcommand::Memory(words) => crate::run_memory(&words, &dirs, &mut *stdout, &mut *stderr),
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
+            // #1512 S5: an owner answer to an approval request or the request list; a plain
+            // follow-up takes the inbox path below.
+            Subcommand::Send(words) if words.iter().any(|w| w == "--approve" || w == "--approvals") => {
+                crate::approve_cmd::run(&words, &dirs, &cwd, &mut *stdout)
+            }
             Subcommand::Local(_) if is_agent(env) => Err(OxaError::new(
                 codes::INVALID,
                 "Local model setup requires the owner outside an agent tool",
@@ -715,6 +722,10 @@ struct Built {
     os_sandbox: bool,
     /// #1512 S2: the dangerous-command rules of the user settings, shared by every session.
     danger: Arc<DangerRules>,
+    /// #1512 S5: the approval desk under the agent directory (`None` when it cannot be opened).
+    approval_desk: Option<Arc<ApprovalDesk>>,
+    /// #1512 S5: what an unattended run does with a dangerous command (`oxa.approval.unattended`).
+    unattended: UnattendedMode,
 }
 
 /// #597: `guard` plus the session's scratch directory (`/tmp` in its sandbox), which the file
@@ -727,6 +738,20 @@ fn session_guard(guard: oxa_perm::PathGuard, sandbox: &dyn Sandbox) -> oxa_perm:
 }
 
 impl Built {
+    /// #1512 S5: `policy` with the approval desk of this process, for `session_id` (bound again
+    /// when the session has its id).
+    fn desk_policy(&self, policy: ModePolicy, session_id: Option<String>) -> ModePolicy {
+        match &self.approval_desk {
+            Some(desk) => policy.with_desk(
+                desk.clone(),
+                session_id.unwrap_or_default(),
+                self.unattended,
+                self.os_sandbox,
+            ),
+            None => policy,
+        }
+    }
+
     /// Fresh `Deps` (the policy and built-in tools are not `Clone`).
     fn deps(&self, session_id: Option<String>) -> Deps {
         // #457: the session's own sandbox (its scratch directory at /tmp), dropped with it.
@@ -787,21 +812,24 @@ impl Built {
             // #1512 S2: dangerous commands ask in standard and auto; the keys of "always allow"
             // are read from the user settings now, so a save covers the next session too.
             policy: Box::new(
-                ModePolicy::new()
-                    .with_guard(session_guard(
-                        oxa_perm::PathGuard::with_real_home(
-                            &self.dirs.home,
-                            oxa_sandbox::account_home().as_deref(),
-                            &self.dirs.agent_dir,
-                            &self.dirs.tmp_dir,
+                self.desk_policy(
+                    ModePolicy::new()
+                        .with_guard(session_guard(
+                            oxa_perm::PathGuard::with_real_home(
+                                &self.dirs.home,
+                                oxa_sandbox::account_home().as_deref(),
+                                &self.dirs.agent_dir,
+                                &self.dirs.tmp_dir,
+                            ),
+                            sandbox.as_ref(),
+                        ))
+                        .with_yolo(self.yolo.clone())
+                        .with_danger(
+                            self.danger.clone(),
+                            Settings::load(&self.dirs, &self.cwd, false).list("oxa.approval.always"),
                         ),
-                        sandbox.as_ref(),
-                    ))
-                    .with_yolo(self.yolo.clone())
-                    .with_danger(
-                        self.danger.clone(),
-                        Settings::load(&self.dirs, &self.cwd, false).list("oxa.approval.always"),
-                    ),
+                    session_id.clone(),
+                ),
             ),
             // File names follow bash's current view, without giving hooks/extensions the
             // bash-only execution bypass. The shared switch also handles live /yolo changes.
@@ -910,6 +938,14 @@ fn prepare(
     // #1512 S2: the dangerous-command rules come from the user settings only.
     let (danger, danger_warnings) = dangerous_rules(&user_settings);
     notices.extend(danger_warnings.into_iter().map(|w| (Level::Warning, w)));
+    // #1512 S5: the unattended answer (user settings only) and the desk that files requests.
+    let unattended_mode = UnattendedMode::parse(
+        &user_settings
+            .string("oxa.approval.unattended")
+            .unwrap_or_default(),
+    )
+    .unwrap_or_default();
+    let approval_desk = ApprovalDesk::open(&dirs.agent_dir).ok().map(Arc::new);
     // The read-only proposal session is on by default; only the user's own `false` turns it off.
     if a.lead && !user_settings.bool(crate::lead_preset::SETTING, true) {
         return Err(OxaError::new(
@@ -1408,6 +1444,8 @@ fn prepare(
         bash_sandbox,
         os_sandbox,
         danger: Arc::new(danger),
+        approval_desk,
+        unattended: unattended_mode,
     };
     Ok(Prep {
         built,
@@ -3205,6 +3243,8 @@ mod session_scratch_tests {
             os_sandbox: false,
             yolo,
             danger: Arc::new(oxa_perm::DangerRules::builtin()),
+            approval_desk: None,
+            unattended: UnattendedMode::default(),
         };
         let first = built.deps(None);
         let second = built.deps(None);
@@ -3291,6 +3331,8 @@ mod session_scratch_tests {
             os_sandbox: false,
             yolo,
             danger: Arc::new(oxa_perm::DangerRules::builtin()),
+            approval_desk: None,
+            unattended: UnattendedMode::default(),
         };
 
         let first = open_interactive_session(&built, built.deps(None), Open::New).unwrap();
@@ -3395,6 +3437,8 @@ mod session_scratch_tests {
                 os_sandbox: false,
                 yolo,
                 danger: Arc::new(oxa_perm::DangerRules::builtin()),
+                approval_desk: None,
+                unattended: UnattendedMode::default(),
                 report_dialog: None,
             }
         };
@@ -3409,6 +3453,35 @@ mod session_scratch_tests {
         .unwrap();
         let policy = build().deps(None).policy;
         assert_eq!(policy.decide(Mode::Workspace, &dangerous, &cwd), Decision::Allow);
+    }
+
+    /// #1512 S5: the unattended answer is user-only. A project file that names `refuse` changes
+    /// nothing; the same value in the user file is read.
+    #[test]
+    fn project_settings_cannot_set_approval_unattended() {
+        let env = oxa_fake::TestEnv::new();
+        let dirs = Dirs::under(env.root());
+        let cwd = env.work();
+        env.write(
+            "work/.oxa/settings.json",
+            &serde_json::json!({"oxa": {"approval": {"unattended": "refuse"}}}).to_string(),
+        );
+        assert_eq!(
+            Settings::load(&dirs, &cwd, false).string("oxa.approval.unattended"),
+            None
+        );
+        std::fs::create_dir_all(dirs.settings_file().parent().unwrap()).unwrap();
+        std::fs::write(
+            dirs.settings_file(),
+            serde_json::json!({"oxa": {"approval": {"unattended": "request"}}}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            Settings::load(&dirs, &cwd, false)
+                .string("oxa.approval.unattended")
+                .as_deref(),
+            Some("request")
+        );
     }
 }
 
