@@ -330,15 +330,7 @@ impl Entry {
     ) -> io::Result<Value> {
         let cost = crate::spend::budget_cost(fields);
         if fields["remote"] != true
-            || ![
-                "anthropic",
-                "openai",
-                "openai-chat",
-                "openrouter",
-                "chatgpt",
-                "opencode",
-            ]
-            .contains(&fields["remote_provider"].as_str().unwrap_or(""))
+            || !crate::spend::valid_provider(&fields["remote_provider"])
             || (cost.is_none() && !crate::spend::unknown_go_cost(fields))
         {
             return Err(io::ErrorKind::InvalidData.into());
@@ -424,7 +416,7 @@ impl Entry {
                 if value == "subscription"
                     || value == "metered" && fields["remote_provider"] == "opencode" =>
             {
-                if !matches!(fields["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
+                if !crate::spend::subscription_provider(&fields["remote_provider"])
                     || (value == "subscription" && cost.is_some_and(|n| n != 0.0))
                     || (value == "metered" && cost.is_none_or(|n| n <= 0.0))
                 {
