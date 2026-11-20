@@ -73,7 +73,7 @@ impl Default for TermOpts {
 /// * Resize through `SIGWINCH` (a flag set by the handler, read by `poll`).
 /// * `poll` reads fd 0 with `libc::poll`, feeds [`crate::parse_input`], and applies the ESC
 ///   timeout with [`crate::flush_pending`].
-/// * `SIGTERM` restores before terminating; `SIGHUP` is reported as terminal loss for orderly shutdown.
+/// * `SIGTERM` restores before terminating; with a run limit the first one is cooperative (see [`cooperative_sigterm`]) and the second one restores and terminates; `SIGHUP` is reported as terminal loss for orderly shutdown.
 pub struct ProcessTerminal {
     /// Bytes written but not yet flushed.
     out: Vec<u8>,
@@ -607,7 +607,22 @@ extern "C" fn on_hangup(_sig: libc::c_int) {
     HUNG_UP.store(true, Ordering::SeqCst);
 }
 
+/// Set once an owner of the run wants the first SIGTERM to be cooperative.
+static COOPERATIVE_SIGTERM: AtomicBool = AtomicBool::new(false);
+/// A cooperative SIGTERM was received (the run's watcher polls it).
+static SIGTERM_SEEN: AtomicBool = AtomicBool::new(false);
+
+/// Let a run owner take the first SIGTERM (a wrap-up turn) instead of the terminal ending the
+/// process at once. A second SIGTERM still restores the terminal and terminates.
+pub fn cooperative_sigterm() -> &'static AtomicBool {
+    COOPERATIVE_SIGTERM.store(true, Ordering::SeqCst);
+    &SIGTERM_SEEN
+}
+
 extern "C" fn on_terminate(sig: libc::c_int) {
+    if COOPERATIVE_SIGTERM.load(Ordering::SeqCst) && !SIGTERM_SEEN.swap(true, Ordering::SeqCst) {
+        return;
+    }
     emergency_restore();
     unsafe {
         libc::signal(sig, libc::SIG_DFL);
