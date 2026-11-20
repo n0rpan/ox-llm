@@ -126,7 +126,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         return 0;
     }
     if a.version {
-        let _ = writeln!(stdout, "oxa {}", env!("CARGO_PKG_VERSION"));
+        let _ = writeln!(stdout, "oxa {}", oxa_proto::BUILD_VERSION);
         return 0;
     }
     let headless = a.subcommand.is_none()

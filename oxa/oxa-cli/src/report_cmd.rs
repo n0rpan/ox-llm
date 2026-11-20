@@ -218,7 +218,7 @@ pub fn draft_body(notes: &str, dirs: &Dirs, ctx: &ScrubCtx, _runner: Runner<'_>)
     let mut parts: Vec<String> = Vec::new();
     let notes = clean_notes(notes, ctx);
     parts.push(format!("## What happened\n\n{}", notes));
-    let mut system: Vec<String> = vec![format!("- oxa version: {}", env!("CARGO_PKG_VERSION"))];
+    let mut system: Vec<String> = vec![format!("- oxa version: {}", oxa_proto::BUILD_VERSION)];
     if let Some(identity) = read_identity(dirs) {
         system.extend(
             identity

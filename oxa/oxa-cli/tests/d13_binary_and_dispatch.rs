@@ -411,7 +411,7 @@ fn help_and_version() {
 
     let version = go(&env, &url, &["-v"]);
     assert_eq!(version.code, 0);
-    assert_eq!(version.out, format!("oxa {}\n", env!("CARGO_PKG_VERSION")));
+    assert_eq!(version.out, format!("oxa {}\n", oxa_proto::BUILD_VERSION));
 }
 
 /// `oxa -p` against oxa-fake
