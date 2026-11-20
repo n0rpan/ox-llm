@@ -291,6 +291,7 @@ fn command_wrappers_and_cumulative_git_directories_ask() {
     .unwrap();
     for c in [
         "env git push origin HEAD:main",
+        "env git -c alias.ship=push ship origin HEAD:main",
         "env -i git -C . push origin HEAD:main",
         "command git push origin HEAD:main",
         "git -C vendor/other -C . push origin HEAD",
