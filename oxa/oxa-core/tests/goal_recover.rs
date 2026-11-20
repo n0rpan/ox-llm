@@ -219,9 +219,10 @@ fn a_schema_answer_is_recorded_and_the_goal_goes_on_to_wait_and_finish() {
     session
         .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
         .unwrap();
-    assert_eq!(
-        last_user(&engine, 1),
-        oxa_core::prompt::GOAL_CONTINUE_AFTER_ANSWER
+    assert!(
+        engine.requests()[1].messages.iter().any(|m| m.role == Role::User
+            && m.content.as_deref() == Some(oxa_core::prompt::GOAL_CONTINUE_AFTER_ANSWER)),
+        "the answer is followed by the after-answer continuation"
     );
     assert_eq!(session.goal().unwrap().status, GoalStatus::Done);
     assert_eq!(session.stats().outcome, RunOutcome::Done);
