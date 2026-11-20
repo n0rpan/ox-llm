@@ -392,7 +392,7 @@ fn h2_idempotent_replay() {
 
     // A new key with the same body is a new request; the script is exhausted.
     let fresh = post_chat(&url, &body, "s", "key-2");
-    assert_eq!(fresh.status, 500);
+    assert_eq!(fresh.status, 422);
     assert!(String::from_utf8_lossy(&fresh.body).contains("script exhausted"));
 }
 

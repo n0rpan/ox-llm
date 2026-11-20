@@ -229,7 +229,7 @@ today), no `/v1/responses`, and
 Cloud models are off by default. When `cloud.enabled` is true in `runtime.json`, remote
 catalog entries appear in `/v1/models` and are called through the same endpoint by model id.
 The key lives in an owner-only controller secrets file and is never listed or logged; every
-OpenRouter request is forced to zero data retention (`provider.zdr`) and no data collection;
+OpenRouter routing preferences (`provider.zdr`, `data_collection`) are sent only if the owner sets them;
 `OXC_OFFLINE=1` refuses remote models; a per-day USD cap stops requests once reached. See
 [CLOUD-MODELS.md](CLOUD-MODELS.md).
 
@@ -458,7 +458,7 @@ So an unknown harness pays for its prefix **once per engine version**: the first
 after the harness is first used, after an engine or model update, or after "Clear caches".
 Every later request, session, harness switch and restart reuses 97 to 99 % of the prefix
 without the controller knowing the harness. At the 124 tokens/s cold prefill rate used in
-`HARNESSES.md` section 4.1, that one time is about 31 s for 3 900 tokens and about 90 s for
+`HARNESSES.md` (archived) section 4.1, that one time is about 31 s for 3 900 tokens and about 90 s for
 a Cline-sized prompt of 11 000 tokens [E].
 
 ### What learning adds

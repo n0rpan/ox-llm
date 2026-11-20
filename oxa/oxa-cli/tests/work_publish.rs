@@ -123,9 +123,13 @@ fn exercise_save_recovery(test_name: &str, case: SaveRecovery) {
             git_binary: "/usr/bin/git".into(),
             host_path: std::env::var_os("PATH").unwrap(),
             terminate_binary: Some("/usr/bin/kill".into()),
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
             runner_owns_github: false,
             autonomy: Default::default(),
-            autonomy_now: None,
+            worker_github: Default::default(),
+            authority_now: None,
             offline: false,
             storage: root.join("home/.oxa/agent/work/save-recovery"),
         };
@@ -606,7 +610,7 @@ fn branch_drift_after_acceptance_cannot_publish_unchecked_commits() {
 #[test]
 fn own_problem_notes_are_captured_and_failed_search_keeps_a_local_draft() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     let text = "done <oxa-work-reports>[{\"title\":\"oxa work symptom\",\"notes\":\"Synthetic reproduction token=example\",\"keywords\":[\"oxa work\",\"synthetic symptom\"]}]</oxa-work-reports>";
     let record = run_args(
@@ -635,7 +639,7 @@ fn own_problem_notes_are_captured_and_failed_search_keeps_a_local_draft() {
 #[test]
 fn a_model_tool_cannot_opt_itself_into_reporting_or_publishing() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
         .args(["work", "../tasks.json", "--report-problems"])
@@ -666,6 +670,7 @@ fn green_rerun_can_publish_after_red_remained_local() {
     );
     assert_eq!(red["draft"], false, "{red}");
     assert!(red["pull_request"].is_null());
+    assert!(red["detail"].as_str().unwrap().contains("not published"), "{red}");
     let green = run_args(
         &env,
         vec![
@@ -684,7 +689,7 @@ fn green_rerun_can_publish_after_red_remained_local() {
 #[test]
 fn semantic_work_report_without_evidence_stays_local() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     env.write(
         "home/.oxa/agent/settings.json",
@@ -721,7 +726,7 @@ fn semantic_work_report_without_evidence_stays_local() {
 #[test]
 fn semantic_work_reports_file_once_and_comment_on_four_paraphrases() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     env.write(
         "home/.oxa/agent/settings.json",
@@ -816,7 +821,7 @@ fn semantic_work_reports_file_once_and_comment_on_four_paraphrases() {
 #[test]
 fn a_local_report_retries_without_replaying_the_completed_task() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     let text = "<oxa-work-reports>[{\"title\":\"oxa work symptom\",\"notes\":\"Synthetic reproduction\",\"keywords\":[\"oxa work\",\"synthetic symptom\"]}]</oxa-work-reports>";
     let first = run_args(
@@ -974,26 +979,7 @@ esac
 }
 
 #[test]
-fn publish_not_done_explains() {
-    let env = TestEnv::new();
-    setup(&env, r#"["printf red > failed-check; exit 1"]"#);
-    let path = configure(&env);
-    let record = run_args(
-        &env,
-        vec![ScriptTurn::text("done"), ScriptTurn::text("still red")],
-        &["work", "../tasks.json", "--publish"],
-        Some(path),
-    );
-    assert_eq!(record["outcome"], "red", "{record}");
-    assert!(
-        record["detail"].as_str().unwrap().contains("not published"),
-        "{record}"
-    );
-    assert!(!env.home().join("push-calls").exists());
-}
-
-#[test]
-fn publish_rechecks_head_after_yes() {
+fn publish_refuses_head_changed_since_preflight() {
     let env = TestEnv::new();
     setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);

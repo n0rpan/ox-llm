@@ -135,8 +135,14 @@ pub(super) fn run(
             Ok::<_, &str>((attempt, objective))
         })
         .transpose()?;
-    if steering.is_some() && !cfg!(all(target_os = "linux", feature = "managed-steering")) {
-        return Err("native steering is unavailable in this build".into());
+    if steering.is_some()
+        && (!cfg!(target_os = "linux")
+            || !oxa_config::Settings::load(&context.dirs, &context.cwd, false).a2a_enabled())
+    {
+        return Err(
+            "native steering is unavailable: it needs Linux and oxa.a2a.enabled set to true in the user settings"
+                .into(),
+        );
     }
     let owner_path = |key: &str| -> Result<PathBuf, String> {
         let path = PathBuf::from(value[key].as_str().ok_or("missing native board path")?);
@@ -200,9 +206,9 @@ pub(super) fn run(
         }
         Ok(())
     };
-    #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+    #[cfg(target_os = "linux")]
     let steering_objective = steering.map(|(_, objective)| objective.to_owned());
-    #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+    #[cfg(target_os = "linux")]
     let steering_binding = binding.clone();
     let admission_claims = claims.clone();
     let admission_binding = binding.clone();
@@ -218,7 +224,7 @@ pub(super) fn run(
                 return Err("native claim is no longer runnable".into());
             }
         }
-        #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+        #[cfg(target_os = "linux")]
         if let Some(objective) = &steering_objective {
             lock.bind_managed_steering(&claims_path, &steering_binding, objective)?;
         }

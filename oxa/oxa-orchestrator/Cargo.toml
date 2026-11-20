@@ -1,26 +1,20 @@
 [package]
 name = "oxa-orchestrator"
-description = "Opt-in foundations for bounded agent orchestration"
+description = "Foundations for bounded agent orchestration"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[features]
-default = []
-core = ["dep:libc", "dep:oxa-proto", "dep:serde_json", "dep:serde", "dep:sha2"]
-a2a = ["core"]
-
 [dependencies]
-libc = { workspace = true, optional = true }
-oxa-proto = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
-sha2 = { workspace = true, optional = true }
+libc.workspace = true
+oxa-proto.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
-oxa-orchestrator = { path = ".", features = ["core", "a2a"] }
 oxa-fake.workspace = true
 
 [lints]

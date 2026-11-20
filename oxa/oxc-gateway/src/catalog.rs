@@ -51,6 +51,7 @@ pub enum Error {
 pub struct ModelInfo<'a> {
     pub id: &'a str,
     pub provider: Provider,
+    pub provider_name: &'a str,
     pub context_window: u32,
     pub max_output: u32,
 }
@@ -168,10 +169,12 @@ impl Model {
         if self.endpoint.scheme() != "https" {
             return Err(Error::InvalidEndpoint);
         }
-        if !matches!(self.provider, Provider::Anthropic | Provider::OpenAi)
-            || ![provider, pool, key]
-                .into_iter()
-                .all(oxa_config::valid_cloud_name)
+        if !matches!(
+            self.provider,
+            Provider::Anthropic | Provider::OpenAi | Provider::OpenRouter
+        ) || ![provider, pool, key]
+            .into_iter()
+            .all(oxa_config::valid_cloud_name)
             || is_builtin(provider)
             || is_builtin(key)
         {
@@ -196,10 +199,47 @@ impl Model {
             .map_or(self.provider.as_str(), |route| &route.key)
     }
 
+    pub(crate) fn provider_name(&self) -> &str {
+        #[cfg(feature = "anthropic-gateway")]
+        if let Some(route) = self.configured_route() {
+            return route.provider();
+        }
+        self.provider.as_str()
+    }
+
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn for_offer(
+        &self,
+        id: &str,
+        upstream: &str,
+        context: u32,
+        output: u32,
+    ) -> Result<Self, Error> {
+        let mut offer = Self::new(
+            id,
+            self.provider,
+            upstream,
+            self.endpoint.as_str(),
+            context,
+            output,
+        )?;
+        offer.configured_route.clone_from(&self.configured_route);
+        Ok(offer)
+    }
+
+    #[cfg(all(test, feature = "anthropic-gateway"))]
+    pub(crate) fn set_mock_base(&mut self, base: &str) {
+        assert!(base.starts_with("http://127.0.0.1:"));
+        self.endpoint = Self::new(&self.id, self.provider, &self.upstream, base, 1, 1)
+            .unwrap()
+            .endpoint;
+    }
+
     pub fn info(&self) -> ModelInfo<'_> {
         ModelInfo {
             id: &self.id,
             provider: self.provider,
+            provider_name: self.provider_name(),
             context_window: self.context_window,
             max_output: self.max_output,
         }

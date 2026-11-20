@@ -360,6 +360,9 @@ pub struct StatusModel {
     /// #202: the process's autonomy level (standard, auto or yolo); with `mode` it gives the
     /// permission mode the status bar shows.
     pub autonomy: oxa_proto::Autonomy,
+    /// #1512 S3: this run has the OS sandbox (bwrap) for bash and hooks. Set from the run's
+    /// policy; the guard label says so honestly.
+    pub os_sandbox: bool,
     /// #873: the authoritative budget the HUD shows, when a front end has one. `None` = no
     /// budget projection is available, and the HUD shows no budget part at all (never a zero).
     /// The projection itself is the public budget surface of #627; until it lands no front end
@@ -368,6 +371,23 @@ pub struct StatusModel {
 }
 
 impl StatusModel {
+    /// #1512 S3: the guard the status line shows, and it never claims a sandbox that is off.
+    /// `None` in plan mode (read-only; the wrapped sandbox decides). Yolo: no prompts. Else the
+    /// OS sandbox when it is on, and "dangerous commands ask" when it is not.
+    pub fn guard_label(&self) -> Option<&'static str> {
+        if matches!(self.mode, Some(Mode::Plan)) {
+            return None;
+        }
+        if self.autonomy == oxa_proto::Autonomy::Yolo {
+            return Some("no sandbox · no prompts");
+        }
+        if self.os_sandbox {
+            Some("sandbox")
+        } else {
+            Some("no sandbox · dangerous commands ask")
+        }
+    }
+
     /// #202: the permission mode as the status bar shows it, with its theme token: `plan` and
     /// `ask` from the session mode, else the autonomy level (`standard`, `auto`, `yolo`).
     pub fn mode_label(&self) -> Option<(&'static str, &'static str)> {
@@ -601,6 +621,8 @@ pub enum WorkerMsg {
     Event(oxa_proto::AgentEvent),
     /// A command finished; `Err` is shown as an error notice.
     Done(Result<(), OxaError>),
+    /// The watched session reached its terminal wrap-up boundary.
+    LimitExit(i32),
     /// A session switch overtook explicit recovery input; return it without sending it.
     UnsentPrompt {
         text: String,
@@ -668,6 +690,13 @@ pub enum UiRequest {
         title: String,
         body: String,
         timeout_ms: Option<u32>,
+        reply: Sender<Option<bool>>,
+    },
+    /// The publication approval dialog (`Ui::approve_publication`): exact text, Approve/Deny,
+    /// Deny focused, no timeout.
+    ApprovePublication {
+        title: String,
+        body: String,
         reply: Sender<Option<bool>>,
     },
     Input {
@@ -869,6 +898,46 @@ pub struct InteractiveOpts {
     /// O-182: the process's YOLO switch, shared with the policy of every session. `None` =
     /// YOLO cannot be switched here (the policy does not listen; tests, ephemeral setups).
     pub yolo: Option<oxa_proto::YoloSwitch>,
+    /// #1512 S3: the run has the OS sandbox (`run_kind::os_sandbox_wanted`); the status line
+    /// shows it. `false` = no OS sandbox: bash runs with the user's rights, dangerous commands ask.
+    pub os_sandbox: bool,
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+
+    #[test]
+    fn guard_label_never_claims_sandbox_when_off() {
+        let off = StatusModel {
+            mode: Some(Mode::Workspace),
+            autonomy: oxa_proto::Autonomy::Standard,
+            os_sandbox: false,
+            ..StatusModel::default()
+        };
+        assert_eq!(off.guard_label(), Some("no sandbox · dangerous commands ask"));
+        let on = StatusModel {
+            os_sandbox: true,
+            ..off.clone()
+        };
+        assert_eq!(on.guard_label(), Some("sandbox"));
+        let yolo = StatusModel {
+            autonomy: oxa_proto::Autonomy::Yolo,
+            ..off.clone()
+        };
+        assert_eq!(yolo.guard_label(), Some("no sandbox · no prompts"));
+        let plan = StatusModel {
+            mode: Some(Mode::Plan),
+            ..off.clone()
+        };
+        assert_eq!(plan.guard_label(), None);
+        // A yolo run never reads as a sandbox, whatever the flag says.
+        let yolo_on = StatusModel {
+            os_sandbox: true,
+            ..yolo.clone()
+        };
+        assert_eq!(yolo_on.guard_label(), Some("no sandbox · no prompts"));
+    }
 }
 
 #[cfg(test)]

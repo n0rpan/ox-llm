@@ -1,6 +1,5 @@
 //! The report-issue workflow for an explicit user-launched --report-problems run.
-//! Confirmations go through the owner confirm broker in a session (`/dev/tty` outside one);
-//! the read-only search asks nothing, only the post does.
+//! Normal `report-issue submit` retains its controlling-terminal confirmation.
 use crate::report_cmd::{self, clean_notes, report_repo, save_draft, scrub, Confirm, Runner, ScrubCtx};
 use oxa_config::{Dirs, Settings};
 use oxa_work::{ProblemNote, Record, ReportRecord};
@@ -218,7 +217,13 @@ fn report_legacy(
         return Ok(result);
     }
     let attempt = (|| -> Result<(), String> {
-        // The search is read-only (open issues and PRs by the visible queries): no question.
+        if confirm(&format!(
+            "Search open issues and PRs in {repo} with these exact queries:\n{}\nType yes to send: ",
+            note.keywords.join("\n")
+        )) != Some(true)
+        {
+            return Err("search was not authorized by the owner; draft retained locally".into());
+        }
         let mut candidates = vec![];
         for query in &note.keywords {
             for kind in ["issue", "pr"] {
@@ -288,7 +293,6 @@ fn report_legacy(
             result.url = value["url"].as_str().map(str::to_string);
             return Ok(());
         }
-        let body_path = result.draft.with_extension("work-body.md");
         if let Some((_, number, value)) = read
             .iter()
             .find(|(kind, _, v)| *kind == "issue" && matches(&note, v))
@@ -305,10 +309,10 @@ fn report_legacy(
                 )) != Some(true)
                 {
                     return Err(
-                        "problem report not posted: the owner did not confirm; draft retained locally".into(),
+                        "problem report was not authorized by the owner; draft retained locally".into(),
                     );
                 }
-                oxa_resources::write_atomic(&body_path, note.notes.as_bytes()).map_err(|e| e.to_string())?;
+                let approved = report_cmd::ApprovedBody::stage(&note.notes).map_err(|e| e.to_string())?;
                 call(
                     runner,
                     &words(&[
@@ -318,7 +322,7 @@ fn report_legacy(
                         "--repo",
                         &repo,
                         "--body-file",
-                        &body_path.to_string_lossy(),
+                        &approved.path(),
                     ]),
                 )?;
             }
@@ -341,11 +345,9 @@ fn report_legacy(
                 note.title
             )) != Some(true)
             {
-                return Err(
-                    "problem report not posted: the owner did not confirm; draft retained locally".into(),
-                );
+                return Err("problem report was not authorized by the owner; draft retained locally".into());
             }
-            oxa_resources::write_atomic(&body_path, body.as_bytes()).map_err(|e| e.to_string())?;
+            let approved = report_cmd::ApprovedBody::stage(&body).map_err(|e| e.to_string())?;
             let url = call(
                 runner,
                 &words(&[
@@ -356,13 +358,12 @@ fn report_legacy(
                     "--title",
                     &note.title,
                     "--body-file",
-                    &body_path.to_string_lossy(),
+                    &approved.path(),
                 ]),
             )?;
             result.disposition = "filed".into();
             result.url = Some(url.trim().into());
         }
-        let _ = std::fs::remove_file(body_path);
         Ok(())
     })();
     if let Err(error) = attempt {
@@ -398,32 +399,35 @@ mod tests {
         )
     }
     #[test]
-    fn work_report_search_needs_no_confirm() {
+    fn declining_visible_queries_prevents_any_github_request() {
         let env = TestEnv::new();
         let dirs = Dirs::under(env.root());
-        let mut prompts = Vec::new();
-        let mut lists = 0;
+        let mut value = note();
+        value.keywords[0] = "component\u{1b}[2Jsymptom\u{200f}".into();
+        let mut calls = 0;
+        let mut approved = false;
         let result = report(
-            &note(),
+            &value,
             &dirs,
             &settings(),
             &ScrubCtx::default(),
             false,
             &mut |prompt| {
-                prompts.push(prompt.to_owned());
+                assert!(!prompt.contains('\u{1b}') && !prompt.contains('\u{200f}'));
+                assert!(prompt.contains("\\u{1b}") && prompt.contains("\\u{200f}"));
+                approved = true;
                 Some(false)
             },
-            |program, args: &[String], _: &File| {
-                if program == "gh" && args[1] == "list" {
-                    lists += 1;
+            |program, _, _| {
+                if program == "gh" {
+                    calls += 1;
                 }
                 Some((0, "[]".into()))
             },
         )
         .unwrap();
-        assert_eq!(lists, 4, "the read-only search ran without a question");
-        assert_eq!(prompts.len(), 1, "{prompts:?}");
-        assert!(prompts[0].starts_with("Create issue in"));
+        assert!(approved);
+        assert_eq!(calls, 0);
         assert_eq!(result.disposition, "local");
         assert!(result.draft.exists());
     }
@@ -457,7 +461,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.disposition, "filed");
-        assert_eq!(prompts.len(), 1, "only the post asks: {prompts:?}");
+        assert_eq!(prompts.len(), 2);
         assert!(prompts
             .iter()
             .all(|prompt| prompt.contains("github.com/example/project")));

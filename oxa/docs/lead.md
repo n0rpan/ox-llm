@@ -4,8 +4,8 @@ The lead is an ordinary oxa session with an embedded, lead-only `lead` skill.
 Its instructions are exported as `oxa_resources::LEAD_SKILL` for the preset;
 ordinary sessions neither discover nor install this skill. It does not enable
 runner access by itself.
-Shadow is disabled by default. Enable `"oxa.lead.shadow": true` in the user's
-`settings.json`; project settings cannot enable it. Then `oxa lead --shadow`
+Shadow is on by default. `"oxa.lead.shadow": false` in the user's
+`settings.json` turns it off; project settings cannot change it. `oxa lead --shadow`
 opens an ordinary TUI or print session restricted to
 `read`, `grep`, `find` and `ls`. It embeds the lead instructions in every prefix
 epoch and enforces the proposal schema. For example:
@@ -142,6 +142,21 @@ the card must say so, rather than manufacture runner facts.
 unsupported observation keeps the saved asks, falls back to an empty board and
 reports a fixed `cause` with a recovery `hint`; raw paths and file contents
 never appear in output.
+
+## Stuck-work signals in the loop
+
+Each pass also derives the record's stuck-work signals: main required-check
+failures, no verified main merge for 45 minutes, over-age merge-queue
+membership, workflow runs queued over 15 minutes, and — through the runner
+situation named by `OXA_LEAD_SITUATION` — a locally accepted commit with no
+publication. A signal never becomes a silent wait. In the same pass the loop
+states the reason per blocking PR, assigns a red item to its own lease holder
+or an idle known worker, and escalates a durable ask to the owner only when no
+worker can take it. Unobserved and stale sources produce no signal: the loop
+never invents a stall. The pass's state line reports `stuck_escalated` when it
+wrote a new ask and `stuck_assigned` when assignments covered every signal,
+alongside the `stuck` object carrying the signal names, the per-PR report and
+the ask ids written this pass.
 
 ## Event integration after L1
 

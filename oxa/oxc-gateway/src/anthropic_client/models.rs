@@ -1,6 +1,6 @@
 //! Off-request-path Anthropic discovery and refusal classification.
 //! No caching or request handling is performed here. Unknown wire fields are ignored.
-use super::{messages_endpoint, Client, Error};
+use super::{messages_endpoint, resource_endpoint, Client, Error};
 use crate::secrets::Key;
 use reqwest::header::HeaderValue;
 use serde_json::Value;
@@ -32,19 +32,33 @@ impl Client {
     /// except on loopback. `timeout` bounds the entire refresh, including pages.
     /// Redirects and proxies remain disabled by the shared transport.
     pub async fn models(&self, base_url: &str, key: &Key, timeout: Duration) -> Result<Vec<Model>, Error> {
-        tokio::time::timeout(timeout, self.discover_models(base_url, key))
+        self.models_at(base_url, key, timeout, false).await
+    }
+
+    pub(crate) async fn models_at(
+        &self,
+        base_url: &str,
+        key: &Key,
+        timeout: Duration,
+        named: bool,
+    ) -> Result<Vec<Model>, Error> {
+        tokio::time::timeout(timeout, self.discover_models(base_url, key, named))
             .await
             .map_err(|_| Error::Transport)?
     }
 
-    async fn discover_models(&self, base_url: &str, key: &Key) -> Result<Vec<Model>, Error> {
-        // Reuse the transport's endpoint validation, including HTTPS/loopback rules.
-        let mut endpoint = messages_endpoint(base_url)?;
-        endpoint
-            .path_segments_mut()
-            .map_err(|_| Error::Endpoint)?
-            .pop()
-            .push("models");
+    async fn discover_models(&self, base_url: &str, key: &Key, named: bool) -> Result<Vec<Model>, Error> {
+        let endpoint = if named {
+            resource_endpoint(base_url, &["models"])?
+        } else {
+            let mut endpoint = messages_endpoint(base_url)?;
+            endpoint
+                .path_segments_mut()
+                .map_err(|_| Error::Endpoint)?
+                .pop()
+                .push("models");
+            endpoint
+        };
         let mut credential = HeaderValue::from_str(key.expose()).map_err(|_| Error::Setup)?;
         credential.set_sensitive(true);
         let mut models = Vec::new();
@@ -76,6 +90,9 @@ impl Client {
                 bytes.extend_from_slice(&chunk);
             }
             let page: Value = serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
+            if named && crate::redaction::contains_secret(&page, key.expose()) {
+                return Err(Error::Protocol);
+            }
             let data = page["data"].as_array().ok_or(Error::Protocol)?;
             if data.len() > MAX_MODELS.saturating_sub(models.len()) {
                 return Err(Error::TooLarge);

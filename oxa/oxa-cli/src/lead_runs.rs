@@ -72,9 +72,13 @@ mod tests {
         assert!(stalled(&pages, 86_400 + 900).unwrap().is_empty());
         let ids = stalled(&pages, 86_400 + 901).unwrap();
         assert_eq!(ids, [10]);
+        let alarms = crate::lead_page::Alarms {
+            stalled_runs: Some(ids),
+            ..Default::default()
+        };
         let page = crate::lead_page::content(
             &crate::lead_page::View {
-                stalled_runs: &ids,
+                alarms: Some(&alarms),
                 ..Default::default()
             },
             86_400 + 3600,

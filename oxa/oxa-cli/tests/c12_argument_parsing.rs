@@ -457,6 +457,7 @@ fn agent_options_keep_command_words_as_prompts() {
         "update",
         "list",
         "config",
+        "local",
         "identity",
         "report-issue",
         "wipe",
@@ -658,6 +659,15 @@ fn max_time_accepts_fractional_seconds_and_rejects_invalid_durations() {
     for value in ["0", "-1", "NaN", "inf", "1e100", "invalid"] {
         assert_eq!(parse_err(&["--max-time", value]).code, codes::USAGE, "{value}");
     }
+}
+
+#[test]
+fn max_time_allowed_interactive() {
+    // S11: the limits no longer refuse a terminal start; the interactive session takes them.
+    let args = parse(&["--max-time", "5", "--max-tokens", "9"]);
+    assert_eq!(args.max_time, Some(std::time::Duration::from_secs(5)));
+    assert_eq!(args.max_tokens, Some(9));
+    assert!(args.mode.is_none() && !args.print);
 }
 
 #[test]

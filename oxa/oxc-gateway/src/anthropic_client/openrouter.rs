@@ -9,11 +9,11 @@ impl Client {
     pub(crate) async fn stream_openrouter<F>(
         &self,
         chat: Chat<'_>,
+        rules: Option<&crate::model_rules::Rules>,
         key: &Key,
         cancel: &Cancellation,
         on: &mut F,
-        terminal_usage: &mut Option<Usage>,
-        terminal_reported_cost: &mut Option<f64>,
+        (terminal_usage, terminal_reported_cost): (&mut Option<Usage>, &mut Option<f64>),
     ) -> Result<Completed, Error>
     where
         F: FnMut(Event) -> Control + ?Sized,
@@ -21,14 +21,18 @@ impl Client {
         if cancel.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        // Reuse the same HTTPS/loopback-only and no-userinfo/query validation.
-        let mut endpoint = messages_endpoint(chat.base_url)?;
-        let path = format!(
-            "{}/chat/completions",
-            endpoint.path().strip_suffix("/messages").ok_or(Error::Endpoint)?
-        );
-        endpoint.set_path(&path);
-        let body = request(&chat)?;
+        let endpoint = if rules.is_some() {
+            resource_endpoint(chat.base_url, &["chat", "completions"])?
+        } else {
+            let mut endpoint = messages_endpoint(chat.base_url)?;
+            let path = format!(
+                "{}/chat/completions",
+                endpoint.path().strip_suffix("/messages").ok_or(Error::Endpoint)?
+            );
+            endpoint.set_path(&path);
+            endpoint
+        };
+        let body = request(&chat, rules)?;
         let body = serde_json::to_vec(&body).map_err(|_| Error::Protocol)?;
         if body.len() > MAX_BODY {
             return Err(Error::TooLarge);
@@ -90,7 +94,7 @@ impl Client {
                 };
                 if data == b"[DONE]" {
                     let reported_cost = stream.reported_cost;
-                    let (completed, chunks) = stream.finish()?;
+                    let (completed, chunks) = stream.finish(rules.is_some())?;
                     // Trust metering only after a complete protocol, but save it
                     // before a callback can cancel final delivery or opt out.
                     *terminal_usage = completed.usage;
@@ -108,10 +112,13 @@ impl Client {
     }
 }
 
-fn request(chat: &Chat<'_>) -> Result<Value, Error> {
+fn request(chat: &Chat<'_>, rules: Option<&crate::model_rules::Rules>) -> Result<Value, Error> {
     let mut body = json!({"model":chat.upstream_model,"stream":true,
-        "provider":{"zdr":true,"data_collection":"deny"},
         "stream_options":{"include_usage":true}});
+    // Owner routing preferences only; with none configured nothing is added.
+    if let Some(provider) = chat.provider {
+        body["provider"] = provider.clone();
+    }
     // Local-only template/cache knobs and caller provider overrides never cross
     // the boundary. Tools and history retain the standard Chat Completions shape.
     for field in [
@@ -153,6 +160,14 @@ fn request(chat: &Chat<'_>) -> Result<Value, Error> {
         .filter(|v| !v.is_null())
         .map(|v| v.as_str().ok_or(Error::Request("reasoning_effort")))
         .transpose()?;
+    if let Some(rules) = rules {
+        // Generic Chat Completions uses the model's own thinking format, never
+        // OpenRouter's routing or reasoning extensions.
+        rules
+            .resolve(crate::model_rules::Route::Cloud, chat.upstream_model)
+            .apply(body.as_object_mut().expect("request object"), effort);
+        return Ok(body);
+    }
     body["reasoning"] = match effort {
         Some("none" | "minimal") => json!({"enabled":false}),
         Some("xhigh") => json!({"effort":"high"}),
@@ -318,9 +333,14 @@ impl<'a> Stream<'a> {
         }
         Ok(out)
     }
-    fn finish(mut self) -> Result<(Completed, Vec<Value>), Error> {
+    fn finish(mut self, named: bool) -> Result<(Completed, Vec<Value>), Error> {
         let reason = self.reason.ok_or(Error::Protocol)?;
-        let usage = self.usage.ok_or(Error::Protocol)?;
+        let usage = self.usage;
+        // Compatible providers may ignore include_usage. Only [DONE] reaches
+        // this finalizer; tool validation still runs before any call is released.
+        if usage.is_none() && !(named && matches!(reason, "stop" | "tool_calls")) {
+            return Err(Error::Protocol);
+        }
         let mut out = Vec::new();
         let text = self.redactor.finish(Field::Content);
         self.text.push_str(&text);
@@ -376,7 +396,7 @@ impl<'a> Stream<'a> {
             json!({"id":"chatcmpl_openrouter","object":"chat.completion.chunk","created":self.created,
             "model":self.model,"choices":[{"index":0,"delta":{},"finish_reason":reason}]}),
         );
-        if self.include_usage {
+        if let Some(usage) = usage.filter(|_| self.include_usage) {
             let mut normalized = usage.openai();
             normalized["completion_tokens_details"]["reasoning_tokens"] = json!(self.reasoning_tokens);
             if let Some(cost) = self.reported_cost {
@@ -391,7 +411,7 @@ impl<'a> Stream<'a> {
             Completed {
                 assistant,
                 native_blocks: Vec::new(),
-                usage: Some(usage),
+                usage,
                 finish_reason: reason,
             },
             out,

@@ -149,6 +149,8 @@ impl WrapUpReason {
 ///   the session and has not armed `bg_cancel` yet would otherwise miss the cancel).
 #[derive(Debug, Default)]
 pub struct Gate {
+    /// `Some` only while a pursuing goal is waiting between failed requests.
+    pub(crate) backoff_model: Mutex<Option<Option<String>>>,
     /// Set when an in-request retry wait consumed `cancel_retry`, so an outer goal recovery
     /// does not restart the request the owner just stopped.
     pub(crate) retry_stopped: std::sync::atomic::AtomicBool,
@@ -573,6 +575,17 @@ impl Handle {
         Ok(())
     }
 
+    /// Offer an explicit model choice to the currently waiting goal, never a later run.
+    pub fn select_model_during_backoff(&self, model: &str) -> bool {
+        let mut waiting = lock(&self.shared.gate.backoff_model);
+        let Some(choice) = waiting.as_mut() else {
+            return false;
+        };
+        *choice = Some(model.to_owned());
+        self.shared.wait_wake.cancel();
+        true
+    }
+
     /// Queue a steering message (delivered after the current tool batch; when idle the caller
     /// should `prompt` instead).
     /// It also cancels this instance's own background request (ENG-002); a foreground request
@@ -783,6 +796,20 @@ impl Handle {
     /// Set an invocation-wide soft budget before accepting prompts (not restored from a session).
     pub fn set_token_budget(&self, tokens: Option<u64>) {
         *lock(&self.shared.gate.token_budget) = tokens;
+    }
+
+    /// Remove startup-only limits after their watcher has stopped, preserving
+    /// any wrap-up already requested by a process signal.
+    pub fn clear_startup_limits(&self) {
+        self.set_token_budget(None);
+        for reason in [WrapUpReason::TimeLimit, WrapUpReason::TokenLimit] {
+            let _ = self.shared.gate.wrap_up.compare_exchange(
+                reason as u8,
+                0,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+        }
     }
 
     pub(crate) fn remaining_tokens(&self) -> Option<u64> {
@@ -1050,6 +1077,21 @@ mod tests {
         assert_eq!(h.wrap_up_reason(), Some(WrapUpReason::Signal));
         h.interrupt();
         assert!(h.interrupted());
+    }
+
+    #[test]
+    fn clearing_startup_limits_releases_the_token_budget_but_preserves_signal_wrap_up() {
+        let handle = handle(QueueMode::All, QueueMode::All);
+        handle.set_token_budget(Some(10));
+        handle.account_tokens(10);
+        assert_eq!(handle.wrap_up_reason(), Some(WrapUpReason::TokenLimit));
+        handle.clear_startup_limits();
+        assert_eq!(handle.remaining_tokens(), None);
+        assert_eq!(handle.wrap_up_reason(), None);
+
+        handle.request_wrap_up(WrapUpReason::Signal);
+        handle.clear_startup_limits();
+        assert_eq!(handle.wrap_up_reason(), Some(WrapUpReason::Signal));
     }
 
     #[test]

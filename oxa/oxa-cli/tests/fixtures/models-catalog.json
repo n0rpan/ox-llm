@@ -1,0 +1,37 @@
+{
+  "defaultModel": "fixture-cloud",
+  "defaultThinkingLevel": "off",
+  "oxa": {
+    "engine": { "inProcessLocal": true, "inProcessCloud": true },
+    "local": {
+      "binary": "/opt/ox-llm/bin/oxe-server",
+      "models": {
+        "fixture-local": { "model": "/models/fixture-local.gguf" }
+      },
+      "limits": {
+        "fixture-local": {
+          "context_window": 32768,
+          "max_output": 4096,
+          "thinking": true,
+          "images": false,
+          "allocation_budget": {
+            "kv_bytes_per_position": 1,
+            "scratch_bytes": 0,
+            "mtp_state_bytes": 0,
+            "margin_bytes": 1044480
+          }
+        }
+      }
+    },
+    "cloud": {
+      "models": {
+        "fixture-cloud": {
+          "provider": "anthropic",
+          "upstream_model": "fixture-upstream",
+          "context_window": 200000,
+          "max_output": 8192
+        }
+      }
+    }
+  }
+}

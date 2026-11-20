@@ -1,7 +1,8 @@
 # Changelog
 
 Release notes per version. Each public release is one squashed commit; its message carries the notes
-and the receipt ids (`oxc/benchmarks/results/public/<id>.json`).
+and the receipt ids (`oxc/benchmarks/results/public/<id>.json`). New changes go in
+[changelog fragments](changelog.d/README.md), which are included in the published notes.
 
 ## v0.2.0 (unreleased)
 
@@ -9,6 +10,10 @@ Combined release under one name, **ox-llm**: the engine oxe (`engine/`), the con
 oxc (`oxc/`; the controller and CLI, formerly oxc) and the coding agent oxa (`oxa/`) ship together with one tag. Previous releases came
 from two repositories.
 
+- **oxa: user-only settings hold.** Keys marked user-only (`oxa.sandbox.net`, `oxa.offline`,
+  `oxa.allowHomeCwd`, `defaultProjectTrust` and the rest) are dropped from a project settings file with a
+  warning, and `Settings::set` for the project file refuses them. A trusted project can no longer
+  widen the sandbox or network (yolo power plan, S8).
 - **oxa is the coding client.** `oxc code` and the widget's code button start oxa (a Rust port of
   the pi coding agent, tuned for the engine). The OpenCode launcher, the OpenCode config that the
   bootstrap and installer generated and the OpenCode wording in the widget are removed. Your own

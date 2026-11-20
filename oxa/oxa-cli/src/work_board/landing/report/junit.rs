@@ -121,6 +121,7 @@ fn parse(xml: &[u8]) -> Result<Vec<String>, String> {
                     failed.insert(test.qualified_name);
                 }
             }
+            Event::End(_) => {}
             Event::DocType(_) => return Err("JUnit document type declarations are unsupported".into()),
             Event::Text(text)
                 if stack.is_empty() && !text.as_ref().bytes().all(|byte| byte.is_ascii_whitespace()) =>

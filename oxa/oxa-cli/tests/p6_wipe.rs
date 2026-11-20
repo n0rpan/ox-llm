@@ -320,6 +320,50 @@ fn all_with_yes_removes_every_session_and_spill_and_keeps_settings() {
     assert!(r.out.contains("removed spill directory"), "{}", r.out);
 }
 
+/// An approval record holds the command, its working directory and the session id. A wipe
+/// removes the records of that session (and of every session for `--all`), never another's.
+#[test]
+fn session_and_all_remove_approval_records() {
+    let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let env = fixture();
+    let desk = oxa_perm::ApprovalDesk::open(&env.agent_dir()).expect("approval desk");
+    let hit = |rule: &str| oxa_perm::DangerHit {
+        rule: rule.into(),
+        reason: "force".into(),
+        segment: "git push --force origin main".into(),
+    };
+    let cwd = env.work();
+    let a = desk
+        .record(
+            A,
+            &cwd,
+            "git push --force origin main",
+            &[hit("git-push-force")],
+            "pending",
+        )
+        .expect("record for A");
+    let b = desk
+        .record(B, &cwd, "rm -rf /", &[hit("rm-rf-root")], "denied")
+        .expect("record for B");
+    let r = wipe(&env, &[], false, "", &["--session", A]);
+    assert_eq!(r.code, 0, "stderr: {}", r.err);
+    assert!(r.out.contains("removed 1 approval record(s)"), "{}", r.out);
+    let left = desk.records().expect("records");
+    assert!(!left.iter().any(|r| r.id == a), "A's record survived");
+    assert!(left.iter().any(|r| r.id == b), "B's record was removed");
+    // A fresh open reads the same directory.
+    let desk = oxa_perm::ApprovalDesk::open(&env.agent_dir()).expect("approval desk");
+    assert_eq!(desk.records().expect("records").len(), 1);
+    let r = wipe(&env, &[], false, "", &["--all", "--yes"]);
+    assert_eq!(r.code, 0, "stderr: {}", r.err);
+    assert!(r.out.contains("removed 1 approval record(s)"), "{}", r.out);
+    let desk = oxa_perm::ApprovalDesk::open(&env.agent_dir()).expect("approval desk");
+    assert!(
+        desk.records().expect("records").is_empty(),
+        "a record survived --all"
+    );
+}
+
 #[test]
 fn all_in_a_terminal_removes_after_the_word_yes() {
     let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());

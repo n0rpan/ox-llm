@@ -16,6 +16,19 @@ use std::path::{Path, PathBuf};
 /// Fixed base environment inside the sandbox (the `PATH` is the layout's, B2).
 const BASE_LANG: &str = "C.UTF-8";
 const BASE_TERM: &str = "dumb";
+
+/// Cleared command environment shared by the sandbox and its attended host wrapper.
+pub(crate) fn base_env(home: &str, layout: &Layout) -> Vec<(String, String)> {
+    let mut env = vec![
+        ("PATH".into(), layout.path_value()),
+        ("HOME".into(), home.into()),
+        ("LANG".into(), BASE_LANG.into()),
+        ("TERM".into(), BASE_TERM.into()),
+        ("AI_AGENT".into(), oxa_proto::names::AI_AGENT.into()),
+    ];
+    env.extend(layout.env.iter().cloned());
+    env
+}
 /// Seconds the probe may take before it counts as a failure.
 const PROBE_TIMEOUT_S: u32 = 10;
 
@@ -23,23 +36,6 @@ const MISSING_HINT: &str =
     "install bubblewrap (the `bubblewrap` package) and make sure unprivileged user namespaces are enabled";
 const UNUSABLE_HINT: &str = "check that unprivileged user namespaces are allowed: `sysctl kernel.unprivileged_userns_clone` must be 1, \
 and on Ubuntu-based systems `sysctl kernel.apparmor_restrict_unprivileged_userns` must be 0; the `bubblewrap` package must be installed";
-
-/// The whole environment a command sees: nothing is inherited (bwrap `--clearenv`, or
-/// `env_clear` off Linux, [`crate::Unsandboxed`]), so credential variables of the process never
-/// reach the model's bash. The fixed base, the layout's passed-through variables, then the
-/// spec's own, in that order (a later one wins).
-pub(crate) fn base_env(s: &ExecSpec, home: &str, layout: &Layout) -> Vec<(String, String)> {
-    let mut e = vec![
-        ("PATH".to_string(), layout.path_value()),
-        ("HOME".to_string(), home.to_string()),
-        ("LANG".to_string(), BASE_LANG.to_string()),
-        ("TERM".to_string(), BASE_TERM.to_string()),
-        ("AI_AGENT".to_string(), oxa_proto::names::AI_AGENT.to_string()),
-    ];
-    e.extend(layout.env.iter().cloned());
-    e.extend(s.env.iter().cloned());
-    e
-}
 
 /// The exact bwrap argv (without `bwrap` itself) for `s` with the minimal layout (base `PATH`,
 /// no toolchain binds, the deny-list of `home`): [`bwrap_args_with`].
@@ -96,13 +92,23 @@ pub(crate) fn bwrap_args_pinned(
     let cwd_c = canon(&s.cwd);
     let cwd_path = cwd_c.as_path();
     let cwd = cwd_c.to_string_lossy().into_owned();
+    // The broker lives below the private agent directory, which the home tmpfs below hides.
+    // Pin that exact socket at a fixed, read-only mount point (`/run`, below). A command can
+    // replace its environment, but it cannot replace this mount or make the client trust
+    // another listener.
+    let owner_confirm = s
+        .env
+        .iter()
+        .rev()
+        .find(|(key, _)| key == crate::OWNER_CONFIRM_SOCK_ENV)
+        .map(|(_, value)| value);
     let mut a: Vec<String> = Vec::new();
     push(&mut a, &["--unshare-all"]);
-    if s.env.iter().any(|(key, _)| key == "OXA_CONFIRM_SOCK") {
-        // Keep a tool from manufacturing another user/PID/mount namespace in which its own
-        // confirmation listener appears to be a host-side peer or covers the broker socket.
-        // `--disable-userns` needs an explicit `--unshare-user`. The launcher only keeps the
-        // broker for a bwrap that supports this ([`denies_nested_userns`]).
+    if owner_confirm.is_some() {
+        // `--cap-drop ALL` does not survive `unshare -Urm`: in a nested user namespace a
+        // command regains mount rights and could stack a fake listener over the trusted mount
+        // point. With the broker mounted, nested user namespaces are denied. The launcher only
+        // keeps the broker for a bwrap that supports this ([`denies_nested_userns`]).
         push(&mut a, &["--unshare-user", "--disable-userns"]);
     }
     if s.net {
@@ -357,35 +363,7 @@ pub(crate) fn bwrap_args_pinned(
         }
     }
     if layout.mask_runtime_ipc {
-        for p in runtime_ipc_paths(&home_c) {
-            let Ok(meta) = std::fs::symlink_metadata(&p) else {
-                continue;
-            };
-            if sockets.iter().any(|(sock, _)| *sock == p) {
-                continue;
-            }
-            let ps = p.to_string_lossy();
-            if meta.is_dir() {
-                push(&mut a, &["--tmpfs", &ps]);
-                for &(sock, fd) in sockets.iter().filter(|(sock, _)| sock.starts_with(&p)) {
-                    push(&mut a, &["--bind-fd", &fd.to_string(), &sock.to_string_lossy()]);
-                    rebound.push(sock);
-                }
-                if s.net && p == Path::new("/run/systemd/resolve") {
-                    // Preserve only DNS configuration online; all resolver IPC stays hidden.
-                    for name in ["resolv.conf", "stub-resolv.conf"] {
-                        let file = p.join(name);
-                        if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
-                            let file = file.to_string_lossy();
-                            push(&mut a, &["--ro-bind", &file, &file]);
-                        }
-                    }
-                }
-                push(&mut a, &["--remount-ro", &ps]);
-            } else {
-                push(&mut a, &["--ro-bind", "/dev/null", &ps]);
-            }
-        }
+        mask_runtime_ipc(&mut a, runtime_ipc_paths(&home_c), s.net, sockets, &mut rebound);
     }
     for &(sock, fd) in sockets.iter().filter(|(sock, _)| !rebound.contains(sock)) {
         push(&mut a, &["--bind-fd", &fd.to_string(), &sock.to_string_lossy()]);
@@ -479,8 +457,30 @@ pub(crate) fn bwrap_args_pinned(
             push(&mut a, &["--remount-ro", &h.to_string_lossy()]);
         }
     }
+    // Give the socket a sandbox-owned parent before pinning it where the client looks for it.
+    // In particular, do not bind over a pathname in the host's writable `/tmp`: bwrap follows a
+    // destination symlink, after which the child could unlink that symlink and install a fake
+    // listener at the trusted name. This late `/run` tmpfs also covers all host runtime IPC after
+    // every cwd/layout bind. Restore only the resolver configuration needed by online commands.
+    // The socket bind remains the last filesystem operation, so no later mount can cover it.
+    if let Some(sock) = owner_confirm {
+        push(&mut a, &["--tmpfs", "/run"]);
+        if s.net {
+            for name in ["resolv.conf", "stub-resolv.conf"] {
+                let file = Path::new("/run/systemd/resolve").join(name);
+                if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
+                    let file = file.to_string_lossy();
+                    push(&mut a, &["--ro-bind", &file, &file]);
+                }
+            }
+        }
+        push(&mut a, &["--ro-bind", sock, crate::OWNER_CONFIRM_SOCK]);
+    }
     push(&mut a, &["--chdir", &cwd, "--clearenv"]);
-    for (k, v) in base_env(s, &home_s, layout) {
+    for (k, mut v) in base_env(&home_s, layout).into_iter().chain(s.env.iter().cloned()) {
+        if k == crate::OWNER_CONFIRM_SOCK_ENV {
+            v = crate::OWNER_CONFIRM_SOCK.to_string();
+        }
         push(&mut a, &["--setenv", &k, &v]);
     }
     push(&mut a, &["--", "bash", "-c", &s.command]);
@@ -508,6 +508,41 @@ fn confirm_socket(s: &ExecSpec) -> Option<&Path> {
 
 #[cfg(test)]
 mod confirm_socket_tests {
+    #[test]
+    fn broker_mount_denies_nested_user_namespaces() {
+        let mut spec = ExecSpec {
+            command: "true".into(),
+            cwd: std::env::temp_dir(),
+            env: vec![(
+                crate::OWNER_CONFIRM_SOCK_ENV.to_string(),
+                "/nonexistent/confirm.sock".into(),
+            )],
+            writable: true,
+            net: false,
+            timeout_s: None,
+        };
+        let home = Path::new("/nonexistent-home");
+        let argv = bwrap_args(&spec, home);
+        let deny = argv
+            .windows(2)
+            .position(|w| w == ["--unshare-user", "--disable-userns"])
+            .expect("nested user namespaces are denied with the broker mounted");
+        let mount = argv
+            .iter()
+            .position(|x| x == crate::OWNER_CONFIRM_SOCK)
+            .expect("broker mounted");
+        assert!(deny < mount);
+        // Without a broker nothing changes: nested namespaces stay available to commands.
+        let mut plain = spec.clone();
+        keep_broker_only_if(&mut plain, false);
+        assert!(plain.env.is_empty(), "no denial support, no broker");
+        let argv = bwrap_args(&plain, home);
+        assert!(!argv.iter().any(|x| x == "--disable-userns"));
+        assert!(!argv.iter().any(|x| x == crate::OWNER_CONFIRM_SOCK));
+        keep_broker_only_if(&mut spec, true);
+        assert_eq!(spec.env.len(), 1, "with denial support the broker stays");
+    }
+
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
@@ -530,15 +565,6 @@ mod confirm_socket_tests {
             env: vec![("OXA_CONFIRM_SOCK".into(), socket.to_string_lossy().into_owned())],
         };
         let args = bwrap_args(&spec, &env.home());
-        assert!(args
-            .windows(2)
-            .any(|w| w == ["--unshare-user", "--disable-userns"]));
-        let mut plain = spec.clone();
-        keep_broker_only_if(&mut plain, false);
-        assert!(plain.env.is_empty(), "no denial support, no broker");
-        let plain_args = bwrap_args(&plain, &env.home());
-        assert!(!plain_args.iter().any(|x| x == "--disable-userns"));
-        assert!(!plain_args.iter().any(|x| x == &*socket.to_string_lossy()));
         let socket = socket.to_string_lossy();
         assert!(args.windows(3).any(|w| w == ["--ro-bind", &*socket, &*socket]));
         let parent = private.to_string_lossy();
@@ -892,10 +918,51 @@ reaches what a command could change, so commands are not run here"
     })
 }
 
+/// Keep IPC masks identical in both Bubblewrap launch paths. RP6: a listed socket
+/// (`sockets`, with its pinned descriptor) is not masked; inside a masked directory it is bound
+/// back before the directory turns read-only and recorded in `rebound`.
+pub(crate) fn mask_runtime_ipc<'s>(
+    a: &mut Vec<String>,
+    paths: impl IntoIterator<Item = PathBuf>,
+    net: bool,
+    sockets: &[(&'s Path, i32)],
+    rebound: &mut Vec<&'s Path>,
+) {
+    for p in paths {
+        let Ok(meta) = std::fs::symlink_metadata(&p) else {
+            continue;
+        };
+        if sockets.iter().any(|(sock, _)| *sock == p) {
+            continue;
+        }
+        let ps = p.to_string_lossy();
+        if meta.is_dir() {
+            push(a, &["--tmpfs", &ps]);
+            for &(sock, fd) in sockets.iter().filter(|(sock, _)| sock.starts_with(&p)) {
+                push(a, &["--bind-fd", &fd.to_string(), &sock.to_string_lossy()]);
+                rebound.push(sock);
+            }
+            if net && p == Path::new("/run/systemd/resolve") {
+                // Preserve only DNS configuration online; all resolver IPC stays hidden.
+                for name in ["resolv.conf", "stub-resolv.conf"] {
+                    let file = p.join(name);
+                    if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
+                        let file = file.to_string_lossy();
+                        push(a, &["--ro-bind", &file, &file]);
+                    }
+                }
+            }
+            push(a, &["--remount-ro", &ps]);
+        } else {
+            push(a, &["--ro-bind", "/dev/null", &ps]);
+        }
+    }
+}
+
 /// sbx-ipc: the host runtime sockets a command must not reach. They live outside `$HOME`,
 /// so the deny-list does not cover them and `--unshare-net` does not either (a Unix socket is
 /// not a network socket).
-fn runtime_ipc_paths(home: &Path) -> Vec<PathBuf> {
+pub(crate) fn runtime_ipc_paths(home: &Path) -> Vec<PathBuf> {
     let uid = std::fs::metadata(home)
         .map(|m| m.uid())
         .unwrap_or_else(|_| unsafe { libc::geteuid() });
@@ -1351,12 +1418,12 @@ pub(crate) fn denies_nested_userns(bwrap: &Path) -> bool {
 }
 
 /// Keep the owner confirm broker in `s` only when `denied` (nested user namespaces are denied
-/// in the sandbox). Without that denial a command could forge a host-side peer or cover the
-/// socket and fake the owner's yes, so the command gets no broker: its confirmation is then
-/// "none" and nothing is published (fail closed).
+/// in the sandbox). Without that denial a command could mount a fake listener over the trusted
+/// socket path and forge the owner's yes, so the command gets no broker: its confirmation is
+/// then "none" and nothing is published (fail closed).
 pub(crate) fn keep_broker_only_if(s: &mut ExecSpec, denied: bool) {
     if !denied {
-        s.env.retain(|(key, _)| key != "OXA_CONFIRM_SOCK");
+        s.env.retain(|(key, _)| key != crate::OWNER_CONFIRM_SOCK_ENV);
     }
 }
 
@@ -1400,6 +1467,101 @@ fn probe(bwrap: &Path) -> Result<(), OxaError> {
 mod tests {
     use super::*;
     use oxa_fake::TestEnv;
+
+    #[test]
+    fn owner_confirm_socket_is_pinned_and_environment_uses_mount() {
+        let env = TestEnv::new();
+        let mut sp = spec(&env.work(), false);
+        let host_sock = env.home().join(".oxa/agent/tmp/confirm/socket");
+        sp.env.push((
+            crate::OWNER_CONFIRM_SOCK_ENV.to_string(),
+            host_sock.to_string_lossy().into_owned(),
+        ));
+
+        let argv = bwrap_args_homes(&sp, &env.home(), &Layout::default(), None);
+        let host_sock_s = host_sock.to_string_lossy().into_owned();
+        let mount = ["--ro-bind", host_sock_s.as_str(), crate::OWNER_CONFIRM_SOCK];
+        assert!(argv.windows(3).any(|window| window == mount));
+        assert!(argv.windows(3).any(|window| {
+            window
+                == [
+                    "--setenv",
+                    crate::OWNER_CONFIRM_SOCK_ENV,
+                    crate::OWNER_CONFIRM_SOCK,
+                ]
+        }));
+        assert!(!argv.windows(3).any(|window| {
+            window[0] == "--setenv"
+                && window[1] == crate::OWNER_CONFIRM_SOCK_ENV
+                && window[2] == host_sock.to_string_lossy()
+        }));
+        let mount_at = argv.windows(3).position(|window| window == mount).unwrap();
+        assert!(argv[..mount_at]
+            .windows(2)
+            .any(|window| window == ["--tmpfs", "/run"]));
+        assert!(!crate::OWNER_CONFIRM_SOCK.starts_with("/tmp/"));
+    }
+
+    /// A host-writable socket pathname can already be a symlink when bwrap starts. The trusted
+    /// destination must instead be created below a fresh sandbox-owned filesystem.
+    #[test]
+    fn owner_confirm_mount_does_not_use_a_symlinked_tmp_destination() {
+        let env = TestEnv::new();
+        let host_sock = env.home().join(".oxa/agent/tmp/confirm/socket");
+        let mut sp = spec(Path::new("/tmp"), false);
+        sp.env.push((
+            crate::OWNER_CONFIRM_SOCK_ENV.to_string(),
+            host_sock.to_string_lossy().into_owned(),
+        ));
+
+        let argv = bwrap_args_homes(&sp, &env.home(), &Layout::default(), None);
+        let host_sock = host_sock.to_string_lossy();
+        let mount = ["--ro-bind", host_sock.as_ref(), crate::OWNER_CONFIRM_SOCK];
+        let mount_at = argv.windows(3).position(|window| window == mount).unwrap();
+        let run_tmpfs_at = argv[..mount_at]
+            .windows(2)
+            .rposition(|window| window == ["--tmpfs", "/run"])
+            .expect("the broker parent is a private tmpfs");
+        assert!(run_tmpfs_at < mount_at);
+        assert_eq!(crate::OWNER_CONFIRM_SOCK, "/run/oxa-owner-confirm.sock");
+    }
+
+    /// A cwd of `/tmp` or `/` binds the host tree over the earlier mounts, so the confirmation
+    /// socket must be mounted after every filesystem operation (bwrap applies them in order).
+    /// Otherwise a command could create its own listener at the trusted path.
+    #[test]
+    fn owner_confirm_socket_mount_is_last_for_a_cwd_that_covers_tmp() {
+        let env = TestEnv::new();
+        let host_sock = env.home().join(".oxa/agent/tmp/confirm/socket");
+        let host_sock_s = host_sock.to_string_lossy().into_owned();
+        for cwd in ["/tmp", "/", "/tmp/deep"] {
+            let mut sp = spec(Path::new(cwd), false);
+            sp.env
+                .push((crate::OWNER_CONFIRM_SOCK_ENV.to_string(), host_sock_s.clone()));
+            let argv = bwrap_args_homes(&sp, &env.home(), &Layout::default(), None);
+            let mount = ["--ro-bind", host_sock_s.as_str(), crate::OWNER_CONFIRM_SOCK];
+            let at = argv
+                .windows(3)
+                .position(|w| w == mount)
+                .unwrap_or_else(|| panic!("socket not mounted for cwd {cwd}"));
+            // Every mount after it must leave `/tmp` and `/` alone, and nothing may be mounted
+            // below the socket's own path.
+            let dest = |i: usize| -> Option<&str> {
+                match argv[i].as_str() {
+                    "--bind" | "--ro-bind" => argv.get(i + 2).map(String::as_str),
+                    "--tmpfs" | "--dev" | "--proc" => argv.get(i + 1).map(String::as_str),
+                    _ => None,
+                }
+            };
+            for i in at + 3..argv.len() {
+                let Some(dest) = dest(i) else { continue };
+                assert!(
+                    dest != "/" && dest != "/tmp" && !dest.starts_with("/tmp/"),
+                    "cwd {cwd}: {dest} is mounted after the confirmation socket"
+                );
+            }
+        }
+    }
 
     /// #528: a refused check and the argv of a home workspace list `$HOME` once, not once per
     /// branch.
@@ -1841,6 +2003,32 @@ mod tests {
             (still_pinned.dev(), still_pinned.ino()),
             (original.dev(), original.ino())
         );
+    }
+
+    #[test]
+    fn runtime_ipc_masks_hide_synthetic_socket_and_directory() {
+        let env = TestEnv::new();
+        let socket = env.work().join("fixture.sock");
+        let _socket = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let runtime_dir = env.work().join("runtime");
+        std::fs::create_dir(&runtime_dir).unwrap();
+        let mut masked = Vec::new();
+        mask_runtime_ipc(
+            &mut masked,
+            [socket.clone(), runtime_dir.clone()],
+            false,
+            &[],
+            &mut Vec::new(),
+        );
+        let socket = socket.to_string_lossy();
+        let runtime_dir = runtime_dir.to_string_lossy();
+        assert!(masked
+            .windows(3)
+            .any(|args| args == ["--ro-bind", "/dev/null", &socket]));
+        assert!(masked.windows(2).any(|args| args == ["--tmpfs", &runtime_dir]));
+        assert!(masked
+            .windows(2)
+            .any(|args| args == ["--remount-ro", &runtime_dir]));
     }
 
     #[test]

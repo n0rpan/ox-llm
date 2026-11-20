@@ -162,6 +162,7 @@ pub(crate) fn converse(
     text: &str,
     board: Option<&Board>,
     situation: Option<&Snapshot>,
+    workers: bool,
 ) -> Result<ConversationReply, OxaError> {
     if !text_ok(text, MAX_MESSAGE_BYTES) {
         return Err(OxaError::new(
@@ -171,7 +172,7 @@ pub(crate) fn converse(
     }
     let evidence = EvidencePacket::new(text, board, situation);
     let context = format!("{REPLY_FORMAT}\nObservations: {}", evidence.context());
-    let (answer, source) = with_lead_owner(binding, env, |session| {
+    let (answer, source) = with_lead_owner(binding, env, workers, |session| {
         let mut reply = FinalReply::default();
         let end = session.prompt_literal_bounded(
             text.to_owned(),

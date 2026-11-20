@@ -258,22 +258,23 @@ fn pi_dirs_never_read() {
     // the pi models.json is not read: the default endpoint is used
     let (cfg, diags) = ModelsConfig::load(&d, &Env::from_pairs(&[]));
     assert!(diags.is_empty());
-    assert_eq!(cfg.endpoints[0].base_url, "http://127.0.0.1:8092");
+    assert_eq!(cfg.endpoints[0].base_url, "http://127.0.0.1:8080");
 }
 
-/// OXA_ENGINE_URL or 127.0.0.1:8092 (the controller)
+/// OXA_ENGINE_URL or 127.0.0.1:8080 (the oxe-server default); unconfigured until something names a model source
 #[test]
 fn default_endpoint() {
     let t = TestEnv::new();
     let dirs = Dirs::under(t.root());
     let (cfg, diags) = ModelsConfig::load(&dirs, &Env::from_pairs(&[]));
     assert!(diags.is_empty());
+    assert!(cfg.unconfigured);
     assert_eq!(cfg.default, "oxe");
     assert_eq!(
         cfg.endpoints,
         vec![Endpoint {
             name: "oxe".into(),
-            base_url: "http://127.0.0.1:8092".into(),
+            base_url: "http://127.0.0.1:8080".into(),
             api_key: None
         }]
     );
@@ -282,6 +283,7 @@ fn default_endpoint() {
         &Env::from_pairs(&[("OXA_ENGINE_URL", "http://192.168.1.20:8080/")]),
     );
     assert_eq!(cfg.endpoints[0].base_url, "http://192.168.1.20:8080");
+    assert!(!cfg.unconfigured);
 }
 
 #[test]
@@ -423,7 +425,7 @@ fn env_empty_values_count_as_unset() {
     assert_eq!(env.get("OXA_ENGINE_URL"), None);
     let t = TestEnv::new();
     let (cfg, _) = ModelsConfig::load(&Dirs::under(t.root()), &env);
-    assert_eq!(cfg.endpoints[0].base_url, "http://127.0.0.1:8092");
+    assert_eq!(cfg.endpoints[0].base_url, "http://127.0.0.1:8080");
 }
 
 /// issue #50: engine model ids that contain a slash are not `provider/id`.

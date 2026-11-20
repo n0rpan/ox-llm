@@ -193,7 +193,46 @@ impl Header {
     pub fn architecture(&self) -> Option<&str> {
         self.get("general.architecture").and_then(|v| v.as_str())
     }
+    /// A tied output head as its own entry: for an architecture of [`TIED_HEAD_ARCHES`] without
+    /// `output.weight`, append `output.weight` with the shape, type and data range of
+    /// `token_embd.weight` (llama.cpp loads the embedding as the head then). A loader that keys
+    /// tensors by name then repacks the head like any other matrix, while the embedding keeps
+    /// its own row layout. Returns whether the alias was added, or an error when the embedding is
+    /// not a two-dimensional `[embedding_length, vocabulary]` matrix.
+    pub fn tie_output_head(&mut self) -> Result<bool> {
+        let Some(arch) = self.architecture().filter(|a| TIED_HEAD_ARCHES.contains(a)) else {
+            return Ok(false);
+        };
+        if self.tensor(OUTPUT_HEAD).is_some() {
+            return Ok(false);
+        }
+        let Some(embd) = self.tensor("token_embd.weight") else {
+            return Ok(false);
+        };
+        let embedding_length = self
+            .get(&format!("{arch}.embedding_length"))
+            .and_then(Value::as_u64)
+            .ok_or_else(|| Error(format!("missing {arch}.embedding_length")))?;
+        if embd.shape.len() != 2 || embd.shape[0] != embedding_length {
+            return err(format!(
+                "token_embd.weight: tied embedding shape {:?}, expected [{embedding_length}, vocabulary]",
+                embd.shape
+            ));
+        }
+        let head = TensorInfo {
+            name: OUTPUT_HEAD.to_string(),
+            ..embd.clone()
+        };
+        self.tensors.push(head);
+        Ok(true)
+    }
 }
+
+/// Name of the output head tensor.
+pub const OUTPUT_HEAD: &str = "output.weight";
+/// Architectures whose files may omit `output.weight` and reuse `token_embd.weight` as the head
+/// (the dense Qwen3.5 small models). See [`Header::tie_output_head`].
+pub const TIED_HEAD_ARCHES: [&str; 1] = ["qwen35"];
 
 struct Cursor<'a> {
     buf: &'a [u8],
@@ -359,6 +398,7 @@ pub fn parse_header(buf: &[u8]) -> Result<Header> {
         return err(format!("general.alignment {align} is not a power of two"));
     }
     h.data_offset = (c.pos as u64).div_ceil(align) * align;
+    h.tie_output_head()?;
     Ok(h)
 }
 

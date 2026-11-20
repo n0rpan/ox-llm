@@ -70,7 +70,7 @@ fn until(mut f: impl FnMut() -> bool) {
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "managed-steering"))]
+#[cfg(target_os = "linux")]
 #[test]
 fn managed_native_worker_authenticates_its_handoff_and_uses_the_owner_goal() {
     for case in [
@@ -80,12 +80,13 @@ fn managed_native_worker_authenticates_its_handoff_and_uses_the_owner_goal() {
         ManagedCase::MissingHost,
         ManagedCase::DifferentHost,
         ManagedCase::Unhosted,
+        ManagedCase::AgentChannelOff,
     ] {
         managed_native_worker(case);
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "managed-steering"))]
+#[cfg(target_os = "linux")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ManagedCase {
     Accepted,
@@ -94,9 +95,10 @@ enum ManagedCase {
     MissingHost,
     DifferentHost,
     Unhosted,
+    AgentChannelOff,
 }
 
-#[cfg(all(target_os = "linux", feature = "managed-steering"))]
+#[cfg(target_os = "linux")]
 fn managed_native_worker(case: ManagedCase) {
     use oxa_session::{send_inbox_control, FsStore, Goal, SessionStore};
     use oxa_work::board::{
@@ -182,6 +184,12 @@ fn managed_native_worker(case: ManagedCase) {
     } else {
         &binding.native_task_id
     };
+    if case == ManagedCase::AgentChannelOff {
+        env.write(
+            "home/.oxa/agent/settings.json",
+            r#"{"oxa":{"a2a":{"enabled":false}}}"#,
+        );
+    }
     let config = controls.join("config.json");
     let mut settings = json!({"enabled":true,"nativeExecution":true,"worker":worker,
         "queue":queue,"claims":claims_path,"pause":controls.join("pause"),
@@ -251,6 +259,12 @@ fn managed_native_worker(case: ManagedCase) {
             "refused case reached the model: {out:?}"
         );
         assert!(!out.status.success(), "{out:?}");
+        if case == ManagedCase::AgentChannelOff {
+            assert!(
+                String::from_utf8_lossy(&out.stderr).contains("oxa.a2a.enabled"),
+                "{out:?}"
+            );
+        }
         if matches!(
             case,
             ManagedCase::MissingHost | ManagedCase::DifferentHost | ManagedCase::Unhosted
@@ -744,9 +758,13 @@ fn a_monitor_error_drains_admitted_workers_before_returning() {
         host_path: "/usr/bin:/bin".into(),
         terminate_binary: None,
         offline: true,
+        gh_binary: None,
+        push_approved: false,
+        content_scan: None,
         runner_owns_github: false,
         autonomy: Default::default(),
-        autonomy_now: None,
+        worker_github: Default::default(),
+        authority_now: None,
         storage: env.agent_dir().join("work/monitor-fixture"),
     };
     let result = oxa_work::run_queue(
