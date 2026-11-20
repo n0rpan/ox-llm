@@ -36,6 +36,7 @@ pub use offline::{no_network_argv, offline_argv};
 pub use run::PinnedCwd;
 pub use run::{
     die_with_parent, run_argv, run_argv_capture, run_argv_stdin, run_unsandboxed, run_unsandboxed_capture,
+    run_unsandboxed_stdin,
 };
 pub use scratch::{scratch_root, user_cache_home, Scratch};
 pub use unsandboxed::Unsandboxed;

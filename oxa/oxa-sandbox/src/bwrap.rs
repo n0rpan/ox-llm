@@ -16,6 +16,19 @@ use std::path::{Path, PathBuf};
 /// Fixed base environment inside the sandbox (the `PATH` is the layout's, B2).
 const BASE_LANG: &str = "C.UTF-8";
 const BASE_TERM: &str = "dumb";
+
+/// Cleared command environment shared by the sandbox and its attended host wrapper.
+pub(crate) fn base_env(home: &str, layout: &Layout) -> Vec<(String, String)> {
+    let mut env = vec![
+        ("PATH".into(), layout.path_value()),
+        ("HOME".into(), home.into()),
+        ("LANG".into(), BASE_LANG.into()),
+        ("TERM".into(), BASE_TERM.into()),
+        ("AI_AGENT".into(), oxa_proto::names::AI_AGENT.into()),
+    ];
+    env.extend(layout.env.iter().cloned());
+    env
+}
 /// Seconds the probe may take before it counts as a failure.
 const PROBE_TIMEOUT_S: u32 = 10;
 
@@ -23,23 +36,6 @@ const MISSING_HINT: &str =
     "install bubblewrap (the `bubblewrap` package) and make sure unprivileged user namespaces are enabled";
 const UNUSABLE_HINT: &str = "check that unprivileged user namespaces are allowed: `sysctl kernel.unprivileged_userns_clone` must be 1, \
 and on Ubuntu-based systems `sysctl kernel.apparmor_restrict_unprivileged_userns` must be 0; the `bubblewrap` package must be installed";
-
-/// The whole environment a command sees: nothing is inherited (bwrap `--clearenv`, or
-/// `env_clear` off Linux, [`crate::Unsandboxed`]), so credential variables of the process never
-/// reach the model's bash. The fixed base, the layout's passed-through variables, then the
-/// spec's own, in that order (a later one wins).
-pub(crate) fn base_env(s: &ExecSpec, home: &str, layout: &Layout) -> Vec<(String, String)> {
-    let mut e = vec![
-        ("PATH".to_string(), layout.path_value()),
-        ("HOME".to_string(), home.to_string()),
-        ("LANG".to_string(), BASE_LANG.to_string()),
-        ("TERM".to_string(), BASE_TERM.to_string()),
-        ("AI_AGENT".to_string(), oxa_proto::names::AI_AGENT.to_string()),
-    ];
-    e.extend(layout.env.iter().cloned());
-    e.extend(s.env.iter().cloned());
-    e
-}
 
 /// The exact bwrap argv (without `bwrap` itself) for `s` with the minimal layout (base `PATH`,
 /// no toolchain binds, the deny-list of `home`): [`bwrap_args_with`].
@@ -367,35 +363,7 @@ pub(crate) fn bwrap_args_pinned(
         }
     }
     if layout.mask_runtime_ipc {
-        for p in runtime_ipc_paths(&home_c) {
-            let Ok(meta) = std::fs::symlink_metadata(&p) else {
-                continue;
-            };
-            if sockets.iter().any(|(sock, _)| *sock == p) {
-                continue;
-            }
-            let ps = p.to_string_lossy();
-            if meta.is_dir() {
-                push(&mut a, &["--tmpfs", &ps]);
-                for &(sock, fd) in sockets.iter().filter(|(sock, _)| sock.starts_with(&p)) {
-                    push(&mut a, &["--bind-fd", &fd.to_string(), &sock.to_string_lossy()]);
-                    rebound.push(sock);
-                }
-                if s.net && p == Path::new("/run/systemd/resolve") {
-                    // Preserve only DNS configuration online; all resolver IPC stays hidden.
-                    for name in ["resolv.conf", "stub-resolv.conf"] {
-                        let file = p.join(name);
-                        if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
-                            let file = file.to_string_lossy();
-                            push(&mut a, &["--ro-bind", &file, &file]);
-                        }
-                    }
-                }
-                push(&mut a, &["--remount-ro", &ps]);
-            } else {
-                push(&mut a, &["--ro-bind", "/dev/null", &ps]);
-            }
-        }
+        mask_runtime_ipc(&mut a, runtime_ipc_paths(&home_c), s.net, sockets, &mut rebound);
     }
     for &(sock, fd) in sockets.iter().filter(|(sock, _)| !rebound.contains(sock)) {
         push(&mut a, &["--bind-fd", &fd.to_string(), &sock.to_string_lossy()]);
@@ -509,7 +477,7 @@ pub(crate) fn bwrap_args_pinned(
         push(&mut a, &["--ro-bind", sock, crate::OWNER_CONFIRM_SOCK]);
     }
     push(&mut a, &["--chdir", &cwd, "--clearenv"]);
-    for (k, mut v) in base_env(s, &home_s, layout) {
+    for (k, mut v) in base_env(&home_s, layout).into_iter().chain(s.env.iter().cloned()) {
         if k == crate::OWNER_CONFIRM_SOCK_ENV {
             v = crate::OWNER_CONFIRM_SOCK.to_string();
         }
@@ -950,10 +918,51 @@ reaches what a command could change, so commands are not run here"
     })
 }
 
+/// Keep IPC masks identical in both Bubblewrap launch paths. RP6: a listed socket
+/// (`sockets`, with its pinned descriptor) is not masked; inside a masked directory it is bound
+/// back before the directory turns read-only and recorded in `rebound`.
+pub(crate) fn mask_runtime_ipc<'s>(
+    a: &mut Vec<String>,
+    paths: impl IntoIterator<Item = PathBuf>,
+    net: bool,
+    sockets: &[(&'s Path, i32)],
+    rebound: &mut Vec<&'s Path>,
+) {
+    for p in paths {
+        let Ok(meta) = std::fs::symlink_metadata(&p) else {
+            continue;
+        };
+        if sockets.iter().any(|(sock, _)| *sock == p) {
+            continue;
+        }
+        let ps = p.to_string_lossy();
+        if meta.is_dir() {
+            push(a, &["--tmpfs", &ps]);
+            for &(sock, fd) in sockets.iter().filter(|(sock, _)| sock.starts_with(&p)) {
+                push(a, &["--bind-fd", &fd.to_string(), &sock.to_string_lossy()]);
+                rebound.push(sock);
+            }
+            if net && p == Path::new("/run/systemd/resolve") {
+                // Preserve only DNS configuration online; all resolver IPC stays hidden.
+                for name in ["resolv.conf", "stub-resolv.conf"] {
+                    let file = p.join(name);
+                    if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
+                        let file = file.to_string_lossy();
+                        push(a, &["--ro-bind", &file, &file]);
+                    }
+                }
+            }
+            push(a, &["--remount-ro", &ps]);
+        } else {
+            push(a, &["--ro-bind", "/dev/null", &ps]);
+        }
+    }
+}
+
 /// sbx-ipc: the host runtime sockets a command must not reach. They live outside `$HOME`,
 /// so the deny-list does not cover them and `--unshare-net` does not either (a Unix socket is
 /// not a network socket).
-fn runtime_ipc_paths(home: &Path) -> Vec<PathBuf> {
+pub(crate) fn runtime_ipc_paths(home: &Path) -> Vec<PathBuf> {
     let uid = std::fs::metadata(home)
         .map(|m| m.uid())
         .unwrap_or_else(|_| unsafe { libc::geteuid() });
@@ -1994,6 +2003,32 @@ mod tests {
             (still_pinned.dev(), still_pinned.ino()),
             (original.dev(), original.ino())
         );
+    }
+
+    #[test]
+    fn runtime_ipc_masks_hide_synthetic_socket_and_directory() {
+        let env = TestEnv::new();
+        let socket = env.work().join("fixture.sock");
+        let _socket = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let runtime_dir = env.work().join("runtime");
+        std::fs::create_dir(&runtime_dir).unwrap();
+        let mut masked = Vec::new();
+        mask_runtime_ipc(
+            &mut masked,
+            [socket.clone(), runtime_dir.clone()],
+            false,
+            &[],
+            &mut Vec::new(),
+        );
+        let socket = socket.to_string_lossy();
+        let runtime_dir = runtime_dir.to_string_lossy();
+        assert!(masked
+            .windows(3)
+            .any(|args| args == ["--ro-bind", "/dev/null", &socket]));
+        assert!(masked.windows(2).any(|args| args == ["--tmpfs", &runtime_dir]));
+        assert!(masked
+            .windows(2)
+            .any(|args| args == ["--remount-ro", &runtime_dir]));
     }
 
     #[test]

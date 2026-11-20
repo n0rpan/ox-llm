@@ -1259,7 +1259,7 @@ fn sec_007() {
     let out = run_oxa(
         &env,
         &srv.url(),
-        &["-p", "--permission-mode", "workspace", "try it"],
+        &["-p", "--permission-mode", "workspace", "--sandbox", "try it"],
         "",
     );
     assert_success(&out);

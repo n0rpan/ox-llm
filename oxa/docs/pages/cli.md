@@ -285,6 +285,7 @@ See [tools.md](tools.md) for the tool names.
 | `--share-model <alias>` | share one native local model during the interactive owner session in a build with the `share` feature, repeat to select more aliases |
 | `--share-bind <address>` | set an explicit bind address for `--share-model`. Sharing uses the Tailscale interface by default |
 | `--offline` | offline mode: oxa's own non-local connections are refused, bash has no network, `web_search` is off, and `!cmd` and stdio MCP servers run without network. What it does not cover is in [security.md](security.md#offline-mode) |
+| `--sandbox` | run bash and hooks in the OS sandbox (bubblewrap) for this interactive run, as `oxa.sandbox.interactive` does. Without it an interactive run has no OS sandbox: bash runs with your rights and dangerous commands ask. Unattended runs (subagents, workers, `oxa work`, headless goals) keep the sandbox |
 
 See [security.md](security.md).
 
@@ -367,6 +368,7 @@ These are set by oxa for its own child processes, or are test hooks. They are no
 - `OXA_SESSION_HINT`: a parent sets `<parent session id>.s<n>` in a subagent child, and every chat request of the child names it.
 - `OXA_CHILD_SOFT_TOKENS`: a parent may set the soft compaction limit of a subagent child; it overrides `oxa.compaction.softTokens`.
 - `OXA_WORKER_DEPTH`: oxa sets `1` in the environment of a lead worker session.
+- `OXA_UNATTENDED`: oxa sets `1` in the environment of a worker it launches; the run counts as unattended and keeps the OS sandbox by default.
 - `OXA_WORK_MODEL_DELEGATED`: `oxa work` sets `1` in a worker; a restored or project-selected model then never counts as chosen by the owner, while an actual model argument is still admitted by a protected Go key.
 - `OXA_WORKTREE_TRUST_SOURCE`: `oxa work` names the trusted source checkout of a managed worktree; it counts only in `--mode json`, and only when the checkout, the trust record and the approved resources verify.
 - `OXA_RUNNER_OWNS_GITHUB`: `oxa work` sets `1` in a worker: the runner owns GitHub access, so the worker runs no `gh`.
