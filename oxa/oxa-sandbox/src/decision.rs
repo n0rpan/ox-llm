@@ -252,6 +252,7 @@ mod tests {
         let unattended_net_off = ExecPolicy {
             os_sandbox_platform: false,
             net_off: true,
+            attended_tui: false,
             ..policy()
         };
         assert!(matches!(
