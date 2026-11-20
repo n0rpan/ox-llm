@@ -2303,6 +2303,7 @@ mod poll_tests {
         assert_eq!(jobs.running(), 0);
     }
 
+    #[test]
     fn command_past_its_timeout_keeps_bounded_output() {
         let (tx, rx) = channel();
         tx.send(vec![b'x'; crate::jobs::BUFFER_CAP * 2]).unwrap();
