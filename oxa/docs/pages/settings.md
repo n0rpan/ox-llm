@@ -213,12 +213,19 @@ See [quickstart.md](quickstart.md#cloud-models) for the keys file and a first se
 `openrouter`, `openai` or `anthropic` key, or after `oxa login chatgpt`; with it
 on, `oxa.cloud.discover_models` also defaults to `true`. An explicit value
 always wins, so `false` opts out (a local HTTP engine with a key in the file
-sets it to `false`). The built-in recommended models of a keyed provider
-(Anthropic and OpenAI current models with their limits and prices, and the
-ChatGPT plan models after sign-in) are merged under `oxa.cloud.models`: an
-entry of yours with the same alias (`provider/upstream-model`) is never
-replaced, and discovery refines the built-in limits and prices. Prices go stale;
-set your own entry to pin one. Offline mode
+sets it to `false`). There is no built-in model table: model data is always
+fetched. The model list comes from each provider's models endpoint with your
+key; limits and prices the provider does not list come from OpenRouter's public
+model catalog (`GET https://openrouter.ai/api/v1/models`, sent with no key and
+no data about you, matched by model id), and the last successful fetch stays in
+the on-disk catalog cache for when a fetch fails. A model nobody lists limits
+for gets a conservative default window (128,000 tokens, 8,192 output) and a
+model nobody prices is usable with unknown cost, recorded as uncertain spend
+(`--list-models` start-up notices say how many and where the data came from).
+An entry of yours under `oxa.cloud.models` with the same alias
+(`provider/upstream-model`) always wins; set one to pin a limit or price.
+Public metadata is used only for a provider's default endpoint, never when you
+point discovery at a proxy. Offline mode
 refuses before opening the gateway; configuration or gateway failures are returned
 directly. Project settings cannot enable this transport or change its cloud policy.
 
@@ -315,7 +322,7 @@ An invalid saved binding refuses the request before provider I/O.
 A `chatgpt` route defaults to `https://chatgpt.com/backend-api/codex` and uses the
 existing owner-only `chatgpt-auth.json` beside the key file. It does not discover
 other applications' credentials or start a sign-in. After `oxa login chatgpt` the plan models
-(`chatgpt/gpt-5`, `chatgpt/gpt-5-codex`) exist without a route in your settings;
+(`chatgpt/gpt-6.2-astra`, `chatgpt/gpt-6.2-sol` and the other models Codex offers with ChatGPT sign-in) exist without a route in your settings;
 the optional user-only `oxa.cloud.subscription_limits` object (positive integer
 `daily_requests` and `daily_tokens`) only adds warnings. The separate optional `oxa.cloud.subscription` refresh object
 accepts a public `client_id` override (`[A-Za-z0-9_.-]{1,128}`); its default is the
