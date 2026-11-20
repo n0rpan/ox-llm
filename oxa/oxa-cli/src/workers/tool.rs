@@ -2789,7 +2789,9 @@ mod tests {
 
     /// The `--model` values of the launches so far, once there are `count` of them.
     fn launched_models(root: &Path, count: usize) -> Vec<String> {
-        for _ in 0..100 {
+        // Poll for up to 30 s: slow runners (the Arch package check) launch the fake oxa later.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
             let text = fs::read_to_string(root.join("argv.log")).unwrap_or_default();
             let lines: Vec<&str> = text.lines().collect();
             let models: Vec<String> = lines
