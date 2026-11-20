@@ -351,18 +351,18 @@ The key is read for each request from the existing private
 `~/.config/oxc/llm/cloud-secrets.json` (owner-only, mode `0600`, outside a checkout).
 Keep keys out of settings. The file uses the existing provider-key JSON format.
 
-To add a named provider, set `oxa.cloud.providers.alibaba` in **user settings**:
+To add a named provider, set `oxa.cloud.providers.myplan` in **user settings**:
 
 ```json
 { "api": "openai-chat", "base_url": "https://example.invalid/compatible/v1",
-  "key": "alibaba-plan", "billing": "subscription" }
+  "key": "myplan", "billing": "subscription" }
 ```
 
-Use the provider's HTTPS API base and put the credential under `alibaba-plan` in
+Use the provider's HTTPS API base and put the credential under `myplan` in
 the existing secrets file. `api` accepts `openai-chat` (Chat Completions) or
 `anthropic` (Messages). A keyed provider discovers models from `<base_url>/models`
-and caches the last successful list. `oxa --list-models alibaba` filters that list;
-select a model with `oxa --model alibaba/<id>`. Explicit owner discovery and gateway
+and caches the last successful list. `oxa --list-models myplan` filters that list;
+pass a qualified model name from the list to `oxa --model`. Explicit owner discovery and gateway
 opt-outs still win. Offline mode does not contact the provider.
 
 Use `subscription` for token accounting or `metered` for USD accounting. When a
