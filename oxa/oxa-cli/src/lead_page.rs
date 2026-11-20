@@ -67,6 +67,24 @@ pub struct View<'a> {
     pub approval_csrf: Option<&'a str>,
     /// The running owner session this chat page is attached to (#2075); replaces the Lead chat.
     pub attached: Option<AttachedView<'a>>,
+    /// The owner's running sessions to choose from, on the chat page only (#1469).
+    pub sessions: Option<SessionListView<'a>>,
+}
+
+/// The sessions of this user that are running now, as the owner's chat page lists them.
+pub struct SessionListView<'a> {
+    pub csrf: &'a str,
+    pub rows: &'a [SessionRow],
+    /// Label of the button that returns to the start-up target, when the page is not on it.
+    pub back: Option<&'static str>,
+}
+
+pub struct SessionRow {
+    pub id: String,
+    /// The project directory's basename only.
+    pub cwd_name: String,
+    pub modified_ms: u64,
+    pub attached: bool,
 }
 
 /// The attached session as the page shows it: the newest part of its transcript, whether it is
@@ -80,6 +98,10 @@ pub struct AttachedView<'a> {
     pub short_id: String,
     /// A message was accepted since the last render.
     pub sent: bool,
+    /// `working` or `idle`, from the newest message; only meaningful while running.
+    pub activity: Option<&'static str>,
+    /// Prompt tokens of the newest request with recorded usage.
+    pub context_tokens: Option<u32>,
 }
 
 pub struct OwnerChatView<'a> {

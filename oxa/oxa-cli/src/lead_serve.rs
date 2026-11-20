@@ -1,7 +1,7 @@
 //! Minimal local board caller. Transport, policy, peer proof and rendering stay shared.
 use crate::dispatch::LeadOwnerBinding;
 use crate::lead_access::{self, proxy, Config, IdentityProvider, Mode, VerifiedIdentity};
-use crate::lead_attach::{AttachedSession, TAIL_BYTES};
+use crate::lead_attach::{self, AttachedSession, TAIL_BYTES};
 use crate::lead_chat::conversation::ConversationReply;
 use crate::lead_http::{OwnerForm, OwnerSubmission, RefusalFact, RefusalLog, Stage};
 use oxa_config::{Dirs, Env, Settings};
@@ -289,6 +289,8 @@ enum OwnerSession {
 
 const DEDICATED_FIX: &str = "check oxa.lead.sessionId and the original dedicated Lead session file";
 const ATTACHED_FIX: &str = "check that oxa.lead.attachSessionId names a session of this user";
+const NO_TARGET_FIX: &str = "choose a running session on the chat page, or set oxa.lead.attachSessionId";
+const NOT_LIVE_FIX: &str = "choose a session from the list of running sessions";
 
 impl OwnerSession {
     fn recheck(&self) -> Result<(), OxaError> {
@@ -324,8 +326,28 @@ impl OwnerSession {
     }
 }
 
+/// The configured owner proof of the service: the session it started on, if any.
+fn recheck_start(start: &Option<OwnerSession>) -> Result<(), OxaError> {
+    start.as_ref().map_or(Ok(()), OwnerSession::recheck)
+}
+
+/// Whether the page is on the target the service started on.
+fn same_target(start: &Option<OwnerSession>, current: &Option<OwnerSession>) -> bool {
+    match (start, current) {
+        (None, None) | (Some(OwnerSession::Dedicated(_)), Some(OwnerSession::Dedicated(_))) => true,
+        (Some(OwnerSession::Attached(a)), Some(OwnerSession::Attached(b))) => a.id() == b.id(),
+        _ => false,
+    }
+}
+
 struct OwnerChat {
-    session: OwnerSession,
+    dirs: Dirs,
+    uid: u32,
+    /// The session the service started on: the configured Lead session, or none (the list alone).
+    start: Option<OwnerSession>,
+    /// The session the page talks to now. The owner's `attach` choice replaces it until the
+    /// service restarts; `oxa.lead.attachSessionId` stays the start-up default.
+    target: Mutex<Option<OwnerSession>>,
     csrf: String,
     latest: Mutex<Option<ChatReply>>,
     /// A message was accepted into the attached session's inbox and not yet shown as sent.
@@ -334,6 +356,52 @@ struct OwnerChat {
 }
 
 impl OwnerChat {
+    fn new(dirs: Dirs, uid: u32, start: Option<OwnerSession>, csrf: String, journal: ServiceJournal) -> Self {
+        Self {
+            dirs,
+            uid,
+            target: Mutex::new(start.clone()),
+            start,
+            csrf,
+            latest: Mutex::new(None),
+            sent: AtomicBool::new(false),
+            journal,
+        }
+    }
+
+    fn current(&self) -> Option<OwnerSession> {
+        self.target
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// The owner chose a running session, or went back to the start-up target. A session that is
+    /// not in the live list is refused and the target stays as it was.
+    fn attach(&self, choice: Option<String>) -> Result<(), &'static str> {
+        let next = match choice {
+            Some(id) => match AttachedSession::select(&self.dirs, self.uid, &id) {
+                Ok(attached) => Some(OwnerSession::Attached(attached)),
+                Err(_) => {
+                    self.journal.log(RefusalFact {
+                        status: 404,
+                        stage: Stage::Recheck,
+                        reason: "not_live",
+                        fix: NOT_LIVE_FIX,
+                    });
+                    return Err("404 Not Found");
+                }
+            },
+            None => self.start.clone(),
+        };
+        *self
+            .target
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = next;
+        self.sent.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+
     fn post(&self, submission: OwnerSubmission, env: &Env) -> Result<(), &'static str> {
         let mut state = self.latest.try_lock().map_err(|_| {
             self.journal.log(RefusalFact {
@@ -344,21 +412,34 @@ impl OwnerChat {
             });
             "409 Conflict"
         })?;
+        let submission = match submission {
+            OwnerSubmission::Attach(choice) => return self.attach(choice),
+            other => other,
+        };
+        let Some(session) = self.current() else {
+            self.journal.log(RefusalFact {
+                status: 503,
+                stage: Stage::Recheck,
+                reason: "binding",
+                fix: NO_TARGET_FIX,
+            });
+            return Err("503 Service Unavailable");
+        };
         let binding_refusal = || {
             self.journal.log(RefusalFact {
                 status: 503,
                 stage: Stage::Recheck,
                 reason: "binding",
-                fix: self.session.fix(),
+                fix: session.fix(),
             });
             "503 Service Unavailable"
         };
-        self.session.recheck().map_err(|_| binding_refusal())?;
-        let OwnerSession::Dedicated(binding) = &self.session else {
+        session.recheck().map_err(|_| binding_refusal())?;
+        let OwnerSession::Dedicated(binding) = &session else {
             // Attached: the text goes to the session's inbox, as `oxa send` does. It is a
             // follow-up for the model, never an approval; there are no proposals here.
             let (OwnerSession::Attached(attached), OwnerSubmission::Message(message)) =
-                (&self.session, submission)
+                (&session, submission)
             else {
                 self.journal.log(RefusalFact {
                     status: 409,
@@ -387,7 +468,7 @@ impl OwnerChat {
                         self.journal.log(conversation_refusal(&error));
                         "503 Service Unavailable"
                     })?;
-                self.session.recheck().map_err(|_| binding_refusal())?;
+                session.recheck().map_err(|_| binding_refusal())?;
                 let proposal = reply
                     .action
                     .as_ref()
@@ -441,7 +522,7 @@ impl OwnerChat {
                 current.confirmed = true;
             }
             // The run closure answers approvals itself, so they never wait on the chat turn lock.
-            OwnerSubmission::Approve { .. } => return Err("409 Conflict"),
+            OwnerSubmission::Approve { .. } | OwnerSubmission::Attach(_) => return Err("409 Conflict"),
         }
         Ok(())
     }
@@ -450,7 +531,7 @@ impl OwnerChat {
 /// The owner's answers to approval requests (#1512 S6). The writes are the ones `oxa send
 /// --approve` makes, through the same path, so a web answer and a CLI answer are equivalent.
 struct OwnerApprovals {
-    session: OwnerSession,
+    session: Option<OwnerSession>,
     dirs: Dirs,
     cwd: PathBuf,
     desk: ApprovalDesk,
@@ -468,7 +549,7 @@ impl OwnerApprovals {
             });
             Err(text)
         };
-        if self.session.recheck().is_err() {
+        if recheck_start(&self.session).is_err() {
             return refuse(503, "503 Service Unavailable", "binding");
         }
         let waiting = match self.desk.pending() {
@@ -550,7 +631,7 @@ impl Source {
         let bound_owner = self
             .owner
             .as_ref()
-            .filter(|owner| (approvals_page || chat_page) && owner.session.recheck().is_ok());
+            .filter(|owner| (approvals_page || chat_page) && recheck_start(&owner.start).is_ok());
         let owner = bound_owner.filter(|_| chat_page);
         let latest = owner.and_then(|owner| owner.latest.try_lock().ok());
         let waiting = if approvals_page && bound_owner.is_some() {
@@ -562,13 +643,41 @@ impl Source {
         // the authorized durable Session on every render, never from a sample.
         let durable_asks = self.durable_asks();
         // The attached session's newest part is read without its writer lock (#2075).
-        let attached = owner.and_then(|owner| match &owner.session {
-            OwnerSession::Attached(attached) => {
+        let current = owner.and_then(|owner| owner.current());
+        let attached = match (&current, owner) {
+            (Some(OwnerSession::Attached(attached)), Some(owner)) => {
                 attached.tail(TAIL_BYTES).ok().map(|tail| (owner, attached, tail))
             }
-            OwnerSession::Dedicated(_) => None,
+            _ => None,
+        };
+        // The owner's running sessions to choose from (#1469), on the chat page only.
+        let attached_id = attached.as_ref().map(|(_, attached, _)| attached.id());
+        let rows: Option<Vec<crate::lead_page::SessionRow>> = owner.map(|owner| {
+            lead_attach::live_sessions(&owner.dirs, owner.uid)
+                .into_iter()
+                .map(|live| crate::lead_page::SessionRow {
+                    attached: attached_id == Some(live.id.as_str()),
+                    id: live.id,
+                    cwd_name: live.cwd_name,
+                    modified_ms: live.modified_ms,
+                })
+                .collect()
         });
+        let back = owner
+            .filter(|owner| !same_target(&owner.start, &current))
+            .map(|owner| match owner.start {
+                Some(OwnerSession::Dedicated(_)) => "Back to Lead chat",
+                Some(OwnerSession::Attached(_)) => "Back to the default session",
+                None => "Close the session view",
+            });
         let view = crate::lead_page::View {
+            sessions: owner
+                .zip(rows.as_deref())
+                .map(|(owner, rows)| crate::lead_page::SessionListView {
+                    csrf: &owner.csrf,
+                    rows,
+                    back,
+                }),
             attached: attached
                 .as_ref()
                 .map(|(owner, attached, tail)| crate::lead_page::AttachedView {
@@ -578,11 +687,16 @@ impl Source {
                     live: attached.live(),
                     short_id: attached.short_id(),
                     sent: owner.sent.swap(false, Ordering::SeqCst),
+                    activity: lead_attach::activity(&tail.entries).map(|activity| match activity {
+                        lead_attach::Activity::Working => "working",
+                        lead_attach::Activity::Idle => "idle",
+                    }),
+                    context_tokens: lead_attach::context_tokens(&tail.entries),
                 }),
             approvals: waiting.as_deref(),
             approval_csrf: bound_owner.map(|owner| owner.csrf.as_str()),
             owner_chat: owner
-                .filter(|owner| matches!(owner.session, OwnerSession::Dedicated(_)))
+                .filter(|_| matches!(current, Some(OwnerSession::Dedicated(_))))
                 .zip(latest.as_deref())
                 .map(|(owner, latest)| crate::lead_page::OwnerChatView {
                     csrf: &owner.csrf,
@@ -612,8 +726,11 @@ impl Source {
     /// session stays explicitly unavailable rather than quietly empty.
     fn durable_asks(&self) -> Option<Vec<oxa_session::OpenGoalAsk>> {
         let owner = self.owner.as_ref()?;
-        owner.session.recheck().ok()?;
-        let entries = owner.session.read_entries_for_goal().ok()?;
+        // The configured start-up session only: a session the owner picked on the page is not
+        // the Lead's durable goal.
+        let start = owner.start.as_ref()?;
+        start.recheck().ok()?;
+        let entries = start.read_entries_for_goal().ok()?;
         let goal = oxa_session::Goal::latest(&entries).ok()?;
         Some(
             goal.map(|goal| goal.lead.map_or_else(Vec::new, |lead| lead.open_asks))
@@ -662,41 +779,40 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
             },
         });
     }
-    let mut attached_mode = false;
+    let mut dedicated_start = false;
     let owner = if config.owner_chat() {
         // `oxa.lead.attachSessionId` wins: the page then needs no dedicated session, takes no
         // session lock and opens no provider.
-        let session = match AttachedSession::load(dirs, uid)? {
-            Some(attached) => OwnerSession::Attached(attached),
+        // With neither key set the page starts on the list of running sessions alone.
+        let start = match AttachedSession::load(dirs, uid)? {
+            Some(attached) => Some(OwnerSession::Attached(attached)),
             None => {
                 let project = cwd
                     .canonicalize()
                     .map_err(|_| invalid("Lead project unavailable"))?;
-                OwnerSession::Dedicated(LeadOwnerBinding::load(dirs, &project, uid)?.ok_or_else(|| {
-                    invalid("Lead owner chat needs oxa.lead.attachSessionId or oxa.lead.sessionId")
-                })?)
+                LeadOwnerBinding::load(dirs, &project, uid)?.map(OwnerSession::Dedicated)
             }
         };
-        attached_mode = matches!(session, OwnerSession::Attached(_));
-        let chat = Arc::new(OwnerChat {
-            session,
-            csrf: oxa_mcp::pkce_pair(&oxa_mcp::random_bytes()?).0,
-            latest: Mutex::new(None),
-            sent: AtomicBool::new(false),
-            journal: journal.clone(),
-        });
+        dedicated_start = matches!(start, Some(OwnerSession::Dedicated(_)));
+        let chat = Arc::new(OwnerChat::new(
+            dirs.clone(),
+            uid,
+            start,
+            oxa_mcp::pkce_pair(&oxa_mcp::random_bytes()?).0,
+            journal.clone(),
+        ));
         source.owner = Some(chat.clone());
         let env = env.clone();
         // Answers use the owner form's CSRF and origin checks, then the desk. They never wait on
         // the chat turn lock, so a running Lead turn does not hold up an approval.
         let approvals = source.desk.clone().map(|desk| OwnerApprovals {
-            session: chat.session.clone(),
+            session: chat.start.clone(),
             dirs: dirs.clone(),
             cwd: cwd.to_path_buf(),
             desk,
             journal: journal.clone(),
         });
-        if !attached_mode {
+        if dedicated_start {
             stop_workers_on_interrupt();
         }
         Some(OwnerForm {
@@ -716,8 +832,8 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
     let identity_journal = journal.clone();
     let refusal_log = journal.sink();
     let listener = TcpListener::bind(config.endpoint()).map_err(|_| invalid("cannot bind lead endpoint"))?;
-    // An attached page spends no model tokens, so the USD budget note does not apply to it.
-    if owner.is_some() && !attached_mode {
+    // Only the dedicated Lead chat spends model tokens; an attached page does not.
+    if owner.is_some() && dedicated_start {
         if let Some(warning) = no_budget_warning(&Settings::load(dirs, cwd, false)) {
             writeln!(out, "{warning}").map_err(|_| invalid("cannot report lead startup"))?;
         }
@@ -830,13 +946,15 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&settings, std::fs::Permissions::from_mode(0o600)).unwrap();
         let (journal, buffer) = captured_journal();
-        let owner = Arc::new(OwnerChat {
-            session: OwnerSession::Dedicated(LeadOwnerBinding::load(&dirs, &project, uid).unwrap().unwrap()),
-            csrf: "fixture".into(),
-            latest: Mutex::new(None),
-            sent: AtomicBool::new(false),
+        let owner = Arc::new(OwnerChat::new(
+            dirs.clone(),
+            uid,
+            Some(OwnerSession::Dedicated(
+                LeadOwnerBinding::load(&dirs, &project, uid).unwrap().unwrap(),
+            )),
+            "fixture".into(),
             journal,
-        });
+        ));
         let mut source = Source::new(&env, uid).unwrap();
         source.owner = Some(owner.clone());
         {
@@ -1173,7 +1291,9 @@ mod approval_answer_tests {
         .unwrap();
         std::fs::set_permissions(dirs.settings_file(), std::fs::Permissions::from_mode(0o600)).unwrap();
         OwnerApprovals {
-            session: OwnerSession::Dedicated(LeadOwnerBinding::load(dirs, &project, uid).unwrap().unwrap()),
+            session: Some(OwnerSession::Dedicated(
+                LeadOwnerBinding::load(dirs, &project, uid).unwrap().unwrap(),
+            )),
             dirs: dirs.clone(),
             cwd: test.work(),
             desk: desk.clone(),

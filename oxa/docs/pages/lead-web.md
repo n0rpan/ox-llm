@@ -38,6 +38,30 @@ model, never an approval: answer approvals on the approvals page. The same ident
 CSRF checks as before apply, the session file must stay private to your user, and a refused send
 is written to the service journal with stage `recheck`, reason `binding` or `inbox`.
 
+### The list of running sessions
+
+With `owner_chat` on, the chat page also lists every session of your user that is running
+now: the lead TUI, an interactive `oxa`, a worker. Each row shows the first characters of the
+id, the project directory's name (never the full path), the time of its last activity and a
+**View** button. Choosing one attaches the page to it until the service restarts: the same
+live transcript and the same message form as above (a message goes into that session's inbox,
+like `oxa send`). The attached view also shows whether the session is running and working or
+idle (from its newest message) and the prompt tokens of its newest request when it recorded
+usage; the session does not record the model's window, so no share of the window is shown.
+
+"Running" means that the process named in the session's lock file is alive; the page never
+takes the lock, so looking cannot make a starting `oxa` see its session as locked. After a
+crash the recycled process id of an unrelated process can briefly make a dead session look
+running. A session that is not running cannot be chosen, and a message to one that stopped
+waits in its inbox until the session runs again.
+
+`oxa.lead.attachSessionId` stays the start-up default. When it is unset the page starts on the
+dedicated Lead chat, or, with no dedicated session either, on the list alone. The **Back**
+button returns to that start-up target. Everything the page shows here is visible only to the
+verified owner on `/chat`; this includes the transcript of your other running sessions and
+workers, masked and escaped as described above. A choice is not a setting: restart the service
+and it starts on the default again.
+
 ## Waiting for your approval
 
 The verified owner can see "Waiting for your approval" on the board and home pages.

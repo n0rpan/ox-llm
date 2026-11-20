@@ -130,6 +130,9 @@ pub(crate) struct FixedForm {
 pub(crate) enum OwnerSubmission {
     Message(String),
     Confirm(String),
+    /// The owner's choice of a running session to attach the page to (`Some(id)`), or back to
+    /// the start-up target (`None`). The id is only a lookup key into the live session list.
+    Attach(Option<String>),
     /// The owner's answer to one approval request. It never enters the chat turn.
     Approve {
         id: String,
@@ -477,7 +480,7 @@ fn owner_submission(bytes: &[u8], expected: &str) -> Result<OwnerSubmission, Rej
         let (key, value) = field.split_once('=').ok_or(Rejected::Body)?;
         match key {
             "csrf" if csrf.replace(value).is_none() => {}
-            "message" | "proposal_id" if input.replace((key, value)).is_none() => {}
+            "message" | "proposal_id" | "attach" if input.replace((key, value)).is_none() => {}
             _ => return Err(Rejected::Body),
         }
     }
@@ -495,6 +498,10 @@ fn owner_submission(bytes: &[u8], expected: &str) -> Result<OwnerSubmission, Rej
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')) =>
         {
             Ok(OwnerSubmission::Confirm(value.to_owned()))
+        }
+        ("attach", "") => Ok(OwnerSubmission::Attach(None)),
+        ("attach", value) if value.len() <= 128 && crate::args::valid_session_id(value) => {
+            Ok(OwnerSubmission::Attach(Some(value.to_owned())))
         }
         _ => Err(Rejected::Body),
     }
@@ -1161,5 +1168,28 @@ mod approval_transport_tests {
         handler.join().unwrap();
         assert!(reply.starts_with("HTTP/1.1 405"), "{reply}");
         assert_eq!(facts.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn owner_attach_field_is_exclusive_and_takes_only_session_ids() {
+        let parse = |body: &str| owner_submission(body.as_bytes(), "nonce");
+        assert!(matches!(
+            parse("csrf=nonce&attach=abc-123.x_y"),
+            Ok(OwnerSubmission::Attach(Some(id))) if id == "abc-123.x_y"
+        ));
+        assert!(matches!(
+            parse("csrf=nonce&attach="),
+            Ok(OwnerSubmission::Attach(None))
+        ));
+        for body in [
+            "csrf=nonce&attach=..%2Fx",
+            "csrf=nonce&attach=a/b",
+            "csrf=nonce&attach=-x",
+            "csrf=nonce&attach=a&message=b",
+            "csrf=nonce&attach=a&attach=b",
+        ] {
+            assert!(matches!(parse(body), Err(Rejected::Body)), "{body}");
+        }
+        assert!(matches!(parse("csrf=wrong&attach=a"), Err(Rejected::Csrf)));
     }
 }

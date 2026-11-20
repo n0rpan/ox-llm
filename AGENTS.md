@@ -77,7 +77,8 @@ code, tests, CI and docs; the owner validates on hardware.
   without the writer lock (bounded tail, never append, sync or repair), and sends only through the
   session's inbox like `oxa send`. Re-prove the owner-only file and the setting before every read
   and send. An inbox message is never an approval. Flag a path that supplies the session from a
-  project file or request, takes the session lock, or opens a provider there.
+  project file or request, takes the session lock, or opens a provider there. The page's own session
+  choice (`attach=<id>`) must resolve only inside the current live-session list of this user.
 - The live owner-authorized Lead service may launch and steer background workers through its sole
   `worker` tool. The shadow Lead preset and one-shot `oxa lead chat` stay tool-free; user-only
   worker enablement, limits and the current permission ceiling govern every new launch.
