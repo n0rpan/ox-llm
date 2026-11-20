@@ -156,8 +156,10 @@ Linux sandbox the broker socket is mounted only where bwrap denies nested user n
 (`--disable-userns`), so a command cannot stack a fake listener over the trusted mount point; a
 broker mount without that denial is high. Publishing hands `gh` the approved bytes through a sealed
 descriptor (`--body-file /dev/fd/N`), never a pathname a command could swap after the yes.
+
 Lane-push approval, `oxa work --publish` and `--report-problems` use this broker when a session
 launches `oxa work`. A direct owner invocation can still use `/dev/tty`; agent markers and piped
 input do not approve. The legacy work-report workflow asks before sending scrubbed worker search
 queries, then separately previews any write. Semantic dedupe uses the owner's explicit opt-in.
+
 Named cloud providers (`oxa.cloud.providers`) are user-only. A provider selects a distinct non-built-in key entry in the existing protected cloud secret store. The owner's HTTPS API base pins discovery and chat; redirects are not followed. A model list, project setting or per-model override cannot replace the base, protocol, key selector or billing class. Cached lists are bound to the base and credential, and catalog replies that echo the credential are refused. Public metadata lookup sends no key and cannot supply another provider's prices for a named route.
