@@ -217,8 +217,20 @@ pub(crate) fn layout(
             Some(DEFAULT_SCRATCH_WARN)
         }
     };
+    // #639: the git config keys ordinary git operations may change; a user-only list.
+    built.git_config_allow = Some(match user.get(SETTING_GIT_CONFIG_ALLOW) {
+        Some(_) => user.list(SETTING_GIT_CONFIG_ALLOW),
+        None => DEFAULT_GIT_CONFIG_ALLOW
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect(),
+    });
     built
 }
+
+/// #639: the git config keys a sandboxed command may change (the rest is restored after it).
+const SETTING_GIT_CONFIG_ALLOW: &str = "oxa.sandbox.gitConfigAllow";
+const DEFAULT_GIT_CONFIG_ALLOW: &[&str] = &["branch.*", "user.*", "remote.*.fetch"];
 
 /// #486: the soft size limit of the session's `/tmp` scratch (a warning, never a block).
 const SETTING_SCRATCH_WARN: &str = "oxa.sandbox.scratchWarnSize";

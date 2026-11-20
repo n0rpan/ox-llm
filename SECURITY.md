@@ -38,6 +38,8 @@ Host runtime sockets (docker, podman) stay masked in sandboxed bash unless the o
 through an FD-based bind (user settings only; the docker socket gives root on the host, so it is noted
 at start, not blocked).
 
+Git config guard (owner decision, #639): sandboxed commands may change the git config keys in the user-only `oxa.sandbox.gitConfigAllow` (default `branch.*`, `user.*`, `remote.*.fetch`), so `git branch -m` and `git config user.name` work. The sandbox leaves an existing plain `config` unbound and, after each command, restores the whole file when any other key changed and says so in the command output; a forbidden key exists on the host for the length of that one command. A session also removes the empty mount-point files and directories it had to create in the host `.git` when it ends.
+
 `oxa send` keeps owner messages over the 256 KiB inline inbox limit in the receiving session's
 private spill directory and queues a short pointer. The sandbox exposes that spill directory only
 to the receiving session and sessions inheriting its history; the private agent directory remains
