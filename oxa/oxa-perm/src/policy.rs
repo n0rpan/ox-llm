@@ -160,6 +160,12 @@ impl PathGuard {
             && !self.is_spill(p)
     }
 
+    /// `dir` (absolute) holds a deny-list entry or the agent directory: removing it recursively
+    /// takes a credential or agent path along.
+    pub fn denies_within(&self, dir: &Path) -> bool {
+        self.deny.iter().any(|d| is_inside(d, dir)) || is_inside(&self.agent_dir, dir)
+    }
+
     /// Like [`PathGuard::denies`] for a read, with skills, inherited output and pasted images
     /// excepted. Images still go through the ordinary outside-project approval table.
     pub fn denies_read(&self, p: &Path) -> bool {
@@ -260,7 +266,7 @@ impl PathFilter for HiddenPaths {
 
 /// B4: how a write to `p` inside `cwd` is protected: `Some(true)` = never by a tool (git),
 /// `Some(false)` = only after the user confirms, `None` = not protected.
-fn protected_write(p: &Path, cwd: &Path) -> Option<bool> {
+pub(crate) fn protected_write(p: &Path, cwd: &Path) -> Option<bool> {
     // A worktree's `.git` is a file that names the git directory git runs hooks and config
     // from; it runs outside the sandbox later, like the files below.
     if p == cwd.join(".git") {

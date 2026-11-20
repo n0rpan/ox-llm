@@ -341,6 +341,18 @@ impl Hooks for ProbeHooks {
     fn prompt_sections(&self) -> Vec<(String, String)> {
         Vec::new()
     }
+    fn poll_access(&self, until: &Value) -> Vec<oxa_proto::Access> {
+        let kind = until["kind"].as_str().unwrap_or("");
+        let answers = kind == "ci" || kind == "pr_merged" || crate::gh_probe::is_read_kind(kind);
+        // A runner-owned session runs no gh at all: nothing to ask for.
+        if answers && !self.runner_owns_github {
+            vec![oxa_proto::Access::Net {
+                host: "github.com".to_string(),
+            }]
+        } else {
+            Vec::new()
+        }
+    }
     fn poll_event(
         &self,
         kind: &str,

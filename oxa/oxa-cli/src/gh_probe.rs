@@ -535,4 +535,34 @@ mod tests {
         assert!(e.contains("offline") || e.contains("network"), "{e}");
         assert_eq!(f.calls(), None, "no gh call while offline");
     }
+
+    /// #1919: a wait on a gh probe declares network access; a runner-owned session runs no gh and
+    /// declares nothing, and neither does a kind this set does not answer.
+    #[test]
+    fn probes_declare_their_network_access() {
+        let f = Fake::new("access");
+        let net = vec![oxa_proto::Access::Net {
+            host: "github.com".to_string(),
+        }];
+        for kind in [
+            "ci",
+            "pr_merged",
+            "pr_view",
+            "pr_checks",
+            "run_log_failed",
+            "issue_view",
+        ] {
+            assert_eq!(f.hooks.poll_access(&json!({"kind": kind})), net, "{kind}");
+        }
+        assert!(f.hooks.poll_access(&json!({"kind": "job_done"})).is_empty());
+        let owned = ProbeHooks::for_test_runner_owned_paths(
+            &f.bin.parent().unwrap().join("work"),
+            &f.bin.parent().unwrap().join("home"),
+            &f.bin,
+            "acme/widgets",
+        );
+        assert!(owned
+            .poll_access(&json!({"kind": "issue_view", "issue": 5}))
+            .is_empty());
+    }
 }

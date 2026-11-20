@@ -1,5 +1,5 @@
 //! Session-local goal controls; no worker, timer thread or external scheduler.
-use oxa_proto::{Access, Exposure, Source, Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec, Value};
+use oxa_proto::{Access, Exposure, Mode, Source, Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec, Value};
 use oxa_session::{Goal, GoalBudget, GoalStatus, SessionRef};
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -499,9 +499,23 @@ impl Tool for Control {
     fn default_selected(&self) -> bool {
         self.spec.name == "wait"
     }
-    fn access(&self, args: &Value, _: &ToolCtx) -> Result<Vec<Access>, String> {
+    fn access(&self, args: &Value, cx: &ToolCtx) -> Result<Vec<Access>, String> {
         validate(&self.spec.name, args)?;
-        Ok(vec![])
+        // A wait on a GitHub probe is network access (#1919): plan denies it and ask asks once
+        // per host; workspace, auto and yolo are unchanged (the same convention as web search).
+        let mut out: Vec<Access> = Vec::new();
+        if self.spec.name == "wait" && matches!(cx.mode, Mode::Ask | Mode::Plan) {
+            if let Some(until) = args.get("until") {
+                for hook in &self.hooks {
+                    for access in hook.poll_access(until) {
+                        if !out.contains(&access) {
+                            out.push(access);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
     fn run(&self, args: &Value, cx: &ToolCtx, live: &mut dyn FnMut(&str)) -> ToolOutput {
         if let Err(e) = validate(&self.spec.name, args) {

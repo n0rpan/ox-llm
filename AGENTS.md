@@ -459,6 +459,11 @@ read its result; they never launch builds or tests.
 - Keep engine transport selection, native binary/launch configuration, `allowRemote`, share authority, login/token
   paths and `oxa.inbox.headless` user-only. A project file must never override these decisions.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
+- **Command effects (#1680, #1919, #2097):** `credential-read` and `git-hook-write` are danger-approval rules for
+  standard mode, not an OS sandbox requirement; yolo never reaches them and the owner can remove them through
+  `oxa.approval.dangerous`. One `Effects` value per shell command (`oxa-perm/src/effects.rs`) feeds them and the
+  replay checks; do not add a per-command parser beside it. A `wait` `until` probe that runs `gh` is network access
+  (`Hooks::poll_access`): plan denies it, ask asks once per host.
 - **Sandbox standard (owner decision, #1512 and 2026-11-19). Do not add an OS sandbox outside these rules:**
   - **Interactive CLI the owner talks to:** no OS sandbox by default, on Linux and macOS alike. A
     dangerous command gets an owner approval (once, this session, always, deny), never bwrap.
