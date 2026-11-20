@@ -48,7 +48,6 @@ enum Kind {
     /// Anything else.
     Other,
 }
-
 /// The segments of `stages` that need an approval, re-joined by the caller's `segment`.
 pub(crate) fn publish_hits(stages: &[Stage], cwd: &Path) -> Vec<String> {
     let unordered = stages.iter().any(|st| st.background || st.mark.is_some());
@@ -270,13 +269,15 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
         return Kind::Unsafe;
     }
     if sub != Some("push") {
-        // An alias can expand to a push; builtin names cannot be shadowed by one.
-        if let Some(name) = sub {
-            if !GIT_LOCAL.contains(&name) && is_alias(&rest[..k], name, cwd, &dirs) {
-                return Kind::Unsafe;
-            }
-        }
-        return Kind::Other;
+        // Git resolves unknown subcommands through configuration and external `git-*`
+        // executables. Keep the publish floor unless this is a builtin that we have
+        // explicitly classified as local; trying to duplicate Git's resolution leaves
+        // configuration sources such as conditional and worktree config uncovered.
+        return match sub {
+            Some(name) if GIT_LOCAL.contains(&name) => Kind::Other,
+            Some(_) => Kind::Unsafe,
+            None => Kind::Other,
+        };
     }
     let push = &rest[k + 1..];
     if opaque || moved || env_unsafe(all) || all.iter().any(|w| dynamic(w)) {
@@ -752,94 +753,4 @@ fn logical_lines(text: &str) -> Vec<String> {
         out.push(buf);
     }
     out
-}
-
-/// Collect the `alias.*` names of one config file. False when the file cannot be read safely
-/// or pulls in another file (an include), so the answer is unknown.
-fn config_aliases(path: &Path, out: &mut Vec<String>) -> bool {
-    let text = match std::fs::symlink_metadata(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return true,
-        _ => match read_small(path) {
-            Some(t) => t,
-            None => return false,
-        },
-    };
-    let mut section = String::new();
-    for raw in logical_lines(&text) {
-        let mut line = raw.trim();
-        if line.starts_with('[') {
-            let Some(end) = line.find(']') else { return false };
-            section = line[1..end]
-                .split(['"', ' ', '.'])
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_ascii_lowercase();
-            line = line[end + 1..].trim();
-        }
-        if section.starts_with("include") {
-            return false;
-        }
-        if section == "alias" && !line.is_empty() && !line.starts_with(['#', ';']) {
-            let key = line.split('=').next().unwrap_or("").trim();
-            out.push(key.to_ascii_lowercase());
-        }
-    }
-    true
-}
-
-/// Whether git subcommand `name` may be an alias: defined by `-c alias.<name>=` on the command
-/// line or in the repo, global or system config. An unreadable config counts as an alias.
-fn is_alias(globals: &[String], name: &str, cwd: &Path, dirs: &[String]) -> bool {
-    let name = name.to_ascii_lowercase();
-    let mut k = 0;
-    while k < globals.len() {
-        if globals[k] == "-c" {
-            if let Some(kv) = globals.get(k + 1) {
-                let key = kv.split('=').next().unwrap_or("").to_ascii_lowercase();
-                if key == format!("alias.{name}") {
-                    return true;
-                }
-            }
-            k += 2;
-        } else {
-            k += 1;
-        }
-    }
-    let mut files: Vec<PathBuf> = Vec::new();
-    let mut wd = cwd.to_path_buf();
-    for d in dirs {
-        wd = crate::paths::normalize(Path::new(d), &wd);
-    }
-    for dir in [cwd, wd.as_path()] {
-        match git_dirs(dir) {
-            Some((_, common)) => files.push(common.join("config")),
-            None => return true,
-        }
-    }
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let xdg = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| home.as_ref().map(|h| h.join(".config")));
-    if let Some(g) = std::env::var_os("GIT_CONFIG_GLOBAL") {
-        files.push(PathBuf::from(g));
-    }
-    if let Some(h) = &home {
-        files.push(h.join(".gitconfig"));
-    }
-    if let Some(x) = xdg {
-        files.push(x.join("git/config"));
-    }
-    files.push(
-        std::env::var_os("GIT_CONFIG_SYSTEM")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/etc/gitconfig")),
-    );
-    let mut names = Vec::new();
-    for f in &files {
-        if !config_aliases(f, &mut names) {
-            return true;
-        }
-    }
-    names.iter().any(|n| *n == name)
 }

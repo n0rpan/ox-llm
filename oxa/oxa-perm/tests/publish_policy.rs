@@ -388,13 +388,16 @@ fn local_writers_and_path_qualified_publish_tools_ask() {
 }
 
 #[test]
-fn continued_config_values_and_git_aliases_ask() {
+fn continued_config_values_and_unresolved_git_subcommands_ask() {
     let cwd = repo("my-branch");
     set_config(
         &cwd,
         "[remote \"origin\"]\n\tharmless = x\\\n[ignored]\n\tpush = HEAD:refs/heads/main\n",
     );
     assert_eq!(decide(&cwd, Autonomy::Auto, "git push origin"), Decision::Ask);
+
+    let cwd = repo("my-branch");
+    assert_eq!(decide(&cwd, Autonomy::Auto, "git ship"), Decision::Ask);
 
     let cwd = repo("my-branch");
     set_config(&cwd, "[alias]\n\tship = push origin HEAD:main\n");
