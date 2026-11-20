@@ -67,6 +67,7 @@ mod usage_log;
 mod wait_probe;
 mod wipe_cmd;
 mod work_board;
+mod worker_cache;
 pub use work_board::refill_input;
 mod work_checks;
 mod work_cmd;

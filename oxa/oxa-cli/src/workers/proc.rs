@@ -512,26 +512,36 @@ fn thread_group_alive(pgid: u32) -> io::Result<bool> {
 }
 
 /// [`group_alive`] without procfs: ask the kernel whether the group has a member. `ESRCH` is an
-/// empty group; `EPERM` is a member we may not signal, which the Linux path treats the same way.
-/// This probe must not be short-circuited by the leader's exit: another member can survive it.
+/// empty group. `EPERM` is a member we may not signal: on macOS that is also what a group of
+/// only zombies answers (#1754), so an exited, unreaped leader plus `EPERM` is a finished
+/// group. This probe must not be short-circuited by the leader's exit alone: another member
+/// can survive it, and then the probe succeeds.
 #[cfg(not(target_os = "linux"))]
 fn group_alive(pgid: u32) -> io::Result<bool> {
     // SAFETY: killpg only inspects the group; signal 0 delivers nothing.
-    if unsafe { libc::killpg(pgid as libc::pid_t, 0) } == 0 {
-        return group_alive_from_probe(Ok(()), libc::ESRCH, libc::EPERM);
-    }
-    group_alive_from_probe(Err(io::Error::last_os_error()), libc::ESRCH, libc::EPERM)
+    let probe = if unsafe { libc::killpg(pgid as libc::pid_t, 0) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    };
+    group_alive_from_probe(probe, libc::ESRCH, libc::EPERM, || leader_exited(pgid))
 }
 
-/// Interpret the portable signal-0 process-group probe.
+/// Interpret the portable signal-0 process-group probe. `leader_exited` is asked only when the
+/// probe answers `denied`: an exited, unreaped leader then means a zombie-only group.
 #[cfg(any(test, not(target_os = "linux")))]
-fn group_alive_from_probe(probe: io::Result<()>, missing: i32, denied: i32) -> io::Result<bool> {
+fn group_alive_from_probe(
+    probe: io::Result<()>,
+    missing: i32,
+    denied: i32,
+    leader_exited: impl FnOnce() -> io::Result<bool>,
+) -> io::Result<bool> {
     let Err(error) = probe else {
         return Ok(true);
     };
     match error.raw_os_error() {
         Some(code) if code == missing => Ok(false),
-        Some(code) if code == denied => Ok(true),
+        Some(code) if code == denied => Ok(!leader_exited()?),
         _ => Err(error),
     }
 }
@@ -689,7 +699,20 @@ mod tests {
     /// its process group still contains a surviving child.
     #[test]
     fn successful_group_probe_reports_survivors_after_leader_exit() {
-        assert!(group_alive_from_probe(Ok(()), ESRCH, 1).expect("group probe"));
+        assert!(group_alive_from_probe(Ok(()), ESRCH, 1, || Ok(true)).expect("group probe"));
+    }
+
+    /// #1754: the probe's answers, with the leader state injected so Linux CI covers them.
+    #[test]
+    fn group_probe_rules_cover_zombie_only_groups() {
+        const EPERM: i32 = 1;
+        let err = |code: i32| Err(io::Error::from_raw_os_error(code));
+        assert!(!group_alive_from_probe(err(ESRCH), ESRCH, EPERM, || Ok(false)).unwrap());
+        assert!(!group_alive_from_probe(err(EPERM), ESRCH, EPERM, || Ok(true)).unwrap());
+        assert!(group_alive_from_probe(err(EPERM), ESRCH, EPERM, || Ok(false)).unwrap());
+        assert!(group_alive_from_probe(err(99), ESRCH, EPERM, || Ok(false)).is_err());
+        // The leader is only asked when EPERM answered.
+        assert!(group_alive_from_probe(Ok(()), ESRCH, EPERM, || panic!("not asked")).unwrap());
     }
 
     #[test]

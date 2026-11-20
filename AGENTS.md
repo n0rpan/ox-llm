@@ -160,6 +160,11 @@ code, tests, CI and docs; the owner validates on hardware.
 - **Cargo cache mounts.** The sandbox forwards an owner-set `CARGO_TARGET_DIR` as a
   toolchain location. An external cache needs a separate user-only
   `oxa.sandbox.writePaths` entry. Review environment forwarding and writable mounts independently.
+- **Worker build cache.** A worker sandbox gets one derived, owner-only extra write path: the
+  per-repository `<cache dir>/<hash>/cargo-target` (`oxa.workers.sharedCache`,
+  `oxa.workers.cacheDir`, `oxa.workers.cacheWarnGb`, all user-only; a project file cannot move
+  or disable it). Never add a parent grant. A held native `oxa work` task is online but
+  GitHub-isolated (runner-owned GitHub), not offline.
 - **Runtime sockets.** Docker and podman sockets stay masked in sandboxed bash unless the owner
   lists them in the user-only `oxa.sandbox.sockets` (default empty) and permits network access.
   An online bind uses a validated socket descriptor. The start notice names each and warns of

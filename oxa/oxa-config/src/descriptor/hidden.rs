@@ -262,4 +262,32 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     )
     .key(Kind::Number, "10")
     .hidden(),
+    // #1541: the shared per-repository build cache of a worker. User settings only.
+    d(
+        "oxa.workers.sharedCache",
+        Group::Advanced,
+        "",
+        "oxa.workers.sharedCache",
+        "",
+    )
+    .key(Kind::Bool, "true")
+    .hidden(),
+    d(
+        "oxa.workers.cacheDir",
+        Group::Advanced,
+        "",
+        "oxa.workers.cacheDir",
+        "",
+    )
+    .key(Kind::String, "null")
+    .hidden(),
+    d(
+        "oxa.workers.cacheWarnGb",
+        Group::Advanced,
+        "",
+        "oxa.workers.cacheWarnGb",
+        "",
+    )
+    .key(Kind::Number, "null")
+    .hidden(),
 ];
