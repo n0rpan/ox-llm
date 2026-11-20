@@ -171,6 +171,7 @@ impl ProbeHooks {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxa_proto::Hooks;
     use serde_json::json;
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     use std::path::PathBuf;
