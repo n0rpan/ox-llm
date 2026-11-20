@@ -325,7 +325,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(fields_of("oxa.cloud").count(), 9);
+        assert_eq!(fields_of("oxa.cloud").count(), 10);
     }
 
     /// The editor of each schema key matches its kind, and choices name only schema options.

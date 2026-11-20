@@ -54,6 +54,7 @@ pub struct Runtime {
     #[cfg(feature = "share")]
     guest_models: BTreeSet<String>,
     go_models: BTreeMap<String, crate::opencode::Model>,
+    model_rules: crate::model_rules::Rules,
     /// Bounded stale-aware Go catalog metadata, beside the ledger in the same
     /// private agent directory. Never a key, header or transcript.
     go_cache: Option<crate::opencode::cache::Cache>,
@@ -207,6 +208,7 @@ impl Runtime {
             #[cfg(feature = "share")]
             guest_models: BTreeSet::new(),
             go_models: BTreeMap::new(),
+            model_rules: crate::model_rules::Rules::default(),
             go_cache: None,
             key_file: KeyFile::prepare(&key_path),
             ledger_dir,
@@ -240,6 +242,15 @@ impl Runtime {
         }
         Ok(self)
     }
+    /// Owner overrides of the model rule table (`oxa.cloud.model_rules`, user settings only).
+    pub fn with_model_rules(mut self, raw: &Value) -> Result<Self, Refusal> {
+        self.model_rules = crate::model_rules::Rules::from_overrides(raw).map_err(|e| invalid(e.0))?;
+        Ok(self)
+    }
+    pub(crate) fn model_rules(&self) -> &crate::model_rules::Rules {
+        &self.model_rules
+    }
+
     /// Trusted user settings: OpenRouter provider routing preferences, sent
     /// exactly as configured. Only `zdr` (bool) and `data_collection`
     /// (`allow` or `deny`) are accepted; anything else is refused. Never forced.

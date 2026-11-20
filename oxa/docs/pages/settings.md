@@ -276,6 +276,19 @@ Known provider or configured prices take precedence over this setting.
 When the same provider has several configured base URLs, select the discovery
 endpoint with `oxa.cloud.discovery.<provider>.base_url`.
 
+Model rules. A built-in table keyed by model id (not by provider URL) says how an
+OpenAI-compatible or OpenCode Go route writes each model's thinking switch, whether its
+`reasoning_content` is replayed, which field carries the output cap and what window it has. Rows
+exist for GLM-5.3 (`thinking` with `clear_thinking:false`), Kimi K3 and DeepSeek V4 (reasoning
+carried on every tool-call turn; DeepSeek also the `thinking` switch) and for local aliases (the
+engine's own template switch; the local request body is not rewritten). `oxa.cloud.model_rules`
+in user settings overrides or adds rows: an object of id patterns (`*` wildcard, case-insensitive)
+to fields `thinking` (`effort`, `object`, `object-keep`, `template`), `replay` (`as-is`, `always`,
+`strip`), `token_field` (`max_tokens`, `max_completion_tokens`), `context_window`, `max_output`
+(positive numbers) and `route` (`cloud`, `local`). Fields left out keep the built-in value; later
+matches win; an unknown key or value is refused at start. A model with no row gets the plain
+request.
+
 OpenRouter privacy routing is the owner's choice and is never forced. By
 default oxa sends no `provider` preferences, so your OpenRouter account and
 workspace settings apply. To choose, set `oxa.cloud.openrouter_provider` in user
