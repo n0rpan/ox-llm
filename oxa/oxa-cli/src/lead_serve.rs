@@ -1087,13 +1087,13 @@ mod tests {
         };
         assert_eq!(owner.post(stale, &env), Err("409 Conflict"));
         assert_eq!((inbox(&a), inbox(&b)), (0, 0));
-        // Back on the start-up target (none), a form for B is stale as well.
+        // Back on the start-up target (none) nothing is attached, so no form can be delivered.
         owner.post(OwnerSubmission::Attach(None), &env).unwrap();
         let orphan = OwnerSubmission::AttachedMessage {
             session: b.clone(),
             text: "meant for B".into(),
         };
-        assert_eq!(owner.post(orphan, &env), Err("409 Conflict"));
+        assert_eq!(owner.post(orphan, &env), Err("503 Service Unavailable"));
         assert_eq!((inbox(&a), inbox(&b)), (0, 0));
         // A form for the session the page is on goes through.
         owner
@@ -1107,9 +1107,14 @@ mod tests {
         assert_eq!((inbox(&a), inbox(&b)), (0, 1));
         let lines = recorded(&buffer);
         assert_eq!(lines.len(), 2, "{lines:?}");
-        assert!(lines
-            .iter()
-            .all(|line| line.contains("status=409 stage=reply reason=stale_target")));
+        assert!(
+            lines[0].contains("status=409 stage=reply reason=stale_target"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[1].contains("status=503 stage=recheck reason=binding"),
+            "{lines:?}"
+        );
         assert!(lines.iter().all(|line| !line.contains("meant for")));
     }
 
