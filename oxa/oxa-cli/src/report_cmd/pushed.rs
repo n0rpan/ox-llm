@@ -8,6 +8,9 @@ use serde_json::Value;
 
 /// Shorter values are too common to identify a secret.
 const MIN_SECRET_VALUE_CHARS: usize = 8;
+/// A value under a generic `_key` / `credentials` name must be at least this long: those
+/// names also label ordinary short identifiers.
+const MIN_KEY_VALUE_CHARS: usize = 16;
 const KEY_FILE_PREFIXES: [&str; 4] = ["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"];
 const KEY_FILE_SUFFIXES: [&str; 7] = [".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".ppk"];
 const REGISTRY_FILES: [&str; 4] = [".npmrc", ".pypirc", ".yarnrc", ".yarnrc.yml"];
@@ -74,6 +77,51 @@ fn opaque_value(value: &str) -> bool {
         && value
             .chars()
             .any(|ch| ch.is_ascii_digit() || !(ch.is_alphabetic() || matches!(ch, '_' | '.' | ':')))
+}
+
+/// Whether a key names a file location (`CLIENT_SECRET_FILE`, `ssl.key.path`, `tokenDir`,
+/// `GOOGLE_APPLICATION_CREDENTIALS`) rather than a secret value. Only such keys may hold a
+/// relative file path; `PASSWORD`, `SECRET`, `TOKEN`, `API_KEY`, `SIGNING_KEY` and a bare
+/// `CREDENTIALS` hold the secret itself, so a path-shaped value under them is refused.
+fn file_location_key(name: &str) -> bool {
+    let name = name.trim_matches(['"', '\'']);
+    if name.eq_ignore_ascii_case("google_application_credentials") {
+        return true;
+    }
+    let lower = name.to_ascii_lowercase();
+    let separated = ["file", "path", "dir", "directory"].iter().any(|word| {
+        lower
+            .strip_suffix(word)
+            .is_some_and(|head| head.ends_with(['_', '-', '.']))
+    });
+    let camel = ["File", "Path", "Dir", "Directory"].iter().any(|word| {
+        name.strip_suffix(word)
+            .is_some_and(|head| head.ends_with(|ch: char| ch.is_ascii_lowercase() || ch.is_ascii_digit()))
+    });
+    separated || camel
+}
+
+/// A path-shaped value that is allowed under this key: a relative file path under a key that
+/// names a file location.
+fn location_value(name: &str, value: &str) -> bool {
+    file_location_key(name) && relative_file_path(value)
+}
+
+/// A relative file path such as `config/service-account.json`: path characters only, a `/`,
+/// no URL scheme and a file extension on the last segment. Base64 never holds a `.`, so an
+/// encoded credential is not mistaken for one.
+fn relative_file_path(value: &str) -> bool {
+    let value = value.trim().trim_matches(['"', '\'']);
+    let Some((_, name)) = value.rsplit_once('/') else {
+        return false;
+    };
+    let ext = name.rsplit_once('.').map_or("", |(_, ext)| ext);
+    !value.contains("://")
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-'))
+        && (1..=5).contains(&ext.len())
+        && ext.chars().all(|ch| ch.is_ascii_alphanumeric())
 }
 
 /// Whether a quoted value of a secret-named key is a literal credential. A quoted string is
@@ -174,14 +222,40 @@ fn environment_secret_assignment(text: &str) -> bool {
     ASSIGNMENT
         .get_or_init(|| {
             regex::Regex::new(concat!(
-                r"(?i)(?:^|[^A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*",
+                r"(?i)(?:^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*",
                 r"(?:password|passwd|passphrase|secret|token|api_?key|access_?key)",
-                r"[A-Za-z0-9_]*\s*=\s*([^\s#]+)"
+                r"[A-Za-z0-9_]*)\s*=\s*([^\s#]+)"
             ))
             .expect("environment secret assignment pattern")
         })
         .captures_iter(text)
-        .any(|found| opaque_value(&found[1]))
+        .any(|found| opaque_value(&found[2]) && !location_value(&found[1], &found[2]))
+}
+
+/// An assignment (`NAME=value`, `name: value`, `"name": "value"`) whose name ends in a
+/// generic key or credential word (`ENCRYPTION_KEY`, `signing.key`, `db_credentials`): the
+/// shared patterns cover only `api_key`/`access_key` and need a word boundary the `_` hides.
+/// `secret_name` treats these names as secret too. Such names also label ordinary values
+/// (`sort_key: created_at_2`), so the value must be a long opaque literal, not a path or URL.
+fn key_named_assignment(text: &str) -> bool {
+    static KEYED: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    KEYED
+        .get_or_init(|| {
+            regex::Regex::new(concat!(
+                r#"(?i)(?:^|[^a-z0-9_.-])["']?([a-z0-9_.-]*(?:[_.-]key|credentials?))["']?\s*[:=]\s*"#,
+                r#"["']?([^\s"'#,;]+)"#
+            ))
+            .expect("key-named assignment pattern")
+        })
+        .captures_iter(text)
+        .any(|found| {
+            let value = found[2].trim();
+            value.chars().count() >= MIN_KEY_VALUE_CHARS
+                && opaque_value(value)
+                && !value.starts_with(['/', '~', '.'])
+                && !location_value(&found[1], value)
+                && !value.contains("://")
+        })
 }
 
 /// `Authorization: Basic …` / `Bearer …` with an encoded value: base64 of a user and a password
@@ -190,8 +264,10 @@ fn scheme_credential(text: &str) -> bool {
     static SCHEME: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     SCHEME
         .get_or_init(|| {
-            regex::Regex::new(r#"(?i)authorization\s*[:=]\s*["']?(?:basic|bearer)\s+([A-Za-z0-9+/=._-]{8,})"#)
-                .expect("authorization scheme pattern")
+            regex::Regex::new(
+                r#"(?i)authorization["']?\s*[:=]\s*["']?(?:basic|bearer)\s+([A-Za-z0-9+/=._-]{8,})"#,
+            )
+            .expect("authorization scheme pattern")
         })
         .captures_iter(text)
         .any(|found| {
@@ -207,13 +283,13 @@ fn prefixed_assignment(text: &str) -> bool {
     PREFIXED
         .get_or_init(|| {
             regex::Regex::new(concat!(
-                r#"(?i)(?:^|[^a-z0-9_])["']?[a-z0-9_.-]*(?:api[_-]?key|access[_-]?token|auth[_-]?token"#,
-                r#"|refresh[_-]?token|token|secret|password|passwd|passphrase)[a-z0-9_.-]*["']?\s*[:=]\s*["']?([^\s"'#,;]+)"#
+                r#"(?i)(?:^|[^a-z0-9_])["']?([a-z0-9_.-]*(?:api[_-]?key|access[_-]?token|auth[_-]?token"#,
+                r#"|refresh[_-]?token|token|secret|password|passwd|passphrase)[a-z0-9_.-]*)["']?\s*[:=]\s*["']?([^\s"'#,;]+)"#
             ))
             .expect("prefixed assignment pattern")
         })
         .captures_iter(text)
-        .any(|found| opaque_value(found[1].trim()))
+        .any(|found| opaque_value(found[2].trim()) && !location_value(&found[1], &found[2]))
 }
 
 /// A PuTTY private key is a line-oriented format, not PEM: `PuTTY-User-Key-File-N` and
@@ -411,6 +487,7 @@ impl PushScan {
             || quoted_secret_literal(text)
             || environment_secret_assignment(text)
             || prefixed_assignment(text)
+            || key_named_assignment(text)
             || registry_auth(text)
             || block_scalar_secret(text)
             || json_split_secret(text)
@@ -698,6 +775,54 @@ mod tests {
     }
 
     #[test]
+    fn relative_credential_file_paths_pass_in_templates() {
+        let scan = PushScan::new(
+            &Env::from_pairs(&[]),
+            &Settings::from_values(json!({}), json!({})),
+        );
+        for text in [
+            "GOOGLE_APPLICATION_CREDENTIALS=config/service-account.json",
+            "SIGNING_KEY_FILE=secrets/dev/signing-key.pem",
+            "service.tls.keyPath: certs/prod/tls.key",
+            "SECRETS_DIR=secrets/dev/store.d",
+            "CLIENT_SECRET_FILE=conf/oauth/client-secret.json",
+            "service_secret_path: certs/prod/tls.key",
+        ] {
+            assert!(scan.check(&added(".env.example", text)).is_none(), "{text}");
+            assert!(
+                scan.check(&added("deploy/app/.env.example", text)).is_none(),
+                "{text}"
+            );
+        }
+        for text in [
+            "ENCRYPTION_KEY=Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MA/b64==",
+            "GOOGLE_APPLICATION_CREDENTIALS=abcdEFGH1234ijklMNOP5678",
+        ] {
+            assert!(scan.check(&added(".env.example", text)).is_some(), "{text}");
+        }
+        // A path-shaped value under a key that names the secret itself is still a credential.
+        for text in [
+            "PASSWORD=abc/def.txt",
+            "DB_PASSWORD=abc/def.txt",
+            "SECRET=abc/def.txt",
+            "CLIENT_SECRET=abc/def.txt",
+            "API_TOKEN=abc/def.txt",
+            "token: abc/def.txt",
+            "API_KEY=abc/def.txt",
+            "SIGNING_KEY=secrets/dev/signing-key.pem",
+            "PRIVATE_KEY=abc/def-ghi-jkl.pem",
+            "DB_CREDENTIALS=abc/def-ghi-jkl.txt",
+            "passwd=abc/def.txt",
+        ] {
+            assert!(scan.check(&added(".env.example", text)).is_some(), "{text}");
+            assert!(
+                scan.check(&added("deploy/app/.env.example", text)).is_some(),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
     fn multiline_secret_values_are_matched_line_by_line() {
         let value = "synthetic-first-half\nsynthetic-second-half";
         let env = Env::from_pairs(&[("SYNTHETIC_PASSWORD", value)]);
@@ -747,6 +872,40 @@ mod tests {
             "TOKEN=placeholder",
         ] {
             assert!(scan.check(&line(".env.example", text)).is_none());
+        }
+    }
+
+    /// Audit of #1264: a generic `_KEY` / `credentials` name (which `secret_name` already
+    /// treats as secret) and a quoted `"Authorization"` JSON key are refused like the other
+    /// credential assignments; short identifiers, paths and references under such names are not.
+    #[test]
+    fn generic_key_names_and_quoted_authorization_keys_are_refused() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        for (path, text) in [
+            (".env.example", "ENCRYPTION_KEY=opaque-pass-value-17"),
+            ("notes.txt", "export SIGNING_KEY=opaque-pass-value-17"),
+            ("settings.yml", "jwt.signing-key: opaque-pass-value-17"),
+            ("settings.json", "{\"db_credentials\": \"opaque-pass-value-17\"}"),
+            (
+                "settings.json",
+                "{\"Authorization\": \"Basic dXNlcjpwYXNzcGhyYXNl\"}",
+            ),
+            ("settings.yml", "'authorization': 'Bearer dXNlcjpwYXNzcGhyYXNl'"),
+        ] {
+            assert!(scan.check(&added(path, text)).is_some(), "{path}: {text}");
+        }
+        for (path, text) in [
+            (".env.example", "ENCRYPTION_KEY=${ENCRYPTION_KEY}"),
+            (".env.example", "ENCRYPTION_KEY=<encryption-key>"),
+            ("settings.yml", "sort_key: created_at_2"),
+            (
+                "settings.yml",
+                "google_application_credentials: /etc/gcp/service-account.json",
+            ),
+            ("settings.yml", "ssh_key: ~/.ssh/id_deploy_ed25519.pub"),
+            ("settings.json", "{\"monkey\":\"opaque-pass-value-17\"}"),
+        ] {
+            assert!(scan.check(&added(path, text)).is_none(), "{path}: {text}");
         }
     }
 

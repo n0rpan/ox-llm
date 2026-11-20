@@ -128,9 +128,10 @@ code, tests, CI and docs; the owner validates on hardware.
   that contradicts an owner decision stated in the linked issue or PR is answered by updating these
   rules in that PR, not by changing the behaviour.
 - **Publication scan:** `oxa work --publish` and lane pushes refuse secrets in the commits they push (keys,
-  known tokens also after a word character, opaque credential assignments and quoted literals, secret-store
-  content, configured secret values). A file is refused for its content, never its name alone: an empty
-  secret-store file and `.env.example` publish unless the content holds a secret. Flag as P1 a change that
+  known tokens also after a word character, opaque credential assignments (also `_key`/`credentials`
+  names) and quoted literals, secret-store content, configured secret values). A file is refused for its
+  content, never its name alone: an empty secret-store file and `.env.example` publish unless the content
+  holds a secret. Flag as P1 a change that
   weakens these refusals or adds a name-only or blanket long-value block (P2 without a doc update).
 - **Bash and subagent limits.** `oxa.bash.maxJobs` (16) and `oxa.subagent.maxChildren` (8, also
   steps per call) are user-only warning thresholds, never refusals:
