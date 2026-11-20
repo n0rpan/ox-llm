@@ -33,14 +33,16 @@ try:
         wait_for(b'/goal resume')
     else:
         wait_for(b'Goal waiting 60 s')
-        if case == 'switch':
+        if case in ('switch', 'over-cap'):
             os.write(master, b'\x0c')
             wait_for(b'Select model')
             os.write(master, b'replacement')
             wait_for(b'search: replacement')
             wait_for(b'replacement-model')
             os.write(master, b'\r')
-        else:
+            if case == 'over-cap':
+                wait_for(b'Stop the retry to use the full model switch dialog')
+        if case != 'switch':
             os.write(master, b'Use the synthetic instruction\r')
         wait_for(b'Synthetic proof')
     child.send_signal(signal.SIGHUP)
@@ -79,7 +81,15 @@ fn exercise(case: &str) {
                 .into_iter()
                 .map(|alias| FakeModel {
                     alias: alias.into(),
-                    cap: 32768,
+                    cap: if alias == "replacement-model" {
+                        if case == "over-cap" {
+                            4096
+                        } else {
+                            131072
+                        }
+                    } else {
+                        32768
+                    },
                     max_output: None,
                     caps: None,
                 })
@@ -134,6 +144,11 @@ fn exercise(case: &str) {
 #[test]
 fn model_picker_retries_the_goal_immediately_on_the_selected_model() {
     exercise("switch");
+}
+
+#[test]
+fn over_cap_choice_does_not_switch_but_the_goal_still_accepts_input() {
+    exercise("over-cap");
 }
 
 #[test]
