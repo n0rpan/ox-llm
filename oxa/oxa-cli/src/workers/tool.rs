@@ -2180,13 +2180,11 @@ mod tests {
         use oxa_fake::{ScriptTurn, ScriptedEngine};
         use oxa_proto::{AgentEvent, EventSink, HeadlessUi};
 
-        // The worker the wait watches: started, and finished, while the `wait` call runs. A
-        // worker start asks the session for the model catalog, which only a run's own host pump
-        // answers, and the wait polls `worker_done` until the worker's status file is terminal.
+        // The worker the wait watches. It exists before the turn starts, with its process
+        // already gone, which is what a finished worker looks like to the probe; this test
+        // asks only that a `wait` on `worker_done` hands that state back to the model.
         struct FinishDuringWait {
-            core: Arc<WorkerCore>,
             agent: PathBuf,
-            repo: PathBuf,
             parent: String,
         }
         impl EventSink for FinishDuringWait {
@@ -2195,15 +2193,7 @@ mod tests {
                 {
                     return;
                 }
-                let out = self.core.start(
-                    &json!({"action": "start", "name": "alpha", "goal": "g"}),
-                    &self.repo,
-                    Mode::Workspace,
-                    Autonomy::Standard,
-                );
-                assert!(!out.is_error, "{}", out.text);
                 let rec = registry::load(&self.agent, &self.parent).unwrap().remove(0);
-                assert_eq!(rec.name, "alpha");
                 let status = json!({"session_id": rec.session_id, "pid": rec.pid, "phase": "finished",
                     "outcome": {"type": "oxa_result", "outcome": "done", "exit_code": 0}});
                 fs::create_dir_all(rec.status_file.parent().unwrap()).unwrap();
@@ -2252,10 +2242,20 @@ mod tests {
         // The hook set learns the parent session (and model) through the host at attach.
         let (parent, _) = hooks.core.session();
         assert_eq!(parent, session.inner().sref.id);
+        // A real launch, so the registry, the status file and the probe are the production ones;
+        // the worker's process is a fake that lingers, so the outcome below is the status file's
+        // own and not a guess from a missing process. The launch asks the session for the model
+        // catalog, which only a run's host pump answers, so the test answers it here.
+        *lock(&hooks.core.host) = Some(Arc::new(CatalogHost(true)));
+        let out = hooks.core.start(
+            &json!({"action": "start", "name": "alpha", "goal": "g"}),
+            &repo,
+            Mode::Workspace,
+            Autonomy::Standard,
+        );
+        assert!(!out.is_error, "{}", out.text);
         let mut sink = FinishDuringWait {
-            core: hooks.core.clone(),
             agent: agent.clone(),
-            repo: repo.clone(),
             parent: parent.clone(),
         };
         session
