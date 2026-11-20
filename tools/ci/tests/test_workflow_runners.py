@@ -143,7 +143,8 @@ class WorkflowRunners(unittest.TestCase):
         text = (WORKFLOWS / 'macos.yml').read_text()
         self.assertNotIn('  pull_request:', text)
         self.assertNotIn('merge_group:', text)
-        self.assertIn("branches: ['main']", text)
+        # #2049: a main push lands the commit the queue tested, so its macOS build is not repeated.
+        self.assertNotIn('  push:', text)
         self.assertIn('workflow_dispatch:', text)
         self.assertIn('workflow_call:', text)
         self.assertNotIn('non-required', text)
