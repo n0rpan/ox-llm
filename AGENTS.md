@@ -128,6 +128,9 @@ code, tests, CI and docs; the owner validates on hardware.
   publish behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and the user
   docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A change to an ordinary
   default, limit or budget updates the user docs; a missing docs update is P3 and is fixed forward.
+- **Dev publishing:** the rolling dev release requires both reproducible Linux archives. Its native
+  macOS arm64 archive is best effort and may be absent without blocking Linux publication. Every
+  archive that is published is included in the versioned checksum file and build provenance.
 - **Memory store:** the memory store's `memory/` directory is owner-only (`0700`), and every entry,
   generated index and lock file is owner-only (`0600`). A save must tighten an existing directory
   with looser permissions before writing; review changes against this upgrade behaviour as well as
