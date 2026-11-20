@@ -466,3 +466,17 @@ fn gh_mutation_fingerprint_preserves_origin_url_order() {
     );
     assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask);
 }
+
+#[test]
+fn gh_mutation_fails_closed_when_config_includes_another_file() {
+    let cwd = repo("my-branch");
+    set_config(
+        &cwd,
+        "[include]\n\tpath = project.inc\n[remote \"origin\"]\n\turl = https://github.com/o/r.git\n",
+    );
+
+    assert_eq!(
+        decide(&cwd, Autonomy::Auto, "gh pr comment --body hi"),
+        Decision::Ask
+    );
+}

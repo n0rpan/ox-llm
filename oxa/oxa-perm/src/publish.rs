@@ -562,13 +562,7 @@ fn config_risky(dir: &Path, branch: &str, implicit: bool) -> bool {
 /// order):
 /// what a push to `origin` really goes to. `None` when the config cannot be read safely.
 fn url_fingerprint(dir: &Path) -> Option<Vec<String>> {
-    let (risky, fp) = scan_config(dir, "", false);
-    // A config that is risky for another reason still has a fingerprint; only a read failure
-    // (reported as risky with an empty list) has none.
-    if risky && fp.is_empty() && git_dirs(dir).is_none() {
-        return None;
-    }
-    Some(fp)
+    scan_config(dir, "", false).1
 }
 
 /// Trusted baseline of origin's URLs per session repository (common dir), taken from the
@@ -613,21 +607,22 @@ fn urls_unchanged(session: &Path, target: &Path) -> bool {
     }
 }
 
-fn scan_config(dir: &Path, branch: &str, implicit: bool) -> (bool, Vec<String>) {
+fn scan_config(dir: &Path, branch: &str, implicit: bool) -> (bool, Option<Vec<String>>) {
     let mut fp: Vec<String> = Vec::new();
     let mut config_risky = false;
+    let mut fingerprint_safe = true;
     let Some((gitdir, common)) = git_dirs(dir) else {
-        return (true, fp);
+        return (true, None);
     };
     if std::fs::symlink_metadata(gitdir.join("config.worktree")).is_ok() {
-        return (true, fp);
+        return (true, None);
     }
     let path = common.join("config");
     let text = match std::fs::symlink_metadata(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         _ => match read_small(&path) {
             Some(t) => t,
-            None => return (true, fp),
+            None => return (true, None),
         },
     };
     let mut section = String::new();
@@ -636,13 +631,13 @@ fn scan_config(dir: &Path, branch: &str, implicit: bool) -> (bool, Vec<String>) 
         let mut line = raw.trim();
         if line.starts_with('[') {
             let Some(end) = line.find(']') else {
-                return (true, fp);
+                return (true, None);
             };
             let head = &line[1..end];
             let (name, s) = match head.split_once('"') {
                 Some((n, rest)) => {
                     let Some(quoted) = rest.strip_suffix('"').and_then(unescape_subsection) else {
-                        return (true, fp);
+                        return (true, None);
                     };
                     (n.trim(), Some(quoted))
                 }
@@ -679,6 +674,11 @@ fn scan_config(dir: &Path, branch: &str, implicit: bool) -> (bool, Vec<String>) 
             },
             _ => false,
         };
+        // Git resolves includes in place, so values from an unparsed included file can change
+        // which remote URL GH selects. Never consider such a fingerprint unchanged.
+        if matches!(section.as_str(), "include" | "includeif") {
+            fingerprint_safe = false;
+        }
         let tracked = match (section.as_str(), sub.as_deref()) {
             ("remote", Some(_)) => matches!(key.as_str(), "url" | "pushurl" | "fetch" | "gh-resolved"),
             ("url", _) => matches!(key.as_str(), "insteadof" | "pushinsteadof"),
@@ -691,7 +691,7 @@ fn scan_config(dir: &Path, branch: &str, implicit: bool) -> (bool, Vec<String>) 
         // even though pushes separately reject the risky configuration.
         config_risky |= risky;
     }
-    (config_risky, fp)
+    (config_risky, fingerprint_safe.then_some(fp))
 }
 
 /// Git drops a backslash before the following character in a quoted subsection name.
