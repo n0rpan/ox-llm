@@ -139,7 +139,6 @@ pub(crate) fn mount_plan(
     real_home: Option<&Path>,
     sockets: &[(&Path, i32)],
 ) -> MountPlan {
-    let home_s = home.to_string_lossy().into_owned();
     // sbx-symhome: every decision and every mount uses the canonical cwd and home, so a cwd
     // that only resolves to `$HOME` (or into it) gets the masks of the real one. An
     // unresolvable path stays as given here; `refusal` refuses to run then (fail closed).

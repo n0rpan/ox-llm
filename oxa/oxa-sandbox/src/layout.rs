@@ -414,6 +414,7 @@ impl Layout {
             scratch: None,
             scratch_root: None,
             cache_home: crate::scratch::user_cache_home(&i.home, &i.env),
+            scratch_warn: None,
         }
     }
 
