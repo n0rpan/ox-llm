@@ -133,12 +133,6 @@ impl FullAccess {
         spec
     }
 
-    /// Exec hooks are trusted project configuration, but retain their dedicated no-network,
-    /// private-path sandbox independently of the interactive bash policy.
-    pub fn hook_sandbox(full: &Arc<FullAccess>) -> Arc<dyn Sandbox> {
-        full.inner.clone()
-    }
-
     /// Reuse the process's switch and launch settings with the session's own sandbox.
     /// In particular, auto/plan bash and the rest of the session must share one scratch dir.
     pub fn with_inner(&self, inner: Arc<dyn Sandbox>) -> FullAccess {
@@ -154,6 +148,14 @@ impl FullAccess {
             host_net: self.host_net.clone(),
             offline_bwrap: self.offline_bwrap.clone(),
         }
+    }
+
+    /// The exec hooks' sandbox. Hooks are trusted configuration and keep the wrapped sandbox,
+    /// except under yolo: the owner standard is "yolo = no sandbox anywhere", so while the
+    /// switch is at yolo (startup or live, also a yolo-started unattended worker) they run with
+    /// the user's rights like bash, keeping the offline rule.
+    pub fn hook_sandbox(full: &Arc<FullAccess>) -> Arc<dyn Sandbox> {
+        full.inner.clone()
     }
 
     /// The session's file-tool view follows bash's full-access switch. Process execution
@@ -295,9 +297,9 @@ impl Sandbox for FullAccess {
         self.inner.run_streaming(s, c, live)
     }
     /// Only exec hooks pass standard input; they are the user's own configuration, not the
-    /// model's bash. With the OS sandbox on they stay in the wrapped sandbox at every level
-    /// (no full-access bypass). Without it (#1512 S3) they run with the user's rights, like
-    /// bash, and keep the owner's network setting.
+    /// model's bash. With the OS sandbox on they stay in the wrapped sandbox. Without it
+    /// (#1512 S3) they run with the user's rights, like bash, keep the owner's network setting,
+    /// and start from an empty environment plus the hook's own (never the yolo inherit path).
     fn run_with_stdin(
         &self,
         s: &ExecSpec,

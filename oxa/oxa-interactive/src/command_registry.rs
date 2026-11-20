@@ -77,6 +77,13 @@ const MEMORY_CLI_ONLY: Surfaces = Surfaces {
     menu: Availability::Exception("The menu has no memory command"),
     web: Availability::Exception("No web frontend is shipped"),
 };
+/// `oxa local add` is a CLI-only surface: it edits the user's settings file and prints a report.
+const LOCAL_CLI_ONLY: Surfaces = Surfaces {
+    cli: Availability::Supported,
+    slash: Availability::Exception("Local models are wired from the command line, not a running session"),
+    menu: Availability::Exception("The menu has no local command"),
+    web: Availability::Exception("No web frontend is shipped"),
+};
 const NO_REQUIREMENTS: Requirements = Requirements {
     restart: false,
     browser: false,
@@ -157,6 +164,23 @@ commands! {
             web: Availability::Exception("No web frontend is shipped"),
         },
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
+    },
+    Status {
+        path: &["status"],
+        aliases: &[],
+        summary: "Show session status, or print suite status as JSON",
+        arguments: &[
+            Argument { name: "session-id|session-file", kind: ArgumentKind::Word, required: false },
+            Argument { name: "json", kind: ArgumentKind::Flag, required: false },
+            Argument { name: "session-dir", kind: ArgumentKind::Flag, required: false },
+        ],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("The slash menu has no status command"),
+            menu: Availability::Exception("The menu has no status command"),
+            web: Availability::Exception("No web frontend is shipped"),
+        },
+        requirements: NO_REQUIREMENTS,
     },
     Lead {
         path: &["lead"], aliases: &[], summary: "Chat with the dedicated Lead session",
@@ -253,6 +277,17 @@ commands! {
         path: &["memory", "rm"], aliases: &[], summary: "Delete one memory entry and its index line",
         arguments: &[Argument { name: "name", kind: ArgumentKind::Word, required: true }],
         surfaces: MEMORY_CLI_ONLY, requirements: NO_REQUIREMENTS,
+    },
+    Local {
+        path: &["local"], aliases: &[], summary: "Wire a local GGUF model into the native local engine settings",
+        arguments: &[Argument { name: "verb", kind: ArgumentKind::Tail, required: false }],
+        surfaces: LOCAL_CLI_ONLY, requirements: Requirements { owner_only: true, ..NO_REQUIREMENTS },
+    },
+    LocalAdd {
+        path: &["local", "add"], aliases: &[],
+        summary: "Add a local GGUF model from the engine's admission report",
+        arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: true }],
+        surfaces: LOCAL_CLI_ONLY, requirements: Requirements { owner_only: true, ..NO_REQUIREMENTS },
     },
     Admission {
         path: &["admission"],
@@ -405,6 +440,21 @@ mod tests {
     }
 
     #[test]
+    fn status_json_is_declared_for_the_cli_surface() {
+        let input = words("status --json");
+        let parsed = parse_cli(&input).expect("status resolves as a CLI command");
+        assert_eq!(parsed.command.id, CommandId::Status);
+        assert_eq!(parsed.args, &input[1..]);
+        assert!(parsed
+            .command
+            .arguments
+            .iter()
+            .any(|argument| argument.name == "json" && argument.kind == ArgumentKind::Flag));
+        assert!(dispatch_slash(&input).is_none());
+        assert!(entries(Surface::Cli).any(|entry| entry.id == CommandId::Status));
+    }
+
+    #[test]
     fn paths_are_unique_and_declarations_are_complete() {
         let mut paths = std::collections::BTreeSet::new();
         for entry in COMMANDS {
@@ -446,6 +496,20 @@ mod tests {
                 assert_eq!(entries(surface).any(|entry| entry.id == *id), shown);
                 assert_eq!(help(surface).contains(declaration.summary), shown);
             }
+        }
+    }
+
+    #[test]
+    fn local_add_is_declared_for_the_cli_surface_only() {
+        let input = words("local add m.gguf --enable");
+        let parsed = parse_cli(&input).expect("local add resolves on the CLI");
+        assert_eq!(parsed.command.id, CommandId::LocalAdd);
+        assert_eq!(parsed.args, &input[2..]);
+        assert!(parsed.command.requirements.owner_only);
+        assert_eq!(parse_cli(&words("local")).unwrap().command.id, CommandId::Local);
+        assert!(dispatch_slash(&words("local add m.gguf")).is_none());
+        for surface in [Surface::Slash, Surface::Menu, Surface::Web] {
+            assert!(!entries(surface).any(|e| e.id == CommandId::LocalAdd));
         }
     }
 

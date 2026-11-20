@@ -17,7 +17,7 @@ use oxa_tui::{
     oxa_theme, resolve_theme, Appearance, ProcessTerminal, TermCaps, TermOpts, Terminal, TerminalColors,
     Theme,
 };
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -398,6 +398,34 @@ impl WorkerStop {
 /// itself, and a session without hook sets posts no host request at all.
 pub const WORKER_IDLE_TICK: Duration = Duration::from_millis(250);
 
+/// Session destinations whose retained job completions sit behind an unsuccessful-run
+/// boundary. Reopening constructs a fresh `Session` with a default outcome, so this boundary
+/// belongs to the worker rather than to one particular `Session` instance.
+#[derive(Default)]
+struct StoppedJobWakes(BTreeSet<String>);
+
+impl StoppedJobWakes {
+    fn preserve(&mut self, session: &Session) {
+        if session.handle().has_job_wake_input() && !may_continue(session.outcome()) {
+            self.0.insert(session.inner().sref.id.clone());
+        }
+    }
+
+    fn permits(&self, session_id: &str) -> bool {
+        !self.0.contains(session_id)
+    }
+
+    fn recover(&mut self, session_id: &str) {
+        self.0.remove(session_id);
+    }
+
+    fn recover_for_prompt(&mut self, session_id: &str, targets_current_session: bool) {
+        if targets_current_session {
+            self.recover(session_id);
+        }
+    }
+}
+
 /// Install the worker's idle wake on `handle`: the session calls it when something the worker
 /// cannot see through `cmds` happens (a host request posted while it waits, a wrap-up
 /// request), and one coalesced [`SessionCmd::Wake`] is sent so the host is served at once
@@ -494,9 +522,10 @@ fn drive(
         } else {
             250
         };
-        let events = term.poll(wait_ms);
-        for ev in events {
-            lp.input(term, ev);
+        if lp.quit.is_none() {
+            for ev in term.poll(wait_ms) {
+                lp.input(term, ev);
+            }
         }
         lp.tick(animating);
         if lp.dirty {
@@ -574,7 +603,12 @@ fn worker_loop_inner(
     // O-152: the boot preload is due as soon as a session is ready, not at the next idle tick.
     // Set again when a reopen gives the worker a new session.
     let mut preload_due = true;
+    // Unlike `Session::outcome`, these stop boundaries survive replacement Session objects.
+    let mut stopped_job_wakes = StoppedJobWakes::default();
     loop {
+        if limit_exit_if_requested(session.as_ref(), &out) {
+            break;
+        }
         // An extension's `ctx.newSession()` / `ctx.switchSession()` is applied as a reopen
         // before the next command (the commands queued behind it run in the new session).
         if let Some(s) = session.as_mut() {
@@ -635,6 +669,9 @@ fn worker_loop_inner(
                         run_boot_preload(s, &out, &mut ui_proxy, &stop, &cmds, &mut backlog);
                     }
                 }
+                if limit_exit_if_requested(session.as_ref(), &out) {
+                    break;
+                }
                 if stop.is_stopped() || backlog.iter().any(|c| matches!(c, SessionCmd::Shutdown)) {
                     break;
                 }
@@ -644,6 +681,9 @@ fn worker_loop_inner(
                     match cmds.recv_timeout(WORKER_IDLE_TICK) {
                         Ok(cmd) => cmd,
                         Err(mpsc::RecvTimeoutError::Timeout) => {
+                            if limit_exit_if_requested(session.as_ref(), &out) {
+                                break;
+                            }
                             if let Some(s) = session.as_mut() {
                                 idle_tick(s, &out, &mut ui_proxy, &mut last, &stop, &cmds, &mut backlog);
                             }
@@ -655,7 +695,7 @@ fn worker_loop_inner(
             }
         };
         // A command taken in the same instant as the stop does not start.
-        if stop.is_stopped() {
+        if stop.is_stopped() || limit_exit_if_requested(session.as_ref(), &out) {
             break;
         }
         if pinned
@@ -704,6 +744,7 @@ fn worker_loop_inner(
                 let resumed = matches!(&how, Reopen::Resume(_));
                 let mut opened = false;
                 if let Some(mut old) = session.take() {
+                    stopped_job_wakes.preserve(&old);
                     // The hook sets are shared with the session that replaces this one, so
                     // they are not shut down here (E-INT 4).
                     old.close(&mut ui_proxy);
@@ -761,6 +802,13 @@ fn worker_loop_inner(
                     }
                 }
             }
+            SessionCmd::JobWake { session_id } if !stopped_job_wakes.permits(&session_id) => {
+                // Clear only the coalesced notification. The destination-bound completion
+                // itself remains queued and the next explicit prompt consumes it.
+                if let Some(s) = session.as_ref() {
+                    s.handle().clear_job_wake(&session_id);
+                }
+            }
             SessionCmd::Snapshot => {
                 let Some(s) = session.as_ref() else { break };
                 let _ = out.send(WorkerMsg::Tree(s.inner().tree.clone()));
@@ -784,6 +832,12 @@ fn worker_loop_inner(
             }
             other => {
                 let Some(s) = session.as_mut() else { break };
+                let recovers_job_wakes = match &other {
+                    SessionCmd::Prompt { .. } => true,
+                    SessionCmd::RecoveryPrompt { handle, .. } => handle.same_instance(&s.handle()),
+                    _ => false,
+                };
+                stopped_job_wakes.recover_for_prompt(&s.inner().sref.id, recovers_job_wakes);
                 let reload = matches!(other, SessionCmd::Reload);
                 let status = match &other {
                     SessionCmd::Navigate { .. } => Some("Navigated to selected point"),
@@ -802,6 +856,9 @@ fn worker_loop_inner(
                                 OxaError::new(codes::INTERNAL, format!("internal error (panic): {error}"));
                             (Err(e), false)
                         });
+                if !s.handle().has_job_wake_input() {
+                    stopped_job_wakes.recover(&s.inner().sref.id);
+                }
                 // pi: a navigation an extension cancelled (`session_before_tree` -> cancel) or
                 // whose summary the user aborted is a status, not an error.
                 if is_nav && result.as_ref().is_err_and(|e| e.code == codes::ABORTED) {
@@ -818,9 +875,25 @@ fn worker_loop_inner(
                 if swapped || reload {
                     let _ = out.send(WorkerMsg::Session(session_info(s)));
                 }
+                let limit_exit = s.handle().wrap_up_requested().then(|| {
+                    let outcome = result
+                        .as_ref()
+                        .err()
+                        .map_or(*s.outcome(), oxa_core::RunOutcome::from_error);
+                    match outcome {
+                        oxa_core::RunOutcome::Done | oxa_core::RunOutcome::NothingToDo => {
+                            oxa_core::RunOutcome::Interrupted.exit_code()
+                        }
+                        other => other.exit_code(),
+                    }
+                });
                 let _ = out.send(WorkerMsg::Done(result));
                 let fresh = fresh_status(s, &mut last);
                 let _ = out.send(WorkerMsg::Status(fresh));
+                if let Some(code) = limit_exit {
+                    let _ = out.send(WorkerMsg::LimitExit(code));
+                    break;
+                }
             }
         }
     }
@@ -829,6 +902,18 @@ fn worker_loop_inner(
         s.shutdown(&mut ui_proxy);
     }
     ended
+}
+
+// A limit on the current Session does not follow a session swap. When no command is
+// active, acknowledge it without starting a prompt or another background request.
+fn limit_exit_if_requested(session: Option<&Session>, out: &Sender<WorkerMsg>) -> bool {
+    let requested = session.is_some_and(|s| s.handle().wrap_up_requested());
+    if requested {
+        let _ = out.send(WorkerMsg::LimitExit(
+            oxa_core::RunOutcome::Interrupted.exit_code(),
+        ));
+    }
+    requested
 }
 
 /// O-152: the boot preload of the session in force while its wire is still empty: prefill its
@@ -874,7 +959,7 @@ fn idle_tick(
     // O-386: the preload is due before the worker's first wait (see `worker_loop_with`); this
     // call is the retry for a session whose hook set had requests pending then.
     run_boot_preload(s, out, ui, stop, cmds, backlog);
-    if !backlog.is_empty() || stop.is_stopped() {
+    if !backlog.is_empty() || stop.is_stopped() || s.handle().wrap_up_requested() {
         return;
     }
     let mut sink = CountingSink {
@@ -2706,7 +2791,7 @@ mod steering_tests;
 
 #[cfg(test)]
 mod job_wake_gate_tests {
-    use super::may_continue;
+    use super::{may_continue, StoppedJobWakes};
     use oxa_core::RunOutcome;
 
     /// A job's wake (or any queued wake) must not restart a run that stopped on a failure,
@@ -2719,5 +2804,34 @@ mod job_wake_gate_tests {
         assert!(!may_continue(&RunOutcome::Blocked("x")));
         assert!(!may_continue(&RunOutcome::Interrupted));
         assert!(!may_continue(&RunOutcome::Stalled));
+    }
+
+    /// Replacing a session resets its `RunOutcome` to `NothingToDo`. The worker-owned
+    /// boundary must nevertheless suppress the retained completion until owner input arrives.
+    #[test]
+    fn a_stopped_job_wake_survives_session_replacement() {
+        let mut stopped = StoppedJobWakes::default();
+        stopped.0.insert("session".into());
+
+        assert!(!stopped.permits("session"));
+        assert!(
+            may_continue(&RunOutcome::NothingToDo),
+            "a replacement outcome alone would incorrectly permit the wake"
+        );
+
+        stopped.recover_for_prompt("session", true);
+        assert!(stopped.permits("session"));
+    }
+
+    /// A recovery prompt still bound to the replaced session is not owner input for the
+    /// current session, so it must not release that session's stopped-job boundary.
+    #[test]
+    fn a_stale_recovery_prompt_does_not_release_the_boundary() {
+        let mut stopped = StoppedJobWakes::default();
+        stopped.0.insert("session".into());
+
+        stopped.recover_for_prompt("session", false);
+
+        assert!(!stopped.permits("session"));
     }
 }

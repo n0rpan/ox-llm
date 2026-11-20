@@ -433,6 +433,10 @@ impl Ui for LockedUi<'_, '_> {
     fn confirm(&mut self, title: &str, body: &str, timeout_ms: Option<u32>) -> Option<bool> {
         self.with(|u| u.confirm(title, body, timeout_ms))
     }
+    fn approve_publication(&mut self, title: &str, body: &str) -> Option<bool> {
+        self.with(|u| u.approve_publication(title, body))
+    }
+
     fn dialog_canceller(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
         self.with(|u| u.dialog_canceller())
     }
@@ -536,7 +540,7 @@ pub(crate) fn pumped<R: Send>(
         while let Err(mpsc::RecvTimeoutError::Timeout) = done_rx.recv_timeout(pause) {
             let mut ui = LockedUi(&cell);
             let served = serve_level(st, level, sink, &mut ui);
-            serve_owner_confirm(st, sink, &mut ui, true);
+            serve_owner_confirm(st, sink, &mut ui);
             tick(sink);
             crate::fire::drain(st, sink, &mut ui);
             crate::fire::fire_prompts(st, &prompts, sink, &mut ui);
@@ -551,7 +555,7 @@ pub(crate) fn pumped<R: Send>(
         if let Some((broker, previous)) = previous_broker_state {
             broker.set_servable(previous);
         }
-        serve_owner_confirm(st, sink, &mut ui, false);
+        drain_owner_confirm_records(st, sink);
         crate::fire::drain(st, sink, &mut ui);
         crate::fire::fire_prompts(st, &prompts, sink, &mut ui);
         match helper.join() {
@@ -564,13 +568,19 @@ pub(crate) fn pumped<R: Send>(
 /// Serve the owner confirm broker from the session thread while a tool runs: show the dialog
 /// of a waiting request, then report what was answered (a notice and a session record, so a
 /// yolo answer is never silent).
-fn serve_owner_confirm(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui, serve: bool) {
+fn serve_owner_confirm(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) {
     let Some(broker) = st.shared.owner_confirm() else {
         return;
     };
-    if serve {
-        broker.serve(ui);
-    }
+    broker.serve(ui);
+    drain_owner_confirm_records(st, sink);
+}
+
+/// Record answers without making the broker servable again after the pumped operation ends.
+fn drain_owner_confirm_records(st: &mut SessionState, sink: &mut dyn EventSink) {
+    let Some(broker) = st.shared.owner_confirm() else {
+        return;
+    };
     for r in broker.take_records() {
         let text = format!(
             "owner confirm {} ({}), preview sha256 {}",
@@ -910,6 +920,8 @@ fn apply(
             "remainingTokens": crate::Handle { shared: st.shared.clone() }.remaining_tokens(),
             "sessionId": st.sref.id,
             "model": st.model,
+            // The table mode (plan, workspace or ask): K5b resumes workers no wider than it.
+            "mode": st.mode.as_str(),
             "remote": st.info.caps.remote,
             "contextWindow": st.info.n_ctx,
             "maxOutput": st.info.max_output,
@@ -1132,6 +1144,17 @@ fn gate_pinned_in(
 fn exec_gated(st: &mut SessionState, spec: ExecSpec, ui: &mut dyn Ui) -> Result<Value, OxaError> {
     if spec.net {
         oxa_proto::check_online("a command with network access")?; // P4: no network grant offline
+    }
+    // A directory outside the session directory is mounted into the sandbox (writable when the
+    // spec says so): it asks like the same file access outside the project (yolo allows, headless
+    // without an approver refuses). A directory inside the session directory is unchanged.
+    if !oxa_perm::is_inside(&spec.cwd, &st.cwd) {
+        let mount = if spec.writable {
+            Access::Write(spec.cwd.clone())
+        } else {
+            Access::Read(spec.cwd.clone())
+        };
+        gate(st, &mount, ui)?;
     }
     gate_at(
         st,
@@ -1421,7 +1444,7 @@ mod tests {
     use super::*;
     use crate::Handle;
     use oxa_config::{Dirs, Settings};
-    use oxa_proto::{Engine, FrozenPrefix, HeadlessUi, Mode, ThinkingLevel, VecSink};
+    use oxa_proto::{Autonomy, Engine, FrozenPrefix, HeadlessUi, Mode, ThinkingLevel, VecSink, YoloSwitch};
     use oxa_sandbox::NoSandbox;
     use oxa_session::{MemStore, SessionStore, Transcript, Tree};
 
@@ -1528,6 +1551,47 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         handle.join().expect("caller thread")
+    }
+
+    /// A child that asks after its foreground tool has returned has nobody to service a dialog,
+    /// so it receives `none` instead of waiting behind a broker left servable by the final drain.
+    #[test]
+    fn pumped_tool_leaves_owner_confirm_unservable() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::UnixStream;
+
+        let mut f = fixture();
+        let broker = crate::owner_confirm::OwnerConfirm::start(
+            &f.env.root().join("confirm-after-tool"),
+            YoloSwitch::new(Autonomy::Standard),
+        )
+        .expect("start owner confirm broker");
+        *f.st
+            .shared
+            .gate
+            .owner_confirm
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(broker.clone());
+
+        let mut sink = VecSink::default();
+        let mut ui = HeadlessUi::default();
+        pumped(&mut f.st, Serve::Run, &mut sink, &mut ui, &mut |_| {}, |_| ());
+
+        let mut stream = UnixStream::connect(broker.sock_path()).expect("connect after tool");
+        writeln!(
+            stream,
+            "{}",
+            json!({"question": "publish?", "preview_sha256": "abc"})
+        )
+        .expect("send request");
+        let mut answer = String::new();
+        std::io::BufReader::new(stream)
+            .read_line(&mut answer)
+            .expect("read answer");
+        assert_eq!(
+            serde_json::from_str::<Value>(&answer).expect("json")["answer"],
+            "none"
+        );
     }
 
     /// #1512 S2: answers the dangerous-command prompt with `answer` and counts the questions.

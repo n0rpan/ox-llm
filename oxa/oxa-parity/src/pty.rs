@@ -991,6 +991,10 @@ impl PtySession {
         let (rows, cols) = opts.size;
         let (master, slave) = open_pty(rows, cols).expect("open a pty");
         let io = |fd: &OwnedFd| Stdio::from(fd.try_clone().expect("dup pty slave"));
+        // The PARITY rows describe an install past its first start: the one-time key note
+        // (`oxa-cli/src/key_hints.rs`, which has its own tests) is marked as already shown, the
+        // same way the environment note is switched off below.
+        let _ = std::fs::write(env.agent_dir().join("key-hints-shown"), b"");
         let mut cmd = Command::new(oxa_bin());
         cmd.args(args)
             .current_dir(env.work())

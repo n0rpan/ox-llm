@@ -424,6 +424,7 @@ fn unattended_approval_cannot_replay_file_fed_input() {
         "cat targets | x'a'rgs rm -rf",
         "cat targets | \"xargs\" rm -rf",
         "cat targets | xa\\rgs rm -rf",
+        "cat targets | xa\\\nrgs rm -rf",
     ] {
         let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
         let cmd = exec(command);

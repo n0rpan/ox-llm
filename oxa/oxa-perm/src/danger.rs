@@ -165,6 +165,29 @@ impl DangerRules {
         hits
     }
 
+    /// The publish rule (owner decision 2026-11-19), a floor prompt next to the built-in rules
+    /// but not one of them: it is not listed in `BUILTIN_RULES` and `oxa.approval.dangerous`
+    /// cannot turn it off. A hit is a git push or gh command beyond the session's own
+    /// non-default branch, or any command chained with a publish command (see `publish.rs`).
+    pub fn publish_classify(&self, command: &str, cwd: &Path) -> Vec<DangerHit> {
+        crate::publish::record_baseline(cwd);
+        let Some(stages) = parse_line(command) else {
+            return vec![DangerHit {
+                rule: "publish-unsafe".to_string(),
+                reason: "the publish approval floor could not safely parse this command".to_string(),
+                segment: command.trim().to_string(),
+            }];
+        };
+        crate::publish::publish_hits(&stages, cwd)
+            .into_iter()
+            .map(|segment| DangerHit {
+                rule: "publish-unsafe".to_string(),
+                reason: "git push beyond the session's own non-default branch, gh merge/release/repo changes, or a command chained with a publish command".to_string(),
+                segment,
+            })
+            .collect()
+    }
+
     /// Adds a hit for a built-in rule (only when enabled) or for a custom `cmd:` rule.
     fn push(&self, hits: &mut Vec<DangerHit>, rule: &str, segment: &str) {
         let reason = match BUILTIN_RULES.iter().find(|row| row.0 == rule) {
@@ -960,22 +983,22 @@ fn heredoc_substitutions(body: &[char]) -> Vec<String> {
 
 /// A tokenized simple command. `pipe_in`: it reads the stdout of the stage before it.
 #[derive(Debug, Default)]
-struct Stage {
-    words: Vec<String>,
+pub(crate) struct Stage {
+    pub(crate) words: Vec<String>,
     /// (operator, target), e.g. (">>", "~/.ssh/authorized_keys"); `<<` and `<<<` included.
-    redirects: Vec<(String, String)>,
+    pub(crate) redirects: Vec<(String, String)>,
     pipe_in: bool,
     /// The previous stage is joined by `&&` or `||`, so this one may not run at all.
     conditional: bool,
     /// This command is followed by `&` and therefore cannot change the parent shell directory.
-    background: bool,
+    pub(crate) background: bool,
     /// A subshell or command-substitution boundary rather than a command.
-    mark: Option<Mark>,
+    pub(crate) mark: Option<Mark>,
 }
 
 /// The kind of a boundary stage: `(`/`$(`/backtick opens a subshell, `)` closes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mark {
+pub(crate) enum Mark {
     Open,
     Close,
 }
@@ -1843,19 +1866,24 @@ pub(crate) fn has_dynamic(text: &str) -> bool {
 /// the owner reviewed does not fix what it acts on. The check is deliberately coarse: a false
 /// positive only means the command is not replayed unattended.
 pub(crate) fn has_mutable_input(text: &str) -> bool {
-    text.contains('<')
-        || text
+    let is_reader = |w: &str| {
+        matches!(w, "xargs" | "parallel" | "read" | "mapfile" | "readarray")
+            || w.ends_with("/xargs")
+            || w.ends_with("/parallel")
+            || w.starts_with("--files-from")
+    };
+    // A backslash-newline continues a word (`xa\<newline>rgs` is `xargs`): join it before
+    // splitting, then also check the words the shell parser itself produces.
+    let joined = text.replace("\\\r\n", "").replace("\\\n", "");
+    joined.contains('<')
+        || joined
             .split(|c: char| c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')' | '{' | '}'))
             // Shell quoting and escapes inside a word do not change the command it names:
             // `x'a'rgs`, `"xargs"` and `xa\rgs` are all `xargs`.
             .map(|w| w.replace(['\'', '"', '\\'], ""))
-            .any(|w| {
-                let w = w.as_str();
-                matches!(w, "xargs" | "parallel" | "read" | "mapfile" | "readarray")
-                    || w.ends_with("/xargs")
-                    || w.ends_with("/parallel")
-                    || w.starts_with("--files-from")
-            })
+            .any(|w| is_reader(&w))
+        || parse_line(&joined)
+            .is_some_and(|stages| stages.iter().any(|st| st.words.iter().any(|w| is_reader(w))))
 }
 
 /// Where a brace expansion (`{a,b}`, `{1..3}`) starts in `w`, if it has one. `{}` (the

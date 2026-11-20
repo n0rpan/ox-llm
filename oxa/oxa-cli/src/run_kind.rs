@@ -71,6 +71,14 @@ pub(crate) fn os_sandbox_wanted(kind: RunKind, a: &Args, user: &Settings) -> boo
     }
 }
 
+/// Whether the configured policy can result in an OS sandbox on this platform.
+///
+/// The configured policy still controls fail-closed execution; status surfaces use this value
+/// so they never advertise confinement on a platform where it is unavailable.
+pub(crate) const fn os_sandbox_active(wanted: bool, platform_supported: bool) -> bool {
+    wanted && platform_supported
+}
+
 /// The owner’s unattended policy, including after a stored goal has been restored.
 pub(crate) fn unattended_os_sandbox(settings: &Settings) -> bool {
     settings
@@ -121,6 +129,14 @@ mod tests {
 
     fn args() -> Args {
         Args::default()
+    }
+
+    #[test]
+    fn sandbox_status_requires_policy_and_platform_support() {
+        assert!(os_sandbox_active(true, true));
+        assert!(!os_sandbox_active(true, false));
+        assert!(!os_sandbox_active(false, true));
+        assert!(!os_sandbox_active(false, false));
     }
 
     #[test]
@@ -325,10 +341,11 @@ mod tests {
             sandbox_net_off(&merged, &user(user_off)),
             "a project cannot relax net = off"
         );
+        // `oxa.sandbox.net` is user-only now: a project file can neither relax nor tighten it.
         let merged = Settings::from_values(json!({}), json!({"oxa": {"sandbox": {"net": "off"}}}));
         assert!(
-            sandbox_net_off(&merged, &user(json!({}))),
-            "a project may turn it off"
+            !sandbox_net_off(&merged, &user(json!({}))),
+            "a project cannot turn it off either"
         );
         assert!(
             !sandbox_net_off(&user(json!({})), &user(json!({}))),
