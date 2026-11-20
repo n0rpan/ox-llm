@@ -540,6 +540,9 @@ impl Session {
         sink: &mut dyn EventSink,
         ui: &mut dyn Ui,
     ) -> Result<Option<RunEnd>, OxaError> {
+        if self.st.goal.is_some() {
+            crate::open_epoch(&mut self.st, "goal", false, sink)?;
+        }
         let guard = self.begin_run()?;
         let ran = oxa_proto::panic::contain(|| queued_run(&mut self.st, sink, ui, true))
             .unwrap_or_else(|error| Err(recover_from_panic(&mut self.st, &error, sink)));
@@ -1765,7 +1768,8 @@ fn restore_locked(
     match replayed {
         Some(prefix) => {
             st.prefix = prefix;
-            crate::tune::refresh(st);
+            // The stored prefix declares `wait` and the goal controls; bind live handlers to them.
+            crate::epoch::rebind_tools(st, sink);
             let enabled = st.compact.enabled;
             st.compact = CompactPolicy {
                 enabled,

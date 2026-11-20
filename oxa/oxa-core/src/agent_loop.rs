@@ -983,6 +983,14 @@ fn run_inner(
                     crate::goal::announce_pause(reason, sink);
                 }
             }
+            if goal.pursuing() && st.active.get("goal_done").is_none() {
+                // The owner's tool selection removed the goal controls: the continue
+                // instruction would name a tool that does not exist, so stop with a reason.
+                let snapshot = goal.pause_because(crate::goal::CONTROLS_MISSING);
+                crate::goal::save_checkpoint(st, &snapshot, sink)?;
+                crate::goal::announce_pause(crate::goal::CONTROLS_MISSING, sink);
+                return Ok(RunEnd::Stopped);
+            }
             if goal.pursuing() {
                 // Queued input (a follow-up that woke a wait) is the next user message:
                 // stop so `settle_runs` delivers it instead of the continuation prompt.

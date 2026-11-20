@@ -19,6 +19,13 @@ The version is computed in one place, `tools/ci/dev_version.py` (`--file-name` p
 without a stable tag the workspace version is used. `dev-update*.sh` accept the older
 `vX.Y.Z-dev.<sha7>` names, pick the highest semver (then highest N) for the `dev` release commit, and
 record the `+` form in their receipts.
+Dev binaries report that full version (`oxa --version` prints `oxa 0.2.2-dev.137+6955919`, likewise
+`oxe` and `oxe-server`). `packaging/release/build.sh` and `portable-build.sh` export it as
+`OX_BUILD_VERSION=${VERSION#v}`, the same value that names the release; a plain `cargo build` and
+every test run leave it unset and report the package version. `release-build.yml` fails when the
+extracted tarball's `--version` output differs from the release name (pull requests build as
+`v<workspace>-pr+<sha7>` so this check also runs there). The engine fingerprint `oxe-<package
+version>` that `oxa` compares for compatibility, and User-Agent values, stay on the package version.
 Archives, SBOMs and proof receipts include the package version and seven-character source
 SHA. SHA256SUMS and downloadable provenance accompany them. The workflow moves only the
 `dev` tag; normal release tags and installs are untouched. Python controller payloads fail

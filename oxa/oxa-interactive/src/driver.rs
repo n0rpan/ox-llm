@@ -2879,7 +2879,7 @@ impl<'a> Loop<'a> {
 
     fn header_lines(&self, width: u16) -> Vec<String> {
         let info = HeaderInfo {
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: oxa_proto::BUILD_VERSION.to_string(),
             resources: self.resources.clone(),
             engine_url: self.session.engine_url.clone(),
             memory_policy: self.session.memory_policy,

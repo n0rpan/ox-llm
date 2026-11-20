@@ -75,7 +75,7 @@ fn record(html: &mut String, csrf: &str, rec: &ApprovalRecord, now: u64, scrub_c
 /// what follows it (`token=demo&&rm` keeps `&&rm`), and quoting or a backslash keeps a
 /// metacharacter inside its word (`password="&value"` is one word). Each word is then
 /// [`mask_word`]ed on its own.
-fn scrub_shell(command: &str, ctx: &ScrubCtx) -> String {
+pub(super) fn scrub_shell(command: &str, ctx: &ScrubCtx) -> String {
     let is_sep = |c: char| c.is_whitespace() || matches!(c, '&' | '|' | ';' | '<' | '>' | '(' | ')');
     let mut out = String::with_capacity(command.len());
     let (mut word, mut seps) = (String::new(), String::new());
@@ -190,7 +190,7 @@ fn expansion_start(next: char) -> bool {
 /// as written, including the command text inside `$(...)`: the owner must see what runs.
 /// A run that holds only quote or escape characters stays as it is, so a fully expanded
 /// value still reads exactly as written.
-fn mask_literal_runs(value: &str) -> String {
+pub(super) fn mask_literal_runs(value: &str) -> String {
     let mut out = String::new();
     let mut literal = String::new();
     let (mut single, mut double, mut escaped) = (false, false, false);
