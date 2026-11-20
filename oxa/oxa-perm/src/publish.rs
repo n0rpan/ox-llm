@@ -267,6 +267,14 @@ fn git_sub(rest: &[String]) -> Option<String> {
     rest.get(k).cloned()
 }
 
+/// Apply `git -C` options in command-line order, as Git does. Relative paths after the first
+/// option are relative to the directory selected by the preceding option, not to `cwd`.
+fn git_working_dir(cwd: &Path, dirs: &[String]) -> PathBuf {
+    dirs.iter().fold(cwd.to_path_buf(), |dir, next| {
+        crate::paths::normalize(Path::new(next), &dir)
+    })
+}
+
 fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
     let rest = &args[1..];
     let (k, dirs, opaque) = git_globals(rest);
@@ -290,10 +298,7 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
     let wd = if dirs.is_empty() {
         cwd.to_path_buf()
     } else {
-        let mut p = cwd.to_path_buf();
-        for d in &dirs {
-            p = crate::paths::normalize(Path::new(d), &p);
-        }
+        let p = git_working_dir(cwd, &dirs);
         if !crate::paths::is_inside(&p, cwd) {
             return Kind::Unsafe;
         }
@@ -808,10 +813,7 @@ fn is_alias(globals: &[String], name: &str, cwd: &Path, dirs: &[String]) -> bool
         }
     }
     let mut files: Vec<PathBuf> = Vec::new();
-    let mut wd = cwd.to_path_buf();
-    for d in dirs {
-        wd = crate::paths::normalize(Path::new(d), &wd);
-    }
+    let wd = git_working_dir(cwd, dirs);
     for dir in [cwd, wd.as_path()] {
         match git_dirs(dir) {
             Some((_, common)) => files.push(common.join("config")),
