@@ -393,7 +393,7 @@ pub(crate) fn mount_plan(
         let dotgit_writable = is_real_dir(&dotgit) && unsafe_reason(&dotgit).is_none();
         let protected = protected_paths(cwd_path);
         for p in &protected {
-            if is_real(p) {
+            if is_real(p) && !config_open(layout, p) {
                 let p = p.to_string_lossy();
                 push(&mut a, &["--ro-bind", &p, &p]);
             }
@@ -1368,9 +1368,11 @@ fn mount_view(cwd: &Path, home: &Path, layout: &Layout, mode: CwdMode, home_entr
                 mounts.ro.push(dotgit);
             }
         }
-        mounts
-            .ro
-            .extend(protected_paths(cwd).into_iter().filter(|p| is_real(p)));
+        mounts.ro.extend(
+            protected_paths(cwd)
+                .into_iter()
+                .filter(|p| is_real(p) && !config_open(layout, p)),
+        );
     }
     // GH config is read-only online and masked offline. Its late mount hides earlier
     // writable binds below it; source aliases elsewhere keep their own mount permissions.
