@@ -52,8 +52,9 @@ fn redact(bytes: &[u8], token: &str) -> Vec<u8> {
     out
 }
 
-/// A streaming redactor: holds back at most `token.len() - 1` bytes (a suffix that could be the
-/// start of the token) between chunks; [`StreamRedactor::finish`] flushes them at EOF.
+/// A streaming redactor: always holds back the last `longest_token - 1` bytes between chunks,
+/// whatever they are; [`StreamRedactor::finish`] flushes them at EOF. The hold-back is
+/// content-independent on purpose (see [`StreamRedactor::push`]).
 struct StreamRedactor<'a> {
     tokens: Vec<&'a [u8]>,
     pending: Vec<u8>,
@@ -79,18 +80,29 @@ impl<'a> StreamRedactor<'a> {
     }
 
     /// Feed a chunk; returns the bytes now safe to show.
+    ///
+    /// The hold-back does not depend on the content. Holding back only a tail that *is* a prefix
+    /// of a secret would be a prefix oracle: with no OS sandbox and `--offline`, a command can
+    /// print a guess and sleep, and a job reading the live stream before EOF learns from the byte
+    /// count whether the guess is a true prefix of the secret. Here the number of bytes shown
+    /// after `n` bytes arrived depends only on `n`.
     fn push(&mut self, chunk: &[u8]) -> Vec<u8> {
         self.pending.extend_from_slice(chunk);
-        let mut out = Vec::new();
-        let mut i = 0;
+        let longest = self.tokens.iter().map(|t| t.len()).max().unwrap_or(0);
+        let hold = longest.saturating_sub(1);
+        let Some(emit) = self.pending.len().checked_sub(hold).filter(|e| *e > 0) else {
+            return Vec::new();
+        };
+        // Any secret that starts before `emit` ends inside `pending` (start + len <=
+        // emit - 1 + hold + 1 = pending.len()), so every position decided here is decided on
+        // full data.
         let buf = &self.pending;
-        while i < buf.len() {
-            let rest = &buf[i..];
-            if let Some(t) = self.tokens.iter().find(|t| rest.starts_with(t)) {
+        let mut out = Vec::with_capacity(emit);
+        let mut i = 0;
+        while i < emit {
+            if let Some(t) = self.tokens.iter().find(|t| buf[i..].starts_with(t)) {
                 out.extend_from_slice(REDACTED.as_bytes());
                 i += t.len();
-            } else if self.tokens.iter().any(|t| t.starts_with(rest)) {
-                break; // maybe the start of the token: wait for more
             } else {
                 out.push(buf[i]);
                 i += 1;
@@ -100,9 +112,17 @@ impl<'a> StreamRedactor<'a> {
         out
     }
 
-    /// EOF: whatever is held back is not a token.
+    /// EOF: the held-back tail is shorter than the longest token, so it cannot hold that one, but
+    /// it can hold a shorter token whole. Mask every token in it, longest first as in
+    /// [`StreamRedactor::many`], and flush.
     fn finish(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.pending)
+        let mut out = std::mem::take(&mut self.pending);
+        for t in &self.tokens {
+            if !t.is_empty() && out.windows(t.len()).any(|window| window == *t) {
+                out = redact(&out, &String::from_utf8_lossy(t));
+            }
+        }
+        out
     }
 }
 
@@ -572,6 +592,65 @@ mod tests {
                 timed_out: false,
                 unsandboxed: false,
             }
+        }
+    }
+
+    /// Codex security review on #1563 (follow-up #1808): the live output must not be a prefix
+    /// oracle. Two streams of the same length that differ only in whether they share a prefix
+    /// with the token show exactly the same number of bytes after every chunk, so a job reading
+    /// the stream before EOF learns nothing, and a token split across chunks is still masked.
+    #[test]
+    fn stream_hold_back_is_independent_of_token_prefixes() {
+        const T: &str = "SYNTH_BG_TOKEN_9";
+        fn per_push(chunks: &[&str]) -> (Vec<usize>, String) {
+            let mut sr = StreamRedactor::new(T);
+            let mut lens = Vec::new();
+            let mut all = Vec::new();
+            for c in chunks {
+                let o = sr.push(c.as_bytes());
+                lens.push(o.len());
+                all.extend_from_slice(&o);
+            }
+            let tail = sr.finish();
+            lens.push(tail.len());
+            all.extend_from_slice(&tail);
+            (lens, String::from_utf8(all).unwrap())
+        }
+        let probes: &[(&[&str], &[&str])] = &[
+            // A true prefix vs a wrong guess of the same length, then the job "sleeps".
+            (&["x ", "SYNTH_BG"], &["x ", "QYNTH_BG"]),
+            (&["SYNTH_BG_TOKEN_"], &["QYNTH_BG_TOKEN_"]),
+            (&["S"], &["Q"]),
+            (
+                &["abc", "SYNTH", "_BG_T", "OKEN_", "X done"],
+                &["abc", "SYNTZ", "_BG_T", "OKEN_", "X done"],
+            ),
+            (
+                &["0123456789abcdefSYNTH_BG_TOKEN_"],
+                &["0123456789abcdefQQQQQQQQQQQQQQQ"],
+            ),
+        ];
+        for (a, b) in probes {
+            let (la, oa) = per_push(a);
+            let (lb, ob) = per_push(b);
+            assert_eq!(
+                la, lb,
+                "shown bytes per chunk depend on the token: {a:?} vs {b:?}"
+            );
+            assert!(!oa.contains(T) && !ob.contains(T));
+            assert_eq!(oa.len(), a.concat().len(), "no full token, nothing replaced");
+        }
+        // Past the hold-back a full token is masked wherever the chunks split it, and several
+        // secrets share one content-independent hold-back sized by the longest.
+        let full = "pre SYNTH_BG_TOKEN_9 mid SYNTH_BG_TOKEN_9 post";
+        for at in 0..=full.len() {
+            let (head, tail) = full.split_at(at);
+            let mut sr = StreamRedactor::many(&[T, "SHORT_SECRET"]);
+            let mut shown = sr.push(head.as_bytes());
+            shown.extend_from_slice(&sr.push(tail.as_bytes()));
+            shown.extend_from_slice(&sr.finish());
+            let shown = String::from_utf8(shown).unwrap();
+            assert_eq!(shown, "pre [redacted] mid [redacted] post", "split at {at}");
         }
     }
 
