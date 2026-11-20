@@ -65,10 +65,14 @@ code, tests, CI and docs; the owner validates on hardware.
   answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
   broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
   files, web pages, other sessions, agent inbox) never approves. In yolo the broker answers yes and
-  records it. The broker socket is owned by the session (dir 0700, socket 0600) and validates a
-  complete, bounded request frame before asking. A typed yes answers only a request whose dialog
-  oxa has already shown (the broker records it); a yes with no shown dialog, or for another request
-  id, is ignored. A consumer a model-run command starts (`oxa work --publish`, `oxa report-issue`)
+  records it, compactly (hash, size, first title line; identical answers merge into one record with
+  a count, the text is not kept). The broker socket is owned by the session (dir 0700, socket 0600).
+  A request is a length-prefixed structured frame (title and body fields); the broker reads the
+  length first and refuses an over-limit frame unread, with a `reason`. The broker's state, bounds
+  and records do not depend on the extension host pump. A typed yes answers only a request whose
+  dialog oxa has already shown: `serve` picks the request, creates its `DialogCancel` ticket and
+  marks it shown in one step, so a yes typed before the UI registered its dialog is not lost and
+  never dismisses another dialog; a yes with no shown dialog, or for another request id, is ignored. A consumer a model-run command starts (`oxa work --publish`, `oxa report-issue`)
   trusts only the sandbox's pinned socket or a listener verified as the session's own oxa process
   (peer credentials: an ancestor, same executable, same user), whatever `OXA_CONFIRM_SOCK` and
   `OXA_CODING_AGENT` say; a fake socket is no answer. Yolo is unchanged (the model already has the
