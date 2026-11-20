@@ -250,3 +250,30 @@ fn hostile_git_metadata_is_not_read() {
     std::os::unix::fs::symlink("/etc/hostname", cwd.join(".git/HEAD")).unwrap();
     assert_eq!(decide(&cwd, Autonomy::Auto, "git push"), Decision::Ask);
 }
+
+#[test]
+fn origin_url_change_after_baseline_asks() {
+    for change in [
+        "[remote \"origin\"]\n\turl = https://other/r\n",
+        "[remote \"origin\"]\n\tpushurl = https://other/r\n",
+        "[url \"https://other/\"]\n\tinsteadOf = https://github.com/\n",
+    ] {
+        let cwd = repo("my-branch");
+        set_config(&cwd, "[remote \"origin\"]\n\turl = https://github.com/o/r\n");
+        // The first command of the session records the baseline.
+        assert_eq!(decide(&cwd, Autonomy::Auto, "git push"), Decision::Allow);
+        assert_eq!(
+            decide(&cwd, Autonomy::Auto, "git push origin HEAD"),
+            Decision::Allow
+        );
+        // An earlier call changes the config: the push now asks.
+        set_config(
+            &cwd,
+            &format!("[remote \"origin\"]\n\turl = https://github.com/o/r\n{change}"),
+        );
+        for c in ["git push", "git push origin HEAD"] {
+            assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{change} {c}");
+        }
+        assert_eq!(decide(&cwd, Autonomy::Yolo, "git push"), Decision::Allow);
+    }
+}

@@ -170,6 +170,7 @@ impl DangerRules {
     /// cannot turn it off. A hit is a git push or gh command beyond the session's own
     /// non-default branch, or any command chained with a publish command (see `publish.rs`).
     pub fn publish_classify(&self, command: &str, cwd: &Path) -> Vec<DangerHit> {
+        crate::publish::record_baseline(cwd);
         let Some(stages) = parse_line(command) else {
             return Vec::new();
         };

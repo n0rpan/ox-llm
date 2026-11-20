@@ -276,7 +276,7 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
             s => pos.push(s),
         }
     }
-    if config_risky(&wd, &current, pos.len() < 2) {
+    if config_risky(&wd, &current, pos.len() < 2) || !urls_unchanged(cwd, &wd) {
         return Kind::Unsafe;
     }
     let ok = match pos.as_slice() {
@@ -493,18 +493,69 @@ fn known_non_default(dir: &Path, branch: &str) -> bool {
 /// URLs, a program-running `core.*` key, and (for an implicit push) a branch whose remote or
 /// upstream is not `origin` / the same-named branch. Unreadable config is risky.
 fn config_risky(dir: &Path, branch: &str, implicit: bool) -> bool {
+    scan_config(dir, branch, implicit).0
+}
+
+/// The origin URLs and URL rewrites of the repo config (sorted `section.sub.key=value` lines):
+/// what a push to `origin` really goes to. `None` when the config cannot be read safely.
+fn url_fingerprint(dir: &Path) -> Option<Vec<String>> {
+    let (risky, fp) = scan_config(dir, "", false);
+    // A config that is risky for another reason still has a fingerprint; only a read failure
+    // (reported as risky with an empty list) has none.
+    if risky && fp.is_empty() && git_dirs(dir).is_none() {
+        return None;
+    }
+    Some(fp)
+}
+
+/// Trusted baseline of origin's URLs per session repository (common dir), taken from the
+/// first command classified for it and kept in memory for the process.
+static BASELINE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, Vec<String>>>> =
+    std::sync::OnceLock::new();
+
+fn baseline_key(cwd: &Path) -> Option<PathBuf> {
+    let (_, common) = git_dirs(cwd)?;
+    std::fs::canonicalize(common).ok()
+}
+
+/// Record the session repository's origin URLs once, before any command of the session can
+/// change them. Called for every classified command line, not only pushes.
+pub(crate) fn record_baseline(cwd: &Path) {
+    let Some(key) = baseline_key(cwd) else { return };
+    let map = BASELINE.get_or_init(Default::default);
+    let Ok(mut m) = map.lock() else { return };
+    m.entry(key)
+        .or_insert_with(|| url_fingerprint(cwd).unwrap_or_else(|| vec!["unreadable".into()]));
+}
+
+/// Origin's current URLs equal the recorded baseline (an unknown baseline never matches).
+fn urls_unchanged(session: &Path, target: &Path) -> bool {
+    record_baseline(session);
+    let Some(key) = baseline_key(session) else {
+        return false;
+    };
+    let Some(map) = BASELINE.get() else { return false };
+    let Ok(m) = map.lock() else { return false };
+    match (m.get(&key), url_fingerprint(target)) {
+        (Some(base), Some(now)) => *base == now,
+        _ => false,
+    }
+}
+
+fn scan_config(dir: &Path, branch: &str, implicit: bool) -> (bool, Vec<String>) {
+    let mut fp: Vec<String> = Vec::new();
     let Some((gitdir, common)) = git_dirs(dir) else {
-        return true;
+        return (true, fp);
     };
     if std::fs::symlink_metadata(gitdir.join("config.worktree")).is_ok() {
-        return true;
+        return (true, fp);
     }
     let path = common.join("config");
     let text = match std::fs::symlink_metadata(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         _ => match read_small(&path) {
             Some(t) => t,
-            None => return true,
+            None => return (true, fp),
         },
     };
     let mut section = String::new();
@@ -512,7 +563,9 @@ fn config_risky(dir: &Path, branch: &str, implicit: bool) -> bool {
     for raw in text.lines() {
         let mut line = raw.trim();
         if line.starts_with('[') {
-            let Some(end) = line.find(']') else { return true };
+            let Some(end) = line.find(']') else {
+                return (true, fp);
+            };
             let head = &line[1..end];
             let (name, s) = match head.split_once('"') {
                 Some((n, rest)) => (n.trim(), Some(rest.trim_end_matches('"').to_string())),
@@ -548,11 +601,20 @@ fn config_risky(dir: &Path, branch: &str, implicit: bool) -> bool {
             },
             _ => false,
         };
+        let tracked = match (section.as_str(), sub.as_deref()) {
+            ("remote", Some("origin")) => matches!(key.as_str(), "url" | "pushurl" | "fetch"),
+            ("url", _) => matches!(key.as_str(), "insteadof" | "pushinsteadof"),
+            _ => false,
+        };
+        if tracked {
+            fp.push(format!("{section}.{}.{key}={val}", sub.as_deref().unwrap_or("")));
+        }
         if risky {
-            return true;
+            return (true, fp);
         }
     }
-    false
+    fp.sort();
+    (false, fp)
 }
 
 /// (git dir, common dir) of the repository around `dir`; a worktree's `.git` is a file.
