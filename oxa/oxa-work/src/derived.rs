@@ -166,43 +166,9 @@ pub(crate) fn committed_packages(
         .collect())
 }
 
-/// The package names this committed change selects in the engine workspace (the owning
-/// workspace directory is `engine`). The lane runs only the portable engine crates; the
-/// other engine suites ride the self-hosted route, so a green lane run is never evidence
-/// for them.
-pub(crate) fn committed_engine_packages(
-    policy: &RunPolicy,
-    root: &Path,
-    base: &str,
-    head: &str,
-) -> Result<Vec<String>, String> {
-    Ok(committed_selection(policy, root, base, head)?
-        .packages
-        .into_iter()
-        .filter(|(_, workspace)| workspace == "engine")
-        .map(|(name, _)| name)
-        .collect())
-}
-
-/// Whether this committed change touches the engine workspace's shared Cargo inputs
-/// (`engine/Cargo.toml`, `engine/Cargo.lock`, `engine/.cargo/`). They select no package,
-/// but the lane still does not run the engine suites: the work stays on the hosted route.
-pub(crate) fn committed_engine_inputs(
-    policy: &RunPolicy,
-    root: &Path,
-    base: &str,
-    head: &str,
-) -> Result<bool, String> {
-    Ok(committed_selection(policy, root, base, head)?
-        .workspace_inputs
-        .contains("engine"))
-}
-
-/// Changed paths no lane run tests: the lane covers the `oxa` workspace and the portable
-/// `engine` crates, and engine suites ride the self-hosted route. So anything under `engine/`
-/// (shared fixtures and build inputs included) and anything under `fuzz/`, whose suite only the
-/// checks workflow runs, has no lane evidence.
-pub(crate) fn committed_uncovered_paths(
+/// Every path this exact committed change touches (the lane coverage rule decides which of
+/// them a lane run is evidence for).
+pub(crate) fn committed_changed_paths(
     policy: &RunPolicy,
     root: &Path,
     base: &str,
@@ -231,13 +197,29 @@ pub(crate) fn committed_uncovered_paths(
     let text = String::from_utf8(diff.stdout).map_err(|_| "change inventory is not UTF-8")?;
     Ok(text
         .split('\0')
-        .filter(|path| !path.is_empty() && lane_cannot_test(path))
+        .filter(|path| !path.is_empty())
         .map(str::to_owned)
         .collect())
 }
 
-fn lane_cannot_test(path: &str) -> bool {
-    path.starts_with("engine/") || path.starts_with("fuzz/")
+/// Whether a `Cargo.toml` sits in a directory above `path`, in the checked-out head or in the
+/// base (a deleted crate leaves no manifest in the head).
+pub(crate) fn has_cargo_ancestor(policy: &RunPolicy, root: &Path, base: &str, path: &str) -> bool {
+    let mut dir = path;
+    while let Some((parent, _)) = dir.rsplit_once('/') {
+        dir = parent;
+        let manifest = format!("{dir}/Cargo.toml");
+        if root.join(&manifest).symlink_metadata().is_ok_and(|m| m.is_file()) {
+            return true;
+        }
+        let spec = format!("{base}:{manifest}");
+        if output(git(policy, root, &["cat-file", "-e", &spec])).is_ok_and(|o| o.status.success()) {
+            return true;
+        }
+    }
+    root.join("Cargo.toml")
+        .symlink_metadata()
+        .is_ok_and(|m| m.is_file())
 }
 
 fn committed_selection(policy: &RunPolicy, root: &Path, base: &str, head: &str) -> Result<Selected, String> {
@@ -652,11 +634,6 @@ impl Manifests {
 struct Selected {
     packages: BTreeSet<(String, String)>,
     requires_hosted: bool,
-    /// The owning workspace directory of every shared workspace input the change touches
-    /// (`<workspace>/Cargo.toml`, `<workspace>/Cargo.lock`, `<workspace>/.cargo/`): these
-    /// inputs select no package, but the lane runs a workspace's suites only through its
-    /// packages, so the engine gate must see them.
-    workspace_inputs: BTreeSet<String>,
 }
 
 fn select(root: &Path, paths: &[String]) -> Result<Selected, String> {
@@ -673,24 +650,14 @@ fn select(root: &Path, paths: &[String]) -> Result<Selected, String> {
         }
         if dir.split('/').any(|part| part == ".cargo") {
             selected.requires_hosted = true;
-            selected
-                .workspace_inputs
-                .insert(manifests.in_dir(root, dir, &mut budget)?);
+            manifests.in_dir(root, dir, &mut budget)?;
             continue;
         }
         // A missing or unsupported package declaration cannot make a Rust edit verified.
         selected.requires_hosted |= name.ends_with(".rs");
         if name == "Cargo.toml" || name == "Cargo.lock" {
             selected.requires_hosted = true;
-            let (is_workspace, package) = {
-                let manifest = manifests.at(root, dir)?;
-                (manifest.workspace, manifest.package.clone())
-            };
-            if is_workspace {
-                selected
-                    .workspace_inputs
-                    .insert(manifests.in_dir(root, dir, &mut budget)?);
-            }
+            let package = manifests.at(root, dir)?.package.clone();
             if let Some(package) = package {
                 selected
                     .packages
@@ -1016,26 +983,6 @@ mod tests {
     use super::*;
     use crate::test_dir::PrivateDir;
 
-    #[test]
-    fn lane_evidence_excludes_engine_fixtures_and_fuzz_but_not_oxa_work() {
-        for path in [
-            "engine/tests/fixtures/klein-4b-q8.tensors.txt",
-            "engine/crates/gguf/src/lib.rs",
-            "fuzz/oxa/src/lib.rs",
-            "fuzz/oxa/tests/smoke.rs",
-        ] {
-            assert!(lane_cannot_test(path), "{path}");
-        }
-        for path in [
-            "oxa/oxa-work/src/lib.rs",
-            "oxa/Cargo.lock",
-            "README.md",
-            "oxa/docs/work.md",
-        ] {
-            assert!(!lane_cannot_test(path), "{path}");
-        }
-    }
-
     fn manifest(dir: &PrivateDir, path: &str, text: &str) {
         let full = dir.path().join(path);
         std::fs::create_dir_all(full.parent().expect("manifest parent")).expect("create manifest folder");
@@ -1107,7 +1054,7 @@ members = ["crates/*", "tools/pinned"]
     }
 
     #[test]
-    fn shared_workspace_inputs_record_the_owning_workspace() {
+    fn shared_workspace_inputs_need_hosted_tests_without_selecting_a_package() {
         // `engine/Cargo.toml` and `engine/.cargo/` select no package, but they change every
         // engine crate: the engine evidence gate must see them.
         let dir = PrivateDir::new("derived-engine-inputs");
@@ -1132,7 +1079,6 @@ members = ["crates/*", "tools/pinned"]
         .unwrap();
         assert!(selected.requires_hosted);
         assert!(selected.packages.is_empty());
-        assert_eq!(selected.workspace_inputs, BTreeSet::from(["engine".to_owned()]));
     }
 
     #[test]
