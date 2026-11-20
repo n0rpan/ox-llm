@@ -5,6 +5,17 @@ Run `oxa lead serve` to serve the read-only board after enabling it in user sett
 The owner must read the final authentication composition before merge or live exposure.
 Chat remains separate work. The one owner-decision mutation is the approval answer below.
 
+The home page's attention block reports the five stuck-work signals from the board
+log's protected record: main required-check failures, no verified main merge for 45
+minutes, over-age merge-queue membership at the exact PR head, workflow runs queued
+over 15 minutes, and unanswered owner decisions. Each source is rendered from its own
+observation: a source the record does not carry is shown as explicitly unavailable,
+never as healthy, and a routine healthy read renders no attention block at all. With
+`owner_chat` enabled, open owner asks are additionally read live from the authorized
+durable Lead Session on every render, with their original revisions, through the
+registered owner-bound caller; an unauthorized or absent session leaves that source
+unavailable rather than quietly empty.
+
 Optional user setting `oxa.lead.serve.fixed_prompts` defaults to false.
 It enables no-JS, same-origin/CSRF-protected fixed questions at zero model tokens.
 Private situation data needs browser proof separate from tool UIDs; absent inputs stay unavailable.

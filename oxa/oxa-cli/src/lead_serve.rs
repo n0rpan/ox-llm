@@ -463,12 +463,12 @@ impl Source {
         let sample = self
             .board
             .as_deref()
-            .and_then(|path| crate::lead_input::board_and_app_quota(path, self.uid).ok());
+            .and_then(|path| crate::lead_input::sample(path, self.uid).ok());
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        let github_quotas = sample.as_ref().and_then(|(board, app_quota)| {
-            crate::lead_quota::GitHubQuotas::from_app_sample((*app_quota)?, board.observed_at, now)
+        let github_quotas = sample.as_ref().and_then(|sample| {
+            crate::lead_quota::GitHubQuotas::from_app_sample(sample.app_quota?, sample.board.observed_at, now)
         });
         use crate::lead_page::Page;
         let approvals_page = matches!(page, Page::Home | Page::Board | Page::BoardQuery(_));
@@ -485,6 +485,9 @@ impl Source {
         } else {
             None
         };
+        // The authenticated live readback (#1391): open owner asks are read from
+        // the authorized durable Session on every render, never from a sample.
+        let durable_asks = self.durable_asks();
         let view = crate::lead_page::View {
             approvals: waiting.as_deref(),
             approval_csrf: bound_owner.map(|owner| owner.csrf.as_str()),
@@ -496,8 +499,12 @@ impl Source {
                     proposal: latest.as_ref().and_then(|latest| latest.proposal.as_ref()),
                     confirmed: latest.as_ref().is_some_and(|latest| latest.confirmed),
                 }),
-            board: sample.as_ref().map(|(board, _)| board),
+            board: sample.as_ref().map(|sample| &sample.board),
             github_quotas: github_quotas.as_ref(),
+            durable_asks: durable_asks.as_deref(),
+            // Stuck-work signals from the same protected record, with each
+            // unobserved source explicit in the view (#1391).
+            alarms: sample.as_ref().map(|sample| &sample.alarms),
             fixed_prompt_csrf: self.form.as_ref().map(|form| form.csrf.as_str()),
             ..Default::default()
         };
@@ -506,6 +513,21 @@ impl Source {
         } else {
             crate::lead_page::document_for(page, &view, now)
         }
+    }
+
+    /// Open owner asks read live from the authorized durable Lead Session, with
+    /// their original revisions. The binding revalidates the owner-only session
+    /// file and the user settings on every read; an unauthorized, busy or absent
+    /// session stays explicitly unavailable rather than quietly empty.
+    fn durable_asks(&self) -> Option<Vec<oxa_session::OpenGoalAsk>> {
+        let owner = self.owner.as_ref()?;
+        owner.binding.recheck().ok()?;
+        let entries = owner.binding.read_entries().ok()?;
+        let goal = oxa_session::Goal::latest(&entries).ok()?;
+        Some(
+            goal.map(|goal| goal.lead.map_or_else(Vec::new, |lead| lead.open_asks))
+                .unwrap_or_default(),
+        )
     }
 }
 
