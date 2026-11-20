@@ -8,6 +8,7 @@ use oxa_proto::{
     HookPoint, Level, OxaError, Part, Role, StopReason, TurnKind, Ui, Usage, Value, WireMsg,
 };
 use oxa_session::new_entry_id;
+use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// How a run ended.
@@ -20,6 +21,9 @@ pub enum RunEnd {
     /// A request failed after retries; stored as `Shown { why: failed | cut }`.
     Failed(OxaError),
 }
+
+/// The start of the stop message of a repetition loop (`stream_broken`, never a transient failure).
+pub(crate) const REPEAT_STOP: &str = "Response stopped: the model fell into a repetition loop";
 
 /// Persist `body` as a new entry under the current leaf, add it to the tree and fold it into
 /// the transcript. The only way an entry is created. Emits nothing; callers emit events.
@@ -101,6 +105,10 @@ pub fn run_loop(
     crate::goal::deliver_saved(st, sink)?;
     crate::goal::ensure_begin(st);
     crate::goal::checkpoint(st, false, sink)?;
+    st.shared
+        .gate
+        .running
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let steering = st
         .goal
         .as_ref()
@@ -140,8 +148,13 @@ fn run_inner(
     let mut wrapping_up = false;
     let mut wrap_up_failure = None;
     let mut length_recoveries = 0;
+    // FH-N2: a headless run gets one nudge when its final reply ends on a plan or a promise.
+    let mut headless_nudged = false;
     // The repeat guard warns the user once per run (`repeat.rs`, #1448).
     let mut repeat_warned = false;
+    // Consecutive transient failures of one logical request. This state lives inside the run so
+    // recovery preserves done checks, the turn limit and the request idempotency key.
+    let mut goal_failures: u32 = 0;
     // `oxa.maxTurns` (default unset: no limit): model replies of this run (#507).
     let max_turns = st.settings.u32(crate::repeat::MAX_TURNS, 0);
     'turns: loop {
@@ -194,7 +207,7 @@ fn run_inner(
             }
         }
         let first = st.stats.requests == 0;
-        let expected = expected_cached(st);
+        let mut expected = expected_cached(st);
 
         let pending = pending_message();
         sink.emit(&AgentEvent::MessageStart {
@@ -227,10 +240,18 @@ fn run_inner(
             events: true,
             idem_key: String::new(),
         };
-        let thinking_on = !wrapping_up && crate::think::request_thinking(st, TurnKind::Chat);
+        let mut thinking_on = !wrapping_up && crate::think::request_thinking(st, TurnKind::Chat);
         let mut retried = false;
+        let mut empty_retries: u32 = 0;
         let mut replays: u32 = 0;
         let turn = loop {
+            // A run that continues after a persisted cut, failure or wrap-up is still foreground
+            // work: re-arm the signal that `persist` cleared, so input during the replay or the
+            // next turn is steering, not a new run. The run's guard clears it at the end.
+            st.shared
+                .gate
+                .running
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             if !wrapping_up && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
                 let text = "Request skipped for wrap-up.".to_string();
                 let progress = persist(
@@ -283,15 +304,20 @@ fn run_inner(
                     st.shared.cancel.reset();
                     Err(OxaError::new(
                         oxa_proto::codes::STREAM_BROKEN,
-                        "Response stopped: the model fell into a repetition loop (the same block of text repeated).",
+                        format!("{REPEAT_STOP} (the same block of text repeated)."),
                     )
-                    .with_hint("Rephrase the request or try again; the partial reply is shown but not sent back."))
+                    .with_hint(
+                        "Rephrase the request or try again; the partial reply is shown but not sent back.",
+                    ))
                 }
                 other => other,
             };
 
             let turn = match res {
-                Ok(t) => t,
+                Ok(t) => {
+                    goal_failures = 0;
+                    t
+                }
                 Err(e) if replayable(st, &e, got_data, looped, replays) => {
                     // #456: a transport cut mid-output. The partial reply stays visible as
                     // `Shown { cut }` (never sent, W2) and the request is resent from the same
@@ -304,7 +330,7 @@ fn run_inner(
                     } else {
                         partial
                     };
-                    persist(
+                    persist_continuing(
                         st,
                         EntryBody::Shown {
                             text,
@@ -332,7 +358,97 @@ fn run_inner(
                     } else {
                         partial
                     };
-                    let progress = persist(st, EntryBody::Shown { text, why }, sink)?;
+                    let retry_stopped = st.shared.gate.retry_stopped.swap(false, Ordering::SeqCst);
+                    let delay = (!retry_stopped)
+                        .then(|| crate::goal::failure_backoff(st, &e, goal_failures))
+                        .flatten();
+                    let progress = persist_with(st, EntryBody::Shown { text, why }, delay.is_some(), sink)?;
+                    if let Some(delay) = delay {
+                        goal_failures += 1;
+                        let text = format!(
+                                "Goal waiting {} s after a transient request failure ({}); no request is sent meanwhile, then the goal continues.",
+                                delay.as_secs(), e.code
+                            );
+                        persist(
+                            st,
+                            EntryBody::Shown {
+                                text: text.clone(),
+                                why: shown_why::NOTICE,
+                            },
+                            sink,
+                        )?;
+                        let shared = st.shared.clone();
+                        shared.wait_wake.reset();
+                        *crate::queue::lock(&shared.gate.backoff_model) = Some(None);
+                        sink.emit(&AgentEvent::Notice {
+                            level: Level::Info,
+                            text,
+                        });
+                        let deadline = std::time::Instant::now() + delay;
+                        loop {
+                            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                            let has_input = !crate::queue::lock(&shared.queue).steering.is_empty();
+                            let ended = crate::goal::wait_failure_backoff(
+                                st,
+                                if has_input {
+                                    std::time::Duration::ZERO
+                                } else {
+                                    remaining
+                                },
+                            );
+                            let mut waiting = crate::queue::lock(&shared.gate.backoff_model);
+                            let model = waiting.take().flatten();
+                            shared.wait_wake.reset();
+                            drop(waiting);
+                            match ended {
+                                crate::goal::BackoffEnd::Aborted => return Ok(RunEnd::Aborted),
+                                crate::goal::BackoffEnd::RetryStopped => return Ok(RunEnd::Failed(e)),
+                                crate::goal::BackoffEnd::Elapsed => {}
+                            }
+                            let mut changed = false;
+                            if let Some(model) = model.filter(|m| *m != st.model) {
+                                match crate::session::switch_model(
+                                    st,
+                                    &model,
+                                    crate::OverCap::Refuse,
+                                    sink,
+                                    ui,
+                                ) {
+                                    Ok(()) => changed = true,
+                                    // A persistence error after the model changed must not replay the old key.
+                                    Err(error) if st.model == model => return Err(error),
+                                    Err(error) => sink.emit(&AgentEvent::Notice {
+                                        level: Level::Warning,
+                                        text: format!(
+                                            "{error}. Stop the retry to use the full model switch dialog."
+                                        ),
+                                    }),
+                                }
+                            }
+                            changed |= deliver_steering(st, sink, ui, run_msgs)?;
+                            if changed {
+                                opts.idem_key.clear();
+                                goal_failures = 0;
+                                replays = 0;
+                                retried = false;
+                                empty_retries = 0;
+                                expected = expected_cached(st);
+                                thinking_on =
+                                    !wrapping_up && crate::think::request_thinking(st, TurnKind::Chat);
+                            }
+                            if changed || std::time::Instant::now() >= deadline {
+                                sink.emit(&AgentEvent::MessageStart {
+                                    message: pending_message(),
+                                });
+                                break;
+                            }
+                            *crate::queue::lock(&shared.gate.backoff_model) = Some(None);
+                        }
+                        continue;
+                    }
+                    if e.code == "cloud_quota_exhausted" {
+                        return Ok(RunEnd::Failed(e));
+                    }
                     let soft_stop = st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0;
                     if soft_stop {
                         let mut message = pending.clone();
@@ -370,7 +486,7 @@ fn run_inner(
                 if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
                     // The normal fallback is a new request. A pending stop instead
                     // gets the bounded final instruction from the outer turn loop.
-                    let progress = persist(
+                    let progress = persist_continuing(
                         st,
                         EntryBody::Shown {
                             text: "Thinking reached its output limit; wrapping up.".to_string(),
@@ -394,6 +510,28 @@ fn run_inner(
                 sink.emit(&AgentEvent::Notice {
                     level: Level::Info,
                     text: crate::think::OVERRUN_NOTICE.to_string(),
+                });
+                continue;
+            }
+            // A cloud reply that ended normally with no text and no tool call is asked again
+            // (`oxa.emptyReplyRetries`, default 1); the empty reply is never kept.
+            if st.info.caps.remote
+                && !wrapping_up
+                && turn.finish == Finish::Stop
+                && turn.msg.tool_calls.is_empty()
+                && turn.msg.content.as_deref().is_none_or(|c| c.trim().is_empty())
+                && empty_retries < st.settings.empty_reply_retries()
+                && st.auto_retry
+                && st.settings.retry().enabled
+                && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) == 0
+                && !st.shared.cancel.is_cancelled()
+            {
+                empty_retries += 1;
+                account_discarded(st, &turn);
+                opts.idem_key = String::new();
+                sink.emit(&AgentEvent::Notice {
+                    level: Level::Info,
+                    text: "the model returned an empty reply; asking again".to_string(),
                 });
                 continue;
             }
@@ -485,7 +623,7 @@ fn run_inner(
                 .clone()
                 .filter(|t| !t.is_empty())
                 .unwrap_or_else(|| "The reply reached its output limit before answering.".to_string());
-            let progress = persist(
+            let progress = persist_continuing(
                 st,
                 EntryBody::Shown {
                     text,
@@ -563,7 +701,7 @@ fn run_inner(
         }
         run_msgs.push(reply.clone());
         account_reply(st, turn.timings, usage);
-        st.last_usage = Some(usage);
+        st.last_usage = usage.reported();
         crate::goal::checkpoint(st, true, sink)?;
         // F4: capabilities that only a loaded engine reports (`/props` `oxe_hints`): re-read
         // once after the first reply while `prefill_only` is still false, and after a request
@@ -621,6 +759,7 @@ fn run_inner(
                 tool_msgs.push(msg);
             }
             done.note_edits(&results);
+            done.note_proof(&calls, &results);
             done.note_bash(st, &results);
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
             crate::think::observe(st, &calls, &results, sink, ui);
@@ -833,8 +972,25 @@ fn run_inner(
                 crate::goal::checkpoint(st, false, sink)?;
                 return Ok(RunEnd::Stopped);
             }
-            let snapshot = goal.stopped();
+            let was_pursuing = goal.pursuing();
+            let (snapshot, idle_noted) = goal.stopped(st.settings.user_bool("oxa.goal.idlePause", false));
             crate::goal::save_checkpoint(st, &snapshot, sink)?;
+            if idle_noted {
+                crate::goal::announce_idle(sink);
+            }
+            if was_pursuing && snapshot.status == oxa_session::GoalStatus::Paused {
+                if let Some(reason) = snapshot.pause_reason.as_deref() {
+                    crate::goal::announce_pause(reason, sink);
+                }
+            }
+            if goal.pursuing() && st.active.get("goal_done").is_none() {
+                // The owner's tool selection removed the goal controls: the continue
+                // instruction would name a tool that does not exist, so stop with a reason.
+                let snapshot = goal.pause_because(crate::goal::CONTROLS_MISSING);
+                crate::goal::save_checkpoint(st, &snapshot, sink)?;
+                crate::goal::announce_pause(crate::goal::CONTROLS_MISSING, sink);
+                return Ok(RunEnd::Stopped);
+            }
             if goal.pursuing() {
                 // Queued input (a follow-up that woke a wait) is the next user message:
                 // stop so `settle_runs` delivers it instead of the continuation prompt.
@@ -844,6 +1000,26 @@ fn run_inner(
                 push_user(st, crate::prompt::GOAL_CONTINUE.into(), sink, ui, run_msgs)?;
                 continue;
             }
+        }
+        if crate::is_headless()
+            && !headless_nudged
+            && turn.finish != Finish::Length
+            && !st.shared.cancel.is_cancelled()
+            && !st.shared.has_input()
+            && turn
+                .msg
+                .content
+                .as_deref()
+                .is_some_and(|c| crate::prompt::ends_unfinished(c, done.proof.edited()))
+        {
+            headless_nudged = true;
+            push_user(st, crate::prompt::HEADLESS_NUDGE.to_string(), sink, ui, run_msgs)?;
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Info,
+                text: "The reply ended on a plan or a question in a headless run; asking it to continue."
+                    .to_string(),
+            });
+            continue;
         }
         return Ok(RunEnd::Stopped);
     }
@@ -988,13 +1164,44 @@ fn drain_follow_ups(st: &SessionState, sink: &mut dyn EventSink) -> Vec<String> 
     taken
 }
 
-/// Persist a body and announce the entry.
+/// Persist a body and announce the entry. A dropped reply (aborted, failed, cut) ends the
+/// foreground signal (`Gate::running`) before the entry is announced, so settlement's remaining
+/// busy claim does not turn input typed after it into steering for a finished turn. A dropped
+/// reply the same run replaces with another request uses [`persist_continuing`].
 pub(crate) fn persist(
     st: &mut SessionState,
     body: EntryBody,
     sink: &mut dyn EventSink,
 ) -> Result<Entry, OxaError> {
+    persist_with(st, body, false, sink)
+}
+
+/// [`persist`] for a cut reply the run goes on from (a replay after a cut stream, a length
+/// recovery, a wrap-up turn): the run still takes input, so the foreground signal stays set
+/// through the events emitted before the next request (the request loop also re-arms it).
+fn persist_continuing(
+    st: &mut SessionState,
+    body: EntryBody,
+    sink: &mut dyn EventSink,
+) -> Result<Entry, OxaError> {
+    persist_with(st, body, true, sink)
+}
+
+fn persist_with(
+    st: &mut SessionState,
+    body: EntryBody,
+    continues: bool,
+    sink: &mut dyn EventSink,
+) -> Result<Entry, OxaError> {
     let entry = append_entry(st, body)?;
+    if !continues
+        && matches!(&entry.body, EntryBody::Shown { why, .. } if [shown_why::ABORTED, shown_why::FAILED, shown_why::CUT].contains(why))
+    {
+        st.shared
+            .gate
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
     sink.emit(&AgentEvent::EntryAppended { entry: entry.clone() });
     Ok(entry)
 }

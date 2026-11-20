@@ -5,9 +5,9 @@ use crate::{
     anthropic_stream::{self, Completed, Field, Redactor, Usage},
     redaction,
     secrets::Key,
-    sse::Framer,
 };
 use futures_util::StreamExt;
+use oxa_http::sse::{Frame, Framer};
 use reqwest::{
     header::{HeaderValue, ACCEPT, CONTENT_TYPE},
     Url,
@@ -48,6 +48,8 @@ pub struct Chat<'a> {
     pub max_output: Option<u64>,
     pub payload: &'a Value,
     pub created: u64,
+    /// Owner OpenRouter routing preferences; `None` adds nothing to the request.
+    pub provider: Option<&'a Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,13 +125,13 @@ impl Client {
         F: FnMut(Event) -> Control + ?Sized,
     {
         let mut terminal_usage = None;
-        self.stream_with_blocks(chat, key, cancel, on, |_| None, &mut terminal_usage)
+        self.stream_with_blocks((chat, false), key, cancel, on, |_| None, &mut terminal_usage)
             .await
     }
 
     pub(crate) async fn stream_with_blocks<F>(
         &self,
-        chat: Chat<'_>,
+        (chat, named): (Chat<'_>, bool),
         key: &Key,
         cancel: &Cancellation,
         on: &mut F,
@@ -142,7 +144,11 @@ impl Client {
         if cancel.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        let endpoint = messages_endpoint(chat.base_url)?;
+        let endpoint = if named {
+            resource_endpoint(chat.base_url, &["messages"])?
+        } else {
+            messages_endpoint(chat.base_url)?
+        };
         let mut body = anthropic_request::translate_with_blocks(
             chat.payload,
             chat.upstream_model,
@@ -216,7 +222,7 @@ impl Client {
                 if received > MAX_BODY {
                     return Err(Error::TooLarge);
                 }
-                let Some(data) = decoder.push(byte) else {
+                let Some(Frame::Data(data)) = decoder.push(byte) else {
                     continue;
                 };
                 let event: Value = serde_json::from_slice(&data).map_err(|_| Error::Protocol)?;
@@ -239,8 +245,8 @@ impl Client {
     }
 }
 
-fn messages_endpoint(base_url: &str) -> Result<Url, Error> {
-    let mut endpoint = Url::parse(base_url).map_err(|_| Error::Endpoint)?;
+fn api_base(base_url: &str) -> Result<Url, Error> {
+    let endpoint = Url::parse(base_url).map_err(|_| Error::Endpoint)?;
     let loopback = match endpoint.host() {
         Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
         Some(url::Host::Ipv6(ip)) => {
@@ -258,6 +264,21 @@ fn messages_endpoint(base_url: &str) -> Result<Url, Error> {
     {
         return Err(Error::Endpoint);
     }
+    Ok(endpoint)
+}
+
+fn resource_endpoint(base: &str, segments: &[&str]) -> Result<Url, Error> {
+    let mut endpoint = api_base(base)?;
+    endpoint
+        .path_segments_mut()
+        .map_err(|_| Error::Endpoint)?
+        .pop_if_empty()
+        .extend(segments);
+    Ok(endpoint)
+}
+
+fn messages_endpoint(base_url: &str) -> Result<Url, Error> {
+    let mut endpoint = api_base(base_url)?;
     let path = endpoint.path().trim_end_matches('/');
     let path = if path.ends_with("/v1") {
         format!("{path}/messages")
@@ -347,10 +368,27 @@ mod tests {
         let mut decoder = Framer::default();
         let events: Vec<Value> = wire
             .iter()
-            .filter_map(|b| decoder.push(*b))
+            .filter_map(|b| match decoder.push(*b) {
+                Some(Frame::Data(data)) => Some(data),
+                _ => None,
+            })
             .map(|data| serde_json::from_slice(&data).unwrap())
             .collect();
         assert_eq!(events, vec![serde_json::json!({"type":"ping","text":"λ"})]);
+    }
+
+    #[test]
+    fn shared_sse_comment_frames_are_not_provider_events() {
+        let mut decoder = Framer::default();
+        let events: Vec<Value> = b"data: {\"type\":\n: keepalive\ndata: \"ping\"}\n\n"
+            .iter()
+            .filter_map(|byte| match decoder.push(*byte) {
+                Some(Frame::Data(data)) => Some(serde_json::from_slice(&data).unwrap()),
+                Some(Frame::Comment(_)) | None => None,
+            })
+            .collect();
+
+        assert_eq!(events, vec![serde_json::json!({"type":"ping"})]);
     }
     #[tokio::test]
     async fn cancellation_is_sticky_and_wakes_subscribers() {

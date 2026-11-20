@@ -31,6 +31,42 @@ pub fn lock_path_of(session: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// The pid recorded in the sidecar of `session` when that process is alive: a read-only probe
+/// of "is this session open in some oxa right now". It never takes `flock` and never unlinks
+/// the sidecar, so a probe cannot make a starting oxa see [`LOCKED`]. A missing, unreadable,
+/// empty or stale (dead pid) sidecar is `None`; a recycled pid can briefly look alive.
+pub fn lock_holder(session: &Path) -> Option<u32> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(lock_path_of(session))
+        .ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(32).read_to_string(&mut text).ok()?;
+    let pid: u32 = text.trim().parse().ok()?;
+    pid_alive(pid).then_some(pid)
+}
+
+fn pid_alive(pid: u32) -> bool {
+    // A pid outside the signed range would be a process group for `kill`; it is never a holder.
+    if pid == 0 || pid > i32::MAX as u32 {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Path::new("/proc").join(pid.to_string()).exists()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // SAFETY: signal 0 only checks that the process exists.
+        let hit = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        hit == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+}
+
 impl SessionLock {
     /// The session file this lock guards.
     pub fn session(&self) -> &Path {

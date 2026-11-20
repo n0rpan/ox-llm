@@ -23,7 +23,7 @@ The installed global OpenCode model is explicit MoE; title generation remains di
 
 ## Spend RAM where it has measured value
 
-Flash already selects the larger tested 12 GiB expert cache. The isolated 8-to-12 GiB comparison generated the same 246-token JSON answer in each arm: generation rose 1.752→2.447 tok/s, decode reads fell 18,593→12,226 MiB and complete elapsed fell 228.81→181.69 s. Minimum available RAM fell 12.15→8.96 GiB. These are sequential structured-output observations; they do not predict the same percentage for a coding agent. [Full comparison and limits](lab-notes/FLASH-NEXT-PREFILL.md)
+Flash already selects the larger tested 12 GiB expert cache. The isolated 8-to-12 GiB comparison generated the same 246-token JSON answer in each arm: generation rose 1.752→2.447 tok/s, decode reads fell 18,593→12,226 MiB and complete elapsed fell 228.81→181.69 s. Minimum available RAM fell 12.15→8.96 GiB. These are sequential structured-output observations; they do not predict the same percentage for a coding agent. Full comparison and limits
 
 The installed Flash admission budget is 21.5 GiB, above its conservative 21.212 GiB estimate and measured 19.706 GiB peak. Start additionally requires 4 GiB available; the live watcher stops below that reserve. This budget admits measured memory use; it is not a requested smaller cache or a per-child RSS ceiling. The existing chat unit's 25 GiB hard limit applies to its whole process group. Keep the 12 GiB cache and demand-mapped ngram table; reducing cache merely to show more free RAM would discard a measured benefit.
 

@@ -1,6 +1,4 @@
 //! D9 acceptance tests: Tree navigator.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 //! (The tree navigator is pure: no file, no engine and no terminal is touched here.)
 
@@ -171,6 +169,7 @@ fn five_filters() {
             Some("a1"),
             EntryBody::Msg {
                 wire: WireMsg {
+                    images: Vec::new(),
                     tool_calls: vec![ToolCall {
                         id: "call1".to_string(),
                         name: "bash".to_string(),
@@ -453,6 +452,7 @@ fn tool_calls_render_as_names() {
             Some("u1"),
             EntryBody::Msg {
                 wire: WireMsg {
+                    images: Vec::new(),
                     tool_calls: vec![ToolCall {
                         id: "call9".to_string(),
                         name: "read".to_string(),

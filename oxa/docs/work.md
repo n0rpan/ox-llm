@@ -1,5 +1,25 @@
 # Unattended work
 
+## Worker mode
+
+`oxa work` workers start in their default mode inside the tool sandbox. When the owner's
+own settings (`permissions.defaultMode` in the user layer) say `yolo`, the runner starts
+every worker with `--yolo`: no prompts and no tool sandbox. Without yolo nothing changes.
+A project's settings are not read for this and cannot raise the worker mode.
+
+## Worker GitHub access
+
+For a task whose GitHub access the runner owns, `oxa.work.workerGithub` (owner settings only)
+says what the worker keeps. Unset follows the owner's mode:
+
+| Mode | Value | The worker gets |
+|---|---|---|
+| yolo | `worker` | its own GitHub environment and `gh`, MCP, web search and subagents; the packet guidance allows `git` and `gh` |
+| auto | `broker` | no token and no `gh`; the runner's packet guidance stays until the host-side GitHub tools land |
+| standard | `runner` | today's behaviour: no GitHub access, the runner's packet only |
+
+An explicit owner value wins in every mode. A project setting is ignored.
+
 `oxa work board --shadow --repo OWNER/REPO --once` captures a read-only GitHub sample.
 For continuous five-minute sampling use `--token-stdin`: the caller supplies a fresh
 newline-terminated App token on a private pipe before each sample. No token is
@@ -17,6 +37,16 @@ The sample records the observed main ref in `landing_main` independently of queu
 and verified merge-group rejection evidence in `queue_rejections`, including the
 removal event time.
 Use `--queue-evidence` to record only the rejection evidence alongside the board.
+
+Add `--lead-alarms` to also record the protected Lead view's stuck-work sources in the
+same sample: the raw `panels` repository record (main required checks with classic
+protection and ruleset requirements, the verified main merge and merge-queue
+membership) and complete `status=queued` Actions pages in `runs`. Each source is
+captured and degraded independently: a missing or oversized record stays absent,
+the sample is never dropped for it, and the Lead view renders that source as
+explicitly unavailable. A main alarm needs one failed required check at the exact
+observed head; failing optional jobs, pending required checks and unobserved
+requirements never page.
 
 To verify the provenance of test-report archives, pass `--queue-report-policy FILE` with an owner-only
 JSON file in a private directory. Set the trusted workflow path, the exact names
@@ -49,25 +79,41 @@ no GitHub reads while disabled. Findings take precedence over failed required CI
 conflicts, missing nonempty `Removes:` lines for source removal, then green draft
 promotion and reviewed readiness. Pending CI or unknown mergeability waits; other
 PRs wait for review. Release-pinned PRs sort first, then action priority and number.
-Active leases and a per-PR UTC daily attempt cap
-make entries ineligible without hiding them. Snapshot adapters must supply the
+Active leases make entries ineligible without hiding them. Snapshot adapters must supply the
 complete open set, current-head required checks, unresolved findings, source-removal
 facts and review-policy approval for the PR's own diff. Callers
 select private repository-scoped claim storage outside worker-writable binds.
 `Claims::open(root).snapshot()` supplies durable state for `Board::read`.
 Before dispatch, `claim(entry, policy, holder, now, ttl)` atomically reserves a
 lease and an attempt under a kernel file lock, then syncs state before returning.
-The default daily cap is three; a crash after reservation consumes an attempt.
+`budget_pools.limits.max_attempts_per_day` sets the daily attempt threshold as an
+advisory default of three per UTC day, and zero warns immediately: a claim past the
+threshold is still reserved, and `oxa work board --refill` prints one operator
+warning on stderr with the attempt ordinal, the threshold and its UTC window. The
+attempt count never fences admission: `enabled: false`, the pause marker, wait
+actions, stale-head and protected-configuration checks, active leases and Claims
+failures still do.
+A crash after reservation consumes an attempt.
 `release(number, lease)` fences stale workers and never refunds attempts. Active
 leases survive UTC midnight; corrupt state, or state that vanished after a PR's
 first reservation, fails closed. Execution, fresh-head validation and CLI polling
 remain in the adapter; core claim storage never spawns workers or writes to GitHub.
 
-On a lab host, an owner can share the worker's Cargo check artifacts between
-worktrees. Set `CARGO_TARGET_DIR` in the environment that starts the worker
-and add that directory to the owner-level `oxa.sandbox.writePaths` setting.
-The variable does not grant a writable mount. Keep this cache dedicated to the
-workers. The acceptance supervisor still uses its own isolated check output.
+A worker works out its own build cache: one Cargo target directory per main
+repository, `<cache dir>/<hash>/cargo-target`, shared by every worktree of that
+repository. It is the only extra writable path of the worker sandbox and
+`CARGO_TARGET_DIR` points at it, so no manual `writePaths` step is needed. A
+`CARGO_TARGET_DIR` that the owner sets himself wins. The user-only settings
+`oxa.workers.sharedCache` (default on), `oxa.workers.cacheDir` and
+`oxa.workers.cacheWarnGb` (no default, warning only) control it; a project file
+cannot. The acceptance supervisor still uses its own isolated check output.
+
+A native board task is held for publication, which is not offline: its worker
+runs online with the runner's real `--offline` switch, so provider-backed models
+work. The hold is enforced by runner-owned GitHub isolation (no token, no GitHub
+adapters, no MCP, even for an owner in yolo) and by never pushing; the finished
+record says `local verified; publication held`. A checkpoint saved before this
+change with the offline restriction stays offline.
 
 A managed worker can load project resources whose content matches the saved
 approval for its source repository. The runner verifies that the checkout is
@@ -193,8 +239,9 @@ commit and still requires hosted test evidence for Rust changes or declared suit
 The runner reads the child's exit code, terminal `oxa_result` and session header,
 without retaining its event stream. It checkpoints the session ID as soon as the
 header arrives. A blocked or failed worker remains blocked; an interrupted worker
-remains interrupted. Neither consumes a repair attempt. Failed acceptance after a successful
-worker continues that same saved session once, then acceptance runs once more.
+remains interrupted. Neither consumes a repair attempt. Failed acceptance (local
+or lane) after a successful worker continues that same saved session once, then
+acceptance runs once more.
 JSON lines include the worker result, session ID, captured `base_sha`, saved
 `head_sha`/`tree_sha`, step, checkpoint revision and time, and the `checks` evidence
 of the last acceptance round. Outcomes are `done`,
@@ -225,12 +272,14 @@ directory so the normal sandbox can bind git objects and refs for commits.
 Before finishing, the runner saves staged, unstaged and untracked work with an
 ordinary sandboxed commit, including red, blocked and interrupted work. Normal
 hooks remain active. Unresolved merges are kept in progress; a rejecting hook or
-remaining dirty files block completion. No automatic cleanup, push or PR creation
-is implemented. Keep retained work until its saved commit has been published and
-inspected. Review task prompts and bases before running them.
+remaining dirty files block completion. No automatic cleanup or PR creation is implemented. A task with `lane_ci`
+pushes its accepted commit as described below; other tasks never push. Keep
+retained work until its saved commit has been published and inspected. Review
+task prompts and bases before running them.
 
-`done` here describes locally checked and saved work. It does not mean published,
-externally accepted or merged. Publication must verify a clean committed export,
+`done` here describes locally checked and saved work. For a `lane_ci` task it
+also requires the lane run at the saved head to have passed. It does not mean
+published or merged. Publication must verify a clean committed export,
 bind checks to that commit and verify base-object integrity before pushing;
 ignored files in a retained working directory are not commit-bound evidence.
 
@@ -300,6 +349,28 @@ without replaying the agent. Offline mode refuses network publication.
 Before each push, the runner asks through the controlling terminal for approval
 of the accepted commit, branch and PR destination. Piped input cannot approve it.
 
+### What the publication scan refuses
+
+Before it asks for approval, `--publish` (and a lane push) scans every commit it would push
+that `origin` does not have: the commit objects, the names of added files and every added
+line. It refuses, and names only the file and line, when it finds a private key, a known
+access token format (GitHub, Anthropic, AWS, Slack, Google, GitLab; also when a letter or digit
+directly precedes the prefix), a `password`/`token`/`secret`-style assignment or quoted
+literal with an opaque value (spaces inside quotes do not hide it), an assignment to a name
+ending in `_key` or `credentials` with a long opaque value (`ENCRYPTION_KEY=...`; paths, URLs
+and `${VAR}` references pass), a `Bearer`/`Basic` header (also as a quoted `"Authorization"`
+key) or URL password, or the value of a secret-named environment variable or setting. A JSON
+value edited under an unchanged key line is scanned together with that key. Lines added to a
+secret store (`.env`, `credentials`, key and certificate files, registry logins such as
+`.docker/config.json`) are refused. An empty secret-store file and a template such as
+`.env.example` are not refused by name: they publish unless their content holds one of the
+secrets above. A path that itself contains secret text is refused and withheld.
+
+Deleting a credential in a later commit does not unblock publication, because the earlier
+commit is still pushed. Rewrite the unpublished commits (`git rebase` or a fresh branch), and
+rotate a credential that left the machine. The scan reads only git objects; it does not
+change them.
+
 `--report-problems` independently authorizes filing the task's own structured
 problem notes using the `report-issue` workflow. This flag must be launched by the
 user outside an agent tool. Each new report or comment shows its exact cleaned
@@ -318,12 +389,21 @@ summaries, without raw assistant output or acceptance logs.
 
 
 Queue mode watches a directory of regular, non-hidden `*.json` task files.
-Each file may contain up to 128 tasks and occupy up to 1 MiB. A queue accepts
+Each file may contain up to 256 tasks and occupy up to 1 MiB. The per-file task
+count is an advisory, configurable threshold: `--max-input-tasks N` sets it for
+this run (default 256, between 1 and 4096); a file with more tasks still
+contributes its first N tasks, and one notice names the limit and what was kept.
+The kept records then go through the normal validation and admission, so a
+duplicate id, a shared branch or a retired identity can still refuse an
+individual task. The count notice is informational: it never counts as a failed
+input or a failed task. The byte limit, the directory bounds and the identity
+retention below do not change with that option. A queue accepts
 up to 256 task files and 16 MiB of input per scan. The controller retains at
 most 4,096 task identities and 16 MiB of task text across scans. Archive
 completed inputs and restart the controller if it reaches the retention limit.
 After adding task files, run
-`oxa work --queue ./tasks --max 2 --min-free-mib 1024`.
+`oxa work --queue ./tasks --max 2 --min-free-mib 1024`; add
+`--max-input-tasks 64` to bound each file more tightly for that run.
 
 Files are admitted oldest modification time first (filename breaks ties), with
 array order preserved inside a file. At most `--max` tasks run; surviving workers
@@ -346,7 +426,9 @@ before returning an error.
 
 Queue mode supports `--publish`, `--report-problems` and `--rerun` with the same
 explicit policy as single-file mode. Its worker threads preserve the parent's
-offline policy. Standard output emits JSON lines tagged `state`, `task` or `error`.
+offline policy. Standard output emits JSON lines tagged `state`, `task`, `error`
+or `notice`; a `notice` is informational and never counts as a failed input or
+task.
 The latest state line is also replaced atomically at
 `<queue>/.oxa-queue-status.json` for a monitor. It contains a heartbeat timestamp,
 active task IDs, pending/finished/failed counts, free bytes and disk-pause details.
@@ -368,3 +450,76 @@ A saved worker result keeps its launch identity across checkpoint replay.
 
 Problem-report workflows hold a per-user kernel lease across drafting, duplicate
 search, match reads and writing, so concurrent workers share one reporting lane.
+
+## Lane CI acceptance
+
+Add `"lane_ci": true` to a task to make the repository's own CI the acceptance
+authority. The branch must be one `.github/workflows/lane.yml` runs on (`agent/`,
+`codex/`, `air/` or `runner/`) and its base must be `main`, because the workflow
+selects the branch diff against `main`. Other tasks keep local-only acceptance.
+
+After the local `done` commands pass and the saved commit exists, the runner
+first re-verifies that exact commit with the existing committed proof (a clean,
+object-verified export whose captured checks run), then pushes it to
+`refs/heads/<branch>` on `origin`. It waits, without a model turn, for the `lane`
+workflow run whose `headSha` is exactly that commit and whose event is the push,
+and records its terminal conclusion in the task record (`lane`). A crash during
+the wait resumes the saved `lane` step instead of rerunning the worker.
+
+Rust work that passed its local checks but needs hosted tests enters the lane
+anyway: the exact-head lane run is that hosted evidence. The task stays `unverified`
+while the run is pending and becomes `done` only when it is green; the push still
+passes the structural checks, owner confirmation and content scan first. The run's
+plan and at least one lane test job must actually succeed: an overall-success run
+whose test jobs were skipped is not evidence.
+
+The lane run only counts for what it actually ran. The workflow selects the crates
+the branch diff touches (and their reverse dependencies), so a declared acceptance
+crate is covered only when the task diff selects it: a declaration the head does not
+touch refuses with the uncovered crate names, and the work stays `unverified` rather
+than crediting a suite that never ran. The engine workspace never counts: the lane
+runs only the portable engine crates and defers the rest to the self-hosted route,
+so any engine change refuses lane evidence and needs the hosted route instead — a
+changed `engine/Cargo.toml`, `engine/Cargo.lock` or `engine/.cargo/` input refuses it too,
+although it names no crate.
+
+A `lane_ci` task's worker launches GitHub-isolated, like a runner-owned task: no
+host `gh` token is injected into its bash (and no MCP, extensions, web search or
+subagents), because the runner alone performs the owner-approved public push.
+
+A green run accepts the task (`done`). A completed `failure` spends the task's
+single repair round, shared with a local acceptance repair, with the failed job,
+step and test names; the runner saves and pushes the repaired commit and observes
+the new head once more. A second failure is `red`. Cancellation, timeouts,
+startup errors and an unobservable run (no matching push run before the bounded
+wait, or a GitHub read error) are `blocked` with their own state and spend no
+repair. In every non-green case the task is never `done`.
+
+Because the lane workflow is the authority, a head that changes
+`.github/workflows/lane.yml` or `tools/ci/` is refused before the push: those
+changes land in their own owner-reviewed change instead of qualifying themselves.
+The check covers every commit the push would add (against the destination's own
+tips), not only the diff from the saved base. A green lane run is evidence only for
+what the lane tests: a change under `engine/`, or under `fuzz/`, stays on the hosted route.
+A branch whose open pull request is already in the merge queue is refused too;
+use a new task branch for follow-up work.
+
+The push is gated. Inside an oxa session, `oxa work` asks through the session's
+owner-confirm broker, so the session dialog or yolo choice is recorded even when
+an agent child launched the command. Outside a session, the owner can confirm at
+the controlling terminal, or an owner-controlled web/runner surface can set
+`OXA_WORK_OWNER_CONFIRMED=1`; those compatibility paths are ignored when a
+coding-agent marker such as `OXA_CODING_AGENT`, `AI_AGENT` or
+`OXA_SUBAGENT_DEPTH` is set. Without that confirmation a lane task ends
+`blocked` before any worker starts and pushes nothing. Offline mode, an untrusted
+project, a missing trusted `gh`, or a missing sandbox refuse it later.
+
+The lane push goes through the same publication content scan as `--publish`,
+immediately before anything is sent: every commit the push would add (the head
+minus the tips `origin` itself advertises) is scanned, including commit objects,
+added lines and file names, with tags and submodules off. A finding refuses the
+push, the task ends `blocked` and no lane run is awaited.
+
+`--publish` refuses a `lane_ci` task unless its saved record has a passing lane
+run at the saved head, so a pull request is opened only after CI passed at that
+head. `oxa work verify` uses the same saved record and therefore the same rule.

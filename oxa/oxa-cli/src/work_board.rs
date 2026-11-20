@@ -1,7 +1,7 @@
 //! Explicitly opted-in, read-only GitHub sampling. Never invokes a worker or mutation.
 use crate::lead_quota::{GitHubIdentity, GitHubQuotas, GitHubResource};
 pub mod refill_input;
-use oxa_work::board::{Board, GitHub, Mergeability, Policy, PullRequest, RequiredCi};
+use oxa_work::board::{Board, GitHub, Incomplete, Mergeability, Policy, PullRequest, RequiredCi, Snapshot};
 use serde_json::Value;
 mod claims_readback;
 mod refill;
@@ -339,6 +339,35 @@ impl<'a> Reader<'a> {
         }
         serde_json::from_str(body).map_err(|_| "invalid GitHub Actions metadata".into())
     }
+
+    /// The lead panels repository record for one observation: main required
+    /// checks, the verified merge and queue membership. Validated with the shared
+    /// parser before it is stored, so a malformed capture is refused at the source.
+    fn lead_panels(&mut self) -> Result<Value, String> {
+        let (repository, _) =
+            self.repository_read(&crate::lead_panels::fields(None).map_err(String::from)?)?;
+        crate::lead_panels::parse_repository(&repository, None)?;
+        Ok(repository)
+    }
+
+    /// Complete `status=queued` Actions pages, bounded to the shared run policy's
+    /// connection limit. An observation beyond it stays absent rather than partial.
+    fn queued_run_pages(&mut self) -> Result<Vec<Value>, String> {
+        const PAGE: u64 = 100;
+        const MAX_RUNS: u64 = 1_000;
+        let first = self.actions_json("runs?status=queued&per_page=100")?;
+        let total = first["total_count"].as_u64().ok_or("missing queued-run count")?;
+        if total > MAX_RUNS {
+            return Err("queued-run connection exceeds the observed limit".into());
+        }
+        let pages = total.div_ceil(PAGE).max(1);
+        let mut rows = vec![first];
+        for page in 2..=pages {
+            let path = format!("runs?status=queued&per_page=100&page={page}");
+            rows.push(self.actions_json(&path)?);
+        }
+        Ok(rows)
+    }
 }
 
 /// Complete one pull request's changed-file connection with bounded
@@ -397,7 +426,7 @@ fn complete_changed_files(
         let continuation = &next[format!("p{number}")];
         let (seen, seen_head) = identity(continuation)?;
         if seen != number {
-            return Err(SnapshotError::from("mismatched PR number"));
+            return Err(SnapshotError::Changed("mismatched PR details; retry later"));
         }
         if seen_head != head || continuation["files"]["totalCount"].as_u64() != Some(total) {
             return Err(SnapshotError::Changed("mismatched PR details; retry later"));
@@ -423,6 +452,39 @@ fn changed_path(file: &Value) -> Result<&str, String> {
         .ok_or_else(|| "missing changed-file path".to_string())
 }
 
+/// Page size of every per-PR connection read in the snapshot query.
+const PAGE_ITEMS: u64 = 100;
+
+/// The first per-PR connection whose total exceeds the page it was read with. Only that PR degrades.
+fn over_page_limit(row: &Value, reviews: bool) -> Option<&'static str> {
+    let mut connections: Vec<(&'static str, &Value)> = vec![
+        ("labels", &row["labels"]),
+        ("changed files", &row["files"]),
+        ("review threads", &row["reviewThreads"]),
+        ("latest reviews", &row["latestOpinionatedReviews"]),
+        ("base rules", &row["baseRef"]["rules"]),
+        (
+            "check contexts",
+            &row["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"],
+        ),
+    ];
+    if reviews {
+        connections.push(("comments", &row["comments"]));
+        connections.push(("reviews", &row["reviews"]));
+    }
+    connections.into_iter().find_map(|(name, connection)| {
+        let total = connection["totalCount"].as_u64()?;
+        let shown = connection["nodes"].as_array()?.len() as u64;
+        (total > shown).then(|| {
+            eprintln!(
+                "oxa work: PR #{} {name} exceed the {PAGE_ITEMS}-item GitHub page ({total} items); the item is not evaluated",
+                row["number"].as_u64().unwrap_or_default()
+            );
+            name
+        })
+    })
+}
+
 fn nodes(value: &Value) -> Result<&Vec<Value>, String> {
     let rows = value["nodes"].as_array().ok_or("missing GitHub connection")?;
     if value["totalCount"].as_u64() != Some(rows.len() as u64) {
@@ -431,7 +493,9 @@ fn nodes(value: &Value) -> Result<&Vec<Value>, String> {
     Ok(rows)
 }
 
-fn check_outcome(check: &Value) -> Option<&str> {
+/// A check outcome reports failure only once its run completed; an active run is
+/// pending whatever conclusion GitHub retained from an earlier attempt.
+pub(crate) fn check_outcome(check: &Value) -> Option<&str> {
     match check["status"].as_str() {
         Some("COMPLETED") => check["conclusion"].as_str(),
         // GitHub can retain a prior conclusion while the check is active.
@@ -440,7 +504,10 @@ fn check_outcome(check: &Value) -> Option<&str> {
     }
 }
 
-fn required_contexts(base: &Value) -> Result<BTreeSet<&str>, String> {
+/// The required check contexts of one base ref: its classic protection plus active
+/// repository and organization rulesets. Shared by the PR snapshot and the main
+/// panels projection.
+pub(crate) fn required_contexts(base: &Value) -> Result<BTreeSet<&str>, String> {
     if !base.is_object() {
         return Err("missing PR base requirements".into());
     }
@@ -468,7 +535,7 @@ fn required_contexts(base: &Value) -> Result<BTreeSet<&str>, String> {
 }
 
 impl Reader<'_> {
-    fn acquire(&mut self) -> Result<Vec<PullRequest>, SnapshotError> {
+    fn acquire(&mut self) -> Result<(Vec<PullRequest>, Vec<Incomplete>), SnapshotError> {
         // Verify the complete paginated identity set before publishing any details.
         let (list, first) = self.listing()?;
         let has_queue = list["mergeQueue"].is_object();
@@ -531,7 +598,14 @@ impl Reader<'_> {
                     head.to_owned()
                 };
                 let row = &mut page[format!("p{n}")];
-                complete_changed_files(self, *n, &head, row)?;
+                if let Err(error) = complete_changed_files(self, *n, &head, row) {
+                    match error {
+                        SnapshotError::Changed(_) => return Err(error),
+                        SnapshotError::Terminal(message) => {
+                            eprintln!("oxa work: PR #{n} changed-file evidence is incomplete: {message}")
+                        }
+                    }
+                }
                 details[format!("p{n}")] = row.clone();
             }
             offset = end;
@@ -545,7 +619,8 @@ impl Reader<'_> {
                 "PR identities changed during snapshot; retry later",
             ));
         }
-        let rows = nodes(&list["pullRequests"])?
+        let reviews = self.review_rows.is_some();
+        let rows: Vec<Result<PullRequest, Incomplete>> = nodes(&list["pullRequests"])?
             .iter()
             .map(|pr| {
                 let row = &details[format!("p{}", pr["number"])];
@@ -555,6 +630,19 @@ impl Reader<'_> {
                         return Err(SnapshotError::Changed("PR changed during snapshot; retry later"));
                     }
                     _ => return Err(SnapshotError::from("invalid PR state")),
+                }
+                if let Some(connection) = over_page_limit(row, reviews) {
+                    let (number, head) = identity(row)?;
+                    return Ok(Err(Incomplete {
+                        number,
+                        head: head.into(),
+                        release_pinned: row["labels"]["nodes"]
+                            .as_array()
+                            .is_some_and(|labels| labels.iter().any(|l| l["name"] == "release-pinned")),
+                        reason: format!(
+                            "{connection} exceed the {PAGE_ITEMS}-item GitHub page; the item is not evaluated"
+                        ),
+                    }));
                 }
                 let required = required_contexts(&row["baseRef"])?;
                 let contexts = &row["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"];
@@ -595,7 +683,7 @@ impl Reader<'_> {
                 } else {
                     RequiredCi::Passed
                 };
-                Ok(PullRequest {
+                Ok(Ok(PullRequest {
                     number: row["number"].as_u64().ok_or("missing PR number")?,
                     head: row["headRefOid"].as_str().ok_or("missing PR head")?.into(),
                     release_pinned: nodes(&row["labels"])?
@@ -638,30 +726,48 @@ impl Reader<'_> {
                         !approvals.is_empty()
                             && approvals.iter().all(|r| r["commit"]["oid"] == row["headRefOid"])
                     },
-                })
+                }))
             })
-            .collect::<Result<Vec<_>, SnapshotError>>()?;
+            .collect::<Result<_, SnapshotError>>()?;
+        let mut pulls = Vec::new();
+        let mut incomplete = Vec::new();
+        for row in rows {
+            match row {
+                Ok(pull) => pulls.push(pull),
+                Err(item) => incomplete.push(item),
+            }
+        }
         self.time_left().map_err(QueryError::message)?;
         if self.review_rows.is_some() {
             self.review_rows = Some(details);
         }
-        Ok(rows)
+        Ok((pulls, incomplete))
     }
 }
 
 impl GitHub for Reader<'_> {
-    fn open_pull_requests(&mut self) -> Result<Vec<PullRequest>, String> {
+    fn snapshot(&mut self) -> Result<Snapshot, String> {
         self.deadline.set(Instant::now() + Duration::from_secs(120));
         self.bytes.set(0);
         if let Some(quota) = &mut self.app_quota {
             *quota.get_mut() = GitHubQuotas::default();
         }
         // A consistency refusal gets exactly one fresh acquisition, sharing its byte budget.
-        match self.acquire() {
+        let (pull_requests, incomplete) = match self.acquire() {
             Err(SnapshotError::Changed(_)) => self.acquire(),
             result => result,
         }
-        .map_err(SnapshotError::message)
+        .map_err(SnapshotError::message)?;
+        Ok(Snapshot {
+            pull_requests,
+            issues: vec![],
+            incomplete,
+        })
+    }
+
+    /// Open PRs whose evidence is complete. Incomplete PRs are reported only through `snapshot`.
+    fn open_pull_requests(&mut self) -> Result<Vec<PullRequest>, String> {
+        self.snapshot().map(|snapshot| snapshot.pull_requests)
     }
 }
 
@@ -682,10 +788,11 @@ pub(crate) fn run(
     // Existing parser declaration; migrate command/flag metadata together in #1062.
     let (repo, options) = match args {
         [shadow, flag, repo, options @ ..] if shadow == "--shadow" && flag == "--repo" => (repo, options),
-        _ => return Err("usage: oxa work board --shadow --repo OWNER/REPO [--once] [--token-stdin] [--app-quota-shadow] [--review-policy FILE] [--queue-evidence] [--landing-shadow] [--queue-report-policy FILE]".into()),
+        _ => return Err("usage: oxa work board --shadow --repo OWNER/REPO [--once] [--token-stdin] [--app-quota-shadow] [--review-policy FILE] [--queue-evidence] [--landing-shadow] [--lead-alarms] [--queue-report-policy FILE]".into()),
     };
     let (mut once, mut streamed, mut review_file) = (false, false, None);
     let (mut queue_evidence, mut landing_shadow, mut quota_shadow) = (false, false, false);
+    let mut lead_alarms = false;
     let mut report_file = None;
     let mut options = options.iter();
     while let Some(option) = options.next() {
@@ -695,6 +802,7 @@ pub(crate) fn run(
             "--queue-evidence" => queue_evidence = true,
             "--landing-shadow" => landing_shadow = true,
             "--app-quota-shadow" => quota_shadow = true,
+            "--lead-alarms" => lead_alarms = true,
             "--queue-report-policy" if report_file.is_none() => {
                 report_file = Some(options.next().ok_or("missing queue report policy file")?);
             }
@@ -798,6 +906,28 @@ pub(crate) fn run(
             } else {
                 (BTreeMap::new(), None)
             };
+            // Opt-in alarm records for the protected Lead view (#1391). Each source
+            // fails independently, so one missing record never hides the others and a
+            // degraded sample stays an explicit partial observation.
+            let (panels, runs) = if lead_alarms {
+                let panels = match reader.lead_panels() {
+                    Ok(panels) => Some(panels),
+                    Err(error) => {
+                        eprintln!("oxa work: lead panels unavailable in this sample: {error}");
+                        None
+                    }
+                };
+                let runs = match reader.queued_run_pages() {
+                    Ok(runs) => Some(runs),
+                    Err(error) => {
+                        eprintln!("oxa work: queued-run observation unavailable in this sample: {error}");
+                        None
+                    }
+                };
+                (panels, runs)
+            } else {
+                (None, None)
+            };
             reader.time_left().map_err(QueryError::message)?;
             Ok(oxa_work::shadow::LandingSample {
                 board,
@@ -805,6 +935,8 @@ pub(crate) fn run(
                 queue_rejections,
                 landing,
                 landing_main,
+                panels,
+                runs,
                 app_quota: reader
                     .app_quota
                     .as_ref()

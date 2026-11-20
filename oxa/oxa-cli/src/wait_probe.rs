@@ -6,6 +6,8 @@
 //!   pending. A run for another commit never counts.
 //! * `{"kind":"pr_merged","pr":<n>}`: done when the pull request is merged; closed without a
 //!   merge is an error (it can never merge by waiting).
+//! * `{"kind":"pr_activity","pr":<n>,"head":<40 hex>}`: see `pr_activity.rs`; done when a review or
+//!   PR comment is new, the head moved, or the PR is merged or closed.
 //!
 //! SECURITY. This runs `gh` with the owner's login, outside the sandbox, on arguments a model
 //! chose. So: `gh` is started with an argument vector (never a shell), in fixed shapes; `sha`
@@ -14,6 +16,8 @@
 //! cwd (github.com only) and never from the call; every call has a deadline and an output cap;
 //! stderr is discarded and no token or environment value is printed; `gh` is found with
 //! `netguard::trusted_executable_for` like every other host tool, so a project shim is never run.
+//! The read probes `pr_view`, `pr_checks`, `run_log_failed` and `issue_view` live in `gh_probe.rs`
+//! and follow the same rules.
 //! A runner-owned worker session (`OXA_RUNNER_OWNS_GITHUB=1`) runs no `gh` at all, `GH_HOST` is
 //! pinned to github.com, and every call is bounded by the wait's own remaining time.
 use oxa_proto::{CommandSpec, HookPoint, HookReply, Hooks, OxaError, Tool, Ui};
@@ -22,12 +26,12 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// One `gh` or `git` call must finish within this.
 const CALL_DEADLINE: Duration = Duration::from_secs(20);
 /// Most bytes of one `gh` answer that are read; more is an error.
-const OUTPUT_CAP: usize = 256 * 1024;
+pub(crate) const OUTPUT_CAP: usize = 256 * 1024;
 /// Most failed job names put in the evidence.
 const MAX_FAILED_JOBS: usize = 20;
 
@@ -40,6 +44,8 @@ pub(crate) struct ProbeHooks {
     /// A runner-owned `oxa work` worker has no GitHub access (AGENTS.md); the runner owns
     /// every GitHub call, including these probes.
     runner_owns_github: bool,
+    /// What `wait until pr_activity` has already seen, per PR (`pr_activity.rs`).
+    pub(crate) activity: Mutex<std::collections::HashMap<u64, crate::pr_activity::ActivityBaseline>>,
 }
 
 impl ProbeHooks {
@@ -51,6 +57,7 @@ impl ProbeHooks {
             repo: Mutex::new(None),
             runner_owns_github: std::env::var_os(oxa_work::RUNNER_GITHUB_ENV)
                 .is_some_and(|value| value == "1"),
+            activity: Mutex::default(),
         }
     }
 
@@ -65,6 +72,16 @@ impl ProbeHooks {
     }
 
     #[cfg(test)]
+    pub(crate) fn for_test_paths(cwd: &Path, home: &Path, path: &Path, repo: &str) -> Self {
+        Self::for_test_role(cwd, home, path, repo, false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_runner_owned_paths(cwd: &Path, home: &Path, path: &Path, repo: &str) -> Self {
+        Self::for_test_role(cwd, home, path, repo, true)
+    }
+
+    #[cfg(test)]
     fn for_test_role(cwd: &Path, home: &Path, path: &Path, repo: &str, runner_owns_github: bool) -> Self {
         Self {
             cwd: cwd.to_path_buf(),
@@ -72,6 +89,7 @@ impl ProbeHooks {
             path: Some(path.as_os_str().to_os_string()),
             repo: Mutex::new(Some(repo.to_string())),
             runner_owns_github,
+            activity: Mutex::default(),
         }
     }
 
@@ -85,6 +103,23 @@ impl ProbeHooks {
     }
 
     fn run(&self, program: &str, args: &[String], budget: Duration) -> Result<String, String> {
+        self.run_accepting(program, args, budget, OUTPUT_CAP, &[0])
+    }
+
+    /// The home directory as text, for the output scrubber.
+    pub(crate) fn home_string(&self) -> String {
+        self.home.to_string_lossy().into_owned()
+    }
+
+    /// Like `run`, with its own read cap, and the listed exit codes count as an answer.
+    pub(crate) fn run_accepting(
+        &self,
+        program: &str,
+        args: &[String],
+        budget: Duration,
+        cap: usize,
+        ok_codes: &[i32],
+    ) -> Result<String, String> {
         let exe = self.exe(program).ok_or_else(|| {
             format!("{program} was not found in a trusted PATH directory; wait until ci / pr_merged needs the GitHub CLI (gh)")
         })?;
@@ -100,12 +135,12 @@ impl ProbeHooks {
             // send the call to an enterprise instance with a same-named repository.
             command.env("GH_HOST", "github.com");
         }
-        match oxa_work::command_runner(command, Some(OUTPUT_CAP), budget) {
+        match oxa_work::command_runner(command, Some(cap), budget) {
             None => Err(format!(
-                "{program} did not finish within {} seconds, could not be started, or printed more than {OUTPUT_CAP} bytes",
+                "{program} did not finish within {} seconds, could not be started, or printed more than {cap} bytes",
                 budget.as_secs()
             )),
-            Some((0, out)) => Ok(out),
+            Some((code, out)) if ok_codes.contains(&code) => Ok(out),
             Some((code, _)) => Err(format!(
                 "{program} exited with status {code} (is `gh auth status` logged in, and does the repository exist?)"
             )),
@@ -113,7 +148,7 @@ impl ProbeHooks {
     }
 
     /// `owner/name` from the `origin` remote of the session cwd.
-    fn repo(&self, budget: Duration) -> Result<String, String> {
+    pub(crate) fn repo(&self, budget: Duration) -> Result<String, String> {
         let mut cached = self.repo.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(r) = cached.as_ref() {
             return Ok(r.clone());
@@ -129,16 +164,23 @@ impl ProbeHooks {
         Ok(repo)
     }
 
-    fn gh(&self, args: &[&str], budget: Duration) -> Result<Value, String> {
+    pub(crate) fn gh(&self, args: &[&str], budget: Duration) -> Result<Value, String> {
         let args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
         let out = self.run("gh", &args, budget)?;
         serde_json::from_str(&out).map_err(|_| "gh printed output that is not JSON".to_string())
     }
 
-    fn ci(&self, args: &Value, budget: Duration) -> Result<Option<String>, String> {
+    pub(crate) fn remaining(deadline: Instant) -> Result<Duration, String> {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| "the wait deadline expired during the GitHub probe".to_string())
+    }
+
+    fn ci(&self, args: &Value, deadline: Instant) -> Result<Option<String>, String> {
         let sha = valid_sha(args["sha"].as_str())?;
         let workflow = valid_workflow(args["workflow"].as_str())?;
-        let repo = self.repo(budget)?;
+        let repo = self.repo(Self::remaining(deadline)?)?;
         let runs = self.gh(
             &[
                 "run",
@@ -154,7 +196,7 @@ impl ProbeHooks {
                 "-L",
                 "5",
             ],
-            budget,
+            Self::remaining(deadline)?,
         )?;
         // Only a run of exactly this head counts; the newest one decides.
         let run = runs
@@ -178,7 +220,10 @@ impl ProbeHooks {
         let mut text = format!("{workflow} run {id} at {sha}: {conclusion}");
         if conclusion != "success" {
             let id = id.to_string();
-            let jobs = self.gh(&["run", "view", &id, "-R", &repo, "--json", "jobs"], budget)?;
+            let jobs = self.gh(
+                &["run", "view", &id, "-R", &repo, "--json", "jobs"],
+                Self::remaining(deadline)?,
+            )?;
             let failed: Vec<String> = jobs["jobs"]
                 .as_array()
                 .into_iter()
@@ -202,12 +247,12 @@ impl ProbeHooks {
         Ok(Some(text))
     }
 
-    fn pr_merged(&self, args: &Value, budget: Duration) -> Result<Option<String>, String> {
+    fn pr_merged(&self, args: &Value, deadline: Instant) -> Result<Option<String>, String> {
         let pr = args["pr"]
             .as_u64()
             .filter(|n| *n > 0)
             .ok_or("pr must be a positive integer")?;
-        let repo = self.repo(budget)?;
+        let repo = self.repo(Self::remaining(deadline)?)?;
         let pr_arg = pr.to_string();
         let view = self.gh(
             &[
@@ -219,7 +264,7 @@ impl ProbeHooks {
                 "--json",
                 "state,mergedAt,headRefOid",
             ],
-            budget,
+            Self::remaining(deadline)?,
         )?;
         let merged = view["state"].as_str() == Some("MERGED")
             || view["mergedAt"].as_str().is_some_and(|m| !m.is_empty());
@@ -236,7 +281,7 @@ impl ProbeHooks {
 }
 
 /// A 40-character hex commit id, lowercased.
-fn valid_sha(sha: Option<&str>) -> Result<String, String> {
+pub(crate) fn valid_sha(sha: Option<&str>) -> Result<String, String> {
     match sha {
         Some(s) if s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit()) => Ok(s.to_ascii_lowercase()),
         _ => Err("sha must be a full 40-character hex commit id".into()),
@@ -308,7 +353,11 @@ impl Hooks for ProbeHooks {
         args: &Value,
         budget: Duration,
     ) -> Option<Result<Option<String>, String>> {
-        if kind != "ci" && kind != "pr_merged" {
+        if kind != "ci"
+            && kind != "pr_merged"
+            && kind != "pr_activity"
+            && !crate::gh_probe::is_read_kind(kind)
+        {
             return None;
         }
         if self.runner_owns_github {
@@ -320,7 +369,7 @@ impl Hooks for ProbeHooks {
         }
         if oxa_proto::offline() {
             return Some(Err(oxa_proto::offline_error(
-                "wait until ci / pr_merged (GitHub)",
+                "wait until ci / pr_merged / pr_activity (GitHub)",
             )
             .to_string()));
         }
@@ -329,10 +378,12 @@ impl Hooks for ProbeHooks {
         if budget.is_zero() {
             return Some(Ok(None));
         }
-        Some(if kind == "ci" {
-            self.ci(args, budget)
-        } else {
-            self.pr_merged(args, budget)
+        let deadline = Instant::now() + budget;
+        Some(match kind {
+            "ci" => self.ci(args, deadline),
+            "pr_merged" => self.pr_merged(args, deadline),
+            "pr_activity" => self.pr_activity(args, deadline),
+            _ => self.read_probe(kind, args, budget).map(Some),
         })
     }
 }
@@ -368,7 +419,7 @@ mod tests {
             for d in [&bin, &work, &home] {
                 mk(d);
             }
-            let script = "#!/bin/sh\ndir=\"$(dirname \"$0\")\"\necho \"$@\" >> \"$dir/calls\"\necho \"host=$GH_HOST\" >> \"$dir/hosts\"\ncase \"$1 $2\" in\n  \"run list\") cat \"$dir/run_list.json\" ;;\n  \"run view\") cat \"$dir/run_view.json\" ;;\n  \"pr view\") cat \"$dir/pr_view.json\" ;;\n  *) exit 2 ;;\nesac\n";
+            let script = "#!/bin/sh\ndir=\"$(dirname \"$0\")\"\necho \"$@\" >> \"$dir/calls\"\necho \"host=$GH_HOST\" >> \"$dir/hosts\"\n[ ! -f \"$dir/delay\" ] || sleep \"$(cat \"$dir/delay\")\"\ncase \"$1 $2\" in\n  \"run list\") cat \"$dir/run_list.json\" ;;\n  \"run view\") cat \"$dir/run_view.json\" ;;\n  \"pr view\") cat \"$dir/pr_view.json\" ;;\n  *) exit 2 ;;\nesac\n";
             let gh = bin.join("gh");
             std::fs::write(&gh, script).unwrap();
             std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -464,6 +515,26 @@ mod tests {
             .calls()
             .unwrap()
             .contains("run view 11 -R acme/widgets --json jobs"));
+    }
+
+    #[test]
+    fn ci_probe_shares_one_deadline_across_subprocesses() {
+        let f = Fake::new("shared-deadline");
+        f.answer(
+            "run_list",
+            &format!(
+                r#"[{{"databaseId":11,"status":"completed","conclusion":"failure","headSha":"{SHA}"}}]"#
+            ),
+        );
+        f.answer("run_view", r#"{"jobs":[]}"#);
+        std::fs::write(f.bin.join("delay"), "0.25").unwrap();
+
+        let started = Instant::now();
+        assert!(f.poll_within(ci_args(SHA), Duration::from_millis(400)).is_err());
+        assert!(
+            started.elapsed() < Duration::from_millis(650),
+            "each subprocess must not receive a fresh 400ms budget"
+        );
     }
 
     #[test]

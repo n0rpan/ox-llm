@@ -217,7 +217,7 @@ fn run_cli_conversation(
     env: &Env,
 ) -> Result<conversation::ConversationReply, OxaError> {
     let binding = local_binding(project, env)?;
-    converse_bound(message, &binding, env).map_err(cli_conversation_error)
+    converse_bound(message, &binding, env, false).map_err(cli_conversation_error)
 }
 
 fn cli_conversation_error(error: OxaError) -> OxaError {
@@ -225,7 +225,10 @@ fn cli_conversation_error(error: OxaError) -> OxaError {
     // Keep the typed internal failure for the journal, and render only fixed text here.
     let message = match error.code {
         "budget_not_configured" => {
-            "Cloud models need a positive oxa.cloud.daily_budget_usd in oxa user settings."
+            "oxa.cloud.daily_budget_usd must be a positive number in oxa user settings, or unset for no USD limit."
+        }
+        "cost_unknown_history" => {
+            "The daily cloud budget cannot be checked: earlier requests today have an unknown cost."
         }
         "budget_exceeded" | codes::BUDGET_EXHAUSTED => "The daily cloud budget is exhausted.",
         codes::LITERAL_OUTPUT_EXHAUSTED => {
@@ -248,6 +251,7 @@ fn cli_conversation_error(error: OxaError) -> OxaError {
         | codes::ENGINE_BUSY
         | codes::STREAM_BROKEN
         | "cloud_rate_limited" => "The Lead provider request failed.",
+        "cloud_quota_exhausted" => "Provider quota exhausted. Switch models or wait for the quota to reset.",
         _ => return OxaError::new(codes::INVALID, "Lead reply did not complete."),
     };
     OxaError::new(error.code, message)
@@ -257,12 +261,13 @@ pub(crate) fn converse_bound(
     message: &str,
     binding: &crate::dispatch::LeadOwnerBinding,
     env: &Env,
+    workers: bool,
 ) -> Result<conversation::ConversationReply, OxaError> {
     binding.recheck()?;
     let uid = owner_uid()?;
     let board = protected_board(env, uid)?;
     let situation = protected_source(env, "OXA_LEAD_SITUATION", uid, crate::lead_input::situation)?;
-    converse(binding, env, message, board.as_ref(), situation.as_ref())
+    converse(binding, env, message, board.as_ref(), situation.as_ref(), workers)
 }
 
 fn prepare_default_state(dirs: &oxa_config::Dirs) -> Result<(), OxaError> {

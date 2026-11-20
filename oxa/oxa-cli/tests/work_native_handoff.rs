@@ -59,7 +59,13 @@ fn policy(root: &Path) -> oxa_work::RunPolicy {
         git_binary: "/usr/bin/git".into(),
         host_path: std::env::var_os("PATH").unwrap(),
         terminate_binary: Some("/usr/bin/kill".into()),
+        gh_binary: None,
+        push_approved: false,
+        content_scan: None,
         runner_owns_github: false,
+        autonomy: Default::default(),
+        worker_github: Default::default(),
+        authority_now: None,
         offline: false,
         storage: root.join("home/.oxa/agent/work/native-handoff"),
     }

@@ -22,9 +22,9 @@
 use crate::agent_loop::persist;
 use crate::{SessionState, Shared, ToolSelection};
 use oxa_proto::{
-    codes, tool_errors, Access, AgentEvent, Answer, CompactReason, Decision, Delivery, Entry, EntryBody,
-    EventSink, ExecSpec, Exposure, HookPoint, HookReply, Hooks, Host, HostAction, Level, OxaError, Tool,
-    ToolCtx, Ui, Value, WireMsg,
+    codes, tool_errors, Access, AgentEvent, Answer, CompactReason, DangerAnswer, Decision, Delivery, Entry,
+    EntryBody, EventSink, ExecSpec, Exposure, HookPoint, HookReply, Hooks, Host, HostAction, Level, OxaError,
+    Tool, ToolCtx, Ui, Value, WireMsg,
 };
 use serde_json::json;
 use std::sync::atomic::Ordering;
@@ -183,6 +183,10 @@ impl CoreHost {
         let (reply, answer) = mpsc::channel();
         let tx = self.tx.lock().unwrap_or_else(|p| p.into_inner());
         tx.send(HostRequest { action, reply }).map_err(|_| gone())?;
+        drop(tx);
+        // The request is in the channel before the wake: a front end that waits instead of
+        // polling (see `Handle::set_attention_waker`) finds it when it serves the host.
+        self.shared.gate.attention.notify();
         Ok(answer)
     }
 
@@ -429,6 +433,13 @@ impl Ui for LockedUi<'_, '_> {
     fn confirm(&mut self, title: &str, body: &str, timeout_ms: Option<u32>) -> Option<bool> {
         self.with(|u| u.confirm(title, body, timeout_ms))
     }
+    fn approve_publication(&mut self, title: &str, body: &str) -> Option<bool> {
+        self.with(|u| u.approve_publication(title, body))
+    }
+
+    fn dialog_canceller(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        self.with(|u| u.dialog_canceller())
+    }
     fn input(&mut self, title: &str, placeholder: &str) -> Option<String> {
         self.with(|u| u.input(title, placeholder))
     }
@@ -452,6 +463,9 @@ impl Ui for LockedUi<'_, '_> {
     }
     fn ask_access(&mut self, a: &Access) -> Answer {
         self.with(|u| u.ask_access(a))
+    }
+    fn ask_dangerous(&mut self, a: &Access, reasons: &[String], keys: &[String]) -> DangerAnswer {
+        self.with(|u| u.ask_dangerous(a, reasons, keys))
     }
     fn editor_text(&mut self) -> String {
         self.with(|u| u.editor_text())
@@ -483,7 +497,8 @@ const POLL_MAX: Duration = Duration::from_millis(10);
 /// gets the caller's UI; the permission prompts of served requests use the same one, one call
 /// at a time. Returns when `f` returns; a panic in `f` is resumed here.
 ///
-/// Without a host (`st.host_rx == None`) `f` runs inline: nothing could answer a host call.
+/// Without a host (`st.host_rx == None`) `f` runs inline unless an owner-confirm broker also
+/// needs the session thread as its dialog pump.
 pub(crate) fn pumped<R: Send>(
     st: &mut SessionState,
     level: Serve,
@@ -498,7 +513,7 @@ pub(crate) fn pumped<R: Send>(
     let tapped = !crate::fire::PromptTap::quiet();
     let mut tap = crate::fire::PromptTap::new(ui, prompts.clone());
     let ui: &mut dyn Ui = if tapped { &mut tap } else { tap.inner_mut() };
-    if st.host_rx.is_none() {
+    if st.host_rx.is_none() && st.shared.owner_confirm().is_none() {
         let out = f(&mut *ui);
         tick(sink);
         crate::fire::drain(st, sink, ui);
@@ -507,6 +522,10 @@ pub(crate) fn pumped<R: Send>(
     }
     let cell: Mutex<&mut dyn Ui> = Mutex::new(ui);
     let (done_tx, done_rx) = mpsc::channel::<()>();
+    let previous_broker_state = st.shared.owner_confirm().map(|broker| {
+        let previous = broker.set_servable(true);
+        (broker, previous)
+    });
     std::thread::scope(|scope| {
         let shared_ui = &cell;
         let dependent = level == Serve::Run;
@@ -521,6 +540,7 @@ pub(crate) fn pumped<R: Send>(
         while let Err(mpsc::RecvTimeoutError::Timeout) = done_rx.recv_timeout(pause) {
             let mut ui = LockedUi(&cell);
             let served = serve_level(st, level, sink, &mut ui);
+            serve_owner_confirm(st, sink, &mut ui);
             tick(sink);
             crate::fire::drain(st, sink, &mut ui);
             crate::fire::fire_prompts(st, &prompts, sink, &mut ui);
@@ -532,6 +552,10 @@ pub(crate) fn pumped<R: Send>(
         }
         tick(sink);
         let mut ui = LockedUi(&cell);
+        if let Some((broker, previous)) = previous_broker_state {
+            broker.set_servable(previous);
+        }
+        drain_owner_confirm_records(st, sink);
         crate::fire::drain(st, sink, &mut ui);
         crate::fire::fire_prompts(st, &prompts, sink, &mut ui);
         match helper.join() {
@@ -539,6 +563,47 @@ pub(crate) fn pumped<R: Send>(
             Err(panic) => std::panic::resume_unwind(panic),
         }
     })
+}
+
+/// Serve the owner confirm broker from the session thread while a tool runs: show the dialog
+/// of a waiting request, then report what was answered (a notice and a session record, so a
+/// yolo answer is never silent).
+fn serve_owner_confirm(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) {
+    let Some(broker) = st.shared.owner_confirm() else {
+        return;
+    };
+    broker.serve(ui);
+    drain_owner_confirm_records(st, sink);
+}
+
+/// Record answers without making the broker servable again after the pumped operation ends.
+fn drain_owner_confirm_records(st: &mut SessionState, sink: &mut dyn EventSink) {
+    let Some(broker) = st.shared.owner_confirm() else {
+        return;
+    };
+    for r in broker.take_records() {
+        let text = format!(
+            "owner confirm {} ({}), preview sha256 {}",
+            r.verdict.as_str(),
+            r.origin.as_str(),
+            r.preview_sha256
+        );
+        sink.emit(&AgentEvent::Notice {
+            level: Level::Info,
+            text,
+        });
+        let data = json!({
+            "question": r.question,
+            "preview_sha256": r.preview_sha256,
+            "answer": r.verdict.as_str(),
+            "source": r.origin.as_str(),
+        });
+        let body = EntryBody::Custom {
+            custom_type: "owner_confirm".to_string(),
+            data,
+        };
+        let _ = persist(st, body, sink);
+    }
 }
 
 /// Fire one hook point on one hook set through [`pumped`].
@@ -816,6 +881,7 @@ fn apply(
         } => fetch(st, &url, &method, &headers, body, ui),
         HostAction::CallTool { name, args } => call_tool(st, &name, &args, sink, ui),
         HostAction::ParkSession => crate::compaction::park(st, sink, ui),
+        HostAction::ForkSeed => crate::fork::seed_of(st),
         HostAction::ClearEngineHint(hint) => clear_engine_hint(st, &hint),
         HostAction::GetSessionName => Ok(session_name(st).map_or(Value::Null, Value::String)),
         HostAction::GetThinkingLevel => Ok(Value::String(st.thinking.as_str().to_string())),
@@ -842,7 +908,11 @@ fn apply(
                     .map(|i| i.caps.remote)
                     .unwrap_or(false)
             };
-            Ok(serde_json::json!({ "model": model, "remote": remote }))
+            // Known to this install: the session's own model, or one of the engine's models.
+            let known = model == st.model
+                || st.info.models.iter().any(|m| *m == model)
+                || st.engine.info(Some(&model)).is_ok();
+            Ok(serde_json::json!({ "model": model, "remote": remote, "known": known }))
         }
         HostAction::AccountRunTokens(tokens) => {
             crate::Handle {
@@ -855,6 +925,8 @@ fn apply(
             "remainingTokens": crate::Handle { shared: st.shared.clone() }.remaining_tokens(),
             "sessionId": st.sref.id,
             "model": st.model,
+            // The table mode (plan, workspace or ask): K5b resumes workers no wider than it.
+            "mode": st.mode.as_str(),
             "remote": st.info.caps.remote,
             "contextWindow": st.info.n_ctx,
             "maxOutput": st.info.max_output,
@@ -979,42 +1051,138 @@ fn gate(st: &mut SessionState, a: &Access, ui: &mut dyn Ui) -> Result<(), OxaErr
     gate_pinned(st, a, ui).map(|_| ())
 }
 
+/// [`gate`] for a command that runs in `cwd` rather than in the session's directory: an
+/// extension may pass its own `cwd` to `oxa.exec`. The session's directory stays the workspace
+/// boundary, and relative operands resolve where the command really runs: the command is gated
+/// in the session's directory as `cd <cwd> && <command>`, which the classifier follows (a `cd`
+/// moves the current directory, never the workspace root). So `rm -rf /work/other/victim` and
+/// `rm -rf victim` with `cwd` `/work/other` are both outside the workspace, and the prompt or
+/// filed request shows the directory the command runs in. One gate, so one answer covers it.
+fn gate_at(
+    st: &mut SessionState,
+    a: &Access,
+    cwd: &std::path::Path,
+    ui: &mut dyn Ui,
+) -> Result<(), OxaError> {
+    let session_cwd = st.cwd.clone();
+    match a {
+        Access::Exec { command, net } if cwd != session_cwd => {
+            let located = Access::Exec {
+                command: format!(
+                    "cd {} && cd {} && {command}",
+                    shell_quote(&session_cwd.to_string_lossy()),
+                    shell_quote(&cwd.to_string_lossy())
+                ),
+                net: *net,
+            };
+            // The wrapper keeps the session directory as the classifier's workspace boundary.
+            // `exec_gated` supplies a canonical cwd, so that real directory is also part of the
+            // exact command identity an unattended approval records and revalidates.
+            gate_pinned_in(st, &located, &session_cwd, ui).map(|_| ())
+        }
+        _ => gate_pinned_in(st, a, cwd, ui).map(|_| ()),
+    }
+}
+
+/// `text` as one single-quoted shell word.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
 /// [`gate`], returning the real location the verdict covers (#518, `Policy::decide_pinned`).
 fn gate_pinned(
     st: &mut SessionState,
     a: &Access,
     ui: &mut dyn Ui,
 ) -> Result<Option<std::path::PathBuf>, OxaError> {
-    let (decision, pin) = st.policy.decide_pinned(st.mode, a, &st.cwd);
+    let cwd = st.cwd.clone();
+    gate_pinned_in(st, a, &cwd, ui)
+}
+
+/// [`gate_pinned`] in an explicit directory.
+fn gate_pinned_in(
+    st: &mut SessionState,
+    a: &Access,
+    cwd: &std::path::Path,
+    ui: &mut dyn Ui,
+) -> Result<Option<std::path::PathBuf>, OxaError> {
+    let (decision, pin) = st.policy.decide_pinned(st.mode, a, cwd);
     match decision {
         Decision::Allow => Ok(pin),
         Decision::Deny(reason) => Err(OxaError::new(codes::DENIED, reason)),
-        Decision::Ask => match ui.ask_access(a) {
-            Answer::Once => Ok(pin),
-            Answer::Session => {
-                st.policy.remember(a);
-                Ok(pin)
+        Decision::Ask => {
+            // #1512 S2: a dangerous command asks first; its answer covers only its rule keys.
+            let danger = st.policy.danger_ask(a, cwd);
+            if !danger.is_empty() {
+                // #1512 S5: an extension's exec takes the same unattended answer as the bash
+                // tool: refused, or filed at the approval desk for the owner, never paused for.
+                if !ui.interactive() {
+                    // Classified, and filed, in the directory the command actually runs in.
+                    if let Some(text) = st.policy.danger_unattended(a, cwd) {
+                        return Err(OxaError::new(codes::DENIED, text));
+                    }
+                }
+                let (keys, reasons): (Vec<String>, Vec<String>) = danger.into_iter().unzip();
+                return match ui.ask_dangerous(a, &reasons, &keys) {
+                    DangerAnswer::Once => Ok(pin),
+                    DangerAnswer::Session | DangerAnswer::Always => {
+                        st.policy.grant_danger(&keys);
+                        Ok(pin)
+                    }
+                    DangerAnswer::Deny if !ui.interactive() => Err(OxaError::new(
+                        codes::DENIED,
+                        tool_errors::DANGEROUS_UNATTENDED.replace("{why}", &reasons.join("; ")),
+                    )),
+                    DangerAnswer::Deny => Err(OxaError::new(codes::DENIED, tool_errors::DENIED_BY_USER)),
+                };
             }
-            Answer::Deny if !ui.interactive() => Err(OxaError::new(
-                codes::DENIED,
-                tool_errors::DENIED_UNATTENDED.replace("{what}", &crate::fire::access_title(a)),
-            )),
-            Answer::Deny => Err(OxaError::new(codes::DENIED, tool_errors::DENIED_BY_USER)),
-        },
+            match ui.ask_access(a) {
+                Answer::Once => Ok(pin),
+                Answer::Session => {
+                    st.policy.remember(a);
+                    Ok(pin)
+                }
+                Answer::Deny if !ui.interactive() => Err(OxaError::new(
+                    codes::DENIED,
+                    tool_errors::DENIED_UNATTENDED.replace("{what}", &crate::fire::access_title(a)),
+                )),
+                Answer::Deny => Err(OxaError::new(codes::DENIED, tool_errors::DENIED_BY_USER)),
+            }
+        }
     }
 }
 
 /// Sandboxed command: policy first, then the sandbox (no unsandboxed fallback).
-fn exec_gated(st: &mut SessionState, spec: ExecSpec, ui: &mut dyn Ui) -> Result<Value, OxaError> {
+fn exec_gated(st: &mut SessionState, mut spec: ExecSpec, ui: &mut dyn Ui) -> Result<Value, OxaError> {
     if spec.net {
         oxa_proto::check_online("a command with network access")?; // P4: no network grant offline
     }
-    gate(
+    // A directory outside the session directory is mounted into the sandbox (writable when the
+    // spec says so): it asks like the same file access outside the project (yolo allows, headless
+    // without an approver refuses). A directory inside the session directory is unchanged.
+    if !oxa_perm::is_inside(&spec.cwd, &st.cwd) {
+        let mount = if spec.writable {
+            Access::Write(spec.cwd.clone())
+        } else {
+            Access::Read(spec.cwd.clone())
+        };
+        gate(st, &mount, ui)?;
+    }
+    // Pin the directory before checking an exec grant, then hand that same real directory to
+    // the sandbox. A symlink swap cannot move execution after its approval was revalidated.
+    spec.cwd = std::fs::canonicalize(&spec.cwd).map_err(|e| {
+        OxaError::new(
+            codes::INVALID,
+            format!("cannot resolve exec cwd {}: {e}", spec.cwd.display()),
+        )
+    })?;
+    gate_at(
         st,
         &Access::Exec {
             command: spec.command.clone(),
             net: spec.net,
         },
+        &spec.cwd,
         ui,
     )?;
     st.sandbox.check()?;
@@ -1294,8 +1462,9 @@ fn notice(sink: &mut dyn EventSink, level: Level, text: impl Into<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Handle;
     use oxa_config::{Dirs, Settings};
-    use oxa_proto::{Engine, FrozenPrefix, HeadlessUi, Mode, ThinkingLevel, VecSink};
+    use oxa_proto::{Autonomy, Engine, FrozenPrefix, HeadlessUi, Mode, ThinkingLevel, VecSink, YoloSwitch};
     use oxa_sandbox::NoSandbox;
     use oxa_session::{MemStore, SessionStore, Transcript, Tree};
 
@@ -1393,6 +1562,86 @@ mod tests {
         }
     }
 
+    /// A UI whose owner accepts confirmation dialogs.
+    struct ConfirmUi;
+
+    impl Ui for ConfirmUi {
+        fn select(&mut self, _: &str, _: &[String], _: Option<u32>) -> Option<usize> {
+            None
+        }
+        fn confirm(&mut self, _: &str, _: &str, _: Option<u32>) -> Option<bool> {
+            Some(true)
+        }
+        fn input(&mut self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+        fn editor(&mut self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+        fn notify(&mut self, _: &str, _: Level) {}
+        fn set_status(&mut self, _: &str, _: Option<&str>) {}
+        fn set_widget(&mut self, _: &str, _: Option<&[String]>, _: oxa_proto::Placement) {}
+        fn set_title(&mut self, _: &str) {}
+        fn set_editor_text(&mut self, _: &str) {}
+        fn ask_access(&mut self, _: &Access) -> Answer {
+            Answer::Deny
+        }
+    }
+
+    /// #1820: a session without extension hosts still pumps its owner-confirm broker while a
+    /// tool runs, so the available owner can approve the tool child's request.
+    #[test]
+    fn owner_confirm_is_pumped_without_extension_hosts() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::UnixStream;
+
+        let mut f = fixture();
+        assert!(
+            f.st.host_rx.is_none(),
+            "the regression requires no extension host"
+        );
+        let broker = crate::owner_confirm::OwnerConfirm::start(
+            &f.env.tmp().join("confirm"),
+            oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard),
+        )
+        .expect("start broker");
+        *f.st
+            .shared
+            .gate
+            .owner_confirm
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(broker.clone());
+
+        let socket = broker.sock_path().to_path_buf();
+        let mut sink = VecSink::default();
+        let mut ui = ConfirmUi;
+        let answer = pumped(
+            &mut f.st,
+            Serve::Run,
+            &mut sink,
+            &mut ui,
+            &mut |_| {},
+            move |_| {
+                let mut stream = UnixStream::connect(socket).expect("connect");
+                writeln!(
+                    stream,
+                    "{}",
+                    json!({"question": "publish the change?", "preview_sha256": "abc"})
+                )
+                .expect("request");
+                let mut line = String::new();
+                std::io::BufReader::new(stream)
+                    .read_line(&mut line)
+                    .expect("reply");
+                serde_json::from_str::<Value>(&line).expect("JSON reply")
+            },
+        );
+
+        assert_eq!(answer["answer"], "yes");
+        assert_eq!(answer["source"], "dialog");
+        broker.close();
+    }
+
     /// Serve the pending requests on this thread until `handle` finishes.
     fn serve_until_done<T: Send + 'static>(f: &mut Fixture, handle: std::thread::JoinHandle<T>) -> T {
         let mut sink = VecSink::default();
@@ -1402,6 +1651,382 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         handle.join().expect("caller thread")
+    }
+
+    /// A child that asks after its foreground tool has returned has nobody to service a dialog,
+    /// so it receives `none` instead of waiting behind a broker left servable by the final drain.
+    #[test]
+    fn pumped_tool_leaves_owner_confirm_unservable() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::UnixStream;
+
+        let mut f = fixture();
+        let broker = crate::owner_confirm::OwnerConfirm::start(
+            &f.env.root().join("confirm-after-tool"),
+            YoloSwitch::new(Autonomy::Standard),
+        )
+        .expect("start owner confirm broker");
+        *f.st
+            .shared
+            .gate
+            .owner_confirm
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(broker.clone());
+
+        let mut sink = VecSink::default();
+        let mut ui = HeadlessUi::default();
+        pumped(&mut f.st, Serve::Run, &mut sink, &mut ui, &mut |_| {}, |_| ());
+
+        let mut stream = UnixStream::connect(broker.sock_path()).expect("connect after tool");
+        writeln!(
+            stream,
+            "{}",
+            json!({"question": "publish?", "preview_sha256": "abc"})
+        )
+        .expect("send request");
+        let mut answer = String::new();
+        std::io::BufReader::new(stream)
+            .read_line(&mut answer)
+            .expect("read answer");
+        assert_eq!(
+            serde_json::from_str::<Value>(&answer).expect("json")["answer"],
+            "none"
+        );
+    }
+
+    /// #1512 S2: answers the dangerous-command prompt with `answer` and counts the questions.
+    struct DangerUi {
+        answer: DangerAnswer,
+        asked: usize,
+    }
+
+    impl Ui for DangerUi {
+        fn select(&mut self, _: &str, _: &[String], _: Option<u32>) -> Option<usize> {
+            None
+        }
+        fn confirm(&mut self, _: &str, _: &str, _: Option<u32>) -> Option<bool> {
+            None
+        }
+        fn input(&mut self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+        fn editor(&mut self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+        fn notify(&mut self, _: &str, _: Level) {}
+        fn set_status(&mut self, _: &str, _: Option<&str>) {}
+        fn set_widget(&mut self, _: &str, _: Option<&[String]>, _: oxa_proto::Placement) {}
+        fn set_title(&mut self, _: &str) {}
+        fn set_editor_text(&mut self, _: &str) {}
+        fn ask_access(&mut self, _: &Access) -> Answer {
+            Answer::Deny
+        }
+        fn ask_dangerous(&mut self, _: &Access, _: &[String], _: &[String]) -> DangerAnswer {
+            self.asked += 1;
+            self.answer
+        }
+        fn interactive(&self) -> bool {
+            true
+        }
+    }
+
+    /// #1512 S2: a dangerous exec in a host gate asks through `ask_dangerous`. `Once` runs it;
+    /// with no one to ask the refusal names the rule, and a generic exec still runs.
+    #[test]
+    fn extension_exec_gate_asks_dangerous() {
+        let mut f = fixture();
+        f.st.policy = Box::new(
+            oxa_perm::ModePolicy::new().with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new()),
+        );
+        let dangerous = Access::Exec {
+            command: "git push --force origin main".into(),
+            net: false,
+        };
+        let mut ui = DangerUi {
+            answer: DangerAnswer::Once,
+            asked: 0,
+        };
+        assert!(gate_pinned(&mut f.st, &dangerous, &mut ui).is_ok());
+        assert_eq!(ui.asked, 1);
+        let mut headless = HeadlessUi::default();
+        let err = gate_pinned(&mut f.st, &dangerous, &mut headless).expect_err("no one to ask");
+        assert_eq!(err.code, codes::DENIED);
+        assert!(
+            err.message
+                .starts_with("Refused: dangerous command (git-push-force: "),
+            "{}",
+            err.message
+        );
+        let plain = Access::Exec {
+            command: "cargo build".into(),
+            net: false,
+        };
+        assert!(gate_pinned(&mut f.st, &plain, &mut headless).is_ok());
+    }
+
+    /// #1512 S5: an extension's dangerous exec in a run with no one to ask files an approval
+    /// request at the desk (request mode), like the bash tool, instead of the S2 dead-end refusal.
+    #[test]
+    fn extension_exec_gate_unattended_files_an_approval_request() {
+        let mut f = fixture();
+        let desk =
+            Arc::new(oxa_perm::ApprovalDesk::open(&f.env.root().join("agent")).expect("approval desk"));
+        f.st.policy = Box::new(
+            oxa_perm::ModePolicy::new()
+                .with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new())
+                .with_desk(
+                    desk.clone(),
+                    "s1".into(),
+                    oxa_perm::UnattendedMode::Request,
+                    false,
+                ),
+        );
+        let dangerous = Access::Exec {
+            command: "git push --force origin main".into(),
+            net: false,
+        };
+        let mut headless = HeadlessUi::default();
+        let err = gate_pinned(&mut f.st, &dangerous, &mut headless).expect_err("not run");
+        assert_eq!(err.code, codes::DENIED);
+        assert!(
+            err.message.starts_with("Needs owner approval (request "),
+            "{}",
+            err.message
+        );
+        assert_eq!(desk.pending().expect("pending").len(), 1);
+    }
+
+    /// #1512 S5: an extension may run in a directory other than the session's. The unattended
+    /// classification and the filed request use that directory, so the request describes what
+    /// will actually run.
+    #[test]
+    fn extension_exec_unattended_files_the_request_in_the_execution_directory() {
+        let mut f = fixture();
+        let desk =
+            Arc::new(oxa_perm::ApprovalDesk::open(&f.env.root().join("agent")).expect("approval desk"));
+        f.st.policy = Box::new(
+            oxa_perm::ModePolicy::new()
+                .with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new())
+                .with_desk(
+                    desk.clone(),
+                    "s1".into(),
+                    oxa_perm::UnattendedMode::Request,
+                    false,
+                ),
+        );
+        let exec_dir = f.env.work().join("deep");
+        std::fs::create_dir_all(&exec_dir).expect("exec dir");
+        let dangerous = Access::Exec {
+            command: "git push --force origin main".into(),
+            net: false,
+        };
+        let mut headless = HeadlessUi::default();
+        let err =
+            super::gate_pinned_in(&mut f.st, &dangerous, &exec_dir, &mut headless).expect_err("not run");
+        assert_eq!(err.code, codes::DENIED);
+        let filed = desk.pending().expect("pending");
+        assert_eq!(filed.len(), 1, "one request");
+        assert_eq!(filed[0].cwd, exec_dir.display().to_string());
+    }
+
+    /// #1512 S5: a dangerous exec in a run with no one to ask is not paused for. The tool error
+    /// names the approval request, and the same text goes out as a Warning notice in the event
+    /// stream (the JSON stream the lead and the runner read). The tool does not run.
+    #[test]
+    fn refusal_emits_warning_notice_in_json_stream() {
+        struct ExecTool(oxa_proto::ToolSpec);
+        impl oxa_proto::Tool for ExecTool {
+            fn spec(&self) -> &oxa_proto::ToolSpec {
+                &self.0
+            }
+            fn access(
+                &self,
+                args: &oxa_proto::Value,
+                _cx: &oxa_proto::ToolCtx<'_>,
+            ) -> Result<Vec<Access>, String> {
+                let command = args
+                    .get("command")
+                    .and_then(oxa_proto::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                Ok(vec![Access::Exec { command, net: false }])
+            }
+            fn run(
+                &self,
+                _args: &oxa_proto::Value,
+                _cx: &oxa_proto::ToolCtx<'_>,
+                _live: &mut dyn FnMut(&str),
+            ) -> oxa_proto::ToolOutput {
+                oxa_proto::ToolOutput::error("the tool ran")
+            }
+        }
+        let mut f = fixture();
+        let desk =
+            Arc::new(oxa_perm::ApprovalDesk::open(&f.env.root().join("agent")).expect("approval desk"));
+        f.st.policy = Box::new(
+            oxa_perm::ModePolicy::new()
+                .with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new())
+                .with_desk(desk, "s1".into(), oxa_perm::UnattendedMode::Request, false),
+        );
+        f.st.active = crate::Toolset {
+            direct: vec![Arc::new(ExecTool(oxa_proto::ToolSpec {
+                name: "shell".into(),
+                description: "test shell".into(),
+                schema_json: "{}".into(),
+                class: oxa_proto::ToolClass::Exec,
+                exposure: oxa_proto::Exposure::Direct,
+                source: oxa_proto::Source::Builtin,
+            }))],
+            indirect: Vec::new(),
+        };
+        let call = oxa_proto::ToolCall {
+            id: "c1".into(),
+            name: "shell".into(),
+            args_raw: r#"{"command":"git push --force origin main"}"#.into(),
+        };
+        let mut sink = oxa_proto::VecSink::default();
+        let mut ui = HeadlessUi::default();
+        let results = crate::exec::run_calls(&mut f.st, &[call], &mut sink, &mut ui);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_error);
+        let notice = sink.0.iter().find_map(|e| match e {
+            AgentEvent::Notice { level, text } => Some((*level, text.clone())),
+            _ => None,
+        });
+        let (level, text) = notice.expect("a notice in the event stream");
+        assert!(matches!(level, Level::Warning), "{text}");
+        assert!(text.starts_with("Needs owner approval (request "), "{text}");
+    }
+
+    /// An extension's own `cwd` never moves the workspace boundary: `rm -rf` of an absolute
+    /// path outside the session's directory is dangerous even when `cwd` is that path's parent.
+    #[test]
+    fn extension_exec_cwd_keeps_the_session_workspace_boundary() {
+        let mut f = fixture();
+        f.st.policy = Box::new(
+            oxa_perm::ModePolicy::new().with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new()),
+        );
+        let other = f.env.root().join("other");
+        std::fs::create_dir_all(other.join("victim")).unwrap();
+        let outside = Access::Exec {
+            command: format!("rm -rf {}", other.join("victim").display()),
+            net: false,
+        };
+        let mut ui = DangerUi {
+            answer: DangerAnswer::Deny,
+            asked: 0,
+        };
+        assert!(gate_at(&mut f.st, &outside, &other, &mut ui).is_err());
+        assert_eq!(ui.asked, 1, "the session workspace boundary asked");
+        let mut headless = HeadlessUi::default();
+        let err = gate_at(&mut f.st, &outside, &other, &mut headless).expect_err("no one to ask");
+        assert_eq!(err.code, codes::DENIED);
+        // A relative operand resolves in the directory the command runs in.
+        let relative = Access::Exec {
+            command: "rm -rf victim".into(),
+            net: false,
+        };
+        let err = gate_at(&mut f.st, &relative, &other, &mut headless).expect_err("outside");
+        assert_eq!(err.code, codes::DENIED);
+        // Inside the workspace a relative delete stays an ordinary command.
+        let inside = f.env.work().join("sub");
+        std::fs::create_dir_all(inside.join("build")).unwrap();
+        let build = Access::Exec {
+            command: "rm -rf build".into(),
+            net: false,
+        };
+        assert!(gate_at(&mut f.st, &build, &inside, &mut headless).is_ok());
+    }
+
+    /// An unattended extension approval is bound to the real execution directory, not the
+    /// session root. Retargeting a symlink cwd therefore needs a new owner approval.
+    #[cfg(unix)]
+    #[test]
+    fn extension_exec_approval_is_bound_to_its_canonical_cwd() {
+        let mut f = fixture();
+        let desk =
+            Arc::new(oxa_perm::ApprovalDesk::open(&f.env.root().join("agent")).expect("approval desk"));
+        f.st.policy = Box::new(
+            oxa_perm::ModePolicy::new()
+                .with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new())
+                .with_desk(
+                    desk.clone(),
+                    "s1".into(),
+                    oxa_perm::UnattendedMode::Request,
+                    false,
+                ),
+        );
+        let repo_a = f.env.work().join("repo-a");
+        let repo_b = f.env.work().join("repo-b");
+        std::fs::create_dir_all(&repo_a).unwrap();
+        std::fs::create_dir_all(&repo_b).unwrap();
+        let link = f.env.work().join("repo");
+        std::os::unix::fs::symlink(&repo_a, &link).unwrap();
+        let spec = || ExecSpec {
+            command: "git push --force origin main".into(),
+            cwd: link.clone(),
+            writable: false,
+            net: false,
+            timeout_s: None,
+            env: Vec::new(),
+        };
+        let mut headless = HeadlessUi::default();
+
+        let request = exec_gated(&mut f.st, spec(), &mut headless).expect_err("owner approval requested");
+        let request_id = request
+            .message
+            .strip_prefix("Needs owner approval (request ")
+            .and_then(|text| text.split_once("): "))
+            .map(|(id, _)| id)
+            .expect("request id in refusal");
+        desk.answer(request_id, "session").expect("approve request");
+        assert_eq!(
+            exec_gated(&mut f.st, spec(), &mut headless)
+                .expect_err("sandbox unavailable")
+                .code,
+            codes::NO_SANDBOX
+        );
+
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&repo_b, &link).unwrap();
+        let next =
+            exec_gated(&mut f.st, spec(), &mut headless).expect_err("retargeted cwd needs another approval");
+        assert!(next.message.starts_with("Needs owner approval (request "));
+    }
+
+    /// O-386: a host request posted while the front end waits (instead of polling) wakes it, so
+    /// the request is served at once and not at the front end's next idle tick. The request is
+    /// in the channel before the wake, so a woken front end finds it.
+    #[test]
+    fn a_posted_host_request_wakes_the_front_end() {
+        let f = fixture();
+        let fired = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = fired.clone();
+        let handle = Handle {
+            shared: f.st.shared.clone(),
+        };
+        handle.set_attention_waker(Arc::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        }));
+        f.host
+            .call(HostAction::SendMessage {
+                custom_type: "test".into(),
+                content: "wake".into(),
+                display: true,
+                details: Value::Null,
+                deliver: Delivery::FollowUp,
+                trigger_turn: true,
+            })
+            .expect("accepted");
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            1,
+            "the posted request wakes the front end"
+        );
+        assert!(
+            f.rx.try_recv().is_ok(),
+            "the request is in the channel the front end serves"
+        );
     }
 
     /// #554 / #557: host writes use the same truthful unattended refusal as built-in tools,

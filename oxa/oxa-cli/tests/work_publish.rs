@@ -116,7 +116,13 @@ fn exercise_save_recovery(test_name: &str, case: SaveRecovery) {
             git_binary: "/usr/bin/git".into(),
             host_path: std::env::var_os("PATH").unwrap(),
             terminate_binary: Some("/usr/bin/kill".into()),
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
             runner_owns_github: false,
+            autonomy: Default::default(),
+            worker_github: Default::default(),
+            authority_now: None,
             offline: false,
             storage: root.join("home/.oxa/agent/work/save-recovery"),
         };
@@ -169,6 +175,7 @@ fn exercise_save_recovery(test_name: &str, case: SaveRecovery) {
                 &policy,
                 std::path::Path::new("/unavailable/gh"),
                 &|_: &oxa_work::Record| Ok(()),
+                &|_| None,
                 &mut |_| panic!("a pending save cannot request publication approval"),
             )
             .unwrap();
@@ -596,7 +603,7 @@ fn branch_drift_after_acceptance_cannot_publish_unchecked_commits() {
 #[test]
 fn own_problem_notes_are_captured_and_failed_search_keeps_a_local_draft() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     let text = "done <oxa-work-reports>[{\"title\":\"oxa work symptom\",\"notes\":\"Synthetic reproduction token=example\",\"keywords\":[\"oxa work\",\"synthetic symptom\"]}]</oxa-work-reports>";
     let record = run_args(
@@ -625,7 +632,7 @@ fn own_problem_notes_are_captured_and_failed_search_keeps_a_local_draft() {
 #[test]
 fn a_model_tool_cannot_opt_itself_into_reporting_or_publishing() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
         .args(["work", "../tasks.json", "--report-problems"])
@@ -674,7 +681,7 @@ fn green_rerun_can_publish_after_red_remained_local() {
 #[test]
 fn semantic_work_report_without_evidence_stays_local() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     env.write(
         "home/.oxa/agent/settings.json",
@@ -711,7 +718,7 @@ fn semantic_work_report_without_evidence_stays_local() {
 #[test]
 fn semantic_work_reports_file_once_and_comment_on_four_paraphrases() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     env.write(
         "home/.oxa/agent/settings.json",
@@ -806,7 +813,7 @@ fn semantic_work_reports_file_once_and_comment_on_four_paraphrases() {
 #[test]
 fn a_local_report_retries_without_replaying_the_completed_task() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     let text = "<oxa-work-reports>[{\"title\":\"oxa work symptom\",\"notes\":\"Synthetic reproduction\",\"keywords\":[\"oxa work\",\"synthetic symptom\"]}]</oxa-work-reports>";
     let first = run_args(
@@ -961,4 +968,329 @@ esac
         unauthorized.is_empty(),
         "public writes without confirmation: {unauthorized:?}"
     );
+}
+
+fn write_turns(path: &str, content: &str) -> Vec<ScriptTurn> {
+    let args = serde_json::json!({"path": path, "content": content}).to_string();
+    vec![
+        ScriptTurn::tool("write", "write", &args),
+        ScriptTurn::text("done"),
+    ]
+}
+
+/// Publication refuses before any GitHub request or push, and names only the place.
+fn assert_refused(env: &TestEnv, record: &serde_json::Value, place: &str, secret: &str) {
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    let detail = record["detail"].as_str().unwrap();
+    assert!(detail.contains("publishing refused"), "{detail}");
+    assert!(detail.contains(place), "{detail}");
+    assert!(!record.to_string().contains(secret), "{record}");
+    assert!(!env.home().join("push-calls").exists());
+    assert!(!env.home().join("gh-calls").exists());
+}
+
+#[test]
+fn publication_refuses_an_added_env_file() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    let secret = format!("SERVICE_PASSWORD={}", "q".repeat(20));
+    let record = run_args(
+        &env,
+        write_turns(".env", &format!("{secret}\n")),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused(&env, &record, ".env", &secret);
+}
+
+#[test]
+fn publication_refuses_a_github_token_in_source() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    let token = format!("ghp_{}", "x".repeat(36));
+    let record = run_args(
+        &env,
+        write_turns(
+            "src/client.txt",
+            &format!("fn main() {{}}\nconst T: &str = \"{token}\";\n"),
+        ),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused(&env, &record, "src/client.txt:2", &token);
+}
+
+#[test]
+fn publication_refuses_a_private_key() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    let body = "x".repeat(64);
+    let key = format!(
+        "-----BEGIN {kind}-----\n{body}\n-----END {kind}-----\n",
+        kind = ["RSA", "PRIVATE KEY"].join(" ")
+    );
+    let record = run_args(
+        &env,
+        write_turns("deploy/notes.txt", &key),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused(&env, &record, "deploy/notes.txt:1", &body);
+}
+
+#[test]
+fn publication_refuses_the_value_of_a_secret_environment_variable() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    let value = format!("synthetic{}", "Q".repeat(12));
+    let (record, _) = work::run_observed_with(
+        &env,
+        write_turns("answer.txt", &format!("copied {value}\n")),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+        |command| {
+            command.env("SYNTHETIC_SERVICE_TOKEN", &value);
+        },
+    );
+    assert_refused(&env, &record, "answer.txt:1", &value);
+}
+
+#[test]
+fn publication_refuses_a_yaml_block_scalar_credential() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    let value = format!("opaque-pass-value-{}", 17);
+    let record = run_args(
+        &env,
+        write_turns("settings.yml", &format!("password: |-\n  {value}\n")),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused(&env, &record, "settings.yml:2", &value);
+}
+
+#[test]
+fn publication_refuses_a_secret_that_a_later_commit_removed() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    let path = configure(&env);
+    let token = format!("ghp_{}", "x".repeat(36));
+    let first = run_args(
+        &env,
+        write_turns("answer.txt", &format!("{token}\n")),
+        &["work", "../tasks.json"],
+        Some(path.clone()),
+    );
+    assert_eq!(first["outcome"], "done", "{first}");
+    let record = run_args(
+        &env,
+        write_turns("answer.txt", "clean\n"),
+        &["work", "../tasks.json", "--rerun", "--publish"],
+        Some(path),
+    );
+    assert_ne!(record["head_sha"], first["head_sha"], "{record}");
+    assert_refused(&env, &record, "answer.txt:1", &token);
+}
+
+#[test]
+fn publication_refuses_an_empty_file_named_with_a_token() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    let token = format!("ghp_{}", "x".repeat(36));
+    let record = run_args(
+        &env,
+        write_turns(&format!("notes/{token}.txt"), ""),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused(&env, &record, "a file whose path", &token);
+}
+
+#[test]
+fn publication_refuses_a_secret_in_a_local_base_commit_origin_lacks() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    let repo = env.work().join("project");
+    let token = format!("ghp_{}", "x".repeat(36));
+    env.write("work/project/local.txt", &format!("{token}\n"));
+    git(&env, &repo, &["add", "local.txt"]);
+    git(&env, &repo, &["commit", "-m", "Local-only base commit"]);
+    let record = run_args(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused(&env, &record, "local.txt:1", &token);
+}
+
+/// Refused after confirmation, from the destination's own tips, before any push.
+fn assert_refused_before_push(env: &TestEnv, record: &serde_json::Value, place: &str, secret: &str) {
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    let detail = record["detail"].as_str().unwrap();
+    assert!(detail.contains("publishing refused"), "{detail}");
+    assert!(detail.contains(place), "{detail}");
+    assert!(!record.to_string().contains(secret), "{record}");
+    assert!(!env.home().join("push-calls").exists());
+}
+
+fn local_secret_commit(env: &TestEnv, token: &str) {
+    let repo = env.work().join("project");
+    env.write("work/project/local.txt", &format!("{token}\n"));
+    git(env, &repo, &["add", "local.txt"]);
+    git(env, &repo, &["commit", "-m", "Local-only base commit"]);
+}
+
+#[test]
+fn publication_refuses_a_secret_in_a_local_commit_message() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    let repo = env.work().join("project");
+    let token = format!("ghp_{}", "x".repeat(36));
+    git(
+        &env,
+        &repo,
+        &["commit", "--allow-empty", "-m", &format!("Note {token}")],
+    );
+    let record = run_args(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused(&env, &record, "commit ", &token);
+}
+
+/// Replace HEAD with a commit whose object carries `header` as an extra header.
+fn craft_header_commit(env: &TestEnv, repo: &std::path::Path, header: &str) -> String {
+    let raw = git(env, repo, &["cat-file", "commit", "HEAD"]);
+    let (head, message) = raw.split_once("\n\n").unwrap();
+    let file = env.tmp().join("crafted-commit");
+    fs::write(&file, format!("{head}\n{header}\n\n{message}\n")).unwrap();
+    let sha = git(
+        env,
+        repo,
+        &[
+            "hash-object",
+            "-t",
+            "commit",
+            "-w",
+            "--literally",
+            file.to_str().unwrap(),
+        ],
+    );
+    git(env, repo, &["reset", "--hard", "-q", &sha]);
+    sha
+}
+
+fn assert_origin_lacks(env: &TestEnv, sha: &str) {
+    let found = Command::new("git")
+        .args(["--git-dir", "remote.git", "cat-file", "-e", sha])
+        .current_dir(env.work())
+        .status()
+        .unwrap();
+    assert!(!found.success(), "origin received {sha}");
+}
+
+#[test]
+fn publication_refuses_a_secret_in_an_extra_commit_header() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    let repo = env.work().join("project");
+    let token = format!("ghp_{}", "x".repeat(36));
+    let sha = craft_header_commit(&env, &repo, &format!("x-note {token}"));
+    let record = run_args(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused_before_push(&env, &record, "commit ", &token);
+    assert_origin_lacks(&env, &sha);
+}
+
+#[test]
+fn publication_refuses_a_secret_in_a_multi_line_signature_header() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    let repo = env.work().join("project");
+    let token = format!("ghp_{}", "x".repeat(36));
+    let header = format!("gpgsig -----BEGIN PGP SIGNATURE-----\n \n {token}\n -----END PGP SIGNATURE-----");
+    let sha = craft_header_commit(&env, &repo, &header);
+    let record = run_args(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused_before_push(&env, &record, "commit ", &token);
+    assert_origin_lacks(&env, &sha);
+}
+
+#[test]
+fn publication_ignores_forged_remote_tracking_refs() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    let repo = env.work().join("project");
+    let token = format!("ghp_{}", "x".repeat(36));
+    local_secret_commit(&env, &token);
+    // A local ref claims origin already has the secret commit; origin does not.
+    git(&env, &repo, &["update-ref", "refs/remotes/origin/forged", "HEAD"]);
+    let record = run_args(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused_before_push(&env, &record, "local.txt:1", &token);
+}
+
+#[test]
+fn publication_checks_the_push_url_not_the_fetch_url() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    let repo = env.work().join("project");
+    let token = format!("ghp_{}", "x".repeat(36));
+    local_secret_commit(&env, &token);
+    // The fetch repository has the secret commit; the push destination does not.
+    git(&env, &env.work(), &["init", "--bare", "mirror.git"]);
+    git(&env, &repo, &["push", "../mirror.git", "main"]);
+    git(&env, &repo, &["remote", "set-url", "origin", "../mirror.git"]);
+    git(
+        &env,
+        &repo,
+        &["remote", "set-url", "--push", "origin", "../remote.git"],
+    );
+    git(&env, &repo, &["fetch", "origin"]);
+    let record = run_args(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused_before_push(&env, &record, "local.txt:1", &token);
+}
+
+#[test]
+fn publication_never_pushes_tags_implicitly() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    let repo = env.work().join("project");
+    let token = format!("ghp_{}", "x".repeat(36));
+    git(&env, &repo, &["config", "push.followTags", "true"]);
+    git(
+        &env,
+        &repo,
+        &["tag", "-a", "synthetic-tag", "-m", &format!("Note {token}")],
+    );
+    let record = run_args(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_eq!(record["outcome"], "done", "{record}");
+    assert!(env.home().join("push-calls").exists());
+    let tags = git(&env, &env.work(), &["--git-dir", "remote.git", "tag", "--list"]);
+    assert!(tags.is_empty(), "{tags}");
 }

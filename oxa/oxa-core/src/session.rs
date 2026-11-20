@@ -2,6 +2,7 @@
 // ported from pi packages/coding-agent/src/core/agent-session.ts
 use crate::agent_loop::{persist, run_loop, RunEnd};
 use crate::host::{attach_hosts, first_reply, observe_hooks, pumped, serve_host, serve_idle, Serve};
+use crate::queue::lock;
 use crate::{Expanded, Handle, SessionState, Shared, Toolset};
 use oxa_compact::CompactPolicy;
 use oxa_config::{Dirs, Settings};
@@ -12,8 +13,10 @@ use oxa_proto::{
 };
 use oxa_session::{MemStore, SessionRef, SessionStore, Transcript, Tree};
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+static NEXT_CONFIRM_BROKER: AtomicU64 = AtomicU64::new(1);
 
 /// What a session is built from. `tools` are the built-ins to offer (normally
 /// `oxa_tools::builtin_tools()`); hook tools are added from `hooks` at each epoch.
@@ -165,6 +168,11 @@ struct BusyGuard(Arc<Shared>);
 
 impl Drop for BusyGuard {
     fn drop(&mut self) {
+        let _transition = lock(&self.0.gate.foreground_transition);
+        // An explicit `abort_next` may arrive after `begin` consumed an earlier request. Do not
+        // leak that bit to a later run.
+        self.0.gate.abort_next.store(false, Ordering::SeqCst);
+        self.0.gate.running.store(false, Ordering::SeqCst);
         self.0.busy.store(false, Ordering::SeqCst);
     }
 }
@@ -210,6 +218,8 @@ impl Session {
             session_id,
             jobs,
         } = d;
+        // W4: `oxa.jobs.wakeOnFinish` (default on, user settings only) is applied by
+        // `sync_job_wake` once the state exists.
         // H: `defaultModel` (pi settings.md "Startup model ID") when no model was chosen and the
         // engine serves it; otherwise the engine's own model, as before.
         let model = match model {
@@ -303,7 +313,65 @@ impl Session {
         let mut sink = VecSink::default();
         let mut ui = HeadlessUi::default();
         enter(&mut st, how, Some(&cli), &mut sink, &mut ui)?;
-        Ok(Session { st, preloaded: false })
+        let session = Session { st, preloaded: false };
+        session.bind_jobs_owner();
+        sync_job_wake(&session.st);
+        // The hook is always installed: `wake_job` asks the live setting, which a reload updates.
+        let handle = session.handle();
+        session
+            .st
+            .jobs
+            .set_on_finish(Arc::new(move |job: oxa_tools::JobDone| {
+                handle.wake_job(&job);
+            }));
+        Ok(session)
+    }
+
+    /// #1844 PR 2: install a fork seed as this session's head (`oxa.fork`). The session keeps
+    /// its own id, model and tool selection, but its frozen prefix and its wire become the
+    /// parent's, so the first prompt continues the parent's conversation: the engine's state is
+    /// not evicted and the parent's next turn reuses it. The parent's last assistant turn has a
+    /// tool call of its own still open, so the interrupted results are appended (as a resume
+    /// after a crash does), and the child's task follows as its first user message.
+    ///
+    /// Called by a subagent child before its first prompt (never mid-run, W1/W3).
+    pub fn adopt_fork(
+        &mut self,
+        seed: &crate::fork::ForkSeed,
+        sink: &mut dyn EventSink,
+    ) -> Result<(), OxaError> {
+        let branch = seed.branch()?;
+        let (prefix, wire) = crate::fork::replay(&branch);
+        let Some(prefix) = prefix else {
+            return Err(OxaError::new(
+                codes::INVALID,
+                "the fork seed holds no frozen prefix",
+            ));
+        };
+        let st = &mut self.st;
+        // The seed replaces the child's own prefix (one edit, not a run: W3).
+        st.prefix = prefix.clone();
+        st.transcript = oxa_session::Transcript::default();
+        crate::agent_loop::persist(st, EntryBody::Prefix(prefix), sink)?;
+        for msg in wire {
+            crate::agent_loop::append_entry(
+                st,
+                EntryBody::Msg {
+                    wire: msg,
+                    parts: Vec::new(),
+                    tool: None,
+                },
+            )?;
+        }
+        crate::resume::close_interrupted(st, sink)?;
+        crate::tune::refresh(st);
+        let enabled = st.compact.enabled;
+        st.compact = CompactPolicy {
+            enabled,
+            ..policy_for_model(&st.info, &st.settings, &st.model)
+        };
+        st.stats.context_tokens = st.transcript.context();
+        Ok(())
     }
 
     /// Run one user prompt to settlement (blocks). A line naming an extension command runs it
@@ -416,6 +484,34 @@ impl Session {
         });
     }
 
+    /// Start the owner confirm broker (a per-session unix socket, dir 0700, socket 0600) and
+    /// export it to tool children as `OXA_CONFIRM_SOCK`. `yolo` is the session's switch: in
+    /// yolo the broker answers yes and records it; otherwise the owner's dialog answer or
+    /// typed message decides. A bind failure leaves the session without a broker.
+    pub fn enable_owner_confirm(&mut self, yolo: oxa_proto::YoloSwitch) -> std::io::Result<()> {
+        // SDK sessions in one process share `Dirs`. Give each broker a distinct short
+        // path so it cannot unlink another session's socket when rebinding.
+        let dir = self.st.dirs.tmp_dir.join(format!(
+            "confirm-{}-{}",
+            std::process::id(),
+            NEXT_CONFIRM_BROKER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let broker = crate::owner_confirm::OwnerConfirm::start(&dir, yolo)?;
+        let old = self
+            .st
+            .shared
+            .gate
+            .owner_confirm
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .replace(broker);
+        if let Some(old) = old {
+            old.close();
+        }
+        refresh_tool_env(&mut self.st);
+        Ok(())
+    }
+
     /// Install a progress observer for this session and subsequent in-process switches.
     pub fn set_progress_observer(&mut self, observer: Arc<dyn crate::ProgressObserver>) {
         *self
@@ -426,6 +522,7 @@ impl Session {
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = Some(observer);
         crate::progress::session(&self.st);
+        crate::goal::publish_status(&self.st);
     }
 
     /// S1 / ENG-002: run the steering and follow-up messages that are queued, as one run, when
@@ -438,6 +535,9 @@ impl Session {
         sink: &mut dyn EventSink,
         ui: &mut dyn Ui,
     ) -> Result<Option<RunEnd>, OxaError> {
+        if self.st.goal.is_some() {
+            crate::open_epoch(&mut self.st, "goal", false, sink)?;
+        }
         let guard = self.begin_run()?;
         let ran = oxa_proto::panic::contain(|| queued_run(&mut self.st, sink, ui, true))
             .unwrap_or_else(|error| Err(recover_from_panic(&mut self.st, &error, sink)));
@@ -505,8 +605,14 @@ impl Session {
         sink: &mut dyn EventSink,
         ui: &mut dyn Ui,
     ) -> Result<Option<String>, OxaError> {
-        let _guard = self.begin()?;
+        let _guard = self.begin_foreground()?;
         crate::navigate(&mut self.st, target, summarize, instructions, sink, ui)
+    }
+
+    /// W4: name the session now bound as the owner of the jobs started from here on. A job
+    /// that started earlier keeps its own owner, so its wake never lands in a later session.
+    fn bind_jobs_owner(&self) {
+        self.st.jobs.set_owner(&self.st.sref.id);
     }
 
     /// `/fork`: new session file from the branch ending at `entry`; this session switches to it.
@@ -516,6 +622,7 @@ impl Session {
         let r = crate::fork_at(&mut self.st, entry, &mut ui);
         if r.is_ok() {
             self.st.jobs.reset();
+            self.bind_jobs_owner();
         }
         r
     }
@@ -527,6 +634,7 @@ impl Session {
         let r = crate::clone_current(&mut self.st, &mut ui);
         if r.is_ok() {
             self.st.jobs.reset();
+            self.bind_jobs_owner();
         }
         r
     }
@@ -541,6 +649,7 @@ impl Session {
         crate::fire::session_shutdown(&mut self.st, reason, target.as_deref(), sink, ui);
         self.st.jobs.reset();
         enter(&mut self.st, how, None, sink, ui)?;
+        self.bind_jobs_owner();
         self.preloaded = false;
         Ok(())
     }
@@ -578,6 +687,11 @@ impl Session {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .take()
+    }
+
+    /// The model this session sends its requests to (the last model switch or the opened one).
+    pub fn model(&self) -> &str {
+        &self.st.model
     }
 
     /// Model switch = a new epoch (W3), applied now when idle. Appends `ModelChange`, then
@@ -641,6 +755,14 @@ impl Session {
     pub fn reload(&mut self, sink: &mut dyn EventSink, ui: &mut dyn Ui) -> Result<bool, OxaError> {
         self.ensure_idle()?;
         crate::reload(&mut self.st, sink, ui)
+    }
+
+    /// Bring the prefix in line with this Session's tool selection: a resumed session replays the
+    /// prefix it stored, so a tool the session did not declare then (or one it no longer offers)
+    /// only changes on a new epoch. Returns `true` when one was opened; nothing changed otherwise.
+    pub fn sync_tools(&mut self, sink: &mut dyn EventSink) -> Result<bool, OxaError> {
+        self.ensure_idle()?;
+        crate::open_epoch(&mut self.st, "tools", false, sink)
     }
 
     /// `!cmd` (`excluded = false`) / `!!cmd` (`true`).
@@ -796,6 +918,18 @@ impl Session {
     /// Replace the session goal while idle, persisting before exposing controls.
     pub fn set_goal(
         &mut self,
+        goal: Option<oxa_session::Goal>,
+        sink: &mut dyn EventSink,
+    ) -> Result<(), OxaError> {
+        self.replace_goal(goal, sink)?;
+        crate::goal::publish_status(&self.st);
+        Ok(())
+    }
+
+    /// Replace the saved goal without publishing it. Callers that require an
+    /// explicit store sync publish only after that sync succeeds.
+    pub(crate) fn replace_goal(
+        &mut self,
         mut goal: Option<oxa_session::Goal>,
         sink: &mut dyn EventSink,
     ) -> Result<(), OxaError> {
@@ -843,6 +977,9 @@ impl Session {
             &mut sink,
             ui,
         );
+        if let Some(broker) = self.st.shared.owner_confirm() {
+            broker.close();
+        }
         self.st.host_rx = None;
         self.st.host_deferred.clear();
         self.st.jobs.kill_all();
@@ -860,6 +997,17 @@ impl Session {
     /// only while its wire is empty. Front ends call it from their idle tick before the first
     /// prompt; it claims the session like a run, so a busy session is skipped (`false`).
     pub fn preload_prefix(&mut self, sink: &mut dyn EventSink, ui: &mut dyn Ui) -> bool {
+        self.preload_prefix_if(sink, ui, || true)
+    }
+
+    /// Recheck front-end admission after claiming background work and before any engine call.
+    /// The caller arms cancellation before this call, then checks its existing command queue.
+    pub fn preload_prefix_if(
+        &mut self,
+        sink: &mut dyn EventSink,
+        ui: &mut dyn Ui,
+        should_start: impl FnOnce() -> bool,
+    ) -> bool {
         if self.preloaded {
             return false;
         }
@@ -871,9 +1019,19 @@ impl Session {
             return false;
         }
         self.preloaded = true;
+        // Nothing to preload (a turn already filled the wire, an engine without prefill, the
+        // setting off): do not claim the session, or an idle worker shows it busy right after
+        // each command and a front end reading `is_busy` sees a run that never was.
+        if !crate::compaction::boot_preload_applies(&self.st) {
+            return false;
+        }
         let Ok(_guard) = self.begin() else {
             return false;
         };
+        if !should_start() {
+            self.preloaded = false;
+            return false;
+        }
         // A turn an extension triggers while the preload request runs waits for the next idle
         // tick (`serve_host`) instead of being queued into a run that never comes.
         crate::host::holding_triggers(|| crate::compaction::boot_preload(&mut self.st, sink, ui))
@@ -1002,7 +1160,7 @@ impl Session {
     /// is never lost to a later reset.
     /// New prompt/extension work gets fresh run-local flags; prefill-only claims do not.
     fn begin_run(&mut self) -> Result<BusyGuard, OxaError> {
-        let guard = self.begin()?;
+        let guard = self.begin_foreground()?;
         crate::progress::notify(&self.st, crate::Progress::RunStart);
         self.st.stats.done_failed = false;
         self.st.stats.output_truncated = false;
@@ -1010,8 +1168,38 @@ impl Session {
         Ok(guard)
     }
 
+    /// Claim a user-facing operation which must remain cancellable even when it emits no
+    /// activity events. Unlike [`Session::begin_run`], this does not start an agent turn or
+    /// reset its outcome bookkeeping.
+    fn begin_foreground(&self) -> Result<BusyGuard, OxaError> {
+        // Publish foreground intent before the claim.  `begin()` used to set `busy` first,
+        // leaving a small but user-visible window in which the terminal could classify an
+        // input event as idle before it consumed AgentStart.
+        {
+            let _transition = lock(&self.st.shared.gate.foreground_transition);
+            if self
+                .st
+                .shared
+                .gate
+                .running
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                return Err(OxaError::new(codes::BUSY, "the session is busy"));
+            }
+        }
+        match self.begin() {
+            Ok(guard) => Ok(guard),
+            Err(error) => {
+                self.st.shared.gate.running.store(false, Ordering::SeqCst);
+                Err(error)
+            }
+        }
+    }
+
     fn begin(&self) -> Result<BusyGuard, OxaError> {
         let shared = self.st.shared.clone();
+        let _transition = lock(&shared.gate.foreground_transition);
         if shared
             .busy
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -1030,6 +1218,7 @@ impl Session {
             shared.cancel.cancel();
             shared.gate.bg_cancel.cancel();
         }
+        drop(_transition);
         Ok(BusyGuard(shared))
     }
 
@@ -1565,7 +1754,8 @@ fn restore_locked(
     match replayed {
         Some(prefix) => {
             st.prefix = prefix;
-            crate::tune::refresh(st);
+            // The stored prefix declares `wait` and the goal controls; bind live handlers to them.
+            crate::epoch::rebind_tools(st, sink);
             let enabled = st.compact.enabled;
             st.compact = CompactPolicy {
                 enabled,
@@ -1656,12 +1846,24 @@ fn latest_of(store: &dyn SessionStore, cwd: &std::path::Path) -> Option<SessionR
         .map(|m| m.sref)
 }
 
+/// W4: apply `oxa.jobs.wakeOnFinish` (user settings only) to the live session. Called at open and
+/// after each settings replacement, so a reload turns wakes off or on without a restart.
+pub(crate) fn sync_job_wake(st: &SessionState) {
+    st.shared
+        .set_job_wake_enabled(st.settings.user_bool("oxa.jobs.wakeOnFinish", true));
+}
+
 /// Point the per-session paths at the current session id.
 pub(crate) fn attach_ids(st: &mut SessionState) {
     let id = st.sref.id.clone();
     st.shared.bind_session(&id);
+    // W4: every identity switch (open, fork, clone, navigation, extension fork) names the new
+    // session as the owner of the jobs started from here on.
+    st.jobs.set_owner(&id);
     st.spill_dir = st.dirs.tmp_dir.join(&id);
     st.policy.set_spill_dir(&st.spill_dir);
+    // #1512 S5: the approval desk files requests for this session id.
+    st.policy.set_session_id(&id);
     // Fork/clone history still names its ancestors' spills, even after those sessions are
     // deleted. Follow trusted live/retained headers, never paths suggested by tool/model text.
     let inherited = oxa_session::inherited_spill_dirs(st.store.as_ref(), &st.dirs.tmp_dir, &st.sref);
@@ -1688,6 +1890,12 @@ pub(crate) fn refresh_tool_env(st: &mut SessionState) {
     ));
     env.push(("AI_AGENT".to_string(), names::AI_AGENT.to_string()));
     env.push(("OXA_CODING_AGENT".to_string(), "true".to_string()));
+    if let Some(broker) = st.shared.owner_confirm() {
+        env.push((
+            crate::owner_confirm::SOCK_ENV.to_string(),
+            broker.sock_path().to_string_lossy().into_owned(),
+        ));
+    }
     st.tool_env = env;
 }
 
@@ -1763,7 +1971,7 @@ fn draft_message(st: &mut SessionState, text: &str, parts: &[Part]) -> Option<Wi
 /// V020-OPTIMIZE #13, privacy: a draft the user never submitted is sent only to an engine on
 /// this machine: a loopback host (`localhost`, 127.0.0.0/8, `::1`, as `oxa.engine.allowRemote`
 /// judges it), or an in-process engine whose base URL has no network authority (test fakes).
-fn engine_on_this_machine(base_url: &str) -> bool {
+pub(crate) fn engine_on_this_machine(base_url: &str) -> bool {
     match oxa_proto::url_host(base_url) {
         Some(host) => oxa_proto::is_loopback_host(&host),
         None => !base_url.contains("://"),
@@ -2221,6 +2429,92 @@ mod tests {
             session_id: None,
             jobs: Arc::new(oxa_tools::JobRegistry::new()),
         }
+    }
+
+    /// W4: the wake switch follows the setting at open and after a reload (user layer only).
+    #[test]
+    fn wake_setting_follows_open_and_reload() {
+        let env = oxa_fake::TestEnv::new();
+        let mut d = deps(&env, Arc::new(MemStore::new()));
+        d.settings = Settings::from_values(
+            serde_json::json!({"oxa": {"jobs": {"wakeOnFinish": false}}}),
+            serde_json::Value::Null,
+        );
+        let mut s = Session::open(d, Open::New).expect("open");
+        assert!(!s.st.shared.job_wake_enabled());
+        s.st.settings = Settings::from_values(serde_json::Value::Null, serde_json::Value::Null);
+        sync_job_wake(&s.st);
+        assert!(s.st.shared.job_wake_enabled(), "the default is on");
+        s.st.settings = Settings::from_values(
+            serde_json::Value::Null,
+            serde_json::json!({"oxa": {"jobs": {"wakeOnFinish": false}}}),
+        );
+        sync_job_wake(&s.st);
+        assert!(
+            s.st.shared.job_wake_enabled(),
+            "a project file cannot turn wakes off"
+        );
+    }
+
+    /// A published foreground start is itself exclusive, even before the session claim is
+    /// visible. This is the interval in which the terminal has not consumed `AgentStart` yet.
+    #[test]
+    fn foreground_start_reservation_rejects_a_second_run() {
+        let env = oxa_fake::TestEnv::new();
+        let session = Session::open(deps(&env, Arc::new(MemStore::new())), Open::New).unwrap();
+        session.st.shared.gate.running.store(true, Ordering::SeqCst);
+
+        let error = session
+            .begin_foreground()
+            .err()
+            .expect("second run must be refused");
+
+        assert_eq!(error.code, codes::BUSY);
+        assert!(!session.handle().is_busy());
+        assert!(session.handle().is_running());
+    }
+
+    /// #1717: Ctrl+C/Escape is routed to `abort` as soon as the foreground reservation is
+    /// published. The abort must survive until that reservation claims `busy`.
+    #[test]
+    fn abort_during_foreground_reservation_cancels_the_claim() {
+        let env = oxa_fake::TestEnv::new();
+        let session = Session::open(deps(&env, Arc::new(MemStore::new())), Open::New).unwrap();
+        let handle = session.handle();
+        session.st.shared.gate.running.store(true, Ordering::SeqCst);
+
+        handle.abort();
+        let guard = session
+            .begin()
+            .expect("the reserved foreground run claims the session");
+
+        assert!(handle.is_aborting(), "the reservation must retain its abort");
+        drop(guard);
+        assert!(!handle.is_busy());
+    }
+
+    /// #1737: an abort that starts while a run is releasing must observe the completed
+    /// release, rather than publishing a sticky abort for an unrelated later prompt.
+    #[test]
+    fn abort_racing_foreground_release_does_not_cancel_the_next_claim() {
+        let env = oxa_fake::TestEnv::new();
+        let session = Session::open(deps(&env, Arc::new(MemStore::new())), Open::New).unwrap();
+        let handle = session.handle();
+        session.st.shared.gate.running.store(true, Ordering::SeqCst);
+
+        let transition = lock(&session.st.shared.gate.foreground_transition);
+        let aborting = std::thread::spawn({
+            let handle = handle.clone();
+            move || handle.abort()
+        });
+        session.st.shared.gate.running.store(false, Ordering::SeqCst);
+        drop(transition);
+        aborting.join().unwrap();
+
+        assert!(!session.st.shared.gate.abort_next.load(Ordering::SeqCst));
+        let guard = session.begin_foreground().expect("the next run starts normally");
+        assert!(!handle.is_aborting());
+        drop(guard);
     }
 
     /// #543, #555: only the active session and its fork/clone ancestors read spill output

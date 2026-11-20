@@ -1,44 +1,42 @@
 ---
 name: ox-llm
-description: Operate the local ox-llm platform that runs this agent - status, switching models (when to use Flash), logs, the daily health digest, updates and troubleshooting with the oxc CLI. Use when the user asks about the local models, the controller, the engine, memory, speed, or why something on the platform is slow or failing.
+description: Operate the ox-llm platform that runs this agent - which models are available, usage and spend, session status, the oxe engine, logs and troubleshooting with the oxa CLI. Use when the user asks about the models, the engine, memory, speed, cost, or why something on the platform is slow or failing.
 ---
 
 # ox-llm platform operations
 
-You run on ox-llm: the oxe engine serves the model on this machine and the oxc controller in
-front of it exposes one OpenAI-compatible endpoint on loopback (`http://127.0.0.1:8092`). Nothing
-leaves the machine. One model is loaded at a time.
+You run in oxa, the ox-llm coding agent: one Rust binary that talks to a cloud model provider
+or to a local oxe engine over an OpenAI-compatible API. There is no separate controller to
+operate. Never ask the user to install or run one.
 
-## Names (v0.2.0 rename)
+## Catalog and status (read-only)
 
-v0.2.0 renamed the controller CLI from `local-ai` to `oxc`, its config from `~/.config/local-ai`
-to `~/.config/oxc`, its state from `~/.local/state/local-ai` to `~/.local/state/oxc` and the
-systemd user units from `local-ai-*` to `oxc-*`. If `command -v oxc` finds nothing, the install
-predates v0.2.0: use `local-ai` with the same subcommands and the old paths and unit names.
+- `oxa models` - every model this install can serve, local and cloud, in one table: where it
+  runs, the context window, the output limit, thinking, images and which one is the default.
+  It runs no other program and prints no key.
+- `oxa models --json` - the same catalog as one `oxa_models` object: the default model, one
+  row per model with its provider, billing, usage pool and state. Read facts from there
+  instead of asking.
+- `oxa models <search>` - filters the catalog by place, provider or model name.
+- `oxa usage --json` - today's cloud spend and request sums per usage pool.
+- `oxa status <session-id|session-file>` - a saved session's progress and stall signal.
+- `free -g` and `df -h` - memory pressure and disk space for local models.
 
-## Status (read-only, never loads a model)
-
-- `oxc status` - one line: chat model state, image state, free memory. `oxc status --json` for
-  every field (selected model, limits, queue).
-- `oxc storage` - stored model files and caches with sizes.
-- `oxc ledger [--limit N] --json` - the last requests (counts and timings, never prompt text).
-- `oxc cache status` - the conversation cache: used, budget, saved conversations.
+A `local` row uses the local-engine route; a `cloud · <provider>` row sends model requests
+to that provider and may incur charges. Check `oxa models --json` for billing and state.
 
 ## Models
 
-- `oxc moe` - Qwen3.6-35B-A3B (128K context).
-- `oxc ornith` - Ornith-1.5-35B-A3B, the everyday default (128K context), when it is set up.
-- `oxc flash` - Qwen3.8-Flash-Next, the large "think hard" model: experts are streamed from the
-  SSD, so it is slower per token and its context is small (16K). Suggest it for a hard,
-  self-contained question; stay on the default model for long agentic sessions.
-- `oxc flash-cache --pref auto|20|18|16|14` - the Flash expert cache tier in GiB (bigger is
-  faster but uses more memory); only when nothing is running.
-- `oxc load` / `oxc unload` - load the selected model now / free its memory.
-- `oxc mode --mode fast|deep|max` - context mode for the client's next session.
+Switch models inside oxa with `/model`: it checks that the conversation fits the target and
+offers to compact first. `oxa --model <name>` selects a model for one run. Switching a local
+model reloads the engine (tens of seconds) and the next request prefills the whole
+conversation again, so keep a long agentic session on the default model. Always tell the
+user before you switch; never switch on your own.
 
-Switching the model reloads the engine (tens of seconds) and the next request prefills the whole
-conversation again. Inside oxa, prefer `/model`: it checks that the conversation fits the target
-and offers to compact first. Always tell the user before you switch; never switch on your own.
+When the catalog lists a large streaming model (Flash), it is the "think hard" choice: its
+experts are streamed from the SSD, so it is slower per token and its context is small.
+Suggest it for one hard, self-contained question. `/compact` (or a new session) shrinks a
+conversation that no longer fits; do it before switching to a model with a smaller window.
 
 ## Running oxa without prompts (YOLO)
 
@@ -49,28 +47,20 @@ it quick to start. Never switch YOLO on yourself; it is the user's choice.
 
 ## Health and logs
 
-- `oxc digest` - today's health numbers (counts, rates, timings; never prompt text).
-  `--day yesterday`, `--status` (the panel line), `--soak` (green days), `--json`.
-- `journalctl --user -u oxc-chat -n 100 --no-pager` - the controller and engine log.
-- `systemctl --user status oxc-chat` - is the service running.
-
-## Updates
-
-- `oxc update --check` - is a staged release ready (never downloads anything).
-- `oxc update [STAGED-RELEASE-DIR] [--no-chat]` - apply a release already staged on this machine.
-- `oxc rollback [--check]` - go back to the previous installed release.
-- `oxc uninstall` is a dry run; it acts only with `--apply`. Never run `--apply` or
-  `--remove-models` unless the user asked for exactly that.
+- `oxa usage --json` shows whether requests are being counted and what they cost.
+- `oxa models --json` shows which models are served and which is the default.
+- The local engine, when one runs, is `oxe-server`: look at its output where the user started it
+  (a terminal or `journalctl --user -u <unit>`).
+- `oxa report-issue` drafts a scrubbed bug report (see the report-issue skill).
+- Slow: check `free -g` for memory pressure; a large local model running from a small expert
+  cache is slow by design.
 
 ## Troubleshooting
 
-1. `oxc status --json`: is the controller up, which model, is something queued?
-2. Offline: `systemctl --user status oxc-chat`, then the journal above.
-3. Slow: check `oxc status --json` for the queue, and `free -g` for memory pressure; Flash is
-   slow by design at small cache tiers.
-4. `oxc cache clear --session ID` drops one saved conversation state; `oxc cache clear --all`
-   also clears stored prompts (ask first).
-5. A reproducible platform bug: offer the report-issue skill.
+1. `oxa models --json` fails or lists nothing: check the engine endpoint (`OXA_ENGINE_URL`, or
+   `models.json` in `~/.oxa/agent/`) and the journal of the local engine above.
+2. Offline or refused connections: is the engine or the provider reachable from this machine?
+3. A reproducible platform bug: offer the report-issue skill.
 
 ## Web search
 
@@ -89,7 +79,8 @@ to paste the key into the chat.
 
 ## Configuration
 
-- Controller: `~/.config/oxc/` (`llm/` holds the model configuration). Do not edit it while a
-  request is running.
 - oxa: `~/.oxa/agent/settings.json`, `models.json` (endpoint), `identity.md` (generated by
   `oxa identity --refresh` at install and update; do not edit by hand).
+- Local aliases and cloud routes are configured in the user settings (`oxa.local.models`,
+  `oxa.cloud.models`); `oxa models` shows what they resolve to. Never read a credential file
+  to answer a question.

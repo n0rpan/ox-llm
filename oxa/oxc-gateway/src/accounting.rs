@@ -38,6 +38,7 @@ pub struct Hold {
     model: Model,
     reserved: f64,
     reserved_tokens: u64,
+    budget_warning: Option<&'static str>,
     output: u64,
     forwarded: bool,
     settled: bool,
@@ -206,7 +207,7 @@ impl Budget {
         let spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
         // Earlier unbudgeted rows with unknown cost make a later cap unverifiable.
         if !unbudgeted && (shared.has_unknown_metered_hold() || state.reader.cost_unknown()) {
-            return Err(exhausted());
+            return Err(Refusal::cost_unknown_history());
         }
         policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), required)?;
         let id = if cost_unknown {
@@ -223,6 +224,7 @@ impl Budget {
             model: model.clone(),
             reserved: required,
             reserved_tokens: 0,
+            budget_warning: None,
             output,
             forwarded: false,
             settled: false,
@@ -237,12 +239,24 @@ impl Budget {
         model: &Model,
         output: u64,
     ) -> Result<Hold, Refusal> {
-        let limits = limits.ok_or_else(SubscriptionLimits::missing)?;
+        self.reserve_subscription_route(limits, ledger_enabled, model, output, false)
+    }
+
+    pub(crate) fn reserve_subscription_route(
+        &self,
+        limits: Option<SubscriptionLimits>,
+        ledger_enabled: bool,
+        model: &Model,
+        output: u64,
+        configured: bool,
+    ) -> Result<Hold, Refusal> {
+        // Subscription limits are advisory for every subscription route: crossing them warns and
+        // records, and unset limits warn nothing. They never refuse a request.
         if !ledger_enabled {
             return Err(Refusal::ledger());
         }
         if !matches!(model.billing, Billing::Subscription)
-            || !matches!(model.provider.as_str(), "chatgpt" | "opencode")
+            || !(configured || matches!(model.provider.as_str(), "chatgpt" | "opencode"))
         {
             return Err(invalid_billing());
         }
@@ -270,7 +284,9 @@ impl Budget {
         // here: subscription and Go admission never stop on local budget.
         state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
         let held = shared.subscription_reserved().map_err(|_| Refusal::ledger())?;
-        limits.check(state.reader.subscription(), held, required)?;
+        let used = state.reader.subscription();
+        let total = used.add(held)?.add(required)?;
+        let budget_warning = limits.and_then(|limits| limits.advisory_warning(total, &model.provider));
         let id = shared
             .insert_subscription(tokens)
             .map_err(|_| Refusal::ledger())?;
@@ -280,6 +296,7 @@ impl Budget {
             model: model.clone(),
             reserved: 0.0,
             reserved_tokens: tokens,
+            budget_warning,
             output,
             forwarded: false,
             settled: false,
@@ -297,6 +314,10 @@ fn invalid_billing() -> Refusal {
     }
 }
 impl Hold {
+    pub(crate) fn budget_warning(&self) -> Option<&'static str> {
+        self.budget_warning
+    }
+
     pub fn reserved(&self) -> f64 {
         self.reserved
     }

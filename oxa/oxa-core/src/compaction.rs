@@ -10,7 +10,10 @@ use crate::agent_loop::persist;
 use crate::exec::{request, RequestOpts};
 use crate::SessionState;
 use oxa_compact::prompt;
-use oxa_compact::{decide, file_lists, first_kept_index, summary_request_with_target, When};
+use oxa_compact::{
+    active_skills, active_skills_block_within, decide, file_lists, first_kept_index,
+    summary_request_with_target, When,
+};
 use oxa_proto::{
     codes, AgentEvent, AssistantTurn, CompactReason, CompactionResult, Entry, EntryBody, EventSink, Finish,
     HookPoint, HookReply, Level, OxaError, Role, TurnKind, Ui, Usage, Value, WireMsg,
@@ -310,7 +313,8 @@ fn last_batch_start(wire: &[WireMsg]) -> Option<usize> {
 /// L5: the context size to decide a turn-start compaction with: [`Transcript::context`] (the
 /// last reply's prompt + completion) plus the messages appended after that reply (an aborted
 /// turn's tool result, a user message), estimated as their serialised bytes / 3 rounded up.
-/// Without any usage (a fresh or just-rebased transcript) it is `context()`, i.e. 0.
+/// The first unreported reply starts an estimate over the whole wire. A fresh or just-rebased
+/// transcript without a reply has no baseline yet.
 pub(crate) fn context_estimate(st: &SessionState) -> u32 {
     estimate_of(&st.transcript)
 }
@@ -322,9 +326,10 @@ fn estimate_of(t: &oxa_session::Transcript) -> u32 {
         return base;
     };
     let wire = t.wire();
+    // B2a: image parts are not text; the estimate counts the text form only.
     let bytes: usize = wire[from.min(wire.len())..]
         .iter()
-        .map(|m| m.to_json().len())
+        .map(|m| m.text_json_len())
         .sum();
     let appended = u32::try_from(bytes.div_ceil(3)).unwrap_or(u32::MAX);
     base.saturating_add(appended)
@@ -342,11 +347,13 @@ mod estimate_tests {
             completion,
             cached: 0,
             cached_missing: false,
+            unreported: false,
         }
     }
 
     fn tool_result(text: &str) -> WireMsg {
         WireMsg {
+            images: Vec::new(),
             role: Role::Tool,
             content: Some(text.to_string()),
             reasoning: None,
@@ -373,6 +380,34 @@ mod estimate_tests {
         let bytes = t.wire().last().expect("tool result").to_json().len();
         assert_eq!(estimate_of(&t), 120 + u32::try_from(bytes.div_ceil(3)).unwrap());
         assert!(estimate_of(&t) > 120 + 1000);
+    }
+
+    #[test]
+    fn a_reopened_first_unreported_reply_estimates_the_whole_wire_until_a_measurement() {
+        let mut t = Transcript::default();
+        t.push(WireMsg::user("hi"));
+        t.push(WireMsg::assistant("an unreported reply"));
+        let entry = oxa_proto::Entry {
+            id: "synthetic-use".into(),
+            parent: None,
+            ts_ms: 1,
+            body: oxa_proto::EntryBody::Usage {
+                kind: oxa_proto::TurnKind::Chat.as_str().to_string(),
+                usage: Usage::unreported(),
+            },
+        };
+        let mut bytes = Vec::new();
+        oxa_session::encode_entry(&entry, &mut bytes);
+        let restored = oxa_session::decode_entry(&bytes).unwrap();
+        t.apply(&restored);
+        let estimate = estimate_of(&t);
+        assert!(estimate > 0);
+        t.push(WireMsg::assistant("another unreported reply"));
+        t.apply(&restored);
+        assert!(estimate_of(&t) > estimate);
+        t.set_usage(&usage(0, 0));
+        assert_eq!(estimate_of(&t), 0);
+        assert_eq!(t.usage_wire_len(), Some(t.wire().len()));
     }
 
     #[test]
@@ -733,6 +768,16 @@ pub(crate) fn draft_prefill(
 /// O-152: the setting that turns the boot preload off (`oxa.bootPreload: false`).
 pub const SETTING_BOOT_PRELOAD: &str = "oxa.bootPreload";
 
+/// Whether [`boot_preload`] would send a request: an empty wire, a prefill-only engine and the
+/// preload not switched off. A caller checks this before it claims the session, so a preload
+/// that has nothing to do never shows the session as busy.
+pub(crate) fn boot_preload_applies(st: &SessionState) -> bool {
+    st.transcript.wire().is_empty()
+        && st.info.prefill_only
+        && st.settings.string("cacheWarming").as_deref() != Some("off")
+        && st.settings.bool(SETTING_BOOT_PRELOAD, true)
+}
+
 /// O-152: the boot preload. While a new session waits for its first prompt, prefill its frozen
 /// prefix (tools, preamble, identity, skills index, then the project's context and `cwd`) with
 /// one zero-token request (H6), `X-Oxe-Priority: background` (H3), `X-Oxe-Snapshot: keep` when
@@ -746,11 +791,7 @@ pub const SETTING_BOOT_PRELOAD: &str = "oxa.bootPreload";
 /// lost preload is never reported as a cache miss. Errors are one warning notice. Returns
 /// whether a request completed.
 pub fn boot_preload(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) -> bool {
-    if !st.transcript.wire().is_empty()
-        || !st.info.prefill_only
-        || st.settings.string("cacheWarming").as_deref() == Some("off")
-        || !st.settings.bool(SETTING_BOOT_PRELOAD, true)
-    {
+    if !boot_preload_applies(st) {
         return false;
     }
     if !st.shared.begin_background() {
@@ -1020,21 +1061,48 @@ fn compact_inner(
         // A hook summary lands as the head as given: no file lists are added (pi).
         HookReply::Summary { text, details } => (text, details, true, None),
         _ => {
-            let (read, modified) = {
+            let (read, modified, skills) = {
                 let summarised = summarised(st, &first_kept);
-                file_lists(&summarised)
+                let (read, modified) = file_lists(&summarised);
+                // A `<skill>` tag counts only when this session really has that skill: a prompt
+                // that merely quotes the tag never becomes an active skill.
+                let loaded: Vec<(String, String)> = if st.settings.compaction_reactivate_skills() {
+                    active_skills(&summarised)
+                        .into_iter()
+                        .filter(|(name, location)| known_skill(st, name, location))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                (read, modified, loaded)
             };
             let mut details = json!({ "readFiles": &read, "modifiedFiles": &modified });
-            let lists = prompt::file_lists_block(&read, &modified);
+            if !skills.is_empty() {
+                details["activeSkills"] = skills
+                    .iter()
+                    .map(|(name, location)| json!({ "name": name, "location": location }))
+                    .collect();
+            }
+            // The skills block is part of the summary, so it shares the summary budget: whole
+            // entries are kept while they fit and the rest are counted.
+            let files = prompt::file_lists_block(&read, &modified);
+            let count = counter(st);
+            let summary_max = match spec.fit {
+                Some(f) => f.summary_max.min(st.compact.summary_max),
+                None => st.compact.summary_max,
+            };
+            let with_lists = |text: &str| {
+                let used = count(text).saturating_add(count(&files));
+                format!(
+                    "{text}{files}{}",
+                    active_skills_block_within(&skills, summary_max.saturating_sub(used), &count)
+                )
+            };
             if let Some(p) = pending {
                 // The idle summary: made for this cut over the same messages, no request.
                 details["precomputed"] = json!(true);
-                (format!("{}{lists}", p.text), details, false, Some(p.usage))
+                (with_lists(&p.text), details, false, Some(p.usage))
             } else {
-                let summary_max = match spec.fit {
-                    Some(f) => f.summary_max.min(st.compact.summary_max),
-                    None => st.compact.summary_max,
-                };
                 let made = match summary_turn(st, spec, summary_max, sink, ui) {
                     Ok(Some(turn)) => {
                         persist(
@@ -1055,7 +1123,7 @@ fn compact_inner(
                     Err(e) => Err(e),
                 };
                 match made {
-                    Ok((text, usage)) => (format!("{text}{lists}"), details, false, Some(usage)),
+                    Ok((text, usage)) => (with_lists(&text), details, false, Some(usage)),
                     // R4: a summary that could not be made is replaced by the mechanical
                     // one, so the session never blocks on it.
                     Err(e) => {
@@ -1075,9 +1143,14 @@ fn compact_inner(
                         details["droppedTurns"] = json!(dropped);
                         details["mechanical"] = json!(true);
                         summary_error = Some(e.message.clone());
-                        let summary =
+                        let mechanical =
                             oxa_compact::mechanical_summary(&st.transcript.wire()[..cut], &read, &modified);
-                        (summary, details, false, None)
+                        // The mechanical summary carries its own file lists already: only the
+                        // skills block is appended, within the summary budget.
+                        let used = count(&mechanical);
+                        let block =
+                            active_skills_block_within(&skills, summary_max.saturating_sub(used), &count);
+                        (format!("{mechanical}{block}"), details, false, None)
                     }
                 }
             }
@@ -1205,6 +1278,17 @@ fn kept_origin(st: &SessionState, cut: usize) -> Result<String, OxaError> {
 
 /// The entries of the current branch that the compaction summarises: everything before the
 /// first kept entry (all of them when nothing is kept).
+/// Whether `(name, location)` names a skill this session discovered: the tag's name and path
+/// must match a skill in `st.resources`, so a plain prompt that quotes a `<skill>` tag is not
+/// treated as an active skill.
+fn known_skill(st: &SessionState, name: &str, location: &str) -> bool {
+    let path = std::path::Path::new(location);
+    st.resources
+        .skills
+        .iter()
+        .any(|s| s.name == name && s.path == path)
+}
+
 fn summarised<'a>(st: &'a SessionState, first_kept: &str) -> Vec<&'a Entry> {
     let branch = st.tree.branch(st.tree.leaf());
     if first_kept.is_empty() {

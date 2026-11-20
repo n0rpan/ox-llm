@@ -1,6 +1,9 @@
 //! Registry-neutral HTTP adapter. No listener, identity policy or command is declared here.
 //! The owner-approved caller binds the listener and supplies verified request authorization.
 use crate::lead_page::Page;
+use oxa_http::server::{
+    content_length, parse_headers, parse_request_line, read_head, split_head, HeadError, Headers,
+};
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -42,6 +45,7 @@ pub enum Stage {
     Recheck,
     Provider,
     Reply,
+    Approval,
 }
 impl Stage {
     pub fn as_str(self) -> &'static str {
@@ -55,6 +59,7 @@ impl Stage {
             Self::Recheck => "recheck",
             Self::Provider => "provider",
             Self::Reply => "reply",
+            Self::Approval => "approval",
         }
     }
 }
@@ -71,6 +76,11 @@ fn refuse(log: Option<&RefusalLog>, fact: RefusalFact) {
 /// Every `/chat` path form; refusals on these paths are chat refusals.
 pub(crate) fn chat_path(path: &str) -> bool {
     path == "/chat" || path.starts_with("/chat?")
+}
+
+/// Every `/approvals` path form; refusals on these paths are logged like chat refusals.
+pub(crate) fn approvals_path(path: &str) -> bool {
+    path == "/approvals" || path.starts_with("/approvals?")
 }
 
 /// Why an authenticated chat submission was not accepted.
@@ -120,6 +130,11 @@ pub(crate) struct FixedForm {
 pub(crate) enum OwnerSubmission {
     Message(String),
     Confirm(String),
+    /// The owner's answer to one approval request. It never enters the chat turn.
+    Approve {
+        id: String,
+        answer: String,
+    },
 }
 
 pub(crate) type OwnerPost = dyn Fn(OwnerSubmission) -> Result<(), &'static str> + Send + Sync;
@@ -197,21 +212,25 @@ fn connection_fixed(
     refusals: Option<&RefusalLog>,
 ) -> std::io::Result<()> {
     let start = Instant::now();
-    let mut bytes = Vec::new();
-    while !bytes.ends_with(b"\r\n\r\n") && bytes.len() < 8192 {
-        let left = Duration::from_secs(5)
-            .checked_sub(start.elapsed())
-            .filter(|d| !d.is_zero())
-            .ok_or(std::io::ErrorKind::TimedOut)?;
-        stream.set_read_timeout(Some(left))?;
-        let mut byte = [0];
-        if stream.read(&mut byte)? == 0 {
-            return Ok(());
+    let bytes: Vec<u8>;
+    let parsed = match read_head(
+        &mut Deadline {
+            stream: &stream,
+            start,
+        },
+        8192,
+    ) {
+        Ok(head) => {
+            bytes = head;
+            request(&bytes, form.is_some(), owner.is_some())
         }
-        bytes.push(byte[0]);
-    }
-    let allowed = request(&bytes, form.is_some(), owner.is_some())
-        .map_err(|status| {
+        Err(HeadError::Closed) => return Ok(()),
+        Err(HeadError::Io(kind)) => return Err(kind.into()),
+        Err(HeadError::TooLarge) => Err("431 Request Header Fields Too Large"),
+        Err(_) => Err("400 Bad Request"),
+    };
+    let allowed = parsed
+        .inspect_err(|status| {
             // Framing failures precede identity and any fact read: one fixed
             // early-parse line, with no request bytes.
             refuse(
@@ -223,12 +242,14 @@ fn connection_fixed(
                     fix: "send well-formed HTTP request framing",
                 },
             );
-            status
         })
         .and_then(|(r, fields)| {
-            let post = r.method == "POST" && r.path == "/chat" && (form.is_some() || owner.is_some());
+            // Answers to approval requests need the owner form; the fixed prompts never reach them.
+            let post = (r.method == "POST" && r.path == "/chat" && (form.is_some() || owner.is_some()))
+                || (r.method == "POST" && r.path == "/approvals" && owner.is_some());
+            let approval = post && r.path == "/approvals";
             if r.method != "GET" && !post {
-                if chat_path(r.path) {
+                if chat_path(r.path) || approvals_path(r.path) {
                     refuse(
                         refusals,
                         RefusalFact {
@@ -249,7 +270,7 @@ fn connection_fixed(
                 let scheme = form.map_or("https", |form| form.scheme);
                 if fields.origin != Some(format!("{scheme}://{}", r.authority).as_str())
                     || fields.kind != Some("application/x-www-form-urlencoded")
-                    || (form.is_none() && fields.fetch_site != Some("same-origin"))
+                    || ((form.is_none() || approval) && fields.fetch_site != Some("same-origin"))
                 {
                     refuse(
                         refusals,
@@ -294,7 +315,7 @@ fn connection_fixed(
                 // below when one is installed; only the final refusal is recorded.
                 let mut form_rejection: Option<Rejected> = None;
                 let fixed = match form {
-                    Some(form) if body.len() <= 256 => match fixed_target(&body, &form.csrf) {
+                    Some(form) if !approval && body.len() <= 256 => match fixed_target(&body, &form.csrf) {
                         Ok(target) => Some(target),
                         Err(rejected) => {
                             form_rejection = Some(rejected);
@@ -305,6 +326,26 @@ fn connection_fixed(
                 };
                 if let Some(target) = fixed {
                     Some(target)
+                } else if approval {
+                    let owner = owner.ok_or("405 Method Not Allowed")?;
+                    if scheme != "https" || fields.fetch_site != Some("same-origin") {
+                        refuse(
+                            refusals,
+                            RefusalFact {
+                                status: 403,
+                                stage: Stage::Origin,
+                                reason: "cross_origin",
+                                fix: "send the approval answer from its served origin",
+                            },
+                        );
+                        return Err("403 Forbidden");
+                    }
+                    let submission = approval_submission(&body, &owner.csrf).map_err(|rejected| {
+                        refuse(refusals, rejected.fact());
+                        "403 Forbidden"
+                    })?;
+                    (owner.post)(submission)?;
+                    Some("/".into())
                 } else {
                     let owner = owner.ok_or_else(|| {
                         refuse(
@@ -459,6 +500,35 @@ fn owner_submission(bytes: &[u8], expected: &str) -> Result<OwnerSubmission, Rej
     }
 }
 
+/// The owner's approval answer: exactly `csrf`, `id` and `answer`, with the answer allow-listed.
+/// The id is only a lookup key; the caller refuses any id that is not pending.
+fn approval_submission(bytes: &[u8], expected: &str) -> Result<OwnerSubmission, Rejected> {
+    let (mut csrf, mut id, mut answer) = (None, None, None);
+    for field in std::str::from_utf8(bytes).map_err(|_| Rejected::Body)?.split('&') {
+        let (key, value) = field.split_once('=').ok_or(Rejected::Body)?;
+        match key {
+            "csrf" if csrf.replace(value).is_none() => {}
+            "id" if id.replace(value).is_none() => {}
+            "answer" if answer.replace(value).is_none() => {}
+            _ => return Err(Rejected::Body),
+        }
+    }
+    if csrf != Some(expected) {
+        return Err(Rejected::Csrf);
+    }
+    let (Some(id), Some(answer)) = (id, answer) else {
+        return Err(Rejected::Body);
+    };
+    let well_formed = !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric());
+    if !well_formed || !matches!(answer, "once" | "session" | "always" | "deny") {
+        return Err(Rejected::Body);
+    }
+    Ok(OwnerSubmission::Approve {
+        id: id.to_owned(),
+        answer: answer.to_owned(),
+    })
+}
+
 fn decode_message(value: &str) -> Option<String> {
     let mut encoded = value.bytes();
     let mut decoded = Vec::new();
@@ -480,57 +550,88 @@ fn decode_message(value: &str) -> Option<String> {
     .then_some(message)
 }
 
-fn request(bytes: &[u8], fixed: bool, owner: bool) -> Result<(Request<'_>, Fields<'_>), &'static str> {
-    let text = std::str::from_utf8(bytes).map_err(|_| "400 Bad Request")?;
-    if !text.ends_with("\r\n\r\n") {
-        return Err("431 Request Header Fields Too Large");
+/// Reads one byte at a time with the remaining share of a 5 s total budget armed before each read.
+struct Deadline<'a> {
+    stream: &'a TcpStream,
+    start: Instant,
+}
+
+impl Read for Deadline<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = Duration::from_secs(5)
+            .checked_sub(self.start.elapsed())
+            .filter(|d| !d.is_zero())
+            .ok_or(std::io::ErrorKind::TimedOut)?;
+        self.stream.set_read_timeout(Some(left))?;
+        self.stream.read(buf)
     }
-    let mut lines = text[..text.len() - 4].split("\r\n");
-    let first: Vec<_> = lines.next().unwrap_or_default().split(' ').collect();
-    if first.len() != 3 || first[2] != "HTTP/1.1" {
-        return Err("400 Bad Request");
-    }
+}
+
+type Scanned<'a> = (Option<&'a str>, Option<&'a str>, Fields<'a>, bool);
+
+/// Per-field rules in header order, so a doubly-wrong request gets the status of its first fault.
+fn scan<'a>(headers: &Headers<'a>) -> Result<Scanned<'a>, &'static str> {
     let mut login = None;
     let mut authority = None;
-    let (mut fields, mut length) = (Fields::default(), None);
-    for line in lines {
-        let (name, value) = line.split_once(':').ok_or("400 Bad Request")?;
-        if name.is_empty()
-            || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            || value.bytes().any(|b| b.is_ascii_control() && b != b'\t')
-        {
-            return Err("400 Bad Request");
-        }
-        if name.eq_ignore_ascii_case("tailscale-user-login") && login.replace(value.trim()).is_some() {
+    let mut fields = Fields::default();
+    let mut length = false;
+    for (name, value) in headers.iter() {
+        if name.eq_ignore_ascii_case("tailscale-user-login") && login.replace(value).is_some() {
             return Err("403 Forbidden");
         }
-        if name.eq_ignore_ascii_case("host") && authority.replace(value.trim()).is_some() {
+        if name.eq_ignore_ascii_case("host") && authority.replace(value).is_some() {
             return Err("400 Bad Request");
         }
         if name.eq_ignore_ascii_case("transfer-encoding") {
             return Err("400 Bad Request");
         }
-        if name.eq_ignore_ascii_case("content-length") && length.replace(value.trim()).is_some()
-            || name.eq_ignore_ascii_case("origin") && fields.origin.replace(value.trim()).is_some()
-            || name.eq_ignore_ascii_case("content-type") && fields.kind.replace(value.trim()).is_some()
-            || name.eq_ignore_ascii_case("sec-fetch-site")
-                && fields.fetch_site.replace(value.trim()).is_some()
+        if name.eq_ignore_ascii_case("content-length") && std::mem::replace(&mut length, true)
+            || name.eq_ignore_ascii_case("origin") && fields.origin.replace(value).is_some()
+            || name.eq_ignore_ascii_case("content-type") && fields.kind.replace(value).is_some()
+            || name.eq_ignore_ascii_case("sec-fetch-site") && fields.fetch_site.replace(value).is_some()
         {
             return Err("400 Bad Request");
         }
     }
-    fields.length = length.unwrap_or("0").parse().map_err(|_| "400 Bad Request")?;
-    if length.is_some_and(|text| text != fields.length.to_string())
-        || fields.length > if owner { 4096 } else { 256 }
-        || fields.length != 0 && !((fixed || owner) && first[0] == "POST" && first[1] == "/chat")
+    Ok((login, authority, fields, length))
+}
+
+fn request(bytes: &[u8], fixed: bool, owner: bool) -> Result<(Request<'_>, Fields<'_>), &'static str> {
+    const BAD: &str = "400 Bad Request";
+    let (line, block) = split_head(bytes).map_err(|e| match e {
+        HeadError::Closed => "431 Request Header Fields Too Large",
+        _ => BAD,
+    })?;
+    let first = parse_request_line(line).map_err(|_| BAD)?;
+    if first.version != "HTTP/1.1" {
+        return Err(BAD);
+    }
+    let Ok(headers) = parse_headers(block) else {
+        // A malformed line only wins if no earlier line was already refused (a second
+        // tailscale-user-login before it is 403).
+        let lines: Vec<_> = block.split("\r\n").collect();
+        let good = lines.iter().take_while(|l| parse_headers(l).is_ok()).count();
+        return Err(parse_headers(&lines[..good].join("\r\n"))
+            .ok()
+            .and_then(|h| scan(&h).err())
+            .unwrap_or(BAD));
+    };
+    let (login, authority, mut fields, _) = scan(&headers)?;
+    let length = content_length(&headers).map_err(|_| BAD)?.unwrap_or(0);
+    fields.length = length;
+    if length > if owner { 4096 } else { 256 }
+        || length != 0
+            && !((fixed || owner)
+                && first.method == "POST"
+                && (first.target == "/chat" || first.target == "/approvals"))
     {
-        return Err("400 Bad Request");
+        return Err(BAD);
     }
     Ok((
         Request {
-            method: first[0],
-            path: first[1],
-            authority: authority.filter(|s| !s.is_empty()).ok_or("400 Bad Request")?,
+            method: first.method,
+            path: first.target,
+            authority: authority.filter(|s| !s.is_empty()).ok_or(BAD)?,
             forwarded_login: login,
         },
         fields,
@@ -657,6 +758,66 @@ mod tests {
                 "authorized={allowed}, origin={origin}, fetch_site={site:?}"
             );
         }
+    }
+
+    #[test]
+    fn malformed_heads_keep_their_status() {
+        let status = |head: &[u8]| {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (server, _) = listener.accept().unwrap();
+            let handler = std::thread::spawn(move || {
+                connection(server, |_, _| true, |_, _| String::new()).unwrap();
+            });
+            client.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            client.write_all(head).unwrap();
+            let mut reply = String::new();
+            client.read_to_string(&mut reply).unwrap();
+            handler.join().unwrap();
+            reply.lines().next().unwrap().to_owned()
+        };
+        let long = "a".repeat(8192);
+        let cases: [(&str, &[u8], &str); 31] = [
+            ("valid", b"GET / HTTP/1.1\r\nHost: h\r\n\r\n", "200 OK"),
+            ("version 1.0", b"GET / HTTP/1.0\r\nHost: h\r\n\r\n", "400 Bad Request"),
+            ("version 2", b"GET / HTTP/2\r\nHost: h\r\n\r\n", "400 Bad Request"),
+            ("two-part line", b"GET /\r\nHost: h\r\n\r\n", "400 Bad Request"),
+            ("duplicate login", b"GET / HTTP/1.1\r\nHost: h\r\nTailscale-User-Login: a\r\ntailscale-user-login: b\r\n\r\n", "403 Forbidden"),
+            ("duplicate login + bad version", b"GET / HTTP/1.0\r\nHost: h\r\nTailscale-User-Login: a\r\ntailscale-user-login: b\r\n\r\n", "400 Bad Request"),
+            ("duplicate login then transfer-encoding", b"GET / HTTP/1.1\r\nHost: h\r\nTailscale-User-Login: a\r\nTailscale-User-Login: b\r\nTransfer-Encoding: chunked\r\n\r\n", "403 Forbidden"),
+            ("transfer-encoding then duplicate login", b"GET / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\nTailscale-User-Login: a\r\nTailscale-User-Login: b\r\n\r\n", "400 Bad Request"),
+            ("duplicate login then bad name", b"GET / HTTP/1.1\r\nHost: h\r\nTailscale-User-Login: a\r\nTailscale-User-Login: b\r\nBad Name: v\r\n\r\n", "403 Forbidden"),
+            ("bad name then duplicate login", b"GET / HTTP/1.1\r\nHost: h\r\nBad Name: v\r\nTailscale-User-Login: a\r\nTailscale-User-Login: b\r\n\r\n", "400 Bad Request"),
+            ("duplicate login then duplicate host", b"GET / HTTP/1.1\r\nHost: h\r\nTailscale-User-Login: a\r\nTailscale-User-Login: b\r\nHost: i\r\n\r\n", "403 Forbidden"),
+            ("duplicate host then duplicate login", b"GET / HTTP/1.1\r\nHost: h\r\nHost: i\r\nTailscale-User-Login: a\r\nTailscale-User-Login: b\r\n\r\n", "400 Bad Request"),
+            ("duplicate login + oversized length", b"GET / HTTP/1.1\r\nHost: h\r\nTailscale-User-Login: a\r\nTailscale-User-Login: b\r\nContent-Length: 5000\r\n\r\n", "403 Forbidden"),
+            ("duplicate host", b"GET / HTTP/1.1\r\nHost: h\r\nHOST: i\r\n\r\n", "400 Bad Request"),
+            ("duplicate content-length", b"GET / HTTP/1.1\r\nHost: h\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n", "400 Bad Request"),
+            ("duplicate origin", b"GET / HTTP/1.1\r\nHost: h\r\nOrigin: a\r\nOrigin: a\r\n\r\n", "400 Bad Request"),
+            ("duplicate content-type", b"GET / HTTP/1.1\r\nHost: h\r\nContent-Type: a\r\nContent-Type: a\r\n\r\n", "400 Bad Request"),
+            ("duplicate sec-fetch-site", b"GET / HTTP/1.1\r\nHost: h\r\nSec-Fetch-Site: a\r\nSec-Fetch-Site: a\r\n\r\n", "400 Bad Request"),
+            ("transfer-encoding", b"GET / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n", "400 Bad Request"),
+            ("transfer-encoding + oversized length", b"GET / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\nContent-Length: 5000\r\n\r\n", "400 Bad Request"),
+            ("non-canonical length", b"GET / HTTP/1.1\r\nHost: h\r\nContent-Length: 010\r\n\r\n", "400 Bad Request"),
+            ("body on GET", b"GET / HTTP/1.1\r\nHost: h\r\nContent-Length: 1\r\n\r\n", "400 Bad Request"),
+            ("oversized length", b"GET / HTTP/1.1\r\nHost: h\r\nContent-Length: 257\r\n\r\n", "400 Bad Request"),
+            ("bare LF in a value", b"GET / HTTP/1.1\r\nHost: h\nX: b\r\n\r\n", "400 Bad Request"),
+            ("bare LF line ends", b"GET / HTTP/1.1\nHost: h\n\r\n\r\n", "400 Bad Request"),
+            ("header without colon", b"GET / HTTP/1.1\r\nHost: h\r\nNoColon\r\n\r\n", "400 Bad Request"),
+            ("control byte in value", b"GET / HTTP/1.1\r\nHost: h\r\nX: a\x01b\r\n\r\n", "400 Bad Request"),
+            ("space in name", b"GET / HTTP/1.1\r\nHost: h\r\nBad Name: v\r\n\r\n", "400 Bad Request"),
+            ("empty host", b"GET / HTTP/1.1\r\nHost: \r\n\r\n", "400 Bad Request"),
+            ("missing host", b"GET / HTTP/1.1\r\n\r\n", "400 Bad Request"),
+            ("not UTF-8", b"GET /\xff HTTP/1.1\r\nHost: h\r\n\r\n", "400 Bad Request"),
+        ];
+        for (name, head, want) in cases {
+            assert_eq!(status(head), format!("HTTP/1.1 {want}"), "{name}");
+        }
+        assert_eq!(
+            status(long.as_bytes()),
+            "HTTP/1.1 431 Request Header Fields Too Large",
+            "head without terminator at 8192 bytes"
+        );
     }
 
     #[test]
@@ -850,5 +1011,155 @@ mod tests {
             elapsed < Duration::from_millis(1750),
             "partial writes renewed the one-second budget: {elapsed:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod approval_transport_tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    /// One `POST /approvals` over a real loopback connection; returns the reply, how many
+    /// answers reached the owner form, and the refusal facts the transport recorded.
+    fn approval_exchange(origin: &str, site: &str, body: &str) -> (String, usize, Vec<RefusalFact>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let invoked = count.clone();
+        let facts: Arc<std::sync::Mutex<Vec<RefusalFact>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = facts.clone();
+        let handler = std::thread::spawn(move || {
+            let owner = OwnerForm {
+                csrf: "fixture".into(),
+                post: Arc::new(move |submission| {
+                    assert!(matches!(
+                        submission,
+                        OwnerSubmission::Approve { ref id, ref answer }
+                            if id == "0123456789abcdef" && answer == "once"
+                    ));
+                    invoked.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }),
+            };
+            let refusals: RefusalLog = Arc::new(move |fact| record.lock().unwrap().push(fact));
+            connection_fixed(
+                server,
+                |_, _| true,
+                |_, _| panic!("unexpected render"),
+                None,
+                Some(&owner),
+                Some(&refusals),
+            )
+            .unwrap();
+        });
+        client.set_read_timeout(Some(Duration::from_secs(6))).unwrap();
+        // A cross-origin submission is refused before its body is read; an unread payload would
+        // turn the close into a reset, so only the same-origin submissions send their body.
+        let payload = if origin == "https://example.invalid" && site == "same-origin" {
+            body
+        } else {
+            ""
+        };
+        write!(
+            client,
+            "POST /approvals HTTP/1.1\r\nHost: example.invalid\r\nOrigin: {origin}\r\nSec-Fetch-Site: {site}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{payload}",
+            body.len()
+        )
+        .unwrap();
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).unwrap();
+        handler.join().unwrap();
+        let facts = facts.lock().unwrap().clone();
+        (reply, count.load(Ordering::SeqCst), facts)
+    }
+
+    #[test]
+    fn approval_post_refuses_bad_csrf() {
+        let body = "csrf=wrong&id=0123456789abcdef&answer=once";
+        let (reply, answered, facts) = approval_exchange("https://example.invalid", "same-origin", body);
+        assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
+        assert_eq!(answered, 0);
+        assert_eq!(
+            facts,
+            [RefusalFact {
+                status: 403,
+                stage: Stage::Csrf,
+                reason: "invalid",
+                fix: "reload the served chat form and resubmit",
+            }]
+        );
+    }
+
+    #[test]
+    fn approval_post_refuses_cross_site_origin() {
+        let body = "csrf=fixture&id=0123456789abcdef&answer=once";
+        for (origin, site) in [
+            ("https://other.invalid", "same-origin"),
+            ("https://example.invalid", "same-site"),
+            ("https://example.invalid", ""),
+        ] {
+            let (reply, answered, facts) = approval_exchange(origin, site, body);
+            assert!(reply.starts_with("HTTP/1.1 403"), "{origin} {site:?}: {reply}");
+            assert_eq!(answered, 0, "{origin} {site:?}");
+            assert_eq!(facts.len(), 1, "{origin} {site:?}");
+            assert_eq!(facts[0].stage, Stage::Origin, "{origin} {site:?}");
+        }
+    }
+
+    #[test]
+    fn approval_post_accepts_one_well_formed_answer_only() {
+        let (reply, answered, facts) = approval_exchange(
+            "https://example.invalid",
+            "same-origin",
+            "csrf=fixture&id=0123456789abcdef&answer=once",
+        );
+        assert!(reply.starts_with("HTTP/1.1 303"), "{reply}");
+        assert!(reply.contains("Location: /\r\n"), "{reply}");
+        assert_eq!(answered, 1);
+        assert!(facts.is_empty());
+        // An unlisted answer or an extra field is malformed and never reaches the owner form.
+        for body in [
+            "csrf=fixture&id=0123456789abcdef&answer=maybe",
+            "csrf=fixture&id=0123456789abcdef&answer=once&extra=1",
+            "csrf=fixture&id=0123456789abcdef",
+        ] {
+            let (reply, answered, _) = approval_exchange("https://example.invalid", "same-origin", body);
+            assert!(reply.starts_with("HTTP/1.1 403"), "{body}: {reply}");
+            assert_eq!(answered, 0, "{body}");
+        }
+    }
+
+    #[test]
+    fn approval_post_refuses_get_and_other_paths_at_the_transport() {
+        // A GET to the same path is a method refusal, logged as a refusal on the approval path.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let facts: Arc<std::sync::Mutex<Vec<RefusalFact>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = facts.clone();
+        let handler = std::thread::spawn(move || {
+            let refusals: RefusalLog = Arc::new(move |fact| record.lock().unwrap().push(fact));
+            connection_fixed(
+                server,
+                |_, _| true,
+                |_, _| panic!("unexpected render"),
+                None,
+                None,
+                Some(&refusals),
+            )
+            .unwrap();
+        });
+        client.set_read_timeout(Some(Duration::from_secs(6))).unwrap();
+        write!(
+            client,
+            "POST /approvals?x=1 HTTP/1.1\r\nHost: example.invalid\r\n\r\n"
+        )
+        .unwrap();
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).unwrap();
+        handler.join().unwrap();
+        assert!(reply.starts_with("HTTP/1.1 405"), "{reply}");
+        assert_eq!(facts.lock().unwrap().len(), 1);
     }
 }

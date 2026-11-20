@@ -14,7 +14,7 @@ use std::{
 };
 
 #[test]
-fn an_explicit_owner_limit_admits_the_fourth_attempt_and_readback_agrees() {
+fn advisory_attempt_thresholds_claim_with_one_warning_and_readback_agrees() {
     let env = TestEnv::new();
     work::setup(&env, "[]");
     let controls = env.agent_dir().join("attempt-limit");
@@ -118,31 +118,36 @@ fn an_explicit_owner_limit_admits_the_fourth_attempt_and_readback_agrees() {
             .unwrap()
     };
 
+    // The missing budget_pools key keeps the default three as an advisory
+    // threshold: the fourth attempt is claimed, not refused, with exactly one
+    // operator warning on stderr.
     write_config(&owner);
     let output = refill();
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(claims.snapshot().unwrap()[&number].attempts, 3);
-    assert!(claims.snapshot().unwrap()[&number].lease.is_none());
+    let fourth = claims.snapshot().unwrap()[&number].clone();
+    assert_eq!(
+        fourth.attempts, 4,
+        "the defaulted fourth attempt was not claimed: {output:?}"
+    );
+    assert!(
+        fourth.lease.is_some(),
+        "the defaulted fourth attempt holds no lease: {output:?}"
+    );
+    let warning = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        warning.matches("attempt 4 of 3").count(),
+        1,
+        "expected one operator warning for the defaulted attempt: {warning:?}"
+    );
     let output = readback();
     assert!(output.status.success(), "{output:?}");
     let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(receipt["max_attempts_per_day"], 3);
 
-    owner["budget_pools"]["limits"]["max_attempts_per_day"] = json!(4);
-    write_config(&owner);
-    let output = refill();
-    assert!(output.status.success(), "{output:?}");
     let assignments = claims.assignments_read_only().unwrap();
-    let row = &assignments[&number];
-    assert_eq!(row.state.attempts, 4, "owned fourth attempt: {output:?}");
-    let binding = row.data.native_binding.as_ref().unwrap();
-    assert!(row.state.lease.as_ref() == Some(&binding.lease));
+    let binding = assignments[&number].data.native_binding.as_ref().unwrap();
+    assert!(assignments[&number].state.lease.as_ref() == Some(&binding.lease));
     assert!(queue.join(format!("board-{}.txt", binding.key)).is_file());
-    let output = readback();
-    assert!(output.status.success(), "{output:?}");
-    let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(receipt["max_attempts_per_day"], 4);
-
     assert!(claims
         .release_for(
             number,
@@ -155,17 +160,46 @@ fn an_explicit_owner_limit_admits_the_fourth_attempt_and_readback_agrees() {
     let charged = claims.snapshot().unwrap()[&number].clone();
     assert_eq!(charged.attempts, 4);
     assert!(charged.lease.is_none());
-    // A new revision has a different publication key, so refusal proves the cap,
-    // rather than the already published packet or the released original lease.
+    // A new revision has a different publication key, so a claim here is a fresh
+    // eligible attempt that neither the published packet nor the released lease
+    // can explain away.
     owner["packets"][0]["revision"] = json!("fixture-revision-2");
     reply["data"]["repository"]["i44"]["updatedAt"] = json!("fixture-revision-2");
     env.write("home/.local/bin/gh.reply", &reply.to_string());
+    // #1448: the daily attempt threshold is advisory, not a refusal. The second
+    // revision is the eligible attempt that only the cap could have refused, so
+    // it must be claimed and carry exactly one operator warning on stderr.
+    owner["budget_pools"]["limits"]["max_attempts_per_day"] = json!(4);
+    write_config(&owner);
+    let output = refill();
+    assert!(output.status.success(), "{output:?}");
+    let fifth = claims.snapshot().unwrap()[&number].clone();
+    assert_eq!(
+        fifth.attempts, 5,
+        "the eligible above-threshold attempt was not claimed: {output:?}"
+    );
+    assert!(
+        fifth.lease.is_some(),
+        "the claimed fifth attempt holds no lease: {output:?}"
+    );
+    let warning = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        warning.matches("attempt 5 of 4").count(),
+        1,
+        "expected one operator warning for the above-threshold claim: {warning:?}"
+    );
     for cap in [json!(4), json!(2), json!(0)] {
         owner["budget_pools"]["limits"]["max_attempts_per_day"] = cap.clone();
         write_config(&owner);
         let output = refill();
         assert!(output.status.success(), "{output:?}");
-        assert_eq!(claims.snapshot().unwrap()[&number], charged);
+        assert_eq!(claims.snapshot().unwrap()[&number], fifth);
+        // The fifth lease is still live and the packet is published: a
+        // duplicate retry must neither claim nor warn again.
+        assert!(
+            String::from_utf8_lossy(&output.stderr).is_empty(),
+            "an active lease and published packet must not claim or warn again: {output:?}"
+        );
         let output = readback();
         assert!(output.status.success(), "{output:?}");
         let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -186,7 +220,7 @@ fn an_explicit_owner_limit_admits_the_fourth_attempt_and_readback_agrees() {
         write_config(&owner);
         assert_eq!(readback().status.code(), Some(2));
         assert_eq!(refill().status.code(), Some(2));
-        assert_eq!(claims.snapshot().unwrap()[&number], charged);
+        assert_eq!(claims.snapshot().unwrap()[&number], fifth);
     }
     owner["budget_pools"]["limits"]["max_attempts_per_day"] = json!(4);
     let project_config = env.work().join("project/owner-policy.json");
@@ -198,5 +232,7 @@ fn an_explicit_owner_limit_admits_the_fourth_attempt_and_readback_agrees() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
-    assert_eq!(claims.snapshot().unwrap()[&number], charged);
+    // The refused project-layer config leaves the fifth, still-leased attempt
+    // exactly as the last successful claim left it.
+    assert_eq!(claims.snapshot().unwrap()[&number], fifth);
 }

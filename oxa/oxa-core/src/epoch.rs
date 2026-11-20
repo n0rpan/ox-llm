@@ -42,13 +42,15 @@ fn gather(st: &SessionState) -> Inputs {
         all.extend(h.tools());
         extra.extend(h.prompt_sections());
     }
+    let policy = crate::goal::WaitPolicy::from_settings(&st.settings);
+    // `wait` is declared in every session from its start (`oxa.tools.wait`, default on), with
+    // the same spec a goal's `wait` has, so starting a goal does not change that tool entry.
+    if st.settings.bool("oxa.tools.wait", true) {
+        all.push(crate::goal::wait_tool(&st.shared, &st.hooks, policy, &st.jobs));
+    }
     if let Some(goal) = st.goal.as_ref().filter(|goal| goal.pursuing()) {
         all.retain(|t| !matches!(t.spec().name.as_str(), "goal_done" | "wait"));
-        all.extend(goal.tools(
-            &st.shared,
-            &st.hooks,
-            crate::goal::WaitPolicy::from_settings(&st.settings),
-        ));
+        all.extend(goal.tools(&st.shared, &st.hooks, policy, &st.jobs));
         extra.push((
             "goal".into(),
             crate::prompt::goal_start(&goal.snapshot().objective),
@@ -63,7 +65,13 @@ fn gather(st: &SessionState) -> Inputs {
     let (mut active, warnings) = resolve_toolset(&all, &sel);
     crate::toolset::apply_codemode_mode(&mut active, &st.settings);
     let specs = active.specs();
-    let tune = crate::tune::tune_for(&st.settings, st.info.n_ctx, crate::tune::budget_soft(st));
+    let tune = crate::tune::tune_for_model(
+        &st.settings,
+        st.info.n_ctx,
+        crate::tune::budget_soft(st),
+        st.info.images == Some(true),
+        st.info.caps.remote,
+    );
     Inputs {
         all,
         active,
@@ -74,11 +82,33 @@ fn gather(st: &SessionState) -> Inputs {
     }
 }
 
+/// Rebuild the live tool handlers from the current state without touching the prefix: a
+/// resumed or switched-to session replays its stored prefix, but `wait` and the goal controls
+/// must be callable and bound to this session's own goal runtime.
+pub(crate) fn rebind_tools(st: &mut SessionState, sink: &mut dyn EventSink) {
+    let Inputs {
+        all,
+        active,
+        warnings,
+        ..
+    } = gather(st);
+    for w in warnings {
+        sink.emit(&AgentEvent::Notice {
+            level: Level::Warning,
+            text: w,
+        });
+    }
+    st.all_tools = all;
+    st.active = active;
+    crate::tune::refresh(st);
+}
+
 /// The prefix options of an epoch, from the settings as they are now.
 pub(crate) fn prefix_opts(st: &SessionState) -> PrefixOpts {
     PrefixOpts {
         diet_output: st.settings.diet_output(),
         child: crate::subagent::is_child_process(),
+        headless: crate::prefix::is_headless(),
     }
 }
 
@@ -133,7 +163,8 @@ pub(crate) fn open_epoch_costed(
     sink: &mut dyn EventSink,
     cost: EpochCost,
 ) -> Result<bool, OxaError> {
-    open_epoch_at(st, reason, true, sink, Some(cost))
+    // The model switch caller owns the session, either idle or between goal requests.
+    open_epoch_inner(st, reason, true, sink, Some(cost))
 }
 
 fn open_epoch_at(
@@ -304,6 +335,7 @@ pub fn reload(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) 
         trusted,
     );
     st.settings = settings;
+    crate::session::sync_job_wake(st);
     crate::settings_refresh::resync(st);
     st.resources = resources;
     crate::host::observe_hooks(st, HookPoint::SessionShutdown, &Value::Null, sink, ui);

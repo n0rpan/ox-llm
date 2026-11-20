@@ -29,6 +29,10 @@ const SUBAGENT_RULE: &str =
     "For a wide search or to read many files, delegate to a subagent and use its summary";
 const SUBAGENT_CHECK_RULE: &str =
     "A subagent's summary can be wrong: before you rely on a claim from it for an edit, read the cited lines yourself";
+/// 2026-11-19: the done check, added with the output diet when `bash` is declared.
+const WAIT_RULE: &str = "Use wait, never sleep-poll";
+const VERIFY_RULE: &str =
+    "Before you call a task done, run the project's own tests or checks and report the result; if you ran none, say so";
 const SHOW_PATHS: &str = "Show file paths clearly when working with files";
 const CONCISE: &str = "Be concise in your responses";
 
@@ -150,8 +154,17 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// 2026-11-15: the built-in `pull-request` skill (#181) joined the skills section.
 /// 2026-11-16: issue #519 added `kill` to the `bash` schema and documented per-job cancellation
 /// and explicit background timeouts; both default tool prefixes intentionally changed.
-const DEFAULT_STABLE_SHA: &str = "2d4683b3fd6b9a30dce842f87a5cf0626e3e7639cc4ad456386e6eaad22757ea";
-const DEFAULT_STABLE_SHA_SUBAGENT: &str = "5ce26b9bd40a179b6dc68f67dea6ffd02f7ad2cf2922ee535d3fafcc639c2613";
+/// 2026-11-19: S12 documents explicit zero in the bash timeout schema.
+/// 2026-11-19: #1552 updates the built-in report-issue skill description.
+/// 2026-11-19: R2 rewrote the built-in `ox-llm` skill description (no controller), and the
+/// new identity text (Rust-only suite, cloud models as one provider line) and the done-check
+/// rule; hashes copied from the `stable sha256` lines of this test in CI.
+/// 2026-11-19: #1552 updates the built-in report-issue skill description.
+/// 2026-11-19: N1 changed the bash tool text (wait cap 300, timeout moves to a background job).
+/// 2026-11-19: `wait` is declared in every session (tool entry and rule line).
+/// 2026-11-20: the `wait` tool description lists `pr_activity{pr,head}`.
+const DEFAULT_STABLE_SHA: &str = "1ed961bbbdf33d90f9d1e99e85877d08ede0bced6529a6c427f8fa126b3a9535";
+const DEFAULT_STABLE_SHA_SUBAGENT: &str = "d40f779e46d53297ba77994f2eccad4b5623fa9279dfba4fdbfb3eedd9cdb3f3";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
 fn has_date(s: &str) -> bool {
@@ -236,6 +249,11 @@ fn prefix_bytes_and_the_anchor() {
         for r in DIET_RULES {
             assert_eq!(system.contains(r), on, "{label}: {r}");
         }
+        assert_eq!(
+            system.contains(VERIFY_RULE),
+            on,
+            "{label}: done check only with the diet on"
+        );
         assert_eq!(system.contains(CONCISE), !on, "{label}: concise rule");
         assert!(system.contains(SHOW_PATHS), "{label}: paths rule");
         assert!(
@@ -257,12 +275,9 @@ fn prefix_bytes_and_the_anchor() {
 
     // The default prefix stays byte-identical to the pinned bytes.
     assert_eq!(
-        default_sha[0], DEFAULT_STABLE_SHA,
-        "the default prefix bytes drifted"
-    );
-    assert_eq!(
-        default_sha[1], DEFAULT_STABLE_SHA_SUBAGENT,
-        "the default prefix bytes with a subagent drifted"
+        (default_sha[0].as_str(), default_sha[1].as_str()),
+        (DEFAULT_STABLE_SHA, DEFAULT_STABLE_SHA_SUBAGENT),
+        "the default prefix bytes drifted (without and with a subagent)"
     );
 
     // The diet costs prefix bytes (its rules replace one line): exactly the rule lines' bytes,
@@ -277,7 +292,9 @@ fn prefix_bytes_and_the_anchor() {
         };
         let (on, off) = (get("diet on"), get("diet off"));
         let line = |t: &str| t.len() + 3;
-        let mut cost: i64 = DIET_RULES.iter().map(|r| line(r) as i64).sum::<i64>() - line(CONCISE) as i64;
+        let mut cost: i64 = DIET_RULES.iter().map(|r| line(r) as i64).sum::<i64>() - line(CONCISE) as i64
+            + line(VERIFY_RULE) as i64
+            + line(WAIT_RULE) as i64;
         if subagent {
             cost += line(SUBAGENT_RULE) as i64 + line(SUBAGENT_CHECK_RULE) as i64;
         }

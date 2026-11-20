@@ -5,7 +5,7 @@ use bigdecimal::BigDecimal;
 use num_traits::ToPrimitive;
 use serde_json::Value;
 use std::{
-    fs::OpenOptions,
+    fs::{self, OpenOptions},
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
@@ -24,19 +24,28 @@ pub struct SpendReader {
     tail: Vec<u8>,
     bytes_read: u64,
 }
+pub(crate) fn builtin_provider(value: &Value) -> bool {
+    matches!(
+        value.as_str(),
+        Some("anthropic" | "openai" | "openai-chat" | "openrouter" | "chatgpt" | "opencode")
+    )
+}
+
+pub(crate) fn subscription_provider(value: &Value) -> bool {
+    matches!(value.as_str(), Some("chatgpt" | "opencode"))
+}
+
 /// Budget accounting accepts an estimate only when it is explicitly classified
 /// and no actual cost field is present. Older settled rows keep their format,
 /// including estimate-only OpenCode rows that earlier binaries recorded.
-pub(crate) fn budget_cost(row: &Value) -> Option<f64> {
+pub(crate) fn budget_cost(row: &Value, configured: bool) -> Option<f64> {
     let value = match (row.get("cost_usd"), row.get("estimated_cost_usd")) {
         (Some(cost), None) => cost,
         (None, Some(estimate))
             if matches!(row["settled"].as_str(), Some("estimated" | "reserved"))
                 && row["billing"] == "metered"
-                && matches!(
-                    row["remote_provider"].as_str(),
-                    Some("anthropic" | "openai" | "openai-chat" | "openrouter" | "opencode")
-                ) =>
+                && (configured || builtin_provider(&row["remote_provider"]))
+                && row["remote_provider"] != "chatgpt" =>
         {
             estimate
         }
@@ -154,7 +163,10 @@ impl SpendReader {
             if row["remote"] != true {
                 continue;
             }
-            let cost = budget_cost(&row);
+            // The private writer sets this marker from route metadata. The
+            // display name may have been redacted and is not the authority.
+            let configured = row["configured_provider"] == true;
+            let cost = budget_cost(&row, configured);
             if cost.is_none() && !unknown_go_cost(&row) {
                 return Err(io::ErrorKind::InvalidData.into());
             }
@@ -182,7 +194,7 @@ impl SpendReader {
                 {
                     if (value == "subscription" && cost.is_some_and(|n| n != 0.0))
                         || (value == "metered" && cost.is_none_or(|n| n <= 0.0))
-                        || !matches!(row["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
+                        || !(configured || subscription_provider(&row["remote_provider"]))
                     {
                         return Err(io::ErrorKind::InvalidData.into());
                     }
@@ -242,6 +254,79 @@ impl SpendReader {
         // never erase a valid positive charge before comparing it with a cap.
         Ok(spend)
     }
+}
+
+/// One day's sums for the owner usage report. Numbers only: no row, session, digest or
+/// model text leaves this module.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DaySums {
+    /// Remote rows without subscription counters (metered routes).
+    pub metered_requests: u64,
+    pub metered_prompt: u64,
+    pub metered_completion: u64,
+    pub metered_cached: u64,
+    /// The validated settled USD total and whether any row's cost was unknown.
+    pub metered_usd: f64,
+    pub metered_cost_unknown: bool,
+    /// Remote rows with subscription counters (ChatGPT and OpenCode Go).
+    pub subscription_requests: u64,
+    pub subscription_tokens: u64,
+    /// Rows written for local guests (not remote).
+    pub local_requests: u64,
+    pub local_prompt: u64,
+    pub local_completion: u64,
+}
+
+/// Sums of one ledger file, or `Ok(None)` when it does not exist (no request today).
+/// Every complete remote row passes [`SpendReader`]'s validation first, so a malformed row
+/// fails closed. The file is read only; no key, salt or directory is opened or created.
+pub fn day_sums(path: &Path) -> io::Result<Option<DaySums>> {
+    match fs::symlink_metadata(path) {
+        Ok(info) if info.is_file() => {}
+        Ok(_) => return Err(io::ErrorKind::InvalidData.into()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    }
+    let mut reader = SpendReader::default();
+    let metered_usd = reader.read(path)?;
+    let mut sums = DaySums {
+        metered_usd,
+        metered_cost_unknown: reader.cost_unknown(),
+        ..DaySums::default()
+    };
+    let mut rows = BufReader::new(fs::File::open(path)?);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        // An unfinished final line is not a committed row (as in SpendReader).
+        if rows.read_until(b'\n', &mut line)? == 0 || !line.ends_with(b"\n") {
+            break;
+        }
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let row: Value =
+            serde_json::from_slice(&line).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+        let count = |name: &str| row[name].as_u64().unwrap_or(0);
+        if row["remote"] == true && row.get("subscription_requests").is_some() {
+            sums.subscription_requests = sums
+                .subscription_requests
+                .saturating_add(count("subscription_requests"));
+            sums.subscription_tokens = sums
+                .subscription_tokens
+                .saturating_add(count("subscription_tokens"));
+        } else if row["remote"] == true {
+            sums.metered_requests += 1;
+            sums.metered_prompt = sums.metered_prompt.saturating_add(count("prompt_tokens"));
+            sums.metered_completion = sums.metered_completion.saturating_add(count("completion_tokens"));
+            sums.metered_cached = sums.metered_cached.saturating_add(count("cached_tokens"));
+        } else if row["remote"] == false {
+            sums.local_requests += 1;
+            sums.local_prompt = sums.local_prompt.saturating_add(count("prompt_tokens"));
+            sums.local_completion = sums.local_completion.saturating_add(count("completion_tokens"));
+        }
+    }
+    Ok(Some(sums))
 }
 
 fn finite_usd(amount: &BigDecimal) -> io::Result<f64> {

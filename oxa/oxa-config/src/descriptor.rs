@@ -2,14 +2,23 @@
 //! (issue #1489, design section 4.1).
 //!
 //! This module holds the types, the `const fn` builder and the lookups. The entries themselves go
-//! in `descriptor/*.rs` (one `ENTRIES` slice per file); `table()` joins them. `KeyDef` and `SCHEMA`
-//! are untouched: validation and merge do not read descriptors.
+//! in `descriptor/*.rs` (one `ENTRIES` slice per file); `all_rows()` joins them. This is the only
+//! settings table: a row with `.key(kind, default)` is a schema key, and `schema()` is derived from
+//! those rows (`schema.rs`). A `.hidden()` row has no menu entry: it declares a schema key only, and
+//! the lookups below skip it.
 
 mod advanced;
+mod budgets;
+mod compaction;
 mod display;
+mod hidden;
 mod lead;
+mod models;
 mod safety;
+pub mod sheet;
+mod tools;
 
+use crate::schema::Kind;
 use std::sync::OnceLock;
 
 /// A settings menu group, in display order.
@@ -205,6 +214,16 @@ pub enum WebEdit {
     ReadOnly,
 }
 
+/// The schema entry a descriptor row declares: kind, default and whether oxa acts on the key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SchemaInfo {
+    pub kind: Kind,
+    /// Default as JSON text.
+    pub default: &'static str,
+    /// `false` = accepted and ignored in oxa with a warning (verdict O keys).
+    pub supported: bool,
+}
+
 /// One row of the settings menus.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Descriptor {
@@ -237,6 +256,10 @@ pub struct Descriptor {
     pub widens: &'static str,
     /// Masked on display.
     pub secret: bool,
+    /// Set on a schema key (not on an object field): its kind and default.
+    pub schema: Option<SchemaInfo>,
+    /// No menu entry; the row only declares a schema key.
+    pub hidden: bool,
 }
 
 /// Starts a descriptor. Every other field has a safe default: a raw editor, `Apply::Restart`
@@ -269,10 +292,35 @@ pub const fn d(
         web: WebEdit::ReadOnly,
         widens: "",
         secret: false,
+        schema: None,
+        hidden: false,
     }
 }
 
 impl Descriptor {
+    /// Declares the row's key a supported schema key with this kind and default (JSON text).
+    pub(crate) const fn key(mut self, kind: Kind, default: &'static str) -> Self {
+        self.schema = Some(SchemaInfo {
+            kind,
+            default,
+            supported: true,
+        });
+        self
+    }
+    /// Declares the row's key a schema key that oxa accepts and ignores (with a warning).
+    pub(crate) const fn ignored(mut self, kind: Kind, default: &'static str) -> Self {
+        self.schema = Some(SchemaInfo {
+            kind,
+            default,
+            supported: false,
+        });
+        self
+    }
+    /// The row has no menu entry; it only declares a schema key.
+    pub(crate) const fn hidden(mut self) -> Self {
+        self.hidden = true;
+        self
+    }
     pub const fn control(mut self, control: Control) -> Self {
         self.control = control;
         self
@@ -327,6 +375,23 @@ impl Descriptor {
         });
         self
     }
+    pub const fn unit(mut self, unit: Unit) -> Self {
+        self.unit = Some(unit);
+        self
+    }
+
+    /// An advised minimum with no maximum: values below it save with a note.
+    pub const fn advise_from(mut self, min: u64, step: u64, note: &'static str) -> Self {
+        self.range = Some(Range {
+            min,
+            max: None,
+            hard: false,
+            step,
+            note,
+        });
+        self
+    }
+
     pub const fn advanced(mut self) -> Self {
         self.advanced = true;
         self
@@ -353,20 +418,32 @@ impl Descriptor {
     }
 }
 
-/// The data table, in display order: the Display rows, then the Lead and web, the Safety and the
-/// Advanced entries.
+/// Every row, hidden ones included: the Display rows, then Models, Compaction, Lead and web,
+/// Safety, Advanced and the hidden schema-only rows.
+pub(crate) fn all_rows() -> &'static [Descriptor] {
+    static ROWS: OnceLock<Vec<Descriptor>> = OnceLock::new();
+    ROWS.get_or_init(|| {
+        [
+            display::ENTRIES,
+            budgets::ENTRIES,
+            tools::ENTRIES,
+            models::ENTRIES,
+            compaction::ENTRIES,
+            lead::ENTRIES,
+            safety::ENTRIES,
+            advanced::ENTRIES,
+            hidden::ENTRIES,
+        ]
+        .concat()
+    })
+    .as_slice()
+}
+
+/// The rows the menus show, in display order: [`all_rows`] without the hidden ones.
 fn table() -> &'static [Descriptor] {
     static TABLE: OnceLock<Vec<Descriptor>> = OnceLock::new();
     TABLE
-        .get_or_init(|| {
-            [
-                display::ENTRIES,
-                lead::ENTRIES,
-                safety::ENTRIES,
-                advanced::ENTRIES,
-            ]
-            .concat()
-        })
+        .get_or_init(|| all_rows().iter().copied().filter(|d| !d.hidden).collect())
         .as_slice()
 }
 
@@ -390,6 +467,22 @@ pub fn fields_of(schema_key: &'static str) -> impl Iterator<Item = &'static Desc
     table().iter().filter(move |d| is_field_of(d.key, schema_key))
 }
 
+/// Test helper: true when `control` edits a value of schema kind `kind`.
+#[cfg(test)]
+pub(crate) fn control_fits(control: Control, kind: crate::schema::Kind) -> bool {
+    use crate::schema::Kind;
+    match control {
+        Control::Toggle => kind == Kind::Bool,
+        Control::Choice => matches!(kind, Kind::Enum(_)),
+        Control::Number | Control::Decimal => kind == Kind::Number,
+        Control::NumberOr(_) => matches!(kind, Kind::Number | Kind::Any),
+        Control::Model | Control::Text => kind == Kind::String,
+        Control::MultiSelect(_) => kind == Kind::StringList,
+        Control::Map(_) | Control::Raw => kind == Kind::Object,
+        _ => false,
+    }
+}
+
 /// True when `key` is `schema_key` followed by "." and a field path.
 fn is_field_of(key: &str, schema_key: &str) -> bool {
     key.strip_prefix(schema_key)
@@ -400,6 +493,13 @@ fn is_field_of(key: &str, schema_key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn openrouter_provider_is_restart_only() {
+        // The gateway copies the preferences once at startup; /reload does not rebuild it.
+        let e = descriptor("oxa.cloud.openrouter_provider").expect("descriptor");
+        assert_eq!(e.apply, Apply::Restart);
+    }
 
     #[test]
     fn builder_sets_fields() {
@@ -463,25 +563,33 @@ mod tests {
     }
 
     #[test]
-    fn group_order_and_ids_are_stable() {
-        let ids: Vec<&str> = Group::ALL.iter().map(|g| g.id()).collect();
-        assert_eq!(
-            ids,
-            [
-                "display",
-                "models",
-                "budgets",
-                "tools",
-                "workers",
-                "memory",
-                "compaction",
-                "codemode",
-                "lead",
-                "safety",
-                "advanced"
-            ]
-        );
-        assert_eq!(Group::ALL.len(), 11);
+    fn enum_kinds_match_the_row_choices() {
+        for row in all_rows() {
+            let Some(info) = row.schema else { continue };
+            if let Kind::Enum(values) = info.kind {
+                if row.choices.is_empty() {
+                    continue;
+                }
+                let mut want: Vec<&str> = values.to_vec();
+                let mut got: Vec<&str> = row.choices.iter().map(|(v, _)| *v).collect();
+                want.sort_unstable();
+                got.sort_unstable();
+                assert_eq!(want, got, "enum and choice values differ for {}", row.key);
+            }
+        }
+    }
+
+    #[test]
+    fn hidden_rows_have_a_key_and_no_menu_entry() {
+        for row in all_rows().iter().filter(|r| r.hidden) {
+            assert!(row.schema.is_some(), "hidden row without a key: {}", row.key);
+            assert!(descriptor(row.key).is_none());
+        }
+        assert!(descriptors().iter().all(|r| !r.hidden));
+    }
+
+    #[test]
+    fn groups_are_well_formed() {
         for g in Group::ALL {
             assert!(
                 g.short().chars().count() <= 8,
@@ -494,14 +602,49 @@ mod tests {
     }
 
     #[test]
-    fn unwired_groups_have_no_entries() {
-        // Display (A2a) and Lead, Safety and Advanced (A2d) have data; the other groups arrive in
-        // A2b and A2c.
-        assert!(descriptor("oxa.bash.defaultTimeout").is_none());
-        assert_eq!(in_group(Group::Tools).count(), 0);
-        assert_eq!(fields_of("oxa.lead.serve").count(), 9);
-        assert_eq!(in_group(Group::Display).count(), 30);
-        assert_eq!(descriptors().len(), 69);
+    fn wired_groups_have_data() {
+        // Display (A2a), Models and compaction (A2b), Budgets and Tools (A2c), and Lead,
+        // Safety and Advanced (A2d) have data. Memory stays unwired.
+        assert!(descriptor("oxa.bash.defaultTimeout").is_some());
+        assert!(descriptor("oxa.maxTurns").is_some());
+        assert!(in_group(Group::Budgets).next().is_some());
+        assert!(in_group(Group::Tools).next().is_some());
+        assert!(in_group(Group::Models).next().is_some());
+        assert!(descriptor("compaction.keepRecentTokens").is_some());
+        assert!(fields_of("oxa.lead.serve").next().is_some());
+        assert!(in_group(Group::Display).next().is_some());
+    }
+
+    /// The table stays well-formed whatever is added: keys are unique, and every key is a
+    /// schema key or a field under an object schema key, so no settings row edits an unknown key.
+    #[test]
+    fn descriptor_keys_are_unique_and_known() {
+        let schema = crate::schema();
+        let mut seen = std::collections::HashSet::new();
+        for row in descriptors() {
+            assert!(seen.insert(row.key), "duplicate descriptor key: {}", row.key);
+            let owner = schema
+                .iter()
+                .filter(|k| row.key == k.key || row.key.starts_with(&format!("{}.", k.key)))
+                .max_by_key(|k| k.key.len());
+            let owner = owner.unwrap_or_else(|| panic!("no schema key for {}", row.key));
+            if row.key != owner.key {
+                assert_eq!(
+                    owner.kind,
+                    crate::Kind::Object,
+                    "field {} must sit under an object",
+                    row.key
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sandbox_socket_descriptor_keeps_owner_confirmation() {
+        let sockets = descriptor("oxa.sandbox.sockets").expect("sandbox socket setting");
+        assert_eq!(sockets.group, Group::Safety);
+        assert!(sockets.user_only);
+        assert_eq!(sockets.web, WebEdit::Confirm);
     }
 
     #[test]

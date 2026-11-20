@@ -266,6 +266,7 @@ impl Engine for ScriptedEngine {
                 completion: 0,
                 cached: if self.omit_cached { 0 } else { cached as u32 },
                 cached_missing: self.omit_cached,
+                unreported: false,
             };
             rec.usage = Some(usage);
             g.seen.push(rec);
@@ -273,6 +274,7 @@ impl Engine for ScriptedEngine {
             g.cache.push((session, prompt_bytes.clone()));
             return Ok(AssistantTurn {
                 msg: WireMsg {
+                    images: Vec::new(),
                     role: oxa_proto::Role::Assistant,
                     content: None,
                     reasoning: None,
@@ -310,6 +312,10 @@ impl Engine for ScriptedEngine {
             Some(Fault::Http { status, body }) => {
                 g.seen.push(rec);
                 return Err(status_error(*status, body, None));
+            }
+            Some(Fault::RateLimited { retry_after }) => {
+                g.seen.push(rec);
+                return Err(status_error(429, "Synthetic provider limit", Some(*retry_after)));
             }
             Some(Fault::Busy { retry_after }) => {
                 g.seen.push(rec);
@@ -419,6 +425,7 @@ impl Engine for ScriptedEngine {
             completion,
             cached: if self.omit_cached { 0 } else { cached as u32 },
             cached_missing: self.omit_cached,
+            unreported: false,
         };
         rec.reply = Some(msg.clone());
         rec.usage = Some(usage);
@@ -465,5 +472,9 @@ fn status_error(status: u16, detail: &str, retry_after: Option<u32>) -> OxaError
             format!("the cloud gateway refused the request (budget_exceeded): {detail}"),
         );
     }
+    let msg = match retry_after {
+        Some(n) if status == 429 => format!("the engine answered HTTP 429 (retry after {n} s): {detail}"),
+        _ => msg,
+    };
     OxaError::new(codes::ENGINE_HTTP, msg)
 }

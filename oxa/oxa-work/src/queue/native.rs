@@ -60,6 +60,7 @@ pub(super) fn from_packet(binding: &board::NativeBinding, packet: &str, policy: 
             prompt: body.into(),
             max_time,
             reviewed_pull_request: None,
+            lane_ci: false,
         },
     )
 }
@@ -187,6 +188,7 @@ mod tests {
             lease: None,
             attempts_today: 0,
             eligible: true,
+            evidence_incomplete: None,
         };
         let lease = claims
             .claim_idle_for(
@@ -211,13 +213,20 @@ mod tests {
             prompt: "Synthetic task".into(),
             max_time: 30,
             reviewed_pull_request: None,
+            lane_ci: false,
         };
         let policy = RunPolicy {
             git_binary: "/usr/bin/git".into(),
             host_path: "/usr/bin".into(),
             terminate_binary: None,
             offline: true,
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
             runner_owns_github: false,
+            autonomy: Default::default(),
+            worker_github: Default::default(),
+            authority_now: None,
             storage: directory.path().join("runner"),
         };
         (directory, claims, binding, prepared, policy)

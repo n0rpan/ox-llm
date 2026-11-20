@@ -4,7 +4,7 @@ use oxa_config::{Dirs, Env, Settings};
 use oxa_proto::Level;
 use oxa_sandbox::{
     expand_home, is_home_itself, is_home_or_above, Layout, LayoutInputs, SETTING_ALLOW_HOME_WRITE,
-    SETTING_READ_PATHS, SETTING_WRITE_PATHS,
+    SETTING_READ_PATHS, SETTING_SOCKETS, SETTING_WRITE_PATHS,
 };
 use std::path::Path;
 
@@ -101,7 +101,23 @@ pub(crate) fn layout(
     }
     let read_extra = paths(SETTING_READ_PATHS);
     let exe = std::env::current_exe().ok();
-    let write_extra = paths(SETTING_WRITE_PATHS);
+    let mut write_extra = paths(SETTING_WRITE_PATHS);
+    // #1541: a worker derives its own per-repository build cache: exactly one more writable
+    // path and `CARGO_TARGET_DIR` for it. Failure never blocks; the worker builds without it.
+    let mut cache_target = None;
+    match crate::worker_cache::derive(&user, &dirs.home, env, cwd) {
+        crate::worker_cache::Derived::Path(p) => {
+            write_extra.push(p.clone());
+            cache_target = Some(p);
+        }
+        crate::worker_cache::Derived::Failed(why) => notices.push((
+            Level::Warning,
+            format!(
+                "worker build cache is off for this run ({why}); builds use the workspace target directory"
+            ),
+        )),
+        crate::worker_cache::Derived::None => {}
+    }
     let mut roots: Vec<&Path> = vec![cwd];
     roots.extend(resolved.as_deref());
     roots.extend(write_extra.iter().map(|p| p.as_path()));
@@ -204,8 +220,66 @@ pub(crate) fn layout(
             ),
         ));
     }
+    if let Some(target) = cache_target {
+        built.env.retain(|(n, _)| n != "CARGO_TARGET_DIR");
+        built
+            .env
+            .push(("CARGO_TARGET_DIR".to_string(), target.display().to_string()));
+        built.env.sort();
+    }
     built.mask_runtime_ipc = true;
+    built.sockets = listed_sockets(&paths(SETTING_SOCKETS), notices);
     built
+}
+
+/// RP6: the owner's listed sockets that exist and are Unix sockets, canonical and sorted. Each
+/// one is named in a start notice that states the risk; a path that is not a socket is
+/// reported and ignored. Runtime binds require network access and a validated descriptor.
+fn listed_sockets(
+    listed: &[std::path::PathBuf],
+    notices: &mut Vec<(Level, String)>,
+) -> Vec<std::path::PathBuf> {
+    use std::os::unix::fs::FileTypeExt;
+    let (ok, bad): (Vec<_>, Vec<_>) = listed.iter().partition(|p| {
+        p.is_absolute()
+            && p.canonicalize()
+                .and_then(std::fs::metadata)
+                .is_ok_and(|m| m.file_type().is_socket())
+    });
+    let mut socks: Vec<_> = ok.iter().filter_map(|p| p.canonicalize().ok()).collect();
+    socks.sort();
+    socks.dedup();
+    if !bad.is_empty() {
+        let list: Vec<_> = bad.iter().map(|p| p.display().to_string()).collect();
+        notices.push((
+            Level::Warning,
+            format!(
+                "{SETTING_SOCKETS} ignored (not an absolute path to an existing socket): {}",
+                list.join(", ")
+            ),
+        ));
+    }
+    if !socks.is_empty() {
+        notices.push((Level::Warning, socket_notice(&socks)));
+    }
+    socks
+}
+
+/// The start notice of exposed sockets: names each and says what the access means.
+pub(crate) fn socket_notice(socks: &[std::path::PathBuf]) -> String {
+    let list: Vec<_> = socks.iter().map(|p| p.display().to_string()).collect();
+    let runtime = list
+        .iter()
+        .any(|p| ["docker", "podman", "containerd"].iter().any(|n| p.contains(n)));
+    let risk = if runtime {
+        "a container runtime socket gives root on this machine"
+    } else {
+        "whatever the service behind a socket allows, bash can do"
+    };
+    format!(
+        "host sockets configured for network-enabled bash: {} ({SETTING_SOCKETS}); {risk}",
+        list.join(", ")
+    )
 }
 
 #[cfg(test)]
@@ -446,5 +520,142 @@ mod tests {
             notices.iter().any(|(_, t)| t.contains("contains the workspace")),
             "{notices:?}"
         );
+    }
+
+    fn socket_at(path: &std::path::Path) -> std::os::unix::net::UnixListener {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::os::unix::net::UnixListener::bind(path).expect("bind socket")
+    }
+
+    #[test]
+    fn listed_socket_is_in_the_layout_and_notice() {
+        let env = TestEnv::new();
+        let sock = env.root().join("rt/docker.sock");
+        let _l = socket_at(&sock);
+        env.write(
+            "home/.oxa/agent/settings.json",
+            &format!(r#"{{"oxa":{{"sandbox":{{"sockets":["{}"]}}}}}}"#, sock.display()),
+        );
+        let (e, dirs) = setup(&env);
+        let mut notices = Vec::new();
+        let l = layout(&e, &dirs, &env.work(), false, &mut notices);
+        assert_eq!(l.sockets, vec![sock.canonicalize().unwrap()]);
+        assert!(
+            notices
+                .iter()
+                .any(|(lv, t)| *lv == Level::Warning && t.contains("docker.sock")),
+            "{notices:?}"
+        );
+    }
+
+    #[test]
+    fn project_cannot_list_sockets() {
+        let env = TestEnv::new();
+        let sock = env.root().join("rt/docker.sock");
+        let _l = socket_at(&sock);
+        env.write(
+            "work/.oxa/settings.json",
+            &format!(r#"{{"oxa":{{"sandbox":{{"sockets":["{}"]}}}}}}"#, sock.display()),
+        );
+        let (e, dirs) = setup(&env);
+        let mut notices = Vec::new();
+        let l = layout(&e, &dirs, &env.work(), false, &mut notices);
+        assert!(l.sockets.is_empty());
+        assert!(!notices.iter().any(|(_, t)| t.contains("sockets")), "{notices:?}");
+    }
+
+    #[test]
+    fn a_listed_path_that_is_not_a_socket_is_ignored_with_a_warning() {
+        let env = TestEnv::new();
+        let file = env.write("rt/plain", "x");
+        env.write(
+            "home/.oxa/agent/settings.json",
+            &format!(r#"{{"oxa":{{"sandbox":{{"sockets":["{}"]}}}}}}"#, file.display()),
+        );
+        let (e, dirs) = setup(&env);
+        let mut notices = Vec::new();
+        let l = layout(&e, &dirs, &env.work(), false, &mut notices);
+        assert!(l.sockets.is_empty());
+        assert!(notices
+            .iter()
+            .any(|(lv, t)| *lv == Level::Warning && t.contains("ignored")));
+    }
+
+    #[test]
+    fn socket_notice_names_the_risk() {
+        let n = socket_notice(&[std::path::PathBuf::from("/run/docker.sock")]);
+        assert!(
+            n.contains("/run/docker.sock") && n.contains("root on this machine"),
+            "{n}"
+        );
+        let n = socket_notice(&[std::path::PathBuf::from("/run/app/x.sock")]);
+        assert!(n.contains("/run/app/x.sock") && n.contains("bash can do"), "{n}");
+    }
+
+    fn worker_env(env: &TestEnv, extra: &[(&str, &str)]) -> (Env, Dirs) {
+        let mut owned = env.envs("http://127.0.0.1:9");
+        owned.push(("OXA_UNATTENDED".to_string(), "1".to_string()));
+        owned.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        let pairs: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let e = Env::from_pairs(&pairs);
+        let dirs = dirs_from_env(&e, None).expect("dirs");
+        (e, dirs)
+    }
+
+    fn target_of(l: &Layout) -> Option<String> {
+        l.env
+            .iter()
+            .find(|(k, _)| k == "CARGO_TARGET_DIR")
+            .map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn a_worker_gets_exactly_the_derived_cache_path_writable_and_as_cargo_target() {
+        let env = TestEnv::new();
+        std::fs::create_dir_all(env.work().join(".git")).unwrap();
+        let (e, dirs) = worker_env(&env, &[]);
+        let plain = layout(&setup(&env).0, &dirs, &env.work(), false, &mut Vec::new());
+        let mut notices = Vec::new();
+        let l = layout(&e, &dirs, &env.work(), false, &mut notices);
+        let target = std::path::PathBuf::from(target_of(&l).expect("cargo target"));
+        assert!(target.is_dir() && target.ends_with("cargo-target"), "{target:?}");
+        assert!(
+            l.write.iter().any(|w| target.starts_with(w) || w == &target),
+            "{:?}",
+            l.write
+        );
+        assert_eq!(l.write.len(), plain.write.len() + 1, "{:?}", l.write);
+        assert!(
+            !l.write.iter().any(|w| w == target.parent().unwrap()),
+            "no parent grant"
+        );
+        // A non-worker session gets nothing.
+        assert!(target_of(&plain).is_none());
+    }
+
+    #[test]
+    fn a_project_file_cannot_move_or_turn_off_the_cache_and_an_owner_target_wins() {
+        let env = TestEnv::new();
+        std::fs::create_dir_all(env.work().join(".git")).unwrap();
+        env.write(
+            "work/.oxa/settings.json",
+            r#"{"oxa":{"workers":{"sharedCache":false,"cacheDir":"/tmp/elsewhere"}}}"#,
+        );
+        let (e, dirs) = worker_env(&env, &[]);
+        let l = layout(&e, &dirs, &env.work(), false, &mut Vec::new());
+        let target = target_of(&l).expect("project file cannot turn it off");
+        assert!(!target.starts_with("/tmp/elsewhere"), "{target}");
+        // The owner's own CARGO_TARGET_DIR wins and adds no write path.
+        let (e, dirs) = worker_env(&env, &[("CARGO_TARGET_DIR", "/srv/own-target")]);
+        let l = layout(&e, &dirs, &env.work(), false, &mut Vec::new());
+        assert_eq!(target_of(&l).as_deref(), Some("/srv/own-target"));
+        // The user setting turns it off.
+        env.write(
+            "home/.oxa/agent/settings.json",
+            r#"{"oxa":{"workers":{"sharedCache":false}}}"#,
+        );
+        let (e, dirs) = worker_env(&env, &[]);
+        let l = layout(&e, &dirs, &env.work(), false, &mut Vec::new());
+        assert!(target_of(&l).is_none());
     }
 }

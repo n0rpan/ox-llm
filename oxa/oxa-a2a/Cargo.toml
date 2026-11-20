@@ -7,17 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[features]
-default = []
-agent-host = ["dep:oxa-proto"]
-
 [dependencies]
-oxa-proto = { workspace = true, optional = true }
+oxa-http = { workspace = true, features = ["client"] }
+# The bounded writer comes from oxa-proto; this crate's modules use it unconditionally.
+oxa-proto.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
 [lints]
 workspace = true
-
-[dev-dependencies]
-oxa-a2a = { path = ".", features = ["agent-host"] }

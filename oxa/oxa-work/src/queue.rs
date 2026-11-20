@@ -1,8 +1,8 @@
 //! Directory queue: oldest regular JSON files first, with bounded independent workers.
 use super::{blocked_record, board, checked, state, LockedTask, Record, Result, RunPolicy, Task};
 use serde::{
-    de::{Error, IgnoredAny, SeqAccess, Visitor},
-    Deserialize, Deserializer, Serialize,
+    de::{IgnoredAny, SeqAccess, Visitor},
+    Deserializer, Serialize,
 };
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::{
@@ -24,6 +24,10 @@ pub struct QueueOptions {
     pub max: usize,
     pub min_free_bytes: u64,
     pub once: bool,
+    /// How many tasks one input file may contribute. Lowering it below the
+    /// default bounds a file further; raising it above the default widens an
+    /// existing input guard and is not offered.
+    pub max_input_tasks: usize,
 }
 impl Default for QueueOptions {
     fn default() -> Self {
@@ -31,6 +35,7 @@ impl Default for QueueOptions {
             max: 1,
             min_free_bytes: 512 * 1024 * 1024,
             once: false,
+            max_input_tasks: DEFAULT_MAX_INPUT_TASKS,
         }
     }
 }
@@ -62,6 +67,8 @@ pub enum QueueEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         native_task_id: Option<String>,
     },
+    /// Informational only: it never counts as a failed input or a failed task.
+    Notice { file: PathBuf, detail: String },
 }
 #[derive(Clone)]
 struct Job {
@@ -207,50 +214,95 @@ fn free_space(repo: &Path, common: &Path, queue: &Path, df: &Path, policy: &RunP
         .min(available(tree_volume, df, policy)?))
 }
 const MAX_INPUT_BYTES: u64 = 1024 * 1024;
-const MAX_INPUT_TASKS: usize = 128;
+/// Advisory per-file task-count default. An input may raise or lower its own
+/// per-file count through the queue options, up to the retained-identity bound;
+/// the byte, directory and identity safeguards do not move with it.
+pub const DEFAULT_MAX_INPUT_TASKS: usize = 256;
+/// Bound on the selections one native batch may carry.
+const MAX_NATIVE_BATCH: usize = 128;
 const MAX_QUEUE_FILES: usize = 256;
 /// Every directory entry counts, including hidden, non-JSON and non-regular ones,
 /// so ignored entries cannot make each watch iteration unbounded.
 const MAX_QUEUE_ENTRIES: usize = 4096;
 const MAX_QUEUE_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_RETAINED_TASKS: usize = 4096;
+/// Upper bound for a per-file task-count option: the same retained-identity
+/// bound that also caps the whole queue.
+pub const MAX_RETAINED_TASKS: usize = 4096;
 
 fn task_bytes(task: &Task) -> u64 {
     (task.id.len() + task.branch.len() + task.base.len() + task.model.len() + task.prompt.len()) as u64
 }
 
-struct QueueTasks(Vec<Task>);
-impl<'de> Deserialize<'de> for QueueTasks {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        struct TasksVisitor;
-        impl<'de> Visitor<'de> for TasksVisitor {
-            type Value = QueueTasks;
+/// An input file's tasks. Only the first `max_input_tasks` records are kept;
+/// the rest are read and dropped, so one over-counting record cannot discard
+/// the valid prefix. `truncated` tells the scan to notify the operator once per
+/// file revision.
+struct QueueTasks {
+    tasks: Vec<Task>,
+    truncated: bool,
+}
+/// Parse an input file's array, keeping its first `max_input_tasks` records for
+/// the normal validation and admission that still runs for every kept task.
+fn parse_queue_tasks(bytes: &[u8], max_input_tasks: usize) -> Result<(Vec<Task>, bool)> {
+    use serde::de::DeserializeSeed;
+    struct Tasks(usize);
+    impl<'de> DeserializeSeed<'de> for Tasks {
+        type Value = QueueTasks;
 
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "an array of at most {MAX_INPUT_TASKS} tasks")
-            }
+        fn deserialize<D: Deserializer<'de>>(
+            self,
+            deserializer: D,
+        ) -> std::result::Result<QueueTasks, D::Error> {
+            struct TasksVisitor(usize);
+            impl<'de> Visitor<'de> for TasksVisitor {
+                type Value = QueueTasks;
 
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<QueueTasks, A::Error> {
-                let mut tasks = Vec::new();
-                while tasks.len() < MAX_INPUT_TASKS {
-                    let Some(task) = seq.next_element()? else {
-                        return Ok(QueueTasks(tasks));
-                    };
-                    tasks.push(task);
+                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    write!(f, "an array of tasks")
                 }
-                if seq.next_element::<IgnoredAny>()?.is_some() {
-                    return Err(A::Error::custom(format!(
-                        "task file exceeds {MAX_INPUT_TASKS} tasks"
-                    )));
+
+                fn visit_seq<A: SeqAccess<'de>>(
+                    self,
+                    mut seq: A,
+                ) -> std::result::Result<QueueTasks, A::Error> {
+                    let mut tasks = Vec::new();
+                    while tasks.len() < self.0 {
+                        let Some(task) = seq.next_element()? else {
+                            return Ok(QueueTasks {
+                                tasks,
+                                truncated: false,
+                            });
+                        };
+                        tasks.push(task);
+                    }
+                    let truncated = seq.next_element::<IgnoredAny>()?.is_some();
+                    while seq.next_element::<IgnoredAny>()?.is_some() {}
+                    Ok(QueueTasks { tasks, truncated })
                 }
-                Ok(QueueTasks(tasks))
             }
+            deserializer.deserialize_seq(TasksVisitor(self.0))
         }
-        deserializer.deserialize_seq(TasksVisitor)
     }
+
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let parsed = Tasks(max_input_tasks)
+        .deserialize(&mut deserializer)
+        .and_then(|parsed| {
+            deserializer.end()?;
+            Ok(parsed)
+        })
+        .map_err(|e| format!("task file: {e}"))?;
+    let tasks = super::validate_tasks(parsed.tasks)?;
+    Ok((tasks, parsed.truncated))
 }
 
-fn read_input(path: &Path) -> Result<Option<Vec<Task>>> {
+fn over_count_notice(max_input_tasks: usize) -> String {
+    format!(
+        "task file has more than {max_input_tasks} tasks; only the first {max_input_tasks} records were kept for normal validation and admission"
+    )
+}
+
+fn read_input(path: &Path, max_input_tasks: usize) -> Result<Option<(Vec<Task>, bool)>> {
     // A queued file may be replaced after the directory scan. Open the final
     // component without following links or blocking on a substituted FIFO.
     let file = match fs::OpenOptions::new()
@@ -277,8 +329,7 @@ fn read_input(path: &Path) -> Result<Option<Vec<Task>>> {
     if bytes.len() as u64 > MAX_INPUT_BYTES {
         return Err(too_large());
     }
-    let QueueTasks(tasks) = serde_json::from_slice(&bytes).map_err(|e| format!("task file: {e}"))?;
-    super::validate_tasks(tasks).map(Some)
+    parse_queue_tasks(&bytes, max_input_tasks).map(Some)
 }
 
 fn input_file(entry: fs::DirEntry) -> Result<Option<(PathBuf, SystemTime, u64)>> {
@@ -310,11 +361,14 @@ struct Inputs {
     files: HashMap<PathBuf, (SystemTime, u64)>,
     tasks: HashMap<String, (PathBuf, Task)>,
     errors: HashMap<PathBuf, Vec<String>>,
+    /// Input revision an over-count notice was already emitted for.
+    notices: HashMap<PathBuf, (SystemTime, u64)>,
     branches: HashSet<String>,
     task_bytes: u64,
 }
 fn scan(
     directory: &Path,
+    max_input_tasks: usize,
     pending: &mut Vec<Job>,
     inputs: &mut Inputs,
     emit: &mut dyn FnMut(QueueEvent) -> Result<()>,
@@ -362,12 +416,13 @@ fn scan(
     }
     inputs.files.retain(|p, _| paths.contains(p));
     inputs.errors.retain(|p, _| paths.contains(p));
+    inputs.notices.retain(|p, _| paths.contains(p));
     files.sort_by(|a, b| (&a.1, &a.0).cmp(&(&b.1, &b.0)));
     for (file, modified, len) in files {
         if inputs.files.get(&file) == Some(&(modified, len)) && !inputs.errors.contains_key(&file) {
             continue;
         }
-        let tasks = match read_input(&file) {
+        let tasks = match read_input(&file, max_input_tasks) {
             Ok(Some(tasks)) => Ok(tasks),
             Ok(None) => continue,
             Err(error) => Err(error),
@@ -375,7 +430,14 @@ fn scan(
         let previous = inputs.errors.remove(&file);
         let mut problems = vec![];
         match tasks {
-            Ok(tasks) => {
+            Ok((tasks, truncated)) => {
+                if truncated && inputs.notices.get(&file) != Some(&(modified, len)) {
+                    inputs.notices.insert(file.clone(), (modified, len));
+                    emit(QueueEvent::Notice {
+                        file: file.clone(),
+                        detail: over_count_notice(max_input_tasks),
+                    })?;
+                }
                 for (index, task) in tasks.into_iter().enumerate() {
                     if let Some((source, known)) = inputs.tasks.get_mut(&task.id) {
                         if *known == task && (*source == file || !paths.contains(source)) {
@@ -541,7 +603,7 @@ impl QueueRun<'_> {
         worker: Arc<NativeWorkerFn>,
         emit: &mut dyn FnMut(QueueEvent) -> Result<()>,
     ) -> Result<QueueStatus> {
-        if !self.options.once || targets.is_empty() || targets.len() > MAX_INPUT_TASKS {
+        if !self.options.once || targets.is_empty() || targets.len() > MAX_NATIVE_BATCH {
             return Err("native batch requires a bounded one-shot selection".into());
         }
         let mut selected = HashMap::new();
@@ -676,7 +738,13 @@ fn run_queue_inner(
     let (mut finished, mut failed, mut last) = (0, 0, None);
     loop {
         if read_directory {
-            scan(&directory, &mut pending, &mut inputs, emit)?;
+            scan(
+                &directory,
+                options.max_input_tasks,
+                &mut pending,
+                &mut inputs,
+                emit,
+            )?;
         }
         // Surviving workers from a dead controller still count toward the concurrency cap.
         let mut waiting = vec![];
@@ -908,6 +976,7 @@ mod tests {
                     lease: None,
                     attempts_today: 0,
                     eligible: true,
+                    evidence_incomplete: None,
                 };
                 let receipt = claims
                     .claim_item_for(&entry, &assignment, &worker, "host-a", (now, 600), |_| Ok(None))
@@ -933,7 +1002,13 @@ mod tests {
             host_path: "/usr/bin".into(),
             terminate_binary: None,
             offline: true,
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
             runner_owns_github: false,
+            autonomy: Default::default(),
+            worker_github: Default::default(),
+            authority_now: None,
             storage: directory.path().join("runner"),
         };
         assert!(Command::new(&policy.git_binary)
@@ -948,6 +1023,7 @@ mod tests {
             max: 2,
             min_free_bytes: 0,
             once: true,
+            ..QueueOptions::default()
         };
         let run = || QueueRun {
             repo: &repo,
@@ -1049,6 +1125,7 @@ mod tests {
                     assert!(rows[&binding.number].data.native_binding.as_ref() == Some(binding));
                     assert!(completed.insert(record.id));
                 }
+                QueueEvent::Notice { .. } => {}
                 error @ QueueEvent::Error { .. } => {
                     let event = serde_json::to_value(error).unwrap();
                     assert_eq!(event["detail"], "synthetic native worker failure");
@@ -1092,7 +1169,35 @@ mod tests {
         let mut oversized = valid.to_owned();
         oversized.push_str(&" ".repeat(1024 * 1024));
         fs::write(dir.join("bytes.json"), oversized).unwrap();
-        let many: Vec<_> = (0..129)
+        fs::write(dir.join("outside"), valid.replace("large", "symlink")).unwrap();
+        std::os::unix::fs::symlink(dir.join("outside"), dir.join("link.json")).unwrap();
+
+        let mut pending = vec![];
+        let mut inputs = Inputs::default();
+        let mut errors = vec![];
+        let result = scan(
+            &dir,
+            DEFAULT_MAX_INPUT_TASKS,
+            &mut pending,
+            &mut inputs,
+            &mut |event| {
+                if let QueueEvent::Error { file, .. } = event {
+                    errors.push(file);
+                }
+                Ok(())
+            },
+        );
+        fs::remove_dir_all(&dir).unwrap();
+        result.unwrap();
+        assert!(
+            pending.is_empty(),
+            "oversized and linked inputs must never be admitted"
+        );
+        assert!(errors.contains(&dir.join("bytes.json")));
+    }
+
+    fn synthetic_tasks(count: usize) -> Vec<serde_json::Value> {
+        (0..count)
             .map(|n| {
                 serde_json::json!({
                     "id": format!("task-{n}"),
@@ -1101,28 +1206,150 @@ mod tests {
                     "prompt": "Synthetic task"
                 })
             })
-            .collect();
-        fs::write(dir.join("count.json"), serde_json::to_vec(&many).unwrap()).unwrap();
-        fs::write(dir.join("outside"), valid.replace("large", "symlink")).unwrap();
-        std::os::unix::fs::symlink(dir.join("outside"), dir.join("link.json")).unwrap();
+            .collect()
+    }
 
+    #[test]
+    fn an_over_count_task_file_keeps_its_valid_prefix_and_notifies_the_operator() {
+        let dir = crate::test_dir::PrivateDir::new("queue-over-count");
+        fs::write(
+            dir.path().join("count.json"),
+            serde_json::to_vec(&synthetic_tasks(129)).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("neighbor.json"),
+            r#"[{"id":"neighbor","branch":"agent/neighbor","model":"fake","prompt":"Synthetic task"}]"#,
+        )
+        .unwrap();
         let mut pending = vec![];
         let mut inputs = Inputs::default();
-        let mut errors = vec![];
-        let result = scan(&dir, &mut pending, &mut inputs, &mut |event| {
-            if let QueueEvent::Error { file, .. } = event {
-                errors.push(file);
+        let mut notices = vec![];
+        let mut failures = vec![];
+        let mut emit = |event: QueueEvent| {
+            match event {
+                QueueEvent::Notice { file, detail } => notices.push((file, detail)),
+                QueueEvent::Error { file, .. } => failures.push(file),
+                _ => {}
             }
             Ok(())
-        });
-        fs::remove_dir_all(&dir).unwrap();
-        result.unwrap();
-        assert!(
-            pending.is_empty(),
-            "oversized and linked inputs must never be admitted"
+        };
+        // The reproduced fixture uses an explicit 128-task threshold.
+        scan(dir.path(), 128, &mut pending, &mut inputs, &mut emit).unwrap();
+        scan(dir.path(), 128, &mut pending, &mut inputs, &mut emit).unwrap();
+        // The complete valid prefix is admitted instead of being discarded
+        // with the over-counting record.
+        let admitted: HashSet<_> = pending.iter().map(|job| job.task.id.clone()).collect();
+        for n in 0..128 {
+            assert!(
+                admitted.contains(&format!("task-{n}")),
+                "valid prefix task {n} was discarded"
+            );
+        }
+        // A healthy neighbor is still processed.
+        assert!(admitted.contains("neighbor"), "{admitted:?}");
+        // The count notice is informational: it is not an input failure.
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(inputs.errors.is_empty());
+        // One notice per file revision, never one per scan.
+        assert_eq!(
+            notices,
+            vec![(
+                dir.path().join("count.json"),
+                "task file has more than 128 tasks; only the first 128 records were kept for normal validation and admission".to_owned()
+            )]
         );
-        assert!(errors.contains(&dir.join("bytes.json")));
-        assert!(errors.contains(&dir.join("count.json")));
+    }
+
+    #[test]
+    fn the_default_per_file_count_is_advisory_and_keeps_its_prefix() {
+        let dir = crate::test_dir::PrivateDir::new("queue-default-count");
+        fs::write(
+            dir.path().join("count.json"),
+            serde_json::to_vec(&synthetic_tasks(DEFAULT_MAX_INPUT_TASKS + 1)).unwrap(),
+        )
+        .unwrap();
+        let mut pending = vec![];
+        let mut inputs = Inputs::default();
+        let mut notices = vec![];
+        let mut failures = vec![];
+        let result = scan(
+            dir.path(),
+            DEFAULT_MAX_INPUT_TASKS,
+            &mut pending,
+            &mut inputs,
+            &mut |event: QueueEvent| {
+                match event {
+                    QueueEvent::Notice { detail, .. } => notices.push(detail),
+                    QueueEvent::Error { .. } => failures.push(()),
+                    _ => {}
+                }
+                Ok(())
+            },
+        );
+        result.unwrap();
+        assert_eq!(pending.len(), DEFAULT_MAX_INPUT_TASKS);
+        assert!(failures.is_empty());
+        assert_eq!(
+            notices,
+            vec![format!(
+                "task file has more than {DEFAULT_MAX_INPUT_TASKS} tasks; only the first {DEFAULT_MAX_INPUT_TASKS} records were kept for normal validation and admission"
+            )]
+        );
+    }
+
+    #[test]
+    fn a_low_per_file_count_threshold_is_honoured_and_noticed_once_per_revision() {
+        let dir = crate::test_dir::PrivateDir::new("queue-low-count");
+        // A separate valid file reserves "agent/shared" first, so the
+        // over-counting file's second kept record conflicts with a tracked
+        // branch. That refusal keeps an input problem, so every scan re-reads
+        // the file and the notice must still appear only once.
+        fs::write(
+            dir.path().join("a-first.json"),
+            r#"[{"id":"first","branch":"agent/shared","model":"fake","prompt":"Synthetic task"}]"#,
+        )
+        .unwrap();
+        let mut tasks = synthetic_tasks(3);
+        tasks[0]["branch"] = serde_json::json!("agent/low-0");
+        tasks[1]["branch"] = serde_json::json!("agent/shared");
+        tasks[2]["branch"] = serde_json::json!("agent/low-2");
+        fs::write(dir.path().join("count.json"), serde_json::to_vec(&tasks).unwrap()).unwrap();
+        let mut pending = vec![];
+        let mut inputs = Inputs::default();
+        let mut notices = vec![];
+        let mut failures = vec![];
+        let mut emit = |event: QueueEvent| {
+            match event {
+                QueueEvent::Notice { file, detail } => notices.push((file, detail)),
+                QueueEvent::Error { file, detail, .. } => failures.push((file, detail)),
+                _ => {}
+            }
+            Ok(())
+        };
+        scan(dir.path(), 2, &mut pending, &mut inputs, &mut emit).unwrap();
+        scan(dir.path(), 2, &mut pending, &mut inputs, &mut emit).unwrap();
+        // The record that clears validation and admission is admitted; the
+        // conflicting one is refused by the existing branch guard.
+        let admitted: HashSet<_> = pending.iter().map(|job| job.task.id.as_str()).collect();
+        assert_eq!(admitted, HashSet::from(["first", "task-0"]));
+        // The count notice is a notice, not an input failure; the branch
+        // conflict stays the one reported problem for that file.
+        assert_eq!(
+            failures,
+            vec![(
+                dir.path().join("count.json"),
+                "branch agent/shared was already queued; use a distinct branch".to_owned()
+            )]
+        );
+        // Emitted once for one file revision, not once per rescan.
+        assert_eq!(
+            notices,
+            vec![(
+                dir.path().join("count.json"),
+                "task file has more than 2 tasks; only the first 2 records were kept for normal validation and admission".to_owned()
+            )]
+        );
     }
 
     #[test]
@@ -1137,7 +1364,13 @@ mod tests {
         }
         let mut pending = vec![];
         let mut inputs = Inputs::default();
-        let result = scan(dir.path(), &mut pending, &mut inputs, &mut |_| Ok(()));
+        let result = scan(
+            dir.path(),
+            DEFAULT_MAX_INPUT_TASKS,
+            &mut pending,
+            &mut inputs,
+            &mut |_| Ok(()),
+        );
         assert!(result.unwrap_err().contains("256 task files"));
         assert!(pending.is_empty());
         assert!(inputs.tasks.is_empty());
@@ -1165,7 +1398,13 @@ mod tests {
         .unwrap();
         let mut pending = vec![];
         let mut inputs = Inputs::default();
-        let result = scan(dir.path(), &mut pending, &mut inputs, &mut |_| Ok(()));
+        let result = scan(
+            dir.path(),
+            DEFAULT_MAX_INPUT_TASKS,
+            &mut pending,
+            &mut inputs,
+            &mut |_| Ok(()),
+        );
         assert!(result.unwrap_err().contains("4096 entries"));
         assert!(pending.is_empty());
         assert!(inputs.tasks.is_empty());
@@ -1183,7 +1422,13 @@ mod tests {
         }
         let mut pending = vec![];
         let mut inputs = Inputs::default();
-        let result = scan(dir.path(), &mut pending, &mut inputs, &mut |_| Ok(()));
+        let result = scan(
+            dir.path(),
+            DEFAULT_MAX_INPUT_TASKS,
+            &mut pending,
+            &mut inputs,
+            &mut |_| Ok(()),
+        );
         assert!(result.unwrap_err().contains("16 MiB"));
         assert!(pending.is_empty());
         assert!(inputs.tasks.is_empty());
@@ -1208,10 +1453,24 @@ mod tests {
         .unwrap();
         let mut pending = vec![];
         let mut inputs = Inputs::default();
-        scan(&dir, &mut pending, &mut inputs, &mut |_| Ok(())).unwrap();
+        scan(
+            &dir,
+            DEFAULT_MAX_INPUT_TASKS,
+            &mut pending,
+            &mut inputs,
+            &mut |_| Ok(()),
+        )
+        .unwrap();
         assert_eq!(pending.len(), 1);
         fs::rename(&path, dir.join("archived")).unwrap();
-        scan(&dir, &mut pending, &mut inputs, &mut |_| Ok(())).unwrap();
+        scan(
+            &dir,
+            DEFAULT_MAX_INPUT_TASKS,
+            &mut pending,
+            &mut inputs,
+            &mut |_| Ok(()),
+        )
+        .unwrap();
         assert!(pending.is_empty(), "archived input must not be dispatched");
         assert!(!inputs.tasks.contains_key("queued"));
         fs::write(
@@ -1219,7 +1478,14 @@ mod tests {
             r#"[{"id":"replacement","branch":"agent/queued","model":"fake","prompt":"Synthetic replacement"}]"#,
         )
         .unwrap();
-        scan(&dir, &mut pending, &mut inputs, &mut |_| Ok(())).unwrap();
+        scan(
+            &dir,
+            DEFAULT_MAX_INPUT_TASKS,
+            &mut pending,
+            &mut inputs,
+            &mut |_| Ok(()),
+        )
+        .unwrap();
         fs::remove_dir_all(&dir).unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].task.id, "replacement");

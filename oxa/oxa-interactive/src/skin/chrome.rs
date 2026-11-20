@@ -196,6 +196,8 @@ struct HudParts {
     spinner: &'static str,
     /// O-182: YOLO is on, with the count of auto-approved questions.
     yolo: Option<u64>,
+    /// #1512 S3: the guard after the mode (`sandbox`, or `no sandbox · …`); `None` in plan mode.
+    guard: Option<&'static str>,
     /// D4b: where the model runs: `local`, or `cloud · <provider>`.
     remote: Option<&'static str>,
     is_remote: bool,
@@ -246,10 +248,23 @@ impl HudParts {
             // frame changes a handful of cells and nothing else on the screen.
             spinner: g.dot,
             yolo: st.yolo.then_some(st.yolo_approved),
+            guard: st.guard_label(),
             remote: st.model_provider,
             is_remote: st.model_remote,
             budget: st.budget,
         }
+    }
+}
+
+/// The colour of a guard label: the yolo one is an error, the sandbox a success, and the
+/// "no sandbox" ones a warning.
+fn guard_token(label: &str) -> &'static str {
+    if label.contains("no prompts") {
+        "error"
+    } else if label.starts_with("no sandbox") {
+        "warning"
+    } else {
+        "success"
     }
 }
 
@@ -361,6 +376,14 @@ fn hud_build(p: &HudParts, drops: usize, model: &str, g: &Glyphs, theme: &Theme)
     // 8: permission mode (#202: never dropped).
     if let Some((label, token)) = p.mode {
         segs.push(theme.fg(token, label));
+    }
+
+    // 8b (#1512 S3): the guard, right after the mode. Dropped before the location (drop 11),
+    // never replaced by a sandbox claim: the label says what bash runs under.
+    if let Some(text) = p.guard {
+        if shown(11) {
+            segs.push(theme.fg(guard_token(text), &text.replace('·', g.mid)));
+        }
     }
 
     // 9: where the model runs (D4b); goes with the mode.
@@ -651,7 +674,7 @@ pub(super) fn activity_line_lead(
     let (word, token) = activity_style(&st.activity)?;
     let g = glyphs(skin);
     let mut tail: Vec<String> = Vec::new();
-    if let Some(detail) = activity_detail(&st.activity, st.working_message.as_deref(), g) {
+    if let Some(detail) = activity_detail(&st.activity, st.working_message.as_deref(), st.activity_ms, g) {
         tail.push(theme.fg("text", &detail));
     }
     if let Some(elapsed) = elapsed_text(st.activity_ms) {
@@ -693,8 +716,14 @@ pub(super) fn activity_style(activity: &Activity) -> Option<(&'static str, &'sta
 }
 
 /// The detail text of an activity; `working` (an extension's text) replaces it for the
-/// thinking, streaming and tool states.
-fn activity_detail(activity: &Activity, working: Option<&str>, g: &Glyphs) -> Option<String> {
+/// thinking, streaming and tool states. `elapsed_ms` is the time in this state, which turns a
+/// retry wait into a live countdown (#2050).
+fn activity_detail(
+    activity: &Activity,
+    working: Option<&str>,
+    elapsed_ms: u64,
+    g: &Glyphs,
+) -> Option<String> {
     let working = clean_opt(working);
     match activity {
         Activity::Idle | Activity::Compacting => None,
@@ -714,7 +743,7 @@ fn activity_detail(activity: &Activity, working: Option<&str>, g: &Glyphs) -> Op
             delay_ms,
         } => Some(format!(
             "{attempt}/{max_attempts} in {}s",
-            delay_ms.div_ceil(1000)
+            delay_ms.saturating_sub(elapsed_ms).div_ceil(1000)
         )),
         Activity::Blocked => Some("for your answer".to_string()),
         Activity::Queued { pos: Some(pos), .. } => Some(format!("#{pos}")),
@@ -987,5 +1016,40 @@ fn pad_right(text: &str, width: usize) -> String {
         text.to_string()
     } else {
         format!("{text}{}", " ".repeat(width - w))
+    }
+}
+
+#[cfg(test)]
+mod guard_hud_tests {
+    use super::*;
+
+    #[test]
+    fn hud_drops_guard_before_mode_when_narrow() {
+        let theme = oxa_tui::Theme::plain();
+        let st = StatusModel {
+            model: "claude".to_string(),
+            mode: Some(oxa_proto::Mode::Workspace),
+            autonomy: oxa_proto::Autonomy::Standard,
+            os_sandbox: false,
+            ..StatusModel::default()
+        };
+        let wide = oxa_hud(&st, 200, &theme, Skin::Oxa);
+        assert!(wide.contains("no sandbox · dangerous commands ask"), "{wide}");
+        let mut guard_dropped = false;
+        for w in (50u16..200).rev() {
+            let line = oxa_hud(&st, w, &theme, Skin::Oxa);
+            assert!(oxa_tui::visible_width(&line) <= usize::from(w), "{line}");
+            // The mode is never dropped (#202); the guard goes first and is never replaced by a
+            // sandbox claim.
+            assert!(line.contains("standard"), "mode kept at {w}: {line}");
+            assert!(
+                !line.contains("sandbox ·") || line.contains("no sandbox"),
+                "{line}"
+            );
+            if !line.contains("no sandbox") {
+                guard_dropped = true;
+            }
+        }
+        assert!(guard_dropped, "the guard drops at some narrow width");
     }
 }

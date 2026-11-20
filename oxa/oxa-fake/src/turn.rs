@@ -6,6 +6,8 @@ use oxa_proto::{Finish, ToolCall, TurnKind, Usage, WireMsg};
 pub enum Fault {
     /// Answer with this HTTP status and body instead of a stream.
     Http { status: u16, body: String },
+    /// Answer HTTP 429 with a `Retry-After` header in seconds.
+    RateLimited { retry_after: u32 },
     /// Answer 400 `exceed_context_size_error` (M2).
     Overflow,
     /// Close the connection after this many bytes of SSE body (mid-stream drop). In the
@@ -106,6 +108,7 @@ impl ScriptTurn {
     /// The assistant message this turn produces (W2: exactly these strings).
     pub fn message(&self) -> WireMsg {
         WireMsg {
+            images: Vec::new(),
             role: oxa_proto::Role::Assistant,
             content: self.text.clone(),
             reasoning: self.reasoning.clone(),

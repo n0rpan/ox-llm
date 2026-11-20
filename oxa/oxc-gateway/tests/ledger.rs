@@ -86,6 +86,8 @@ fn chat_completions_records_actual_and_estimated_debits() {
     fields.as_object_mut().unwrap().remove("cost_usd");
     fields["remote_provider"] = json!("synthetic-configured-provider");
     assert!(entry().append(&fields, 200, None, None).is_err());
+    fields["configured_provider"] = json!(true);
+    assert!(entry().append(&fields, 200, None, None).is_err());
 
     let reopened = Ledger::open(&home.0).unwrap().day("20260102").unwrap();
     assert_eq!(reopened.budget().spend().unwrap(), 0.875);

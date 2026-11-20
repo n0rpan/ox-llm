@@ -25,7 +25,9 @@ pub(super) fn render(html: &mut String, view: &View<'_>, prompt: Prompt, now: u6
         let _ = write!(html, "<p>Snapshot observations unavailable for this prompt. This question needs a {needed} observation; none reached this page.</p>");
     }
     html.push_str("<p class=muted>From the snapshot · 0 tokens</p></article></div></section>");
-    if let Some(owner) = &view.owner_chat {
+    if let Some(attached) = &view.attached {
+        super::session::render(html, attached);
+    } else if let Some(owner) = &view.owner_chat {
         let csrf = super::escape(owner.csrf);
         let _ = write!(
             html,

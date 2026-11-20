@@ -1,11 +1,13 @@
 # Native v0.2.1 install and upgrade
 
 v0.2.1 is the Rust-only release target tracked by [#763](https://github.com/oxstack/ox-llm/issues/763).
-Its model runtime is `oxa` plus `oxe-server`, with the approved native
-`local-ai-memlat-boot` utility and inert MEMLAT templates: no Python runtime, controller
-daemon, `oxc` command wrapper or service on port 8092. Release qualification and
-publication are separate owner steps; this guide does not declare an unpublished
-candidate ready. v0.2.0 remains the legacy install.
+The combined Linux archive and both Arch variants install `oxa`, `oxe`,
+`oxe-server` and `local-ai-memlat-boot`, plus licence files and four inert MEMLAT
+templates. Standalone `oxe` stays in the release so the engine tools are available
+for other clients and LAN sharing without running the `oxa` agent. There is no
+Python runtime, controller daemon, `oxc` command wrapper or service on port 8092.
+Release qualification and publication are separate owner steps; this guide does
+not declare an unpublished candidate ready. v0.2.0 remains the legacy install.
 Python may still be a source-package build/test tool; it is not an installed
 runtime dependency.
 
@@ -25,10 +27,10 @@ Do not use v0.2.0's source/bootstrap installer or a development parser binary as
 the native v0.2.1 installer.
 
 For an Arch package, use the verified v0.2.1 package with `sudo pacman -U`.
-The combined tarball has the same `usr/` layout as the packages, including
-`usr/bin/oxa` and `usr/bin/oxe-server`. First inspect its file list and extract
-into a fresh, versioned user-owned directory. Run the native binaries directly
-from that directory for the first check; do not overlay the legacy installation
+The combined tarball has the same `usr/` layout as the packages. First inspect
+its file list and extract into a fresh, versioned user-owned directory. Run the
+native binaries directly from that directory for the first check; do not overlay
+the legacy installation
 or copy the release's configuration over existing user settings. Keep the
 matching `oxa` and `oxe-server` together. A local load rejects an engine whose
 build version does not match the agent.
@@ -125,8 +127,9 @@ To return to v0.2.0, stop the native runtime and select the retained legacy
 installation explicitly. Do not run both to repair a shared token, restore a
 stale token backup over a refreshed record or delete user data to switch versions.
 
-LAN sharing, panel, Studio/images, the lead layer and a controller/HTTP daemon are
-outside v0.2.1. See [release qualification and upgrade boundary](https://github.com/oxstack/ox-llm/blob/main/docs/RELEASE.md#v021-rust-only-upgrade-boundary).
+Status as of v0.2.1: LAN sharing is not in the release binaries; the omarchy panel
+source is in the repository but is not packaged; Studio/images, the lead layer and a
+controller/HTTP daemon are outside v0.2.1. See [release qualification and upgrade boundary](https://github.com/oxstack/ox-llm/blob/main/docs/RELEASE.md#v021-rust-only-upgrade-boundary).
 
 The approved native `local-ai-memlat-boot` utility is retained. The four MEMLAT
 hook/script templates are `05-local-ai-memlat-fallback.hook`,

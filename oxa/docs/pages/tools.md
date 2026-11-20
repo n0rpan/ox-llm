@@ -9,7 +9,7 @@ See [tools and context handling](tools-context.md) for the defaults and formats.
 | Tool | Access | What it does |
 |---|---|---|
 | `read` | read | reads a file. Parameters `path`, `offset` (first line, 1-based), `limit` (lines). A call returns at most 2000 lines or 16 KB; continue with `offset` for the rest. A call with neither `offset` nor `limit` returns a shorter first page; see [tools-context.md](tools-context.md) |
-| `bash` | exec | runs a shell command in the project in the sandbox. Parameters `command`, `timeout` (seconds). With no `timeout` it stops after 120 seconds; `oxa.bash.defaultTimeout` sets it. Output over 16 KB is cut to its first and last parts, and the full output is saved to a file the model can read |
+| `bash` | exec | runs a shell command in the project in the sandbox. Parameters `command`, `timeout` (seconds). With no `timeout` it waits 120 seconds, then moves to a background job instead of being killed; `oxa.bash.defaultTimeout` sets it, `oxa.bash.waitCap` (default 300 s) caps a job read's `wait_s`. Output over 16 KB is cut to its first and last parts, and the full output is saved to a file the model can read |
 | `edit` | write | replaces exact text in one file. Takes one `oldText` / `newText` pair per call; the array form is still accepted. See [tools-context.md](tools-context.md) |
 | `write` | write | writes a file, creating it and its parent directories, and overwrites an existing file |
 | `grep` | read | searches file contents for `pattern`. Optional `path`, `glob`, `ignoreCase`, `literal`, `context` and `limit` (default 100 matches). Respects `.gitignore`; lines are cut at 500 characters. When matches exceed `limit`, the answer is the total and one count per file instead of the lines; see [tools-context.md](tools-context.md) |
@@ -22,11 +22,13 @@ Tool names, descriptions and schemas are part of the system prompt. They stay th
 
 ### Output limits
 
-- Any tool output sent to the model is capped at `oxa.toolOutputCap` bytes (16384 by default). Output above the cap is cut and says so. When `oxa.compaction.softTokens` is set or the engine publishes a compaction point, one tool result is at most a quarter of it (three bytes per token, never below 2048 bytes), unless `oxa.toolOutputCap` is set. Only the first page of a `read` (no `offset` or `limit`) is at most 8 KiB; `grep`, `find`, `ls` and a `read` with `offset` or `limit` are cut at the cap itself, with a note inside the cap that says how to go on. See [tools-context.md](tools-context.md).
+- Any tool output sent to the model is capped at `oxa.toolOutputCap` bytes (16384 by default; on a cloud model 3/16 of its window in bytes unless you set it). Output above the cap is cut and says so. When `oxa.compaction.softTokens` is set or the engine publishes a compaction point, one tool result is at most a quarter of it (three bytes per token, never below 2048 bytes), unless `oxa.toolOutputCap` is set. Only the first page of a `read` (no `offset` or `limit`) is at most 8 KiB; `grep`, `find`, `ls` and a `read` with `offset` or `limit` are cut at the cap itself, with a note inside the cap that says how to go on. See [tools-context.md](tools-context.md).
 - `read`, `grep`, `find` and `ls` apply their own line or match limits first.
 - For bash, the full output is kept in a file, and the model is told where it is.
 
 ## Choosing tools
+
+In a headless run (`-p`, `--mode json`) with the output diet on, the prompt adds one integrity rule: solve the task yourself, do not look up its ready-made solution online and do not read verifier, grader or hidden-test files. The `oxa_result` record reports `web_lookups`, the number of `web_search` calls. It is a prompt rule and a count, not a block: a tool call is never refused because of it.
 
 | Option or setting | Effect |
 |---|---|
@@ -37,6 +39,10 @@ Tool names, descriptions and schemas are part of the system prompt. They stay th
 | `--no-tools` (`-nt`) | disables all tools |
 | `--no-mcp` | no MCP servers connect and no MCP tools are offered |
 | `defaultTools` setting | the list of tools on by default. Names may include `subagent`, `web_search`, `codemode` and `tool_search`, and a list can be patched with `+name` and `-name` |
+
+With the output diet on (the default) the rules also tell the model to run the project's own checks before it calls a task done (when `bash` is on), and to use `wait` instead of polling (whenever `wait` is declared, which is every session unless `oxa.tools.wait` is `false`). `wait` takes seconds, and optionally `until` `ci`, `pr_merged`, `job_done` (a background bash job id) or a GitHub read probe; a message the owner types ends it early.
+`wait` with `until` `pr_activity` waits for a review or conversation comment on a pull request you pinned at a head: `{"seconds":1800,"reason":"Review of #7","until":{"kind":"pr_activity","pr":7,"head":"<sha>"}}`. It wakes with the new reviews and comments (author, state, link, body cut to 1500 characters, at most 10 listed), and also when the head is no longer the pinned one or the PR is merged or closed. The first poll for a PR and head is the baseline: what is already there does not wake it, unless you pass `"since":"<UTC time like 2026-11-20T10:00:00Z>"`, which counts anything newer on that first poll (use it after a restart). The baseline lasts for the session, and evidence that was returned is not returned again.
+A resumed session (`--continue`, `--resume`, `/resume`) keeps `wait` and, for a goal that is pursuing, `goal_done`, without opening a new prefix epoch. If a goal is pursuing but the tool selection (`--tools`, `defaultTools`) removed `goal_done`, the goal pauses with that reason instead of repeating a continue instruction the model cannot follow; add `goal_done` to the selection, then `/goal resume`.
 
 Examples:
 
@@ -76,6 +82,8 @@ Loops that vary too much for this guard (calls that alternate, output with a tim
 A `bash` command that waits for CI by polling is not blocked. It runs and reports its own exit status, and its result carries a note with the native call to use instead: `wait {"seconds":3600,"reason":"Wait for CI","until":{"kind":"ci","sha":"<head>","workflow":"<workflow>"}}`. The note fills in the 40-hex head commit and the workflow name when the command or its output names them, and leaves the placeholders otherwise.
 
 A polling command is a `for` / `while` / `until` loop or `watch` around `gh run`, `gh workflow` or `gh pr checks`, `gh run watch` itself, `gh pr checks --watch`, or an earlier `sleep` before the check. Quoted text is ignored, and a single `gh run view`, `gh run list`, `gh pr view` or `gh pr checks` is not polling. The `wait` tool is offered while a goal is active; without it, run one blocking check instead of a loop.
+
+`oxa.bash.ciPollHint` (`true` by default) turns the note off; user settings only, so a project file cannot. The command runs and reports its own result either way.
 
 ## Thinking on tool follow-ups
 
@@ -123,13 +131,14 @@ normal permission checks remain in force.
 
 - Shapes: `{agent, task}` for one child; `{tasks: [...]}` for several, run one after another in order; `{chain: [...]}` for steps where each step can use `{previous}`, the output of the step before.
 - Agents are Markdown files in `~/.oxa/agent/agents/` and, in a trusted project, `.oxa/agents/`. The file has a `name` and a `description` in its front matter, and its body is the child's system prompt. A project agent with the same name replaces the user agent. A `model:` in an agent file is used when that model or the session's model runs in the cloud; with a local session and a local `model:` it is ignored with a warning (one local model is loaded) and the child uses the session's model.
-- The child is a new oxa process in JSON print mode, with the same model, permission mode and tools, and no session file. It runs on its own compaction limit ([compaction.md](compaction.md)).
-- Local children run one at a time. When children of a `tasks` call run on a cloud model, up to `oxa.subagent.remoteConcurrency` (4) run at once; results still come back in call order. A call with more than 8 tasks is refused.
-- The result is the child's final text, capped at `oxa.subagent.resultCap` (6144 bytes). A longer result is cut and the full text is saved to a file under the agent directory's `tmp/`.
+- The child is a new oxa process in JSON print mode, with the same model and permission mode, and no session file.
+- **On a local model the child forks your session.** Its first request carries your frozen prefix (the system text and the tool list) and your whole conversation, with the task appended, so the engine continues the session's state instead of evicting it: the child prefills nothing of what you already have, and your next turn reuses its context (a local re-prefill costs 45-100 s at 12K tokens). Two things follow from sharing the prefix: your tool list is what the child is offered, so a tool its agent file does not list comes back as an unknown tool, and the agent's system prompt is appended to the task instead of the system prompt. A fork child's compaction point is the session's own ([compaction.md](compaction.md)). A cloud child, a cloud session and `oxa.subagent.isolated: true` keep the isolated child: its own session and prefix, the parent parked, and its own compaction limit, at the cost of that prefill. The call names that cost once when the setting is why.
+- The result is the child's final text, capped at `oxa.subagent.resultCap` (6144 bytes; scaled with the window of a cloud model unless you set it). A longer result is cut and the full text is saved to a file under the agent directory's `tmp/`.
+- Local children run one at a time. When children of a `tasks` call run on a cloud model, up to `oxa.subagent.remoteConcurrency` (8) run at once; results still come back in call order. A call with more tasks than `oxa.subagent.maxChildren` (8) still runs, queued, and its result ends with a warning.
 - Interrupting the parent stops the child: SIGTERM to its process group, then SIGKILL after 2 seconds.
 - Plan mode refuses the tool, because it runs a process.
 
-The tool is on by default when the session's model is not Flash and its context window is at least 32K. `oxa.subagent.enabled` sets it explicitly, and `oxa.subagent.smallContext: true` allows it on a smaller window. Children do not get `subagent` themselves.
+The tool is on by default when the session's model is not Flash and its context window is at least 32K. `oxa.subagent.enabled` sets it explicitly, and `oxa.subagent.smallContext: true` allows it on a smaller window. A child cannot run `subagent` itself (depth 1); a fork child's shared prefix still lists it, and calling it there comes back as an unknown tool.
 
 ## web_search
 

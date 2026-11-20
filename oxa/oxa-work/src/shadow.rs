@@ -7,6 +7,7 @@ use crate::board::{
 };
 use crate::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -67,6 +68,15 @@ struct Sample<'a> {
     landing: &'a BTreeMap<u64, LandingDecision>,
     #[serde(skip_serializing_if = "Option::is_none")]
     landing_main: Option<&'a str>,
+    /// Raw lead-panels repository record: main required checks, the verified merge
+    /// and queue membership at this observation. The protected Lead view validates
+    /// and derives its alarms from it; this runner never interprets it (#1391).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    panels: Option<&'a Value>,
+    /// Complete GitHub Actions pages sampled with `status=queued`, for the
+    /// queued-run stall signal. Incomplete or oversized captures stay absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runs: Option<&'a [Value]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     app_quota: Option<AppQuota>,
 }
@@ -81,6 +91,28 @@ pub(crate) fn regular_file_owned_by(metadata: &Metadata, owner: u32) -> bool {
 pub fn open_log(path: &Path) -> Result<File> {
     // SAFETY: geteuid has no preconditions and returns this process's effective owner.
     open_log_for_owner(path, unsafe { libc::geteuid() })
+}
+
+/// An owner-private append log for a worker's stdout and stderr: created 0600, never opened
+/// through a symlink, and refused unless it is an owner-only regular file with one link.
+pub fn open_owner_log(path: &Path) -> Result<File> {
+    // SAFETY: geteuid has no preconditions and returns this process's effective owner.
+    let owner = unsafe { libc::geteuid() };
+    let file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(OWNER_FILE_FLAGS)
+        .open(path)
+        .map_err(|_| "cannot open private worker log")?;
+    let metadata = file.metadata().map_err(|_| "cannot inspect worker log")?;
+    if !regular_file_owned_by(&metadata, owner)
+        || metadata.nlink() != 1
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err("worker log must be a private regular file with one link".into());
+    }
+    Ok(file)
 }
 
 fn open_log_for_owner(path: &Path, owner: u32) -> Result<File> {
@@ -359,6 +391,8 @@ pub struct LandingSample {
     pub landing: BTreeMap<u64, LandingDecision>,
     /// Main can advance independently of the queue or its merge-group commits.
     pub landing_main: Option<String>,
+    pub panels: Option<Value>,
+    pub runs: Option<Vec<Value>>,
     pub app_quota: Option<AppQuota>,
 }
 
@@ -378,6 +412,8 @@ pub fn run_with_landing(
             queue_rejections,
             mut landing,
             landing_main,
+            panels,
+            runs,
             app_quota,
         } = snapshot()?;
         let matched_queue_admissions = if landing.is_empty() {
@@ -409,12 +445,27 @@ pub fn run_with_landing(
             matched_queue_admissions: &matched_queue_admissions,
             landing: &landing,
             landing_main: landing_main.as_deref(),
+            panels: panels.as_ref(),
+            runs: runs.as_deref(),
             app_quota,
         };
         let mut line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
-        if sample.app_quota.is_some() && line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
+        // The Lead sample bound is fixed: the largest optional records degrade
+        // first, and a degraded record is an explicit partial observation.
+        if line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
             sample.app_quota = None;
             line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
+        }
+        if line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
+            sample.runs = None;
+            line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
+        }
+        if line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
+            sample.panels = None;
+            line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
+        }
+        if line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
+            return Err("shadow sample exceeds the Lead sample limit".into());
         }
         line.push(b'\n');
         let length = log.metadata().map_err(|_| "cannot inspect shadow log")?.len();

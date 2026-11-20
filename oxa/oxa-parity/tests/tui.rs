@@ -180,9 +180,29 @@ fn raw_since(rig: &Rig, mark: usize) -> String {
 }
 
 /// The footer: the last two rows.
-fn footer(s: &Screen) -> (String, String) {
+/// #1512 S3: the pi footer's extension status row (`no sandbox · …`, `sandbox`, `YOLO full
+/// access`) is drawn below the footer. Such a row is skipped to find the footer rows.
+fn is_status_row(text: &str) -> bool {
+    let t = text.trim();
+    t == "sandbox"
+        || t.starts_with("no sandbox")
+        || t.starts_with("YOLO full access")
+        || t.ends_with("YOLO full access")
+}
+
+/// The last row that is not an extension status row.
+fn last_footer_row(s: &Screen) -> u16 {
     let (rows, _) = s.size();
-    (s.row(rows - 2), s.row(rows - 1))
+    let mut row = rows - 1;
+    while row > 1 && is_status_row(&s.row(row)) {
+        row -= 1;
+    }
+    row
+}
+
+fn footer(s: &Screen) -> (String, String) {
+    let last = last_footer_row(s);
+    (s.row(last - 1), s.row(last))
 }
 
 /// Wait until the editor holds exactly `text`.
@@ -809,8 +829,9 @@ fn tui_005() {
         let Some(&bottom) = rules.last() else {
             return Vec::new();
         };
-        let (rows_n, _) = s.size();
-        rows[bottom + 1..(rows_n as usize).saturating_sub(2)].to_vec()
+        // #1512 S3: the footer ends above the extension status row.
+        let cwd_row = usize::from(last_footer_row(s)).saturating_sub(1);
+        rows[bottom + 1..cwd_row.max(bottom + 1)].to_vec()
     };
     rig.pty.send_text("/");
     let s = rig
@@ -849,7 +870,7 @@ fn tui_006() {
         &[
             "oxa-tui/src/highlight.rs",
             "oxa-tui/src/markdown.rs",
-            "oxa-config/src/schema.rs",
+            "oxa-config/src/descriptor/display.rs",
         ],
         &["syntect", "table", "markdown.codeBlockIndent"],
     );
@@ -1503,7 +1524,12 @@ fn tui_026() {
     // Alt+M cycles the mode; the footer follows.
     rig.pty.send_key("alt+m");
     rig.pty
-        .wait_for_named("mode changed", |s| !footer(s).1.contains("auto"), WAIT)
+        // The mode word itself (the context line also shows `(auto)` compaction).
+        .wait_for_named(
+            "mode changed",
+            |s| !footer(s).1.split_whitespace().any(|w| w == "auto"),
+            WAIT,
+        )
         .unwrap();
     // Prefill progress and speed come from the engine's comments and timings (the fake sends
     // neither for a chat request): the footer renders them from the status.
@@ -1535,6 +1561,33 @@ fn tui_026() {
     );
 }
 
+/// #1512 S2: a dangerous command stops at the four-choice dialog in the real TUI. Deny has the
+/// focus, so Enter refuses it, nothing runs and the model hears the refusal.
+#[test]
+fn dangerous_command_asks_in_the_real_tui() {
+    let env = TestEnv::new();
+    let script = vec![
+        ScriptTurn::tool("c1", "bash", r#"{"command":"git push --force origin main"}"#),
+        ScriptTurn::text("refused as expected"),
+    ];
+    let rig = Rig::start_in(env, script, RigOpts::default());
+    rig.pty.wait_for_text("ctrl+d exit").unwrap();
+    rig.type_text("push the branch");
+    rig.pty.send_key("enter");
+    let s = rig.pty.wait_for_text("Dangerous command").unwrap();
+    for label in [
+        "Allow once",
+        "Allow for this session",
+        "Always allow (saved to your user settings)",
+        "Deny",
+    ] {
+        assert!(s.contains(label), "{label}\n{s:?}");
+    }
+    rig.pty.send_key("enter");
+    rig.pty.wait_for_text("the user declined this action").unwrap();
+    rig.pty.wait_for_text("refused as expected").unwrap();
+}
+
 /// Permission prompt Once / Session / Deny; mode cycle; timed dialogs
 #[test]
 fn tui_027() {
@@ -1550,4 +1603,40 @@ fn tui_027() {
             "timeout_ms",
         ],
     );
+}
+
+/// #1512 S3: the real TUI over a PTY tells the truth about the OS sandbox. A default
+/// (attended) start shows "no sandbox · dangerous commands ask"; `--sandbox` shows "sandbox"
+/// and never the "no sandbox" text.
+#[test]
+fn sandbox_guard_is_shown_in_the_real_tui() {
+    let rig = Rig::start(replies(1), RigOpts::default());
+    rig.pty
+        .wait_for_named(
+            "no-sandbox guard",
+            |s| {
+                s.rows()
+                    .iter()
+                    .any(|r| r.contains("no sandbox · dangerous commands ask"))
+            },
+            WAIT,
+        )
+        .unwrap();
+    drop(rig);
+    let rig = Rig::start(
+        replies(1),
+        RigOpts {
+            args: vec!["--sandbox".into()],
+            ..RigOpts::default()
+        },
+    );
+    let s = rig
+        .pty
+        .wait_for_named(
+            "sandbox guard",
+            |s| s.rows().iter().any(|r| r.trim() == "sandbox"),
+            WAIT,
+        )
+        .unwrap();
+    assert!(!s.rows().iter().any(|r| r.contains("no sandbox")), "{s:?}");
 }

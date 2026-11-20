@@ -1,6 +1,4 @@
 //! E12 acceptance tests: HTML export.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_export::{
@@ -43,6 +41,7 @@ fn msg(wire: WireMsg) -> EntryBody {
 /// A small session: user, assistant with a built-in and a custom tool call, their results.
 fn fixture() -> Vec<Entry> {
     let assistant = WireMsg {
+        images: Vec::new(),
         role: Role::Assistant,
         content: Some("Let me look.".to_string()),
         reasoning: None,
@@ -55,6 +54,7 @@ fn fixture() -> Vec<Entry> {
         tool_call_id: None,
     };
     let custom = WireMsg {
+        images: Vec::new(),
         role: Role::Assistant,
         content: Some("Running mytool.".to_string()),
         reasoning: None,

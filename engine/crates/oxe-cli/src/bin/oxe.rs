@@ -8,6 +8,9 @@
 //!                                                                         oracle's prompt + greedy tokens, ids + KLD
 //!   oxe bench   --model M [--tokens 128 --warmup 16 --prompt-len 16 | --prompt-ids 1,2,..] [--batched-prompt]
 //!                                                                         decode timing with real math (Codex lane)
+//!   oxe admission --model M --ctx N [oxe-server launch args] [--margin-bytes B] --json
+//!                                                                         the allocation bounds oxa's local admission needs, from the
+//!                                                                         GGUF header and the engine's own allocation code (no weights read)
 //!   oxe cache   --model M                                                 build/verify the repacked weight cache only
 //!   oxe prefill-verify --model M --ref DIR [--ubatch 256] [--trace-out D]  M3.2 gate: batched prefill vs llama.cpp's
 //!                                                                         batched prefill (logits, KV, recurrent state),
@@ -47,6 +50,8 @@
 //! the verified weight mapping (default off; N8). The cache directory is chosen explicitly with
 //! --cache-dir D, else $XDG_CACHE_HOME/local-ai/snapdragon-engine (or $HOME/.cache/...); fault-in
 //! never moves or copies the cache to another volume.
+#[path = "../admission_cmd.rs"]
+mod admission_cmd;
 #[cfg(feature = "npu-device")]
 #[path = "../expert_dma.rs"]
 mod expert_dma;
@@ -313,6 +318,7 @@ const COMMANDS: &[(&str, fn(&Args))] = &[
     ("kbench-mt", cmd_kbench_mt),
     ("vocab-freq", cmd_vocab_freq),
     ("cache", cmd_cache),
+    ("admission", cmd_admission),
     ("prefill-verify", cmd_prefill_verify),
     ("prefill-bench", cmd_prefill_bench),
     ("mtp-check", cmd_mtp_check),
@@ -328,6 +334,13 @@ const COMMANDS: &[(&str, fn(&Args))] = &[
     ("npu-f32-check", cmd_npu_f32_check),
     ("npu-prefill-check", cmd_npu_prefill_check),
 ];
+
+/// `oxe admission ...` takes oxe-server launch arguments (`-c`, `-ctk`, ...) that the generic
+/// `--key value` parser rejects, so `main` hands it the raw arguments before `Args::parse`; this
+/// table entry keeps the usage line complete.
+fn cmd_admission(_a: &Args) {
+    admission_cmd::run(&std::env::args().skip(2).collect::<Vec<_>>());
+}
 
 // Feature-gated subcommands (text-encoder/NPU lane), wrapped so the N3 table stays complete.
 fn cmd_expert_price(_a: &Args) {
@@ -1045,6 +1058,8 @@ fn cmd_verify(a: &Args) {
     let mut bytes = vec![0u8; 4 * n_vocab];
     let (mut kl_sum, mut kl_max, mut top1, mut nk, mut exact_rows) =
         (0f64, 0f64, 0usize, 0usize, 0usize);
+    // largest |ours - ref| over every compared logit, and the largest |ref| (its scale)
+    let (mut max_abs_diff, mut max_abs_ref) = (0f32, 0f32);
     let mut first_div: Option<usize> = None;
     let mut ours_gen = Vec::new();
     let t0 = Instant::now();
@@ -1069,6 +1084,10 @@ fn cmd_verify(a: &Args) {
                 nk += 1;
                 top1 += (argmax(&rbuf) == argmax(ol)) as usize;
                 exact_rows += rbuf.iter().zip(ol).all(|(x, y)| x.to_bits() == y.to_bits()) as usize;
+                for (x, y) in rbuf.iter().zip(ol) {
+                    max_abs_diff = max_abs_diff.max((x - y).abs());
+                    max_abs_ref = max_abs_ref.max(x.abs());
+                }
             }
         }
     }
@@ -1084,6 +1103,8 @@ fn cmd_verify(a: &Args) {
         "max_kld": kl_max,
         "top1_agreement": if nk > 0 { top1 as f64 / nk as f64 } else { f64::NAN },
         "bit_exact_logit_rows": exact_rows,
+        "max_abs_logit_diff": max_abs_diff,
+        "max_abs_ref_logit": max_abs_ref,
         "threads": s.pool.nthreads(),
         "seconds": secs,
     });
@@ -3470,11 +3491,26 @@ fn cmd_npu_prefill_check(a: &Args) {
     }
 }
 
+/// The release stamp (`OX_BUILD_VERSION`, set only by packaging/release/build.sh) or the
+/// package version. The engine fingerprint stays on `CARGO_PKG_VERSION`.
+fn build_version() -> &'static str {
+    match option_env!("OX_BUILD_VERSION") {
+        Some(stamp) if !stamp.is_empty() => stamp,
+        _ => env!("CARGO_PKG_VERSION"),
+    }
+}
+
 fn main() {
     sched::cli::exit_zero_on_epipe(); // F-CI9: `| head` ends with status 0, not a core dump
     if std::env::args().skip(1).collect::<Vec<_>>() == ["--version"] {
-        println!("oxe {}", env!("CARGO_PKG_VERSION"));
+        println!("oxe {}", build_version());
         return;
+    }
+    {
+        let raw: Vec<String> = std::env::args().skip(1).collect();
+        if raw.first().map(String::as_str) == Some("admission") {
+            admission_cmd::run(&raw[1..]);
+        }
     }
     let a = Args::parse();
     if let Some(mode) = a.get("shared-experts") {
@@ -3596,7 +3632,7 @@ mod n3_tests {
         unique.sort();
         unique.dedup();
         assert_eq!(unique.len(), names.len());
-        assert_eq!(names.len(), 24);
+        assert_eq!(names.len(), 25);
     }
 
     #[test]
