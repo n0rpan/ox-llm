@@ -449,6 +449,14 @@ fn local_writers_and_path_qualified_publish_tools_ask() {
 }
 
 #[test]
+fn external_git_helpers_keep_the_publish_approval_floor() {
+    let cwd = repo("my-branch");
+    for command in ["git citool", "git p4", "git send-email", "git svn"] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask, "{command}");
+    }
+}
+
+#[test]
 fn continued_config_values_and_unresolved_git_subcommands_ask() {
     let cwd = repo("my-branch");
     set_config(
