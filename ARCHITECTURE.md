@@ -34,7 +34,6 @@ Details: [oxc/docs/ARCHITECTURE.md](oxc/docs/ARCHITECTURE.md) covers the control
 |---|---|---|---|
 | engine | `engine/Cargo.toml` (workspace) | `engine/Cargo.lock` | `ci-engine.yml` on `lab-arm64` |
 | oxa | `oxa/Cargo.toml` (workspace) | `oxa/Cargo.lock` | `ci-oxa.yml` on `lab-arm64` |
-| lab | `oxc/pyproject.toml` | none (standard library + pinned tools) | `ci-lab.yml` on `lab-x64` |
 | repository | none | none | `ci-repo.yml` on `lab-x64`: secret and SDK scans, isolation, release tooling |
 
 There is no root cargo workspace and no shared `Cargo.lock`. `oxa/` must not have a `path =`

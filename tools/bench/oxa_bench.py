@@ -155,13 +155,20 @@ def build_argv(instruction, model=DEFAULT_MODEL, max_time=None):
 
 
 def run_script(argv):
-    """Shell script for the run: capture stdout/stderr/exit code, pass only scorable exits as 0."""
-    scored = "|".join(str(c) for c in SCORED_EXIT_CODES)
+    """Capture the run and pass only completed, scorable outcomes as zero."""
     return (
         f"mkdir -p {REMOTE_LOGS}; "
         f"{shlex.join(argv)} > {REMOTE_STDOUT} 2> {REMOTE_STDERR} < /dev/null; rc=$?; "
         f"printf '%s\\n' \"$rc\" > {REMOTE_EXIT}; "
-        f"case $rc in {scored}) exit 0;; *) exit $rc;; esac"
+        "case $rc in "
+        "0|130) exit 0;; "
+        "1) "
+        f"test -s {REMOTE_USAGE_LOG} && "
+        f"grep -Eq '\"request\"[[:space:]]*:[[:space:]]*[1-9][0-9]*' {REMOTE_USAGE_LOG} && "
+        f"grep -q '\"oxa_result\"' {REMOTE_STDERR} && "
+        f"grep -Eq '\"requests\"[[:space:]]*:[[:space:]]*[1-9][0-9]*' {REMOTE_STDERR} && "
+        "exit 0; exit 1;; "
+        "*) exit $rc;; esac"
     )
 
 
