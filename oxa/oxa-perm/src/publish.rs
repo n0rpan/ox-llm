@@ -59,7 +59,8 @@ pub(crate) fn publish_hits(stages: &[Stage], cwd: &Path) -> Vec<String> {
                 continue;
             }
             let mut kind = kind_of(&st.words, cwd, moved);
-            if matches!(first_word(&st.words), Some("cd" | "pushd" | "popd")) {
+            if matches!(first_word(&st.words), Some("cd" | "pushd" | "popd")) || mutates_repo_state(&st.words)
+            {
                 moved = true;
             }
             if kind == Kind::Allowed && st.redirects.iter().any(|(op, t)| !harmless_redirect(op, t)) {
@@ -88,6 +89,30 @@ pub(crate) fn publish_hits(stages: &[Stage], cwd: &Path) -> Vec<String> {
 /// A redirect that writes no file: to `/dev/null` or a descriptor copy (`2>&1`).
 fn harmless_redirect(op: &str, target: &str) -> bool {
     target == "/dev/null" || (op == ">&" && (target == "-" || target.chars().all(|c| c.is_ascii_digit())))
+}
+
+/// A `git` command that can change the checked-out branch or the repository config, so the
+/// on-disk state seen by the classifier is stale for any later command of the line.
+fn mutates_repo_state(words: &[String]) -> bool {
+    let args: Vec<String> = words.iter().skip_while(|w| is_assignment(w)).cloned().collect();
+    if args.first().map(|w| base(w)) != Some("git") {
+        return false;
+    }
+    match git_sub(&args[1..]) {
+        Some(sub) => matches!(
+            sub.as_str(),
+            "switch"
+                | "checkout"
+                | "branch"
+                | "remote"
+                | "stash"
+                | "restore"
+                | "config"
+                | "reset"
+                | "worktree"
+        ),
+        None => false,
+    }
 }
 
 fn first_word(words: &[String]) -> Option<&str> {
@@ -119,8 +144,10 @@ fn is_local(words: &[String], redirects: &[(String, String)]) -> bool {
     }
     let args: Vec<&String> = words.iter().skip_while(|w| is_assignment(w)).collect();
     match args.first().map(|w| base(w)) {
-        Some("git") => git_sub(&args[1..].iter().map(|s| s.to_string()).collect::<Vec<_>>())
-            .is_some_and(|sub| GIT_LOCAL.contains(&sub.as_str())),
+        Some("git") => {
+            let rest: Vec<String> = args[1..].iter().map(|s| s.to_string()).collect();
+            !git_globals(&rest).2 && git_sub(&rest).is_some_and(|sub| GIT_LOCAL.contains(&sub.as_str()))
+        }
         Some(n) => LOCAL.contains(&n),
         None => true,
     }
@@ -150,11 +177,17 @@ fn kind_of(words: &[String], cwd: &Path, moved: bool) -> Kind {
     };
     match name.as_str() {
         "git" => git_kind(words, &args, cwd, moved),
-        "gh" => gh_kind(words, &args),
+        "gh" => gh_kind(words, &args, moved),
         // A wrapper or interpreter that carries git push / gh in its words hides it.
         _ => {
             let hides = args.iter().skip(1).any(|w| {
-                w == "gh" || w == "push" || w.contains("git push") || w.contains("gh ") || w.ends_with("/gh")
+                // Quotes and backslashes can split a word (`pu''sh`); compare the plain text.
+                let plain = w.replace(['\'', '"', '\\'], "");
+                w == "gh"
+                    || w.contains("gh ")
+                    || w.ends_with("/gh")
+                    || (plain.contains("git") && plain.contains("push"))
+                    || (plain.contains("git") && w.contains(['$', '`']))
             });
             if hides {
                 Kind::Unsafe
@@ -165,38 +198,29 @@ fn kind_of(words: &[String], cwd: &Path, moved: bool) -> Kind {
     }
 }
 
-/// The subcommand of a git argv (after the program), skipping global options.
-fn git_sub(rest: &[String]) -> Option<String> {
-    let mut k = 0;
-    while k < rest.len() {
-        let a = rest[k].as_str();
-        if matches!(a, "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace") {
-            k += 2;
-        } else if a.starts_with('-') {
-            k += 1;
-        } else {
-            return Some(a.to_string());
-        }
-    }
-    None
-}
+/// Global options that change nothing about repository, config or program lookup.
+const GIT_PLAIN_GLOBALS: &[&str] = &["--no-pager", "-P", "--no-optional-locks", "--no-advice"];
 
-fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
-    // Find the subcommand index again to get the push arguments.
-    let rest = &args[1..];
+/// Parse git's global options: (index of the subcommand, `-C` directory, whether an option
+/// that can redirect git (`-c`, `--config-env`, `--git-dir`, `--exec-path`, anything unknown)
+/// was seen).
+fn git_globals(rest: &[String]) -> (usize, Option<String>, bool) {
     let mut k = 0;
-    let mut dir: Option<String> = None;
+    let mut dir = None;
     let mut opaque = false;
     while k < rest.len() {
         let a = rest[k].as_str();
         if a == "-C" {
             dir = rest.get(k + 1).cloned();
             k += 2;
-        } else if matches!(a, "-c" | "--git-dir" | "--work-tree" | "--namespace") {
+        } else if matches!(
+            a,
+            "-c" | "--config-env" | "--git-dir" | "--work-tree" | "--namespace"
+        ) {
             opaque = true;
             k += 2;
         } else if a.starts_with('-') {
-            if a.starts_with("--git-dir=") || a.starts_with("--work-tree=") || a.starts_with("-c") {
+            if !GIT_PLAIN_GLOBALS.contains(&a) {
                 opaque = true;
             }
             k += 1;
@@ -204,6 +228,18 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
             break;
         }
     }
+    (k, dir, opaque)
+}
+
+/// The subcommand of a git argv (after the program), skipping global options.
+fn git_sub(rest: &[String]) -> Option<String> {
+    let (k, _, _) = git_globals(rest);
+    rest.get(k).cloned()
+}
+
+fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
+    let rest = &args[1..];
+    let (k, dir, opaque) = git_globals(rest);
     if rest.get(k).map(String::as_str) != Some("push") {
         return Kind::Other;
     }
@@ -217,6 +253,11 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
             if !crate::paths::is_inside(&p, cwd) {
                 return Kind::Unsafe;
             }
+            // A nested repository (submodule, clone) is not the session repository.
+            match (git_dirs(&p), git_dirs(cwd)) {
+                (Some((_, a)), Some((_, b))) if same_dir(&a, &b) => {}
+                _ => return Kind::Unsafe,
+            }
             p
         }
         None => cwd.to_path_buf(),
@@ -224,7 +265,7 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
     let Some(current) = current_branch(&wd) else {
         return Kind::Unsafe;
     };
-    if !valid_branch(&current) || is_default(&wd, &current) {
+    if !valid_branch(&current) || !known_non_default(&wd, &current) {
         return Kind::Unsafe;
     }
     let mut pos: Vec<&str> = Vec::new();
@@ -234,6 +275,9 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
             s if s.starts_with('-') => return Kind::Unsafe,
             s => pos.push(s),
         }
+    }
+    if config_risky(&wd, &current, pos.len() < 2) {
+        return Kind::Unsafe;
     }
     let ok = match pos.as_slice() {
         [] => true,
@@ -260,6 +304,71 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
     }
 }
 
+/// Flags of `gh pr create|edit|comment` that are safe for the session's own PR, by arity. Any
+/// other flag, and any positional (a PR number, url or branch), is not.
+fn pr_flags_ok(rest: &[String]) -> bool {
+    const VALUE_LONG: &[&str] = &[
+        "title",
+        "body",
+        "base",
+        "label",
+        "assignee",
+        "reviewer",
+        "milestone",
+        "project",
+        "add-label",
+        "remove-label",
+        "add-assignee",
+        "remove-assignee",
+        "add-reviewer",
+        "remove-reviewer",
+        "add-project",
+        "remove-project",
+    ];
+    const BOOL_LONG: &[&str] = &[
+        "draft",
+        "fill",
+        "fill-first",
+        "fill-verbose",
+        "no-maintainer-edit",
+        "web",
+        "dry-run",
+        "remove-milestone",
+        "edit-last",
+        "delete-last",
+        "yes",
+        "create-if-none",
+        "editor",
+    ];
+    const VALUE_SHORT: &[char] = &['t', 'b', 'B', 'l', 'a', 'r', 'm', 'p'];
+    const BOOL_SHORT: &[char] = &['d', 'f', 'w', 'e'];
+    let mut j = 0;
+    while j < rest.len() {
+        let a = rest[j].as_str();
+        if let Some(long) = a.strip_prefix("--") {
+            match long.split_once('=') {
+                Some((n, _)) if VALUE_LONG.contains(&n) => {}
+                Some(_) => return false,
+                None if VALUE_LONG.contains(&long) => j += 1,
+                None if BOOL_LONG.contains(&long) => {}
+                None => return false,
+            }
+        } else if let Some(short) = a.strip_prefix('-') {
+            let mut cs = short.chars();
+            match (cs.next(), cs.next()) {
+                (Some(c), None) if VALUE_SHORT.contains(&c) => j += 1,
+                (Some(c), None) if BOOL_SHORT.contains(&c) => {}
+                (Some(c), Some(_)) if VALUE_SHORT.contains(&c) => {}
+                _ => return false,
+            }
+        } else {
+            return false;
+        }
+        j += 1;
+    }
+    true
+}
+
 fn valid_branch(b: &str) -> bool {
     !b.is_empty()
         && !b.starts_with(['-', '+', '/'])
@@ -268,56 +377,31 @@ fn valid_branch(b: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
 }
 
-fn gh_kind(all: &[String], args: &[String]) -> Kind {
+fn gh_kind(all: &[String], args: &[String], moved: bool) -> Kind {
     if env_unsafe(all) || all.iter().any(|w| dynamic(w)) {
         return Kind::Unsafe;
     }
     let rest = &args[1..];
-    let flags_with_value = ["-R", "--repo", "-H", "--head", "--hostname"];
+    // Repo and head overrides, in any spelling (`-R x`, `-Rx`, `--repo=x`, `-Hx`, `--head x`).
     if rest.iter().any(|a| {
-        flags_with_value.contains(&a.as_str())
-            || a.starts_with("--repo=")
-            || a.starts_with("--head=")
-            || a.starts_with("-R")
+        a.starts_with("-R")
+            || a.starts_with("-H")
+            || a.starts_with("--repo")
+            || a.starts_with("--head")
+            || a.starts_with("--hostname")
     }) {
         return Kind::Unsafe;
     }
-    let words: Vec<&str> = rest
-        .iter()
-        .map(String::as_str)
-        .filter(|a| !a.starts_with('-'))
-        .collect();
-    let (g, s) = (
-        words.first().copied().unwrap_or(""),
-        words.get(1).copied().unwrap_or(""),
-    );
+    let plain = |i: usize| {
+        rest.get(i)
+            .map(String::as_str)
+            .filter(|a| !a.starts_with('-'))
+            .unwrap_or("")
+    };
+    let (g, s) = (plain(0), plain(1));
     match (g, s) {
         ("pr", "create" | "edit" | "comment") => {
-            // Own branch's PR only: no PR argument, no body file, no other-ref flags.
-            let value_flag = rest.iter().any(|a| {
-                matches!(
-                    a.as_str(),
-                    "-F" | "--body-file" | "--template" | "-T" | "--recover"
-                ) || a.starts_with("--body-file=")
-            });
-            // Values of flags (`--title x`) are words too; allow them when they follow a flag.
-            let mut stray = false;
-            let mut prev_flag = false;
-            let mut seen = 0;
-            for a in rest {
-                if a.starts_with('-') {
-                    prev_flag = !a.contains('=');
-                } else {
-                    if !prev_flag {
-                        seen += 1;
-                        if seen > 2 {
-                            stray = true;
-                        }
-                    }
-                    prev_flag = false;
-                }
-            }
-            if value_flag || stray {
+            if moved || !pr_flags_ok(&rest[2..]) {
                 Kind::Unsafe
             } else {
                 Kind::Allowed
@@ -329,9 +413,12 @@ fn gh_kind(all: &[String], args: &[String]) -> Kind {
         ("auth", "status") => Kind::Allowed,
         ("api", _) => {
             let mutating = rest.iter().any(|a| {
-                matches!(a.as_str(), "-f" | "-F" | "--field" | "--raw-field" | "--input")
-                    || a.starts_with("--field=")
-                    || a.starts_with("--input=")
+                // `-f`/`-F` in any short cluster or attached form (`-ftitle=x`), and the long
+                // spellings with or without `=`.
+                (a.starts_with('-') && !a.starts_with("--") && a.contains(['f', 'F']))
+                    || ["--field", "--raw-field", "--input"]
+                        .iter()
+                        .any(|l| a.as_str() == *l || a.starts_with(&format!("{l}=")))
             }) || rest
                 .windows(2)
                 .any(|w| matches!(w[0].as_str(), "-X" | "--method") && !w[1].eq_ignore_ascii_case("GET"))
@@ -354,29 +441,118 @@ fn gh_kind(all: &[String], args: &[String]) -> Kind {
         | ("auth", _)
         | ("run", "rerun" | "cancel" | "delete")
         | ("issue", "delete" | "transfer") => Kind::Unsafe,
-        _ => Kind::Other,
+        // Any other gh command (update-branch, issue edit...) may write: ask.
+        _ => Kind::Unsafe,
+    }
+}
+
+/// Largest git metadata file read for the classifier (config can be big, the rest is tiny).
+const META_MAX: u64 = 1 << 20;
+
+/// Read a regular, non-symlink file of at most `META_MAX` bytes.
+fn read_small(path: &Path) -> Option<String> {
+    let md = std::fs::symlink_metadata(path).ok()?;
+    if !md.file_type().is_file() || md.len() > META_MAX {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
+}
+
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
     }
 }
 
 /// The checked-out branch of the repository that contains `dir`, from `HEAD`.
 fn current_branch(dir: &Path) -> Option<String> {
     let (gitdir, _) = git_dirs(dir)?;
-    let head = std::fs::read_to_string(gitdir.join("HEAD")).ok()?;
+    let head = read_small(&gitdir.join("HEAD"))?;
     head.trim().strip_prefix("ref: refs/heads/").map(str::to_string)
 }
 
-fn is_default(dir: &Path, branch: &str) -> bool {
+/// True only when the remote's default branch is positively known and is another branch. A
+/// missing or unreadable `origin/HEAD` is unknown, which asks.
+fn known_non_default(dir: &Path, branch: &str) -> bool {
     if DEFAULT_BRANCHES.contains(&branch) {
-        return true;
+        return false;
     }
     git_dirs(dir)
-        .and_then(|(_, common)| std::fs::read_to_string(common.join("refs/remotes/origin/HEAD")).ok())
+        .and_then(|(_, common)| read_small(&common.join("refs/remotes/origin/HEAD")))
         .and_then(|s| {
             s.trim()
                 .strip_prefix("ref: refs/remotes/origin/")
                 .map(str::to_string)
         })
-        .is_some_and(|d| d == branch)
+        .is_some_and(|d| d != branch && !d.is_empty())
+}
+
+/// Whether the repository config can send a push somewhere the command line does not say:
+/// includes, `[push]`, `remote.origin.push|pushurl|mirror`, `remote.pushDefault`, push-rewriting
+/// URLs, a program-running `core.*` key, and (for an implicit push) a branch whose remote or
+/// upstream is not `origin` / the same-named branch. Unreadable config is risky.
+fn config_risky(dir: &Path, branch: &str, implicit: bool) -> bool {
+    let Some((gitdir, common)) = git_dirs(dir) else {
+        return true;
+    };
+    if std::fs::symlink_metadata(gitdir.join("config.worktree")).is_ok() {
+        return true;
+    }
+    let path = common.join("config");
+    let text = match std::fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        _ => match read_small(&path) {
+            Some(t) => t,
+            None => return true,
+        },
+    };
+    let mut section = String::new();
+    let mut sub: Option<String> = None;
+    for raw in text.lines() {
+        let mut line = raw.trim();
+        if line.starts_with('[') {
+            let Some(end) = line.find(']') else { return true };
+            let head = &line[1..end];
+            let (name, s) = match head.split_once('"') {
+                Some((n, rest)) => (n.trim(), Some(rest.trim_end_matches('"').to_string())),
+                None => match head.split_once('.') {
+                    Some((n, r)) => (n, Some(r.to_string())),
+                    None => (head.trim(), None),
+                },
+            };
+            section = name.to_ascii_lowercase();
+            sub = s;
+            line = line[end + 1..].trim();
+        }
+        if line.is_empty() || line.starts_with(['#', ';']) {
+            continue;
+        }
+        let (key, val) = match line.split_once('=') {
+            Some((k, v)) => (
+                k.trim().to_ascii_lowercase(),
+                v.trim().trim_matches('"').to_string(),
+            ),
+            None => (line.to_ascii_lowercase(), String::new()),
+        };
+        let risky = match (section.as_str(), sub.as_deref()) {
+            ("include" | "includeif" | "push", _) => true,
+            ("remote", None) => key == "pushdefault",
+            ("remote", Some("origin")) => matches!(key.as_str(), "push" | "pushurl" | "mirror"),
+            ("url", _) => key == "pushinsteadof",
+            ("core", _) => matches!(key.as_str(), "sshcommand" | "gitproxy" | "hookspath"),
+            ("branch", Some(b)) if b == branch && implicit => match key.as_str() {
+                "remote" | "pushremote" => val != "origin",
+                "merge" => val != format!("refs/heads/{branch}"),
+                _ => false,
+            },
+            _ => false,
+        };
+        if risky {
+            return true;
+        }
+    }
+    false
 }
 
 /// (git dir, common dir) of the repository around `dir`; a worktree's `.git` is a file.
@@ -384,15 +560,18 @@ fn git_dirs(dir: &Path) -> Option<(PathBuf, PathBuf)> {
     let mut cur = Some(dir);
     while let Some(d) = cur {
         let dot = d.join(".git");
-        if dot.is_dir() {
-            return Some((dot.clone(), dot));
-        }
-        if dot.is_file() {
-            let text = std::fs::read_to_string(&dot).ok()?;
+        if let Ok(md) = std::fs::symlink_metadata(&dot) {
+            let ft = md.file_type();
+            if ft.is_symlink() {
+                return None;
+            }
+            if ft.is_dir() {
+                return Some((dot.clone(), dot));
+            }
+            let text = read_small(&dot)?;
             let target = text.trim().strip_prefix("gitdir:")?.trim();
             let gitdir = crate::paths::normalize(Path::new(target), d);
-            let common = std::fs::read_to_string(gitdir.join("commondir"))
-                .ok()
+            let common = read_small(&gitdir.join("commondir"))
                 .map(|c| crate::paths::normalize(Path::new(c.trim()), &gitdir))
                 .unwrap_or_else(|| gitdir.clone());
             return Some((gitdir, common));
