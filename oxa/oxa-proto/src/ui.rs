@@ -108,6 +108,14 @@ pub trait Ui: Send {
     fn approve_publication(&mut self, _title: &str, _body: &str) -> Option<bool> {
         None
     }
+    /// A masked input for a password a process of this session asks for (sudo's askpass helper):
+    /// shows `body` as the requesting process's own text and returns what the owner typed, or
+    /// `None` when dismissed or when this UI cannot ask. The value goes straight to that
+    /// process; callers must never log, record or display it. Never answered by a model,
+    /// a typed chat message or yolo.
+    fn secret(&mut self, _title: &str, _body: &str) -> Option<String> {
+        None
+    }
     /// A handle that dismisses dialogs currently waiting in this UI. RPC uses this so an
     /// owner reply delivered through another authenticated input path can release a session
     /// thread waiting in [`Ui::confirm`].

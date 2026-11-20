@@ -591,6 +591,9 @@ impl Ui for PromptTap<'_> {
     fn approve_publication(&mut self, title: &str, body: &str) -> Option<bool> {
         self.span("confirm", Some(title), |u| u.approve_publication(title, body))
     }
+    fn secret(&mut self, title: &str, body: &str) -> Option<String> {
+        self.inner.secret(title, body)
+    }
 
     fn dialog_canceller(&self) -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
         self.inner.dialog_canceller()

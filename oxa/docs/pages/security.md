@@ -66,6 +66,12 @@ A shell alias makes yolo quick to start:
 $ alias yoxa='oxa --yolo'
 ```
 
+### Grants, named root actions and the sudo password
+
+An approval you answer for an unattended run (`oxa send --approve`, the lead page) is bound to what the command acts on. For a push that is the object id of each source ref and a digest of origin's URLs, read again immediately before the run; the same text after a new commit, a reset or `git remote set-url` asks again, and a push whose refspec the shell computes cannot be replayed unattended. An interactive session grant and your own `always` line stay exact-text keys, by your choice.
+
+`oxa.approval.rootActions` names root actions you accept without oxa's own question, for example `boot: bootctl set-default *` (`*` matches exactly one word). It only applies to a line that is one `sudo` (or `sudo -n`) command with no redirect, pipe or `$`, only in your interactive session, and never to workers, subagents or headless runs. oxa skips its own prompt for a named action; sudo itself still decides whether a password is needed. When it is, sudo runs oxa's askpass helper, a masked dialog asks you, and the password goes straight to sudo: it is not in the tool output, the transcript, the session file or the logs, and neither a typed message nor yolo can answer it. Without a terminal-free path (an unattended run, or under `--sandbox`) the request is answered `none` and sudo reports its own error.
+
 ### Dangerous-command rules
 
 Before a command runs in standard or auto mode, oxa reads what it does: the program after launchers (`command`, `env`, `exec`, `nice`), the directory chain of `env -C`, the files it writes and reads, and whether it prints a login token. The built-in rules are approval prompts, not a sandbox, and yolo never asks.

@@ -285,8 +285,28 @@ fn execute(
         Stdio::null()
     })
     .stdout(Stdio::from(writer))
-    .stderr(Stdio::from(writer_err))
-    .process_group(0);
+    .stderr(Stdio::from(writer_err));
+    // A privileged command with a password helper (`SUDO_ASKPASS`, set only by an attended
+    // session) runs in its own session without a controlling terminal, so sudo uses the helper
+    // instead of opening the TUI's terminal. The session leader is also the process group
+    // leader, so the group handling below is unchanged. Other commands keep the process group.
+    if cmd
+        .get_envs()
+        .any(|(key, value)| key == "SUDO_ASKPASS" && value.is_some())
+    {
+        // SAFETY: the closure runs in the forked child before exec and calls only
+        // async-signal-safe functions (setsid).
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    } else {
+        cmd.process_group(0);
+    }
     let spawned = cmd.spawn();
     // The Command still holds the write ends; they must close here or the reader never sees EOF.
     drop(cmd);

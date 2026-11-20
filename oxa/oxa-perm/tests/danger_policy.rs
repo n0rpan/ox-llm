@@ -222,3 +222,43 @@ fn a_grant_covers_only_the_command_line_it_was_approved_in() {
         "the push alone was never approved"
     );
 }
+
+/// #784: an owner-named root action skips oxa's own `sudo` question for exactly that command; a
+/// compound line, a computed word or a redirect keeps it, and a policy built without the list (a
+/// worker) still asks.
+#[test]
+fn a_named_root_action_skips_only_the_sudo_question() {
+    let guard = guard();
+    let entries = vec!["boot: bootctl set-default *".to_string()];
+    let (rules, warnings) = DangerRules::builtin().with_root_actions(&entries);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let ids = |rules: &DangerRules, command: &str| -> Vec<String> {
+        rules
+            .classify(command, cwd(), &guard)
+            .into_iter()
+            .map(|hit| hit.rule)
+            .collect()
+    };
+    assert!(ids(&rules, "sudo bootctl set-default arch.conf").is_empty());
+    assert!(ids(&rules, "sudo -n bootctl set-default arch.conf").is_empty());
+    for command in [
+        "sudo bootctl set-default a; rm -rf /",
+        "sudo bootctl set-default $X",
+        "sudo bootctl set-default a > /etc/x",
+        "sudo rm -rf /srv",
+        "sudo bootctl set-default a b",
+        "sudo ./bootctl set-default a",
+        "sudo -u root bootctl set-default a",
+    ] {
+        assert!(ids(&rules, command).contains(&"sudo".to_string()), "{command}");
+    }
+    // A policy built without the list (the worker path) still asks.
+    let plain = DangerRules::builtin();
+    assert_eq!(
+        ids(&plain, "sudo bootctl set-default arch.conf"),
+        vec!["sudo".to_string()]
+    );
+    // A malformed entry is ignored with a warning.
+    let (_, warnings) = DangerRules::builtin().with_root_actions(&["no colon here".to_string()]);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+}

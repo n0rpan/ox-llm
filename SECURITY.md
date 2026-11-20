@@ -23,6 +23,16 @@ prompts in standard mode, not a sandbox; yolo does not reach them. A saved unatt
 pipeline fed by anything but a literal `echo`/`printf`, or an input redirect. A `wait` probe that runs `gh`
 is network access (plan denies, ask asks once per session).
 
+A desk grant (once or session) of a pushing command in an unattended run is bound to resolved facts:
+the source ref object ids and a digest of origin's URLs (never the URLs), re-read at every decision
+immediately before the run, plus the run and session. After a commit, a reset or `git remote set-url`
+the same text asks again; facts that cannot be resolved (computed words, unreadable repository) are
+refused for unattended replay. An interactive session grant and the owner's `always` line stay
+exact-text keys by the owner's own choice. `oxa.approval.rootActions` (user settings only, never a
+project file, never given to a worker, subagent or headless run) names `sudo` commands oxa does not
+ask about; sudo itself still decides whether a password is needed, and the password is typed into an
+oxa dialog and goes owner -> broker -> askpass helper -> sudo, never to the model, transcript or logs.
+
 Saved dangerous-command grants cover a reviewed literal command. Shell parameter or command
 substitution markers in any stage make saved grants inapplicable, including markers before a hit.
 The native cloud gateway's default recommendations use only configured API-key providers

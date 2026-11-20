@@ -1110,6 +1110,36 @@ fn prepare(st: &mut SessionState, call: &ToolCall, sink: &mut dyn EventSink, ui:
 /// tool (`ToolCtx::env`; extension tools pass it to `execute` as `toolCallId`).
 pub const TOOL_CALL_ID_ENV: &str = oxa_proto::names::ENV_TOOL_CALL_ID;
 
+/// #784: `SUDO_ASKPASS` for a bash command that runs through `sudo` in an attended session with
+/// no OS sandbox. It names the broker's askpass entry, so a password sudo asks for is typed into
+/// an oxa dialog and goes straight to sudo; the model never sees it. Not exported under bwrap
+/// (the helper is outside it) or for an unattended run (nobody can type a password).
+fn askpass_env(st: &SessionState, tool: &str, args: &Value, attended: bool) -> Option<(String, String)> {
+    if tool != "bash" || !attended {
+        return None;
+    }
+    let command = args.get("command")?.as_str()?;
+    if !oxa_perm::runs_privileged(command) {
+        return None;
+    }
+    let broker = st.shared.owner_confirm()?;
+    let probe = oxa_proto::ExecSpec {
+        command: String::new(),
+        cwd: st.cwd.clone(),
+        writable: true,
+        net: true,
+        timeout_s: None,
+        env: Vec::new(),
+    };
+    if !st.sandbox.bwrap_args(&probe).is_empty() {
+        return None;
+    }
+    Some((
+        "SUDO_ASKPASS".to_string(),
+        broker.askpass_path().to_string_lossy().into_owned(),
+    ))
+}
+
 /// What a tool run needs from the state, owned, so that the run can leave the session thread.
 struct OwnedCtx {
     cwd: std::path::PathBuf,
@@ -1128,11 +1158,13 @@ impl OwnedCtx {
         st: &SessionState,
         call_id: &str,
         checked: &[(std::path::PathBuf, std::path::PathBuf)],
+        askpass: Option<(String, String)>,
     ) -> OwnedCtx {
         let mut env = st.tool_env.clone();
         if !call_id.is_empty() {
             env.push((TOOL_CALL_ID_ENV.to_string(), call_id.to_string()));
         }
+        env.extend(askpass);
         OwnedCtx {
             cwd: st.cwd.clone(),
             spill_dir: st.spill_dir.clone(),
@@ -1177,7 +1209,8 @@ pub(crate) fn run_tool(
     ui: &mut dyn Ui,
     live: &mut dyn FnMut(&mut dyn EventSink, &str),
 ) -> ToolOutput {
-    let owned = OwnedCtx::of(st, call_id, checked);
+    let askpass = askpass_env(st, &tool.spec().name, args, ui.interactive());
+    let owned = OwnedCtx::of(st, call_id, checked, askpass);
     if st.host_rx.is_none() {
         let cx = owned.cx();
         let mut direct = |partial: &str| live(&mut *sink, partial);
@@ -1281,9 +1314,10 @@ fn run_parallel(
     for p in batch {
         crate::fire::tool_start(st, &p.id, &p.name, &p.args, sink, ui);
     }
+    let attended = ui.interactive();
     let owned: Vec<OwnedCtx> = batch
         .iter()
-        .map(|p| OwnedCtx::of(st, &p.id, &p.checked))
+        .map(|p| OwnedCtx::of(st, &p.id, &p.checked, askpass_env(st, &p.name, &p.args, attended)))
         .collect();
     let cancelled = st.shared.cancel.is_cancelled();
     std::thread::scope(|scope| {

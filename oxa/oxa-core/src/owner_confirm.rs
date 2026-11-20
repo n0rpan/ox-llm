@@ -13,6 +13,12 @@
 //! Protocol, one line each way: `{"question": .., "preview_sha256": ..}` in,
 //! `{"answer": "yes"|"no"|"none", "source": "yolo"|"dialog"|"typed"|"none"}` out. `none` means
 //! nobody could answer (no way to ask the owner); callers treat it as "not confirmed".
+//!
+//! A second request shape carries a password prompt (sudo's askpass helper): `{"secret_prompt": ..}`
+//! in, `{"secret": ..}` or `{"answer": "none"}` out. It is answered only by the session's own
+//! `Ui::secret` dialog: never by a typed message, never by yolo (there is no password to invent),
+//! and an unattended run answers `none`. The secret is held only until it is written to the
+//! asking process's socket; it is never put in a [`Record`] or in `Debug` output.
 use oxa_proto::{Ui, YoloSwitch};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
@@ -98,6 +104,21 @@ pub fn ask(sock: &Path, question: &str) -> Option<bool> {
 }
 
 /// [`ask`] on a connection the caller already made (and verified): one request, one answer.
+/// The askpass side: send a password prompt to the session's broker at `sock` and wait for the
+/// owner's secret. `None` when nobody could answer. The caller prints the secret to its own
+/// stdout, which sudo reads; it must not log or keep it.
+pub fn ask_secret(sock: &Path, prompt: &str) -> Option<String> {
+    let mut stream = UnixStream::connect(sock).ok()?;
+    writeln!(stream, "{}", json!({"secret_prompt": prompt})).ok()?;
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).ok()?;
+    let reply: Value = serde_json::from_str(&line).ok()?;
+    reply.get("secret").and_then(Value::as_str).map(str::to_string)
+}
+
+/// The askpass helper's name in the broker directory (a symlink to the running executable).
+pub const ASKPASS_NAME: &str = "oxa-askpass";
+
 pub fn ask_on(mut stream: UnixStream, question: &str) -> Option<bool> {
     use sha2::{Digest, Sha256};
     let sha: String = Sha256::digest(question.as_bytes())
@@ -167,6 +188,10 @@ struct Pending {
     shown: bool,
     reply: Option<(Verdict, Origin)>,
     cancel_dialog: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// A password prompt rather than a yes/no question: only the `Ui::secret` dialog answers it.
+    secret: bool,
+    /// The owner's secret, held until the waiting connection takes it.
+    secret_value: Option<String>,
 }
 
 #[derive(Default)]
@@ -233,6 +258,13 @@ impl OwnerConfirm {
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
         let sock = dir.join("confirm.sock");
         let _ = std::fs::remove_file(&sock);
+        // The askpass entry sudo runs: the oxa executable itself under another name, so no
+        // second binary ships. A failure only means no password path.
+        let helper = dir.join(ASKPASS_NAME);
+        let _ = std::fs::remove_file(&helper);
+        if let Ok(exe) = std::env::current_exe() {
+            let _ = std::os::unix::fs::symlink(exe, &helper);
+        }
         let listener = UnixListener::bind(&sock)?;
         std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))?;
         let broker = Arc::new(OwnerConfirm {
@@ -250,6 +282,11 @@ impl OwnerConfirm {
 
     pub fn sock_path(&self) -> &Path {
         &self.sock
+    }
+
+    /// The askpass helper a privileged command's `SUDO_ASKPASS` names (see [`ASKPASS_NAME`]).
+    pub fn askpass_path(&self) -> PathBuf {
+        self.sock.parent().unwrap_or(Path::new("")).join(ASKPASS_NAME)
     }
 
     /// Return the previous state so an inner host pump can restore its caller's state.
@@ -272,12 +309,23 @@ impl OwnerConfirm {
                 .map(|p| {
                     p.shown = true;
                     p.cancel_dialog = canceller;
-                    (p.id, p.question.clone())
+                    (p.id, p.question.clone(), p.secret)
                 })
         };
-        let Some((id, question)) = next else {
+        let Some((id, question, secret)) = next else {
             return;
         };
+        if secret {
+            // The prompt is the requesting process's own text, shown as data. Only this dialog
+            // answers; the value goes straight to the waiting connection.
+            let body = format!(
+                "A process run by this session asks for a password. Its prompt follows as written; \
+                 it is not an oxa message.\n\n{question}"
+            );
+            let value = ui.secret("Password requested by a process of this session", &body);
+            self.answer_secret(id, value);
+            return;
+        }
         // The question is the requesting process's own text: shown as data, marked as such, so
         // it cannot pass for an oxa message.
         let body = format!(
@@ -299,7 +347,7 @@ impl OwnerConfirm {
         let id = lock(&self.state)
             .pending
             .iter()
-            .find(|p| p.reply.is_none() && p.shown)
+            .find(|p| p.reply.is_none() && p.shown && !p.secret)
             .map(|p| p.id);
         let Some(id) = id else {
             return false;
@@ -312,7 +360,7 @@ impl OwnerConfirm {
         lock(&self.state)
             .pending
             .iter()
-            .find(|p| p.reply.is_none() && p.shown)
+            .find(|p| p.reply.is_none() && p.shown && !p.secret)
             .map(|p| p.id)
     }
 
@@ -324,7 +372,7 @@ impl OwnerConfirm {
         let shown = lock(&self.state)
             .pending
             .iter()
-            .any(|p| p.id == id && p.reply.is_none() && p.shown);
+            .any(|p| p.id == id && p.reply.is_none() && p.shown && !p.secret);
         if !shown {
             return false;
         }
@@ -367,8 +415,30 @@ impl OwnerConfirm {
         true
     }
 
+    /// The owner's answer to a password prompt, from the session's `Ui::secret` dialog only.
+    fn answer_secret(&self, id: u64, value: Option<String>) {
+        let mut st = lock(&self.state);
+        if let Some(p) = st.pending.iter_mut().find(|p| p.id == id && p.reply.is_none()) {
+            let verdict = if value.is_some() {
+                Verdict::Yes
+            } else {
+                Verdict::None
+            };
+            p.secret_value = value;
+            p.reply = Some((verdict, Origin::Dialog));
+            self.cv.notify_all();
+        }
+    }
+
     fn request(&self, question: String, sha: String) -> (Verdict, Origin) {
-        if self.yolo.full() {
+        let (verdict, origin, _) = self.request_kind(question, sha, false);
+        (verdict, origin)
+    }
+
+    fn request_kind(&self, question: String, sha: String, secret: bool) -> (Verdict, Origin, Option<String>) {
+        // Yolo answers a yes/no question; it cannot answer a password prompt (there is no
+        // password to invent), so a secret request waits for the owner's dialog like any other.
+        if self.yolo.full() && !secret {
             let mut st = lock(&self.state);
             st.fresh.push(Record {
                 question,
@@ -376,14 +446,14 @@ impl OwnerConfirm {
                 verdict: Verdict::Yes,
                 origin: Origin::Yolo,
             });
-            return (Verdict::Yes, Origin::Yolo);
+            return (Verdict::Yes, Origin::Yolo, None);
         }
         let mut st = lock(&self.state);
         while st.busy && !self.closed.load(Ordering::SeqCst) {
             st = self.cv.wait(st).unwrap_or_else(|p| p.into_inner());
         }
         if self.closed.load(Ordering::SeqCst) || !self.servable.load(Ordering::SeqCst) {
-            return (Verdict::None, Origin::Nobody);
+            return (Verdict::None, Origin::Nobody, None);
         }
         st.busy = true;
         let id = st.next;
@@ -394,6 +464,8 @@ impl OwnerConfirm {
             shown: false,
             reply: None,
             cancel_dialog: None,
+            secret,
+            secret_value: None,
         });
         let outcome = loop {
             let done = st.pending.iter().find(|p| p.id == id).and_then(|p| p.reply);
@@ -405,9 +477,14 @@ impl OwnerConfirm {
             }
             st = self.cv.wait(st).unwrap_or_else(|p| p.into_inner());
         };
+        let value = st
+            .pending
+            .iter_mut()
+            .find(|p| p.id == id)
+            .and_then(|p| p.secret_value.take());
         st.pending.retain(|p| p.id != id);
         st.busy = false;
-        if outcome.0 != Verdict::None {
+        if outcome.0 != Verdict::None && !secret {
             st.fresh.push(Record {
                 question,
                 preview_sha256: sha,
@@ -416,7 +493,7 @@ impl OwnerConfirm {
             });
         }
         self.cv.notify_all();
-        outcome
+        (outcome.0, outcome.1, value)
     }
 
     /// Read one request line: at most `max_request_bytes` (newline included), delivered
@@ -463,6 +540,16 @@ impl OwnerConfirm {
             Some(line) => serde_json::from_str(&line).unwrap_or(Value::Null),
             None => Value::Null,
         };
+        if let Some(prompt) = req.get("secret_prompt").and_then(Value::as_str) {
+            let (_, _, secret) = self.request_kind(prompt.to_string(), String::new(), true);
+            let _ = stream.set_write_timeout(Some(self.limits.read_timeout));
+            let reply = match secret {
+                Some(value) => json!({"secret": value}),
+                None => json!({"answer": "none", "source": "none"}),
+            };
+            let _ = writeln!(&stream, "{reply}");
+            return;
+        }
         let sha = req.get("preview_sha256").and_then(Value::as_str).unwrap_or("");
         let (verdict, origin) = match req.get("question").and_then(Value::as_str) {
             Some(q) => self.request(q.to_string(), sha.to_string()),
@@ -592,6 +679,110 @@ mod tests {
         fn ask_access(&mut self, _: &oxa_proto::Access) -> oxa_proto::Answer {
             oxa_proto::Answer::Deny
         }
+    }
+
+    /// A `Ui` whose password dialog answers `value`, after `gate` (when given) is released.
+    struct SecretDialog {
+        value: Option<String>,
+        gate: Option<std::sync::mpsc::Receiver<()>>,
+    }
+    impl Ui for SecretDialog {
+        fn secret(&mut self, _: &str, _: &str) -> Option<String> {
+            if let Some(gate) = &self.gate {
+                gate.recv().ok()?;
+            }
+            self.value.clone()
+        }
+        fn confirm(&mut self, _: &str, _: &str, _: Option<u32>) -> Option<bool> {
+            None
+        }
+        fn select(&mut self, _: &str, _: &[String], _: Option<u32>) -> Option<usize> {
+            None
+        }
+        fn input(&mut self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+        fn editor(&mut self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+        fn notify(&mut self, _: &str, _: oxa_proto::Level) {}
+        fn set_status(&mut self, _: &str, _: Option<&str>) {}
+        fn set_widget(&mut self, _: &str, _: Option<&[String]>, _: oxa_proto::Placement) {}
+        fn set_title(&mut self, _: &str) {}
+        fn set_editor_text(&mut self, _: &str) {}
+        fn ask_access(&mut self, _: &oxa_proto::Access) -> oxa_proto::Answer {
+            oxa_proto::Answer::Deny
+        }
+    }
+
+    /// A password prompt is answered by the session's secret dialog, even in yolo (no password
+    /// to invent), and the secret is in no Record.
+    #[test]
+    fn owner_confirm_secret_is_answered_by_the_secret_dialog_and_never_recorded() {
+        let d = dir("secret");
+        let b = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Yolo)).expect("start");
+        b.set_servable(true);
+        let sock = b.sock_path().to_path_buf();
+        let t = std::thread::spawn(move || ask_secret(&sock, "Password:"));
+        let mut dialog = SecretDialog {
+            value: Some("opaque-example".into()),
+            gate: None,
+        };
+        pump(&b, &mut dialog, 25);
+        assert_eq!(t.join().expect("join").as_deref(), Some("opaque-example"));
+        assert!(b.take_records().is_empty(), "a secret is never recorded");
+        assert!(!format!("{b:?}").contains("opaque-example"));
+        b.close();
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// A typed message never answers a password prompt, whatever it says.
+    #[test]
+    fn owner_confirm_typed_text_cannot_answer_a_secret_request() {
+        let d = dir("secret-typed");
+        let b = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Standard)).expect("start");
+        b.set_servable(true);
+        let sock = b.sock_path().to_path_buf();
+        let t = std::thread::spawn(move || ask_secret(&sock, "Password:"));
+        while lock(&b.state).pending.is_empty() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let (release, gate) = std::sync::mpsc::channel();
+        let shown = b.clone();
+        let dialog = std::thread::spawn(move || {
+            shown.serve(&mut SecretDialog {
+                value: Some("opaque-example".into()),
+                gate: Some(gate),
+            });
+        });
+        while b
+            .state
+            .lock()
+            .map(|st| !st.pending.iter().any(|p| p.shown))
+            .unwrap_or(true)
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            !b.resolve_typed("yes"),
+            "typed text does not answer a secret request"
+        );
+        assert_eq!(b.shown_request(), None);
+        release.send(()).expect("release the dialog");
+        dialog.join().expect("dialog");
+        assert_eq!(t.join().expect("join").as_deref(), Some("opaque-example"));
+        b.close();
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// With no way to ask the owner (not servable), a password prompt is answered `none`.
+    #[test]
+    fn owner_confirm_secret_without_a_servable_ui_is_none() {
+        let d = dir("secret-none");
+        let b = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Standard)).expect("start");
+        assert_eq!(ask_secret(b.sock_path(), "Password:"), None);
+        b.close();
+        let _ = std::fs::remove_dir_all(d);
     }
 
     /// Serve until the waiting request has been shown and answered, from the "session thread".

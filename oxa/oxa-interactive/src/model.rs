@@ -704,6 +704,13 @@ pub enum UiRequest {
         placeholder: String,
         reply: Sender<Option<String>>,
     },
+    /// A masked input for a password a process of this session asks for (`Ui::secret`). Its
+    /// answer is never recorded or displayed.
+    Secret {
+        title: String,
+        body: String,
+        reply: Sender<Option<String>>,
+    },
     Editor {
         title: String,
         prefill: String,

@@ -14,6 +14,9 @@ use std::path::{Path, PathBuf};
 /// The owner setting that lists the rules (`oxa.approval.dangerous`); user settings only.
 pub const SETTING_DANGEROUS: &str = "oxa.approval.dangerous";
 
+/// The owner setting that names root actions (`oxa.approval.rootActions`); user settings only.
+pub const SETTING_ROOT_ACTIONS: &str = "oxa.approval.rootActions";
+
 /// Every built-in rule: (id, one-line reason).
 pub const BUILTIN_RULES: &[(&str, &str)] = &[
     (
@@ -89,6 +92,8 @@ impl DangerHit {
 pub struct DangerRules {
     builtin: Vec<&'static str>,
     custom: Vec<Vec<String>>,
+    /// Owner-named root actions (`oxa.approval.rootActions`): the command words of each entry.
+    root_actions: Vec<Vec<String>>,
 }
 
 /// Recursion cap for nested `$( )`, backticks and `sh -c` strings.
@@ -128,6 +133,7 @@ impl DangerRules {
         DangerRules {
             builtin: BUILTIN_RULES.iter().map(|row| row.0).collect(),
             custom: Vec::new(),
+            root_actions: Vec::new(),
         }
     }
 
@@ -155,7 +161,77 @@ impl DangerRules {
                 warnings.push(format!("{SETTING_DANGEROUS}: unknown rule `{e}` ignored"));
             }
         }
-        (DangerRules { builtin, custom }, warnings)
+        (
+            DangerRules {
+                builtin,
+                custom,
+                root_actions: Vec::new(),
+            },
+            warnings,
+        )
+    }
+
+    /// The owner's named root actions (`oxa.approval.rootActions`, user settings only): each
+    /// entry is `<name>: <command words>`, where `*` matches exactly one word. A line that is
+    /// exactly one simple command, `sudo` (optionally `-n`) and a listed command, raises no
+    /// `sudo` hit; every other rule still applies to it. Sudo itself still decides whether a
+    /// password is needed. Malformed entries are ignored and reported in the warnings.
+    pub fn with_root_actions(mut self, entries: &[String]) -> (DangerRules, Vec<String>) {
+        let mut warnings = Vec::new();
+        for entry in entries {
+            let words: Option<Vec<String>> = entry
+                .split_once(':')
+                .filter(|(name, _)| !name.trim().is_empty())
+                .map(|(_, command)| command.split_whitespace().map(str::to_string).collect())
+                .filter(|words: &Vec<String>| !words.is_empty() && words.iter().all(|w| !has_dynamic(w)));
+            match words {
+                Some(words) => {
+                    if !self.root_actions.contains(&words) {
+                        self.root_actions.push(words);
+                    }
+                }
+                None => warnings.push(format!(
+                    "{SETTING_ROOT_ACTIONS}: entry `{}` ignored (expected `<name>: <command words>`)",
+                    entry.trim()
+                )),
+            }
+        }
+        (self, warnings)
+    }
+
+    /// `true` when `stages` is exactly one simple command, with no redirect, pipe, background,
+    /// substitution or `$`, that runs a listed root action through `sudo` (or `sudo -n`).
+    fn is_root_action(&self, stages: &[Stage]) -> bool {
+        if self.root_actions.is_empty() {
+            return false;
+        }
+        let [stage] = stages else { return false };
+        if stage.mark.is_some()
+            || stage.pipe_in
+            || stage.background
+            || stage.conditional
+            || !stage.redirects.is_empty()
+            || !stage.bodies.is_empty()
+            || stage.words.iter().any(|w| has_dynamic(w))
+        {
+            return false;
+        }
+        let words = &stage.words;
+        let argv: &[String] = match words.as_slice() {
+            [sudo, rest @ ..] if sudo == "sudo" => match rest {
+                [flag, tail @ ..] if flag == "-n" => tail,
+                _ => rest,
+            },
+            _ => return false,
+        };
+        // The launcher chain must be just that `sudo`: the same argv comes out of `effects::of`.
+        let fx = effects::of(words, &stage.redirects, false);
+        fx.privileged
+            && fx.argv == argv
+            && self
+                .root_actions
+                .iter()
+                .any(|action| root_action_matches(action, argv))
     }
 
     /// Every simple command of `command` that matches an enabled rule. `cwd` is the workspace
@@ -168,7 +244,12 @@ impl DangerRules {
         };
         let mut hits: Vec<DangerHit> = Vec::new();
         match parse_line(command) {
-            Some(stages) => self.check_stages(&stages, &ctx, 0, false, &mut hits),
+            Some(stages) => {
+                self.check_stages(&stages, &ctx, 0, false, &mut hits);
+                if self.is_root_action(&stages) {
+                    hits.retain(|hit| hit.rule != "sudo");
+                }
+            }
             None => self.push(&mut hits, "unparsed", command.trim()),
         }
         hits
@@ -996,6 +1077,24 @@ impl DangerRules {
     }
 }
 
+/// `argv` equals the words of a root action; `*` stands for exactly one word. The command name
+/// must be the listed word itself (not a path): `sudo` resolves it on its own secure path, so a
+/// script in the workspace named like the action is never matched.
+fn root_action_matches(action: &[String], argv: &[String]) -> bool {
+    action.len() == argv.len() && action.iter().zip(argv).all(|(a, w)| a == "*" || a == w)
+}
+
+/// `true` when some simple command of `command` runs through a privilege launcher (`sudo`,
+/// `doas`, `su`, `pkexec`, `run0`).
+pub fn runs_privileged(command: &str) -> bool {
+    parse_line(command).is_some_and(|stages| {
+        stages
+            .iter()
+            .filter(|st| st.mark.is_none())
+            .any(|st| effects::of(&st.words, &st.redirects, false).privileged)
+    })
+}
+
 /// A write target git runs later: the worktree's `.git` file, a hooks directory, `config`,
 /// `config.worktree`, `commondir` or `gitdir` of any `.git` directory (any depth), or the same
 /// files of a linked worktree's git directory.
@@ -1206,7 +1305,7 @@ fn push_subshell(out: &mut Vec<Stage>, inner: &str, depth: usize) -> Option<()> 
 /// Splits a line into simple commands, flattening command substitutions, backticks and
 /// subshells into the same list. `None` when the line cannot be read (an open quote, a
 /// trailing backslash, too much nesting).
-fn parse_line(src: &str) -> Option<Vec<Stage>> {
+pub(crate) fn parse_line(src: &str) -> Option<Vec<Stage>> {
     parse_depth(src, 0)
 }
 

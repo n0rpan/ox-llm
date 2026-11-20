@@ -1035,6 +1035,16 @@ fn prepare(
     let endpoint = with_api_key(default_endpoint(&models)?, a);
     // E11: a subagent child sends its requests under the parent's child hint (`child.rs`).
     let child = crate::child::ChildIdentity::from_env(env, &mut notices);
+    // #784: the owner's named root actions apply to the interactive owner session only; a
+    // worker, subagent, headless or `oxa work` run never gets the list.
+    let danger = if mode == RunMode::Interactive && !child.nested() && !a.lead {
+        let (rules, warnings) =
+            danger.with_root_actions(&user_settings.user_list(oxa_perm::SETTING_ROOT_ACTIONS));
+        notices.extend(warnings.into_iter().map(|w| (Level::Warning, w)));
+        rules
+    } else {
+        danger
+    };
     if !crate::in_process::cloud_enabled(&user_settings, dirs) {
         notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
     }

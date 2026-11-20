@@ -40,7 +40,9 @@ mod policy;
 mod publish;
 mod trust;
 
-pub use danger::{DangerHit, DangerRules, BUILTIN_RULES, SETTING_DANGEROUS};
+pub use danger::{
+    runs_privileged, DangerHit, DangerRules, BUILTIN_RULES, SETTING_DANGEROUS, SETTING_ROOT_ACTIONS,
+};
 pub use desk::{ApprovalDesk, Record as ApprovalRecord, UnattendedMode};
 pub use paths::{is_inside, is_read_only_command, normalize, resolve_real};
 pub use policy::{deny_reasons, HiddenPaths, ModePolicy, PathGuard};
