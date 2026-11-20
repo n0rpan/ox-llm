@@ -745,7 +745,20 @@ fn saved_native_result_recovers_after_another_task_acknowledges_the_cursor() {
 fn a_held_native_task_runs_online_and_ends_locally_verified_with_publication_held() {
     let fixture = Fixture::new();
     renew(&fixture);
-    let server = completion();
+    let mut done = ScriptTurn::tool(
+        "done",
+        "goal_done",
+        r#"{"status":"complete","evidence":"Synthetic held task."}"#,
+    );
+    done.text = Some("Synthetic held task complete".into());
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::tool("write", "write", r#"{"path":"held.txt","content":"held\n"}"#),
+            done,
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
     let (_, output) = fixture.run(&server);
     assert!(output.status.success(), "{output:?}");
     assert!(
