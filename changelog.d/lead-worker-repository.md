@@ -1,0 +1,1 @@
+- A trusted Lead outside Git can start workers in an explicitly trusted checkout named in the owner's settings, without switching the Lead to that repository.

@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 
 /// Names that are read or set in non-test code but are not oxa configuration. Each has a reason.
 const ALLOWED: &[(&str, &str)] = &[
+    (
+        "CARGO_TARGET_DIR",
+        "toolchain: an owner-set target directory wins over the derived worker build cache",
+    ),
     ("HOME", "OS: the user's home directory"),
     ("PATH", "OS: executable search path, passed on to children"),
     ("USER", "OS: login name, for the report footer"),

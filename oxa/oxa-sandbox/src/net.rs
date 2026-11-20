@@ -96,33 +96,30 @@ impl<'a> StreamRedactor<'a> {
         // Any secret that starts before `emit` ends inside `pending` (start + len <=
         // emit - 1 + hold + 1 = pending.len()), so every position decided here is decided on
         // full data.
-        let buf = &self.pending;
-        let mut out = Vec::with_capacity(emit);
-        let mut i = 0;
-        while i < emit {
-            if let Some(t) = self.tokens.iter().find(|t| buf[i..].starts_with(t)) {
-                out.extend_from_slice(REDACTED.as_bytes());
-                i += t.len();
-            } else {
-                out.push(buf[i]);
-                i += 1;
-            }
-        }
-        self.pending.drain(..i);
+        let (out, consumed) = self.mask(&self.pending, emit);
+        self.pending.drain(..consumed);
         out
     }
 
-    /// EOF: the held-back tail is shorter than the longest token, so it cannot hold that one, but
-    /// it can hold a shorter token whole. Mask every token in it, longest first as in
-    /// [`StreamRedactor::many`], and flush.
+    /// EOF: the held-back tail may contain a shorter secret. Mask it before sending it.
     fn finish(&mut self) -> Vec<u8> {
-        let mut out = std::mem::take(&mut self.pending);
-        for t in &self.tokens {
-            if !t.is_empty() && out.windows(t.len()).any(|window| window == *t) {
-                out = redact(&out, &String::from_utf8_lossy(t));
+        let pending = std::mem::take(&mut self.pending);
+        self.mask(&pending, pending.len()).0
+    }
+
+    fn mask(&self, bytes: &[u8], emit: usize) -> (Vec<u8>, usize) {
+        let mut out = Vec::with_capacity(emit);
+        let mut i = 0;
+        while i < emit {
+            if let Some(t) = self.tokens.iter().find(|t| bytes[i..].starts_with(t)) {
+                out.extend_from_slice(REDACTED.as_bytes());
+                i += t.len();
+            } else {
+                out.push(bytes[i]);
+                i += 1;
             }
         }
-        out
+        (out, i)
     }
 }
 
@@ -141,9 +138,8 @@ impl NetSandbox {
 
     /// The credentials to scrub from the output of commands that run with the user's own
     /// rights (no OS sandbox), whatever the bash network setting: `source` runs lazily, once,
-    /// at the first such command, and returns every GitHub CLI token on the machine (all
-    /// accounts, all hosts), so `gh auth token --user other` or a read of the token file is
-    /// scrubbed too.
+    /// at the first such command. The session supplies its known values, including GitHub
+    /// CLI tokens for every account and host.
     pub fn with_host_secrets_lazy(
         mut self,
         source: impl Fn() -> Vec<String> + Send + Sync + 'static,
@@ -218,6 +214,10 @@ impl NetSandbox {
         run: impl FnOnce(&ExecSpec, &mut dyn FnMut(&[u8])) -> ExecResult,
     ) -> ExecResult {
         let s = self.clamp_run(spec);
+        if !self.inner.network_enforced() {
+            // The portable executor also runs hooks and extension commands with host rights.
+            return Self::redact_host_output(Some(self), &s.env, live, |live| run(&s, live));
+        }
         // Injection is per command, but redaction covers every networked command once the
         // token is known, so `cat token.txt` after `gh auth token > token.txt` is scrubbed.
         // `self.token()` loads a lazy token here too: the first networked command may be
@@ -260,28 +260,34 @@ impl NetSandbox {
             None => Vec::new(),
         });
         for t in found {
-            let t = t.trim();
-            if !t.is_empty() && !all.iter().any(|x| x == t) {
-                all.push(t.to_string());
+            if !t.is_empty() && !all.contains(t) {
+                all.push(t.clone());
             }
         }
         all
     }
 
-    /// [`redact_output`](Self::redact_output) for commands that run with the user's rights:
-    /// scrubs every GitHub credential, whether or not the command has the network (a file-backed
-    /// token reads the same with the network off). The environment stays cleared; nothing is
-    /// injected.
+    /// Host shells mask known credentials even when the network is off and even if a
+    /// variable was stripped from the command's environment. This never injects a value.
     pub(crate) fn redact_host_output(
-        &self,
+        controls: Option<&Self>,
+        env: &[(String, String)],
         live: &mut dyn FnMut(&[u8]),
         run: impl FnOnce(&mut dyn FnMut(&[u8])) -> ExecResult,
     ) -> ExecResult {
-        let secrets = self.host_redaction_secrets();
-        if secrets.is_empty() {
+        let secrets = controls.map(Self::host_redaction_secrets).unwrap_or_default();
+        let refs: Vec<&str> = secrets
+            .iter()
+            .map(String::as_str)
+            .chain(
+                env.iter()
+                    .filter(|(name, value)| crate::is_host_secret_name(name) && !value.is_empty())
+                    .map(|(_, value)| value.as_str()),
+            )
+            .collect();
+        if refs.is_empty() {
             return run(live);
         }
-        let refs: Vec<&str> = secrets.iter().map(String::as_str).collect();
         let mut sr = StreamRedactor::many(&refs);
         let mut r = run(&mut |b: &[u8]| {
             let o = sr.push(b);
@@ -293,9 +299,7 @@ impl NetSandbox {
         if !tail.is_empty() {
             live(&tail);
         }
-        for t in &refs {
-            r.output = redact(&r.output, t);
-        }
+        r.output = sr.mask(&r.output, r.output.len()).0;
         r
     }
 
@@ -559,7 +563,7 @@ mod tests {
         let n = NetSandbox::new(inner, false, true)
             .with_host_secrets_lazy(|| vec!["SYNTH_ACCOUNT_A".into(), "SYNTH_ACCOUNT_B".into()]);
         let mut live = Vec::new();
-        let r = n.redact_host_output(&mut |b| live.extend_from_slice(b), |live| {
+        let r = NetSandbox::redact_host_output(Some(&n), &[], &mut |b| live.extend_from_slice(b), |live| {
             live(b"a=SYNTH_ACCOUNT_A b=SYNTH_ACC");
             live(b"OUNT_B end");
             ExecResult {

@@ -135,23 +135,22 @@ pub const TOOLCHAIN_ENV: &[&str] = &[
 /// Prefixes of variables passed through when set (the same secret rule applies).
 pub const TOOLCHAIN_ENV_PREFIXES: &[&str] = &["MISE_"];
 
+/// Names whose exact values are masked in host shell output.
+pub fn is_host_secret_name(name: &str) -> bool {
+    let up = name.to_ascii_uppercase();
+    HOST_SECRET_NAMES.iter().any(|word| up.contains(word))
+}
+
+const HOST_SECRET_NAMES: [&str; 4] = ["TOKEN", "SECRET", "KEY", "PASSWORD"];
+
 /// A variable name that looks like a secret (token, key, password, credential, auth, cookie,
 /// session): never passed into the sandbox, whatever list it is on.
 pub fn is_secret_name(name: &str) -> bool {
     let up = name.to_ascii_uppercase();
-    [
-        "TOKEN",
-        "SECRET",
-        "KEY",
-        "PASSWORD",
-        "PASSWD",
-        "CREDENTIAL",
-        "AUTH",
-        "COOKIE",
-        "SESSION",
-    ]
-    .iter()
-    .any(|w| up.contains(w))
+    HOST_SECRET_NAMES
+        .iter()
+        .chain(["PASSWD", "CREDENTIAL", "AUTH", "COOKIE", "SESSION"].iter())
+        .any(|w| up.contains(w))
 }
 
 /// The variables of `env` that may reach a command: toolchain locations ([`TOOLCHAIN_ENV`],

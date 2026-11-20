@@ -183,6 +183,15 @@ impl Goal {
             self.pause_reason = None;
         }
     }
+    /// End a pursuing or paused goal as blocked, with a reason the owner sees (an owner budget
+    /// chose `stop` over a pause).
+    pub fn stop_because(&mut self, reason: &str) {
+        if matches!(self.status, GoalStatus::Pursuing | GoalStatus::Paused) {
+            self.status = GoalStatus::Blocked;
+            self.pause_reason = None;
+            self.evidence = Some(reason.into());
+        }
+    }
     /// Pause with a reason the owner sees (the goal cannot go on until they act).
     pub fn pause_because(&mut self, reason: &str) {
         if self.status == GoalStatus::Pursuing {

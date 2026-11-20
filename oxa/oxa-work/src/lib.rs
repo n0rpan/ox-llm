@@ -1717,6 +1717,10 @@ fn run_locked(
             }
         }
     }
+    // #1376: a native task is held for publication; say what finished and what did not.
+    if planned.native && state.record.outcome == Outcome::Done && state.record.detail.is_empty() {
+        state.record.detail = "local verified; publication held".into();
+    }
     writer
         .save(&mut state, Step::Finished, observer)
         .map_err(RunError::Checkpoint)?;

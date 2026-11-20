@@ -212,11 +212,9 @@ impl FullAccess {
     ) -> ExecResult {
         if !self.no_net() {
             let spec = self.host_spec(s);
-            let mut result = if let Some(net) = &self.host_net {
-                net.redact_host_output(live, |live| run_unsandboxed_capture(&spec, c, live, capture))
-            } else {
+            let mut result = NetSandbox::redact_host_output(self.host_net.as_deref(), &s.env, live, |live| {
                 run_unsandboxed_capture(&spec, c, live, capture)
-            };
+            });
             result.unsandboxed = true;
             return result;
         }
@@ -234,14 +232,10 @@ impl FullAccess {
         match self.offline_argv(s) {
             Ok(argv) => {
                 let spec = self.host_spec(s);
-                let run = |live: &mut dyn FnMut(&[u8])| {
+                // The network-disabled host path can still read credentials on disk.
+                NetSandbox::redact_host_output(self.host_net.as_deref(), &s.env, live, |live| {
                     crate::run::run_argv_cleared(&argv, &spec.env, stdin, s.timeout_s, c, live, capture)
-                };
-                // The network-disabled path still reads the same token files: scrub them too.
-                match &self.host_net {
-                    Some(net) => net.redact_host_output(live, run),
-                    None => run(live),
-                }
+                })
             }
             Err(_) => {
                 let message = oxa_proto::offline_error("bash under full access")
@@ -319,10 +313,9 @@ impl Sandbox for FullAccess {
         }
         if !self.no_net() {
             let spec = self.host_spec(s);
-            if let Some(net) = &self.host_net {
-                return net.redact_host_output(live, |live| run_unsandboxed_stdin(&spec, stdin, c, live));
-            }
-            return run_unsandboxed_stdin(&spec, stdin, c, live);
+            return NetSandbox::redact_host_output(self.host_net.as_deref(), &s.env, live, |live| {
+                run_unsandboxed_stdin(&spec, stdin, c, live)
+            });
         }
         self.run_without_network(s, Some(stdin), c, live, true)
     }

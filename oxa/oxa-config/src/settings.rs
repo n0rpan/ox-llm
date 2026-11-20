@@ -519,7 +519,7 @@ impl Settings {
         project: bool,
     ) -> Result<(), OxaError> {
         check_key_shape(key)?;
-        if project && crate::descriptor(key).is_some_and(|d| d.user_only) {
+        if project && crate::descriptor::is_user_only(key) {
             return Err(OxaError::new(
                 codes::INVALID,
                 format!("setting `{key}` is user-only; it cannot be set in a project file"),
@@ -935,7 +935,7 @@ fn strip_user_only(project: &mut Value, source: &str) -> Vec<Diagnostic> {
         return Vec::new();
     };
     let mut diags = Vec::new();
-    for d in crate::descriptors().iter().filter(|d| d.user_only) {
+    for d in crate::descriptor::all_rows().iter().filter(|d| d.user_only) {
         if remove_nested(map, d.key) {
             diags.push(warn(
                 source,
