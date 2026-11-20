@@ -163,6 +163,22 @@ pub enum Refusal {
     LocalOnly,
     Unauthenticated,
     NotAllowed,
+    /// Local mode: the request carries no valid per-client token (#193).
+    ClientToken,
+}
+
+/// Local mode needs more than the same-user peer: every request, page or POST, proves it holds
+/// the token `oxa lead serve` minted. Compared without an early exit on the first differing byte.
+pub(crate) fn client_token_ok(expected: &str, given: Option<&str>) -> bool {
+    let Some(given) = given else {
+        return false;
+    };
+    let (a, b) = (expected.as_bytes(), given.as_bytes());
+    let mut diff = a.len() ^ b.len();
+    for i in 0..a.len().max(b.len()) {
+        diff |= usize::from(a.get(i).copied().unwrap_or(0) ^ b.get(i).copied().unwrap_or(1));
+    }
+    !expected.is_empty() && diff == 0
 }
 
 /// Authorize before obtaining any observation. No socket, process, mutation, or secret reads.
@@ -304,7 +320,20 @@ mod tests {
             path,
             authority: "lead.example.invalid:9448",
             forwarded_login: Some("owner"),
+            client_token: None,
+            token_in_query: false,
+            denied: Default::default(),
         }
+    }
+
+    #[test]
+    fn client_token_compares_whole_value() {
+        assert!(client_token_ok("abc", Some("abc")));
+        assert!(!client_token_ok("abc", Some("abd")));
+        assert!(!client_token_ok("abc", Some("abcd")));
+        assert!(!client_token_ok("abc", Some("ab")));
+        assert!(!client_token_ok("abc", None));
+        assert!(!client_token_ok("", Some("")));
     }
 
     #[test]

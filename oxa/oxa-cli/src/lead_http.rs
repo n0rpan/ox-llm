@@ -190,6 +190,26 @@ pub struct Request<'a> {
     /// The single raw Host authority. This is input to policy, never expected/proven authority.
     pub authority: &'a str,
     pub forwarded_login: Option<&'a str>,
+    /// The per-client token the request carries (`?t=`, bearer or cookie), when well-formed.
+    /// Input to policy only; the transport never judges it.
+    pub client_token: Option<&'a str>,
+    /// The token came in the `?t=` query: a valid one is exchanged for a cookie by redirect.
+    pub token_in_query: bool,
+    /// Set by the authorization closure to 401 when the refusal is the client token.
+    pub denied: std::cell::Cell<u16>,
+}
+
+/// Cookie that carries the lead client token after the first `?t=` visit.
+pub(crate) const TOKEN_COOKIE: &str = "oxa_lead";
+
+/// A client token is the base64url text the server minted: nothing else is carried or echoed.
+fn token_text(value: &str) -> Option<&str> {
+    (!value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+    .then_some(value)
 }
 
 /// Handle one accepted connection, authorizing before any fact read or page rendering.
@@ -229,6 +249,7 @@ fn connection_fixed(
         Err(HeadError::TooLarge) => Err("431 Request Header Fields Too Large"),
         Err(_) => Err("400 Bad Request"),
     };
+    let mut set_cookie = String::new();
     let allowed = parsed
         .inspect_err(|status| {
             // Framing failures precede identity and any fact read: one fixed
@@ -264,7 +285,17 @@ fn connection_fixed(
             }
             // An identity refusal is reported by the caller's own authorization closure.
             if !authorize(&stream, &r) {
-                return Err("403 Forbidden");
+                return Err(if r.denied.get() == 401 {
+                    "401 Unauthorized"
+                } else {
+                    "403 Forbidden"
+                });
+            }
+            // The owner opened the printed URL: keep the token in a cookie, off the address bar.
+            if let (true, Some(token)) = (r.method == "GET" && r.token_in_query, r.client_token) {
+                set_cookie =
+                    format!("Set-Cookie: {TOKEN_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/\r\n");
+                return Ok((r.path, Some(r.path.to_string())));
             }
             let page = if post {
                 let scheme = form.map_or("https", |form| form.scheme);
@@ -384,7 +415,7 @@ fn connection_fixed(
             Ok((r.path, page))
         });
     let location = match &allowed {
-        Ok((_, Some(target))) => format!("Location: {target}\r\n"),
+        Ok((_, Some(target))) => format!("Location: {target}\r\n{set_cookie}"),
         _ => String::new(),
     };
     let (status, kind, body) = match allowed {
@@ -448,6 +479,8 @@ struct Fields<'a> {
     origin: Option<&'a str>,
     fetch_site: Option<&'a str>,
     kind: Option<&'a str>,
+    bearer: Option<&'a str>,
+    cookie: Option<&'a str>,
     length: usize,
 }
 
@@ -589,6 +622,8 @@ fn scan<'a>(headers: &Headers<'a>) -> Result<Scanned<'a>, &'static str> {
             || name.eq_ignore_ascii_case("origin") && fields.origin.replace(value).is_some()
             || name.eq_ignore_ascii_case("content-type") && fields.kind.replace(value).is_some()
             || name.eq_ignore_ascii_case("sec-fetch-site") && fields.fetch_site.replace(value).is_some()
+            || name.eq_ignore_ascii_case("authorization") && fields.bearer.replace(value).is_some()
+            || name.eq_ignore_ascii_case("cookie") && fields.cookie.replace(value).is_some()
         {
             return Err("400 Bad Request");
         }
@@ -627,12 +662,32 @@ fn request(bytes: &[u8], fixed: bool, owner: bool) -> Result<(Request<'_>, Field
     {
         return Err(BAD);
     }
+    // A `?t=<token>` query is the one query this layer takes off the path; the page router
+    // never sees it.
+    let (path, query) = match first.target.split_once("?t=") {
+        Some((path, token)) if first.method == "GET" => (path, token_text(token)),
+        _ => (first.target, None),
+    };
+    let bearer = fields
+        .bearer
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .and_then(token_text);
+    let cookie = fields.cookie.and_then(|value| {
+        value
+            .split(';')
+            .filter_map(|pair| pair.trim().split_once('='))
+            .find_map(|(name, value)| (name == TOKEN_COOKIE).then_some(value))
+            .and_then(token_text)
+    });
     Ok((
         Request {
             method: first.method,
-            path: first.target,
+            path,
             authority: authority.filter(|s| !s.is_empty()).ok_or(BAD)?,
             forwarded_login: login,
+            client_token: query.or(bearer).or(cookie),
+            token_in_query: query.is_some(),
+            denied: std::cell::Cell::new(403),
         },
         fields,
     ))

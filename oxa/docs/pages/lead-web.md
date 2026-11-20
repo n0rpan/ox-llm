@@ -63,7 +63,11 @@ default. The default identity mode is `local`, the bind is `127.0.0.1`, and the
 default port is `8743`. There are no deployment-specific port or identity rules.
 
 Local mode requires independently verified local OS ownership, not merely a
-loopback address. Tailscale mode requires an authenticated request-bound proxy
+loopback address, and a per-start client token. `oxa lead serve` prints
+`http://127.0.0.1:<port>/?t=<token>` once; opening it sets an `oxa_lead` cookie
+(HttpOnly, SameSite=Strict) and redirects to the same path without the query. Tools may send
+the token as `Authorization: Bearer`; it is also in `<agent dir>/lead-client-token` (0600),
+replaced on every start. A request without it gets 401. Tailscale mode is unchanged. Tailscale mode requires an authenticated request-bound proxy
 identity, its matching forwarded login, and an exact `allowed_identities` match.
 Local browser authority includes the port and must match the configured numeric bind. Proxy
 proof must bind the independently authenticated expected authority to the request;

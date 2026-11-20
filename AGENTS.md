@@ -94,6 +94,10 @@ code, tests, CI and docs; the owner validates on hardware.
   Preserve subscription token accounting and provider-side limits. A configured
   `oxa.cloud.subscription_limits` is advisory (Go and ChatGPT plan): it warns at 80% and 100% and is
   recorded, it is not a local refusal (#1443/#1444).
+- Loopback listeners: every loopback listener in oxa that can start a model request or spend cloud
+  budget requires a per-client token or key (share guest bearer, a2a capability, oxe API key file,
+  lead client token). Same-uid peer proof alone is not enough. Flag a new unauthenticated loopback
+  model surface as P1. The in-process cloud gateway has no listener.
 - Keyed providers: an OpenRouter, OpenAI or Anthropic key or a ChatGPT sign-in opens the gateway and
   discovery; explicit `inProcessCloud`/`discover_models` (even false) win; user layer only.
 - Keyed Go: a Go key in the owner's own secrets file enables the Go subscription transport for

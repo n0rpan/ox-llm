@@ -25,7 +25,24 @@ impl Drop for Running {
         let _ = self.0.wait();
     }
 }
+thread_local! {
+    static AGENT: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+/// The bearer header of the local client token the running lead wrote for its owner.
+fn bearer() -> String {
+    AGENT.with(|agent| {
+        agent
+            .borrow()
+            .as_ref()
+            .and_then(|dir| std::fs::read_to_string(dir.join("lead-client-token")).ok())
+            .map(|token| format!("Authorization: Bearer {}\r\n", token.trim()))
+            .unwrap_or_default()
+    })
+}
 fn get(port: u16, path: &str, authority: &str, extra: &str) -> String {
+    get_raw(port, path, authority, &format!("{}{extra}", bearer()))
+}
+fn get_raw(port: u16, path: &str, authority: &str, extra: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     write!(stream, "GET {path} HTTP/1.1\r\nHost: {authority}\r\n{extra}\r\n").unwrap();
@@ -42,6 +59,7 @@ fn start_with_situation(
     sample: &std::path::Path,
     situation: Option<&std::path::Path>,
 ) -> Running {
+    AGENT.with(|agent| *agent.borrow_mut() = Some(test.agent_dir()));
     let mut invocation = command(test);
     if let Some(path) = situation {
         invocation.env("OXA_LEAD_SITUATION", path);
@@ -70,6 +88,9 @@ fn start_with_situation(
 }
 
 fn post(port: u16, path: &str, host: &str, origin: &str, extra: &str, body: &str) -> String {
+    post_raw(port, path, host, origin, &format!("{}{extra}", bearer()), body)
+}
+fn post_raw(port: u16, path: &str, host: &str, origin: &str, extra: &str, body: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     write!(stream, "POST {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n{extra}\r\n{body}", body.len()).unwrap();
@@ -227,6 +248,40 @@ fn fixed_post_redirects_to_the_selected_refresh_url() {
 fn same_uid_client_cannot_read_protected_situation() {
     with_fixed_chat(|port, authority, _agent_dir| {
         assert!(get(port, "/asks", authority, "").contains("Owner asks unavailable"));
+    });
+}
+
+#[test]
+fn same_uid_client_needs_the_minted_token_for_pages_and_posts() {
+    with_fixed_chat(|port, authority, stderr| {
+        let dir = AGENT.with(|dir| dir.borrow().clone().unwrap());
+        let file = dir.join("lead-client-token");
+        assert_eq!(std::fs::metadata(&file).unwrap().mode() & 0o777, 0o600);
+        let token = std::fs::read_to_string(&file).unwrap();
+        // Without the token neither a page nor a form submission is served.
+        assert!(get_raw(port, "/", authority, "").starts_with("HTTP/1.1 401"));
+        assert!(get_raw(port, "/", authority, "Authorization: Bearer wrong\r\n").starts_with("HTTP/1.1 401"));
+        let nonce_page = get(port, "/chat", authority, "");
+        let nonce = form_nonce(&nonce_page);
+        let origin = format!("http://{authority}");
+        let body = format!("csrf={nonce}&prompt=status");
+        let denied = post_raw(port, "/chat", authority, &origin, "", &body);
+        assert!(denied.starts_with("HTTP/1.1 401"), "{denied}");
+        // The printed URL exchanges the token for a cookie and redirects without the query.
+        let opened = get_raw(port, &format!("/chat?t={token}"), authority, "");
+        assert!(opened.starts_with("HTTP/1.1 303"), "{opened}");
+        assert!(opened.contains("Location: /chat\r\n"), "{opened}");
+        assert!(opened.contains(&format!(
+            "Set-Cookie: oxa_lead={token}; HttpOnly; SameSite=Strict; Path=/"
+        )));
+        let cookie = format!("Cookie: oxa_lead={token}\r\n");
+        assert!(get_raw(port, "/chat", authority, &cookie).starts_with("HTTP/1.1 200"));
+        let accepted = post_raw(port, "/chat", authority, &origin, &cookie, &body);
+        assert!(accepted.starts_with("HTTP/1.1 303"), "{accepted}");
+        // No token bytes reach the service journal.
+        let journal = std::fs::read_to_string(stderr).unwrap();
+        assert!(!journal.contains(token.trim()), "{journal}");
+        assert!(journal.contains("reason=client_token"), "{journal}");
     });
 }
 
