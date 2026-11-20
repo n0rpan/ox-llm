@@ -719,8 +719,6 @@ fn gh_source_is_safe(
     })
 }
 
-/// `p` canonical, or `p` itself when it cannot be resolved (the argv stays deterministic; the
-/// sandbox refuses to run a command then, [`refusal`]).
 /// `p` with its deepest existing ancestor resolved (symlinks), so a path to a file that does
 /// not exist yet is judged where it would be created.
 pub(crate) fn canon_existing(p: &Path) -> PathBuf {
@@ -732,6 +730,8 @@ pub(crate) fn canon_existing(p: &Path) -> PathBuf {
     p.to_path_buf()
 }
 
+/// `p` canonical, or `p` itself when it cannot be resolved (the argv stays deterministic; the
+/// sandbox refuses to run a command then, [`refusal`]).
 fn canon(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
