@@ -755,7 +755,9 @@ fn send_reads_an_oversized_message_from_stdin_through_the_binary() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stdout.is_empty());
+    // One receipt line: the pointer message is queued, not yet taken by an owner.
+    let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(receipt["outcome"], "queued");
 
     let dirs = oxa_config::Dirs::under(env.root());
     let spills: Vec<_> = std::fs::read_dir(dirs.agent_dir.join("tmp/session-638"))
