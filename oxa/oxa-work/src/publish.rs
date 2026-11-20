@@ -576,7 +576,7 @@ pub(crate) fn gh(
     super::isolate_git_environment(&mut command);
     isolate_github_environment(&mut command);
     if let Some(token) = token {
-        command.env("GH_TOKEN", token);
+        command.env("GH_HOST", "github.com").env("GH_TOKEN", token);
     }
     command
         .env("PATH", &policy.host_path)

@@ -328,7 +328,7 @@ fn log_failed(
     crate::publish::isolate_github_environment(&mut command);
     let token = crate::policy_token(policy, repo).ok()?;
     if let Some(secret) = &token {
-        command.env("GH_TOKEN", secret);
+        command.env("GH_HOST", "github.com").env("GH_TOKEN", secret);
     }
     command
         .env("PATH", &policy.host_path)

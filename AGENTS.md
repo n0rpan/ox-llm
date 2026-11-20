@@ -13,9 +13,10 @@ code, tests, CI and docs; the owner validates on hardware.
 
 - Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests;
   use synthetic fixtures. Do not open real credential files during review.
-- Resolve owner token commands through vetted tool paths before execution. Relative paths,
-  project-local targets and unsafe directory permissions are refused. Every active output
-  redactor must observe newly registered tokens before forwarding output.
+- Resolve owner token commands through vetted tool paths; run them outside the checkout with a
+  fixed system PATH and only vetted home/config directory variables. Configured publish tokens
+  go only to github.com over HTTPS without checkout Git config. Refresh after confirmation and
+  during lane reads; never replay a mutation. Active output redactors must see newly registered tokens.
 - Keep engine transport selection, native binary/launch configuration, `allowRemote`, share
   authority, login/token paths and `oxa.inbox.headless` user-only. A project file must never
   override these decisions. Enforce that boundary both when loading settings and when adopting a

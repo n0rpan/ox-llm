@@ -161,6 +161,186 @@ fn a_green_lane_run_at_the_pushed_head_is_done() {
 }
 
 #[test]
+fn configured_github_auth_is_isolated_and_refreshed_at_publication_boundaries() {
+    use std::os::unix::fs::PermissionsExt;
+    const CONFIRM_FIXTURE: &str = "OXA_AUTH_CONFIRM_FIXTURE";
+    const TEST_NAME: &str = "configured_github_auth_is_isolated_and_refreshed_at_publication_boundaries";
+    if let Some(storage) = std::env::var_os(CONFIRM_FIXTURE) {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        let repo = std::env::current_dir().unwrap();
+        let tools = repo.join("../../tmp").canonicalize().unwrap();
+        let task = oxa_work::read_tasks(&repo.join("../tasks.json"))
+            .unwrap()
+            .remove(0);
+        let policy = oxa_work::RunPolicy {
+            git_binary: tools.join("git"),
+            host_path: std::env::var_os("PATH").unwrap(),
+            terminate_binary: Some("/usr/bin/kill".into()),
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
+            runner_owns_github: false,
+            github_token_command: vec![tools.join("mint").to_str().unwrap().into()],
+            autonomy: Default::default(),
+            worker_github: Default::default(),
+            authority_now: None,
+            offline: false,
+            storage: storage.into(),
+        };
+        let record = oxa_work::publish(
+            &repo,
+            std::path::Path::new(env!("CARGO_BIN_EXE_oxa")),
+            &task,
+            &policy,
+            &tools.join("gh"),
+            &|_: &oxa_work::Record| Ok(()),
+            &|_| None,
+            &mut |_| {
+                fs::copy(home.join("mint-count"), home.join("generation-at-confirmation")).unwrap();
+                Some(true)
+            },
+        )
+        .unwrap();
+        assert_eq!(record.outcome, oxa_work::Outcome::Done, "{record:?}");
+        assert_eq!(
+            record.pull_request.as_deref(),
+            Some("https://github.com/example/project/pull/1")
+        );
+        return;
+    }
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    lane_task(&env);
+    let path = configure(&env);
+    let project = env.work().join("project");
+    let remote = env.work().join("remote.git");
+    let url = "https://github.com/example/project.git";
+    git(&env, &project, &["remote", "set-url", "--push", "origin", url]);
+    git(&env, &project, &["config", "credential.helper", "!exit 42"]);
+    let source = env.write(
+        "tmp/mint",
+        r#"#!/bin/sh
+set -eu
+test "$(pwd -P)" = /
+test "$PATH" = /usr/bin:/bin
+n=0
+if test -f "$HOME/mint-count"; then read -r n < "$HOME/mint-count"; fi
+n=$((n + 1))
+printf '%s\n' "$n" > "$HOME/mint-count"
+printf 'synthetic-lane-%s\n' "$n"
+"#,
+    );
+    env.write(
+        "home/.oxa/agent/settings.json",
+        &serde_json::json!({"defaultProjectTrust":"always","oxa":{"github":{"tokenCommand":[source]}}})
+            .to_string(),
+    );
+    let git_shim = env.write(
+        "tmp/git",
+        format!(r#"#!/bin/sh
+set -eu
+home={home:?}
+remote={remote:?}
+for arg do
+    case "$arg" in
+      ls-remote|push)
+        op=$arg
+        test "${{GIT_CONFIG_KEY_0:-}}" = 'http.https://github.com/.extraHeader'
+        test "${{GH_TOKEN+x}}" != x
+        test "$GIT_ALLOW_PROTOCOL" = https
+        read -r n < "$home/mint-count"
+        if test -f "$home/generation-at-confirmation"; then
+            read -r confirmed < "$home/generation-at-confirmation"
+            test "$n" -gt "$confirmed"
+        fi
+        encoded=$(printf 'x-access-token:synthetic-lane-%s' "$n" | /usr/bin/base64 | tr -d '\n')
+        test "$GIT_CONFIG_VALUE_0" = "Authorization: Basic $encoded"
+        if test "$op" = ls-remote; then
+            test "$PWD" = /
+            shift $(( $# - 1 ))
+            test "$1" = {url}
+            exec env -u GIT_ALLOW_PROTOCOL -u GIT_CONFIG_COUNT /usr/bin/git ls-remote --heads --tags --refs "$remote"
+        fi
+        test -f config
+        if /usr/bin/git config --local --get credential.helper; then exit 42; fi
+        shift $(( $# - 2 ))
+        test "$1" = {url}
+        printf '%s\n' "$n" >> "$home/push-generations"
+        exec env -u GIT_ALLOW_PROTOCOL -u GIT_CONFIG_COUNT /usr/bin/git push "$remote" "$2"
+        ;;
+    esac
+done
+exec /usr/bin/git "$@"
+"#, home = env.home()),
+    );
+    let gh = env.write(
+        "tmp/gh",
+        format!(r##"#!/bin/sh
+set -eu
+remote={remote:?}
+read -r n < "$HOME/mint-count"
+test "$GH_TOKEN" = "synthetic-lane-$n"
+test "$GH_HOST" = github.com
+case "$1 $2" in
+  'repo view') printf '%s' '{{"nameWithOwner":"example/project","url":"https://github.com/example/project"}}' ;;
+  'pr list') printf '[]' ;;
+  'run list')
+    head=$(/usr/bin/git --git-dir="$remote" rev-parse refs/heads/agent/test)
+    if test -f "$HOME/last-poll"; then
+        read -r earlier < "$HOME/last-poll"
+        test "$n" -gt "$earlier"
+        status=completed
+        conclusion=success
+    else
+        read -r earlier < "$HOME/push-generations"
+        test "$n" -gt "$earlier"
+        printf '%s\n' "$n" > "$HOME/last-poll"
+        status=in_progress
+        conclusion=
+    fi
+    printf '[{{"databaseId":7,"headSha":"%s","status":"%s","conclusion":"%s","event":"push"}}]' "$head" "$status" "$conclusion" ;;
+  'run view') printf '%s' '{{"jobs":[{{"name":"lane plan","conclusion":"success"}},{{"name":"lane (oxa, ubuntu-24.04)","conclusion":"success"}}]}}' ;;
+  'pr create')
+    read -r confirmed < "$HOME/generation-at-confirmation"
+    test "$n" -gt "$confirmed"
+    printf '%s' 'https://github.com/example/project/pull/1' ;;
+  *) exit 7 ;;
+esac
+"##),
+    );
+    for exe in [source, git_shim, gh] {
+        fs::set_permissions(exe, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let record = run_lane(&env, edits(), path.clone());
+    assert_eq!(record["outcome"], "done", "{record}");
+    assert_eq!(origin_head(&env), record["head_sha"].as_str().unwrap());
+    let push_count = || {
+        fs::read_to_string(env.home().join("push-generations"))
+            .unwrap()
+            .lines()
+            .count()
+    };
+    assert_eq!(push_count(), 1);
+
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", TEST_NAME, "--nocapture"])
+        .current_dir(&project)
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .env("PATH", path)
+        .env(CONFIRM_FIXTURE, state_path(&env).parent().unwrap())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(push_count(), 2);
+}
+
+#[test]
 fn a_green_workflow_with_skipped_test_jobs_is_not_lane_evidence() {
     let env = TestEnv::new();
     setup(&env, r#"["true"]"#);
