@@ -327,6 +327,7 @@ pub(crate) fn run(
                 })?;
             return Ok(i32::from(summary.failed > 0 || summary.pending > 0));
         }
+        let mut packet_just_fetched = false;
         let (tasks, explicit_model) = match task_args {
             [file] if !file.starts_with('-') => (oxa_work::read_tasks(&cwd.join(file))?, false),
             [flag, number, model_flag, model] if flag == "--issue" && model_flag == "--model" => {
@@ -350,6 +351,7 @@ pub(crate) fn run(
                     let mut task =
                         oxa_work::issue_task(&root, &gh, &policy.host_path, number, model.clone())?;
                     task.prompt.insert_str(0, &oxa_work::github_runner_guidance("issue"));
+                    packet_just_fetched = true;
                     task
                 };
                 (vec![task], true)
@@ -369,6 +371,7 @@ pub(crate) fn run(
                 )
                 .ok_or("no trusted gh executable outside the source project")?;
                 let number = number.parse().map_err(|_| "invalid pull request number")?;
+                packet_just_fetched = true;
                 (
                     vec![oxa_work::pull_request_task(&root, &gh, &policy, number, model.clone())?],
                     true,
@@ -430,6 +433,7 @@ pub(crate) fn run(
                         policy: policy.clone(),
                         model: model.clone(),
                         agent_dir: dirs.agent_dir.clone(),
+                        just_fetched: std::sync::atomic::AtomicBool::new(packet_just_fetched),
                     }) as std::sync::Arc<dyn oxa_work::PacketFeed>
                 })
             }
@@ -492,11 +496,17 @@ struct GhPacketFeed {
     policy: oxa_work::RunPolicy,
     model: String,
     agent_dir: PathBuf,
+    /// True while the task was fetched in this very run and no launch has asked yet.
+    just_fetched: std::sync::atomic::AtomicBool,
 }
 
 impl oxa_work::PacketFeed for GhPacketFeed {
     fn fresh(&self, task: &oxa_work::Task) -> Result<Option<String>, String> {
         if let Some(number) = task.id.strip_prefix("issue-").and_then(|n| n.parse::<u64>().ok()) {
+            if self.just_fetched.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                // The packet was read a moment ago to build the task; do not read it twice.
+                return Ok(None);
+            }
             let mut fresh = oxa_work::issue_task(
                 &self.root,
                 &self.gh,
@@ -508,6 +518,9 @@ impl oxa_work::PacketFeed for GhPacketFeed {
                 .prompt
                 .insert_str(0, &oxa_work::github_runner_guidance("issue"));
             return Ok(Some(fresh.prompt));
+        }
+        if self.just_fetched.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Ok(None);
         }
         if let Some(number) = task
             .id
