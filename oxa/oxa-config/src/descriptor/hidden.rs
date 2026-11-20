@@ -230,6 +230,17 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     d("oxa.workers.max", Group::Advanced, "", "oxa.workers.max", "")
         .key(Kind::Number, "4")
         .hidden(),
+    // The owner's model choice policy for workers: default and per-kind model lists, and the
+    // escalation after repeated failures. User settings only; no model id is built in.
+    d(
+        "oxa.workers.models",
+        Group::Advanced,
+        "",
+        "oxa.workers.models",
+        "",
+    )
+    .key(Kind::Object, "{}")
+    .hidden(),
     // K5b: relaunch the unfinished, dead workers of a session when it is opened again. User
     // settings only: a project file can neither enable nor disable it (`Settings::user_bool`).
     d(

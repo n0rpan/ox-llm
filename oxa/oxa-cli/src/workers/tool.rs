@@ -19,6 +19,7 @@
 //!   relaunched through the same launch path (`resume.rs`) unless `oxa.workers.resumeOnStart`
 //!   is false.
 use super::launch::{check_value, child_argv, child_env, valid_name, worktree_argv, WorkerMode, WorkerSpec};
+use super::model_policy::{self, Attempt, ModelPolicy};
 use super::proc::Supervisor;
 use super::registry::{self, WorkerRecord, WorkerState};
 use super::resume;
@@ -50,9 +51,9 @@ pub const SETTING_MAX: &str = "oxa.workers.max";
 /// nested; only an unset variable lets the hook set be built.
 pub const ENV_WORKER_DEPTH: &str = "OXA_WORKER_DEPTH";
 
-const DESCRIPTION: &str = "Background workers: each is a separate oxa process that runs one goal in its own git worktree on branch agent/<name>. Actions: start {name, goal, model?, mode?} starts one (name: lowercase letters, digits and dashes, at most 40 characters); list shows this session's workers and their state; stop {name} stops one; send {name, text} delivers a follow-up message to a worker's session inbox and reports its phase. mode is plan, ask, workspace, auto or yolo, never wider than this session; without mode the worker inherits this session's level (a yolo session starts yolo workers, so they can push, open PRs and read CI).";
+const DESCRIPTION: &str = "Background workers: each is a separate oxa process that runs one goal in its own git worktree on branch agent/<name>. Actions: start {name, goal, model?, kind?, job?, reason?, mode?} starts one (name: lowercase letters, digits and dashes, at most 40 characters). Without model the owner's policy (oxa.workers.models) picks one by kind (a job kind such as review, docs or tests); after repeated failures on the same job (job: a stable key such as pr-2127, default the name) it escalates; with no policy the worker uses this session's model. reason is one line on why you chose that model or kind. list shows this session's workers, their model, choice and state; result {name, result: ok or failed, reason} records how a worker's work turned out (call it with failed when review or CI rejects it, so the policy can escalate); stop {name} stops one; send {name, text} delivers a follow-up message to a worker's session inbox and reports its phase. mode is plan, ask, workspace, auto or yolo, never wider than this session; without mode the worker inherits this session's level (a yolo session starts yolo workers, so they can push, open PRs and read CI).";
 
-const SCHEMA: &str = r#"{"type":"object","properties":{"action":{"type":"string","enum":["start","list","stop","send"]},"name":{"type":"string"},"goal":{"type":"string"},"text":{"type":"string"},"model":{"type":"string"},"mode":{"type":"string","enum":["plan","ask","workspace","auto","yolo"]}},"required":["action"]}"#;
+const SCHEMA: &str = r#"{"type":"object","properties":{"action":{"type":"string","enum":["start","list","stop","send","result"]},"name":{"type":"string"},"goal":{"type":"string"},"text":{"type":"string"},"model":{"type":"string"},"kind":{"type":"string"},"job":{"type":"string"},"reason":{"type":"string"},"result":{"type":"string","enum":["ok","failed"]},"mode":{"type":"string","enum":["plan","ask","workspace","auto","yolo"]}},"required":["action"]}"#;
 
 /// `oxa.workers.enabled` from the user settings only (default true): a project file cannot turn
 /// process launch on or off.
@@ -92,6 +93,8 @@ pub struct WorkerConfig {
     pub yolo: YoloSwitch,
     /// `oxa.workers.resumeOnStart`: relaunch dead, unfinished workers when the session opens.
     pub resume_on_start: bool,
+    /// `oxa.workers.models`: the owner's model choice policy (empty: the session model).
+    pub models: ModelPolicy,
 }
 
 /// What the parent session allows a worker to have.
@@ -115,6 +118,7 @@ pub struct WorkerCore {
     bin_id: Option<BinId>,
     agent_dir: PathBuf,
     max: AtomicUsize,
+    models: Mutex<ModelPolicy>,
     sessions_dir: PathBuf,
     parent_env: Vec<(String, String)>,
     parent_scope: ParentScope,
@@ -412,13 +416,38 @@ fn label(state: &WorkerState) -> String {
 }
 
 fn describe(rec: &WorkerRecord, sessions_dir: &Path) -> String {
-    format!(
-        "{} session {} branch {} {}",
-        rec.name,
-        rec.session_id,
-        rec.branch,
-        label(&live_state(rec, sessions_dir))
-    )
+    let mut line = format!(
+        "{} session {} branch {} model {}",
+        rec.name, rec.session_id, rec.branch, rec.model
+    );
+    if !rec.kind.is_empty() {
+        line.push_str(&format!(" kind {}", rec.kind));
+    }
+    if !rec.job.is_empty() {
+        line.push_str(&format!(" job {}", rec.job));
+    }
+    if !rec.choice.is_empty() {
+        line.push_str(&format!(" choice ({})", rec.choice));
+    }
+    line.push(' ');
+    line.push_str(&label(&live_state(rec, sessions_dir)));
+    if !rec.result.is_empty() {
+        line.push_str(&format!(" result {}: {}", rec.result, rec.result_reason));
+    }
+    line
+}
+
+/// The session's earlier workers as the model choice sees them, for the job `job`.
+fn attempts(records: &[WorkerRecord], job: &str, sessions_dir: &Path) -> Vec<Attempt> {
+    records
+        .iter()
+        .map(|r| Attempt {
+            model: r.model.clone(),
+            kind: r.kind.clone(),
+            job_matches: r.job_key() == job,
+            failed: model_policy::failed(&r.result, &live_state(r, sessions_dir)),
+        })
+        .collect()
 }
 
 impl WorkerCore {
@@ -434,6 +463,7 @@ impl WorkerCore {
             cwd: cfg.cwd,
             agent_dir: cfg.agent_dir,
             max: AtomicUsize::new(cfg.max),
+            models: Mutex::new(cfg.models),
             sessions_dir: cfg.sessions_dir,
             parent_env: cfg.parent_env,
             parent_scope: cfg.parent_scope,
@@ -574,23 +604,71 @@ impl WorkerCore {
         if parent.is_empty() {
             return ToolOutput::error("worker: the session id is not known yet");
         }
-        let model = match args.get("model") {
+        let explicit = match args.get("model") {
             Some(value) => match value.as_str() {
-                Some(model) if !model.trim().is_empty() => model.to_owned(),
+                Some(model) if !model.trim().is_empty() => Some(model.to_owned()),
                 _ => return ToolOutput::error("worker: model must be a non-empty string"),
             },
-            None if session_model.is_empty() => {
-                return ToolOutput::error("worker: the session model is not known yet");
-            }
-            None => session_model,
+            None => None,
         };
-        if let Err(error) = check_value("model", &model) {
-            return ToolOutput::error(format!("worker: {error}"));
+        if let Some(model) = &explicit {
+            if let Err(error) = check_value("model", model) {
+                return ToolOutput::error(format!("worker: {error}"));
+            }
         }
+        let kind = match args.get("kind") {
+            None => None,
+            Some(v) => match v.as_str().filter(|k| model_policy::valid_kind(k)) {
+                Some(k) => Some(k.to_string()),
+                None => return ToolOutput::error(
+                    "worker: invalid kind; use lowercase letters, digits and dashes, at most 32 characters",
+                ),
+            },
+        };
+        let job = match args.get("job") {
+            None => name.to_string(),
+            Some(v) => match v.as_str().filter(|j| model_policy::valid_job(j)) {
+                Some(j) => j.to_string(),
+                None => return ToolOutput::error(
+                    "worker: invalid job; use lowercase letters, digits and dashes, at most 40 characters",
+                ),
+            },
+        };
+        let reason = match args.get("reason") {
+            None => String::new(),
+            Some(v) => match v.as_str().map(model_policy::check_reason) {
+                Some(Ok(text)) => text,
+                Some(Err(e)) => return ToolOutput::error(format!("worker: {e}")),
+                None => return ToolOutput::error("worker: reason must be a string"),
+            },
+        };
         let mut records = match registry::load(&self.agent_dir, &parent) {
             Ok(records) => records,
             Err(e) => return ToolOutput::error(format!("worker: {e}")),
         };
+        let history = attempts(&records, &job, &self.sessions_dir);
+        let policy = lock(&self.models).clone();
+        let choice = match model_policy::choose(
+            &policy,
+            explicit.as_deref(),
+            kind.as_deref(),
+            &job,
+            &session_model,
+            &history,
+        ) {
+            Ok(choice) => choice,
+            Err(e) => return ToolOutput::error(format!("worker: {e}")),
+        };
+        let model = choice.model.clone();
+        if let Err(error) = check_value("model", &model) {
+            return ToolOutput::error(format!("worker: {error}"));
+        }
+        // Warn and record, never block: the live catalog is only asked, and an answer that
+        // cannot be had leaves the model unverified.
+        let host = lock(&self.host).clone();
+        let verified = host
+            .and_then(|h| h.call(HostAction::ModelInfo(model.clone())).ok())
+            .and_then(|v| v.get("known").and_then(Value::as_bool));
         if records.iter().any(|r| r.name == name) {
             return ToolOutput::error(format!(
                 "worker: a worker named {name} already exists in this session; stop it or choose another name"
@@ -735,10 +813,17 @@ impl WorkerCore {
             .cloned()
             .unwrap_or_else(|| "workspace".to_string());
 
+        let kind_text = kind.as_deref().map(|k| format!(", kind {k}")).unwrap_or_default();
         let mut text = format!(
-            "started worker {name}: model {model}, session {session_id}, branch {branch}, worktree {}",
+            "started worker {name}: model {model} ({}){kind_text}, job {job}, session {session_id}, branch {branch}, worktree {}",
+            choice.why,
             worktree.display()
         );
+        if verified == Some(false) {
+            text.push_str(&format!(
+                "\nwarning: {model} is not in this install's model catalog (oxa models); the worker may fail to start"
+            ));
+        }
         records.push(WorkerRecord {
             name: name.to_string(),
             session_id: session_id.clone(),
@@ -758,6 +843,13 @@ impl WorkerCore {
             log_file: log,
             started_ms: started,
             stopped: false,
+            kind: kind.unwrap_or_default(),
+            job,
+            choice: choice.why,
+            reason,
+            verified,
+            result: String::new(),
+            result_reason: String::new(),
         });
         if let Err(e) = registry::save(&self.agent_dir, &parent, &records) {
             // Not recorded, so nothing would ever stop it: stop it now.
@@ -793,6 +885,42 @@ impl WorkerCore {
         }
         let lines: Vec<String> = records.iter().map(|r| describe(r, &self.sessions_dir)).collect();
         ToolOutput::ok(lines.join("\n"))
+    }
+
+    /// `result {name, result, reason}`: record how a worker's work turned out. The record is the
+    /// caller's word (review or CI rejected a worker that itself ended done); a later call replaces
+    /// an earlier one. Registry write only: nothing is launched and no network is used.
+    pub fn result(&self, args: &Value) -> ToolOutput {
+        let _gate = lock(&self.gate);
+        let name = str_arg(args, "name").unwrap_or("");
+        let result = match str_arg(args, "result") {
+            Some(r @ ("ok" | "failed")) => r,
+            _ => return ToolOutput::error("worker: result must be ok or failed"),
+        };
+        let reason = match model_policy::check_reason(str_arg(args, "reason").unwrap_or("")) {
+            Ok(reason) => reason,
+            Err(e) => return ToolOutput::error(format!("worker: {e}")),
+        };
+        let (parent, _) = self.session();
+        if parent.is_empty() {
+            return ToolOutput::error("worker: the session id is not known yet");
+        }
+        let mut records = match registry::load(&self.agent_dir, &parent) {
+            Ok(records) => records,
+            Err(e) => return ToolOutput::error(format!("worker: {e}")),
+        };
+        let Some(rec) = records.iter_mut().find(|r| r.name == name) else {
+            return ToolOutput::error(format!("worker: no worker named {name:?}"));
+        };
+        rec.result = result.to_string();
+        rec.result_reason = reason;
+        let model = rec.model.clone();
+        if let Err(e) = registry::save(&self.agent_dir, &parent, &records) {
+            return ToolOutput::error(format!("worker: {e}"));
+        }
+        ToolOutput::ok(format!(
+            "recorded result {result} for worker {name} (model {model})"
+        ))
     }
 
     /// `stop {name}`: stop the worker's process group and mark it stopped.
@@ -1035,7 +1163,8 @@ fn worker_access(args: &Value, cwd: &Path) -> Result<Vec<Access>, String> {
     match str_arg(args, "action") {
         // Listing only reads the worker registry and status through this trusted built-in. It
         // neither launches a command nor asks the network permission gate, including in plan mode.
-        Some("list") => Ok(Vec::new()),
+        // Recording a result is a registry write of the same kind: no launch, no network.
+        Some("list" | "result") => Ok(Vec::new()),
         Some("start") => {
             let name = str_arg(args, "name").unwrap_or("");
             let Some(path) = worktree_path(cwd, name) else {
@@ -1093,7 +1222,8 @@ impl Tool for WorkerTool {
             Some("list") => self.core.list(),
             Some("stop") => self.core.stop(args),
             Some("send") => self.core.send(args),
-            _ => ToolOutput::error("worker: action must be start, list, stop or send"),
+            Some("result") => self.core.result(args),
+            _ => ToolOutput::error("worker: action must be start, list, stop, send or result"),
         }
     }
 
@@ -1158,11 +1288,13 @@ impl WorkerHooks {
     fn refresh_authority_from(&self, current: &WorkerHooks) {
         let max = current.core.max.load(Ordering::SeqCst);
         let yolo = lock(&current.core.yolo).clone();
-        self.refresh_authority(max, &yolo);
+        let models = lock(&current.core.models).clone();
+        self.refresh_authority(max, &yolo, models);
     }
 
-    fn refresh_authority(&self, max: usize, yolo: &YoloSwitch) {
+    fn refresh_authority(&self, max: usize, yolo: &YoloSwitch, models: ModelPolicy) {
         self.core.max.store(max, Ordering::SeqCst);
+        *lock(&self.core.models) = models;
         *lock(&self.core.yolo) = yolo.clone();
     }
 
@@ -1183,11 +1315,16 @@ static OWNER_WORKERS: Mutex<Vec<(PathBuf, Arc<WorkerHooks>)>> = Mutex::new(Vec::
 /// Return an owner hook set already retained by this process, updating the authority used for
 /// future launches. Looking it up before building hooks avoids pinning a throwaway executable on
 /// every HTTP owner message.
-pub fn retained_owner_workers(key: &Path, max: usize, yolo: &YoloSwitch) -> Option<Arc<WorkerHooks>> {
+pub fn retained_owner_workers(
+    key: &Path,
+    max: usize,
+    yolo: &YoloSwitch,
+    models: ModelPolicy,
+) -> Option<Arc<WorkerHooks>> {
     let all = lock(&OWNER_WORKERS);
     let hooks = all.iter().find(|(k, _)| k == key)?.1.clone();
     drop(all);
-    hooks.refresh_authority(max, yolo);
+    hooks.refresh_authority(max, yolo, models);
     Some(hooks)
 }
 
@@ -1405,6 +1542,7 @@ mod tests {
             parent_scope,
             yolo: YoloSwitch::new(autonomy),
             resume_on_start: true,
+            models: ModelPolicy::default(),
         })
     }
 
@@ -1597,6 +1735,7 @@ mod tests {
             log_file: root.join("worker.log"),
             started_ms: 0,
             stopped,
+            ..WorkerRecord::default()
         };
         let records = [
             worker("shared-pool", "opencode/synthetic-worker", false),
@@ -1877,8 +2016,13 @@ mod tests {
         let rec = registry::load(&agent, "parent-1").unwrap().remove(0);
         first.shutdown();
         // Turn 2: the kept hook set is found before another one (and its pinned launcher) is built.
-        let second = retained_owner_workers(&agent, 4, &YoloSwitch::new(Autonomy::Standard))
-            .expect("the owner hooks should be retained");
+        let second = retained_owner_workers(
+            &agent,
+            4,
+            &YoloSwitch::new(Autonomy::Standard),
+            ModelPolicy::default(),
+        )
+        .expect("the owner hooks should be retained");
         assert!(Arc::ptr_eq(&second, &made));
         assert!(
             PathBuf::from(format!("/proc/{}", rec.pid)).exists(),
@@ -1905,8 +2049,13 @@ mod tests {
         set_session(&kept, "parent-authority");
         start_alpha(&kept, &repo);
 
-        let current = retained_owner_workers(&agent, 1, &YoloSwitch::new(Autonomy::Standard))
-            .expect("the owner hooks should be retained");
+        let current = retained_owner_workers(
+            &agent,
+            1,
+            &YoloSwitch::new(Autonomy::Standard),
+            ModelPolicy::default(),
+        )
+        .expect("the owner hooks should be retained");
         assert!(Arc::ptr_eq(&current, &first));
 
         // LeadOwner::keep_workers passes the hook found above back through this function. Both
@@ -2281,5 +2430,274 @@ mod tests {
             u64::MAX,
         );
         assert!(id != other, "distinct parents must produce distinct child ids");
+    }
+
+    // ---- model per job -------------------------------------------------------------------
+
+    fn policy(value: Value) -> ModelPolicy {
+        model_policy::parse(Some(&value)).0
+    }
+
+    /// Like `hooks`, with the owner's model policy.
+    fn hooks_with_policy(fake: &Path, agent: &Path, models: ModelPolicy) -> WorkerHooks {
+        let hooks = hooks_with(
+            fake,
+            agent,
+            vec![("PATH".to_string(), "/usr/bin:/bin".to_string())],
+            ParentScope::default(),
+        );
+        *lock(&hooks.core.models) = models;
+        hooks
+    }
+
+    /// A fake oxa that appends each launch's argv (one element per line, then `--`) to
+    /// `<root>/argv.log`.
+    fn logging_oxa(root: &Path) -> PathBuf {
+        let fake = root.join("log-oxa");
+        fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = work ]; then exit 0; fi\nprintf '%s\\n' \"$@\" >> '{0}/argv.log'\necho -- >> '{0}/argv.log'\nexec /bin/sleep 30\n",
+                root.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        fake
+    }
+
+    /// The `--model` values of the launches so far, once there are `count` of them.
+    fn launched_models(root: &Path, count: usize) -> Vec<String> {
+        for _ in 0..100 {
+            let text = fs::read_to_string(root.join("argv.log")).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().collect();
+            let models: Vec<String> = lines
+                .windows(2)
+                .filter(|w| w[0] == "--model")
+                .map(|w| w[1].to_string())
+                .collect();
+            if models.len() >= count {
+                return models;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("fewer than {count} launches recorded");
+    }
+
+    fn start_with(hooks: &WorkerHooks, repo: &Path, extra: Value) -> ToolOutput {
+        let mut args = json!({"action": "start", "goal": "g"});
+        for (k, v) in extra.as_object().unwrap() {
+            args[k] = v.clone();
+        }
+        hooks.core.start(&args, repo, Mode::Workspace, Autonomy::Standard)
+    }
+
+    fn stop_all(hooks: &WorkerHooks, names: &[&str]) {
+        for name in names {
+            let _ = hooks.core.stop(&json!({"action": "stop", "name": name}));
+        }
+    }
+
+    #[test]
+    fn policy_alternates_models_by_kind_and_records_the_choice() {
+        let (root, repo, agent, _) = fixture("policy-kind");
+        let hooks = hooks_with_policy(
+            &logging_oxa(&root),
+            &agent,
+            policy(json!({"kinds": {"review": ["a", "b"]}})),
+        );
+        set_session(&hooks, "parent-1");
+        let first = start_with(
+            &hooks,
+            &repo,
+            json!({"name": "r1", "kind": "review", "job": "pr-1"}),
+        );
+        assert!(!first.is_error, "{}", first.text);
+        assert!(
+            first.text.contains("model a (policy: kind review)"),
+            "{}",
+            first.text
+        );
+        let second = start_with(&hooks, &repo, json!({"name": "r2", "kind": "review"}));
+        assert!(!second.is_error, "{}", second.text);
+        assert_eq!(launched_models(&root, 2), vec!["a", "b"]);
+        let records = registry::load(&agent, "parent-1").unwrap();
+        assert_eq!(
+            (records[0].kind.as_str(), records[0].job.as_str()),
+            ("review", "pr-1")
+        );
+        assert_eq!(records[0].choice, "policy: kind review");
+        assert_eq!(records[1].job, "r2");
+        let listed = hooks.core.list().text;
+        assert!(
+            listed.contains("model a") && listed.contains("kind review"),
+            "{listed}"
+        );
+        stop_all(&hooks, &["r1", "r2"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn escalation_is_the_floor_after_recorded_failures_on_one_job() {
+        let (root, repo, agent, _) = fixture("policy-escalate");
+        let hooks = hooks_with_policy(
+            &logging_oxa(&root),
+            &agent,
+            policy(json!({"kinds": {"review": ["a", "b"]}, "escalateTo": ["s"]})),
+        );
+        set_session(&hooks, "parent-1");
+        for name in ["t1", "t2"] {
+            let out = start_with(
+                &hooks,
+                &repo,
+                json!({"name": name, "kind": "review", "job": "pr-9"}),
+            );
+            assert!(!out.is_error, "{}", out.text);
+            let done = hooks.core.result(
+                &json!({"action": "result", "name": name, "result": "failed", "reason": "review P1"}),
+            );
+            assert!(!done.is_error, "{}", done.text);
+        }
+        let third = start_with(
+            &hooks,
+            &repo,
+            json!({"name": "t3", "kind": "review", "job": "pr-9"}),
+        );
+        assert!(!third.is_error, "{}", third.text);
+        assert!(third.text.contains("model s (escalation"), "{}", third.text);
+        assert!(third.text.contains("2 failed attempts on pr-9"), "{}", third.text);
+        // Another job still gets the kind row, not the escalation.
+        let other = start_with(
+            &hooks,
+            &repo,
+            json!({"name": "t4", "kind": "review", "job": "pr-10"}),
+        );
+        assert!(other.text.contains("policy: kind review"), "{}", other.text);
+        let models = launched_models(&root, 4);
+        assert_eq!(models[2], "s");
+        assert_ne!(models[3], "s");
+        stop_all(&hooks, &["t1", "t2", "t3", "t4"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn explicit_model_wins_over_policy_and_is_recorded() {
+        let (root, repo, agent, _) = fixture("policy-explicit");
+        let hooks = hooks_with_policy(&logging_oxa(&root), &agent, policy(json!({"default": ["a"]})));
+        set_session(&hooks, "parent-1");
+        let out = start_with(
+            &hooks,
+            &repo,
+            json!({"name": "x1", "model": "mine/m", "reason": "needs long context"}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(launched_models(&root, 1), vec!["mine/m"]);
+        let rec = registry::load(&agent, "parent-1").unwrap().remove(0);
+        assert_eq!(
+            (rec.choice.as_str(), rec.reason.as_str()),
+            ("explicit", "needs long context")
+        );
+        stop_all(&hooks, &["x1"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn no_policy_keeps_the_session_model() {
+        let (root, repo, agent, fake) = fixture("policy-none");
+        let hooks = hooks(&fake, &agent);
+        set_session(&hooks, "parent-1");
+        let out = start_with(&hooks, &repo, json!({"name": "n1", "kind": "review"}));
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("model model-x (session model)"), "{}", out.text);
+        stop_all(&hooks, &["n1"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bad_kind_job_or_reason_is_refused_before_a_worktree() {
+        let (root, repo, agent, fake) = fixture("policy-bad-args");
+        let hooks = hooks(&fake, &agent);
+        set_session(&hooks, "parent-1");
+        for extra in [
+            json!({"name": "b1", "kind": "Not Valid"}),
+            json!({"name": "b1", "job": "has space"}),
+            json!({"name": "b1", "reason": "two\nlines"}),
+        ] {
+            let out = start_with(&hooks, &repo, extra);
+            assert!(out.is_error, "{}", out.text);
+            assert!(!worktree_path(&repo, "b1").unwrap().exists());
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn result_action_records_and_shows_the_reason() {
+        let (root, repo, agent, fake) = fixture("result-action");
+        let hooks = hooks(&fake, &agent);
+        set_session(&hooks, "parent-1");
+        start_alpha(&hooks, &repo);
+        let ok = hooks
+            .core
+            .result(&json!({"action": "result", "name": "alpha", "result": "failed", "reason": "CI red"}));
+        assert!(!ok.is_error, "{}", ok.text);
+        assert!(hooks.core.list().text.contains("result failed: CI red"));
+        // A second call replaces the first.
+        hooks
+            .core
+            .result(&json!({"action": "result", "name": "alpha", "result": "ok", "reason": "fixed"}));
+        assert!(hooks.core.list().text.contains("result ok: fixed"));
+        let unknown = hooks
+            .core
+            .result(&json!({"action": "result", "name": "nobody", "result": "ok"}));
+        assert!(unknown.is_error);
+        let control = hooks
+            .core
+            .result(&json!({"action": "result", "name": "alpha", "result": "ok", "reason": "a\u{7}b"}));
+        assert!(control.is_error);
+        assert!(hooks.core.list().text.contains("result ok: fixed"));
+        // Recording a result is no launch and needs no external access.
+        let access = worker_access(&json!({"action": "result", "name": "alpha"}), &repo).unwrap();
+        assert!(access.is_empty());
+        stop_all(&hooks, &["alpha"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    struct CatalogHost(bool);
+
+    impl Host for CatalogHost {
+        fn call(&self, action: HostAction) -> Result<Value, OxaError> {
+            match action {
+                HostAction::ModelInfo(model) => Ok(json!({"model": model, "remote": true, "known": self.0})),
+                _ => Err(OxaError::new(oxa_proto::codes::INTERNAL, "not in the mock")),
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_model_warns_and_still_starts() {
+        let (root, repo, agent, fake) = fixture("policy-unverified");
+        let hooks = hooks(&fake, &agent);
+        set_session(&hooks, "parent-1");
+        *lock(&hooks.core.host) = Some(Arc::new(CatalogHost(false)));
+        let out = start_with(&hooks, &repo, json!({"name": "u1", "model": "ghost/model"}));
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("warning: ghost/model is not in this install"),
+            "{}",
+            out.text
+        );
+        assert_eq!(
+            registry::load(&agent, "parent-1").unwrap()[0].verified,
+            Some(false)
+        );
+        *lock(&hooks.core.host) = Some(Arc::new(CatalogHost(true)));
+        let known = start_with(&hooks, &repo, json!({"name": "u2", "model": "real/model"}));
+        assert!(!known.text.contains("warning"), "{}", known.text);
+        assert_eq!(
+            registry::load(&agent, "parent-1").unwrap()[1].verified,
+            Some(true)
+        );
+        stop_all(&hooks, &["u1", "u2"]);
+        let _ = fs::remove_dir_all(&root);
     }
 }
