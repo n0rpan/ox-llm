@@ -531,10 +531,7 @@ fn native_openrouter_refuses_decoded_held_key_before_executable_write() {
                 request.header("authorization"),
                 Some(format!("Bearer {HELD}").as_str())
             );
-            assert_eq!(
-                request.body["provider"],
-                json!({"zdr":true,"data_collection":"deny"})
-            );
+            assert!(request.body.get("provider").is_none());
         }
         assert!(!json!(rows(&env)).to_string().contains(HELD));
         mock.finish();
@@ -613,10 +610,7 @@ fn native_openrouter_discovery_tool_loop_and_settlement() {
         );
         assert_eq!(request.body["model"], UPSTREAM);
         assert_eq!(request.body["max_tokens"], 16);
-        assert_eq!(
-            request.body["provider"],
-            json!({"zdr":true,"data_collection":"deny"})
-        );
+        assert!(request.body.get("provider").is_none());
         assert_eq!(request.body["stream_options"]["include_usage"], true);
         assert_eq!(request.body["reasoning"], json!({"enabled":false}));
         assert!(request.body.get("reasoning_effort").is_none());
@@ -941,7 +935,8 @@ const RECOMMENDED: &str = "anthropic/claude-haiku-5-5";
 fn recommended_catalog_requires_a_configured_provider_and_can_be_disabled() {
     let env = cloud_env();
     write_key(&env, &json!({"anthropic": CREDENTIAL}).to_string());
-    let mut settings = json!({"oxa":{"engine":{"inProcessCloud":true,"inProcessLocal":false}}});
+    let mut settings = json!({"oxa":{"engine":{"inProcessCloud":true,"inProcessLocal":false},
+        "cloud":{"opencode":{"enabled":false}}}});
     env.write("home/.oxa/agent/settings.json", &settings.to_string());
     let listed = run(&env, &["--list-models"], None);
     success(&listed);

@@ -443,6 +443,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn openrouter_provider_is_restart_only() {
+        // The gateway copies the preferences once at startup; /reload does not rebuild it.
+        let e = descriptor("oxa.cloud.openrouter_provider").expect("descriptor");
+        assert_eq!(e.apply, Apply::Restart);
+    }
+
+    #[test]
     fn builder_sets_fields() {
         let e = d(
             "oxa.bash.defaultTimeout",
@@ -546,9 +553,9 @@ mod tests {
         assert!(descriptor("compaction.keepRecentTokens").is_some());
         assert_eq!(fields_of("oxa.lead.serve").count(), 9);
         assert_eq!(in_group(Group::Display).count(), 30);
-        // main's 147 descriptors plus this branch's `oxa.emptyReplyRetries`
-        // and main's `oxa.a2a.enabled`.
-        assert_eq!(descriptors().len(), 149);
+        // main's 147 descriptors plus `oxa.a2a.enabled`, `oxa.emptyReplyRetries`
+        // and this branch's `oxa.cloud.openrouter_provider`.
+        assert_eq!(descriptors().len(), 150);
     }
 
     #[test]

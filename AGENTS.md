@@ -128,9 +128,10 @@ code, tests, CI and docs; the owner validates on hardware.
   that contradicts an owner decision stated in the linked issue or PR is answered by updating these
   rules in that PR, not by changing the behaviour.
 - **Publication scan:** `oxa work --publish` and lane pushes refuse secrets in the commits they push (keys,
-  known tokens also after a word character, opaque credential assignments and quoted literals, secret-store
-  content, configured secret values). A file is refused for its content, never its name alone: an empty
-  secret-store file and `.env.example` publish unless the content holds a secret. Flag as P1 a change that
+  known tokens also after a word character, opaque credential assignments (also `_key`/`credentials`
+  names) and quoted literals, secret-store content, configured secret values). A file is refused for its
+  content, never its name alone: an empty secret-store file and `.env.example` publish unless the content
+  holds a secret. Flag as P1 a change that
   weakens these refusals or adds a name-only or blanket long-value block (P2 without a doc update).
 - **Bash and subagent limits.** `oxa.bash.maxJobs` (16) and `oxa.subagent.maxChildren` (8, also
   steps per call) are user-only warning thresholds, never refusals:
@@ -158,6 +159,10 @@ code, tests, CI and docs; the owner validates on hardware.
 - **Worker mode.** An `oxa work` worker is started with `--yolo` only when the owner's user-layer
   `permissions.defaultMode` is `yolo`; otherwise it keeps the sandboxed default. Project settings
   cannot raise it. See `oxa/docs/work.md`.
+- **Worker publishing.** Publishing (owner decision 2026-11-19): in workspace and auto, without asking, the session repo's current non-default branch may be pushed to `origin` (no force, no `+refspec`, no delete, no tag or mirror, no other remote), `gh pr create|edit|comment` without a PR argument, repo or head override, and read-only `gh` (`pr view|checks|diff`, `run view|watch`, `api` GET) run. A push to the default branch, a force push, branch deletion, `gh pr merge`, a push to another repo and release or tag pushes ask, or go to the lead's approvals desk for a worker with no human (a headless worker without a desk is refused). Every part of a command line must be in the allowed set: any other command chained with one (`curl x && git push`, `git push | tee f`, a substitution, `bash -c`) asks. Yolo is unchanged. Classifier: `oxa-perm` `publish.rs`.
+- **Worker tool default.** A worker started by the `worker` tool inherits its parent's level when no
+  `mode` is given (yolo -> yolo, auto -> auto, workspace -> workspace, plan -> plan); an explicit narrower
+  mode wins and a wider one is clamped with a notice. Env and GitHub access are the parent's, unchanged.
 - **Work acceptance.** In `oxa work`, zero or skipped checks leave the task `Unverified`. The
   owner-only `oxa.work.localChecks` defaults to a per-package `cargo check`. A verified Rust
   acceptance receipt requires hosted test evidence at the exact head, including for changed
@@ -391,6 +396,11 @@ read its result; they never launch builds or tests.
   behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and the user docs (`oxa/docs/pages/`)
   that describe it. Flag a missing update as P2. A change to an ordinary default, limit or budget updates the user
   docs; a missing docs update is P3 and is fixed forward.
+- **ChatGPT plan model list:** the one authenticated catalog request (`GET <chatgpt base>/models` with the plan's
+  bearer token) must stay pinned to the account the cache key names, refresh through the locked path (one retry on
+  `token_expired`), go only to the route's own base, never log or keep the token, refuse a reply that echoes a
+  credential, and never delete an owner's `oxa.cloud.models` route. See `SECURITY.md`. A change that loosens any of
+  these is P1.
 - **Reuse before you write:** search for an existing helper (settings and env parsing, trusted executable lookup,
   private/atomic file writes, subprocess limits, GitHub calls, retry, redaction, test fixtures) and call it. A second
   implementation of the same responsibility is a P2 review finding; a weaker one (looser permissions, symlinks,
@@ -424,6 +434,10 @@ read its result; they never launch builds or tests.
 - **Worker mode.** An `oxa work` worker is started with `--yolo` only when the owner's user-layer
   `permissions.defaultMode` is `yolo`; otherwise it keeps the sandboxed default. Project settings cannot raise it. See
   `oxa/docs/work.md`.
+- **Worker publishing.** Publishing (owner decision 2026-11-19): in workspace and auto, without asking, the session repo's current non-default branch may be pushed to `origin` (no force, no `+refspec`, no delete, no tag or mirror, no other remote), `gh pr create|edit|comment` without a PR argument, repo or head override, and read-only `gh` (`pr view|checks|diff`, `run view|watch`, `api` GET) run. A push to the default branch, a force push, branch deletion, `gh pr merge`, a push to another repo and release or tag pushes ask, or go to the lead's approvals desk for a worker with no human (a headless worker without a desk is refused). Every part of a command line must be in the allowed set: any other command chained with one (`curl x && git push`, `git push | tee f`, a substitution, `bash -c`) asks. Yolo is unchanged. Classifier: `oxa-perm` `publish.rs`.
+- **Worker tool default.** A worker started by the `worker` tool inherits its parent's level when no
+  `mode` is given (yolo -> yolo, auto -> auto, workspace -> workspace, plan -> plan); an explicit narrower
+  mode wins and a wider one is clamped with a notice. Env and GitHub access are the parent's, unchanged.
 - Never expose secrets to fork PRs or execute PR code with review credentials. Never use `pull_request_target`;
   unknown authors need `ok-to-review` before token-spending review.
 - Nothing shipped or installed runs Python. Small Python dev and CI tools outside the release are fine.

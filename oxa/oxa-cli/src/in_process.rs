@@ -360,7 +360,8 @@ fn select_for(
             let no_other_cloud = user
                 .get("oxa.cloud.models")
                 .is_none_or(|models| models.is_null() || models.as_object().is_some_and(|m| m.is_empty()))
-                && !user.bool("oxa.cloud.discover_models", false);
+                && !user.bool("oxa.cloud.discover_models", false)
+                && user.get("oxa.cloud.recommended_models") == Some(&Value::Bool(false));
             if no_other_cloud && user.get("oxa.cloud.opencode").is_some() {
                 return Err(error.clone());
             }
@@ -583,7 +584,10 @@ fn open_gateway_with_go(
     let needs_subscription = routes
         .iter()
         .any(|(_, billing)| matches!(billing, Some(Billing::Subscription)));
-    let (subscription, subscription_limits) = subscription_options(cloud, needs_subscription)?;
+    // The ChatGPT plan's model list needs the sign-in refresh settings too.
+    let signed_in = catalog::signed_in_chatgpt(dirs);
+    let (subscription, subscription_limits) =
+        subscription_options(cloud, needs_subscription || (discover && signed_in))?;
     let cap = match cloud.get("daily_budget_usd") {
         None | Some(Value::Null) => None,
         Some(value) => Some(value.as_f64().ok_or_else(invalid)?),
@@ -593,6 +597,7 @@ fn open_gateway_with_go(
         for (provider, default) in [
             (Provider::OpenRouter, "https://openrouter.ai/api/v1"),
             (Provider::OpenAi, oxc_gateway::openai::client::API_BASE),
+            (Provider::ChatGpt, oxc_gateway::openai::client::SUBSCRIPTION_BASE),
             (Provider::Anthropic, "https://api.anthropic.com"),
         ] {
             let mut configured = routes.iter().filter_map(|(model, _)| {
@@ -642,6 +647,11 @@ fn open_gateway_with_go(
                 .with_unpriced_discovered_pricing(pricing)
                 .map_err(|e| OxaError::new(e.code, e.message))?;
         }
+    }
+    if let Some(provider) = cloud.get("openrouter_provider").filter(|v| !v.is_null()) {
+        runtime = runtime
+            .with_openrouter_provider(provider)
+            .map_err(|e| OxaError::new(e.code, e.message))?;
     }
     if let Some(diagnostics) = diagnostics {
         runtime = runtime.with_diagnostics(diagnostics);

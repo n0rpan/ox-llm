@@ -180,14 +180,14 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.allowHomeCwd` | bool | `false` | allow oxa to start in the home directory, `/` or a parent of home. Without it print, JSON and RPC modes refuse and interactive mode asks. An explicit `--yolo` or `--auto` on the command line also allows it, with a warning and no question; the environment variable `OXA_ALLOW_HOME_CWD` also allows it. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
 | `oxa.allowHomeCwd` | bool | `false` | allow oxa to start in the home directory, `/` or a parent of home. Without it print, JSON and RPC modes refuse and interactive mode asks; the environment variable `OXA_ALLOW_HOME_CWD` also allows it. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
 | `oxa.approval.always` | list | `[]` | exact `<rule> <command>` keys written by "Always allow" in the dangerous-command prompt (#1512). Each key matches one command of one rule; remove a line to revoke it. User settings only |
-| `oxa.approval.dangerous` | list | `[]` | rules for dangerous commands, matched on the parsed command (#1512). `[]` (the default) is all built-in rules. `+id` adds a rule, `-id` removes one, `+cmd:<words>` adds a rule for a command (`+cmd:terraform destroy`), and a list without `+`/`-` entries replaces the built-in set (a plain `cmd:<words>` there turns the built-in rules off). Built-in ids: `rm-recursive-outside`, `git-push-force`, `credential-write`, `pipe-to-shell`, `disk-destroy`, `chmod-recursive-open`, `sudo`, `sql-drop`, `kill-foreign`, `oxa-self-approve`, `eval-dynamic`, `unparsed`. Unknown entries are ignored with a warning. User settings only |
+| `oxa.approval.dangerous` | list | `[]` | rules for dangerous commands, matched on the parsed command (#1512). `[]` (the default) is all built-in rules. `+id` adds a rule, `-id` removes one, `+cmd:<words>` adds a rule for a command (`+cmd:terraform destroy`), and a list without `+`/`-` entries replaces the built-in set (a plain `cmd:<words>` there turns the built-in rules off). Built-in ids: `rm-recursive-outside`, `git-push-force`, `credential-write`, `pipe-to-shell`, `disk-destroy`, `chmod-recursive-open`, `sudo`, `sql-drop`, `kill-foreign`, `oxa-self-approve`, `eval-dynamic`, `unparsed`. Unknown entries are ignored with a warning. Separately from these rules, a built-in publish check always runs: pushing the session's own non-default branch and `gh pr create|edit|comment` or read-only `gh` need no question, but a push to the default branch, a force push, a merge, a push elsewhere, or any command chained with a publish command asks (yolo never asks). User settings only |
 | `oxa.mode` | `plan` / `workspace` / `ask` | `workspace` | table mode at start |
 | `defaultProjectTrust` | `ask` / `always` / `never` | `ask` | what happens in a project that is not trusted yet; user settings only |
 | `oxa.offline` | bool | `false` | same as `--offline`; user settings only |
 | `oxa.engine.allowRemote` | bool | `false` | allow an engine on another host; user settings only |
 | `oxa.engine.inProcessLocal` | bool | `false` | select the in-process owned local engine, including offline; user settings only |
 | `oxa.inbox.headless` | bool | `true` | a headless print or JSON run (`--mode json`) of a persisted session whose goal is pursuing takes `oxa send` follow-ups from that session's inbox for the length of the run. Each message is an ordinary follow-up user message, at most 256 KiB and 64 queued; a larger file stays on disk. Runs without a pursuing goal never watch the inbox, and `false` turns this off. Read from the user settings file only; a project file cannot change it |
-| `oxa.local` | object | `{}` | literal native binary/model/arguments/environment and model limits; user settings only; `oxa local add` writes it from the engine's admission report ([Local models](cli.md#local-models)); see [native local configuration](../../oxc-local/CONFIGURATION.md) |
+| `oxa.local` | object | `{}` | literal native binary/model/arguments/environment and model limits; user settings only; `oxa local add` writes it from the engine's admission report, including the cache options (state cache, session RAM, prefix cache, 8 checkpoints; owner values win) ([Local models](cli.md#local-models)); see [native local configuration](../../oxc-local/CONFIGURATION.md) |
 | `oxa.a2a.enabled` | bool | `true` | sessions accept follow-ups and control (steer, pause, resume, cancel) from the lead over a local authenticated channel, from the same user only. `false`: file inbox only, and `nativeSteering` is refused. User settings only. See [security.md](security.md#agent-control-channel) |
 | `oxa.lead.shadow` | bool | `true` | the read-only `oxa lead --shadow` proposal preset; `false` turns it off; user settings only; no live runner actions |
 | `oxa.engine.inProcessCloud` | bool | unset | select the in-process Rust cloud gateway for sessions and model discovery. Unset is on when the owner's key file has an `openrouter`, `openai` or `anthropic` key or `oxa login chatgpt` was done; `false` opts out. User settings only |
@@ -275,6 +275,14 @@ Known provider or configured prices take precedence over this setting.
 When the same provider has several configured base URLs, select the discovery
 endpoint with `oxa.cloud.discovery.<provider>.base_url`.
 
+OpenRouter privacy routing is the owner's choice and is never forced. By
+default oxa sends no `provider` preferences, so your OpenRouter account and
+workspace settings apply. To choose, set `oxa.cloud.openrouter_provider` in user
+settings: `zdr` (`true` or `false`) limits or allows routing by zero data
+retention, and `data_collection` (`allow` or `deny`) controls providers that may
+train on or keep prompts. Values are sent exactly as set; any other key or value
+is refused at load. A client request cannot override them.
+
 The merged catalog is available through the model picker and `--list-models`.
 The LAN guest catalog lists only guest-allowlisted models.
 
@@ -333,12 +341,9 @@ An invalid saved binding refuses the request before provider I/O.
 
 A `chatgpt` route defaults to `https://chatgpt.com/backend-api/codex` and uses the
 existing owner-only `chatgpt-auth.json` beside the key file. It does not discover
-other applications' credentials or start a sign-in. After `oxa login chatgpt` the gateway opens,
-but the plan's models are not listed automatically: the subscription offers no models endpoint and
-no model row is built into the binary, so write one `chatgpt` route per model you want under
-`oxa.cloud.models` (an `upstream_model`, a `context_window` and a `max_output`, with no price);
-a route written that way is listed and usable exactly like a keyed provider's. The optional
-user-only `oxa.cloud.subscription_limits` object (positive integer
+other applications' credentials or start a sign-in. After `oxa login chatgpt` the plan models
+(`chatgpt/<model>` for every model the plan's own list offers, fetched live from `GET https://chatgpt.com/backend-api/codex/models` with your token, cached like the other provider lists) exist without a route in your settings; the window comes from that list, the output limit from OpenRouter's public catalog, and they are unpriced subscription routes;
+the optional user-only `oxa.cloud.subscription_limits` object (positive integer
 `daily_requests` and `daily_tokens`) only adds warnings. The separate optional `oxa.cloud.subscription` refresh object
 accepts a public `client_id` override (`[A-Za-z0-9_.-]{1,128}`); its default is the
 experimental public identity approved in #252. The refresh endpoint is fixed at

@@ -549,8 +549,8 @@ impl BashTool {
                     .wait(id, remaining.min(Duration::from_secs(3600)), cx.cancel);
             }
             if let Ok((read, fresh)) = self.jobs.read_bytes_from(id, shown) {
+                shown += fresh.len() as u64;
                 sink(&fresh);
-                shown = read.total;
                 last_read = Some(read);
             }
             if cx.cancel.is_cancelled() {
@@ -560,7 +560,9 @@ impl BashTool {
                 // Output written after the last read (the job ended in between).
                 let output = done.output;
                 if (output.len() as u64) > shown {
-                    sink(&output[shown as usize..]);
+                    for chunk in output[shown as usize..].chunks(crate::jobs::FOLLOW_CHUNK_CAP) {
+                        sink(chunk);
+                    }
                 }
                 return Followed::Done(oxa_proto::ExecResult {
                     output,
@@ -2299,8 +2301,11 @@ mod poll_tests {
         let (out, _) = job_call(&tool, json!({"command": "yes", "timeout": 1}));
         assert_eq!(out.ui["movedToBackground"], json!(true));
         assert_eq!(jobs.buffered_len("job-1"), Some(crate::jobs::BUFFER_CAP));
+        jobs.kill_all();
+        assert_eq!(jobs.running(), 0);
     }
 
+    #[test]
     fn command_past_its_timeout_keeps_bounded_output() {
         let (tx, rx) = channel();
         tx.send(vec![b'x'; crate::jobs::BUFFER_CAP * 2]).unwrap();

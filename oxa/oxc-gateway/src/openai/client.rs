@@ -237,6 +237,118 @@ impl Client {
         .await
         .map_err(|_| Error::Transport)?
     }
+    /// List the models the signed-in ChatGPT plan offers, as the Codex CLI does: `GET <base>/models`
+    /// with the plan's bearer token and account header. Only the ids and the context window the
+    /// endpoint states are taken; nothing else of the response is kept. The request is pinned to
+    /// `expected_account` (the account the cache key was derived from): a different sign-in is
+    /// refused, never fetched. The token is refreshed through the same locked path as a chat
+    /// request and never leaves this function.
+    pub async fn plan_models(
+        &self,
+        base: &str,
+        token_path: &Path,
+        expected_account: &str,
+        refresh: Refresh<'_>,
+        timeout: Duration,
+    ) -> Result<Vec<(String, Option<u64>)>, Error> {
+        let mut endpoint = responses_endpoint(base, true)?;
+        endpoint
+            .path_segments_mut()
+            .map_err(|_| Error::Endpoint)?
+            .pop()
+            .push("models");
+        endpoint
+            .query_pairs_mut()
+            .append_pair("client_version", env!("CARGO_PKG_VERSION"));
+        tokio::time::timeout(timeout, async {
+            // A 401 `token_expired` refreshes once through the locked path and retries once.
+            let mut rejected: Option<String> = None;
+            // Every credential used or retired across both attempts: the reply may echo none.
+            let mut seen: Vec<String> = Vec::new();
+            let response = loop {
+                let (record, retired) = self
+                    .credentials(
+                        token_path,
+                        expected_account,
+                        Refresh {
+                            endpoint: refresh.endpoint,
+                            client_id: refresh.client_id,
+                            timeout: refresh.timeout,
+                        },
+                        &Cancellation::new(),
+                        rejected.as_deref(),
+                    )
+                    .await?;
+                seen.extend(retired);
+                seen.extend([
+                    record.access_token().to_owned(),
+                    record.refresh_token().to_owned(),
+                    record.account_id().to_owned(),
+                ]);
+                let mut bearer = HeaderValue::from_str(&format!("Bearer {}", record.access_token()))
+                    .map_err(|_| Error::Credentials)?;
+                bearer.set_sensitive(true);
+                let mut request = self.0.get(endpoint.clone()).header(AUTHORIZATION, bearer);
+                for (name, value) in chatgpt_request::catalog_headers(record.account_id()) {
+                    let mut value = HeaderValue::from_str(value).map_err(|_| Error::Credentials)?;
+                    value.set_sensitive(true);
+                    request = request.header(name, value);
+                }
+                let response = request.send().await.map_err(|_| Error::Transport)?;
+                let status = response.status().as_u16();
+                if status == 401 && rejected.is_none() {
+                    let bytes = bounded(response, MAX_ERROR, &Cancellation::new()).await?;
+                    if serde_json::from_slice::<Value>(&bytes).ok().is_some_and(|v| {
+                        v["error"]["code"] == "token_expired" || v["error"]["type"] == "token_expired"
+                    }) {
+                        rejected = Some(record.access_token().to_owned());
+                        continue;
+                    }
+                    return Err(Error::SignedOut);
+                }
+                break response;
+            };
+            let status = response.status().as_u16();
+            if status == 401 || status == 403 {
+                return Err(Error::SignedOut);
+            }
+            if status != 200 {
+                return Err(Error::Http {
+                    status,
+                    refusal: None,
+                });
+            }
+            let bytes = bounded(
+                response,
+                crate::catalog_cache::MAX_BYTES as usize,
+                &Cancellation::new(),
+            )
+            .await?;
+            let body: Value = serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
+            for secret in &seen {
+                if crate::redaction::contains_secret(&body, secret) {
+                    return Err(Error::Protocol);
+                }
+            }
+            body["models"]
+                .as_array()
+                .ok_or(Error::Protocol)?
+                .iter()
+                // The picker's own rule: a model hidden from the list is not offered.
+                .filter(|model| matches!(model["visibility"].as_str(), None | Some("list")))
+                .map(|model| {
+                    let id = model["slug"]
+                        .as_str()
+                        .filter(|id| !id.is_empty() && id.len() <= 128)
+                        .map(str::to_owned)
+                        .ok_or(Error::Protocol)?;
+                    Ok::<_, Error>((id, model["context_window"].as_u64()))
+                })
+                .collect()
+        })
+        .await
+        .map_err(|_| Error::Transport)?
+    }
     pub async fn stream<F>(
         &self,
         chat: Chat<'_>,
