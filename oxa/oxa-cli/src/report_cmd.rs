@@ -525,7 +525,7 @@ fn stage_bytes(bytes: &[u8]) -> std::io::Result<std::fs::File> {
     use std::os::fd::{AsRawFd, FromRawFd};
     // No MFD_CLOEXEC: the `gh` child inherits the descriptor.
     // SAFETY: a NUL-terminated name and valid flags; the returned descriptor is owned below.
-    let fd = unsafe { libc::memfd_create(b"oxa-approved-body\0".as_ptr().cast(), libc::MFD_ALLOW_SEALING) };
+    let fd = unsafe { libc::memfd_create(c"oxa-approved-body".as_ptr(), libc::MFD_ALLOW_SEALING) };
     if fd < 0 {
         return Err(std::io::Error::last_os_error());
     }
