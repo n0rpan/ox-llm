@@ -18,6 +18,7 @@ code, tests, CI and docs; the owner validates on hardware.
   override these decisions. Enforce that boundary both when loading settings and when adopting a
   project file after any settings edit; an unrelated project edit must not restore a rejected
   user-only value.
+- `oxa local add` is owner-only. Refuse agent invocations before engine admission or settings writes.
 - Agent control lane: a session accepts steer/pause/resume/cancel only from the same user, and the
   session owner checks each request against the lease and goal revision. `oxa.a2a.enabled: false`
   (user-only) turns it off. Do not add a path that skips the lease check or reads the setting from a
@@ -128,10 +129,10 @@ code, tests, CI and docs; the owner validates on hardware.
   content, configured secret values). A file is refused for its content, never its name alone: an empty
   secret-store file and `.env.example` publish unless the content holds a secret. Flag as P1 a change that
   weakens these refusals or adds a name-only or blanket long-value block (P2 without a doc update).
-- **Bash and subagent limits.** The two caps are user-only. `oxa.bash.maxJobs` defaults to 16
-  running background jobs.
-  `oxa.subagent.maxChildren` defaults to 8 running or queued children per parent and 8 steps
-  per call. Both settings have a minimum of 1. An explicit bash `timeout: 0` disables the
+- **Bash and subagent limits.** `oxa.bash.maxJobs` (16) and `oxa.subagent.maxChildren` (8, also
+  steps per call) are user-only warning thresholds, never refusals:
+  above them a job starts or children queue, with a warning in the result. A goal token budget
+  counts known usage only; two idle replies warn unless `oxa.goal.idlePause`. Both limits are at least 1. An explicit bash `timeout: 0` disables the
   timeout for that call, including a background job, and overrides the foreground default.
   A foreground command that passes its timeout is not killed: it moves to a background job
   (counted in `oxa.bash.maxJobs`). `oxa.bash.waitCap` (user-only, default 300 s) caps `wait_s`.

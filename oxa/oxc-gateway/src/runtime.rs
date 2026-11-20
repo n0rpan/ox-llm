@@ -13,6 +13,13 @@ pub use crate::history::HistorySeal;
 use auth::Credential;
 pub use auth::{OpenAiAuthHandle, Subscription};
 use serde_json::{json, Value};
+
+/// Window and output assumed for a discovered model no catalog gives limits for: small enough to
+/// be safe on any current model, so an unknown model works without a promise it cannot keep.
+const UNKNOWN_CONTEXT: u32 = 128_000;
+const UNKNOWN_OUTPUT: u32 = 8_192;
+#[cfg(feature = "share")]
+use std::collections::BTreeSet;
 #[cfg(feature = "upstream-openai")]
 use std::path::Path;
 use std::{
@@ -402,9 +409,14 @@ impl Runtime {
                 // Discovery may raise the owner's configured reservation bounds.
                 let context = offer.context.max(fallback_info.map(|info| info.context_window));
                 let max_output = offer.max_output.max(fallback_info.map(|info| info.max_output));
-                let limits = context
-                    .zip(max_output)
-                    .filter(|(context, output)| output <= context);
+                // What nobody can tell is not refused: a conservative generic window and, for a price
+                // nobody lists, an unpriced route whose usage is recorded with unknown cost.
+                let limits = match (context, max_output) {
+                    (Some(context), Some(output)) if output <= context => Some((context, output)),
+                    (Some(context), None) => Some((context, UNKNOWN_OUTPUT.min(context))),
+                    (None, Some(output)) => Some((UNKNOWN_CONTEXT.max(output), output)),
+                    _ => None,
+                };
                 let price = match (self.billings.get(alias), offer.price.as_ref()) {
                     (Some(Billing::Metered(configured)), live) if configured.is_estimated() => live.cloned(),
                     (Some(Billing::Metered(configured)), Some(live)) => {
@@ -414,23 +426,20 @@ impl Runtime {
                     (_, live) => live.cloned(),
                 }
                 .or_else(|| self.unpriced_discovered.get(alias).cloned());
+                let (context, output) = limits.unwrap_or((UNKNOWN_CONTEXT, UNKNOWN_OUTPUT));
                 let price = price.filter(|price| {
-                    limits.is_none_or(|(context, output)| {
-                        price
-                            .reservation(
-                                source.provider().as_str(),
-                                &offer.id,
-                                u64::from(context),
-                                u64::from(output),
-                            )
-                            .is_some_and(f64::is_finite)
-                    })
+                    price
+                        .reservation(
+                            source.provider().as_str(),
+                            &offer.id,
+                            u64::from(context),
+                            u64::from(output),
+                        )
+                        .is_some_and(f64::is_finite)
                 });
                 missing_price += usize::from(price.is_none());
                 missing_limits += usize::from(limits.is_none());
-                let (Some(price), Some((context, output))) = (price, limits) else {
-                    continue;
-                };
+                let price = price.unwrap_or_else(crate::pricing::Price::unpriced);
                 let Ok(model) = Model::new(
                     alias,
                     source.provider(),
@@ -988,6 +997,7 @@ mod discovery_budget_tests {
         .unwrap();
         let source = Source::new(provider, base).unwrap();
         let offer = Offer {
+            public: false,
             id: upstream.into(),
             context: Some(context),
             max_output: Some(output),

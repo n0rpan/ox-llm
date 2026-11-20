@@ -120,11 +120,17 @@ fn ceiling(parent_mode: Mode, parent_autonomy: Autonomy) -> WorkerMode {
 
 /// A value passed as its own argv element: it must not be empty, must not look like a flag, and
 /// must not hold control characters.
-fn check_value(label: &str, value: &str) -> Result<(), String> {
+pub(super) fn check_value(label: &str, value: &str) -> Result<(), String> {
     if value.is_empty() || value.starts_with('-') || value.chars().any(char::is_control) {
         return Err(format!("invalid worker {label}: {value:?}"));
     }
     Ok(())
+}
+
+/// K5b: the level a resumed worker runs at: the level recorded when it started, never wider than
+/// the ceiling the parent's table mode and autonomy give now (as for a first launch).
+pub(super) fn resume_mode(recorded: WorkerMode, parent_mode: Mode, parent_autonomy: Autonomy) -> WorkerMode {
+    recorded.min(ceiling(parent_mode, parent_autonomy))
 }
 
 /// The argv of the child (without the program): `--mode json --session-id <id> --model <m>
@@ -172,15 +178,31 @@ pub fn child_argv(
     .to_vec();
     // The parent's own limits and scope reach the child, so starting a worker is not a way
     // around them.
-    if let Some(tokens) = spec.max_tokens {
+    args.extend(scope_args(
+        spec.max_tokens,
+        &spec.exclude_tools,
+        spec.session_dir.as_deref(),
+        &spec.narrowing,
+    )?);
+    Ok((args, notice))
+}
+
+/// The shared launch and resume arguments for the parent's allowance, scope and session directory.
+pub(super) fn scope_args(
+    max_tokens: Option<u64>,
+    exclude_tools: &[String],
+    session_dir: Option<&Path>,
+    n: &Narrowing,
+) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    if let Some(tokens) = max_tokens {
         args.push(format!("--max-tokens={tokens}"));
     }
-    if !spec.exclude_tools.is_empty() {
-        let excluded: Vec<&str> = spec.exclude_tools.iter().map(String::as_str).collect();
+    if !exclude_tools.is_empty() {
+        let excluded: Vec<&str> = exclude_tools.iter().map(String::as_str).collect();
         check_value("excluded tool", &excluded.join(","))?;
         args.push(format!("--exclude-tools={}", excluded.join(",")));
     }
-    let n = &spec.narrowing;
     if let Some(tools) = &n.tools {
         let allowed: Vec<&str> = tools.iter().map(String::as_str).collect();
         for tool in &allowed {
@@ -206,11 +228,11 @@ pub fn child_argv(
             args.push(flag.to_string());
         }
     }
-    if let Some(dir) = &spec.session_dir {
+    if let Some(dir) = session_dir {
         check_value("session directory", &dir.to_string_lossy())?;
         args.push(format!("--session-dir={}", dir.display()));
     }
-    Ok((args, notice))
+    Ok(args)
 }
 
 /// The git commands that create a worker's worktree, one argv each (program first). Hooks are

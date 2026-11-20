@@ -110,16 +110,24 @@ fn goal_run_continues_after_transient_failure() {
 }
 
 #[test]
-fn remote_busy_failure_exhausts_a_configured_token_budget_before_retry() {
+fn remote_busy_failure_is_unknown_spend_that_warns_and_the_goal_retries() {
     let env = TestEnv::new();
     let engine = Arc::new(ScriptedEngine::new(vec![busy(), finish()]).with_remote());
     let store = Arc::new(MemStore::new());
-    let mut session = Session::open(deps(&env, store, engine.clone(), Some(1)), Open::New).unwrap();
+    let mut dependencies = deps(&env, store, engine.clone(), Some(1));
+    dependencies.settings = Settings::from_values(
+        serde_json::json!({
+            "oxa": {"envNote": false, "goal": {"failureBackoffSeconds": 1}},
+            "retry": {"enabled": false}
+        }),
+        serde_json::json!({}),
+    );
+    let mut session = Session::open(dependencies, Open::New).unwrap();
     let mut sink = VecSink::default();
     session
         .set_goal(
             Some(objective(GoalBudget {
-                max_tokens: Some(1),
+                max_tokens: Some(1_000_000),
                 ..GoalBudget::default()
             })),
             &mut sink,
@@ -130,13 +138,25 @@ fn remote_busy_failure_exhausts_a_configured_token_budget_before_retry() {
         .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
         .unwrap();
 
-    assert_eq!(session.stats().outcome, RunOutcome::Failed(codes::ENGINE_BUSY));
-    assert_eq!(engine.requests().len(), 1, "the cloud request is not retried");
+    assert_eq!(
+        engine.requests().len(),
+        2,
+        "the cloud request is sent again after the wait"
+    );
     let goal = session.goal().unwrap();
-    assert_eq!(goal.status, GoalStatus::Blocked);
-    assert_eq!(goal.unknown_requests, 1);
-    assert!(goal.exhausted());
-    assert!(waits(&sink).is_empty());
+    assert_eq!(goal.unknown_requests, 1, "the uncertain spend is recorded");
+    assert_ne!(
+        goal.status,
+        GoalStatus::Blocked,
+        "unknown spend does not block the goal"
+    );
+    assert!(
+        sink.0.iter().any(|e| matches!(
+            e,
+            oxa_proto::AgentEvent::Notice { text, .. } if text.contains("reported no token usage")
+        )),
+        "the owner sees a warning"
+    );
 }
 
 #[test]

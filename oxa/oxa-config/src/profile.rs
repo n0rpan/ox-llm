@@ -177,7 +177,40 @@ pub struct CompactionTuning {
     pub summary_target: u32,
 }
 
+/// Caps that scale with the context window of a cloud model, each `None` when the owner set the
+/// key (the owner's value wins) or the window is unknown. The local profile never gets one, so
+/// local bytes stay as they are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CloudCaps {
+    /// `oxa.toolOutputCap` in bytes: 3/16 of the window in tokens, at least 16 KiB.
+    pub tool_output: Option<usize>,
+    /// `oxa.subagent.resultCap` in bytes: 3/32 of the window in tokens, at least 6 KiB.
+    pub subagent_result: Option<usize>,
+    /// `oxa.subagent.softTokens`: half the window, at least 24000.
+    pub child_soft_tokens: Option<u32>,
+}
+
 impl Settings {
+    /// The window-scaled caps of a cloud model with a `window` of tokens (0 or `u32::MAX` =
+    /// unknown). `cloud_model` is as in [`Settings::compaction_tuning`]; a local profile
+    /// (chosen or followed) yields no scaled cap.
+    pub fn cloud_caps(&self, cloud_model: bool, window: u32) -> CloudCaps {
+        if window == 0
+            || window == u32::MAX
+            || self.compaction_tuning(cloud_model).profile != CompactionProfile::Cloud
+        {
+            return CloudCaps::default();
+        }
+        let w = u64::from(window);
+        let scaled = |key: &str, bytes: u64, floor: u64| (!self.is_explicit(key)).then(|| bytes.max(floor));
+        CloudCaps {
+            tool_output: scaled("oxa.toolOutputCap", w * 3 / 16, 16_384).map(|n| n as usize),
+            subagent_result: scaled("oxa.subagent.resultCap", w * 3 / 32, 6_144).map(|n| n as usize),
+            child_soft_tokens: scaled("oxa.subagent.softTokens", w / 2, 24_000)
+                .map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
+        }
+    }
+
     /// `compaction.profile` as set by a layer; `None` = unset or not a profile name.
     pub fn compaction_profile_setting(&self) -> Option<CompactionProfile> {
         self.string(CompactionProfile::SETTING)
@@ -257,6 +290,37 @@ mod tests {
         assert_eq!(local.threshold, None);
         assert_eq!(local.keep_recent_tokens, 4_000);
         assert_eq!(local.summary_target, SUMMARY_TARGET_DEFAULT);
+    }
+
+    #[test]
+    fn cloud_caps_scale_with_the_window_and_owner_keys_and_local_win() {
+        let none = Settings::from_values(json!({}), json!({}));
+        let small = none.cloud_caps(true, 200_000);
+        assert_eq!(small.tool_output, Some(37_500));
+        assert_eq!(small.subagent_result, Some(18_750));
+        assert_eq!(small.child_soft_tokens, Some(100_000));
+        assert_eq!(none.cloud_caps(true, 1_000_000).tool_output, Some(187_500));
+        assert_eq!(
+            none.cloud_caps(true, 32_000).tool_output,
+            Some(16_384),
+            "never below the default"
+        );
+        assert_eq!(
+            none.cloud_caps(false, 200_000),
+            CloudCaps::default(),
+            "local profile unchanged"
+        );
+        assert_eq!(none.cloud_caps(true, 0), CloudCaps::default(), "unknown window");
+        let local = Settings::from_values(json!({"compaction": {"profile": "local"}}), json!({}));
+        assert_eq!(local.cloud_caps(true, 200_000), CloudCaps::default());
+        let owner = Settings::from_values(
+            json!({"oxa": {"toolOutputCap": 20_000, "subagent": {"softTokens": 5_000}}}),
+            json!({}),
+        );
+        let caps = owner.cloud_caps(true, 200_000);
+        assert_eq!(caps.tool_output, None, "an owner value wins");
+        assert_eq!(caps.child_soft_tokens, None);
+        assert_eq!(caps.subagent_result, Some(18_750));
     }
 
     #[test]
