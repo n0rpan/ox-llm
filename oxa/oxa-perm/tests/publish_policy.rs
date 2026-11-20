@@ -449,3 +449,20 @@ fn gh_mutation_fingerprint_includes_remotes_after_risky_settings() {
     );
     assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask);
 }
+
+#[test]
+fn gh_mutation_fingerprint_preserves_origin_url_order() {
+    let cwd = repo("my-branch");
+    set_config(
+        &cwd,
+        "[remote \"origin\"]\n\turl = https://github.com/o/r.git\n[push]\n\tdefault = simple\n[remote \"origin\"]\n\turl = https://github.com/o/other.git\n",
+    );
+    let command = "gh pr comment --body hi";
+    assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Allow);
+
+    set_config(
+        &cwd,
+        "[remote \"origin\"]\n\turl = https://github.com/o/other.git\n[push]\n\tdefault = simple\n[remote \"origin\"]\n\turl = https://github.com/o/r.git\n",
+    );
+    assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask);
+}

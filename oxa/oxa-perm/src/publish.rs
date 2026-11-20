@@ -558,7 +558,8 @@ fn config_risky(dir: &Path, branch: &str, implicit: bool) -> bool {
     scan_config(dir, branch, implicit).0
 }
 
-/// The origin URLs and URL rewrites of the repo config (sorted `section.sub.key=value` lines):
+/// The origin URLs and URL rewrites of the repo config (`section.sub.key=value` lines in config
+/// order):
 /// what a push to `origin` really goes to. `None` when the config cannot be read safely.
 fn url_fingerprint(dir: &Path) -> Option<Vec<String>> {
     let (risky, fp) = scan_config(dir, "", false);
@@ -690,7 +691,6 @@ fn scan_config(dir: &Path, branch: &str, implicit: bool) -> (bool, Vec<String>) 
         // even though pushes separately reject the risky configuration.
         config_risky |= risky;
     }
-    fp.sort();
     (config_risky, fp)
 }
 
