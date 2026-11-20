@@ -319,6 +319,13 @@ pub const ENV_TABLE: &[EnvVar] = &[
         kind: EnvKind::User,
     },
     EnvVar {
+        name: "OXA_WORK_OWNER_CONFIRMED",
+        pi_name: None,
+        description: "1 from a surface that holds the owner's own confirmation (web or runner): confirms the lane push of `oxa work` without the terminal question; ignored when a coding-agent marker (OXA_CODING_AGENT, AI_AGENT, OXA_SUBAGENT_DEPTH) is set",
+        supported: true,
+        kind: EnvKind::User,
+    },
+    EnvVar {
         name: "OXA_WORK_OUTPUT_DIR",
         pi_name: None,
         description: "oxa work sets it for done-check commands: the private output directory (also TMPDIR and CARGO_TARGET_DIR/target) when the task has one",
