@@ -442,6 +442,8 @@ read its result; they never launch builds or tests.
   its surfaces and help (P1 if added outside it or without an exception reason).
 
 **Security invariants**
+- Inbox child creation, publication, scanning and privacy wipes must stay relative to opened
+  no-follow directory descriptors on Linux and macOS. Do not re-resolve a saved pathname.
 
 - Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests; use synthetic fixtures.
   Do not open real credential files during review.
