@@ -941,7 +941,8 @@ const RECOMMENDED: &str = "anthropic/claude-haiku-5-5";
 fn recommended_catalog_requires_a_configured_provider_and_can_be_disabled() {
     let env = cloud_env();
     write_key(&env, &json!({"anthropic": CREDENTIAL}).to_string());
-    let mut settings = json!({"oxa":{"engine":{"inProcessCloud":true,"inProcessLocal":false}}});
+    let mut settings = json!({"oxa":{"engine":{"inProcessCloud":true,"inProcessLocal":false},
+        "cloud":{"opencode":{"enabled":false}}}});
     env.write("home/.oxa/agent/settings.json", &settings.to_string());
     let listed = run(&env, &["--list-models"], None);
     success(&listed);
