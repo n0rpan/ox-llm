@@ -95,7 +95,7 @@ impl ProbeHooks {
     }
 
     /// Scrub, then cut: a credential a cut could separate from its marker stays recognisable.
-    fn scrubbed(&self, text: &str, max: usize) -> String {
+    pub(crate) fn scrubbed(&self, text: &str, max: usize) -> String {
         cut_chars(&scrub(text, &self.scrub_ctx()), max)
     }
 
