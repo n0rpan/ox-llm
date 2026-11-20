@@ -4,8 +4,9 @@
 //!
 //! * **Permission ladder.** plan < ask < workspace (standard) < auto < yolo. A worker never runs
 //!   wider than its parent: a requested mode above the parent's ceiling is clamped to it and a
-//!   notice is returned. `yolo` is passed only when the parent runs in yolo and `yolo` was asked
-//!   for explicitly; a worker without a requested mode runs in `workspace`.
+//!   notice is returned. A worker without a requested mode inherits its parent's ceiling (yolo
+//!   parent, yolo worker; auto, auto; workspace, workspace; plan, plan); an explicit narrower
+//!   mode still wins.
 //! * **Worktrees.** `git -c core.hooksPath=/dev/null worktree add --no-checkout -b agent/<name>
 //!   <repo-parent>/.oxa-worktrees/<repo>/<name> <base>`: metadata only on the host, so no hook,
 //!   smudge filter or `.gitattributes` callback of the repository runs outside the sandbox. The
@@ -52,8 +53,8 @@ pub struct WorkerSpec {
     pub model: String,
     /// Path of the goal file, passed to `--goal`.
     pub goal_file: String,
-    /// The requested mode; `None` means `workspace`. `Some(WorkerMode::Yolo)` is the only way to
-    /// ask for yolo.
+    /// The requested mode; `None` means the parent's ceiling. An explicit narrower mode wins;
+    /// a wider one is clamped to the ceiling.
     pub mode: Option<WorkerMode>,
     /// The parent's token allowance (`--max-tokens`): the child may not spend more than it.
     pub max_tokens: Option<u64>,
@@ -148,8 +149,8 @@ pub fn child_argv(
     check_value("session id", &spec.session_id)?;
     check_value("model", &spec.model)?;
     check_value("goal file", &spec.goal_file)?;
-    let wanted = spec.mode.unwrap_or(WorkerMode::Workspace);
     let ceil = ceiling(parent_mode, parent_autonomy);
+    let wanted = spec.mode.unwrap_or(ceil);
     let mode = wanted.min(ceil);
     let notice = (mode < wanted).then(|| {
         format!(
@@ -342,10 +343,24 @@ mod tests {
         assert_eq!(perm(&args), "workspace");
         assert!(!args.iter().any(|a| a == "yolo"));
         assert!(notice.is_some());
-        // No requested mode: workspace, no notice, never yolo.
+        // No requested mode under a yolo parent: yolo, no notice.
         let (args, notice) = child_argv(&spec(None), Mode::Workspace, Autonomy::Yolo).unwrap();
+        assert_eq!(perm(&args), "yolo");
+        assert!(notice.is_none());
+        // An explicit narrower mode under yolo still wins.
+        let (args, notice) = child_argv(
+            &spec(Some(WorkerMode::Workspace)),
+            Mode::Workspace,
+            Autonomy::Yolo,
+        )
+        .unwrap();
         assert_eq!(perm(&args), "workspace");
         assert!(notice.is_none());
+        // No requested mode inherits the other ceilings too.
+        let (args, _) = child_argv(&spec(None), Mode::Workspace, Autonomy::Standard).unwrap();
+        assert_eq!(perm(&args), "workspace");
+        let (args, _) = child_argv(&spec(None), Mode::Plan, Autonomy::Yolo).unwrap();
+        assert_eq!(perm(&args), "plan");
         // Yolo parent with yolo asked for explicitly: yolo, no notice.
         let (args, notice) =
             child_argv(&spec(Some(WorkerMode::Yolo)), Mode::Workspace, Autonomy::Yolo).unwrap();
@@ -374,9 +389,9 @@ mod tests {
         assert_eq!(perm(&args), "auto");
         assert!(!args.iter().any(|a| a == "yolo"));
         assert!(notice.is_some());
-        // An auto parent with no requested mode still runs workspace.
+        // An auto parent with no requested mode inherits auto.
         let (args, notice) = child_argv(&spec(None), Mode::Workspace, Autonomy::Auto).unwrap();
-        assert_eq!(perm(&args), "workspace");
+        assert_eq!(perm(&args), "auto");
         assert!(notice.is_none());
         // The argv value is read back by the real CLI parser as auto, not as standard prompts.
         let pair = ["--permission-mode".to_string(), perm(&auto_args).to_string()];
