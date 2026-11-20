@@ -406,6 +406,61 @@ fn live_state(rec: &WorkerRecord, sessions_dir: &Path) -> WorkerState {
     registry::state(rec, status.as_ref(), alive)
 }
 
+/// One worker of a session as the Lead pages and loop see it: the lane (its branch), its
+/// model and live state, read from the registry and the worker's own status file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Binding {
+    pub name: String,
+    pub branch: String,
+    pub model: String,
+    pub state: WorkerState,
+    pub started_ms: u64,
+    /// Seconds since the worker's status file changed; `None` when it has none.
+    pub status_age_secs: Option<u64>,
+}
+
+/// Why no binding list could be read: an explicit state, never an empty list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingsError {
+    /// No worker is recorded for this session.
+    Absent,
+    /// The registry is unreadable or corrupt; it is left untouched.
+    Refused,
+}
+
+/// The workers recorded for `parent_session_id` with their live state. It needs no
+/// `WorkerCore`: the registry and each worker's status file are the whole input.
+pub fn bindings(
+    agent_dir: &Path,
+    sessions_dir: &Path,
+    parent_session_id: &str,
+) -> Result<Vec<Binding>, BindingsError> {
+    let records = registry::load(agent_dir, parent_session_id).map_err(|_| BindingsError::Refused)?;
+    if records.is_empty() {
+        return Err(BindingsError::Absent);
+    }
+    let now = std::time::SystemTime::now();
+    Ok(records
+        .iter()
+        .map(|rec| {
+            let path = status_path(sessions_dir, &rec.worktree, &rec.session_id)
+                .unwrap_or_else(|| rec.status_file.clone());
+            Binding {
+                name: rec.name.clone(),
+                branch: rec.branch.clone(),
+                model: rec.model.clone(),
+                state: live_state(rec, sessions_dir),
+                started_ms: rec.started_ms,
+                status_age_secs: fs::metadata(path)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|at| now.duration_since(at).ok())
+                    .map(|age| age.as_secs()),
+            }
+        })
+        .collect())
+}
+
 fn is_live(rec: &WorkerRecord, sessions_dir: &Path) -> bool {
     matches!(
         live_state(rec, sessions_dir),
@@ -1873,6 +1928,50 @@ mod tests {
             Autonomy::Standard,
         );
         assert!(!out.is_error, "{}", out.text);
+    }
+
+    #[test]
+    fn bindings_report_live_dead_absent_and_refused_without_touching_the_registry() {
+        let root = scratch("bindings");
+        let (agent, sessions) = (root.join("agent"), root.join("sessions"));
+        fs::create_dir_all(&agent).unwrap();
+        assert_eq!(
+            bindings(&agent, &sessions, "parent-1"),
+            Err(BindingsError::Absent)
+        );
+        let record = |name: &str, pid: u32| WorkerRecord {
+            name: name.into(),
+            session_id: format!("child-{name}"),
+            branch: format!("agent/{name}"),
+            model: "provider/model".into(),
+            pid,
+            pgid: pid,
+            worktree: root.join(name),
+            ..WorkerRecord::default()
+        };
+        registry::save(
+            &agent,
+            "parent-1",
+            &[record("alive", std::process::id()), record("gone", u32::MAX - 1)],
+        )
+        .unwrap();
+        let found = bindings(&agent, &sessions, "parent-1").unwrap();
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].branch, "agent/alive");
+        assert!(matches!(
+            found[0].state,
+            WorkerState::Starting | WorkerState::Working | WorkerState::Idle
+        ));
+        assert_eq!(found[1].state, WorkerState::Dead);
+        // A corrupt registry is refused and its bytes are left as they were.
+        let path = agent.join("workers").join("parent-2.json");
+        fs::write(&path, "not json").unwrap();
+        assert_eq!(
+            bindings(&agent, &sessions, "parent-2"),
+            Err(BindingsError::Refused)
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "not json");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

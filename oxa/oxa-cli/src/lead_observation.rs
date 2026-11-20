@@ -1,6 +1,7 @@
 //! One Lead observation per tick. The loop reads the protected Board sample and the
 //! runner situation once; every stuck-work rule is a pure derivation over the result,
 //! so no rule makes its own partial read (#2088, #2090, #2091).
+use crate::workers::tool::{Binding, BindingsError};
 use crate::{
     lead_input::{self, BoardCause},
     lead_page::{self, Alarms},
@@ -8,7 +9,7 @@ use crate::{
 use oxa_proto::work::{LocalAcceptance, PullRequest, Snapshot};
 use oxa_work::{
     board::Board,
-    shadow::{Deferral, ThreadHold},
+    shadow::{AppQuota, Deferral, ThreadHold},
 };
 use std::{collections::BTreeMap, path::Path};
 
@@ -21,12 +22,17 @@ pub(crate) struct Observation {
     /// Why the Board sample could not be read; the board is then the default one.
     pub cause: Option<BoardCause>,
     pub alarms: Alarms,
+    /// The App's GitHub quota windows as the Reader sampled them.
+    pub app_quota: Option<AppQuota>,
     /// Unresolved review threads by PR; `None` when the sample has no landing record.
     pub threads: Option<BTreeMap<u64, ThreadHold>>,
     /// PRs whose reviewer refused the configured requester account.
     pub review_rejected: Vec<u64>,
     /// Optional GitHub work the owner's App reserve deferred in this sample.
     pub quota_deferred: Vec<Deferral>,
+    /// The Lead session's workers with their lanes and live state; `None` when no owner
+    /// session was bound, an explicit error when the registry is absent or refused.
+    pub bindings: Option<Result<Vec<Binding>, BindingsError>>,
     /// The runner situation, only while it is inside its freshness window.
     pub situation: Option<Snapshot>,
     pub now_ms: u64,
@@ -72,11 +78,33 @@ impl Observation {
             board,
             cause,
             alarms,
+            app_quota: quota,
             threads,
             review_rejected: rejected,
             quota_deferred: deferred,
+            bindings: None,
             situation,
             now_ms,
+        }
+    }
+
+    /// Add the worker bindings of the Lead's own session: its owner binding's session
+    /// id, never a session list.
+    pub(crate) fn with_workers(mut self, agent_dir: &Path, sessions_dir: &Path, parent: &str) -> Self {
+        self.bindings = Some(crate::workers::tool::bindings(agent_dir, sessions_dir, parent));
+        self
+    }
+
+    /// Workers whose process is gone or was stopped.
+    pub(crate) fn gone_workers(&self) -> Vec<&str> {
+        use crate::workers::registry::WorkerState;
+        match &self.bindings {
+            Some(Ok(bindings)) => bindings
+                .iter()
+                .filter(|b| matches!(b.state, WorkerState::Dead | WorkerState::Stopped))
+                .map(|b| b.name.as_str())
+                .collect(),
+            _ => Vec::new(),
         }
     }
 
