@@ -371,6 +371,10 @@ fn wrapper_semantics_keep_the_publish_floor() {
         "/usr/bin/env git push origin HEAD",
         "env -C vendor/other gh pr create --title t --body b",
         "env --chdir=vendor/other git push origin HEAD",
+        "env -Cvendor/other git push origin HEAD",
+        "env --split-string='git push origin HEAD'",
+        "env -S'git push origin HEAD'",
+        "exec -a git-push git https://example.invalid/other.git HEAD:refs/heads/main",
         "env -S 'gh pr merge 5 --squash'",
         "env -S 'git push origin HEAD:main'",
         "su -c 'gh pr merge 5 --squash'",
@@ -387,6 +391,7 @@ fn wrapper_semantics_keep_the_publish_floor() {
         "command git push origin HEAD",
         "env git push origin HEAD",
         "env -i git push origin HEAD",
+        "HOME=./scratch cargo fmt --check",
     ] {
         assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Allow, "{c}");
     }

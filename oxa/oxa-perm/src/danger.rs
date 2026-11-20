@@ -1485,7 +1485,11 @@ pub(crate) fn peel(words: &[String], unknown_in: bool) -> Peeled {
             "nice" => i = skip_flags(words, i + 1, &["-n", "--adjustment"]),
             "nohup" | "command" | "builtin" | "setsid" => i = skip_flags(words, i + 1, &[]),
             "time" => i = skip_flags(words, i + 1, &["-f", "-o"]),
-            "exec" => i = skip_flags(words, i + 1, &["-a"]),
+            "exec" => {
+                let from = i + 1;
+                i = skip_flags(words, from, &["-a"]);
+                out.unknown |= words[from..i].iter().any(|w| short_has(w, 'a'));
+            }
             "stdbuf" => i = skip_flags(words, i + 1, &["-i", "-o", "-e"]),
             "ionice" => i = skip_flags(words, i + 1, &["-c", "-n", "-p", "-P", "-u"]),
             "timeout" => i = skip_positional(words, i + 1, &["-s", "-k", "--signal", "--kill-after"]),
@@ -1603,7 +1607,10 @@ fn skip_env(words: &[String], from: usize, inline: &mut Vec<String>, dir: &mut O
     let mut i = from;
     while i < words.len() {
         let w = words[i].as_str();
-        if let Some(value) = w.strip_prefix("--chdir=") {
+        if let Some(value) = w
+            .strip_prefix("--chdir=")
+            .or_else(|| w.strip_prefix("-C").filter(|v| !v.is_empty()))
+        {
             *dir = Some(value.to_string());
             i += 1;
             continue;
@@ -1614,14 +1621,18 @@ fn skip_env(words: &[String], from: usize, inline: &mut Vec<String>, dir: &mut O
             i += 2;
             continue;
         }
-        if w == "-S" || w == "--split-string" {
-            let Some(split) = words.get(i + 1) else {
-                return words.len();
-            };
+        let split = if matches!(w, "-S" | "--split-string") {
+            words.get(i + 1).map(|value| (value.as_str(), i + 2))
+        } else {
+            w.strip_prefix("--split-string=")
+                .or_else(|| w.strip_prefix("-S"))
+                .map(|value| (value, i + 1))
+        };
+        if let Some((split, next)) = split {
             // The words after the split string are that command's own arguments.
-            let rest = &words[i + 2..];
+            let rest = &words[next..];
             inline.push(if rest.is_empty() {
-                split.clone()
+                split.to_string()
             } else {
                 format!("{split} {}", rest.join(" "))
             });

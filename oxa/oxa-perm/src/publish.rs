@@ -202,18 +202,18 @@ fn kind_of(words: &[String], cwd: &Path, moved: bool) -> Kind {
     if !peeled.exact || peeled.dir.is_some() || !peeled.inline.is_empty() || peeled.unknown {
         return Kind::Unsafe;
     }
-    // Assignments inside the wrapper (`env GH_REPO=.. gh ..`) reach the wrapped command; the
-    // leading-assignment scan of `env_unsafe` stops at the wrapper word and never sees them.
-    if words[..peeled.start]
-        .iter()
-        .any(|w| is_assignment(w) && assignment_unsafe(w))
-    {
-        return Kind::Unsafe;
-    }
     let args: Vec<String> = words[peeled.start..].to_vec();
     let Some(name) = args.first().cloned() else {
         return Kind::Other;
     };
+    // Assignments inside a wrapper reach git or gh, but the leading scan stops at the wrapper.
+    if matches!(name.as_str(), "git" | "gh")
+        && words[..peeled.start]
+            .iter()
+            .any(|w| is_assignment(w) && assignment_unsafe(w))
+    {
+        return Kind::Unsafe;
+    }
     if matches!(base(&name), "git" | "gh") && !matches!(name.as_str(), "git" | "gh") {
         return Kind::Unsafe;
     }
