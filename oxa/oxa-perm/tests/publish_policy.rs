@@ -469,14 +469,20 @@ fn gh_mutation_fingerprint_preserves_origin_url_order() {
 
 #[test]
 fn gh_mutation_fails_closed_when_config_includes_another_file() {
-    let cwd = repo("my-branch");
-    set_config(
-        &cwd,
-        "[include]\n\tpath = project.inc\n[remote \"origin\"]\n\turl = https://github.com/o/r.git\n",
-    );
+    for include in [
+        "[include]\n\tpath = project.inc\n",
+        "[includeIf \"gitdir:~/project/\"]\n\tpath = project.inc\n",
+    ] {
+        let cwd = repo("my-branch");
+        set_config(
+            &cwd,
+            &format!("{include}[remote \"origin\"]\n\turl = https://github.com/o/r.git\n"),
+        );
 
-    assert_eq!(
-        decide(&cwd, Autonomy::Auto, "gh pr comment --body hi"),
-        Decision::Ask
-    );
+        assert_eq!(
+            decide(&cwd, Autonomy::Auto, "gh pr comment --body hi"),
+            Decision::Ask,
+            "{include} must invalidate the repository fingerprint"
+        );
+    }
 }
