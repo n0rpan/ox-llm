@@ -199,7 +199,8 @@ code, tests, CI and docs; the owner validates on hardware.
   `oxa.approval.unattended` (`auto` by default, `refuse`, `request`; user settings only) refuses or
   files an owner request, answered only through `oxa send --approve` after the session's owner-confirm broker (or the direct controlling terminal) authenticates the answer. A refusal is returned to the
   run without writing an approval record; only requests that the owner can answer are persisted. Grants are
-  owner-scoped (`once` is consumed by the retrying run; `session`/`always` persist) and a project file
+  owner-scoped (`once` is consumed by the retrying run; `session` expires when that run ends;
+  `always` persists through user settings) and a project file
   or model output cannot grant one. Shell parameter or command substitution markers anywhere in
   the command prevent reuse of a saved grant. A finding that asks for a default-off switch or for
   an unattended run to wait is answered here.
