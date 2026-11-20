@@ -82,7 +82,7 @@ fn catalog(dirs: &Dirs, cwd: &Path, env: &Env, err: &mut dyn Write) -> Result<Ca
                 .map(|provider| (id.clone(), (true, provider.to_owned())))
         }));
     }
-    let (engine, notices) = crate::in_process::select_catalog(&user, &user, dirs, || engine_for(&endpoint))?;
+    let (engine, notices) = crate::in_process::select_catalog(&user, dirs, || engine_for(&endpoint))?;
     write_diagnostics(err, notices.into_iter().map(|text| (Level::Info, text)));
     Ok(Catalog {
         engine,

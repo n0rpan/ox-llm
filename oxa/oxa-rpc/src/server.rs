@@ -13,7 +13,7 @@
 // (`pending`, the prompt's run claim), then write the response, the run's `agent_settled` (held
 // back while the job ran) and the `abort` responses that waited for it. A command a client
 // sends after reading any of those records therefore meets an idle session and fresh state.
-#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+#[cfg(target_os = "linux")]
 use crate::a2a_control::{write_control_receipt, BoundControl};
 use crate::events::{event_to_json, session_state, write_record};
 use crate::{cmd_run, handle_session, Out, RpcCx, RpcUi, UiRouter};
@@ -25,8 +25,18 @@ use std::collections::HashSet;
 use std::io::BufRead;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
+use std::time::Duration;
+
+/// How long the session thread waits for a job before it re-checks the stop flags
+/// (`wrap_up_requested`, `interrupted`).
+///
+/// The wait is not the only wake: the session's attention waker (see
+/// [`Handle::set_attention_waker`]) sends [`Job::Wake`] when a wrap-up or an interruption is
+/// requested, so a stop is served at once instead of at the next tick. A job (a command, an
+/// inbox follow-up, a shutdown) wakes the wait by itself.
+const RPC_IDLE_TICK: Duration = Duration::from_millis(250);
 
 /// One parsed command line.
 #[derive(Debug, Clone, PartialEq)]
@@ -146,7 +156,10 @@ enum Job {
     Outcome(RunOutcome),
     /// A follow-up is already in Handle's queue; wake the session even with stdin idle.
     Inbox(String),
-    #[cfg(all(target_os = "linux", feature = "a2a-control"))]
+    /// The session's attention waker: a wrap-up or an interruption was requested. The session
+    /// thread re-checks the flags at the top of its loop; the job carries no work.
+    Wake,
+    #[cfg(target_os = "linux")]
     GoalControl(BoundControl),
     Shutdown,
 }
@@ -157,7 +170,7 @@ struct Gate {
     /// Session commands sent to the worker and not finished (outcome-only jobs claim nothing).
     pending: usize,
     /// Bound the typed inbox lane to one pending job on the existing session FIFO.
-    #[cfg(all(target_os = "linux", feature = "a2a-control"))]
+    #[cfg(target_os = "linux")]
     control_pending: bool,
     /// EOF is ordered with inbox admission: leave later files for the next owner.
     closed: bool,
@@ -420,9 +433,9 @@ fn session_loop(
     gate: Arc<Mutex<Gate>>,
     bash_running: Arc<AtomicBool>,
     tx: Sender<Job>,
-    #[cfg(all(target_os = "linux", feature = "a2a-control"))] steering_authority: Arc<
-        oxa_core::goal::SteeringAuthority,
-    >,
+    wake_pending: Arc<AtomicBool>,
+    control_lane: bool,
+    #[cfg(target_os = "linux")] steering_authority: Arc<oxa_core::goal::SteeringAuthority>,
 ) -> RunOutcome {
     let mut outcome = RunOutcome::NothingToDo;
     let mut inbox = None;
@@ -465,10 +478,16 @@ fn session_loop(
                 }
                 true
             };
-            #[cfg(not(all(target_os = "linux", feature = "a2a-control")))]
-            let watch = oxa_session::Inbox::watch(&cx.dirs.agent_dir, &session.id, follow_up);
-            #[cfg(all(target_os = "linux", feature = "a2a-control"))]
+            #[cfg(not(target_os = "linux"))]
             let watch = {
+                let _ = control_lane;
+                oxa_session::Inbox::watch(&cx.dirs.agent_dir, &session.id, follow_up)
+            };
+            // `oxa.a2a.enabled: false` keeps the plain follow-up inbox; control files stay unread.
+            #[cfg(target_os = "linux")]
+            let watch = if !control_lane {
+                oxa_session::Inbox::watch(&cx.dirs.agent_dir, &session.id, follow_up)
+            } else {
                 use oxa_session::InboxItem;
                 let control_gate = gate.clone();
                 let sender = tx.clone();
@@ -539,7 +558,7 @@ fn session_loop(
                 }
             }
         } else {
-            match rx.recv_timeout(std::time::Duration::from_millis(20)) {
+            match rx.recv_timeout(RPC_IDLE_TICK) {
                 Ok(job) => job,
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -564,7 +583,14 @@ fn session_loop(
                     false,
                 )
             }
-            #[cfg(all(target_os = "linux", feature = "a2a-control"))]
+            // The session's attention waker: a wrap-up or an interruption was requested. The
+            // flags are re-checked at the top of the loop; the job carries no work. The flag is
+            // cleared first, so a wake arriving while this one is served is not lost.
+            Job::Wake => {
+                wake_pending.store(false, Ordering::SeqCst);
+                continue;
+            }
+            #[cfg(target_os = "linux")]
             Job::GoalControl(control) => {
                 let id = control.id().to_owned();
                 let mut sink = cmd_run::OutSink(cx.out.clone());
@@ -754,18 +780,32 @@ pub fn serve_outcome(
     input: Box<dyn BufRead + Send>,
     out: Out,
 ) -> Result<RunOutcome, OxaError> {
+    serve_outcome_gated(session, dirs, input, out, true)
+}
+
+/// [`serve_outcome`] with the inbox control lane chosen by the caller (`oxa.a2a.enabled`).
+/// With `control_lane` false the session reads plain follow-ups only and leaves control files
+/// in the inbox.
+pub fn serve_outcome_gated(
+    session: Session,
+    dirs: oxa_config::Dirs,
+    input: Box<dyn BufRead + Send>,
+    out: Out,
+    control_lane: bool,
+) -> Result<RunOutcome, OxaError> {
     serve_inner(
         session,
         dirs,
         input,
         out,
-        #[cfg(all(target_os = "linux", feature = "a2a-control"))]
+        control_lane,
+        #[cfg(target_os = "linux")]
         Arc::new(|_, with_lease| with_lease(None)),
     )
 }
 
 /// Serve an assigned session using the frontend's existing guarded lease read.
-#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+#[cfg(target_os = "linux")]
 pub fn serve_outcome_with_steering_authority(
     mut session: Session,
     dirs: oxa_config::Dirs,
@@ -774,7 +814,7 @@ pub fn serve_outcome_with_steering_authority(
     authority: Arc<oxa_core::goal::SteeringAuthority>,
 ) -> Result<RunOutcome, OxaError> {
     session.bind_lead_steering_authority(authority.clone());
-    serve_inner(session, dirs, input, out, authority)
+    serve_inner(session, dirs, input, out, true, authority)
 }
 
 fn serve_inner(
@@ -782,12 +822,11 @@ fn serve_inner(
     dirs: oxa_config::Dirs,
     input: Box<dyn BufRead + Send>,
     out: Out,
-    #[cfg(all(target_os = "linux", feature = "a2a-control"))] steering_authority: Arc<
-        oxa_core::goal::SteeringAuthority,
-    >,
+    control_lane: bool,
+    #[cfg(target_os = "linux")] steering_authority: Arc<oxa_core::goal::SteeringAuthority>,
 ) -> Result<RunOutcome, OxaError> {
     let handle = session.handle();
-    #[cfg(all(target_os = "linux", feature = "a2a-control"))]
+    #[cfg(target_os = "linux")]
     handle.enable_goal_steering();
     let router = Arc::new(UiRouter::new());
     let gate = Arc::new(Mutex::new(Gate::default()));
@@ -801,24 +840,51 @@ fn serve_inner(
         dirs,
     };
     let cache = Arc::new(Mutex::new(publish(&cx)));
+    // The wake the session thread and the supervisory loop share. The session's attention
+    // waker (see `Handle::set_attention_waker`) sends one `Job::Wake` per pending wake, so the
+    // session thread's wait ends at once when a wrap-up or an interruption is requested, and
+    // signals the supervisory loop, which otherwise waits on the session thread's exit.
+    let wake_pending = Arc::new(AtomicBool::new(false));
+    let done = Arc::new((Mutex::new(false), Condvar::new()));
+    {
+        let wake_tx = tx.clone();
+        let wake_pending = wake_pending.clone();
+        let done = done.clone();
+        handle.set_attention_waker(Arc::new(move || {
+            if !wake_pending.swap(true, Ordering::SeqCst) {
+                let _ = wake_tx.send(Job::Wake);
+            }
+            let (lock, wake) = &*done;
+            drop(lock.lock().unwrap_or_else(|p| p.into_inner()));
+            wake.notify_all();
+        }));
+    }
     let worker = {
         let cache = cache.clone();
         let gate = gate.clone();
         let bash_flag = bash_running.clone();
         let tx = tx.clone();
+        let wake_pending = wake_pending.clone();
+        let done = done.clone();
         thread::Builder::new()
             .name("oxa-rpc-session".to_string())
             .spawn(move || {
-                session_loop(
+                let outcome = session_loop(
                     cx,
                     rx,
                     cache,
                     gate,
                     bash_flag,
                     tx,
-                    #[cfg(all(target_os = "linux", feature = "a2a-control"))]
+                    wake_pending,
+                    control_lane,
+                    #[cfg(target_os = "linux")]
                     steering_authority,
-                )
+                );
+                let (lock, wake) = &*done;
+                *lock.lock().unwrap_or_else(|p| p.into_inner()) = true;
+                wake.notify_all();
+                outcome
             })
             .map_err(|e| OxaError::io("cannot start the session thread", &e))?
     };
@@ -857,12 +923,22 @@ fn serve_inner(
             return Err(OxaError::io("cannot start the RPC input thread", &error));
         }
     };
-    while !worker.is_finished() {
+    // The supervisory wait: the session thread signals `done` when it returns, and the
+    // attention waker signals it when a wrap-up or an interruption is requested (the router is
+    // closed then, so a dialog the run waits on is answered). The tick is the deadline, not the
+    // only wake.
+    let (done_lock, done_wake) = &*done;
+    let mut finished = done_lock.lock().unwrap_or_else(|p| p.into_inner());
+    while !*finished && !worker.is_finished() {
         if control.wrap_up_requested() || control.interrupted() {
             router.close();
         }
-        thread::sleep(std::time::Duration::from_millis(20));
+        finished = done_wake
+            .wait_timeout(finished, RPC_IDLE_TICK)
+            .unwrap_or_else(|p| p.into_inner())
+            .0;
     }
+    drop(finished);
     router.close();
     if reader.is_finished() {
         let _ = reader.join();

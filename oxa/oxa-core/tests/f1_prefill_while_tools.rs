@@ -1101,7 +1101,7 @@ fn advancing_tool_prefill_counts_as_progress_while_a_quiet_tool_runs() {
 }
 
 #[test]
-fn cancelled_sent_prefill_marks_goal_usage_unknown_before_another_generation() {
+fn cancelled_sent_prefill_marks_goal_usage_unknown_without_blocking_the_goal() {
     let _g = serial(SHORT);
     let env = TestEnv::new();
     let scripted = Arc::new(ScriptedEngine::new(script(reads_then_slow())));
@@ -1134,14 +1134,14 @@ fn cancelled_sent_prefill_marks_goal_usage_unknown_before_another_generation() {
     session
         .prompt("Start".into(), vec![], &mut sink, &mut ui)
         .unwrap();
-    assert_eq!(
-        scripted.requests().len(),
-        1,
-        "An uncertain prefill must stop the next generation"
-    );
     let goal = session.goal().unwrap();
-    assert_eq!(goal.unknown_requests, 1);
-    assert_eq!(goal.status, oxa_session::GoalStatus::Blocked);
+    // Two requests carry unknown spend: the cancelled turn and the prefill that was already
+    // sent for it. Each is recorded once; neither counts as used tokens.
+    assert_eq!(goal.unknown_requests, 2);
+    assert!(
+        !goal.exhausted(),
+        "an uncertain prefill is recorded, not an exhausted budget"
+    );
 }
 
 #[test]

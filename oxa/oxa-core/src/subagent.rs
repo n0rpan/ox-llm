@@ -7,16 +7,15 @@
 //! * **Concurrency 1 on the local engine.** A lock held for the whole call serialises calls that
 //!   arrive concurrently (e.g. from codemode). A `tasks` call whose children all run locally
 //!   runs them in call order and shows the rest as `subagent k/n, queued`; when some child runs
-//!   on a remote (cloud) model, up to `oxa.subagent.remoteConcurrency` (default 4) children run
+//!   on a remote (cloud) model, up to `oxa.subagent.remoteConcurrency` (default 8) children run
 //!   at once, local ones still one at a time, and results come back in call order (#458);
-//!   more than [`MAX_PARALLEL_TASKS`] tasks are refused with pi's text. Depth 1: a child gets
-//!   `OXA_SUBAGENT_DEPTH=1` and the binary then does not build this hook set.
-//! * **Eight children per parent session, over the whole tree (O-146).** The cap is not per
-//!   `tasks` array: a `chain` longer than eight steps is refused too, and children that run
-//!   or wait are counted per parent session over every call in flight (a call queued behind
-//!   the running one has reserved its tasks), so several calls cannot add up to more than
-//!   eight. Children cannot spawn (depth 1), so these are all descendants. A refusal is a
-//!   tool error to the model and starts nothing.
+//!   more than [`MAX_PARALLEL_TASKS`] tasks run anyway, with a warning in the result. Depth 1: a
+//!   child gets `OXA_SUBAGENT_DEPTH=1` and the binary then does not build this hook set.
+//! * **Eight children per parent session, over the whole tree (O-146).** `oxa.subagent.maxChildren`
+//!   (default 8) is a warning threshold, not a refusal: a longer `tasks` array or `chain`, or
+//!   more children than that running or waiting per parent session over every call in flight
+//!   (a call queued behind the running one has reserved its tasks), still runs, queued, and
+//!   the result ends with a warning that names the setting. Children cannot spawn (depth 1).
 //! * **Own session per child.** Child `n` of parent session `P` gets the hint `P.s<n>` (env
 //!   `OXA_SESSION_HINT`); the child binary sends it as `X-Session-Id` / `X-Oxe-Session` with
 //!   `X-Oxe-Priority: background` and `X-Oxe-Turn-Kind: subagent` (`oxa-cli/src/child.rs`).
@@ -116,7 +115,7 @@ pub const SETTING_SMALL_CONTEXT: &str = "oxa.subagent.smallContext";
 pub const DEFAULT_SOFT_TOKENS: u32 = 24_000;
 pub const DEFAULT_RESULT_CAP: usize = 6144;
 pub const SETTING_REMOTE_CONCURRENCY: &str = "oxa.subagent.remoteConcurrency";
-pub const DEFAULT_REMOTE_CONCURRENCY: usize = 4;
+pub const DEFAULT_REMOTE_CONCURRENCY: usize = 8;
 
 /// pi's limit on `tasks`, and the default of `oxa.subagent.maxChildren`: the most children one
 /// parent session runs or queues over every call in flight, and the most steps one call takes.
@@ -297,6 +296,9 @@ struct Inner {
     agents: Vec<AgentDef>,
     excluded_tools: Mutex<Vec<String>>,
     config: Mutex<Config>,
+    /// The settings the config came from: a cloud model's window scales the result cap and the
+    /// child compaction point unless the owner set them ([`Settings::cloud_caps`]).
+    settings: Mutex<Settings>,
     host: Mutex<Option<Arc<dyn Host>>>,
     /// The context window of the session's model, as last learned through the host.
     context_window: Mutex<Option<u32>>,
@@ -348,6 +350,7 @@ impl SubagentHooks {
             agents,
             excluded_tools: Mutex::new(Vec::new()),
             config: Mutex::new(Config::default()),
+            settings: Mutex::new(Settings::default()),
             host: Mutex::new(None),
             context_window: Mutex::new(None),
             flash: Mutex::new(false),
@@ -429,6 +432,7 @@ impl SubagentHooks {
                 .clamp(1, max_children),
             max_children,
         };
+        *lock(&self.inner.settings) = settings.clone();
         self
     }
 
@@ -446,7 +450,7 @@ impl SubagentHooks {
         match c.enabled {
             Some(on) => on,
             None if c.small_context => true,
-            None => !flash && !window.is_some_and(|w| w < MIN_CONTEXT),
+            None => !flash && window.is_none_or(|w| w >= MIN_CONTEXT),
         }
     }
 
@@ -720,6 +724,35 @@ fn parse_limits(v: &Value) -> Limits {
     }
 }
 
+/// #1512 S3: the environment of a subagent child. Every child is unattended (`OXA_UNATTENDED=1`):
+/// no person watches it, so the OS sandbox stays on by default.
+fn child_env(hint: &str, soft: u32) -> Vec<(String, String)> {
+    vec![
+        (ENV_SESSION_HINT.to_string(), hint.to_string()),
+        (ENV_SUBAGENT_DEPTH.to_string(), "1".to_string()),
+        (ENV_CHILD_SOFT_TOKENS.to_string(), soft.to_string()),
+        (oxa_proto::names::ENV_UNATTENDED.to_string(), "1".to_string()),
+    ]
+}
+
+#[cfg(test)]
+mod child_env_tests {
+    use super::child_env;
+
+    #[test]
+    fn subagent_child_env_sets_oxa_unattended() {
+        let env = child_env("sess.s1", 24000);
+        assert!(
+            env.contains(&("OXA_UNATTENDED".to_string(), "1".to_string())),
+            "{env:?}"
+        );
+        assert!(
+            env.contains(&("OXA_SUBAGENT_DEPTH".to_string(), "1".to_string())),
+            "{env:?}"
+        );
+    }
+}
+
 /// The child's soft compaction limit: the setting, never above the parent's `compactAt` and
 /// always below the context window.
 fn child_soft_tokens(setting: u32, l: &Limits) -> u32 {
@@ -830,9 +863,12 @@ impl Tool for SubagentTool {
             return ToolOutput::error(T::INVALID_MODE.replace("{available}", &available_list(&inner.agents)));
         }
         let max = lock(&inner.config).max_children;
+        // `oxa.subagent.maxChildren` is a warning threshold: a call above it runs (children go
+        // one after another or at the remote concurrency) and the result carries the warning.
+        let mut warnings: Vec<String> = Vec::new();
         let (shape, items) = if !chain.is_empty() {
             if chain.len() > max {
-                return ToolOutput::error(
+                warnings.push(
                     TOO_MANY_CHAIN
                         .replace("{n}", &chain.len().to_string())
                         .replace("{max}", &max.to_string()),
@@ -841,7 +877,7 @@ impl Tool for SubagentTool {
             (Shape::Chain, chain)
         } else if !tasks.is_empty() {
             if tasks.len() > max {
-                return ToolOutput::error(
+                warnings.push(
                     TOO_MANY
                         .replace("{n}", &tasks.len().to_string())
                         .replace("{max}", &max.to_string()),
@@ -882,20 +918,20 @@ impl Tool for SubagentTool {
             Ok(v) => parse_limits(&v),
             Err(e) => return ToolOutput::error(T::FAILED.replace("{error}", &e.message)),
         };
-        // O-146: at most eight children per parent session, running or waiting, over every
-        // call in flight. Reserved before this call waits for its turn, so a call queued
-        // behind the running one counts too; refused calls start nothing.
-        let budget = match Budget::reserve(inner, &limits.session_id, items.len()) {
-            Ok(b) => b,
-            Err(pending) => {
-                return ToolOutput::error(
-                    TOO_MANY_SESSION
-                        .replace("{pending}", &pending.to_string())
-                        .replace("{n}", &items.len().to_string())
-                        .replace("{max}", &lock(&inner.config).max_children.to_string()),
-                )
-            }
-        };
+        // O-146: children per parent session, running or waiting, over every call in flight,
+        // counted against `oxa.subagent.maxChildren`. Reserved before this call waits for its
+        // turn, so a call queued behind the running one counts too. Above the limit the call
+        // still runs, queued, with a warning.
+        let (budget, over) = Budget::reserve(inner, &limits.session_id, items.len());
+        // A call whose own size passed the limit already carries that warning.
+        if let Some(pending) = over.filter(|pending| *pending > 0) {
+            warnings.push(
+                TOO_MANY_SESSION
+                    .replace("{pending}", &pending.to_string())
+                    .replace("{n}", &items.len().to_string())
+                    .replace("{max}", &lock(&inner.config).max_children.to_string()),
+            );
+        }
         // Concurrency 1: one call (and so one child) at a time.
         let _running = lock(&inner.running);
         inner.abort.store(false, Ordering::SeqCst);
@@ -996,9 +1032,18 @@ impl Tool for SubagentTool {
             })).collect::<Vec<_>>(),
             "isError": is_error,
         });
+        let result_cap = lock(&inner.settings)
+            .cloud_caps(run.limits.remote, run.limits.context_window)
+            .subagent_result
+            .unwrap_or(config.result_cap);
+        let mut text = cap_result(&text, result_cap, cx.spill_dir);
+        for warning in &warnings {
+            text.push_str("\n\n");
+            text.push_str(warning);
+        }
         ToolOutput {
             images: Vec::new(),
-            text: cap_result(&text, config.result_cap, cx.spill_dir),
+            text,
             is_error,
             ui: details,
         }
@@ -1100,21 +1145,25 @@ struct Budget<'a> {
 }
 
 impl<'a> Budget<'a> {
-    /// Reserve `n` children for `session`, or `Err(children already running or waiting)`
-    /// when that would pass `oxa.subagent.maxChildren`.
-    fn reserve(inner: &'a Inner, session: &str, n: usize) -> Result<Budget<'a>, usize> {
+    /// Reserve `n` children for `session`. The second value is `Some(children already running
+    /// or waiting)` when that passes `oxa.subagent.maxChildren`: a warning, the reservation
+    /// still stands.
+    fn reserve(inner: &'a Inner, session: &str, n: usize) -> (Budget<'a>, Option<usize>) {
         let max = lock(&inner.config).max_children;
         let mut pending = lock(&inner.pending);
         let now = pending.get(session).copied().unwrap_or(0);
-        if now.saturating_add(n) > max {
-            return Err(now);
-        }
-        pending.insert(session.to_string(), now + n);
-        Ok(Budget {
-            inner,
-            session: session.to_string(),
-            left: n,
-        })
+        // The warning names what was already in flight: with nothing pending, this call's own
+        // size is the per-call warning's business, not a session one.
+        let over = now > 0 && now.saturating_add(n) > max;
+        pending.insert(session.to_string(), now.saturating_add(n));
+        (
+            Budget {
+                inner,
+                session: session.to_string(),
+                left: n,
+            },
+            over.then_some(now),
+        )
     }
 
     fn release(&mut self, n: usize) {
@@ -1344,7 +1393,15 @@ impl Run<'_, '_> {
             *n += 1;
             format!("{}.s{}", self.limits.session_id, n)
         };
-        let soft = child_soft_tokens(self.config.soft_tokens, &self.limits);
+        // A cloud model's window scales the child's compaction point unless the owner set it.
+        let setting = match lock(&self.inner.settings)
+            .cloud_caps(remote && self.limits.remote, self.limits.context_window)
+            .child_soft_tokens
+        {
+            Some(scaled) => scaled,
+            None => self.config.soft_tokens,
+        };
+        let soft = child_soft_tokens(setting, &self.limits);
         let mut argv: Vec<String> = vec!["--mode".into(), "json".into(), "-p".into(), "--no-session".into()];
         if !model.is_empty() {
             argv.push("--model".into());
@@ -1372,11 +1429,7 @@ impl Run<'_, '_> {
             argv.push(agent.system_prompt.clone());
         }
         argv.push(T::TASK.replace("{task}", task));
-        let env = vec![
-            (ENV_SESSION_HINT.to_string(), hint.clone()),
-            (ENV_SUBAGENT_DEPTH.to_string(), "1".to_string()),
-            (ENV_CHILD_SOFT_TOKENS.to_string(), soft.to_string()),
-        ];
+        let env = child_env(&hint, soft);
         let expected = &self.cwds[k];
         let current = child_cwd(self.cx.cwd, item.cwd.as_deref().unwrap_or("."));
         if &current != expected {
@@ -1544,6 +1597,13 @@ fn wait_child(
                         let extra = total.saturating_sub(charged);
                         let _ = host.call(HostAction::AccountRunTokens(extra));
                         charged = charged.saturating_add(extra);
+                    }
+                    if v["complete"] == false {
+                        // The child could not size its own spend: charge the rest of the
+                        // allowance it was given so the parent wraps up, never above it.
+                        let rest = remaining.unwrap_or(0).saturating_sub(charged);
+                        let _ = host.call(HostAction::AccountRunTokens(rest));
+                        charged = charged.saturating_add(rest);
                     }
                 }
             }
@@ -1826,5 +1886,23 @@ mod limit_tests {
             assert_eq!(config.max_children, expected);
             assert_eq!(config.remote_concurrency, expected);
         }
+    }
+
+    #[test]
+    fn children_above_the_limit_are_reserved_with_a_warning_not_refused() {
+        let settings = Settings::from_values(json!({"oxa": {"subagent": {"maxChildren": 3}}}), json!({}));
+        let hooks = SubagentHooks::new(PathBuf::from("unused"), Vec::new()).with_settings(&settings);
+        let (first, over) = Budget::reserve(&hooks.inner, "s", 3);
+        assert_eq!(over, None, "at the limit is not above it");
+        let (second, over) = Budget::reserve(&hooks.inner, "s", 2);
+        assert_eq!(over, Some(3), "two more on top of three running or queued warn");
+        assert_eq!(
+            lock(&hooks.inner.pending).get("s").copied(),
+            Some(5),
+            "both reservations stand"
+        );
+        drop(second);
+        drop(first);
+        assert!(lock(&hooks.inner.pending).get("s").is_none());
     }
 }

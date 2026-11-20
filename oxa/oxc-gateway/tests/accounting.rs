@@ -66,11 +66,12 @@ fn subscription_reserves_full_window_and_settles_zero_usd_with_actual_token_coun
         .reserve_subscription(limits, true, &subscription(), 20)
         .unwrap();
     assert_eq!(hold.reserved(), 0.0);
-    let error = other
-        .reserve_subscription(limits, true, &subscription(), 20)
-        .err()
-        .unwrap();
-    assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
+    // Past the owner's limits a request is still admitted (advisory), and the hold is released.
+    drop(
+        other
+            .reserve_subscription(limits, true, &subscription(), 20)
+            .unwrap(),
+    );
     hold.mark_forwarded().unwrap();
     let row = hold
         .finish(
@@ -104,11 +105,12 @@ fn subscription_reserves_full_window_and_settles_zero_usd_with_actual_token_coun
         |row| append(&path, row),
     )
     .unwrap();
-    let error = Budget::new(path)
-        .reserve_subscription(limits, true, &subscription(), 20)
-        .err()
-        .unwrap();
-    assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
+    // Past the owner's limits a request is still admitted (advisory), and the hold is released.
+    drop(
+        Budget::new(path)
+            .reserve_subscription(limits, true, &subscription(), 20)
+            .unwrap(),
+    );
 }
 
 #[test]
@@ -129,11 +131,12 @@ fn clean_subscription_refusals_release_tokens_but_still_consume_request_allowanc
         assert_eq!(row["subscription_tokens"], 0);
         assert_eq!(row["settled"], "refused");
     }
-    let error = Budget::new(path)
-        .reserve_subscription(limits, true, &subscription(), 20)
-        .err()
-        .unwrap();
-    assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
+    // Past the owner's limits a request is still admitted (advisory), and the hold is released.
+    drop(
+        Budget::new(path)
+            .reserve_subscription(limits, true, &subscription(), 20)
+            .unwrap(),
+    );
 }
 
 #[test]
@@ -186,28 +189,20 @@ fn unknown_subscription_outcomes_never_refund_the_token_reservation() {
         assert_eq!(row["subscription_tokens"], 120);
         assert_eq!(row["usage_missing"], true);
         assert_eq!(row["settled"], "reserved");
-        let error = Budget::new(path)
-            .reserve_subscription(limits, true, &subscription(), 20)
-            .err()
-            .unwrap();
-        assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
+        // Past the owner's limits a request is still admitted (advisory), and the hold is released.
+        drop(
+            Budget::new(path)
+                .reserve_subscription(limits, true, &subscription(), 20)
+                .unwrap(),
+        );
     }
 }
 
 #[test]
-fn subscription_requires_caps_and_cannot_make_an_api_provider_free() {
+fn subscription_limits_are_advisory_and_cannot_make_an_api_provider_free() {
     let home = Home::new();
     let path = home.ledger();
     let budget = Budget::new(path.clone());
-    let error = budget
-        .reserve_subscription(None, true, &subscription(), 20)
-        .err()
-        .unwrap();
-    assert_eq!(
-        (error.status, error.code),
-        (403, "subscription_limits_not_configured")
-    );
-    assert_eq!(fs::read_dir(&home.0).unwrap().count(), 0);
     let limits = Some(SubscriptionLimits::new(3, 1000).unwrap());
     let mut wrong = subscription();
     wrong.provider = "openai".into();
@@ -228,6 +223,10 @@ fn subscription_requires_caps_and_cannot_make_an_api_provider_free() {
         assert_eq!((error.status, error.code), (400, "invalid_billing"));
     }
     assert!(!path.exists());
+    // Without limits a subscription request is admitted and recorded, never refused.
+    budget
+        .reserve_subscription(None, true, &subscription(), 20)
+        .unwrap();
 }
 
 #[test]
@@ -315,13 +314,8 @@ fn legacy_unscoped_subscription_usd_reserves_nothing_but_its_tokens_still_count(
         // The legacy hold's tokens still count toward the subscription caps.
         let tight = SubscriptionLimits::new(10, 130).unwrap();
         let admission = budget.reserve_subscription(Some(tight), true, &subscription(), 20);
-        match &legacy {
-            None => drop(admission.unwrap()),
-            Some(_) => {
-                let error = admission.err().unwrap();
-                assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
-            }
-        }
+        // The limits are advisory: a legacy hold's tokens still count toward them, never refuse.
+        drop(admission.unwrap());
         // Actual paid usage settles normally and the legacy USD never lands in
         // the daily total.
         hold.mark_forwarded().unwrap();
@@ -948,7 +942,7 @@ fn pending_unknown_cost_hold_closes_later_capped_admission() {
             .reserve(&json!(1), true, &model(), 32)
             .err()
             .map(|error| (error.status, error.code)),
-        Some((429, "budget_exceeded"))
+        Some((429, "cost_unknown_history"))
     );
     // Uncapped requests keep working, before and after the pending hold is released.
     assert!(reopened.reserve(&json!(null), true, &model(), 32).is_ok());
@@ -1042,7 +1036,7 @@ fn cancelled_unpriced_request_keeps_cost_unknown() {
             .reserve(&json!(1), true, &model(), 32)
             .err()
             .map(|error| (error.status, error.code)),
-        Some((429, "budget_exceeded"))
+        Some((429, "cost_unknown_history"))
     );
 }
 
@@ -1064,7 +1058,7 @@ fn unknown_cost_row_closes_later_capped_admission() {
             .reserve(&json!(1), true, &model(), 32)
             .err()
             .map(|error| (error.status, error.code)),
-        Some((429, "budget_exceeded"))
+        Some((429, "cost_unknown_history"))
     );
     // Uncapped requests keep working.
     assert!(reopened.reserve(&json!(null), true, &model(), 32).is_ok());
@@ -1081,4 +1075,22 @@ fn budget_reserve_with_null_cap_still_refuses_when_ledger_disabled() {
             .map(|error| (error.status, error.code)),
         Some((503, "cloud_ledger_unavailable"))
     );
+}
+
+#[test]
+fn unknown_history_reason_not_exhausted() {
+    let home = Home::new();
+    let path = home.ledger();
+    let mut unknown = model();
+    unknown.context = 200_000_000;
+    let budget = Budget::new(path.clone());
+    let hold = budget.reserve(&json!(null), true, &unknown, 32).unwrap();
+    let error = Budget::new(path)
+        .reserve(&json!(1), true, &model(), 32)
+        .err()
+        .unwrap();
+    assert_eq!(error.code, "cost_unknown_history");
+    assert_ne!(error.code, "budget_exceeded");
+    assert!(error.message.contains("unknown cost"));
+    drop(hold);
 }

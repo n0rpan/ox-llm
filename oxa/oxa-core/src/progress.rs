@@ -11,6 +11,13 @@ pub enum Progress<'a> {
         file: Option<&'a Path>,
     },
     RunStart,
+    /// The frozen prefix (system text + tool list) the next request sends: its SHA-256
+    /// (`FrozenPrefix::sha256`) and its byte count. Sent right before `RequestStart`. Digest
+    /// and length only, never content: `--usage-log` records them to show the prefix is stable.
+    Prefix {
+        sha256: [u8; 32],
+        bytes: usize,
+    },
     RequestStart {
         kind: TurnKind,
         remote: bool,
@@ -26,6 +33,11 @@ pub enum Progress<'a> {
     /// The operation may still need a prefix refresh. This is a wake to read the bound owner.
     GoalControlCommitted {
         revision: u64,
+    },
+    /// The saved goal's status changed; `none` once it is cleared. A pause carries its stored reason.
+    GoalStatus {
+        status: &'static str,
+        reason: Option<&'a str>,
     },
     /// An operation returned, including an empty queue or a command without an agent turn.
     /// This observation does not imply an AgentSettled event or hook was emitted.
@@ -69,4 +81,12 @@ pub(crate) fn session(st: &SessionState) {
 pub(crate) fn session_file(st: &SessionState) -> Option<&Path> {
     let path = &st.sref.path;
     (!path.as_os_str().is_empty() && !path.to_string_lossy().starts_with("mem:")).then_some(path)
+}
+
+/// The `Prefix` progress of a request: digest and size of the frozen prefix it sends.
+pub(crate) fn prefix_progress(prefix: &oxa_proto::FrozenPrefix) -> Progress<'static> {
+    Progress::Prefix {
+        sha256: prefix.sha256,
+        bytes: prefix.hash_input().len(),
+    }
 }

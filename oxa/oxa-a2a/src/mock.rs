@@ -1,5 +1,5 @@
 //! Loopback mock agent. No models, paid calls, filesystem tools or ambient keys.
-use crate::loopback::{authorized, read_head, Capability, Client, DeadlineStream, Limits};
+use crate::loopback::{authorized, Capability, Client, DeadlineStream, Limits, RequestHead};
 use crate::wire::*;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -93,16 +93,16 @@ enum Reply {
 
 fn serve(socket: TcpStream, address: SocketAddr, auth: &Capability, state: &mut State) -> io::Result<()> {
     let mut reader = BufReader::new(DeadlineStream {
-        #[cfg(feature = "agent-host")]
         budget: None,
         socket,
         deadline: Instant::now() + Duration::from_millis(500),
     });
-    let head = read_head(&mut reader)?;
+    let head = RequestHead::read(&mut reader)?;
     if !authorized(&head, auth) {
         return write_http(reader.get_mut(), "401 Unauthorized", "application/json", b"{}");
     }
-    if head.first == "GET /.well-known/agent-card.json HTTP/1.1" {
+    let line = head.request_line();
+    if line == Some(("GET", "/.well-known/agent-card.json", "HTTP/1.1")) {
         let card = card(address);
         return write_http(
             reader.get_mut(),
@@ -111,9 +111,7 @@ fn serve(socket: TcpStream, address: SocketAddr, auth: &Capability, state: &mut 
             &serde_json::to_vec(&card)?,
         );
     }
-    if head.first != "POST / HTTP/1.1"
-        || head.headers.get("content-type").map(String::as_str) != Some("application/json")
-    {
+    if line != Some(("POST", "/", "HTTP/1.1")) || head.header("content-type") != Some("application/json") {
         return write_http(reader.get_mut(), "400 Bad Request", "application/json", b"{}");
     }
     let length = head.length(64 * 1024)?;
@@ -159,8 +157,7 @@ fn serve(socket: TcpStream, address: SocketAddr, auth: &Capability, state: &mut 
 }
 
 fn write_http(writer: &mut impl Write, status: &str, content_type: &str, bytes: &[u8]) -> io::Result<()> {
-    write!(writer, "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", bytes.len())?;
-    writer.write_all(bytes)
+    oxa_http::server::write_response(writer, status, &[("Content-Type", content_type)], bytes)
 }
 
 fn card(address: SocketAddr) -> AgentCard {

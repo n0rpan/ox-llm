@@ -1164,9 +1164,9 @@ dependencies = [
 
 [[package]]
 name = "oxa-a2a"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
- "oxa-a2a",
+ "oxa-http",
  "oxa-proto",
  "serde",
  "serde_json",
@@ -1174,9 +1174,10 @@ dependencies = [
 
 [[package]]
 name = "oxa-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
- "oxa-cli",
+ "libc",
+ "oxa-a2a",
  "oxa-codemode",
  "oxa-compact",
  "oxa-config",
@@ -1185,6 +1186,7 @@ dependencies = [
  "oxa-export",
  "oxa-ext",
  "oxa-fake",
+ "oxa-http",
  "oxa-interactive",
  "oxa-mcp",
  "oxa-orchestrator",
@@ -1213,7 +1215,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-codemode"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-fake",
  "oxa-proto",
@@ -1223,7 +1225,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-compact"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-fake",
  "oxa-proto",
@@ -1233,7 +1235,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-config"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "globset",
  "oxa-fake",
@@ -1244,7 +1246,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-compact",
  "oxa-config",
@@ -1262,9 +1264,10 @@ dependencies = [
 
 [[package]]
 name = "oxa-engine"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-fake",
+ "oxa-http",
  "oxa-proto",
  "oxc-gateway",
  "serde_json",
@@ -1273,7 +1276,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-export"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-fake",
  "oxa-proto",
@@ -1283,7 +1286,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-ext"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-config",
  "oxa-fake",
@@ -1294,17 +1297,29 @@ dependencies = [
 
 [[package]]
 name = "oxa-fake"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
+ "oxa-http",
  "oxa-proto",
  "serde_json",
  "sha2",
 ]
 
 [[package]]
-name = "oxa-interactive"
-version = "0.2.0"
+name = "oxa-http"
+version = "0.2.1"
 dependencies = [
+ "futures-util",
+ "oxa-proto",
+ "reqwest",
+ "tokio",
+]
+
+[[package]]
+name = "oxa-interactive"
+version = "0.2.1"
+dependencies = [
+ "libc",
  "oxa-config",
  "oxa-core",
  "oxa-engine",
@@ -1321,12 +1336,13 @@ dependencies = [
 
 [[package]]
 name = "oxa-mcp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "libc",
  "oxa-config",
  "oxa-fake",
+ "oxa-http",
  "oxa-proto",
  "oxa-sandbox",
  "serde_json",
@@ -1336,11 +1352,10 @@ dependencies = [
 
 [[package]]
 name = "oxa-orchestrator"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "oxa-fake",
- "oxa-orchestrator",
  "oxa-proto",
  "serde",
  "serde_json",
@@ -1349,7 +1364,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-parity"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "oxa-codemode",
@@ -1370,7 +1385,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-perm"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-fake",
  "oxa-proto",
@@ -1380,7 +1395,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-proto"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "nix 0.30.1",
  "serde_json",
@@ -1388,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-resources"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-config",
  "oxa-fake",
@@ -1399,22 +1414,22 @@ dependencies = [
 
 [[package]]
 name = "oxa-rpc"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
+ "oxa-a2a",
  "oxa-config",
  "oxa-core",
  "oxa-export",
  "oxa-fake",
  "oxa-orchestrator",
  "oxa-proto",
- "oxa-rpc",
  "oxa-session",
  "serde_json",
 ]
 
 [[package]]
 name = "oxa-sandbox"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "oxa-fake",
@@ -1425,7 +1440,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-script"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-fake",
  "oxa-proto",
@@ -1435,7 +1450,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-session"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "oxa-fake",
@@ -1447,8 +1462,9 @@ dependencies = [
 
 [[package]]
 name = "oxa-tools"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
+ "base64 0.22.1",
  "globset",
  "ignore",
  "libc",
@@ -1462,7 +1478,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-tui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "crossterm",
@@ -1477,11 +1493,12 @@ dependencies = [
 
 [[package]]
 name = "oxa-web"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "oxa-config",
  "oxa-fake",
+ "oxa-http",
  "oxa-perm",
  "oxa-proto",
  "oxa-tools",
@@ -1491,7 +1508,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-work"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "oxa-proto",
@@ -1502,7 +1519,7 @@ dependencies = [
 
 [[package]]
 name = "oxc-gateway"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bigdecimal",
  "chrono",
@@ -1513,6 +1530,7 @@ dependencies = [
  "num-traits",
  "oxa-config",
  "oxa-engine",
+ "oxa-http",
  "oxa-proto",
  "reqwest",
  "serde_json",
@@ -1523,13 +1541,14 @@ dependencies = [
 
 [[package]]
 name = "oxc-local"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-io",
  "futures-lite",
  "nix 0.30.1",
  "oxa-engine",
  "oxa-fake",
+ "oxa-http",
  "oxa-proto",
  "serde_json",
  "tokio",
@@ -1539,7 +1558,7 @@ dependencies = [
 
 [[package]]
 name = "oxc-memlat"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "regex",

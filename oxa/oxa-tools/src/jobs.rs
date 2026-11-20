@@ -9,12 +9,13 @@
 //! running job, which makes the sandbox's run loop kill the whole process group.
 //!
 //! Limits: at most [`MAX_JOBS`] jobs run at once by default (`oxa.bash.maxJobs` sets it per
-//! registry, see [`JobRegistry::with_max_jobs`]; a further start is refused); a
+//! registry, see [`JobRegistry::with_max_jobs`]; a further start goes ahead with a warning); a
 //! finished job keeps at most [`BUFFER_CAP`] bytes of output (a ring buffer), and only the
 //! last [`MAX_FINISHED`] finished jobs stay readable.
 
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, Sandbox};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -24,7 +25,7 @@ const WAIT_TICK: Duration = Duration::from_millis(10);
 /// How long [`JobRegistry::kill`] waits for a cancelled job to settle.
 const KILL_SETTLE: Duration = Duration::from_secs(5);
 
-/// The default for how many background jobs may run at once (`oxa.bash.maxJobs`).
+/// The default for how many background jobs run before a warning (`oxa.bash.maxJobs`).
 pub const MAX_JOBS: usize = 16;
 /// How many finished jobs stay readable; spawning a job forgets the oldest ones beyond this.
 pub const MAX_FINISHED: usize = 16;
@@ -32,10 +33,59 @@ pub const MAX_FINISHED: usize = 16;
 pub const BUFFER_CAP: usize = 64 * 1024;
 /// How much of a job's output a read returns, in bytes.
 pub const READ_CAP: usize = 8 * 1024;
+/// The largest allocation returned while a foreground caller follows a job.
+pub(crate) const FOLLOW_CHUNK_CAP: usize = 8 * 1024;
 /// How much of a job's output a listing looks at for its last line, in bytes.
 const LAST_LINE_SCAN: usize = 4 * 1024;
 /// The longest last line a listing shows, in characters.
 const LAST_LINE_CAP: usize = 100;
+/// W4: how many trailing lines of a finished job's output its wake message carries.
+pub const WAKE_TAIL_LINES: usize = 20;
+/// W4: how many trailing bytes of a finished job's output its wake message may carry.
+pub const WAKE_TAIL_BYTES: usize = 2 * 1024;
+/// W4: how many characters of the command a wake message shows.
+pub const WAKE_COMMAND_CAP: usize = 120;
+
+/// W4: a background job that finished on its own (not stopped by the model or the user), handed
+/// to the finish hook installed with [`JobRegistry::set_on_finish`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobDone {
+    pub id: String,
+    /// `Exited(code)` for a normal exit; `Killed` for a signal or a timeout.
+    pub status: JobStatus,
+    /// The command as the model wrote it (never the configured shell prefix, which may carry
+    /// credentials), shown truncated in the wake message. Empty when the caller gave none.
+    pub command: String,
+    /// The session that owned the registry when the job started (see
+    /// [`JobRegistry::set_owner`]); the wake is delivered to it, not to whichever session is
+    /// active when the job exits. Empty when no owner was set.
+    pub session: String,
+    /// The last [`WAKE_TAIL_LINES`] lines (and at most [`WAKE_TAIL_BYTES`]) of the output.
+    pub tail: String,
+}
+
+impl JobDone {
+    /// The one follow-up message a finished job sends its session.
+    pub fn wake_text(&self) -> String {
+        let outcome = match self.status {
+            JobStatus::Exited(code) => format!("exit {code}"),
+            _ => "killed".to_string(),
+        };
+        let command: String = self.command.chars().take(WAKE_COMMAND_CAP).collect();
+        let command = if command.is_empty() {
+            String::new()
+        } else {
+            format!(" {command};")
+        };
+        format!(
+            "[background job {} finished: {outcome};{command} last lines:]\n{}",
+            self.id, self.tail
+        )
+    }
+}
+
+/// W4: called once on the job's thread when the job finishes on its own.
+pub type FinishHook = Arc<dyn Fn(JobDone) + Send + Sync>;
 
 /// The status of one job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +117,8 @@ struct Out {
     total: u64,
     /// `total` as of the last read: what the model has seen.
     seen: u64,
+    /// Whether new output and the current buffer are limited to [`BUFFER_CAP`].
+    bounded: bool,
 }
 
 /// The shared state of one job.
@@ -76,6 +128,21 @@ struct Job {
     status: Arc<Mutex<JobStatus>>,
     /// When the job was started, for the age a listing shows.
     started: Instant,
+    /// W4: set when the model or the user stopped the job (or the session reset it); such a job
+    /// never wakes the session.
+    stopped: Arc<AtomicBool>,
+    /// The sandbox ran the command with the user's own rights (no OS sandbox).
+    unsandboxed: Arc<AtomicBool>,
+}
+
+/// A finished job taken out of the registry by [`JobRegistry::take_finished`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TakenJob {
+    pub status: JobStatus,
+    /// All the output the job wrote (a job started with `keep_all`), else its last
+    /// [`BUFFER_CAP`] bytes.
+    pub output: Vec<u8>,
+    pub unsandboxed: bool,
 }
 
 /// A snapshot of a job for a read.
@@ -123,6 +190,10 @@ pub struct JobRegistry {
     state: Mutex<State>,
     /// The sandbox every job runs under, set once by the session that owns the registry.
     sandbox: Mutex<Option<Arc<dyn Sandbox>>>,
+    /// W4: the hook a job's thread calls when it finishes on its own; `None` = no wake.
+    on_finish: Arc<Mutex<Option<FinishHook>>>,
+    /// W4: the id of the session these jobs belong to; each job records it at its start.
+    owner: Mutex<String>,
     /// How many jobs may run at once ([`MAX_JOBS`] unless the owner set `oxa.bash.maxJobs`).
     max_jobs: usize,
 }
@@ -132,6 +203,8 @@ impl Default for JobRegistry {
         JobRegistry {
             state: Mutex::new(State::default()),
             sandbox: Mutex::new(None),
+            on_finish: Arc::new(Mutex::new(None)),
+            owner: Mutex::new(String::new()),
             max_jobs: MAX_JOBS,
         }
     }
@@ -156,10 +229,43 @@ impl JobRegistry {
         }
     }
 
+    /// The limit `oxa.bash.maxJobs` sets (a warning threshold, not a refusal).
+    pub fn max_jobs(&self) -> usize {
+        self.max_jobs
+    }
+
+    /// The warning line when more jobs run than `oxa.bash.maxJobs`: the start went ahead.
+    pub fn over_limit_note(&self) -> Option<String> {
+        let running = self.running();
+        (running > self.max_jobs).then(|| {
+            format!(
+                "Warning: {running} background jobs are running, above oxa.bash.maxJobs ({}). Nothing was refused; stop jobs you no longer need with bash {{\"job\": \"<id>\", \"kill\": true}} or raise the setting.",
+                self.max_jobs
+            )
+        })
+    }
+
     /// The sandbox every job runs under. Set once by the session that owns the registry
     /// (the same `Arc` the session's tools run with).
     pub fn set_sandbox(&self, sandbox: Arc<dyn Sandbox>) {
         *self.sandbox.lock().unwrap() = Some(sandbox);
+    }
+
+    /// W4: install the hook a job calls when it finishes on its own (not stopped). Without a
+    /// hook a finished job only waits for a read, as before.
+    pub fn set_on_finish(&self, hook: FinishHook) {
+        *self.on_finish.lock().unwrap() = Some(hook);
+    }
+
+    /// W4: name the session the next jobs belong to. Set at open and again once a fork, clone
+    /// or switch has rebound the session; a job keeps the owner it started under.
+    pub fn set_owner(&self, session_id: &str) {
+        *self.owner.lock().unwrap() = session_id.to_string();
+    }
+
+    /// The session the next jobs belong to (see [`JobRegistry::set_owner`]).
+    pub fn owner(&self) -> String {
+        self.owner.lock().unwrap().clone()
     }
 
     /// How many jobs are currently running.
@@ -173,34 +279,47 @@ impl JobRegistry {
             .count()
     }
 
-    /// Start `spec` detached and return its id. `Err` when the registry's limit of jobs is
-    /// already running (the refusal names the oldest one, so the model can stop it), or when no
-    /// sandbox has been set.
+    /// Start `spec` detached and return its id. `Err` when no sandbox has been set. Running
+    /// more jobs than the limit is allowed; see [`JobRegistry::over_limit_note`].
     pub fn spawn(&self, spec: ExecSpec) -> Result<String, String> {
+        self.spawn_labeled(spec, "")
+    }
+
+    /// Like [`JobRegistry::spawn`], with `label`, the command as the model wrote it, for the
+    /// wake message. `spec.command` is never shown: it carries the configured shell prefix.
+    pub fn spawn_labeled(&self, spec: ExecSpec, label: &str) -> Result<String, String> {
         let sandbox = self
             .sandbox
             .lock()
             .unwrap()
             .clone()
             .ok_or_else(|| "background jobs are unavailable: no sandbox".to_string())?;
+        self.spawn_on_labeled(sandbox, spec, false, label)
+    }
+
+    /// Like [`JobRegistry::spawn`], on `sandbox`. With `keep_all` the job keeps every byte of
+    /// its output (not only the last [`BUFFER_CAP`]): a foreground command that may move to the
+    /// background keeps the whole result it had before, and [`JobRegistry::take_finished`]
+    /// hands it over and forgets the job.
+    pub fn spawn_on(
+        &self,
+        sandbox: Arc<dyn Sandbox>,
+        spec: ExecSpec,
+        keep_all: bool,
+    ) -> Result<String, String> {
+        self.spawn_on_labeled(sandbox, spec, keep_all, "")
+    }
+
+    /// [`JobRegistry::spawn_on`] with the wake message's `label` (see
+    /// [`JobRegistry::spawn_labeled`]).
+    pub fn spawn_on_labeled(
+        &self,
+        sandbox: Arc<dyn Sandbox>,
+        spec: ExecSpec,
+        keep_all: bool,
+        label: &str,
+    ) -> Result<String, String> {
         let mut state = self.state.lock().unwrap();
-        let running: Vec<String> = state
-            .jobs
-            .iter()
-            .filter(|(_, j)| *j.status.lock().unwrap() == JobStatus::Running)
-            .map(|(id, _)| id.clone())
-            .collect();
-        if running.len() >= self.max_jobs {
-            let oldest = running
-                .iter()
-                .min_by_key(|id| job_number(id))
-                .cloned()
-                .unwrap_or_default();
-            return Err(format!(
-                "At most {} background jobs can run at once. Stop one with bash {{\"job\": \"{oldest}\", \"kill\": true}} or wait for it to finish. The limit is oxa.bash.maxJobs.",
-                self.max_jobs
-            ));
-        }
         // Forget the oldest finished jobs (ids grow with start order), so a long session does
         // not keep every job's output tail. Running jobs are never dropped.
         let mut finished: Vec<(u64, String)> = state
@@ -219,8 +338,16 @@ impl JobRegistry {
         state.next += 1;
         let id = format!("job-{}", state.next);
         let cancel = CancelToken::new();
-        let output = Arc::new(Mutex::new(Out::default()));
+        let output = Arc::new(Mutex::new(Out {
+            bounded: !keep_all,
+            ..Out::default()
+        }));
         let status = Arc::new(Mutex::new(JobStatus::Running));
+        // A foreground command followed to its end (`keep_all`) never wakes the session; only
+        // one that moves to the background does (see `release_to_background`).
+        let stopped = Arc::new(AtomicBool::new(keep_all));
+        let unsandboxed = Arc::new(AtomicBool::new(false));
+        let unsandboxed_job = unsandboxed.clone();
         state.jobs.insert(
             id.clone(),
             Job {
@@ -228,28 +355,69 @@ impl JobRegistry {
                 output: output.clone(),
                 status: status.clone(),
                 started: Instant::now(),
+                stopped: stopped.clone(),
+                unsandboxed,
             },
         );
         drop(state);
 
+        let job_id = id.clone();
+        let command = label.to_string();
+        let session = self.owner.lock().unwrap().clone();
+        let on_finish = self.on_finish.clone();
         std::thread::spawn(move || {
             let mut sink = |chunk: &[u8]| {
                 let mut out = output.lock().unwrap();
                 out.total += chunk.len() as u64;
                 out.buf.extend_from_slice(chunk);
-                if out.buf.len() > BUFFER_CAP {
+                if out.bounded && out.buf.len() > BUFFER_CAP {
                     let keep = out.buf.len() - BUFFER_CAP;
                     out.buf.drain(..keep);
                 }
             };
             let res: ExecResult = sandbox.run_streaming(&spec, &cancel, &mut sink);
+            // Streaming executors normally return an empty `output`, but launch failures can
+            // happen before there is a process whose pipes feed `sink`. Preserve any such
+            // diagnostic in the job buffer so foreground callers following the job receive it.
+            if !res.output.is_empty() {
+                sink(&res.output);
+            }
+            unsandboxed_job.store(res.unsandboxed, Ordering::SeqCst);
             let final_status = match res.exit {
                 Some(code) => JobStatus::Exited(code),
                 None => JobStatus::Killed,
             };
             *status.lock().unwrap() = final_status;
+            // W4: wake the session on its own finish only; a stopped job stays quiet.
+            if stopped.load(Ordering::SeqCst) {
+                return;
+            }
+            let hook = on_finish.lock().unwrap().clone();
+            if let Some(hook) = hook {
+                let tail = wake_tail(&output.lock().unwrap().buf);
+                (*hook)(JobDone {
+                    id: job_id,
+                    status: final_status,
+                    command,
+                    session,
+                    tail,
+                });
+            }
         });
         Ok(id)
+    }
+
+    /// Switch a foreground job that detached to bounded background retention.
+    pub fn bound_output(&self, id: &str) -> Result<(), String> {
+        let state = self.state.lock().unwrap();
+        let job = state.jobs.get(id).ok_or_else(|| format!("Unknown job: {id}"))?;
+        let mut out = job.output.lock().unwrap();
+        out.bounded = true;
+        if out.buf.len() > BUFFER_CAP {
+            let drop = out.buf.len() - BUFFER_CAP;
+            out.buf.drain(..drop);
+        }
+        Ok(())
     }
 
     /// Read a job's status and the last [`READ_CAP`] bytes of its output. `Err` for an
@@ -267,6 +435,57 @@ impl JobRegistry {
             output: text,
             total: out.total,
         })
+    }
+
+    /// Snapshot the raw bytes retained after the absolute output offset `from`.
+    ///
+    /// Foreground jobs use `keep_all`, so their follower can stream every byte without the
+    /// display-oriented [`READ_CAP`] truncation or a lossy UTF-8 conversion.
+    pub(crate) fn read_bytes_from(&self, id: &str, from: u64) -> Result<(JobRead, Vec<u8>), String> {
+        let state = self.state.lock().unwrap();
+        let job = state.jobs.get(id).ok_or_else(|| format!("Unknown job: {id}"))?;
+        let status = *job.status.lock().unwrap();
+        let mut out = job.output.lock().unwrap();
+        let retained_from = out.total.saturating_sub(out.buf.len() as u64);
+        let start = from.saturating_sub(retained_from).min(out.buf.len() as u64) as usize;
+        let end = start.saturating_add(FOLLOW_CHUNK_CAP).min(out.buf.len());
+        out.seen = retained_from + end as u64;
+        let display_start = out.buf.len().saturating_sub(READ_CAP);
+        let read = JobRead {
+            status,
+            output: String::from_utf8_lossy(&out.buf[display_start..]).into_owned(),
+            total: out.total,
+        };
+        Ok((read, out.buf[start..end].to_vec()))
+    }
+
+    /// Take a finished job out of the registry: its status, all buffered output and whether it
+    /// ran unsandboxed. `Ok(None)` while the job still runs (it stays); `Err` for an unknown id.
+    pub fn take_finished(&self, id: &str) -> Result<Option<TakenJob>, String> {
+        let mut state = self.state.lock().unwrap();
+        let job = state.jobs.get(id).ok_or_else(|| format!("Unknown job: {id}"))?;
+        let status = *job.status.lock().unwrap();
+        if status == JobStatus::Running {
+            return Ok(None);
+        }
+        let output = std::mem::take(&mut job.output.lock().unwrap().buf);
+        let unsandboxed = job.unsandboxed.load(Ordering::SeqCst);
+        // The caller reads the result itself, so the job needs no wake of its own.
+        job.stopped.store(true, Ordering::SeqCst);
+        state.jobs.remove(id);
+        Ok(Some(TakenJob {
+            status,
+            output,
+            unsandboxed,
+        }))
+    }
+
+    /// A followed foreground job (`keep_all`) outlived its wait and continues as a background
+    /// job: from now on its finish wakes the session like any other background job.
+    pub fn release_to_background(&self, id: &str) {
+        if let Some(job) = self.state.lock().unwrap().jobs.get(id) {
+            job.stopped.store(false, Ordering::SeqCst);
+        }
     }
 
     /// #150 (2): block for up to `max` until the job exits, prints output it has not yet shown
@@ -339,13 +558,14 @@ impl JobRegistry {
     /// returns. A job that already finished is left as it is (`was_running: false`). `Err` for an
     /// unknown id.
     pub fn kill(&self, id: &str) -> Result<JobKill, String> {
-        let (cancel, status) = {
+        let (cancel, status, stopped) = {
             let state = self.state.lock().unwrap();
             let job = state.jobs.get(id).ok_or_else(|| format!("Unknown job: {id}"))?;
-            (job.cancel.clone(), job.status.clone())
+            (job.cancel.clone(), job.status.clone(), job.stopped.clone())
         };
         let was_running = *status.lock().unwrap() == JobStatus::Running;
         if was_running {
+            stopped.store(true, Ordering::SeqCst);
             cancel.cancel();
             let deadline = Instant::now() + KILL_SETTLE;
             while *status.lock().unwrap() == JobStatus::Running && Instant::now() < deadline {
@@ -361,19 +581,47 @@ impl JobRegistry {
     pub fn reset(&self) {
         let mut state = self.state.lock().unwrap();
         for job in state.jobs.values() {
+            job.stopped.store(true, Ordering::SeqCst);
             job.cancel.cancel();
         }
         state.jobs.clear();
     }
 
-    /// Cancel every running job. The sandbox's run loop then kills each process group;
-    /// the jobs' statuses become [`JobStatus::Killed`] as their threads settle.
+    /// Cancel every running job and wait (up to [`KILL_SETTLE`] in all) until each has
+    /// settled: the sandbox's run loop kills each process group and the jobs' statuses become
+    /// [`JobStatus::Killed`]. Waiting matters at session end: a host-rights job (no OS sandbox,
+    /// so no `--die-with-parent`) would otherwise outlive a process that exits right after.
     pub fn kill_all(&self) {
-        let state = self.state.lock().unwrap();
-        for job in state.jobs.values() {
-            job.cancel.cancel();
+        let statuses: Vec<_> = {
+            let state = self.state.lock().unwrap();
+            state
+                .jobs
+                .values()
+                .map(|job| {
+                    job.stopped.store(true, Ordering::SeqCst);
+                    job.cancel.cancel();
+                    job.status.clone()
+                })
+                .collect()
+        };
+        let deadline = Instant::now() + KILL_SETTLE;
+        while statuses
+            .iter()
+            .any(|status| *status.lock().unwrap() == JobStatus::Running)
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(WAIT_TICK);
         }
     }
+}
+
+/// W4: the last lines of a finished job's output for its wake message: at most
+/// [`WAKE_TAIL_LINES`] lines and [`WAKE_TAIL_BYTES`] bytes, from the ring buffer's end.
+fn wake_tail(buf: &[u8]) -> String {
+    let tail = &buf[buf.len().saturating_sub(WAKE_TAIL_BYTES)..];
+    let text = String::from_utf8_lossy(tail);
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(WAKE_TAIL_LINES)..].join("\n")
 }
 
 /// The number of a `job-N` id, for ordering a listing and forgetting the oldest finished jobs.
@@ -493,7 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn job_past_the_limit_is_refused() {
+    fn job_past_the_limit_starts_and_warns() {
         let reg = JobRegistry::new();
         let sb = Arc::new(Blocking {
             seen: Mutex::new(None),
@@ -503,17 +751,16 @@ mod tests {
             reg.spawn(spec()).unwrap();
         }
         assert_eq!(reg.running(), MAX_JOBS);
-        let err = reg.spawn(spec()).unwrap_err();
-        assert!(
-            err.contains(&format!("At most {MAX_JOBS} background jobs")),
-            "{err}"
-        );
-        assert!(err.contains("\"job\": \"job-1\""), "{err}");
+        assert!(reg.over_limit_note().is_none(), "at the limit is not above it");
+        reg.spawn(spec()).expect("a start above the limit goes ahead");
+        assert_eq!(reg.running(), MAX_JOBS + 1);
+        let note = reg.over_limit_note().expect("above the limit is a warning");
+        assert!(note.contains(&format!("oxa.bash.maxJobs ({MAX_JOBS})")), "{note}");
         reg.kill_all();
     }
 
-    /// `oxa.bash.maxJobs` is the registry's limit: a registry built with 2 refuses the third
-    /// start and names the oldest running job; the default registry keeps [`MAX_JOBS`].
+    /// `oxa.bash.maxJobs` is the registry's limit: a registry built with 2 warns from the third
+    /// start on; the default registry keeps [`MAX_JOBS`].
     #[test]
     fn jobs_limit_is_per_registry() {
         let reg = JobRegistry::with_max_jobs(2);
@@ -523,9 +770,10 @@ mod tests {
         reg.set_sandbox(sb.clone());
         reg.spawn(spec()).unwrap();
         reg.spawn(spec()).unwrap();
-        let err = reg.spawn(spec()).unwrap_err();
-        assert!(err.contains("At most 2 background jobs"), "{err}");
-        assert!(err.contains("\"job\": \"job-1\""), "{err}");
+        assert!(reg.over_limit_note().is_none());
+        reg.spawn(spec()).expect("a third start goes ahead");
+        let note = reg.over_limit_note().expect("warns above the limit");
+        assert!(note.contains("3 background jobs"), "{note}");
         reg.kill_all();
         assert_eq!(JobRegistry::with_max_jobs(0).max_jobs, 1);
         assert_eq!(JobRegistry::new().max_jobs, MAX_JOBS);
@@ -652,6 +900,52 @@ mod tests {
     }
 
     #[test]
+    fn foreground_reads_bound_each_chunk_and_preserve_the_spill() {
+        struct QuickOutput(Vec<u8>);
+        impl Sandbox for QuickOutput {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+            fn run(&self, _s: &ExecSpec, _c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+                live(&self.0);
+                ExecResult {
+                    output: Vec::new(),
+                    exit: Some(0),
+                    timed_out: false,
+                    unsandboxed: false,
+                }
+            }
+        }
+
+        let output = vec![b'x'; FOLLOW_CHUNK_CAP * 3 + 17];
+        let reg = JobRegistry::new();
+        let id = reg
+            .spawn_on(Arc::new(QuickOutput(output.clone())), spec(), true)
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while reg.read(&id).unwrap().status == JobStatus::Running {
+            assert!(std::time::Instant::now() < deadline, "job did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let mut received = Vec::new();
+        let mut offset = 0;
+        loop {
+            let (_, chunk) = reg.read_bytes_from(&id, offset).unwrap();
+            assert!(chunk.len() <= FOLLOW_CHUNK_CAP);
+            if chunk.is_empty() {
+                break;
+            }
+            offset += chunk.len() as u64;
+            received.extend_from_slice(&chunk);
+        }
+        assert_eq!(received, output);
+    }
+
+    #[test]
     fn list_snapshots_without_consuming_output() {
         let reg = JobRegistry::new();
         reg.set_sandbox(Arc::new(Blocking {
@@ -725,5 +1019,52 @@ mod tests {
         }
         let line = reg.list()[0].last_line.clone();
         assert_eq!(line, format!("{}...", "x".repeat(LAST_LINE_CAP)));
+    }
+
+    /// The wake shows the command the model wrote and the owner the job started under, never
+    /// the prefixed execution command (which may hold a credential) nor the session active
+    /// when the job exits.
+    #[test]
+    fn wake_carries_label_and_start_owner_not_the_execution_command() {
+        struct Quick;
+        impl Sandbox for Quick {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+            fn run(&self, _s: &ExecSpec, _c: &CancelToken, _l: &mut dyn FnMut(&[u8])) -> ExecResult {
+                ExecResult {
+                    output: Vec::new(),
+                    exit: Some(0),
+                    timed_out: false,
+                    unsandboxed: false,
+                }
+            }
+        }
+        let reg = JobRegistry::new();
+        reg.set_sandbox(Arc::new(Quick));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tx = Mutex::new(tx);
+        reg.set_on_finish(Arc::new(move |job: JobDone| {
+            let _ = tx.lock().unwrap().send(job);
+        }));
+        reg.set_owner("old");
+        let mut s = spec();
+        s.command = "export API_TOKEN=example-secret\nmake test".to_string();
+        reg.spawn_labeled(s, "make test").unwrap();
+        // The owner changes before the job exits: the job keeps the one it started under.
+        reg.set_owner("new");
+        let job = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        assert_eq!(job.session, "old");
+        let text = job.wake_text();
+        assert!(text.contains("make test"), "{text}");
+        assert!(!text.contains("example-secret"), "{text}");
+        // A spawn without a label never falls back to the execution command.
+        reg.spawn(spec()).unwrap();
+        let job = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        assert_eq!(job.session, "new");
+        assert!(!job.wake_text().contains("sleep 100"), "{}", job.wake_text());
     }
 }
