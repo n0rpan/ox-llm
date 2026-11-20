@@ -328,7 +328,13 @@ pub fn with_lead_owner<T>(
     let prep = binding.prepare_inner(&mut args, env, RunMode::Print, home_workspace, workers)?;
     let mut session = binding.open(&prep)?;
     let result = run(&mut session);
-    session.shutdown(&mut oxa_proto::HeadlessUi::default());
+    if workers {
+        // The serving process owns the retained worker hook set. End this chat turn without
+        // shutting that hook set down; lead_serve stops it when the owner service exits.
+        session.close(&mut oxa_proto::HeadlessUi::default());
+    } else {
+        session.shutdown(&mut oxa_proto::HeadlessUi::default());
+    }
     result
 }
 
