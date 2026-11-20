@@ -288,10 +288,11 @@ impl DoneState {
     }
 }
 
-/// `oxa.done.proveIt` (user settings, default on): a run that changed files and ran no passing
-/// check afterwards gets one turn asking for proof.
+/// `oxa.done.proveIt` (user settings, default off until the extra turn is the default for the
+/// scripted suites too): a run that changed files and ran no passing check afterwards gets one
+/// turn asking for proof.
 fn prove_it(st: &SessionState) -> bool {
-    st.settings.user_bool("oxa.done.proveIt", true)
+    st.settings.user_bool("oxa.done.proveIt", false)
 }
 
 /// What is still open when a run or goal is about to end.
