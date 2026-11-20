@@ -1673,3 +1673,97 @@ fn idle_pause_records_reason() {
     assert_eq!(session.goal().unwrap().pause_reason, None);
     session.shutdown(&mut HeadlessUi::default());
 }
+
+fn unknown_tool_answer(name: &str) -> String {
+    oxa_proto::tool_errors::UNKNOWN_TOOL.replace("{name}", name)
+}
+
+/// A resumed session pursuing a goal, driven only through the queue (what `oxa send`, queued
+/// input and job wakes do in the TUI), still has `wait` and `goal_done`.
+fn resumed_goal_parks_and_finishes_through_a_queued_run(model: Option<&str>) {
+    let env = TestEnv::new();
+    let store = Arc::new(MemStore::new());
+    let mut first = Session::open(
+        deps(&env, store.clone(), Arc::new(ScriptedEngine::new(vec![]))),
+        Open::New,
+    )
+    .unwrap();
+    first
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let sref = first.inner().sref.clone();
+    let prefix = first.inner().prefix.clone();
+    first.shutdown(&mut HeadlessUi::default());
+    drop(first);
+
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("w", "wait", r#"{"seconds":1,"reason":"synthetic"}"#),
+        ScriptTurn::tool(
+            "d",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Synthetic proof."}"#,
+        ),
+    ]));
+    let mut d = deps(&env, store, engine.clone());
+    d.model = model.map(str::to_owned);
+    let mut session = Session::open(d, Open::Resume(sref)).unwrap();
+    assert!(session.inner().active.get("goal_done").is_some());
+    assert!(session.inner().active.get("wait").is_some());
+    assert_eq!(session.inner().prefix, prefix, "a resume opens no epoch");
+
+    session.handle().follow_up("Synthetic inbox message".into());
+    let mut sink = VecSink::default();
+    session.run_queued(&mut sink, &mut HeadlessUi::default()).unwrap();
+    assert_eq!(session.stats().outcome, RunOutcome::Done);
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Done);
+    let unknown = ["wait", "goal_done"].map(unknown_tool_answer);
+    for request in engine.requests() {
+        for message in &request.messages {
+            if message.tool_call_id.is_some() {
+                let content = message.content.clone().unwrap_or_default();
+                assert!(!unknown.contains(&content), "{content}");
+            }
+        }
+    }
+}
+
+#[test]
+fn resumed_pursuing_goal_parks_and_finishes_through_a_queued_run() {
+    resumed_goal_parks_and_finishes_through_a_queued_run(None);
+}
+
+#[test]
+fn resumed_pursuing_goal_with_a_model_choice_parks_and_finishes_through_a_queued_run() {
+    resumed_goal_parks_and_finishes_through_a_queued_run(Some("fake-model"));
+}
+
+#[test]
+fn a_goal_whose_controls_were_deselected_pauses_with_a_reason_instead_of_looping() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("Nothing to do.")]));
+    let mut d = deps(&env, Arc::new(MemStore::new()), engine.clone());
+    d.selection = ToolSelection {
+        tools: Some(vec!["read".into()]),
+        ..ToolSelection::default()
+    };
+    let mut session = Session::open(d, Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    session
+        .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+        .unwrap();
+    let goal = session.goal().unwrap();
+    assert_eq!(goal.status, GoalStatus::Paused);
+    assert!(goal.pause_reason.is_some());
+    let continues = session
+        .inner()
+        .transcript
+        .wire()
+        .iter()
+        .filter(|m| m.content.as_deref() == Some(oxa_core::prompt::GOAL_CONTINUE))
+        .count();
+    assert_eq!(continues, 0);
+    assert_eq!(engine.requests().len(), 1);
+}

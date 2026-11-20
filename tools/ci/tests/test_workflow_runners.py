@@ -27,8 +27,8 @@ EXCEPTIONS = {
     'release-build.yml': 'builds the published binaries; they are never built on the project\'s own runners',
 }
 
-# #795: the native arm64 macOS build (macos.yml) is the only job that may name the hosted macOS image.
-MACOS_EXCEPTIONS = {('macos.yml', 'test', 'macos-15')}
+# #795: the native arm64 macOS builds (macos.yml and the dev-build.yml macos job) are the only jobs that may name the hosted macOS image.
+MACOS_EXCEPTIONS = {('macos.yml', 'test', 'macos-15'), ('dev-build.yml', 'macos', 'macos-15')}
 
 FIX = (
     "Run the job on the hosted ARM image ({arm}) or copy the runner expression from "
