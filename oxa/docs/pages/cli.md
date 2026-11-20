@@ -105,7 +105,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa status <session-id\|session-file> [--session-dir <dir>]` | read a saved session's progress and stall signal without contacting an engine |
 | `oxa models [--json] [search]` | list the local and cloud models this install can serve — where each runs, its limits and which one is the default; `--json` prints one `oxa_models` object, and a search word filters by place, provider or model name; reads no key and no ledger, runs no model |
-| `oxa send <session-id> <text\|->` | queue one follow-up for the session's TUI or RPC owner; `-` reads standard input |
+| `oxa send <session-id> <text\|->` | queue one follow-up for the session's TUI or RPC owner, or for a running `oxa work` worker (it takes it at its next turn boundary); `-` reads standard input |
 | `oxa send <session-id> --approve <request-id> once\|session\|always\|deny` | answer a dangerous-command request filed by an unattended run (#1512). The answer requires confirmation from the session's owner-confirm broker, or directly from the controlling terminal. `always` also saves the rule key to the user settings. Answers go to the approval desk, never to the session's message queue |
 | `oxa send --approvals` | list the approval requests still waiting for an answer: id, session, command and reasons. Commands refused outright are not stored in the approval desk |
 | `oxa config [-l]` | print every setting with its value and where it comes from |
@@ -392,6 +392,7 @@ These are set by oxa for its own child processes, or are test hooks. They are no
 - `OXA_CHILD_FORK`: a parent sets the path of the fork seed of a local subagent child (its frozen prefix and its conversation, in an owner-only file it deletes when the child is gone); the child continues that conversation instead of starting its own. See [tools.md](tools.md#subagent).
 - `OXA_WORKER_DEPTH`: oxa sets `1` in the environment of a lead worker session.
 - `OXA_UNATTENDED`: oxa sets `1` in the environment of a worker it launches; the run counts as unattended and keeps the OS sandbox by default.
+- `OXA_WORK_INBOX`: `oxa work` sets `1` in a worker; the worker then watches its session inbox like a pursuing goal does, so `oxa send` reaches it at its next turn boundary (user setting `oxa.inbox.headless: false` turns it off).
 - `OXA_WORK_MODEL_DELEGATED`: `oxa work` sets `1` in a worker; a restored or project-selected model then never counts as chosen by the owner, while an actual model argument is still admitted by a protected Go key.
 - `OXA_WORKTREE_TRUST_SOURCE`: `oxa work` names the trusted source checkout of a managed worktree; it counts only in `--mode json`, and only when the checkout, the trust record and the approved resources verify.
 - `OXA_RUNNER_OWNS_GITHUB`: `oxa work` sets `1` in a worker: the runner owns GitHub access, so the worker runs no `gh`.

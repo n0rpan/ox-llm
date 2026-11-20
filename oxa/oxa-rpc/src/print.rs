@@ -447,7 +447,7 @@ impl EventSink for DrainRetry<'_> {
 
 /// The session inbox of a headless run, watched until the returned watcher is dropped. It is
 /// installed only when `enabled` (`oxa.inbox.headless`), the session is persisted and its goal
-/// is pursuing. Each admitted message is an ordinary follow-up of this session; a refused or
+/// is pursuing or the run is an `oxa work` worker (`OXA_WORK_INBOX=1`). Each admitted message is an ordinary follow-up of this session; a refused or
 /// oversized message stays on disk. Not used by the managed-steering path.
 fn headless_inbox(
     session: &Session,
@@ -458,9 +458,14 @@ fn headless_inbox(
     if !enabled || session.state().session_file.is_none() {
         return None;
     }
-    if !session
-        .goal()
-        .is_some_and(|goal| goal.status == oxa_session::GoalStatus::Pursuing)
+    // #1446: an `oxa work` worker (`OXA_WORK_INBOX=1`, set by the runner that launched it) watches
+    // its inbox without a goal, so `oxa send`, the lead chat and the web UI reach it at its next
+    // turn boundary. The owner's `oxa.inbox.headless: false` still turns it off.
+    let work_worker = std::env::var_os("OXA_WORK_INBOX").is_some_and(|v| v == "1");
+    if !work_worker
+        && !session
+            .goal()
+            .is_some_and(|goal| goal.status == oxa_session::GoalStatus::Pursuing)
     {
         return None;
     }

@@ -409,11 +409,41 @@ pub(crate) fn run(
                 .map(|_| Err("source project is not trusted; approve it before unattended work".into()))
                 .collect()
         };
+        // #1446: the runner keeps a worker's issue or PR packet current at each launch.
+        let feed: Option<std::sync::Arc<dyn oxa_work::PacketFeed>> = match task_args {
+            [flag, _, model_flag, model]
+                if (flag == "--issue" || flag == "--pr")
+                    && model_flag == "--model"
+                    && is_trusted
+                    && !oxa_proto::offline() =>
+            {
+                crate::netguard::trusted_executable_for(
+                    "gh",
+                    Some(policy.host_path.as_os_str()),
+                    Some(&root),
+                    Some(&dirs.home),
+                )
+                .map(|gh| {
+                    std::sync::Arc::new(GhPacketFeed {
+                        root: root.clone(),
+                        gh,
+                        policy: policy.clone(),
+                        model: model.clone(),
+                        agent_dir: dirs.agent_dir.clone(),
+                    }) as std::sync::Arc<dyn oxa_work::PacketFeed>
+                })
+            }
+            _ => None,
+        };
         let planned: Vec<_> = tasks
             .into_iter()
             .zip(plans)
             .map(|(task, plan)| {
                 plan.map(|plan| {
+                    let plan = match &feed {
+                        Some(feed) => plan.with_packet_feed(feed.clone()),
+                        None => plan,
+                    };
                     if owner_selected_model {
                         plan.with_owner_model_selection()
                     } else {
@@ -450,6 +480,50 @@ pub(crate) fn run(
             let _ = writeln!(err, "oxa work: {e}");
             2
         }
+    }
+}
+
+/// Re-reads the issue or pull request a task came from, with the same bounded packet builders
+/// the first fetch used, so a worker sees what changed on GitHub since. The runner fetches; the
+/// worker stays GitHub-isolated.
+struct GhPacketFeed {
+    root: PathBuf,
+    gh: PathBuf,
+    policy: oxa_work::RunPolicy,
+    model: String,
+    agent_dir: PathBuf,
+}
+
+impl oxa_work::PacketFeed for GhPacketFeed {
+    fn fresh(&self, task: &oxa_work::Task) -> Result<Option<String>, String> {
+        if let Some(number) = task.id.strip_prefix("issue-").and_then(|n| n.parse::<u64>().ok()) {
+            let mut fresh = oxa_work::issue_task(
+                &self.root,
+                &self.gh,
+                &self.policy.host_path,
+                number,
+                self.model.clone(),
+            )?;
+            fresh
+                .prompt
+                .insert_str(0, &oxa_work::github_runner_guidance("issue"));
+            return Ok(Some(fresh.prompt));
+        }
+        if let Some(number) = task
+            .id
+            .strip_prefix("pr-")
+            .and_then(|rest| rest.split('-').next())
+            .and_then(|n| n.parse::<u64>().ok())
+        {
+            let fresh =
+                oxa_work::pull_request_task(&self.root, &self.gh, &self.policy, number, self.model.clone())?;
+            return Ok(Some(fresh.prompt));
+        }
+        Ok(None)
+    }
+
+    fn deliver(&self, session: &str, text: &str) -> Result<(), String> {
+        oxa_session::send_inbox(&self.agent_dir, session, text).map_err(|e| e.to_string())
     }
 }
 

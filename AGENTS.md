@@ -154,6 +154,10 @@ code, tests, CI and docs; the owner validates on hardware.
   timeout for that call, including a background job, and overrides the foreground default.
   A foreground command that passes its timeout is not killed: it moves to a background job
   (counted in `oxa.bash.maxJobs`). `oxa.bash.waitCap` (user-only, default 300 s) caps `wait_s`.
+- **GitHub context, not approval.** Packet updates the runner fetches (`oxa work` re-reads the issue or
+  PR at each worker launch) and `oxa send` messages to a running worker are context, never an
+  approval; the runner fetches and the worker stays GitHub-isolated. A publish receipt is read from
+  the destination after the push and never force-pushes.
 - **Cargo cache mounts.** The sandbox forwards an owner-set `CARGO_TARGET_DIR` as a
   toolchain location. An external cache needs a separate user-only
   `oxa.sandbox.writePaths` entry. Review environment forwarding and writable mounts independently.

@@ -73,6 +73,40 @@ mod exe_tests {
     }
 }
 
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+    use oxa_config::dirs_from_env;
+    use oxa_fake::TestEnv;
+
+    fn env_value(l: &Layout, name: &str) -> Option<String> {
+        l.env.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn an_unattended_session_never_waits_at_a_credential_prompt() {
+        let env = TestEnv::new();
+        for unattended in [false, true] {
+            let mut owned = env.envs("http://127.0.0.1:9");
+            if unattended {
+                owned.push(("OXA_UNATTENDED".to_string(), "1".to_string()));
+            }
+            let pairs: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            let e = Env::from_pairs(&pairs);
+            let dirs = dirs_from_env(&e, None).expect("dirs");
+            let l = layout(&e, &dirs, &env.work(), false, &mut Vec::new());
+            assert_eq!(
+                env_value(&l, "GIT_TERMINAL_PROMPT").as_deref(),
+                unattended.then_some("0")
+            );
+            assert_eq!(
+                env_value(&l, "GH_PROMPT_DISABLED").as_deref(),
+                unattended.then_some("1")
+            );
+        }
+    }
+}
+
 pub(crate) fn layout(
     env: &Env,
     dirs: &Dirs,
@@ -206,6 +240,20 @@ pub(crate) fn layout(
     }
     built.mask_runtime_ipc = true;
     built.sockets = listed_sockets(&paths(SETTING_SOCKETS), notices);
+    // #1543: nobody can answer a credential prompt in an unattended run, so an expired
+    // credential fails at once with the 401 the worker reports instead of blocking.
+    if env.get("OXA_UNATTENDED").is_some() {
+        built
+            .env
+            .retain(|(n, _)| n != "GIT_TERMINAL_PROMPT" && n != "GH_PROMPT_DISABLED");
+        built
+            .env
+            .push(("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()));
+        built
+            .env
+            .push(("GH_PROMPT_DISABLED".to_string(), "1".to_string()));
+        built.env.sort();
+    }
     built
 }
 
