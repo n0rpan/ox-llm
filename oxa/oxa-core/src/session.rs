@@ -1934,7 +1934,7 @@ fn draft_message(st: &mut SessionState, text: &str, parts: &[Part]) -> Option<Wi
 /// V020-OPTIMIZE #13, privacy: a draft the user never submitted is sent only to an engine on
 /// this machine: a loopback host (`localhost`, 127.0.0.0/8, `::1`, as `oxa.engine.allowRemote`
 /// judges it), or an in-process engine whose base URL has no network authority (test fakes).
-fn engine_on_this_machine(base_url: &str) -> bool {
+pub(crate) fn engine_on_this_machine(base_url: &str) -> bool {
     match oxa_proto::url_host(base_url) {
         Some(host) => oxa_proto::is_loopback_host(&host),
         None => !base_url.contains("://"),
