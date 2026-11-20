@@ -54,8 +54,8 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     // Background jobs that may run at once (`bash {background: true}`); at least 1.
     d("oxa.bash.maxJobs", Group::Advanced, "", "oxa.bash.maxJobs", "")
         .key(Kind::Number, "16")
-<<<<<<< HEAD
-        .hidden(),
+        .hidden()
+        .user_only(),
     d(
         "oxa.bash.ciPollHint",
         Group::Advanced,
@@ -64,11 +64,8 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "",
     )
     .key(Kind::Bool, "true")
-    .hidden(),
-=======
-        .hidden()
-        .user_only(),
->>>>>>> origin/main
+    .hidden()
+    .user_only(),
     // Longest a bash job read blocks, in seconds (default 300; at least 1).
     d("oxa.bash.waitCap", Group::Advanced, "", "oxa.bash.waitCap", "")
         .key(Kind::Number, "300")
