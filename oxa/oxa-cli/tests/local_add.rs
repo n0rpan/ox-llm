@@ -205,6 +205,30 @@ fn local_add_without_enable_leaves_the_engine_switch_alone() {
 }
 
 #[test]
+fn local_add_preserves_an_explicit_engine_home() {
+    let _guard = LOCK.lock().unwrap();
+    let env = TestEnv::new();
+    let configured_home = env.root().join("engine-home");
+    fs::create_dir_all(&configured_home).unwrap();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        &json!({
+            "oxa": {"local": {"environment": {"HOME": configured_home}}}
+        })
+        .to_string(),
+    );
+    let dir = engine_dir(&env, &report(2048));
+
+    let out = add(&env, &dir, &["--name", "preserved", "--ctx", "2048"]);
+
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        read(&user_settings(&env))["oxa"]["local"]["environment"]["HOME"],
+        configured_home.to_str().unwrap()
+    );
+}
+
+#[test]
 fn local_add_never_writes_project_settings() {
     let _guard = LOCK.lock().unwrap();
     let env = TestEnv::new();

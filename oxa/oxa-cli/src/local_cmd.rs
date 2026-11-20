@@ -335,7 +335,8 @@ fn merge_alias(
     // `default` disk caches remain absolute and cannot fall back to the launch directory.
     let environment = root.entry("environment").or_insert_with(|| json!({}));
     object(environment, "oxa.local.environment")?
-        .insert("HOME".into(), Value::String(home.to_string_lossy().into_owned()));
+        .entry("HOME")
+        .or_insert_with(|| Value::String(home.to_string_lossy().into_owned()));
     match root.get("binary").and_then(Value::as_str) {
         Some(existing) if existing != server_path => {
             return Err(invalid(format!(
