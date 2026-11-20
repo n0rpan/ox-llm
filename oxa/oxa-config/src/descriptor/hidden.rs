@@ -90,7 +90,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .hidden(),
     // The finish decision: one nudge turn per open fact before a run or goal ends.
     d("oxa.done.proveIt", Group::Advanced, "", "oxa.done.proveIt", "")
-        .key(Kind::Bool, "true")
+        .key(Kind::Bool, "false")
         .hidden(),
     d(
         "oxa.done.waitForJobs",

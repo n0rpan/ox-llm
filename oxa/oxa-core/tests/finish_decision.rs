@@ -132,7 +132,7 @@ fn edit_without_a_check_gets_one_nudge_then_ends_with_a_warning() {
 #[test]
 fn edit_then_passing_check_needs_no_nudge() {
     let r = run(
-        json!({"envNote": false}),
+        json!({"envNote": false, "done": {"proveIt": true}}),
         vec![write("c1", "a.txt"), check("c2"), ScriptTurn::text("done")],
     );
     assert_eq!(r.engine.requests().len(), 3);
@@ -151,7 +151,12 @@ fn read_only_run_is_never_asked() {
 }
 
 #[test]
-fn prove_it_can_be_turned_off() {
+fn prove_it_is_off_by_default_and_can_be_turned_off() {
+    let r = run(
+        json!({"envNote": false}),
+        vec![write("c1", "a.txt"), ScriptTurn::text("done")],
+    );
+    assert_eq!(r.engine.requests().len(), 2);
     let r = run(
         json!({"envNote": false, "done": {"proveIt": false}}),
         vec![write("c1", "a.txt"), ScriptTurn::text("done")],
