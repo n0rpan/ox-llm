@@ -2499,23 +2499,44 @@ pub(crate) fn list_models(
             None => true,
         })
         .collect();
-    let write_err = |e: std::io::Error| OxaError::io("cannot write the model list", &e);
     if rows.is_empty() {
-        match search {
-            Some(s) => writeln!(out, "No models matching \"{s}\"").map_err(write_err)?,
-            None => writeln!(out, "No models available").map_err(write_err)?,
-        }
-        return Ok(0);
+        return empty_list(search, out);
     }
-    let headers = ["provider", "model", "context", "max-out", "thinking", "images"];
+    let rows: Vec<Vec<String>> = rows.into_iter().map(Vec::from).collect();
+    render_table(
+        &["provider", "model", "context", "max-out", "thinking", "images"],
+        &rows,
+        out,
+    )?;
+    Ok(0)
+}
+
+/// The empty listing: the search word when one was given, else the plain fact.
+pub(crate) fn empty_list(search: Option<&str>, out: &mut dyn Write) -> Result<i32, OxaError> {
+    let text = match search {
+        Some(s) => format!("No models matching \"{s}\""),
+        None => "No models available".to_string(),
+    };
+    let write_err = |e: std::io::Error| OxaError::io("cannot write the model list", &e);
+    writeln!(out, "{text}").map_err(write_err)?;
+    Ok(0)
+}
+
+/// One padded table, shared by `--list-models` and `oxa models`: every row carries exactly the
+/// header count of cells; every column but the last is padded, so the lines carry no trailing
+/// spaces.
+pub(crate) fn render_table(
+    headers: &[&str],
+    rows: &[Vec<String>],
+    out: &mut dyn Write,
+) -> Result<(), OxaError> {
     let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
-    for row in &rows {
+    for row in rows {
         for (i, cell) in row.iter().enumerate() {
             widths[i] = widths[i].max(cell.len());
         }
     }
     let line = |cells: &[&str]| -> String {
-        // Every column but the last is padded, so the lines carry no trailing spaces.
         let mut s = String::new();
         for (i, cell) in cells.iter().enumerate() {
             if i + 1 == cells.len() {
@@ -2526,16 +2547,19 @@ pub(crate) fn list_models(
         }
         s
     };
-    writeln!(out, "{}", line(&headers)).map_err(write_err)?;
-    for row in &rows {
+    let write_err = |e: std::io::Error| OxaError::io("cannot write the model list", &e);
+    let header_line = line(headers);
+    writeln!(out, "{header_line}").map_err(write_err)?;
+    for row in rows {
         let cells: Vec<&str> = row.iter().map(String::as_str).collect();
         writeln!(out, "{}", line(&cells)).map_err(write_err)?;
     }
-    Ok(0)
+    Ok(())
 }
 
-/// `true` -> `yes`, `false` -> `no` for the `thinking`/`images` columns of `--list-models`.
-fn bool_word(b: bool) -> String {
+/// `true` -> `yes`, `false` -> `no` for the `thinking`/`images` columns of `--list-models`
+/// and `oxa models`.
+pub(crate) fn bool_word(b: bool) -> String {
     if b {
         "yes".to_string()
     } else {
@@ -2543,8 +2567,9 @@ fn bool_word(b: bool) -> String {
     }
 }
 
-/// pi's token counts: `200K`, `1M`, `1.5M`; below a thousand the plain number.
-fn format_tokens(count: u64) -> String {
+/// pi's token counts: `200K`, `1M`, `1.5M`; below a thousand the plain number. Shared with
+/// `oxa models`.
+pub(crate) fn format_tokens(count: u64) -> String {
     let scaled = |div: f64, unit: &str| {
         let v = count as f64 / div;
         if v.fract() == 0.0 {

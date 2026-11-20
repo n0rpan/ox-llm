@@ -36,8 +36,8 @@ const BASE: &[Entry] = &[
     },
     Entry {
         path: &["models"],
-        summary: "List the models the engine serves, as a table or as JSON",
-        usage: &["oxa models [--json]"],
+        summary: "List the local and cloud models this install can serve, where each runs and which one is the default",
+        usage: &["oxa models [--json] [search]"],
         example: "oxa models --json",
     },
     Entry {

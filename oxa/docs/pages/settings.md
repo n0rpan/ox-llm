@@ -314,7 +314,7 @@ retention, and `data_collection` (`allow` or `deny`) controls providers that may
 train on or keep prompts. Values are sent exactly as set; any other key or value
 is refused at load. A client request cannot override them.
 
-The merged catalog is available through the model picker and `--list-models`.
+The merged catalog is available through the model picker, `oxa models` and `--list-models`.
 The LAN guest catalog lists only guest-allowlisted models.
 
 Configure `anthropic`, `openai` (Responses API) or `chatgpt` (subscription) routes
