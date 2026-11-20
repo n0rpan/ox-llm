@@ -79,6 +79,8 @@ struct Sample<'a> {
     runs: Option<&'a [Value]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     app_quota: Option<AppQuota>,
+    #[serde(skip_serializing_if = "<[Deferral]>::is_empty")]
+    quota_deferred: &'a [Deferral],
 }
 
 pub(crate) const OWNER_FILE_FLAGS: libc::c_int = libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
@@ -419,6 +421,19 @@ pub struct ThreadHold {
     pub incomplete: bool,
 }
 
+/// Optional GitHub work the owner's App reserve kept back in one sample (#1413): a
+/// recorded, non-fatal deferral that says why a source is absent.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct Deferral {
+    pub work: String,
+    pub resource: String,
+    /// The window reset the work waits for; absent when no window was observed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<u64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub awaiting_observation: bool,
+}
+
 #[derive(Serialize)]
 pub struct RejectionNotice {
     pr_head: String,
@@ -446,6 +461,7 @@ pub struct LandingSample {
     pub panels: Option<Value>,
     pub runs: Option<Vec<Value>>,
     pub app_quota: Option<AppQuota>,
+    pub quota_deferred: Vec<Deferral>,
 }
 
 /// Persist the board and its projections in one owner-only sample.
@@ -467,6 +483,7 @@ pub fn run_with_landing(
             panels,
             runs,
             app_quota,
+            quota_deferred,
         } = snapshot()?;
         let matched_queue_admissions = if landing.is_empty() {
             BTreeMap::new()
@@ -500,18 +517,20 @@ pub fn run_with_landing(
             panels: panels.as_ref(),
             runs: runs.as_deref(),
             app_quota,
+            quota_deferred: &quota_deferred,
         };
         let mut line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
         // The Lead sample bound is fixed: the largest optional records degrade
         // first, and a degraded record is an explicit partial observation.
         // The App quota is small and decides whether the rest may be read: it goes last.
-        for step in 0..3 {
+        for step in 0..4 {
             if line.len() as u64 <= MAX_LEAD_SAMPLE_BYTES {
                 break;
             }
             match step {
-                0 => sample.runs = None,
-                1 => sample.panels = None,
+                0 => sample.quota_deferred = &[],
+                1 => sample.runs = None,
+                2 => sample.panels = None,
                 _ => sample.app_quota = None,
             }
             line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;

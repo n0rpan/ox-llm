@@ -759,6 +759,7 @@ fn run_inner(
                 tool_msgs.push(msg);
             }
             done.note_edits(&results);
+            st.stats.ci_polls += results.iter().filter(|r| r.ui["ciPoll"] == true).count() as u32;
             done.note_proof(&calls, &results);
             done.note_bash(st, &results);
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
@@ -805,6 +806,7 @@ fn run_inner(
                 return Ok(RunEnd::Stopped);
             }
             crate::goal::checkpoint(st, false, sink)?;
+            announce_exceeded(st, &results, sink)?;
 
             if st.shared.cancel.is_cancelled() || wrapping_up {
                 return Ok(wrap_up_failure.map_or(RunEnd::Aborted, RunEnd::Failed));
@@ -973,15 +975,34 @@ fn run_inner(
                 return Ok(RunEnd::Stopped);
             }
             let was_pursuing = goal.pursuing();
-            let (snapshot, idle_noted) = goal.stopped(st.settings.user_bool("oxa.goal.idlePause", false));
+            let idle_action = crate::goal::idle_action(st, &goal, max_turns);
+            let (mut snapshot, idle_noted) = goal.stopped(idle_action.enforces());
+            let mut idle_stopped = None;
+            if idle_action == oxa_config::OnExceed::Stop
+                && was_pursuing
+                && snapshot.status == oxa_session::GoalStatus::Paused
+            {
+                let reason = snapshot.pause_reason.clone().unwrap_or_default();
+                snapshot = goal.stop_because(&reason);
+                idle_stopped = Some(reason);
+            }
             crate::goal::save_checkpoint(st, &snapshot, sink)?;
             if idle_noted {
                 crate::goal::announce_idle(sink);
+                crate::goal::record_notice(st, crate::goal::IDLE_NOTICE.into(), sink)?;
             }
             if was_pursuing && snapshot.status == oxa_session::GoalStatus::Paused {
                 if let Some(reason) = snapshot.pause_reason.as_deref() {
                     crate::goal::announce_pause(reason, sink);
+                    crate::goal::record_notice(st, format!("Goal paused: {reason}; /goal resume"), sink)?;
                 }
+            }
+            if let Some(reason) = idle_stopped {
+                crate::goal::record_exceeded(
+                    st,
+                    format!("Goal stopped: {reason} (oxa.onExceed.goalIdle is stop)"),
+                    sink,
+                )?;
             }
             if goal.pursuing() && st.active.get("goal_done").is_none() {
                 // The owner's tool selection removed the goal controls: the continue
@@ -1162,6 +1183,32 @@ fn drain_follow_ups(st: &SessionState, sink: &mut dyn EventSink) -> Vec<String> 
         sink.emit(&AgentEvent::QueueUpdate { steering, follow_up });
     }
     taken
+}
+
+/// An owner budget a tool result exceeded (`oxa.onExceed`): one warning notice and one recorded
+/// `Shown` entry per result, whatever the action was (warn, or a refused call).
+fn announce_exceeded(
+    st: &mut SessionState,
+    results: &[crate::exec::CallResult],
+    sink: &mut dyn EventSink,
+) -> Result<(), OxaError> {
+    for result in results {
+        if let Some((_, notice)) = oxa_proto::ToolOutput::exceeded_notice(&result.ui) {
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Warning,
+                text: notice.to_string(),
+            });
+            persist(
+                st,
+                EntryBody::Shown {
+                    text: notice.to_string(),
+                    why: shown_why::NOTICE,
+                },
+                sink,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Persist a body and announce the entry. A dropped reply (aborted, failed, cut) ends the

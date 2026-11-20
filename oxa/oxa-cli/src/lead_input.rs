@@ -57,6 +57,11 @@ pub struct Sample {
     /// Unresolved review threads per PR from the landing record; `None` when the
     /// sample carries no landing record.
     pub threads: Option<std::collections::BTreeMap<u64, ThreadHold>>,
+    /// PRs whose review decision is `requester_rejected`: the reviewer refused the
+    /// configured requester account.
+    pub review_rejected: Vec<u64>,
+    /// Optional GitHub work the owner's App reserve kept back from this sample.
+    pub quota_deferred: Vec<oxa_work::shadow::Deferral>,
 }
 
 /// Read the most recent complete Reader sample within the existing tail bound.
@@ -85,12 +90,21 @@ pub fn sample(path: &Path, uid: u32) -> Result<Sample> {
         let line = &tail[previous.map_or(0, |p| p + 1)..end];
         let decoded = decode_board_sample(line)?;
         if !decoded.publication {
-            let (alarms, threads) = decode_alarms(line, &decoded.board, decoded.board.observed_at);
+            let record: serde_json::Value = serde_json::from_slice(line).unwrap_or(serde_json::Value::Null);
+            let (alarms, threads) = decode_alarms(&record, &decoded.board, decoded.board.observed_at);
             return Ok(Sample {
                 board: decoded.board,
                 app_quota: decoded.app_quota,
                 alarms,
                 threads,
+                review_rejected: record["reviews"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .filter(|(_, plan)| plan["decision"].get("requester_rejected").is_some())
+                    .filter_map(|(number, _)| number.parse().ok())
+                    .collect(),
+                quota_deferred: serde_json::from_value(record["quota_deferred"].clone()).unwrap_or_default(),
             });
         }
         // Publication rows carry a Board for journal replay, not a Reader observation.
@@ -191,14 +205,13 @@ struct LandingRow {
 /// failing the board, and the shared parsers keep their own policy results
 /// without this module recomputing any age.
 fn decode_alarms(
-    line: &[u8],
+    record: &serde_json::Value,
     board: &Board,
     observed_at: u64,
 ) -> (
     crate::lead_page::Alarms,
     Option<std::collections::BTreeMap<u64, ThreadHold>>,
 ) {
-    let record: serde_json::Value = serde_json::from_slice(line).unwrap_or_else(|_| serde_json::Value::Null);
     let panels = record
         .get("panels")
         .filter(|value| !value.is_null())

@@ -6,7 +6,10 @@ use crate::{
     lead_page::{self, Alarms},
 };
 use oxa_proto::work::{LocalAcceptance, PullRequest, Snapshot};
-use oxa_work::{board::Board, shadow::ThreadHold};
+use oxa_work::{
+    board::Board,
+    shadow::{Deferral, ThreadHold},
+};
 use std::{collections::BTreeMap, path::Path};
 
 /// A runner situation more than this far in the future or past is not claimed.
@@ -20,6 +23,10 @@ pub(crate) struct Observation {
     pub alarms: Alarms,
     /// Unresolved review threads by PR; `None` when the sample has no landing record.
     pub threads: Option<BTreeMap<u64, ThreadHold>>,
+    /// PRs whose reviewer refused the configured requester account.
+    pub review_rejected: Vec<u64>,
+    /// Optional GitHub work the owner's App reserve deferred in this sample.
+    pub quota_deferred: Vec<Deferral>,
     /// The runner situation, only while it is inside its freshness window.
     pub situation: Option<Snapshot>,
     pub now_ms: u64,
@@ -37,12 +44,21 @@ impl Observation {
     pub(crate) fn read(board_path: &Path, situation_path: Option<&Path>, uid: u32, now_ms: u64) -> Self {
         // The default board keeps held asks and the stale policy; only a fixed
         // allowlisted cause and its hint reach operator status.
-        let (board, alarms, threads, cause) = match lead_input::sample(board_path, uid) {
-            Ok(sample) => (sample.board, sample.alarms, sample.threads, None),
+        let (board, alarms, threads, rejected, deferred, cause) = match lead_input::sample(board_path, uid) {
+            Ok(s) => (
+                s.board,
+                s.alarms,
+                s.threads,
+                s.review_rejected,
+                s.quota_deferred,
+                None,
+            ),
             Err(error) => (
                 Board::default(),
                 Alarms::default(),
                 None,
+                Vec::new(),
+                Vec::new(),
                 Some(lead_input::board_cause(error)),
             ),
         };
@@ -57,6 +73,8 @@ impl Observation {
             cause,
             alarms,
             threads,
+            review_rejected: rejected,
+            quota_deferred: deferred,
             situation,
             now_ms,
         }
