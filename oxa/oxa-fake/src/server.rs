@@ -1339,8 +1339,10 @@ fn plan_chat(sh: &Shared, req: &Request, meta: &mut (Option<usize>, Option<u32>)
         Some(t) => t,
         None => {
             seen.push(rec);
+            // 422, not 5xx: oxa retries every 5xx with backoff (up to ~6 minutes by default), which
+            // turned a test's unexpected extra request into a silent multi-minute wait.
             return json_plan(
-                500,
+                422,
                 &error_value(codes::INTERNAL, "script exhausted: unexpected extra request"),
             );
         }

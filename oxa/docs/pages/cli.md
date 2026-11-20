@@ -21,9 +21,11 @@ Replace `SESSION_ID` with the printed id. `--continue=<id>` also works. A word a
 
 ```console
 $ oxa send SESSION_ID "task finished, red"
+$ generate-large-follow-up | oxa send SESSION_ID -
 ```
 
 Use the full session id. This queues one follow-up without starting an engine or requiring the session to be running. Its TUI or RPC owner consumes it when idle or at a follow-up boundary, just like queued follow-up input; it does not interrupt the active turn. A stopped session retains the message until it is opened again in TUI or RPC mode. Success means **queued**, not that the model has answered.
+Use `-` as the text argument to read the entire follow-up from standard input. This avoids the operating system's per-argument size limit for large messages.
 
 The inbox lives at `inbox/<session-id>/` under the agent directory, in private `0700` directories with `0600` message files. Publication is an atomic rename; the owner uses inotify (no file polling, socket or daemon), including a startup scan for queued messages. The agent directory remains masked by the sandbox. A message over 256 KiB is not refused: its full text is kept in the session's private, tool-readable spill directory under the temporary-data directory, and the queued follow-up names that file. Only that session (and sessions inheriting its history) can read the spill through model tools; other private agent state remains masked. The owner admits at most 64 messages or 1 MiB of inbox text across destinations; excess files remain on disk and are retried when the owner releases capacity, without polling. Oversized externally written files remain on disk and are not delivered. Once admitted to the owner's in-memory follow-up queue, a message file is removed. This is not transactional with the session transcript: a process crash can lose an admitted message or replay a file not yet removed. Worker prompts are unchanged.
 
@@ -70,9 +72,9 @@ A plain reply cut at its output limit also continues under the auto-retry policy
 
 `--goal <file>` opts print/JSON mode into a persistent objective (UTF-8, at most 64 KiB). The session exposes `goal_done` and a cancellable `wait` of 1–3,600 seconds only while pursuing it. A normal assistant stop sends the same continuation instruction; two consecutive stops without tool use pause the goal with a `stalled` result. Completion or blockage requires evidence. The terminal record includes goal status, evidence and cumulative counters. A pursuing saved goal continues with `--continue` without rereading the file. Goal time and token budgets are stored with their spent counters, so restarting does not grant a fresh allowance. Ordinary sessions retain their existing tools and prefix. Interactive slash controls and inbox wake integration are separate follow-ups.
 
-`--max-time <seconds>` sets a soft runtime limit for print, JSON and RPC modes, measured after startup/session loading. Fractional seconds are accepted. At the limit, or on SIGTERM, oxa lets the active tool batch finish, then gives the agent one final turn (up to 1,024 output tokens, thinking off) to commit changes from this run or summarize its state. That final request is not retried by the agent. The session and completed tool results are retained; the outcome is `interrupted` (130), and later prompts are left unstarted. If an in-flight or final request fails, its typed failure takes precedence over interruption; a final summary cannot hide an earlier blocked or failed request. Resume with the session id and a new instruction. RPC also exits on a limit/SIGTERM while stdin is still open. `--no-session` continues to disable session storage.
+`--max-time <seconds>` sets a soft runtime limit for every mode (interactive, print, JSON and RPC), measured after startup/session loading. Fractional seconds are accepted. At the limit, or on SIGTERM, oxa lets the active tool batch finish, then gives the agent one final turn (up to 1,024 output tokens, thinking off) to commit changes from this run or summarize its state. That final request is not retried by the agent. The session and completed tool results are retained; the outcome is `interrupted` (130), and later prompts are left unstarted. If an in-flight or final request fails, its typed failure takes precedence over interruption; a final summary cannot hide an earlier blocked or failed request. Resume with the session id and a new instruction. RPC also exits on a limit/SIGTERM while stdin is still open. When the watched interactive session is idle, it exits without requesting a final model turn. `--no-session` continues to disable session storage.
 
-`--max-tokens <N>` sets a positive integer token budget for the same headless modes, with the same wrap-up and `interrupted` outcome as `--max-time`. It counts newly processed prompt tokens (`prompt - cached`, floored at zero) plus output tokens across requests in this invocation, not usage restored from a session. Cached prefix tokens are free. Each subagent gets the remaining budget at spawn; its reported assistant usage is also charged to the parent, so later queued children see the reduced amount. This is a soft budget: active requests/tools (including concurrent children) finish, and the one final wrap-up turn is allowed beyond the budget. Both limits may be used together; the first reached requests wrap-up. Without either flag, normal work is unchanged.
+`--max-tokens <N>` sets a positive integer token budget for every mode, with the same wrap-up and `interrupted` outcome as `--max-time`. In interactive mode the limit applies to the session the TUI opened at start; a session opened later with `/new`, `/resume` or `/fork` is not limited. It counts newly processed prompt tokens (`prompt - cached`, floored at zero) plus output tokens across requests in this invocation, not usage restored from a session. Cached prefix tokens are free. Each subagent gets the remaining budget at spawn; its reported assistant usage is also charged to the parent, so later queued children see the reduced amount. This is a soft budget: active requests/tools (including concurrent children) finish, and the one final wrap-up turn is allowed beyond the budget. Both limits may be used together; the first reached requests wrap-up. Without either flag, normal work is unchanged.
 
 `--usage-log <file>` writes one JSON line per model call of this invocation, in every mode, and creates the file owner-only (mode 0600; an existing file is truncated and narrowed). Each line has `request` (1-based call number), `turn` (chat turns so far; compaction, prefill and branch summaries do not count), `kind`, `model` (the session's model id, or null), `usage_reported`, `prompt`, `cached` (null when the server did not report it), `output` (completion tokens), `reasoning_tokens` (always null for now: the engine's usage does not split it out yet) and `duration_ms`. Calls that report no usage keep `usage_reported: false` with null counts. The sums of `prompt`, `cached` and `output` equal the `tokens` totals of `oxa_result` when that record says `complete`. Records hold numbers, ids and timings only: no message text, tool output or request body. `duration_ms` pairs each end with the oldest unfinished start, so it is exact for sequential calls and may swap between concurrent subagent calls. If a line cannot be written, the run continues and `oxa_result` carries `"usage_log": "write_failed"`.
 
@@ -102,8 +104,11 @@ Commands take the place of the message. They do not start a session.
 | `oxa login chatgpt --experimental [--paste] [--replace]` | explicit owner-only native ChatGPT sign-in |
 | `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa status <session-id\|session-file> [--session-dir <dir>]` | read a saved session's progress and stall signal without contacting an engine |
-| `oxa send <session-id> "text"` | queue one follow-up for the session's TUI or RPC owner |
+| `oxa send <session-id> <text\|->` | queue one follow-up for the session's TUI or RPC owner; `-` reads standard input |
+| `oxa send <session-id> --approve <request-id> once\|session\|always\|deny` | answer a dangerous-command request filed by an unattended run (#1512). The answer requires confirmation from the session's owner-confirm broker, or directly from the controlling terminal. `always` also saves the rule key to the user settings. Answers go to the approval desk, never to the session's message queue |
+| `oxa send --approvals` | list the approval requests still waiting for an answer: id, session, command and reasons |
 | `oxa config [-l]` | print every setting with its value and where it comes from |
+| `oxa local add <model.gguf> [--name ALIAS] [--ctx N] [--max-output N] [--margin-bytes N] [--enable] [--replace] [--engine-dir DIR] [-- LAUNCH ARGS]` | write the native local engine settings for one GGUF from the engine's own admission report, see [Local models](#local-models) |
 | `oxa mcp <command>` | manage MCP servers, see below |
 | `oxa memory <list\|show\|rm>` | list the memory index, show one memory entry, or remove one entry and its index line, see [Memory commands](#memory-commands) |
 | `oxa identity [--refresh] [--offline]` | show the identity text of the system prompt; `--refresh` rewrites it from this machine and the engine, and `--offline` skips the engine |
@@ -137,9 +142,24 @@ Metered cloud aliases need `oxa.engine.inProcessCloud`, a configured price, and 
 
 `oxa update --self`, `--all` and `--models` report that they are not supported: oxa does not update itself and does not refresh model catalogues. Update oxa by installing a new build.
 
-`oxa report-issue draft` takes `--title <text>` (required), and the notes either inline with `--notes <text>` or from a file with `--notes-file <path>` (relative paths are taken from the current directory). It writes the draft under `issue-drafts/` in the agent directory and prints its path; it posts nothing. `oxa report-issue submit <draft>` posts it after you type `yes`.
+`oxa report-issue draft` takes `--title <text>` (required), and the notes either inline with `--notes <text>` or from a file with `--notes-file <path>` (relative paths are taken from the current directory). It writes the draft under `issue-drafts/` in the agent directory and prints its path; it posts nothing. `oxa report-issue submit <draft>` posts it after you type `yes` in a terminal. Inside an interactive oxa session, ask for the draft to be published instead: in yolo it posts at once and shows the result; otherwise oxa shows the exact text in an approval dialog (or you type `yes`), and the model can request it but never answer it.
 
 `oxa config` lists the settings as oxa resolves them.
+
+### Local models
+
+`oxa local add <model.gguf>` lets the owner wire one local model into the native local engine. Run it outside an agent tool. It needs no hand-written limits:
+
+1. It finds `oxe` and `oxe-server` in the directory of the running `oxa` executable. There is no PATH or current-directory search; `--engine-dir DIR` names another installation explicitly.
+2. It runs `oxe admission --json` for the model and launch profile. The engine reads only the GGUF header and reports `kv_bytes_per_position`, `scratch_bytes`, `mtp_state_bytes` and `margin_bytes` from its own allocation code, the context window, and the complete launch arguments the numbers are valid for.
+3. It writes `oxa.local` (the `binary`, `models.<alias>.model` and `arguments`, and `limits.<alias>` with `context_window`, `max_output` and `allocation_budget`) into your **user** settings file only, after copying the existing file to `settings.json.bak-<unix seconds>` next to it (mode 0600). Project settings are never read or written.
+4. It sets `oxa.engine.inProcessLocal` to `true` only when you pass `--enable`.
+
+Options: `--name` is the model alias (default: the lowercased file name without extension), `--ctx` the context in positions (default: the model's own `context_length`), `--max-output` a narrower output limit (default: the context window, the engine's own bound), `--margin-bytes` the host margin (default: the engine's documented 1 GiB), `--replace` overwrites an existing alias. Everything after `--` is passed to the engine as launch arguments, for example `-- --oxe-cpus 0-7 --spec-type draft-mtp`. The admission report resolves them with the same rules as `oxe-server` and the written `arguments` are the resolved list.
+
+**Cache capacity.** The launch the report resolves also carries the engine's cache options, so a second request (a subagent child, a worker, another session) does not wipe the first session's cached context and force a full re-prefill (45-100 s at 12K tokens on a laptop): `--state-cache default`, `--session-ram-bytes N`, `--prefix-cache default` and `--ctx-checkpoints 8`. `N` is the parked-session RAM, `MemTotal / 32` (1 GiB on a 32 GiB machine, 2 GiB on 64 GiB; 1 GiB when the memory size is unknown) and it is counted in the `scratch_bytes` of the budget. It is a default, not a cap. Your own value after `--` wins for each option, for example `-- --session-ram-bytes 4294967296 --ctx-checkpoints 12`, or `--session-ram-bytes 0` to switch the RAM off; edit `oxa.local.models.<alias>.arguments` for an alias that exists (the budget then follows `oxa local add --replace`). When `MemAvailable` is below what the weights, the engine allocations, the session RAM and the margin need, `oxa local add` prints a warning; it never refuses for it.
+
+A value that the report or an option does not supply is an explained error and nothing is written: oxa never guesses a limit. The generated `oxa.local` is also checked by the same code that loads it at startup before the file is touched. At load time oxa still requires `MemAvailable` to cover the model file plus the budget; see [native local configuration](../../oxc-local/CONFIGURATION.md).
 
 ### Experimental ChatGPT sign-in
 
@@ -207,17 +227,25 @@ $ oxa memory rm <name>
 | `--list-models [search]` | list the models the engine serves, optionally filtered by a fuzzy search, and exit |
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
 | `--mode <mode>` | output mode: `text` (default), `json` or `rpc` ([rpc.md](rpc.md)) |
-| `--shadow` | required with `oxa lead`; read-only proposal preset, enabled only by user setting `oxa.lead.shadow` (default false) |
+| `--shadow` | required with `oxa lead`; read-only proposal preset, on by default; the user setting `oxa.lead.shadow: false` turns it off |
 | `--output-schema <file>` | check the final answer against a JSON schema file (a supported subset), retrying once on mismatch |
 | `--print`, `-p` | non-interactive: process the prompts and exit |
 | `--goal <file>` | pursue a stored UTF-8 objective in print/JSON mode; continue the saved pursuing goal after restart |
-| `--max-time <seconds>` | softly limit a headless run, then allow one final wrap-up turn |
-| `--max-tokens <N>` | softly limit new prompt + output tokens in a headless run; cached tokens are free |
+| `--max-time <seconds>` | softly limit a run, then allow one final wrap-up turn |
+| `--max-tokens <N>` | softly limit new prompt + output tokens; cached tokens are free |
 | `--usage-log <file>` | write one JSONL record per model call (tokens, duration, model, turn); owner-only file, no message text |
 | `--stall-timeout <seconds>` | flag a session as stalled after this long without progress; a signal that never cancels the run |
 | `--export <input> [output]` | export a session file to HTML and exit |
+
 | `--tui-mode <mode>` | `fullscreen` (default) or `regular` |
 | `--verbose` | show more start-up information |
+
+The live, owner-authorized Lead service exposes only the `worker` tool. It may create Git
+worktrees and launch, list, steer, or stop child `oxa` processes; workers remain supervised across
+service chat turns. New launches obey the current permission mode and the user-only
+`oxa.workers.enabled` and `oxa.workers.max` settings. The `oxa lead --shadow` preset is read-only,
+and standalone one-shot `oxa lead chat <message>` exposes no tools because its process cannot keep
+a background worker alive for a later turn.
 
 ### Sessions
 
@@ -269,6 +297,7 @@ See [tools.md](tools.md) for the tool names.
 | `--share-model <alias>` | share one native local model during the interactive owner session in a build with the `share` feature, repeat to select more aliases |
 | `--share-bind <address>` | set an explicit bind address for `--share-model`. Sharing uses the Tailscale interface by default |
 | `--offline` | offline mode: oxa's own non-local connections are refused, bash has no network, `web_search` is off, and `!cmd` and stdio MCP servers run without network. What it does not cover is in [security.md](security.md#offline-mode) |
+| `--sandbox` | run bash and hooks in the OS sandbox (bubblewrap) for this interactive run, as `oxa.sandbox.interactive` does. Without it an interactive run has no OS sandbox: bash runs with your rights and dangerous commands ask. Unattended runs (subagents, workers, `oxa work`, headless goals) keep the sandbox |
 
 See [security.md](security.md).
 
@@ -307,7 +336,7 @@ Every boolean variable takes the same eight words, in any case: `1`, `true`, `ye
 
 | Variable | Meaning |
 |---|---|
-| `OXA_ENGINE_URL` | engine endpoint for the default model entry. Default `http://127.0.0.1:8092` |
+| `OXA_ENGINE_URL` | engine endpoint for the default model entry, for an engine you started yourself (`oxe-server` listens on `http://127.0.0.1:8080` by default). With no `OXA_ENGINE_URL`, no `models.json` endpoint and no model configured, oxa dials nothing and says to configure a cloud key or run `oxa local add` |
 | `OXA_AGENT_DIR` | agent directory. Default `~/.oxa/agent`; `~` is expanded |
 | `OXA_LEAD_BOARD_LOG` | owner-selected absolute path to a private local board sample log; missing or refused data stays unavailable |
 | `OXA_SESSION_DIR` | session storage; `--session-dir` wins over it |
@@ -315,6 +344,9 @@ Every boolean variable takes the same eight words, in any case: `1`, `true`, `ye
 | `OXA_SYSTEM_SKILLS_DIR` | system skills directory, read last. Default `/usr/share/omarchy/default/agents/skills`; empty disables it |
 | `OXA_OFFLINE` | `1`, `true`, `yes` or `on` turns offline mode on, as `--offline` does |
 | `OXA_ALLOW_HOME_CWD` | `1`, `true`, `yes` or `on` allows a start in the home directory, `/` or a parent of home, as the user setting `oxa.allowHomeCwd` does. See [security.md](security.md#starting-in-your-home-directory) |
+| `OXA_CONFIRM_MAX_REQUEST_BYTES` | largest owner confirm request a tool child may send, in bytes. Default 8 MiB |
+| `OXA_CONFIRM_READ_TIMEOUT_SECS` | seconds a tool child has to send its whole owner confirm request. Default 60 |
+| `OXA_CONFIRM_MAX_CONNECTIONS` | owner confirm requests served at once; more are answered "none" at once. Default 64 |
 | `OXA_WEB_SEARCH` | `0`, `false`, `no` or `off` disables `web_search`; `1`, `true`, `yes` or `on` says on |
 | `BRAVE_SEARCH_API_KEY` | Brave Search key for `web_search`; wins over `brave-search.key` ([tools.md](tools.md#web_search)) |
 | `OXA_CODEMODE_MAX_WORKERS` | script workers alive at once in the process. Default 2; overrides `codemode.maxWorkers` |
@@ -349,6 +381,7 @@ These are set by oxa for its own child processes, or are test hooks. They are no
 - `OXA_SESSION_HINT`: a parent sets `<parent session id>.s<n>` in a subagent child, and every chat request of the child names it.
 - `OXA_CHILD_SOFT_TOKENS`: a parent may set the soft compaction limit of a subagent child; it overrides `oxa.compaction.softTokens`.
 - `OXA_WORKER_DEPTH`: oxa sets `1` in the environment of a lead worker session.
+- `OXA_UNATTENDED`: oxa sets `1` in the environment of a worker it launches; the run counts as unattended and keeps the OS sandbox by default.
 - `OXA_WORK_MODEL_DELEGATED`: `oxa work` sets `1` in a worker; a restored or project-selected model then never counts as chosen by the owner, while an actual model argument is still admitted by a protected Go key.
 - `OXA_WORKTREE_TRUST_SOURCE`: `oxa work` names the trusted source checkout of a managed worktree; it counts only in `--mode json`, and only when the checkout, the trust record and the approved resources verify.
 - `OXA_RUNNER_OWNS_GITHUB`: `oxa work` sets `1` in a worker: the runner owns GitHub access, so the worker runs no `gh`.

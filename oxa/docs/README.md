@@ -27,7 +27,7 @@ User files live in `~/.oxa/agent/`. Project files live in `.oxa/` and load only 
 
 | Page | Read it for |
 |---|---|
-| [install.md](pages/install.md) | the stable release, the dev build, building from source, updating and removing |
+| [install.md](pages/install.md) | the portable Linux x86_64 binary, the stable release, the dev build, building from source, updating and removing |
 | [quickstart.md](pages/quickstart.md) | cloud providers and keys, local models, the first prompt, where files live |
 | [modes.md](pages/modes.md) | standard, auto, yolo and plan: what each mode does, and macOS |
 | [usage.md](pages/usage.md) | the interface: editor, keys, slash commands, footer, selectors |

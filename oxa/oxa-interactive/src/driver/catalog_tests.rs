@@ -101,6 +101,7 @@ pub(super) fn with_loop(
         gated: Vec::new(),
         engine_status: None,
         yolo: None,
+        os_sandbox: false,
     };
     let mut vm = ViewModel::default();
     vm.status.model = "model-a".into();

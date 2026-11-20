@@ -323,8 +323,11 @@ that `origin` does not have: the commit objects, the names of added files and ev
 line. It refuses, and names only the file and line, when it finds a private key, a known
 access token format (GitHub, Anthropic, AWS, Slack, Google, GitLab; also when a letter or digit
 directly precedes the prefix), a `password`/`token`/`secret`-style assignment or quoted
-literal with an opaque value (spaces inside quotes do not hide it), a `Bearer` header or URL
-password, or the value of a secret-named environment variable or setting. Lines added to a
+literal with an opaque value (spaces inside quotes do not hide it), an assignment to a name
+ending in `_key` or `credentials` with a long opaque value (`ENCRYPTION_KEY=...`; paths, URLs
+and `${VAR}` references pass), a `Bearer`/`Basic` header (also as a quoted `"Authorization"`
+key) or URL password, or the value of a secret-named environment variable or setting. A JSON
+value edited under an unchanged key line is scanned together with that key. Lines added to a
 secret store (`.env`, `credentials`, key and certificate files, registry logins such as
 `.docker/config.json`) are refused. An empty secret-store file and a template such as
 `.env.example` are not refused by name: they publish unless their content holds one of the

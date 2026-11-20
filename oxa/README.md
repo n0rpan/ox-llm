@@ -11,11 +11,12 @@ Install a release or a dev build with [docs/pages/install.md](docs/pages/install
 ```console
 $ cargo build --release --locked -p oxa-cli
 $ export PATH="$PWD/target/release:$PATH"
+$ export OXA_ENGINE_URL=http://127.0.0.1:8080
 $ cd ~/project
 $ oxa
 ```
 
-oxa needs a model before the first prompt: a provider key for a cloud model, or `oxa local add <model.gguf> --enable` for a local one. [docs/pages/quickstart.md](docs/pages/quickstart.md) has both. See [tools and context handling](docs/pages/tools-context.md) for the defaults. For one answer from a script, use print mode:
+oxa needs a model before the first prompt: a provider key for a cloud model, or `oxa local add <model.gguf> --enable` for a local one. [docs/pages/quickstart.md](docs/pages/quickstart.md) has both. `OXA_ENGINE_URL` names an engine you started yourself (`oxe-server` listens on `http://127.0.0.1:8080`); with no model configured oxa dials nothing and says what to configure, and with a dead address it stops with an error that names it. See [tools and context handling](docs/pages/tools-context.md) for the defaults. For one answer from a script, use print mode:
 
 ```console
 $ oxa -p --tools read,ls "List the files"

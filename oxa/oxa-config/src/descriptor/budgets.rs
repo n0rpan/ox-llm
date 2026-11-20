@@ -89,11 +89,35 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .user_only()
     .widens("Changes the prices used to count spending on discovered models."),
     d(
+        "oxa.cloud.openrouter_provider",
+        Group::Budgets,
+        "",
+        "OpenRouter routing preferences",
+        "Optional zdr (true/false) and data_collection (allow/deny) sent to OpenRouter; unset sends nothing.",
+    )
+    .control(Control::Raw)
+    .apply(Apply::Restart)
+    .web(WebEdit::Confirm)
+    .user_only()
+    .widens("Changes which OpenRouter providers may serve your requests and how they may retain data."),
+    d(
         "oxa.cloud.discovery",
         Group::Budgets,
         "",
         "Discovery endpoints",
         "Base URL per provider when several are configured.",
+    )
+    .control(Control::Raw)
+    .apply(Apply::Restart)
+    .web(WebEdit::ReadOnly)
+    .advanced()
+    .user_only(),
+    d(
+        "oxa.cloud.model_rules",
+        Group::Budgets,
+        "",
+        "Model rules",
+        "Per-model thinking format, reasoning replay, token field and limits.",
     )
     .control(Control::Raw)
     .apply(Apply::Restart)
@@ -124,3 +148,18 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openrouter_provider_preferences_require_restart() {
+        let preferences = ENTRIES
+            .iter()
+            .find(|entry| entry.key == "oxa.cloud.openrouter_provider")
+            .expect("OpenRouter provider preferences descriptor");
+
+        assert_eq!(preferences.apply, Apply::Restart);
+    }
+}

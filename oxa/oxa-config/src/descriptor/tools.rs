@@ -325,7 +325,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(fields_of("oxa.cloud").count(), 8);
+        assert_eq!(fields_of("oxa.cloud").count(), 10);
     }
 
     /// The editor of each schema key matches its kind, and choices name only schema options.
@@ -371,6 +371,7 @@ mod tests {
         for key in [
             "oxa.cloud.models",
             "oxa.cloud.unpriced_discovered_pricing",
+            "oxa.cloud.openrouter_provider",
             "oxa.cloud.discovery",
         ] {
             let descriptor = descriptors()

@@ -487,16 +487,16 @@ fn configure_lane(policy: &mut oxa_work::RunPolicy, root: &Path, env: &Env, dirs
             .check(item)
         }));
     }
+    // Compatibility for an owner-controlled launcher. Agent children authenticate the owner's
+    // answer through the broker instead. Resolved on both paths: a queue launch has no single
+    // question to ask, so its lane tasks would stay unapprovable without this.
+    if env.get("OXA_WORK_OWNER_CONFIRMED") == Some("1") && !agent_launched(env) {
+        policy.push_approved = true;
+    }
     if ask && !policy.push_approved {
         let question = "Lane acceptance will push each accepted commit to origin and wait for lane CI. Type yes to allow pushes for this run: ";
         if let Some(socket) = env.get(oxa_core::owner_confirm::SOCK_ENV) {
-            let preview = format!("{:x}", Sha256::digest(question.as_bytes()));
-            policy.push_approved = oxa_core::owner_confirm::ask(Path::new(socket), question, &preview)
-                .is_ok_and(|answer| answer == oxa_core::owner_confirm::Verdict::Yes);
-        } else if env.get("OXA_WORK_OWNER_CONFIRMED") == Some("1") && !agent_launched(env) {
-            // Compatibility for an owner-controlled launcher. Agent children
-            // authenticate the owner's answer through the broker above.
-            policy.push_approved = true;
+            policy.push_approved = oxa_core::owner_confirm::ask(Path::new(socket), question) == Some(true);
         } else if !agent_launched(env) {
             policy.push_approved = crate::report_cmd::tty_confirm(env)(question) == Some(true);
         }

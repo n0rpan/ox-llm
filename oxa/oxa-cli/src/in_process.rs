@@ -13,7 +13,9 @@ use oxc_gateway::{
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 
+mod catalog;
 mod routing;
+pub(crate) use catalog::cloud_enabled;
 
 pub(crate) const SETTING: &str = "oxa.engine.inProcessCloud";
 pub(crate) const GO_SETTING: &str = "oxa.cloud.opencode.enabled";
@@ -271,6 +273,9 @@ fn select_for(
     shared: SharedEngines,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Selected, OxaError> {
+    // A provider key or the ChatGPT sign-in is the owner's switch: see `catalog`.
+    let keyed_user = catalog::with_keyed_defaults(user, dirs);
+    let user = &*keyed_user;
     let (requested, scope, endpoint, owner_selected, show_status) = match purpose {
         SelectPurpose::Model(selection) => (
             selection.pattern,
@@ -355,7 +360,8 @@ fn select_for(
             let no_other_cloud = user
                 .get("oxa.cloud.models")
                 .is_none_or(|models| models.is_null() || models.as_object().is_some_and(|m| m.is_empty()))
-                && !user.bool("oxa.cloud.discover_models", false);
+                && !user.bool("oxa.cloud.discover_models", false)
+                && user.get("oxa.cloud.recommended_models") == Some(&Value::Bool(false));
             if no_other_cloud && user.get("oxa.cloud.opencode").is_some() {
                 return Err(error.clone());
             }
@@ -374,19 +380,21 @@ fn select_for(
                 .map_or_else(|| go.notice("OpenCode Go", GO_SETTING), ToString::to_string);
             notices.push(notice);
         }
+        let recommended = gateway.recommended_models().clone();
         Ok((
             Arc::new(EmbeddedEngine::from_shared_gateway(gateway)) as Arc<dyn Engine>,
             notices,
             go_failure,
+            recommended,
         ))
     };
     if native_local && native_cloud {
-        let (cloud, catalog_notices, go_failure) = match cloud_engine() {
-            Ok((engine, notices, go_failure)) => (Ok(engine), notices, go_failure),
+        let (cloud, catalog_notices, go_failure, recommended_models) = match cloud_engine() {
+            Ok((engine, notices, go_failure, recommended)) => (Ok(engine), notices, go_failure, recommended),
             Err(error) => {
                 let notice = go_error.unwrap_or(&error).to_string();
                 let notices = if show_status { vec![notice] } else { Vec::new() };
-                (Err(error), notices, None)
+                (Err(error), notices, None, Default::default())
             }
         };
         return routing::Routed {
@@ -394,6 +402,7 @@ fn select_for(
             cloud,
             local_models: aliases("oxa.local.models"),
             cloud_models,
+            recommended_models,
             go_error: go_error.cloned().or(go_failure),
             endpoint: endpoint.to_owned(),
             default: effective.string("defaultModel"),
@@ -425,7 +434,7 @@ fn select_for(
         let resolves_go = selected
             .as_ref()
             .ok()
-            .and_then(|(engine, _, _)| engine.info(None).ok())
+            .and_then(|(engine, _, _, _)| engine.info(None).ok())
             .is_some_and(|info| {
                 if let Some(pattern) = requested {
                     routing::resolve_in_catalog(pattern, endpoint, info.models)
@@ -438,7 +447,7 @@ fn select_for(
             return http().map(|engine| (engine, Vec::new()));
         }
     }
-    let (engine, notices, go_failure) = selected?;
+    let (engine, notices, go_failure, recommended_models) = selected?;
     if let Some(error) = go_failure.filter(|_| go_requested) {
         return Err(error);
     }
@@ -452,6 +461,7 @@ fn select_for(
                 cloud: Ok(engine),
                 local_models: Default::default(),
                 cloud_models,
+                recommended_models,
                 go_error: None,
                 endpoint: endpoint.to_owned(),
                 default: effective.string("defaultModel"),
@@ -464,6 +474,65 @@ fn select_for(
         ));
     }
     Ok((engine, notices))
+}
+
+fn configured_route(alias: &str, value: &Value) -> Result<(Model, Option<Billing>), OxaError> {
+    let (provider, default_endpoint) = match text(value, "provider")? {
+        "anthropic" => (Provider::Anthropic, "https://api.anthropic.com"),
+        "openrouter" => (Provider::OpenRouter, "https://openrouter.ai/api/v1"),
+        "openai" => (Provider::OpenAi, oxc_gateway::openai::client::API_BASE),
+        "chatgpt" => (Provider::ChatGpt, oxc_gateway::openai::client::SUBSCRIPTION_BASE),
+        _ => return Err(OxaError::unsupported("this in-process cloud provider")),
+    };
+    let endpoint = match value.get("base_url") {
+        None => default_endpoint,
+        Some(value) => value.as_str().ok_or_else(invalid)?,
+    };
+    let model = Model::new(
+        alias,
+        provider,
+        text(value, "upstream_model")?,
+        endpoint,
+        limit(value, "context_window")?,
+        limit(value, "max_output")?,
+    )
+    .map_err(|_| invalid())?;
+    let billing = if provider == Provider::ChatGpt {
+        Some(Billing::Subscription)
+    } else {
+        Price::from_model(value).map(Billing::Metered)
+    };
+    Ok((model, billing))
+}
+
+fn recommended_routes(
+    overrides: &serde_json::Map<String, Value>,
+    local_models: Option<&Value>,
+) -> Result<Vec<(Model, Price)>, OxaError> {
+    let catalog: serde_json::Map<String, Value> =
+        serde_json::from_str(include_str!("../../../oxc/docs/cloud-models.json")).map_err(|_| invalid())?;
+    let mut routes = Vec::new();
+    for (alias, mut value) in catalog {
+        if overrides.contains_key(&alias)
+            || local_models.is_some_and(|models| models.get(alias.as_str()).is_some())
+            || !matches!(
+                value["provider"].as_str(),
+                Some("anthropic" | "openai" | "openrouter")
+            )
+        {
+            continue;
+        }
+        // Bundled routes only use the native provider's canonical API base.
+        if let Some(object) = value.as_object_mut() {
+            object.remove("base_url");
+        }
+        let (model, billing) = configured_route(&alias, &value)?;
+        let Some(Billing::Metered(price)) = billing else {
+            return Err(invalid());
+        };
+        routes.push((model, price));
+    }
+    Ok(routes)
 }
 
 #[cfg(feature = "share")]
@@ -485,56 +554,40 @@ fn open_gateway_with_go(
     configure: impl FnOnce(Gateway) -> Result<Gateway, OxaError>,
     go_enabled: Option<bool>,
 ) -> Result<OpenedGateway, OxaError> {
+    let keyed_user = catalog::with_keyed_defaults(user, dirs);
+    let user = &*keyed_user;
     // Shared callers defer key checks until the guest catalog is validated.
     let go_configured = go_enabled == Some(true);
     let empty_cloud = Value::Object(serde_json::Map::new());
     let cloud = match user.get("oxa.cloud") {
         Some(cloud) if cloud.is_object() => cloud,
-        None if go_configured => &empty_cloud,
+        // The recommended models are bundled, so an owner with no cloud setting at all still
+        // has a catalog to open.
+        None => &empty_cloud,
         _ => return Err(invalid()),
     };
     let discover = cloud.get("discover_models") == Some(&Value::Bool(true));
+    let recommended = cloud.get("recommended_models") != Some(&Value::Bool(false));
     let empty = serde_json::Map::new();
     let models = match cloud.get("models") {
-        None | Some(Value::Null) if go_configured || discover => &empty,
+        None => &empty,
+        Some(Value::Null) if go_configured || discover || recommended => &empty,
         Some(value) => value.as_object().ok_or_else(invalid)?,
-        None => return Err(invalid()),
     };
-    if models.is_empty() && !go_configured && !discover {
+    if models.is_empty() && !go_configured && !discover && !recommended {
         return Err(invalid());
     }
-    let mut routes = Vec::with_capacity(models.len());
-    let mut needs_subscription = false;
-    for (alias, value) in models {
-        let (provider, default_endpoint) = match text(value, "provider")? {
-            "anthropic" => (Provider::Anthropic, "https://api.anthropic.com"),
-            "openrouter" => (Provider::OpenRouter, "https://openrouter.ai/api/v1"),
-            "openai" => (Provider::OpenAi, oxc_gateway::openai::client::API_BASE),
-            "chatgpt" => (Provider::ChatGpt, oxc_gateway::openai::client::SUBSCRIPTION_BASE),
-            _ => return Err(OxaError::unsupported("this in-process cloud provider")),
-        };
-        let endpoint = match value.get("base_url") {
-            None => default_endpoint,
-            Some(value) => value.as_str().ok_or_else(invalid)?,
-        };
-        let model = Model::new(
-            alias,
-            provider,
-            text(value, "upstream_model")?,
-            endpoint,
-            limit(value, "context_window")?,
-            limit(value, "max_output")?,
-        )
-        .map_err(|_| invalid())?;
-        let billing = if provider == Provider::ChatGpt {
-            needs_subscription = true;
-            Some(Billing::Subscription)
-        } else {
-            Price::from_model(value).map(Billing::Metered)
-        };
-        routes.push((model, billing));
-    }
-    let (subscription, subscription_limits) = subscription_options(cloud, needs_subscription)?;
+    let routes = models
+        .iter()
+        .map(|(alias, value)| configured_route(alias, value))
+        .collect::<Result<Vec<_>, _>>()?;
+    let needs_subscription = routes
+        .iter()
+        .any(|(_, billing)| matches!(billing, Some(Billing::Subscription)));
+    // The ChatGPT plan's model list needs the sign-in refresh settings too.
+    let signed_in = catalog::signed_in_chatgpt(dirs);
+    let (subscription, subscription_limits) =
+        subscription_options(cloud, needs_subscription || (discover && signed_in))?;
     let cap = match cloud.get("daily_budget_usd") {
         None | Some(Value::Null) => None,
         Some(value) => Some(value.as_f64().ok_or_else(invalid)?),
@@ -544,6 +597,7 @@ fn open_gateway_with_go(
         for (provider, default) in [
             (Provider::OpenRouter, "https://openrouter.ai/api/v1"),
             (Provider::OpenAi, oxc_gateway::openai::client::API_BASE),
+            (Provider::ChatGpt, oxc_gateway::openai::client::SUBSCRIPTION_BASE),
             (Provider::Anthropic, "https://api.anthropic.com"),
         ] {
             let mut configured = routes.iter().filter_map(|(model, _)| {
@@ -559,7 +613,15 @@ fn open_gateway_with_go(
                     first
                 }
             };
-            sources.extend(Source::new(provider, base));
+            // The public metadata catalog fills in only for the provider's own default endpoint:
+            // an owner proxy or local mock keeps every request on that endpoint.
+            sources.extend(Source::new(provider, base).map(|source| {
+                if base == default {
+                    source
+                } else {
+                    source.with_metadata_base(None)
+                }
+            }));
         }
     }
     // These existing private locations are denied to both file tools and bash.
@@ -585,6 +647,16 @@ fn open_gateway_with_go(
                 .with_unpriced_discovered_pricing(pricing)
                 .map_err(|e| OxaError::new(e.code, e.message))?;
         }
+    }
+    if let Some(rules) = cloud.get("model_rules") {
+        runtime = runtime
+            .with_model_rules(rules)
+            .map_err(|e| OxaError::new(e.code, e.message))?;
+    }
+    if let Some(provider) = cloud.get("openrouter_provider").filter(|v| !v.is_null()) {
+        runtime = runtime
+            .with_openrouter_provider(provider)
+            .map_err(|e| OxaError::new(e.code, e.message))?;
     }
     if let Some(diagnostics) = diagnostics {
         runtime = runtime.with_diagnostics(diagnostics);
@@ -612,8 +684,14 @@ fn open_gateway_with_go(
                 }
                 if status.missing_price + status.missing_limits > 0 {
                     notices.push(format!(
-                        "{provider} catalog omitted {} offers with unknown pricing and {} with unknown limits.",
+                        "{provider} catalog has {} offers with unknown pricing and {} with unknown limits; they stay usable, with default limits, and their spend is recorded as uncertain.",
                         status.missing_price, status.missing_limits,
+                    ));
+                }
+                if status.public_metadata > 0 {
+                    notices.push(format!(
+                        "{provider} limits and prices for {} models come from OpenRouter's public catalog.",
+                        status.public_metadata,
                     ));
                 }
                 if status.estimated_price > 0 {
@@ -639,6 +717,24 @@ fn open_gateway_with_go(
             Err(error) if gateway.discovery().next().is_some() => go_failure = Some(error),
             Err(error) => return Err(error),
         }
+    }
+    // Keep live discovery and guest validation based on explicitly configured routes.
+    // Recommendations fill unused owner aliases without a network call.
+    if recommended {
+        let local_models = if user.bool(oxc_local::LOCAL_SETTING, false) {
+            user.get("oxa.local.models")
+        } else {
+            None
+        };
+        gateway
+            .add_recommended_models(recommended_routes(models, local_models)?)
+            .map_err(|e| {
+                let refusal = e.refusal();
+                OxaError::new(refusal.code, e.to_string())
+            })?;
+    }
+    if models.is_empty() && !go_enabled && !discover && gateway.discovery().next().is_none() {
+        return Err(invalid());
     }
     let gateway = Arc::new(gateway);
     if refresh_go.is_some() || !refresh_cloud.is_empty() {

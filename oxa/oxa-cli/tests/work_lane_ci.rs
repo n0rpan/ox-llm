@@ -409,6 +409,67 @@ fn an_agent_process_can_use_the_owner_confirm_broker() {
 }
 
 #[test]
+fn a_queue_launch_approves_lane_tasks_from_the_owner_environment() {
+    let env = TestEnv::new();
+    setup(&env, r#"["true"]"#);
+    // A lane task arrives through the queue directory, not a task file: the queue
+    // path never reaches the interactive ask, so only the owner-controlled
+    // environment can approve its pushes.
+    env.write(
+        "work/queue/lane.json",
+        r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"Finish task","lane_ci":true}]"#,
+    );
+    let path = configure(&env);
+    let server = oxa_fake::FakeServer::start(edits(), oxa_fake::FakeOpts::default()).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args([
+            "work",
+            "--queue",
+            "../queue",
+            "--max",
+            "1",
+            "--min-free-mib",
+            "0",
+            "--once",
+        ])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .env("PATH", path)
+        .env("OXA_WORK_OWNER_CONFIRMED", "1");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(command.output().unwrap());
+    });
+    let out = rx
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("queue finished");
+    let events: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    let task = events
+        .iter()
+        .find(|row| row["event"] == "task")
+        .expect("one task event");
+    assert_eq!(
+        task["outcome"], "done",
+        "the queue's approved lane task should complete: {task}"
+    );
+    assert!(
+        !task["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("push confirmation"),
+        "the queue's lane task was refused for a missing push confirmation: {task}"
+    );
+    assert!(
+        !server.requests().is_empty(),
+        "the approved lane task started its worker and reached the model"
+    );
+}
+
+#[test]
 fn a_lane_task_without_owner_push_approval_runs_its_local_checks_but_is_never_done() {
     let env = TestEnv::new();
     setup(&env, r#"["true"]"#);

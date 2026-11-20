@@ -128,6 +128,7 @@ pub struct Session {
     pub(crate) st: SessionState,
     /// O-152: the boot preload ran (or was skipped) for the session entered last.
     preloaded: bool,
+    startup_limit: Option<Box<dyn Send>>,
 }
 
 /// The CLI-level choices of [`Session::open`]. `None` in [`enter`] means a switch inside a
@@ -313,7 +314,11 @@ impl Session {
         let mut sink = VecSink::default();
         let mut ui = HeadlessUi::default();
         enter(&mut st, how, Some(&cli), &mut sink, &mut ui)?;
-        let session = Session { st, preloaded: false };
+        let session = Session {
+            st,
+            preloaded: false,
+            startup_limit: None,
+        };
         session.bind_jobs_owner();
         sync_job_wake(&session.st);
         // The hook is always installed: `wake_job` asks the live setting, which a reload updates.
@@ -571,6 +576,7 @@ impl Session {
         let mut ui = HeadlessUi::default();
         let r = crate::fork_at(&mut self.st, entry, &mut ui);
         if r.is_ok() {
+            drop(self.startup_limit.take());
             self.st.jobs.reset();
             self.bind_jobs_owner();
         }
@@ -583,6 +589,7 @@ impl Session {
         let mut ui = HeadlessUi::default();
         let r = crate::clone_current(&mut self.st, &mut ui);
         if r.is_ok() {
+            drop(self.startup_limit.take());
             self.st.jobs.reset();
             self.bind_jobs_owner();
         }
@@ -599,6 +606,7 @@ impl Session {
         crate::fire::session_shutdown(&mut self.st, reason, target.as_deref(), sink, ui);
         self.st.jobs.reset();
         enter(&mut self.st, how, None, sink, ui)?;
+        drop(self.startup_limit.take());
         self.bind_jobs_owner();
         self.preloaded = false;
         Ok(())
@@ -705,6 +713,14 @@ impl Session {
     pub fn reload(&mut self, sink: &mut dyn EventSink, ui: &mut dyn Ui) -> Result<bool, OxaError> {
         self.ensure_idle()?;
         crate::reload(&mut self.st, sink, ui)
+    }
+
+    /// Bring the prefix in line with this Session's tool selection: a resumed session replays the
+    /// prefix it stored, so a tool the session did not declare then (or one it no longer offers)
+    /// only changes on a new epoch. Returns `true` when one was opened; nothing changed otherwise.
+    pub fn sync_tools(&mut self, sink: &mut dyn EventSink) -> Result<bool, OxaError> {
+        self.ensure_idle()?;
+        crate::open_epoch(&mut self.st, "tools", false, sink)
     }
 
     /// `!cmd` (`excluded = false`) / `!!cmd` (`true`).
@@ -906,10 +922,16 @@ impl Session {
         &self.st
     }
 
+    /// Keep the startup limit armed until this session closes or switches files.
+    pub fn hold_startup_limit(&mut self, limit: impl Send + 'static) {
+        self.startup_limit = Some(Box::new(limit));
+    }
+
     /// Leave this session without stopping the hook sets: fire `SessionShutdown` and drop the
     /// host. For a front end that replaces the session object by another one built from the
     /// same hook sets (`/new`, `/resume`, fork): the new session attaches its own host.
     pub fn close(&mut self, ui: &mut dyn Ui) {
+        drop(self.startup_limit.take());
         crate::progress::notify(&self.st, crate::Progress::Closing);
         let mut sink = VecSink::default();
         observe_hooks(
@@ -1803,6 +1825,8 @@ pub(crate) fn attach_ids(st: &mut SessionState) {
     st.jobs.set_owner(&id);
     st.spill_dir = st.dirs.tmp_dir.join(&id);
     st.policy.set_spill_dir(&st.spill_dir);
+    // #1512 S5: the approval desk files requests for this session id.
+    st.policy.set_session_id(&id);
     // Fork/clone history still names its ancestors' spills, even after those sessions are
     // deleted. Follow trusted live/retained headers, never paths suggested by tool/model text.
     let inherited = oxa_session::inherited_spill_dirs(st.store.as_ref(), &st.dirs.tmp_dir, &st.sref);
