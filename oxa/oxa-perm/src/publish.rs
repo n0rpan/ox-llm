@@ -238,6 +238,11 @@ fn git_globals(rest: &[String]) -> (usize, Vec<String>, bool) {
                 opaque = true;
             }
             k += 2;
+        } else if a.starts_with("--config-env=") {
+            // Unlike most `--option=value` spellings this value is not just an
+            // argument: Git reads the named variable and installs it as config.
+            opaque = true;
+            k += 1;
         } else if matches!(
             a,
             "-c" | "--config-env" | "--git-dir" | "--work-tree" | "--namespace"
@@ -841,5 +846,5 @@ fn is_alias(globals: &[String], name: &str, cwd: &Path, dirs: &[String]) -> bool
             return true;
         }
     }
-    names.iter().any(|n| *n == name)
+    names.contains(&name)
 }
