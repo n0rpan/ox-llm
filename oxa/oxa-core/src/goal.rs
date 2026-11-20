@@ -350,6 +350,12 @@ impl GoalRuntime {
             && state.goal.status == GoalStatus::Pursuing;
         (state.goal.clone(), noted)
     }
+    /// Pause a pursuing goal whose controls the tool selection removed; returns the saved goal.
+    pub(crate) fn pause_because(&self, reason: &str) -> Goal {
+        let mut state = self.lock();
+        state.goal.pause_because(reason);
+        state.goal.clone()
+    }
     pub(crate) fn note_tools(&self) {
         self.lock().goal.idle_stops = 0;
     }
@@ -742,6 +748,9 @@ pub(crate) fn checkpoint(
     }
     Ok(())
 }
+/// The pause reason when a pursuing goal has no `goal_done` in the tool selection.
+pub(crate) const CONTROLS_MISSING: &str =
+    "goal_done is not in this session's tool selection; add goal_done to --tools or defaultTools";
 pub(crate) fn save_checkpoint(
     st: &mut crate::SessionState,
     goal: &Goal,

@@ -41,6 +41,7 @@ In a headless run (`-p`, `--mode json`) with the output diet on, the prompt adds
 | `defaultTools` setting | the list of tools on by default. Names may include `subagent`, `web_search`, `codemode` and `tool_search`, and a list can be patched with `+name` and `-name` |
 
 With the output diet on (the default) the rules also tell the model to run the project's own checks before it calls a task done (when `bash` is on), and to use `wait` instead of polling (whenever `wait` is declared, which is every session unless `oxa.tools.wait` is `false`). `wait` takes seconds, and optionally `until` `ci`, `pr_merged`, `job_done` (a background bash job id) or a GitHub read probe; a message the owner types ends it early.
+A resumed session (`--continue`, `--resume`, `/resume`) keeps `wait` and, for a goal that is pursuing, `goal_done`, without opening a new prefix epoch. If a goal is pursuing but the tool selection (`--tools`, `defaultTools`) removed `goal_done`, the goal pauses with that reason instead of repeating a continue instruction the model cannot follow; add `goal_done` to the selection, then `/goal resume`.
 
 Examples:
 

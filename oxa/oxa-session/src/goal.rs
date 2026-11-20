@@ -183,6 +183,13 @@ impl Goal {
             self.pause_reason = None;
         }
     }
+    /// Pause with a reason the owner sees (the goal cannot go on until they act).
+    pub fn pause_because(&mut self, reason: &str) {
+        if self.status == GoalStatus::Pursuing {
+            self.status = GoalStatus::Paused;
+            self.pause_reason = Some(reason.into());
+        }
+    }
     pub fn resume(&mut self) -> Result<(), OxaError> {
         if self.is_terminal() || self.exhausted() {
             return Err(invalid());

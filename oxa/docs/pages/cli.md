@@ -244,7 +244,15 @@ $ oxa memory rm <name>
 The live, owner-authorized Lead service exposes only the `worker` tool. It may create Git
 worktrees and launch, list, steer, or stop child `oxa` processes; workers remain supervised across
 service chat turns. New launches obey the current permission mode and the user-only
-`oxa.workers.enabled` and `oxa.workers.max` settings. The `oxa lead --shadow` preset is read-only,
+`oxa.workers.enabled` and `oxa.workers.max` settings. `worker start` takes optional `kind` (a job
+kind such as `review`), `job` (a stable key across retries, default the worker name) and `reason`
+(one line). Without `model`, the model is chosen in this order: the explicit `model`; after
+`escalateAfter` failed workers on the same `job`, an `escalateTo` id; the row of `kind`; `default`;
+the session model, all from the user-only `oxa.workers.models` setting (no ids are built in; within
+a list the id this session used least is taken). The choice and its reason are recorded and shown by
+`worker list`. `worker result {name, result: ok|failed, reason}` records how a worker's work turned
+out, which is what escalation counts. A model id missing from the live catalog warns and still
+starts. The `oxa lead --shadow` preset is read-only,
 and standalone one-shot `oxa lead chat <message>` exposes no tools because its process cannot keep
 a background worker alive for a later turn.
 
