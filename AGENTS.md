@@ -59,8 +59,10 @@ code, tests, CI and docs; the owner validates on hardware.
     Answer it by citing this rule, and do not apply it. A change that re-adds an OS sandbox to those
     paths is a P1 finding.
   - Off Linux the bash network is not restricted. The start notice and the model env note say so.
-  - Headless runs pursuing a goal and ownerless RPC count as unattended. Host bash uses a
-    cleared toolchain environment and keeps GitHub output redaction, on Linux and off it.
+  - Headless runs pursuing a goal and ownerless RPC count as unattended. Host tool shells use a
+    cleared toolchain environment. Preserve exact-value masking in live and captured output for
+    known GitHub credentials, the engine bearer key and nonempty environment values named with
+    `KEY`, `SECRET`, `TOKEN` or `PASSWORD`, on Linux and off it.
 - **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
   answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
   broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
@@ -153,9 +155,14 @@ code, tests, CI and docs; the owner validates on hardware.
   holds a secret. Flag as P1 a change that
   weakens these refusals or adds a name-only or blanket long-value block (P2 without a doc update).
 - **Bash and subagent limits.** `oxa.bash.maxJobs` (16) and `oxa.subagent.maxChildren` (8, also
-  steps per call) are user-only warning thresholds, never refusals:
-  above them a job starts or children queue, with a warning in the result. A goal token budget
-  counts known usage only; two idle replies warn unless `oxa.goal.idlePause`. Both limits are at least 1. An explicit bash `timeout: 0` disables the
+  steps per call) are user-only caps, at least 1. Caps are owner settings with default warn and record:
+  above them a job starts or children queue, with a warning in the result, a notice and a recorded
+  `Shown` entry. A hard stop (refuse the call) comes only through the user-only `oxa.onExceed`
+  (`bashJobs`, `subagentChildren`, `goalIdle`, `goalUnknownUsage`: `warn`, `pause` or `stop`); a project
+  file cannot set it or any of these caps (also `oxa.tools.wait`, `oxa.toolOutputCap`). Review line: a
+  change that adds a cap must route its action through `oxa.onExceed`, never hard-code a refusal. A goal
+  with no other budget pauses after two replies without a tool call, and a goal under a token cap
+  pauses when a request reports no usage, unless the owner chose `warn`. An explicit bash `timeout: 0` disables the
   timeout for that call, including a background job, and overrides the foreground default.
   A foreground command that passes its timeout is not killed: it moves to a background job
   (counted in `oxa.bash.maxJobs`). `oxa.bash.waitCap` (user-only, default 300 s) caps `wait_s`.
