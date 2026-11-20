@@ -210,3 +210,48 @@ async fn a_second_token_expired_reply_is_not_retried_again() {
     assert_eq!(backend.requests().len(), 2);
     assert_eq!(refresher.requests().len(), 1);
 }
+
+#[tokio::test]
+async fn a_reply_echoing_the_token_of_an_earlier_attempt_is_refused() {
+    // The stored token is already expired locally, so attempt 1 refreshes it (retiring the
+    // stored one); the backend then says token_expired for the refreshed token, attempt 2 refreshes
+    // again, and the final reply echoes the first refreshed token.
+    let (_home, path) = Home::new("echo-earlier");
+    let past = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - 10;
+    fs::write(
+        &path,
+        json!({"access_token":TOKEN,"refresh_token":"synthetic-refresh","account_id":"synthetic-account","expires_at":past})
+            .to_string(),
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let refresher = MockOpenAi::start(vec![
+        Reply::json(
+            json!({"access_token":"synthetic-first-access","refresh_token":"synthetic-first-refresh","expires_in":3600}),
+        ),
+        Reply::json(
+            json!({"access_token":"synthetic-second-access","refresh_token":"synthetic-second-refresh","expires_in":3600}),
+        ),
+    ]);
+    let backend = MockOpenAi::start(vec![
+        Reply::error(401, "token_expired", "synthetic expiry"),
+        Reply::json(json!({"models":[{"slug":"synthetic-first-access"}]})),
+    ]);
+    let endpoint = refresher.base_url();
+    let refresh = Refresh {
+        endpoint: &endpoint,
+        client_id: "synthetic-client",
+        timeout: Duration::from_secs(2),
+    };
+    let result = Client::new()
+        .unwrap()
+        .plan_models(
+            &backend.base_url(),
+            &path,
+            "synthetic-account",
+            refresh,
+            Duration::from_secs(5),
+        )
+        .await;
+    assert!(matches!(result, Err(client::Error::Protocol)));
+}

@@ -263,7 +263,9 @@ impl Client {
         tokio::time::timeout(timeout, async {
             // A 401 `token_expired` refreshes once through the locked path and retries once.
             let mut rejected: Option<String> = None;
-            let (record, retired, response) = loop {
+            // Every credential used or retired across both attempts: the reply may echo none.
+            let mut seen: Vec<String> = Vec::new();
+            let response = loop {
                 let (record, retired) = self
                     .credentials(
                         token_path,
@@ -277,6 +279,12 @@ impl Client {
                         rejected.as_deref(),
                     )
                     .await?;
+                seen.extend(retired);
+                seen.extend([
+                    record.access_token().to_owned(),
+                    record.refresh_token().to_owned(),
+                    record.account_id().to_owned(),
+                ]);
                 let mut bearer = HeaderValue::from_str(&format!("Bearer {}", record.access_token()))
                     .map_err(|_| Error::Credentials)?;
                 bearer.set_sensitive(true);
@@ -298,7 +306,7 @@ impl Client {
                     }
                     return Err(Error::SignedOut);
                 }
-                break (record, retired, response);
+                break response;
             };
             let status = response.status().as_u16();
             if status == 401 || status == 403 {
@@ -317,11 +325,7 @@ impl Client {
             )
             .await?;
             let body: Value = serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
-            for secret in retired.iter().map(String::as_str).chain([
-                record.access_token(),
-                record.refresh_token(),
-                record.account_id(),
-            ]) {
+            for secret in &seen {
                 if crate::redaction::contains_secret(&body, secret) {
                     return Err(Error::Protocol);
                 }
