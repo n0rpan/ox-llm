@@ -30,7 +30,6 @@ use oxa_rpc::{
     confirm_before_start, run_json_outcome_with_inbox, run_print_outcome_with_inbox, serve_outcome_gated, Out,
 };
 use oxa_sandbox::Bwrap;
-#[cfg(target_os = "linux")]
 use oxa_sandbox::NoSandbox;
 use oxa_session::{decode_entry, decode_header, FsStore, MemStore, SessionStore, Tree};
 use std::io::{BufReader, Read, Write};
