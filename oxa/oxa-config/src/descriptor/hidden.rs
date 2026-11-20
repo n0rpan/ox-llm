@@ -91,6 +91,16 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     )
     .key(Kind::Number, "300")
     .hidden(),
+    // An idle goal (replies without a tool call): the first wait after the nudge; `0` opts out.
+    d(
+        "oxa.goal.idleBackoffSeconds",
+        Group::Advanced,
+        "",
+        "oxa.goal.idleBackoffSeconds",
+        "",
+    )
+    .key(Kind::Number, "60")
+    .hidden(),
     d(
         "oxa.goal.idlePause",
         Group::Advanced,
@@ -99,6 +109,19 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "",
     )
     .key(Kind::Bool, "false")
+    .hidden(),
+    // The finish decision: one nudge turn per open fact before a run or goal ends.
+    d("oxa.done.proveIt", Group::Advanced, "", "oxa.done.proveIt", "")
+        .key(Kind::Bool, "false")
+        .hidden(),
+    d(
+        "oxa.done.waitForJobs",
+        Group::Advanced,
+        "",
+        "oxa.done.waitForJobs",
+        "",
+    )
+    .key(Kind::Bool, "true")
     .hidden(),
     // V020-OPTIMIZE #1 / #2: unset = on.
     // The per-prompt environment note (date, time, runtime facts): unset = on.

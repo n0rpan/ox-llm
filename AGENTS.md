@@ -166,7 +166,9 @@ code, tests, CI and docs; the owner validates on hardware.
   file cannot set it or any of these caps (also `oxa.tools.wait`, `oxa.toolOutputCap`). Review line: a
   change that adds a cap must route its action through `oxa.onExceed`, never hard-code a refusal. A goal
   with no other budget pauses after two replies without a tool call, and a goal under a token cap
-  pauses when a request reports no usage, unless the owner chose `warn`. An explicit bash `timeout: 0` disables the
+  pauses when a request reports no usage, unless the owner chose `warn`. A goal that only warns on
+  idle (a budget of its own, or `warn`) gets one nudge and then waits between requests
+  (`oxa.goal.idleBackoffSeconds`, default 60, doubling, `0` off). An explicit bash `timeout: 0` disables the
   timeout for that call, including a background job, and overrides the foreground default.
   A foreground command that passes its timeout is not killed: it moves to a background job
   (counted in `oxa.bash.maxJobs`). `oxa.bash.waitCap` (user-only, default 300 s) caps `wait_s`.
