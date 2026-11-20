@@ -79,8 +79,6 @@ pub struct Shared {
     pub cancel_retry: CancelToken,
     /// Wakes a running `wait` tool when input for the active session arrives (reset per wait).
     pub wait_wake: CancelToken,
-    /// `Some` only while a pursuing goal is waiting between failed requests.
-    pub(crate) backoff_model: Mutex<Option<Option<String>>>,
     /// `true` while `prompt` is running.
     pub busy: std::sync::atomic::AtomicBool,
     pub modes: Mutex<(QueueMode, QueueMode)>,
@@ -151,6 +149,8 @@ impl WrapUpReason {
 ///   the session and has not armed `bg_cancel` yet would otherwise miss the cancel).
 #[derive(Debug, Default)]
 pub struct Gate {
+    /// `Some` only while a pursuing goal is waiting between failed requests.
+    pub(crate) backoff_model: Mutex<Option<Option<String>>>,
     /// Set when an in-request retry wait consumed `cancel_retry`, so an outer goal recovery
     /// does not restart the request the owner just stopped.
     pub(crate) retry_stopped: std::sync::atomic::AtomicBool,
@@ -405,7 +405,6 @@ impl Shared {
             cancel: CancelToken::new(),
             cancel_retry: CancelToken::new(),
             wait_wake: CancelToken::new(),
-            backoff_model: Mutex::new(None),
             busy: std::sync::atomic::AtomicBool::new(false),
             modes: Mutex::new((steering, follow_up)),
             dirty: std::sync::atomic::AtomicBool::new(false),
@@ -578,7 +577,7 @@ impl Handle {
 
     /// Offer an explicit model choice to the currently waiting goal, never a later run.
     pub fn select_model_during_backoff(&self, model: &str) -> bool {
-        let mut waiting = lock(&self.shared.backoff_model);
+        let mut waiting = lock(&self.shared.gate.backoff_model);
         let Some(choice) = waiting.as_mut() else {
             return false;
         };

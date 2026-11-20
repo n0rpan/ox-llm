@@ -379,7 +379,7 @@ fn run_inner(
                         )?;
                         let shared = st.shared.clone();
                         shared.wait_wake.reset();
-                        *crate::queue::lock(&shared.backoff_model) = Some(None);
+                        *crate::queue::lock(&shared.gate.backoff_model) = Some(None);
                         sink.emit(&AgentEvent::Notice {
                             level: Level::Info,
                             text,
@@ -396,7 +396,7 @@ fn run_inner(
                                     remaining
                                 },
                             );
-                            let mut waiting = crate::queue::lock(&shared.backoff_model);
+                            let mut waiting = crate::queue::lock(&shared.gate.backoff_model);
                             let model = waiting.take().flatten();
                             shared.wait_wake.reset();
                             drop(waiting);
@@ -442,7 +442,7 @@ fn run_inner(
                                 });
                                 break;
                             }
-                            *crate::queue::lock(&shared.backoff_model) = Some(None);
+                            *crate::queue::lock(&shared.gate.backoff_model) = Some(None);
                         }
                         continue;
                     }
