@@ -79,6 +79,34 @@ fn opaque_value(value: &str) -> bool {
             .any(|ch| ch.is_ascii_digit() || !(ch.is_alphabetic() || matches!(ch, '_' | '.' | ':')))
 }
 
+/// Whether a key names a file location (`CLIENT_SECRET_FILE`, `ssl.key.path`, `tokenDir`,
+/// `GOOGLE_APPLICATION_CREDENTIALS`) rather than a secret value. Only such keys may hold a
+/// relative file path; `PASSWORD`, `SECRET`, `TOKEN`, `API_KEY`, `SIGNING_KEY` and a bare
+/// `CREDENTIALS` hold the secret itself, so a path-shaped value under them is refused.
+fn file_location_key(name: &str) -> bool {
+    let name = name.trim_matches(['"', '\'']);
+    if name.eq_ignore_ascii_case("google_application_credentials") {
+        return true;
+    }
+    let lower = name.to_ascii_lowercase();
+    let separated = ["file", "path", "dir", "directory"].iter().any(|word| {
+        lower
+            .strip_suffix(word)
+            .is_some_and(|head| head.ends_with(['_', '-', '.']))
+    });
+    let camel = ["File", "Path", "Dir", "Directory"].iter().any(|word| {
+        name.strip_suffix(word)
+            .is_some_and(|head| head.ends_with(|ch: char| ch.is_ascii_lowercase() || ch.is_ascii_digit()))
+    });
+    separated || camel
+}
+
+/// A path-shaped value that is allowed under this key: a relative file path under a key that
+/// names a file location.
+fn location_value(name: &str, value: &str) -> bool {
+    file_location_key(name) && relative_file_path(value)
+}
+
 /// A relative file path such as `config/service-account.json`: path characters only, a `/`,
 /// no URL scheme and a file extension on the last segment. Base64 never holds a `.`, so an
 /// encoded credential is not mistaken for one.
@@ -194,14 +222,14 @@ fn environment_secret_assignment(text: &str) -> bool {
     ASSIGNMENT
         .get_or_init(|| {
             regex::Regex::new(concat!(
-                r"(?i)(?:^|[^A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*",
+                r"(?i)(?:^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*",
                 r"(?:password|passwd|passphrase|secret|token|api_?key|access_?key)",
-                r"[A-Za-z0-9_]*\s*=\s*([^\s#]+)"
+                r"[A-Za-z0-9_]*)\s*=\s*([^\s#]+)"
             ))
             .expect("environment secret assignment pattern")
         })
         .captures_iter(text)
-        .any(|found| opaque_value(&found[1]) && !relative_file_path(&found[1]))
+        .any(|found| opaque_value(&found[2]) && !location_value(&found[1], &found[2]))
 }
 
 /// An assignment (`NAME=value`, `name: value`, `"name": "value"`) whose name ends in a
@@ -214,18 +242,18 @@ fn key_named_assignment(text: &str) -> bool {
     KEYED
         .get_or_init(|| {
             regex::Regex::new(concat!(
-                r#"(?i)(?:^|[^a-z0-9_.-])["']?[a-z0-9_.-]*(?:[_.-]key|credentials?)["']?\s*[:=]\s*"#,
+                r#"(?i)(?:^|[^a-z0-9_.-])["']?([a-z0-9_.-]*(?:[_.-]key|credentials?))["']?\s*[:=]\s*"#,
                 r#"["']?([^\s"'#,;]+)"#
             ))
             .expect("key-named assignment pattern")
         })
         .captures_iter(text)
         .any(|found| {
-            let value = found[1].trim();
+            let value = found[2].trim();
             value.chars().count() >= MIN_KEY_VALUE_CHARS
                 && opaque_value(value)
                 && !value.starts_with(['/', '~', '.'])
-                && !relative_file_path(value)
+                && !location_value(&found[1], value)
                 && !value.contains("://")
         })
 }
@@ -255,13 +283,13 @@ fn prefixed_assignment(text: &str) -> bool {
     PREFIXED
         .get_or_init(|| {
             regex::Regex::new(concat!(
-                r#"(?i)(?:^|[^a-z0-9_])["']?[a-z0-9_.-]*(?:api[_-]?key|access[_-]?token|auth[_-]?token"#,
-                r#"|refresh[_-]?token|token|secret|password|passwd|passphrase)[a-z0-9_.-]*["']?\s*[:=]\s*["']?([^\s"'#,;]+)"#
+                r#"(?i)(?:^|[^a-z0-9_])["']?([a-z0-9_.-]*(?:api[_-]?key|access[_-]?token|auth[_-]?token"#,
+                r#"|refresh[_-]?token|token|secret|password|passwd|passphrase)[a-z0-9_.-]*)["']?\s*[:=]\s*["']?([^\s"'#,;]+)"#
             ))
             .expect("prefixed assignment pattern")
         })
         .captures_iter(text)
-        .any(|found| opaque_value(found[1].trim()) && !relative_file_path(&found[1]))
+        .any(|found| opaque_value(found[2].trim()) && !location_value(&found[1], &found[2]))
 }
 
 /// A PuTTY private key is a line-oriented format, not PEM: `PuTTY-User-Key-File-N` and
@@ -455,9 +483,7 @@ impl PushScan {
         // The scrubber's keyed, `Bearer ..` and URL-credential patterns, which catch
         // an opaque credential copied from a project file that no configured value matches.
         let value_of = |text: &str| text.split_whitespace().last().unwrap_or_default().to_string();
-        if p.keyed
-            .captures_iter(text)
-            .any(|found| opaque_value(&found[2]) && !relative_file_path(&found[2]))
+        if p.keyed.captures_iter(text).any(|found| opaque_value(&found[2]))
             || quoted_secret_literal(text)
             || environment_secret_assignment(text)
             || prefixed_assignment(text)
@@ -756,9 +782,11 @@ mod tests {
         );
         for text in [
             "GOOGLE_APPLICATION_CREDENTIALS=config/service-account.json",
-            "SIGNING_KEY=secrets/dev/signing-key.pem",
+            "SIGNING_KEY_FILE=secrets/dev/signing-key.pem",
+            "service.tls.keyPath: certs/prod/tls.key",
+            "SECRETS_DIR=secrets/dev/store.d",
             "CLIENT_SECRET_FILE=conf/oauth/client-secret.json",
-            "service_secret: certs/prod/tls.key",
+            "service_secret_path: certs/prod/tls.key",
         ] {
             assert!(scan.check(&added(".env.example", text)).is_none(), "{text}");
             assert!(
@@ -771,6 +799,26 @@ mod tests {
             "GOOGLE_APPLICATION_CREDENTIALS=abcdEFGH1234ijklMNOP5678",
         ] {
             assert!(scan.check(&added(".env.example", text)).is_some(), "{text}");
+        }
+        // A path-shaped value under a key that names the secret itself is still a credential.
+        for text in [
+            "PASSWORD=abc/def.txt",
+            "DB_PASSWORD=abc/def.txt",
+            "SECRET=abc/def.txt",
+            "CLIENT_SECRET=abc/def.txt",
+            "API_TOKEN=abc/def.txt",
+            "token: abc/def.txt",
+            "API_KEY=abc/def.txt",
+            "SIGNING_KEY=secrets/dev/signing-key.pem",
+            "PRIVATE_KEY=abc/def-ghi-jkl.pem",
+            "DB_CREDENTIALS=abc/def-ghi-jkl.txt",
+            "passwd=abc/def.txt",
+        ] {
+            assert!(scan.check(&added(".env.example", text)).is_some(), "{text}");
+            assert!(
+                scan.check(&added("deploy/app/.env.example", text)).is_some(),
+                "{text}"
+            );
         }
     }
 
