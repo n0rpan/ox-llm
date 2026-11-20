@@ -9,6 +9,7 @@
 //! a terminal and without `--yes`.
 use crate::dispatch::{default_endpoint, engine_for};
 use oxa_config::{dirs_from_env, Dirs, Env, ModelsConfig, Settings};
+use oxa_perm::ApprovalDesk;
 use oxa_proto::{codes, Engine, OxaError};
 use oxa_session::{
     purge_session_file, remove_all_spill, remove_inbox, remove_spill_dir, session_files_under, SessionHeader,
@@ -113,6 +114,13 @@ fn matching_ids(query: &str, ids: &BTreeSet<String>) -> Vec<String> {
     ids.iter().filter(|id| id.starts_with(query)).cloned().collect()
 }
 
+/// Remove the approval records of `session`, or every record when there is no session. One
+/// session's records or all of them, never another session's.
+fn forget_approvals(dirs: &Dirs, session: Option<&str>) -> Result<usize, OxaError> {
+    ApprovalDesk::wipe(&dirs.agent_dir, session)
+        .map_err(|e| OxaError::io("cannot remove approval records", &e))
+}
+
 /// `--session <id>`: remove that session's files and spill directory.
 fn wipe_one(
     query: &str,
@@ -169,6 +177,10 @@ fn wipe_one(
         .collect();
     let inbox_files = remove_inbox(&dirs.agent_dir, Some(&id))?;
     let _ = writeln!(out, "removed {inbox_files} inbox file(s) for session {id}");
+    // Approval requests hold the command, its working directory and the session id: a wiped
+    // session keeps no copy of them.
+    let approvals = forget_approvals(dirs, Some(&id))?;
+    let _ = writeln!(out, "removed {approvals} approval record(s) for session {id}");
     for path in &files {
         purge_session_file(path)?;
         let _ = writeln!(out, "removed session file {}", path.display());
@@ -254,6 +266,8 @@ fn wipe_all(plan: &Plan, dirs: &Dirs, sessions: &Path, env: &Env, io: WipeIo<'_>
 
     let inbox_files = remove_inbox(&dirs.agent_dir, None)?;
     let _ = writeln!(out, "removed {inbox_files} inbox file(s)");
+    let approvals = forget_approvals(dirs, None)?;
+    let _ = writeln!(out, "removed {approvals} approval record(s)");
     let mut ids = Vec::new();
     let mut parents = BTreeSet::new();
     for (path, header) in &sessions_found {

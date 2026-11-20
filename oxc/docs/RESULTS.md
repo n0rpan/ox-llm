@@ -83,7 +83,7 @@ The 14 GiB rows (063) and the 16/18 GiB rows (G3′) use different protocols and
 | 18 GiB beside OpenCode | host fell to 0.95 GiB, guard stopped the task | [M G3′] |
 | Load-time admission need, 14 / 16 / 18 / 20 GiB tiers | 24.1 / 26.1 / 28.1 / 30.1 GiB free (cache + measured overhead + 0.8 GiB harness growth + 1 GiB floor) | [D F118] |
 
-Later [FLASH-PREFIX-2 is INSTALLED_O43b with accepted timing exceptions](FLASH-PREFIX-2.md). Its one-pair 19.343× gain concerns prefill only; both original raw FAILs, the installed chat/context timing FAIL, cancel recovery below 5 seconds and historical R0 guard stop remain explicit. FP-SHORTLAT targets a ≤50 ms short-fixture delta in v0.1.2.
+Later FLASH-PREFIX-2 is INSTALLED_O43b with accepted timing exceptions. Its one-pair 19.343× gain concerns prefill only; both original raw FAILs, the installed chat/context timing FAIL, cancel recovery below 5 seconds and historical R0 guard stop remain explicit. FP-SHORTLAT targets a ≤50 ms short-fixture delta in v0.1.2.
 
 ### 3.2 Ornith-1.5-35B-A3B (default) and Qwen3.6-35B-A3B on `oxe`
 
@@ -171,7 +171,7 @@ There is still **no single matched "stock upstream → today" run**. The ladder 
 
 ## 5. Compared with Apple Silicon
 
-**No matched measurement exists.** The rules a Mac row must meet: same model file (SHA256) and prompt token ids; same day, ≥3 warm runs per side; a stock baseline on each machine (pinned upstream llama.cpp) plus the Mac's usual best stack, named and pinned; decode and prefill separately; context, threads, power and thermal state stated; receipt and command in the repository. [`tools/mac_reproduce.py`](../tools/mac_reproduce.py) does this; it has not yet run on a Mac.
+**No matched measurement exists.** The rules a Mac row must meet: same model file (SHA256) and prompt token ids; same day, ≥3 warm runs per side; a stock baseline on each machine (pinned upstream llama.cpp) plus the Mac's usual best stack, named and pinned; decode and prefill separately; context, threads, power and thermal state stated; receipt and command in the repository. `tools/mac_reproduce.py` does this; it has not yet run on a Mac.
 
 Third-party Flash-Next figures we have seen [E: community posts, other quants, engines and prompts, not verified by us], listed so the gap is not hidden:
 

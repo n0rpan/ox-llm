@@ -15,6 +15,22 @@ use crate::prompt::{self, McpReach, SkillReader};
 pub struct PrefixOpts {
     pub diet_output: bool,
     pub child: bool,
+    /// A headless run (`-p`, `--mode json`): adds [`prompt::RULE_INTEGRITY`] with the diet on and
+    /// [`crate::prompt::HEADLESS_AUTONOMY`].
+    pub headless: bool,
+}
+
+static HEADLESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Mark this process as a headless run. Called once, before the session opens.
+pub fn set_headless(on: bool) {
+    HEADLESS.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Whether [`set_headless`] was called with true, for a run of its own. A subagent child is not
+/// headless: its parent reads the result, and its prefix stays as it was.
+pub fn is_headless() -> bool {
+    HEADLESS.load(std::sync::atomic::Ordering::SeqCst) && !crate::subagent::is_child_process()
 }
 
 /// Build the prefix of an epoch under the default options (diet off, not a child). Pure: same
@@ -38,7 +54,7 @@ pub fn build_prefix(
 /// joined), `cwd` (`prompt::cwd_section`, always last). `tools_json` = [`tools_json`] over
 /// the `Direct` tools. `sha256` = SHA-256 of `FrozenPrefix::hash_input`. No date, no git
 /// state, no mode, no model name, no host name (a negative test greps the bytes).
-/// `opts` changes only the preamble (see [`PrefixOpts`]).
+/// `opts` changes only the preamble (a headless run adds an `<autonomy>` block to it) (see [`PrefixOpts`]).
 pub fn build_prefix_with(
     cwd: &Path,
     r: &Resources,
@@ -59,7 +75,25 @@ pub fn build_prefix_with(
                 .collect();
             let pairs: Vec<(&str, &str)> = snippets.iter().map(|(n, s)| (*n, s.as_str())).collect();
             let omit_tools = true;
-            prompt::preamble_with(&pairs, &[], omit_tools, opts.diet_output, opts.child)
+            let base = prompt::preamble_with(
+                &pairs,
+                if opts.headless && opts.diet_output && !opts.child {
+                    &[prompt::RULE_INTEGRITY]
+                } else {
+                    &[]
+                },
+                omit_tools,
+                opts.diet_output,
+                opts.child,
+            );
+            if opts.headless {
+                format!(
+                    "{base}\n\n{}",
+                    prompt::tagged("autonomy", prompt::HEADLESS_AUTONOMY)
+                )
+            } else {
+                base
+            }
         }
     };
     push(&mut sections, "preamble", preamble);

@@ -510,7 +510,22 @@ fn check_file(meta: &Metadata) -> Result<(), Error> {
 
 /// Read a private, bounded Python token record without refreshing it.
 pub fn read(path: &Path) -> Result<TokenRecord, Error> {
-    Directory::open(path)?.read()
+    let dir = Directory::open(path)?;
+    match dir.read() {
+        Ok(record) => Ok(record),
+        Err(Error::UnsafeFile) => {
+            // An off-Linux create-only publication can be interrupted after
+            // linkat commits but before its staging name is removed. Serialize
+            // with publishers before deciding whether the extra link is that
+            // recoverable state or an unrelated unsafe hard link.
+            let lock = dir.open_file(OsStr::new(LOCK), OFlag::O_RDWR | OFlag::O_CREAT)?;
+            check_file(&lock.metadata().map_err(|_| Error::Unavailable)?)?;
+            let _lock = Flock::lock(lock, FlockArg::LockExclusive).map_err(|_| Error::Unavailable)?;
+            recover_interrupted_publish(&dir)?;
+            dir.read()
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Fixed owner location, beside the existing cloud key file. Create only the
@@ -940,7 +955,7 @@ mod publication_tests {
     }
 
     #[test]
-    fn interrupted_hard_link_is_recovered_before_reading() {
+    fn interrupted_hard_link_is_recovered_by_direct_read() {
         let root = std::env::temp_dir().join(format!("recover-publication-{}", std::process::id()));
         std::fs::create_dir(&root).unwrap();
         std::fs::set_permissions(&root, Permissions::from_mode(0o700)).unwrap();
@@ -957,10 +972,7 @@ mod publication_tests {
         std::fs::hard_link(&path, root.join(STAGING)).unwrap();
         assert_eq!(std::fs::symlink_metadata(&path).unwrap().nlink(), 2);
 
-        let recovered = credentials(&path, |_: &TokenRecord| -> Result<TokenRecord, ()> {
-            panic!("fresh recovered credentials must not refresh")
-        })
-        .unwrap();
+        let recovered = read(&path).unwrap();
         assert_eq!(recovered.account_id(), record.account_id());
         assert!(!root.join(STAGING).exists());
         assert_eq!(std::fs::symlink_metadata(&path).unwrap().nlink(), 1);

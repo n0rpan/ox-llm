@@ -11,11 +11,11 @@ use std::{
 
 /// The endpoint name oxa gives the local engine (`OXA_PROVIDER` is always this).
 pub(crate) const ENGINE_ENDPOINT: &str = "oxe";
-/// Used when neither models.json nor `OXA_ENGINE_URL` names an endpoint: the oxc
-/// controller on loopback (its OpenAI-compatible API, `/_local/status` with the per-model
-/// limits and capabilities, the queue). A bare engine (`oxe-server`, default port 8080) is
-/// reached by naming it in models.json or `OXA_ENGINE_URL`.
-pub(crate) const DEFAULT_ENGINE_URL: &str = "http://127.0.0.1:8092";
+/// Used when neither models.json nor `OXA_ENGINE_URL` names an endpoint: the address
+/// `oxe-server` listens on by default (`--port 8080`, loopback). oxa does not dial it when
+/// nothing is configured ([`ModelsConfig::unconfigured`]); a bare engine started by hand on
+/// that port is reached by naming it in models.json or `OXA_ENGINE_URL`.
+pub(crate) const DEFAULT_ENGINE_URL: &str = "http://127.0.0.1:8080";
 /// The only API oxa speaks; an entry naming another API is not an engine endpoint.
 const ENGINE_API: &str = "openai-completions";
 /// pi's cloud provider ids. oxa has one provider type, its engine, so these are refused with a
@@ -58,7 +58,7 @@ const NON_ENGINE_PROVIDERS: &[&str] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Endpoint {
     pub name: String,
-    /// e.g. `http://127.0.0.1:8092`. Plain HTTP; the engine is local or on the LAN.
+    /// e.g. `http://127.0.0.1:8080`. Plain HTTP; the engine is local or on the LAN.
     pub base_url: String,
     /// Optional bearer key (literal or from the environment per models.json).
     pub api_key: Option<String>,
@@ -119,11 +119,15 @@ pub struct ModelsConfig {
     /// Name of the default endpoint.
     pub default: String,
     pub cloud_providers: BTreeMap<String, CloudProvider>,
+    /// True when nothing names a model source: no `OXA_ENGINE_URL`, no models.json
+    /// endpoint and no models.json cloud provider. The default endpoint is then only a
+    /// placeholder and callers say "no model is configured" instead of dialing it.
+    pub unconfigured: bool,
 }
 
 impl ModelsConfig {
     /// Read `<agent_dir>/models.json`; without a file the single default endpoint is
-    /// `OXA_ENGINE_URL` or `http://127.0.0.1:8092` (the local engine). Entries using the
+    /// `OXA_ENGINE_URL` or `http://127.0.0.1:8080` (the `oxe-server` default). Entries using the
     /// cloud key or pool fields are parsed separately from the legacy engine catalog.
     ///
     /// Legacy engine entry shape in the `providers` map:
@@ -170,6 +174,8 @@ impl ModelsConfig {
             )),
         }
 
+        let unconfigured =
+            endpoints.is_empty() && cloud_providers.is_empty() && env.get(ENGINE_URL).is_none();
         if endpoints.is_empty() {
             endpoints.push(Endpoint {
                 name: ENGINE_ENDPOINT.to_string(),
@@ -197,6 +203,7 @@ impl ModelsConfig {
                 endpoints,
                 default,
                 cloud_providers,
+                unconfigured,
             },
             diags,
         )

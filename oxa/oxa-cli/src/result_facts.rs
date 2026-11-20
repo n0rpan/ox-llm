@@ -14,6 +14,7 @@ struct Call {
     request: u64,
     turn: u64,
     started: Instant,
+    prefix: Option<(String, usize)>,
 }
 
 #[derive(Debug)]
@@ -33,6 +34,9 @@ struct State {
     model: Option<String>,
     pending: VecDeque<Call>,
     log_failed: bool,
+    lookups: u64,
+    /// (sha256 hex, bytes) of the frozen prefix announced for the next request.
+    prefix: Option<(String, usize)>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -52,6 +56,8 @@ impl Default for State {
             model: None,
             pending: VecDeque::new(),
             log_failed: false,
+            lookups: 0,
+            prefix: None,
         }
     }
 }
@@ -119,6 +125,7 @@ impl ResultFacts {
                 request: state.requests.unwrap_or(0),
                 turn: state.turns.unwrap_or(0),
                 started: Instant::now(),
+                prefix: state.prefix.take(),
             };
             state.pending.push_back(call);
         }
@@ -144,6 +151,7 @@ impl ResultFacts {
                 state.log_failed = true;
             }
         }
+        let usage = usage.and_then(Usage::reported);
         if let Some(usage) = usage {
             add(&mut state.prompt, usage.prompt.into());
             add(&mut state.completion, usage.completion.into());
@@ -191,6 +199,8 @@ impl ResultFacts {
             record["goal"] = goal.clone();
         }
         record["usage_scope"] = json!("process");
+        // Web searches this invocation made (FH-N5 integrity report); null when unobserved.
+        record["web_lookups"] = state.as_ref().map_or(Value::Null, |state| json!(state.lookups));
         // Successful tool calls and generated text are not checked workspace/commit evidence.
         record["files_changed"] = Value::Null;
         record["files_changed_evidence"] = json!("unavailable");
@@ -212,6 +222,9 @@ fn call_record(call: &Call, model: Option<&str>, usage: Option<Usage>) -> Value 
         "output": usage.as_ref().map(|u| u.completion),
         "reasoning_tokens": Value::Null,
         "duration_ms": u64::try_from(call.started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        // Digest and byte count of the frozen prefix (system prompt + tool list) the call sent.
+        "prefix_sha256": call.prefix.as_ref().map(|p| p.0.as_str()),
+        "prefix_bytes": call.prefix.as_ref().map(|p| p.1),
     })
 }
 
@@ -219,8 +232,18 @@ impl ProgressObserver for ResultFacts {
     fn notify(&self, session: &oxa_session::SessionRef, progress: Progress<'_>) {
         match progress {
             Progress::Session { file } => self.session(file.map(|_| session.id.as_str())),
+            Progress::Prefix { sha256, bytes } => {
+                let hex = sha256.iter().map(|b| format!("{b:02x}")).collect::<String>();
+                self.state.lock().unwrap_or_else(|p| p.into_inner()).prefix = Some((hex, bytes));
+            }
             Progress::RequestStart { kind, .. } => self.request_start(kind),
             Progress::RequestEnd { usage, .. } => self.request_end(usage),
+            Progress::ToolStart("web_search") => {
+                let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                if !state.finished {
+                    state.lookups = state.lookups.saturating_add(1);
+                }
+            }
             _ => {}
         }
         if let Some(status) = &self.status {
@@ -239,6 +262,7 @@ mod tests {
             completion,
             cached,
             cached_missing: false,
+            unreported: false,
         }
     }
 
@@ -259,12 +283,30 @@ mod tests {
         assert_eq!(record["session_id"], "saved-session");
         assert_eq!(record["requests"], 4);
         assert_eq!(record["turns"], 2);
+        assert_eq!(record["web_lookups"], 0);
         assert_eq!(
             record["tokens"],
             json!({"prompt":400,"completion":16,"cached":240,"complete":true,"unreported_requests":0})
         );
         assert!(record["files_changed"].is_null());
         assert_eq!(record["files_changed_evidence"], "unavailable");
+    }
+
+    #[test]
+    fn web_searches_are_counted_in_the_result() {
+        let facts = ResultFacts::default();
+        facts.session(Some("s"));
+        let session = oxa_session::SessionRef {
+            path: std::path::PathBuf::from("mem:s"),
+            id: "s".to_string(),
+        };
+        for name in ["read", "web_search", "web_search", "bash"] {
+            facts.notify(&session, Progress::ToolStart(name));
+        }
+        assert_eq!(
+            ResultFacts::record(RunOutcome::Done, Some(&facts))["web_lookups"],
+            2
+        );
     }
 
     #[test]
@@ -408,6 +450,8 @@ mod tests {
             "output",
             "reasoning_tokens",
             "duration_ms",
+            "prefix_sha256",
+            "prefix_bytes",
         ];
         for record in lines(&path) {
             for (key, value) in record.as_object().unwrap() {
@@ -421,6 +465,25 @@ mod tests {
             }
             assert_eq!(record["model"], "model-id");
         }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn usage_log_records_the_prefix_digest_and_size_only() {
+        let dir = log_dir("prefix");
+        let path = dir.join("usage.jsonl");
+        let facts = logged_facts(&path);
+        let digest = "ab".repeat(32);
+        facts.state.lock().unwrap().prefix = Some((digest.clone(), 1234));
+        facts.request_start(TurnKind::Chat);
+        facts.request_end(Some(usage(7, 3, 1)));
+        // a call with no announced prefix logs nulls, and does not reuse the previous digest
+        facts.request_start(TurnKind::Chat);
+        facts.request_end(Some(usage(7, 3, 1)));
+        let records = lines(&path);
+        assert_eq!(records[0]["prefix_sha256"], digest.as_str());
+        assert_eq!(records[0]["prefix_bytes"], 1234);
+        assert!(records[1]["prefix_sha256"].is_null());
         let _ = std::fs::remove_dir_all(dir);
     }
 }
