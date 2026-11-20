@@ -227,7 +227,13 @@ fn successful_test_jobs(value: &Value) -> bool {
 /// A head that edits the lane workflow or its runner could report itself green.
 const PROTECTED_LANE_CONTROLS: &[&str] = &[".github/workflows/", "tools/ci/"];
 
-fn protected_controls_unchanged(policy: &RunPolicy, repo: &Path, base: &str, head: &str) -> Result<()> {
+fn protected_controls_unchanged(
+    policy: &RunPolicy,
+    repo: &Path,
+    base: &str,
+    head: &str,
+    remote: &str,
+) -> Result<()> {
     let changed = crate::checked(crate::git(
         policy,
         repo,
@@ -243,7 +249,7 @@ fn protected_controls_unchanged(policy: &RunPolicy, repo: &Path, base: &str, hea
     ))?;
     // The saved base can be ahead of what the destination has, so the controls of every
     // commit the push would add are checked against the destination's own tips too.
-    let unpushed = crate::publish::pushed_path_changes(policy, repo, head, PROTECTED_LANE_CONTROLS)?;
+    let unpushed = crate::publish::pushed_path_changes(policy, repo, head, PROTECTED_LANE_CONTROLS, remote)?;
     if changed.trim().is_empty() && unpushed.trim().is_empty() {
         Ok(())
     } else {
@@ -320,6 +326,10 @@ fn log_failed(
     let mut command = Command::new(gh);
     crate::isolate_git_environment(&mut command);
     crate::publish::isolate_github_environment(&mut command);
+    let token = crate::policy_token(policy, repo).ok()?;
+    if let Some(secret) = &token {
+        command.env("GH_TOKEN", secret);
+    }
     command
         .env("PATH", &policy.host_path)
         .env("GH_PROMPT_DISABLED", "1")
@@ -338,7 +348,7 @@ fn log_failed(
         Stdio::from(lock.try_clone().ok()?),
         COMMAND_DEADLINE,
     )?;
-    (code == 0).then_some(text)
+    (code == 0 && !token.is_some_and(|secret| text.contains(&secret))).then_some(text)
 }
 
 fn wait_with(
@@ -412,12 +422,16 @@ pub(crate) fn accept(
     // captured checks run for this commit. Nothing is pushed before it passes.
     let proof = crate::committed::verify_commit_with(repo, binary, policy, saved, lock, true)?;
     proof.verify(policy, head, base)?;
-    protected_controls_unchanged(policy, repo, base, head)?;
+    let remote = crate::publish::origin_push_url(policy, repo)?;
+    protected_controls_unchanged(policy, repo, base, head, &remote)?;
     let token = crate::policy_token(policy, repo)?;
     let token = token.as_deref();
-    let repository = crate::publish::origin_repository(repo, gh, policy, token, lock)?;
+    let repository = crate::publish::origin_repository(repo, gh, policy, token, lock, &remote)?;
     // The same content scan `--publish` runs, before anything is sent.
-    crate::publish::scan_push(policy, repo, head)?;
+    crate::publish::scan_push(policy, repo, head, &remote)?;
+    let export = crate::publish::prepare_github_push(policy, repo, head)?;
+    let token = crate::policy_token(policy, repo)?;
+    let token = token.as_deref();
     // Queue membership is the final remote decision before the push, avoiding
     // a scan-sized race in which an open PR can enter the merge queue.
     if let Some(number) =
@@ -427,14 +441,23 @@ pub(crate) fn accept(
             "PR #{number} is in the merge queue; use a new task branch for follow-up lane work"
         ));
     }
-    crate::publish::push_head(policy, token, repo, head, &task.branch, lock)?;
+    crate::publish::push_head(
+        policy,
+        token.zip(export.as_ref()),
+        repo,
+        head,
+        &task.branch,
+        lock,
+        &remote,
+    )?;
     let started = Instant::now();
     let run = wait_with(
         || {
+            let fresh = crate::policy_token(policy, repo)?;
             let text = crate::publish::gh(
                 gh,
                 policy,
-                token,
+                fresh.as_deref(),
                 repo,
                 lock,
                 &[
@@ -461,10 +484,11 @@ pub(crate) fn accept(
     let conclusion = run.conclusion.clone().unwrap_or_else(|| "unknown".into());
     let mut disposition = disposition(&conclusion);
     let mut failed = Vec::new();
+    let fresh = crate::policy_token(policy, repo)?;
     let jobs = crate::publish::gh(
         gh,
         policy,
-        token,
+        fresh.as_deref(),
         repo,
         lock,
         &[

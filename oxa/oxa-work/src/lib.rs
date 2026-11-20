@@ -615,6 +615,29 @@ pub fn trusted_token_program(
         .find_map(|dir| validate(&dir.join(program)))
 }
 
+/// Execute the vetted helper outside the checkout with no shell startup, loader,
+/// Git, or credential overrides inherited from the caller.
+pub fn token_helper_command(exe: &Path, project: Option<&Path>) -> Command {
+    let mut command = Command::new(exe);
+    command.env_clear().current_dir("/").env("PATH", "/usr/bin:/bin");
+    let trusted_dir = |dir: &Path| {
+        dir.is_absolute()
+            && dir.canonicalize().is_ok_and(|real| {
+                !real.components().any(|part| part.as_os_str() == ".oxa-worktrees")
+                    && !project.is_some_and(|root| {
+                        dir.starts_with(root)
+                            || root.canonicalize().map_or(true, |root| real.starts_with(root))
+                    })
+            })
+    };
+    for key in ["HOME", "XDG_CONFIG_HOME", "GH_CONFIG_DIR"] {
+        if let Some(dir) = std::env::var_os(key).filter(|dir| trusted_dir(Path::new(dir))) {
+            command.env(key, dir);
+        }
+    }
+    command
+}
+
 /// The owner's token command (`oxa.github.tokenCommand`) for the runner's own GitHub calls:
 /// a trusted absolute program, or a bare name only from the vetted tool directories.
 fn policy_token(policy: &RunPolicy, repo: &Path) -> Result<Option<String>> {
@@ -623,7 +646,7 @@ fn policy_token(policy: &RunPolicy, repo: &Path) -> Result<Option<String>> {
     };
     let exe = trusted_token_program(program, Some(&policy.host_path), Some(repo))
         .ok_or("GitHub token command is outside trusted tool locations")?;
-    let mut command = Command::new(exe);
+    let mut command = token_helper_command(&exe, Some(repo));
     command.args(args);
     token_from_command(command, COMMAND_DEADLINE)
         .map(Some)

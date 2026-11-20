@@ -121,6 +121,55 @@ fn pushed_revisions<'a>(head: &'a str, known: &'a [String]) -> Vec<&'a str> {
 /// The branch and tag tips the publication destination itself advertises. Local
 /// remote-tracking refs are writable by the task and may describe a different
 /// fetch URL, so only the destination's own answer may exclude history.
+fn github_https_url(url: &str) -> Result<&str> {
+    let path = url
+        .strip_prefix("https://github.com/")
+        .ok_or("configured GitHub authentication requires a github.com HTTPS push URL")?;
+    let (owner, repo) = path.split_once('/').ok_or("invalid GitHub push URL")?;
+    let valid = |part: &str| {
+        !part.is_empty()
+            && !matches!(part, "." | "..")
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+    };
+    if !valid(owner) || !valid(repo.strip_suffix(".git").unwrap_or(repo)) {
+        return Err("invalid GitHub push URL".into());
+    }
+    Ok(url)
+}
+
+/// Only use this from outside any checkout or from a freshly exported bare
+/// store. Neither system/global config nor project transport helpers are loaded.
+fn github_git(policy: &RunPolicy, cwd: &Path, token: &str) -> Command {
+    use base64::Engine as _;
+    let auth = base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
+    let mut command = Command::new(&policy.git_binary);
+    command
+        .env_clear()
+        .current_dir(cwd)
+        .env("PATH", "/usr/bin:/bin")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ALLOW_PROTOCOL", "https")
+        // Use environment config so the header is neither in argv nor on disk.
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "http.https://github.com/.extraHeader")
+        .env("GIT_CONFIG_VALUE_0", format!("Authorization: Basic {auth}"))
+        .args([
+            "-c",
+            "http.followRedirects=false",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ]);
+    command
+}
+
 fn destination_tips(policy: &RunPolicy, repo: &Path, url: &str) -> Result<Vec<String>> {
     if url.starts_with('-') {
         return Err("publishing refused: invalid publication destination".into());
@@ -147,8 +196,27 @@ fn destination_tips(policy: &RunPolicy, repo: &Path, url: &str) -> Result<Vec<St
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GH_PROMPT_DISABLED", "1")
         .env("GIT_ALLOW_PROTOCOL", "https:ssh:file");
-    let text = checked(command)
-        .map_err(|_| "publishing refused: cannot read the publication destination's branches".to_string())?;
+    let token = super::policy_token(policy, repo)?;
+    let mut authenticated;
+    let command = if let Some(token) = token.as_deref() {
+        let url = github_https_url(url)?;
+        if !matches!(std::fs::symlink_metadata("/.git"), Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+            return Err("cannot run Git outside a checkout".into());
+        }
+        authenticated = github_git(policy, Path::new("/"), token);
+        authenticated.args(["ls-remote", "--heads", "--tags", "--refs", url]);
+        authenticated
+    } else {
+        command
+    };
+    let text = super::command_runner(
+        command,
+        Some(MAX_PUBLICATION_RESPONSE_BYTES),
+        super::COMMAND_DEADLINE,
+    )
+    .filter(|(status, _)| *status == 0)
+    .map(|(_, text)| text)
+    .ok_or("publishing refused: cannot read the publication destination's branches")?;
     let mut tips: Vec<String> = text
         .lines()
         .filter_map(|line| line.split_once('\t'))
@@ -651,46 +719,56 @@ pub(crate) fn queued_pull_request(
     Ok((!pull["mergeQueueEntry"].is_null()).then_some(number))
 }
 
-/// Resolve the single origin destination through the same validated `gh` read.
+pub(crate) fn origin_push_url(policy: &RunPolicy, repo: &Path) -> Result<String> {
+    let remote = checked(super::git(
+        policy,
+        repo,
+        &["remote", "get-url", "--push", "--all", "origin"],
+    ))?;
+    if remote.lines().count() != 1 || remote.starts_with('-') {
+        return Err("publishing requires one origin push URL".into());
+    }
+    if !policy.github_token_command.is_empty() {
+        github_https_url(&remote)?;
+    }
+    Ok(remote)
+}
+
+/// Resolve the pinned origin destination through the same validated `gh` read.
 pub(crate) fn origin_repository(
     repo: &Path,
     gh_binary: &Path,
     policy: &RunPolicy,
     token: Option<&str>,
     lock: &File,
+    remote: &str,
 ) -> Result<Repository> {
-    let remote = checked(super::git(
-        policy,
-        repo,
-        &["remote", "get-url", "--push", "--all", "origin"],
-    ))?;
-    if remote.lines().count() != 1 {
-        return Err("publishing requires one origin push URL".into());
+    if token.is_some() {
+        github_https_url(remote)?;
     }
-    repository(&json(&gh(
+    let repository = repository(&json(&gh(
         gh_binary,
         policy,
         token,
         repo,
         lock,
-        &["repo", "view", &remote, "--json", "nameWithOwner,url"],
-    )?)?)
+        &["repo", "view", remote, "--json", "nameWithOwner,url"],
+    )?)?)?;
+    if token.is_some() && repository.host != "github.com" {
+        return Err("configured GitHub authentication requires github.com".into());
+    }
+    Ok(repository)
 }
 
 /// The publication content scan for a push `head` would make to `origin`: every
 /// commit the push URL's own advertised tips lack, the same scan `--publish` runs.
 /// Nothing is sent; any failure, or a missing scan, refuses the push.
-pub(crate) fn scan_push(policy: &RunPolicy, repo: &Path, head: &str) -> Result<()> {
+pub(crate) fn scan_push(policy: &RunPolicy, repo: &Path, head: &str, remote: &str) -> Result<()> {
     let scan = policy
         .content_scan
         .as_deref()
         .ok_or("publishing refused: the publication content scan is unavailable")?;
-    let remote = checked(super::git(
-        policy,
-        repo,
-        &["remote", "get-url", "--push", "--all", "origin"],
-    ))?;
-    let known = destination_tips(policy, repo, &remote)?;
+    let known = destination_tips(policy, repo, remote)?;
     scan_pushed(policy, repo, &pushed_revisions(head, &known), scan)
 }
 
@@ -702,13 +780,9 @@ pub(crate) fn pushed_path_changes(
     repo: &Path,
     head: &str,
     paths: &[&str],
+    remote: &str,
 ) -> Result<String> {
-    let remote = checked(super::git(
-        policy,
-        repo,
-        &["remote", "get-url", "--push", "--all", "origin"],
-    ))?;
-    let known = destination_tips(policy, repo, &remote)?;
+    let known = destination_tips(policy, repo, remote)?;
     let mut args = vec!["log", "--format=", "--name-only", "--no-renames", "-m"];
     args.extend(pushed_revisions(head, &known));
     args.push("--");
@@ -718,14 +792,52 @@ pub(crate) fn pushed_path_changes(
 
 /// Push one exact accepted commit. Metadata probes deny every transport;
 /// only this explicit, confirmed publication may use normal GitHub/file transports.
+pub(crate) fn prepare_github_push(
+    policy: &RunPolicy,
+    repo: &Path,
+    head: &str,
+) -> Result<Option<super::committed::Export>> {
+    if policy.github_token_command.is_empty() {
+        return Ok(None);
+    }
+    let tree = checked(super::git(
+        policy,
+        repo,
+        &["rev-parse", &format!("{head}^{{tree}}")],
+    ))?;
+    // Export afresh after the checks, without their writable Git config.
+    super::committed::Export::create(policy, repo, head, &tree, head).map(Some)
+}
+
 pub(crate) fn push_head(
     policy: &RunPolicy,
-    token: Option<&str>,
+    auth: Option<(&str, &super::committed::Export)>,
     repo: &Path,
     head: &str,
     branch: &str,
     lock: &File,
+    remote: &str,
 ) -> Result<()> {
+    if let Some((token, export)) = auth {
+        let url = github_https_url(remote)?;
+        let mut push = github_git(policy, &export.store, token);
+        push.args([
+            "push",
+            "--no-follow-tags",
+            "--recurse-submodules=no",
+            url,
+            &format!("{head}:refs/heads/{branch}"),
+        ]);
+        return match super::command_runner_with_stdin(
+            push,
+            Some(MAX_PUBLICATION_RESPONSE_BYTES),
+            Stdio::from(lock.try_clone().map_err(|e| e.to_string())?),
+            super::COMMAND_DEADLINE,
+        ) {
+            Some((0, _)) => Ok(()),
+            _ => Err("accepted commit push failed".into()),
+        };
+    }
     let mut push = super::git(
         policy,
         repo,
@@ -751,9 +863,6 @@ pub(crate) fn push_head(
         ],
     );
     isolate_github_environment(&mut push);
-    if let Some(token) = token {
-        push.env("GH_TOKEN", token);
-    }
     push.env("GIT_TERMINAL_PROMPT", "0")
         .env("GH_PROMPT_DISABLED", "1")
         .env("GIT_ALLOW_PROTOCOL", "https:ssh:file");
@@ -893,11 +1002,14 @@ fn publish_locked(
         // before any remote request, against what the local origin refs record.
         // The destination's own tips are checked again after confirmation.
         scan_pushed(policy, tree, &[head.as_str(), "--not", "--remotes=origin"], scan)?;
-        let remote = checked(git(repo, &["remote", "get-url", "--push", "--all", "origin"]))?;
+        let remote = origin_push_url(policy, repo)?;
         let token = super::policy_token(policy, repo)?;
         let token = token.as_deref();
-        let gh = |repo: &Path, lock: &File, args: &[&str]| gh(gh_binary, policy, token, repo, lock, args);
-        let repository = origin_repository(tree, gh_binary, policy, token, lock)?;
+        let gh = |worktree: &Path, lock: &File, args: &[&str]| {
+            let fresh = super::policy_token(policy, repo)?;
+            gh(gh_binary, policy, fresh.as_deref(), worktree, lock, args)
+        };
+        let repository = origin_repository(tree, gh_binary, policy, token, lock, &remote)?;
         let name = repository.qualified.as_str();
         let prs = open_pull_requests(tree, gh_binary, policy, token, lock, &repository, &task.branch)?;
         if accepted == Outcome::NothingToDo
@@ -934,8 +1046,11 @@ fn publish_locked(
         // the push URL's own advertised tips rather than from local refs.
         let known = destination_tips(policy, repo, &remote)?;
         scan_pushed(policy, tree, &pushed_revisions(&head, &known), scan)?;
+        let export = prepare_github_push(policy, repo, &head)?;
         // Confirmation may remain open indefinitely: queue admission is checked
         // only after it returns, immediately before the push.
+        let token = super::policy_token(policy, repo)?;
+        let token = token.as_deref();
         if let Some(number) =
             queued_pull_request(tree, gh_binary, policy, token, lock, &repository, &task.branch)?
         {
@@ -943,7 +1058,15 @@ fn publish_locked(
                 "PR #{number} is in the merge queue; use a new task branch for follow-up work"
             ));
         }
-        push_head(policy, token, repo, &head, &task.branch, lock)?;
+        push_head(
+            policy,
+            token.zip(export.as_ref()),
+            repo,
+            &head,
+            &task.branch,
+            lock,
+            &remote,
+        )?;
         let draft = false;
         let body = policy.storage.join(format!("{}.pr-body.md", task.id));
         crate::checkpoint::write_atomic(&body, text.as_bytes(), body.exists())?;
@@ -1157,7 +1280,11 @@ mod tests {
             "case \"$GH_TOKEN\" in '') ;; ghs_RUNNER_TOKEN) echo authenticated ;; *) exit 1 ;; esac",
         );
         let echoing_gh = script(dir.path(), "gh-echo", "printf '%s' \"$GH_TOKEN\"");
-        let source = script(dir.path(), "token", "echo ghs_RUNNER_TOKEN");
+        let source = script(
+            dir.path(),
+            "token",
+            "test \"$(pwd -P)\" = / && test \"$PATH\" = /usr/bin:/bin && echo ghs_RUNNER_TOKEN",
+        );
         let lock = File::create(dir.path().join("lock")).unwrap();
         // Without the setting the runner keeps the stored login: no token is passed on.
         let plain = policy(dir.path(), Vec::new());

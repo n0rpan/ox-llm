@@ -234,7 +234,7 @@ fn gh_token(command: &[String]) -> Option<String> {
                 .to_owned()
         };
         let exe = oxa_work::trusted_token_program(&candidate, None, project)?;
-        let mut command = std::process::Command::new(exe);
+        let mut command = oxa_work::token_helper_command(&exe, project);
         command.args(args);
         return oxa_work::token_from_command(command, oxa_work::COMMAND_DEADLINE);
     }
@@ -302,11 +302,12 @@ const GH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
 /// Run `exe auth token --hostname github.com` under one `deadline` that covers the process and
 /// the reading of its output.
 fn gh_token_from(exe: &Path, deadline: std::time::Duration) -> Option<String> {
-    let mut command = std::process::Command::new(exe);
-    command
-        .args(["auth", "token", "--hostname", "github.com"])
-        .env_remove("GH_TOKEN")
-        .env_remove("GITHUB_TOKEN");
+    let cwd = std::env::current_dir().ok();
+    let project = cwd
+        .as_deref()
+        .and_then(|cwd| cwd.ancestors().filter(|dir| dir.join(".git").exists()).last());
+    let mut command = oxa_work::token_helper_command(exe, project);
+    command.args(["auth", "token", "--hostname", "github.com"]);
     oxa_work::token_from_command(command, deadline)
 }
 
