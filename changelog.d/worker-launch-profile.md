@@ -1,0 +1,1 @@
+- A worker now derives its own shared per-repository Cargo build cache (`oxa.workers.sharedCache`, `cacheDir`, `cacheWarnGb`), a held native `oxa work` task runs online with GitHub isolation instead of being forced offline, and a zombie-only worker group on macOS no longer makes a stop time out.

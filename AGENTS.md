@@ -80,7 +80,10 @@ code, tests, CI and docs; the owner validates on hardware.
   project file or request, takes the session lock, or opens a provider there.
 - The live owner-authorized Lead service may launch and steer background workers through its sole
   `worker` tool. The shadow Lead preset and one-shot `oxa lead chat` stay tool-free; user-only
-  worker enablement, limits and the current permission ceiling govern every new launch.
+  worker enablement, limits and the current permission ceiling govern every new launch. Outside
+  Git, the trusted live Lead may start in the explicitly trusted primary checkout named by the
+  user-only `oxa.workers.repository`. Both source and worktree require matching write permission
+  pins; no project setting or model path selects the repository.
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
   in the ledger (an unknown cost is recorded as unknown). Limits are owner configuration: with no cap
@@ -157,12 +160,20 @@ code, tests, CI and docs; the owner validates on hardware.
 - **Cargo cache mounts.** The sandbox forwards an owner-set `CARGO_TARGET_DIR` as a
   toolchain location. An external cache needs a separate user-only
   `oxa.sandbox.writePaths` entry. Review environment forwarding and writable mounts independently.
+- **Worker build cache.** A worker sandbox gets one derived, owner-only extra write path: the
+  per-repository `<cache dir>/<hash>/cargo-target` (`oxa.workers.sharedCache`,
+  `oxa.workers.cacheDir`, `oxa.workers.cacheWarnGb`, all user-only; a project file cannot move
+  or disable it). Never add a parent grant. A held native `oxa work` task is online but
+  GitHub-isolated (runner-owned GitHub), not offline.
 - **Runtime sockets.** Docker and podman sockets stay masked in sandboxed bash unless the owner
   lists them in the user-only `oxa.sandbox.sockets` (default empty) and permits network access.
   An online bind uses a validated socket descriptor. The start notice names each and warns of
   the access it grants. Yolo needs no entry.
 - **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
   registry with its surfaces and help (P1 if added outside it or without an exception reason).
+- The publish text heuristic must not mistake a literal script filename in a direct shell invocation
+  for inline `git push` text. Script-file commands keep normal mode permissions; the remaining
+  publish and dangerous-command checks still apply.
 - An explicit owner CLI `--auto` or `--yolo` permits starting at home, root, or a parent of home
   with a warning. Settings and environment opt-ins retain their own rules. Interactive `--max-time`
   and `--max-tokens` stop the watched startup session at its wrap-up boundary, before later prompts.
