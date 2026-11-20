@@ -69,6 +69,35 @@ pub fn run_argv_stdin(
     execute(cmd, prog, Some(stdin), timeout_s, cancel, live, true)
 }
 
+/// The environment variable that names the session's owner confirm door (a descriptor number).
+pub(crate) const CONFIRM_FD_ENV: &str = "OXA_CONFIRM_FD";
+
+/// The descriptor number `env` names as the owner confirm door, when it names one.
+pub(crate) fn confirm_door_fd(env: &[(String, String)]) -> Option<i32> {
+    env.iter()
+        .rev()
+        .find(|(key, _)| key == CONFIRM_FD_ENV)
+        .and_then(|(_, value)| value.trim().parse::<i32>().ok())
+        .filter(|fd| *fd >= 3)
+}
+
+/// Let this child, and only this child, inherit the owner confirm door named in `env`: the
+/// close-on-exec flag is cleared after the fork, so the parent's own descriptor keeps it. Every
+/// run path that gives a command a broker calls this; a spec without the variable passes nothing.
+pub(crate) fn pass_confirm_door(cmd: &mut Command, env: &[(String, String)]) {
+    let Some(fd) = confirm_door_fd(env) else {
+        return;
+    };
+    // SAFETY: runs between fork and exec; fcntl is async-signal-safe and touches only our own
+    // descriptor in the child. A descriptor that is not open is not an error for the command.
+    unsafe {
+        cmd.pre_exec(move || {
+            libc::fcntl(fd, libc::F_SETFD, 0);
+            Ok(())
+        });
+    }
+}
+
 /// Run a resolved command with only the environment chosen by the caller.
 pub(crate) fn run_argv_cleared(
     argv: &[String],
@@ -86,6 +115,7 @@ pub(crate) fn run_argv_cleared(
     cmd.args(args)
         .env_clear()
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    pass_confirm_door(&mut cmd, env);
     execute(cmd, prog, stdin, timeout_s, cancel, live, capture)
 }
 
@@ -147,6 +177,12 @@ fn unsandboxed_command(s: &ExecSpec, base: Option<&[(String, String)]>) -> Comma
         Some(env) => cmd.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str()))),
         None => cmd.envs(s.env.iter().map(|(k, v)| (k.as_str(), v.as_str()))),
     };
+    // A command that gets a broker inherits the door and is told its number, also when its
+    // environment is exactly `base`.
+    if let Some(fd) = confirm_door_fd(&s.env) {
+        cmd.env(CONFIRM_FD_ENV, fd.to_string());
+        pass_confirm_door(&mut cmd, &s.env);
+    }
     cmd
 }
 
@@ -194,6 +230,7 @@ pub fn run_unsandboxed_stdin(
         .current_dir(&s.cwd)
         .env_clear()
         .envs(s.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    pass_confirm_door(&mut cmd, &s.env);
     execute(cmd, "bash", Some(stdin), s.timeout_s, cancel, live, true)
 }
 
@@ -586,5 +623,58 @@ mod tests {
         die_with_parent(&mut cmd);
         let status = cmd.status().expect("spawn true");
         assert!(status.success());
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod door_tests {
+    use super::*;
+
+    /// A datagram socketpair, close-on-exec like the broker's door. Returns its child end.
+    fn door() -> i32 {
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: socketpair writes two descriptors; fcntl sets the flag on descriptors we own.
+        unsafe {
+            assert_eq!(
+                libc::socketpair(libc::AF_UNIX, libc::SOCK_DGRAM, 0, fds.as_mut_ptr()),
+                0
+            );
+            libc::fcntl(fds[0], libc::F_SETFD, libc::FD_CLOEXEC);
+            libc::fcntl(fds[1], libc::F_SETFD, libc::FD_CLOEXEC);
+        }
+        fds[1]
+    }
+
+    fn spec(command: &str, env: Vec<(String, String)>) -> ExecSpec {
+        ExecSpec {
+            command: command.into(),
+            cwd: std::env::temp_dir(),
+            env,
+            writable: false,
+            net: false,
+            timeout_s: Some(20),
+        }
+    }
+
+    fn output(r: ExecResult) -> String {
+        String::from_utf8_lossy(&r.output).trim().to_string()
+    }
+
+    /// A command that gets a broker sees a socket at `$OXA_CONFIRM_FD`, on the plain unsandboxed
+    /// path and with an exact base environment; a spec without the variable passes nothing, even
+    /// though the descriptor is open in the parent.
+    #[test]
+    fn a_command_inherits_the_owner_confirm_door_only_when_its_spec_names_it() {
+        let fd = door();
+        let named = vec![(CONFIRM_FD_ENV.to_string(), fd.to_string())];
+        let probe = "[ -S \"/dev/fd/$OXA_CONFIRM_FD\" ] && echo socket || echo none";
+        let cancel = CancelToken::new();
+        let plain = run_unsandboxed_env(&spec(probe, named.clone()), None, &cancel, &mut |_| {}, true);
+        assert_eq!(output(plain), "socket");
+        let based = run_unsandboxed_env(&spec(probe, named), Some(&[]), &cancel, &mut |_| {}, true);
+        assert_eq!(output(based), "socket");
+        let unnamed = format!("[ -e /dev/fd/{fd} ] && echo open || echo closed");
+        let without = run_unsandboxed_env(&spec(&unnamed, Vec::new()), None, &cancel, &mut |_| {}, true);
+        assert_eq!(output(without), "closed");
     }
 }

@@ -1615,10 +1615,9 @@ mod tests {
             f.st.host_rx.is_none(),
             "the regression requires no extension host"
         );
-        let broker = crate::owner_confirm::OwnerConfirm::start(
-            &f.env.root().join("confirm"),
-            oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard),
-        )
+        let broker = crate::owner_confirm::OwnerConfirm::start(oxa_proto::YoloSwitch::new(
+            oxa_proto::Autonomy::Standard,
+        ))
         .expect("start broker");
         *f.st
             .shared
@@ -1627,7 +1626,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = Some(broker.clone());
 
-        let socket = broker.sock_path().to_path_buf();
+        let door = broker.door_fd();
         let mut sink = VecSink::default();
         let mut ui = ConfirmUi;
         let reply = pumped(
@@ -1637,8 +1636,9 @@ mod tests {
             &mut ui,
             &mut |_| {},
             move |_| {
+                let env = oxa_config::Env::from_pairs(&[(crate::owner_confirm::FD_ENV, &door.to_string())]);
                 crate::owner_confirm::ask(
-                    &socket,
+                    &env,
                     &crate::owner_confirm::Request::ask("Publish", "publish the change?"),
                 )
             },
@@ -1665,11 +1665,8 @@ mod tests {
     #[test]
     fn pumped_tool_leaves_owner_confirm_unservable() {
         let mut f = fixture();
-        let broker = crate::owner_confirm::OwnerConfirm::start(
-            &f.env.root().join("confirm-after-tool"),
-            YoloSwitch::new(Autonomy::Standard),
-        )
-        .expect("start owner confirm broker");
+        let broker = crate::owner_confirm::OwnerConfirm::start(YoloSwitch::new(Autonomy::Standard))
+            .expect("start owner confirm broker");
         *f.st
             .shared
             .gate
@@ -1681,10 +1678,10 @@ mod tests {
         let mut ui = HeadlessUi::default();
         pumped(&mut f.st, Serve::Run, &mut sink, &mut ui, &mut |_| {}, |_| ());
 
-        let reply = crate::owner_confirm::ask(
-            broker.sock_path(),
-            &crate::owner_confirm::Request::ask("Publish", "publish?"),
-        );
+        let env =
+            oxa_config::Env::from_pairs(&[(crate::owner_confirm::FD_ENV, &broker.door_fd().to_string())]);
+        let reply =
+            crate::owner_confirm::ask(&env, &crate::owner_confirm::Request::ask("Publish", "publish?"));
         assert_eq!(reply.verdict, crate::owner_confirm::Verdict::None);
     }
 

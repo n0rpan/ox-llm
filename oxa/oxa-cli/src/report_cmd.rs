@@ -567,18 +567,18 @@ fn stage_bytes(bytes: &[u8]) -> std::io::Result<std::fs::File> {
     Ok(file)
 }
 
-/// The real confirmation. Under oxa's own tools the session exports `OXA_CONFIRM_SOCK`: the
-/// question goes to the session's owner confirm broker, which answers from the owner (yolo, the
-/// owner's dialog answer or the owner's typed message), never from text the model read. A model-run
-/// command controls its own environment (it can set `OXA_CONFIRM_SOCK` and drop the agent marker),
-/// so the consumer trusts a socket only when it is the sandbox's pinned mount point or when the
-/// peer behind it is verified as the session's own oxa process ([`peer_is_session_oxa`]); a fake
-/// listener is no answer. In yolo the model already holds the owner's rights, so nothing changes
-/// there: the real broker verifies and answers yes. Without a broker, a tool child
+/// The one owner ask. Under oxa's own tools the session exports `OXA_CONFIRM_FD`, the
+/// descriptor of its owner confirm door: the question goes to the session's broker, which answers
+/// from the owner (yolo, the owner's dialog answer or the owner's typed message), never from text
+/// the model read. A verdict-only ask acts on the answer in this process, so it needs the door's
+/// creator verified as the session's own oxa ([`oxa_core::owner_confirm::Conn::peer_verified`]):
+/// the model's shell sits between oxa and this command and can swap the descriptor, but it cannot
+/// make its own door count. Where the creator cannot be verified (another pid namespace, off Linux)
+/// the answer is `None` and the reason is printed. Without a door, a tool child
 /// (`OXA_CODING_AGENT` set) gets `None`. A manual terminal asks through `/dev/tty` (never stdin, so
 /// piped input cannot confirm) and gets `None` without one.
 pub(crate) fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
-    tty_confirm_with(env, ask_broker, ask_verified)
+    tty_confirm_with(env, ask_through_door)
 }
 
 /// The structured request for a question text: the broker shows the title and the body as
@@ -607,111 +607,34 @@ fn answer_of(reply: oxa_core::owner_confirm::Reply, question: &str) -> Option<bo
     answer
 }
 
-fn ask_broker(sock: &Path, question: &str) -> Option<bool> {
-    answer_of(
-        oxa_core::owner_confirm::ask(sock, &confirm_request(question)),
-        question,
-    )
-}
-
-/// Connect to `sock`, require the peer to be the session's own oxa process, then ask on that
-/// same connection (no window between the check and the question).
-fn ask_verified(sock: &Path, question: &str) -> Option<bool> {
-    let stream = std::os::unix::net::UnixStream::connect(sock).ok()?;
-    if !peer_is_session_oxa(&stream) {
+/// Ask `question` on `stream` once the caller has decided whether the door's creator is the
+/// session's own oxa. An unverified door is no answer.
+fn ask_checked(stream: &std::os::unix::net::UnixStream, verified: bool, question: &str) -> Option<bool> {
+    if !verified {
+        eprintln!(
+            "Not confirmed: the owner confirm broker could not be verified from inside this sandbox; \
+             run it from your terminal or an unsandboxed session."
+        );
         return None;
     }
     answer_of(
-        oxa_core::owner_confirm::ask_on(stream, &confirm_request(question)),
+        oxa_core::owner_confirm::exchange(stream, &confirm_request(question)),
         question,
     )
 }
 
-/// `true` when the process that owns the listening socket is this process's ancestor, runs the
-/// same executable and is the same user. The model's commands run below the session's oxa and can
-/// start any listener they like, but a listener they start is not oxa's own executable (and a
-/// copy of oxa they start serves its own session, not the owner's). Off Linux there is no peer
-/// credential check here and the socket is not trusted.
-#[cfg(target_os = "linux")]
-fn peer_is_session_oxa(stream: &std::os::unix::net::UnixStream) -> bool {
-    use std::os::fd::AsRawFd;
-    let mut cred = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    // SAFETY: getsockopt on a socket this function owns, into a ucred of the stated length.
-    let rc = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            std::ptr::addr_of_mut!(cred).cast(),
-            &mut len,
-        )
-    };
-    // SAFETY: geteuid has no preconditions.
-    if rc != 0 || cred.pid <= 0 || cred.uid != unsafe { libc::geteuid() } {
-        return false;
-    }
-    let Ok(peer) = u32::try_from(cred.pid) else {
-        return false;
-    };
-    let exe_of = |pid: u32| {
-        std::fs::read_link(format!("/proc/{pid}/exe"))
-            .ok()
-            .map(|p| PathBuf::from(p.to_string_lossy().trim_end_matches(" (deleted)")))
-    };
-    let (Some(own), Some(theirs)) = (exe_of(std::process::id()), exe_of(peer)) else {
-        return false;
-    };
-    let mut ancestors = Vec::new();
-    let mut pid = std::process::id();
-    for _ in 0..64 {
-        let Some(parent) = parent_pid(pid) else { break };
-        if parent <= 1 {
-            break;
-        }
-        ancestors.push(parent);
-        pid = parent;
-    }
-    is_session_broker(peer, &ancestors, &theirs, &own)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn peer_is_session_oxa(_stream: &std::os::unix::net::UnixStream) -> bool {
-    false
-}
-
-#[cfg(target_os = "linux")]
-fn parent_pid(pid: u32) -> Option<u32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // `pid (comm) state ppid ...`: comm may hold spaces and parentheses, so cut after the last `)`.
-    let rest = &stat[stat.rfind(')')? + 1..];
-    rest.split_whitespace().nth(1)?.parse().ok()
-}
-
-/// The verdict on a listener: its process is one of the consumer's ancestors and runs the
-/// consumer's own executable.
-fn is_session_broker(peer: u32, ancestors: &[u32], peer_exe: &Path, own_exe: &Path) -> bool {
-    ancestors.contains(&peer) && peer_exe == own_exe
+fn ask_through_door(env: &Env, question: &str) -> Option<bool> {
+    let conn = oxa_core::owner_confirm::connect(env)?;
+    ask_checked(conn.stream(), conn.peer_verified(), question)
 }
 
 fn tty_confirm_with<'a>(
     env: &'a Env,
-    ask_pinned: impl Fn(&Path, &str) -> Option<bool> + 'a,
-    ask_checked: impl Fn(&Path, &str) -> Option<bool> + 'a,
+    ask_door: impl Fn(&Env, &str) -> Option<bool> + 'a,
 ) -> impl FnMut(&str) -> Option<bool> + 'a {
     move |question: &str| {
-        if let Some(sock) = env.get(oxa_core::owner_confirm::SOCK_ENV) {
-            // The socket bwrap pinned at its immutable mount point is the session's broker by
-            // construction; any other path (the model can set the variable and drop the agent
-            // marker) must prove its listener first.
-            if sock == oxa_sandbox::OWNER_CONFIRM_SOCK {
-                return ask_pinned(Path::new(sock), question);
-            }
-            return ask_checked(Path::new(sock), question);
+        if env.get(oxa_core::owner_confirm::FD_ENV).is_some() {
+            return ask_door(env, question);
         }
         if env.get("OXA_CODING_AGENT").is_some() {
             return None;
@@ -735,75 +658,44 @@ fn tty_confirm_with<'a>(
 #[cfg(test)]
 mod confirm_tests {
     use super::*;
-    use std::os::unix::net::UnixListener;
-
-    /// A one-shot fake broker that answers `answer` and reports the question it saw.
-    fn broker(name: &str, answer: &'static str) -> (std::path::PathBuf, std::thread::JoinHandle<String>) {
-        let sock = std::env::temp_dir().join(format!("oxa-s2-{name}-{}.sock", std::process::id()));
-        let _ = std::fs::remove_file(&sock);
-        let listener = UnixListener::bind(&sock).expect("bind");
-        let handle = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept");
-            let mut line = String::new();
-            std::io::BufReader::new(&stream)
-                .read_line(&mut line)
-                .expect("read");
-            writeln!(&stream, "{{\"answer\": \"{answer}\", \"source\": \"typed\"}}").expect("write");
-            line
-        });
-        (sock, handle)
-    }
+    use oxa_core::owner_confirm::OwnerConfirm;
+    use oxa_proto::{Autonomy, YoloSwitch};
 
     #[test]
-    fn confirm_uses_broker_under_agent_marker() {
-        let env = Env::from_pairs(&[
-            ("OXA_CODING_AGENT", "true"),
-            ("OXA_CONFIRM_SOCK", oxa_sandbox::OWNER_CONFIRM_SOCK),
-        ]);
-        let mut confirm = tty_confirm_with(
-            &env,
-            |sock, question| {
-                assert_eq!(sock, Path::new(oxa_sandbox::OWNER_CONFIRM_SOCK));
-                assert_eq!(question, "Post this issue? ");
-                Some(true)
-            },
-            |_, _| panic!("the pinned mount needs no peer check"),
-        );
-        assert_eq!(confirm("Post this issue? "), Some(true));
-
-        // The same process may override its environment (and drop the agent marker), but an
-        // arbitrary listener is not the session's broker and must never count as owner approval:
-        // a fake listener that answers yes is rejected with or without the marker.
+    fn a_door_is_asked_only_under_the_door_variable_and_a_verified_creator_answers() {
+        let broker = OwnerConfirm::start(YoloSwitch::new(Autonomy::Yolo)).expect("start");
+        // An injected, verified connection approves; the same connection unverified is no answer.
+        let stream = broker.connect().expect("connect");
+        assert_eq!(ask_checked(&stream, true, "Push?"), Some(true));
+        let stream = broker.connect().expect("connect");
+        assert_eq!(ask_checked(&stream, false, "Push?"), None);
+        // With the variable set the ask goes through the door function, with or without the agent
+        // marker; the question reaches it unchanged.
         for marker in [true, false] {
-            let (sock, _seen) = broker("fake", "yes");
-            let path = sock.to_string_lossy().into_owned();
-            let mut pairs = vec![("OXA_CONFIRM_SOCK", path.as_str())];
+            let fd = broker.door_fd().to_string();
+            let mut pairs = vec![("OXA_CONFIRM_FD", fd.as_str())];
             if marker {
                 pairs.push(("OXA_CODING_AGENT", "true"));
             }
             let env = Env::from_pairs(&pairs);
-            assert_eq!(tty_confirm(&env)("q"), None, "marker {marker}");
+            let mut confirm = tty_confirm_with(&env, |_, question| {
+                assert_eq!(question, "Post?");
+                Some(true)
+            });
+            assert_eq!(confirm("Post?"), Some(true), "marker {marker}");
         }
-        let env = Env::from_pairs(&[
-            ("OXA_CODING_AGENT", "true"),
-            ("OXA_CONFIRM_SOCK", "/workspace/fake-confirm.sock"),
-        ]);
-        assert_eq!(tty_confirm(&env)("q"), None);
+        broker.close();
     }
 
+    /// In a test the door's creator is this very process, never an ancestor of itself, so the
+    /// real ask refuses: a descriptor swapped in by a model-run command cannot approve anything.
     #[test]
-    fn broker_is_trusted_only_as_an_ancestor_running_the_same_executable() {
-        let oxa = Path::new("/usr/bin/oxa");
-        assert!(is_session_broker(10, &[20, 10, 5], oxa, oxa));
-        // Not an ancestor: a listener a command started beside or below the consumer.
-        assert!(!is_session_broker(99, &[20, 10, 5], oxa, oxa));
-        // An ancestor that is not oxa's executable (a script that wraps the consumer).
-        assert!(!is_session_broker(
-            10,
-            &[20, 10, 5],
-            Path::new("/usr/bin/python3"),
-            oxa
-        ));
+    fn a_door_made_by_this_process_does_not_verify_for_a_verdict_only_ask() {
+        let broker = OwnerConfirm::start(YoloSwitch::new(Autonomy::Yolo)).expect("start");
+        let fd = broker.door_fd().to_string();
+        let env = Env::from_pairs(&[("OXA_CODING_AGENT", "true"), ("OXA_CONFIRM_FD", fd.as_str())]);
+        assert_eq!(tty_confirm(&env)("q"), None);
+        broker.close();
     }
 
     #[test]
@@ -829,10 +721,10 @@ mod confirm_tests {
 
     #[test]
     fn confirm_none_without_broker_or_tty() {
-        // The marker without a broker never reaches /dev/tty; a dead socket path is no answer.
+        // The marker without a broker never reaches /dev/tty; a bad descriptor is no answer.
         let env = Env::from_pairs(&[("OXA_CODING_AGENT", "true")]);
         assert_eq!(tty_confirm(&env)("q"), None);
-        let env = Env::from_pairs(&[("OXA_CONFIRM_SOCK", "/nonexistent/oxa-confirm.sock")]);
+        let env = Env::from_pairs(&[("OXA_CONFIRM_FD", "9999")]);
         assert_eq!(tty_confirm(&env)("q"), None);
     }
 }
@@ -967,8 +859,8 @@ text and posts it itself.",
             // A tool child hands the fields to the session's broker, which prepares, shows,
             // holds and posts: a fake listener cannot post, so nothing needs verifying. A tool
             // child without a broker can ask nobody. A manual terminal asks through /dev/tty.
-            let submission = if let Some(sock) = env.get(oxa_core::owner_confirm::SOCK_ENV) {
-                let mut gate = BrokerGate::new(Path::new(sock));
+            let submission = if env.get(oxa_core::owner_confirm::FD_ENV).is_some() {
+                let mut gate = BrokerGate::new(env);
                 submit_record(
                     &draft,
                     &storage,

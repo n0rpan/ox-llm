@@ -361,9 +361,9 @@ pub const ENV_TABLE: &[EnvVar] = &[
         kind: EnvKind::User,
     },
     EnvVar {
-        name: "OXA_CONFIRM_SOCK",
+        name: "OXA_CONFIRM_FD",
         pi_name: None,
-        description: "oxa sets it in tool children to the path of the session's private owner confirm socket, through which oxa commands ask the owner",
+        description: "oxa sets it in tool children to the number of the inherited descriptor of the session's owner confirm door, through which oxa commands ask the owner (there is no socket path)",
         supported: true,
         kind: EnvKind::Set,
     },

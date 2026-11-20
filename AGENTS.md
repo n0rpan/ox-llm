@@ -39,9 +39,9 @@ code, tests, CI and docs; the owner validates on hardware.
 - **Extension exec directory:** an extension's `oxa.exec` whose `cwd` is outside the session directory asks like a write (or read) outside the project before the directory is mounted; yolo does not ask, a `cwd` inside the session directory is unchanged (`exec_gated`, `oxa-core/src/host.rs`).
 - **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
   answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
-  broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
+  broker (`OXA_CONFIRM_FD`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
   files, web pages, other sessions, agent inbox) never approves. In yolo the broker answers yes and
-  records it. The broker socket is owned by the session (dir 0700, socket 0600). Do not add
+  records it. The broker door is a descriptor the session makes (no socket file). Do not add
   `/dev/tty`-only confirmations or env-marker refusals for owner actions.
 - **Sandbox standard (owner decision, #1512 and 2026-11-19). Do not add an OS sandbox outside these rules:**
   - **Interactive CLI the owner talks to:** no OS sandbox by default, on Linux and macOS alike. A
@@ -61,19 +61,58 @@ code, tests, CI and docs; the owner validates on hardware.
     cleared toolchain environment and keeps GitHub output redaction, on Linux and off it.
 - **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
   answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
-  broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
+  broker (`OXA_CONFIRM_FD`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
   files, web pages, other sessions, agent inbox) never approves. In yolo the broker answers yes and
   records it, compactly (hash, size, first title line; identical answers merge into one record with
-  a count, the text is not kept). The broker socket is owned by the session (dir 0700, socket 0600).
+  a count, the text is not kept). The broker door is a descriptor the session makes (no socket file).
   A request is a length-prefixed structured frame (title and body fields); the broker reads the
   length first and refuses an over-limit frame unread, with a `reason`. The broker's state, bounds
   and records do not depend on the extension host pump. A typed yes answers only a request whose
   dialog oxa has already shown: `serve` picks the request, creates its `DialogCancel` ticket and
   marks it shown in one step, so a yes typed before the UI registered its dialog is not lost and
-  never dismisses another dialog; a yes with no shown dialog, or for another request id, is ignored. A consumer a model-run command starts (`oxa work --publish`, `oxa report-issue`)
-  trusts only the sandbox's pinned socket or a listener verified as the session's own oxa process
-  (peer credentials: an ancestor, same executable, same user), whatever `OXA_CONFIRM_SOCK` and
-  `OXA_CODING_AGENT` say; a fake socket is no answer. Yolo is unchanged (the model already has the
+  never dismisses another dialog; a yes with no shown dialog, or for another request id, is ignored.
+  A tool child reaches the broker through an inherited descriptor (`OXA_CONFIRM_FD`, the door), never
+  a path: no mount, symlink or env path exists to attack. A publication needs no verification (the
+  parent posts the approved bytes). A verdict-only ask (`oxa work --publish`, lane push,
+  `oxa send --approve`) is accepted only when the door's creator is verified by peer credentials (an
+  ancestor, same executable, same user), whatever `OXA_CONFIRM_FD` and `OXA_CODING_AGENT` say; inside
+  a pid-namespaced sandbox it answers none with a message. Yolo is unchanged (the model already has the
+  owner's rights). The question is shown to the owner as the process's text, marked as such. Do not add
+  `/dev/tty`-only confirmations or env-marker refusals for owner actions.
+- **Sandbox standard (owner decision, #1512 and 2026-11-19). Do not add an OS sandbox outside these rules:**
+  - **Interactive CLI the owner talks to:** no OS sandbox by default, on Linux and macOS alike. A
+    dangerous command gets an owner approval (once, this session, always, deny), never bwrap.
+  - **Yolo:** no OS sandbox anywhere. That covers the owner's session and every worker, subagent,
+    lead-started, headless and unattended run it starts. Yolo never asks. It hard-refuses only
+    publishing secrets and an OS-breaking wipe, and the owner's typed yes passes everything else.
+    Exec hooks run unsandboxed under yolo too (`FullAccess::hook_sandbox`), `--offline` still holds.
+  - **Unattended runs without yolo** (workers, subagents, headless, `oxa work`) keep bwrap by default.
+  - **In-process guards stay in every mode:** secret masking, file-tool denials for private paths,
+    user-only settings, offline mode.
+  - **Reviews:** a finding that asks to sandbox an interactive or yolo path contradicts this standard.
+    Answer it by citing this rule, and do not apply it. A change that re-adds an OS sandbox to those
+    paths is a P1 finding.
+  - Off Linux the bash network is not restricted. The start notice and the model env note say so.
+  - Headless runs pursuing a goal and ownerless RPC count as unattended. Host bash uses a
+    cleared toolchain environment and keeps GitHub output redaction, on Linux and off it.
+- **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
+  answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
+  broker (`OXA_CONFIRM_FD`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
+  files, web pages, other sessions, agent inbox) never approves. In yolo the broker answers yes and
+  records it, compactly (hash, size, first title line; identical answers merge into one record with
+  a count, the text is not kept). The broker door is a descriptor the session makes (no socket file).
+  A request is a length-prefixed structured frame (title and body fields); the broker reads the
+  length first and refuses an over-limit frame unread, with a `reason`. The broker's state, bounds
+  and records do not depend on the extension host pump. A typed yes answers only a request whose
+  dialog oxa has already shown: `serve` picks the request, creates its `DialogCancel` ticket and
+  marks it shown in one step, so a yes typed before the UI registered its dialog is not lost and
+  never dismisses another dialog; a yes with no shown dialog, or for another request id, is ignored.
+  A tool child reaches the broker through an inherited descriptor (`OXA_CONFIRM_FD`, the door), never
+  a path. A publication needs no verification (the parent posts the approved bytes). A verdict-only
+  ask (`oxa work --publish`, lane push, `oxa send --approve`) is accepted only when the door's creator
+  is verified by peer credentials (an ancestor, same executable, same user), whatever
+  `OXA_CONFIRM_FD` and `OXA_CODING_AGENT` say; inside a pid-namespaced sandbox it answers none with a
+  message. Yolo is unchanged (the model already has the
   owner's rights). The question is shown to the owner as the process's text, marked as such. Do not add
   `/dev/tty`-only confirmations or env-marker refusals for owner actions.
 - **Lead web attach (#2075):** attached mode takes the session id from the user-only

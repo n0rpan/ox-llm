@@ -376,36 +376,50 @@ fn an_agent_marker_voids_the_ambient_owner_confirmation() {
     }
 }
 
+/// A lane push is a verdict-only ask: the child acts on the answer itself, so the door's creator
+/// must be the session's own oxa. Here the creator is the test process, not the `oxa` binary, so
+/// even a yolo broker cannot approve the push.
 #[test]
-fn an_agent_process_can_use_the_owner_confirm_broker() {
+fn a_door_made_by_another_executable_cannot_approve_a_lane_push() {
+    use std::os::unix::process::CommandExt;
     let env = TestEnv::new();
     setup(&env, r#"["true"]"#);
     lane_task(&env);
     let path = configure(&env);
     env.write("home/lane-pass", "");
-    let broker_dir = env.home().join("confirm-broker");
-    let broker = oxa_core::owner_confirm::OwnerConfirm::start(
-        &broker_dir,
-        oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Yolo),
-    )
-    .unwrap();
+    let broker =
+        oxa_core::owner_confirm::OwnerConfirm::start(oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Yolo))
+            .unwrap();
+    let door = broker.door_fd();
     let server = oxa_fake::FakeServer::start(edits(), oxa_fake::FakeOpts::default()).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
+    command
         .args(["work", "../tasks.json"])
         .current_dir(env.work().join("project"))
         .env_clear()
         .envs(env.envs(&server.url()))
         .env("PATH", path)
         .env("OXA_CODING_AGENT", "1")
-        .env(oxa_core::owner_confirm::SOCK_ENV, broker.sock_path())
-        .output()
-        .unwrap();
+        .env(oxa_core::owner_confirm::FD_ENV, door.to_string());
+    // SAFETY: runs between fork and exec; fcntl clears close-on-exec on the door in the child only.
+    unsafe {
+        command.pre_exec(move || {
+            libc::fcntl(door, libc::F_SETFD, 0);
+            Ok(())
+        });
+    }
+    let out = command.output().unwrap();
     let record: serde_json::Value = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(&out.stderr)));
-    assert_eq!(record["outcome"], "done", "{record}");
-    let approvals = broker.take_records();
-    assert_eq!(approvals.len(), 1);
-    assert_eq!(approvals[0].verdict, oxa_core::owner_confirm::Verdict::Yes);
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(
+        record["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("push confirmation"),
+        "{record}"
+    );
+    assert!(broker.take_records().is_empty(), "the broker was never asked");
 }
 
 #[test]

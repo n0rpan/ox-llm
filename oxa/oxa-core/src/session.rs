@@ -13,10 +13,8 @@ use oxa_proto::{
 };
 use oxa_session::{MemStore, SessionRef, SessionStore, Transcript, Tree};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
-
-static NEXT_CONFIRM_BROKER: AtomicU64 = AtomicU64::new(1);
 
 /// What a session is built from. `tools` are the built-ins to offer (normally
 /// `oxa_tools::builtin_tools()`); hook tools are added from `hooks` at each epoch.
@@ -491,6 +489,12 @@ impl Session {
         });
     }
 
+    /// The descriptor number of this session's owner confirm door (what tool children get as
+    /// `OXA_CONFIRM_FD`), or `None` without a broker.
+    pub fn owner_confirm_door(&self) -> Option<std::os::fd::RawFd> {
+        self.st.shared.owner_confirm().map(|broker| broker.door_fd())
+    }
+
     /// Install the publication side of the owner confirm broker (call after
     /// [`Session::enable_owner_confirm`]): the broker's publish requests are prepared, shown
     /// and posted by `publisher`, in this process. No-op without a broker.
@@ -500,19 +504,12 @@ impl Session {
         }
     }
 
-    /// Start the owner confirm broker (a per-session unix socket, dir 0700, socket 0600) and
-    /// export it to tool children as `OXA_CONFIRM_SOCK`. `yolo` is the session's switch: in
+    /// Start the owner confirm broker (a per-session door: a socketpair, no file or path) and
+    /// export its descriptor number to tool children as `OXA_CONFIRM_FD`. `yolo` is the session's switch: in
     /// yolo the broker answers yes and records it; otherwise the owner's dialog answer or
     /// typed message decides. A bind failure leaves the session without a broker.
     pub fn enable_owner_confirm(&mut self, yolo: oxa_proto::YoloSwitch) -> std::io::Result<()> {
-        // SDK sessions in one process share `Dirs`. Give each broker a distinct short
-        // path so it cannot unlink another session's socket when rebinding.
-        let dir = self.st.dirs.tmp_dir.join(format!(
-            "confirm-{}-{}",
-            std::process::id(),
-            NEXT_CONFIRM_BROKER.fetch_add(1, Ordering::Relaxed)
-        ));
-        let broker = crate::owner_confirm::OwnerConfirm::start(&dir, yolo)?;
+        let broker = crate::owner_confirm::OwnerConfirm::start(yolo)?;
         let old = self
             .st
             .shared
@@ -1918,8 +1915,8 @@ pub(crate) fn refresh_tool_env(st: &mut SessionState) {
     env.push(("OXA_CODING_AGENT".to_string(), "true".to_string()));
     if let Some(broker) = st.shared.owner_confirm() {
         env.push((
-            crate::owner_confirm::SOCK_ENV.to_string(),
-            broker.sock_path().to_string_lossy().into_owned(),
+            crate::owner_confirm::FD_ENV.to_string(),
+            broker.door_fd().to_string(),
         ));
     }
     st.tool_env = env;

@@ -188,15 +188,15 @@ impl PublishGate for LocalGate<'_> {
 /// A tool child's side: hand the fields to the session's broker, which prepares, shows, holds
 /// and posts. No listener verification is needed, because a fake listener cannot post.
 pub(crate) struct BrokerGate {
-    sock: PathBuf,
+    env: Env,
     approved: Option<UnixStream>,
     reason: Option<String>,
 }
 
 impl BrokerGate {
-    pub(crate) fn new(sock: &Path) -> Self {
+    pub(crate) fn new(env: &Env) -> Self {
         Self {
-            sock: sock.to_path_buf(),
+            env: env.clone(),
             approved: None,
             reason: None,
         }
@@ -207,14 +207,12 @@ impl PublishGate for BrokerGate {
     fn approve(&mut self, publication: &Publication) -> Option<bool> {
         self.approved = None;
         self.reason = None;
-        let Ok(stream) = UnixStream::connect(&self.sock) else {
-            return None;
-        };
-        let reply = owner_confirm::exchange(&stream, &Request::Publish(publication.clone()));
+        let conn = owner_confirm::connect(&self.env)?;
+        let reply = conn.ask(&Request::Publish(publication.clone()));
         self.reason = reply.reason.clone();
         if reply.approved {
-            self.approved = Some(stream);
-            return Some(true);
+            self.approved = conn.stream().try_clone().ok();
+            return self.approved.as_ref().map(|_| true);
         }
         reply.answer()
     }
@@ -258,8 +256,9 @@ mod tests {
     use oxa_fake::TestEnv;
     use oxa_proto::{Autonomy, YoloSwitch};
     use std::io::{Read, Write};
+    use std::os::fd::{FromRawFd, RawFd};
     use std::os::unix::fs::PermissionsExt;
-    use std::os::unix::net::UnixListener;
+    use std::os::unix::net::UnixStream;
     use std::sync::Arc;
 
     struct Fixture {
@@ -302,12 +301,45 @@ mod tests {
         }
     }
 
-    fn child_env(f: &Fixture, sock: &Path) -> Env {
+    fn child_env(f: &Fixture, door: RawFd) -> Env {
         Env::from_pairs(&[
             ("PATH", f.path.as_str()),
             ("OXA_CODING_AGENT", "true"),
-            ("OXA_CONFIRM_SOCK", &sock.display().to_string()),
+            ("OXA_CONFIRM_FD", &door.to_string()),
         ])
+    }
+
+    /// The listening end of a door the test made itself, as a model-run process could: a datagram
+    /// socketpair, and a function that receives the stream a client sends through it.
+    fn fake_door() -> (RawFd, RawFd) {
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: socketpair writes two descriptors into the array.
+        let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_DGRAM, 0, fds.as_mut_ptr()) };
+        assert_eq!(rc, 0);
+        (fds[0], fds[1])
+    }
+
+    fn receive_stream(door: RawFd) -> UnixStream {
+        let mut byte = [0u8; 1];
+        let mut iov = libc::iovec {
+            iov_base: byte.as_mut_ptr().cast(),
+            iov_len: 1,
+        };
+        let mut control = [0u8; 64];
+        // SAFETY: a zeroed msghdr is a valid empty message; the fields are set before use.
+        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+        msg.msg_iov = &mut iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control.as_mut_ptr().cast();
+        msg.msg_controllen = control.len() as _;
+        // SAFETY: recvmsg into buffers owned by this frame; the received descriptor is ours.
+        unsafe {
+            assert!(libc::recvmsg(door, &mut msg, 0) >= 0);
+            let cmsg = libc::CMSG_FIRSTHDR(&msg);
+            assert!(!cmsg.is_null());
+            let fd = std::ptr::read_unaligned(libc::CMSG_DATA(cmsg).cast::<RawFd>());
+            UnixStream::from_raw_fd(fd)
+        }
     }
 
     fn submit_as_child(f: &Fixture, env: &Env) -> (i32, String) {
@@ -339,7 +371,7 @@ mod tests {
             &Settings::default(),
             &f.env.work(),
         )));
-        let (code, out) = submit_as_child(&f, &child_env(&f, broker.sock_path()));
+        let (code, out) = submit_as_child(&f, &child_env(&f, broker.door_fd()));
         assert_eq!(code, 0, "{out}");
         assert!(
             out.contains("Posted: https://github.com/oxstack/ox-llm/issues/7"),
@@ -361,20 +393,19 @@ mod tests {
         broker.close();
     }
 
-    /// A listener the model started can answer yes, but it cannot post: the child runs no `gh`.
+    /// A door the model made can answer yes, but it cannot post: the child runs no `gh`.
     #[test]
-    fn a_fake_listener_answering_yes_makes_the_child_post_nothing() {
+    fn a_fake_door_answering_yes_makes_the_child_post_nothing() {
         let f = fixture("It stalls.");
-        let sock = f.env.root().join("fake.sock");
-        let listener = UnixListener::bind(&sock).unwrap();
+        let (listening, client) = fake_door();
         let fake = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            let mut stream = receive_stream(listening);
             let mut buf = [0u8; 8192];
             let _ = stream.read(&mut buf);
             let _ = writeln!(stream, r#"{{"answer":"yes","source":"yolo","approved":true}}"#);
             let _ = stream.read(&mut buf);
         });
-        let (code, out) = submit_as_child(&f, &child_env(&f, &sock));
+        let (code, out) = submit_as_child(&f, &child_env(&f, client));
         fake.join().unwrap();
         assert_eq!(code, 1, "{out}");
         assert!(!f.log.exists(), "the child never runs gh");
