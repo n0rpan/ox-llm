@@ -738,3 +738,47 @@ fn saved_native_result_recovers_after_another_task_acknowledges_the_cursor() {
     assert_eq!(row.state.attempts, 1);
     assert!(row.data.native_binding.as_ref() == Some(&fixture.binding));
 }
+
+/// #1376: the publication hold is not offline. The worker runs against the provider, finishes
+/// locally verified, and the record says that publication is held (nothing was pushed).
+#[test]
+fn a_held_native_task_runs_online_and_ends_locally_verified_with_publication_held() {
+    let fixture = Fixture::new();
+    renew(&fixture);
+    let mut done = ScriptTurn::tool(
+        "done",
+        "goal_done",
+        r#"{"status":"complete","evidence":"Synthetic held task."}"#,
+    );
+    done.text = Some("Synthetic held task complete".into());
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::tool("write", "write", r#"{"path":"held.txt","content":"held\n"}"#),
+            done,
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let (_, output) = fixture.run(&server);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        server.requests().iter().any(|request| request.max_tokens > 0),
+        "the worker reached the provider"
+    );
+    let checkpoint = checkpoint(&fixture);
+    assert_eq!(checkpoint["record"]["step"], "finished");
+    assert_eq!(checkpoint["record"]["outcome"], "done");
+    assert_eq!(checkpoint["record"]["detail"], "local verified; publication held");
+    // `--publish` on the native queue stays refused.
+    let (_, refused) = fixture.invoke(
+        &server,
+        &[
+            "work",
+            "--native-queue",
+            "--publish",
+            "--config",
+            fixture.config.to_str().unwrap(),
+        ],
+    );
+    assert!(!refused.status.success(), "{refused:?}");
+}

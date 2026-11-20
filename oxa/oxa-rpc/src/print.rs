@@ -473,8 +473,16 @@ fn headless_inbox(
     let handle = session.handle();
     let owner = id.clone();
     // Like the RPC owner, a message that arrives once the run is wrapping up stays on disk.
-    let watch = oxa_session::Inbox::watch(agent_dir, &id, move |text| {
-        !handle.wrap_up_requested() && handle.follow_up_for(&owner, text)
+    // #2183: a steer reaches the run at its next tool boundary, a follow-up when it stops.
+    let watch = oxa_session::Inbox::watch_messages(agent_dir, &id, move |item| {
+        if handle.wrap_up_requested() {
+            return false;
+        }
+        match item {
+            oxa_session::InboxItem::Steer(text) => handle.steer_for(&owner, text),
+            oxa_session::InboxItem::FollowUp(text) => handle.follow_up_for(&owner, text),
+            oxa_session::InboxItem::Control(_) => false,
+        }
     });
     match watch {
         Ok(inbox) => Some(inbox),

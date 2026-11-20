@@ -293,6 +293,256 @@ fn a_worker_in_publish_pending_is_escalated_in_the_same_pass() {
     assert!(state.get("stuck").is_none(), "{state}");
 }
 
+/// The sample's merge queue (exact heads) in its panels record.
+fn queue_of(mut panels: Value, prs: &[(u64, String)]) -> Value {
+    let nodes: Vec<Value> = prs
+        .iter()
+        .map(|(number, head)| json!({"pullRequest": {"number": number, "headRefOid": head}}))
+        .collect();
+    panels["mergeQueue"] = json!({"entries": {"totalCount": nodes.len(), "nodes": nodes}});
+    panels
+}
+
+/// Add one Reader record (`landing`, `reviews`, ...) to an already written sample.
+fn add_field(path: &Path, key: &str, value: Value) {
+    let mut sample: Value = serde_json::from_str(fs::read_to_string(path).unwrap().trim()).unwrap();
+    sample[key] = value;
+    fs::write(path, format!("{sample}\n")).unwrap();
+}
+
+fn add_landing(path: &Path, landing: Value) {
+    add_field(path, "landing", landing);
+}
+
+fn escalated(state: &Value) -> Vec<String> {
+    state["stuck"]["escalated"]
+        .as_array()
+        .map(|ids| ids.iter().map(|id| id.as_str().unwrap().to_owned()).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_queue_age_alarm_escalates_only_while_the_pr_is_queued_at_that_head() {
+    // #2091: the alarm and the queue must agree on the exact (number, head).
+    let head = "a".repeat(40);
+    let alarm = json!({"80": {"queue_alarm": true, "queue": {"enqueued_at": 1}}});
+    let cases: [(&str, Option<Vec<(u64, String)>>, bool); 4] = [
+        ("queued at the alarmed head", Some(vec![(80, head.clone())]), true),
+        ("absent from the queue", Some(vec![]), false),
+        ("queued at another head", Some(vec![(80, "b".repeat(40))]), false),
+        ("queue unobserved", None, false),
+    ];
+    for (name, queue, expected) in cases {
+        let (_test, _dirs, board, _situation, _id, command) = lead_test();
+        let now = oxa_proto::time::now_ms() / 1000;
+        let panels = queue.map(|queue| queue_of(panels_record(now, 10 * 60), &queue));
+        write_sample(
+            &board,
+            now,
+            &[(80, Action::WaitRequiredCi, true, None, None)],
+            panels,
+        );
+        add_landing(&board, alarm.clone());
+        let state = run_once(&command, None);
+        assert_eq!(
+            escalated(&state).contains(&"lead:stuck:queue:80".to_owned()),
+            expected,
+            "{name}: {state}"
+        );
+    }
+}
+
+#[test]
+fn a_publication_of_another_commit_does_not_publish_the_accepted_one() {
+    // #2090: a task counts as published only when the PR head is the accepted commit.
+    let now_ms = oxa_proto::time::now_ms();
+    let now = now_ms / 1000;
+    for (published_head, expected) in [("e", true), ("d", false)] {
+        let (_test, _dirs, board, situation, _id, command) = lead_test();
+        write_sample(&board, now, &[], Some(panels_record(now, 10 * 60)));
+        let mut snapshot = include_str!("../../oxa-proto/tests/fixtures/work/evening.jsonl")
+            .lines()
+            .find_map(|line| oxa_proto::work::Snapshot::from_json(line.as_bytes()).ok())
+            .unwrap();
+        snapshot.at_ms = now_ms;
+        snapshot.local_accepted = vec![oxa_proto::work::LocalAcceptance {
+            task: "lander-1".into(),
+            commit: "d".repeat(40),
+            evidence: oxa_proto::work::Evidence {
+                kind: oxa_proto::work::EvidenceKind::LocalCheck,
+                id: "evidence-example".into(),
+            },
+        }];
+        snapshot.published = vec![oxa_proto::work::Publication {
+            task: "lander-1".into(),
+            pr: oxa_proto::work::PullRequest {
+                number: 7,
+                head: published_head.repeat(40),
+            },
+        }];
+        fs::write(&situation, snapshot.to_json().unwrap()).unwrap();
+        fs::set_permissions(&situation, fs::Permissions::from_mode(0o600)).unwrap();
+        let state = run_once(&command, Some(&situation));
+        assert_eq!(
+            escalated(&state).contains(&"lead:stuck:publish:lander-1".to_owned()),
+            expected,
+            "{state}"
+        );
+    }
+}
+
+#[test]
+fn a_stall_with_only_ready_rows_proposes_the_next_action() {
+    // #2088: no report row and no escalation must not end the pass silently.
+    let (_test, _dirs, board, _situation, _id, command) = lead_test();
+    let now = oxa_proto::time::now_ms() / 1000;
+    write_sample(
+        &board,
+        now,
+        &[(72, Action::Ready, true, None, None)],
+        Some(panels_record(now, 46 * 60)),
+    );
+    let state = run_once(&command, None);
+    assert_eq!(state["state"], "awaiting_owner", "{state}");
+    assert_eq!(state["asks"][0]["id"], json!("lead:board:72"));
+    assert!(state["stuck"]["signals"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("merge_stalled")));
+}
+
+#[test]
+fn a_thread_held_pr_is_reported_with_its_head_age_and_owner() {
+    // #1549: green CI and one optional failure still leave an unresolved thread
+    // held; the report names the exact head, the thread age and who takes it.
+    let (_test, _dirs, board, _situation, _id, command) = lead_test();
+    let now = oxa_proto::time::now_ms() / 1000;
+    write_sample(
+        &board,
+        now,
+        &[
+            (90, Action::Ready, true, None, None),
+            (91, Action::Ready, true, Some(now - 60), Some("idle-worker")),
+        ],
+        Some(panels_record(now, 10 * 60)),
+    );
+    let held = |incomplete| {
+        json!({"queue_alarm": false, "threads": {
+            "unresolved": 2, "current": 1, "oldest_at": now - 3600,
+            "authors": ["reviewer"], "incomplete": incomplete,
+        }})
+    };
+    add_landing(&board, json!({"90": held(false)}));
+    let state = run_once(&command, None);
+    let row = stall_report(&state)
+        .into_iter()
+        .find(|row| row["pr"] == json!(90))
+        .unwrap_or_else(|| panic!("{state}"));
+    assert_eq!(row["head"], json!("a".repeat(40)));
+    assert_eq!(row["threads"], json!(2));
+    assert_eq!(row["thread_authors"], json!(["reviewer"]));
+    assert_eq!(row["assignee"], json!("idle-worker"));
+    assert!((3600..3700).contains(&row["oldest_thread_age_secs"].as_u64().unwrap()));
+    assert_eq!(row["incomplete"], json!(false));
+    // The hold is a report only: the pass still proposes the next Board action.
+    assert_eq!(state["state"], "awaiting_owner", "{state}");
+    assert!(
+        state["asks"][0]["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("lead:board:"),
+        "{state}"
+    );
+
+    add_landing(&board, json!({"90": held(true)}));
+    let state = run_once(&command, None);
+    let row = stall_report(&state)
+        .into_iter()
+        .find(|row| row["pr"] == json!(90))
+        .unwrap();
+    assert_eq!(row["incomplete"], json!(true), "an incomplete page is reported");
+}
+
+#[test]
+fn a_refused_review_identity_is_escalated_never_waited_on() {
+    // #1457: the reviewer refused the requester; the Lead says so instead of waiting.
+    let (_test, _dirs, board, _situation, _id, command) = lead_test();
+    let now = oxa_proto::time::now_ms() / 1000;
+    write_sample(
+        &board,
+        now,
+        &[(50, Action::WaitReview, true, None, None)],
+        Some(panels_record(now, 10 * 60)),
+    );
+    add_field(
+        &board,
+        "reviews",
+        json!({"50": {"decision": {"requester_rejected": {"reviewer": "codex"}}, "requests": []}}),
+    );
+    add_field(
+        &board,
+        "quota_deferred",
+        json!([{"work": "queued_run_pages", "resource": "core", "awaiting_observation": true}]),
+    );
+    let state = run_once(&command, None);
+    assert_eq!(state["state"], "stuck_escalated", "{state}");
+    assert_eq!(escalated(&state), ["lead:stuck:review-identity:50"]);
+    assert!(state["stuck"]["signals"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("review_rejected:50")));
+    assert_eq!(state["quota_deferred"][0]["work"], "queued_run_pages");
+}
+
+#[test]
+fn a_queued_pr_with_a_current_thread_is_escalated_for_dequeue() {
+    // #1673: a queued head with an unresolved current thread asks the owner to dequeue.
+    let (_test, _dirs, board, _situation, _id, command) = lead_test();
+    let now = oxa_proto::time::now_ms() / 1000;
+    let panels = queue_of(panels_record(now, 10 * 60), &[(95, "a".repeat(40))]);
+    write_sample(
+        &board,
+        now,
+        &[(95, Action::Ready, true, None, None)],
+        Some(panels),
+    );
+    add_landing(
+        &board,
+        json!({"95": {"queue_alarm": false, "queue": {"enqueued_at": now - 60}, "threads": {
+            "unresolved": 1, "current": 1, "oldest_at": now - 120, "authors": ["reviewer"], "incomplete": false,
+        }}}),
+    );
+    let state = run_once(&command, None);
+    assert_eq!(state["state"], "stuck_escalated", "{state}");
+    assert_eq!(escalated(&state), ["lead:stuck:queued-findings:95"]);
+    assert!(state["stuck"]["signals"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("queued_findings:95")));
+}
+
+#[test]
+fn a_queued_pr_with_only_outdated_threads_is_not_escalated() {
+    let (_test, _dirs, board, _situation, _id, command) = lead_test();
+    let now = oxa_proto::time::now_ms() / 1000;
+    let panels = queue_of(panels_record(now, 10 * 60), &[(95, "a".repeat(40))]);
+    write_sample(
+        &board,
+        now,
+        &[(95, Action::Ready, true, None, None)],
+        Some(panels),
+    );
+    add_landing(
+        &board,
+        json!({"95": {"queue_alarm": false, "queue": {"enqueued_at": now - 60}, "threads": {
+            "unresolved": 1, "current": 0, "oldest_at": now - 120, "authors": ["reviewer"], "incomplete": false,
+        }}}),
+    );
+    let state = run_once(&command, None);
+    assert!(escalated(&state).is_empty(), "{state}");
+    assert!(!state["asks"].to_string().contains("queued-findings"), "{state}");
+}
+
 #[test]
 fn running_lead_reopens_the_same_owner_ask_after_process_kill() {
     let test = TestEnv::new();

@@ -14,7 +14,7 @@
 //! * `Hooks::shutdown` stops every worker through the supervisor.
 //! * K5b: `send {name, text}` publishes `text` to the worker's session inbox (the writer behind
 //!   `oxa send`) and reports the delivery and the worker's phase. The child id is read from the
-//!   registry record of `name`. `poll_event("worker", {name})` is done when the worker finished
+//!   registry record of `name`. `poll_event("worker_done", {name})` is done when the worker finished
 //!   or its process is gone. On `session_start` (startup, resume) each dead, unfinished worker is
 //!   relaunched through the same launch path (`resume.rs`) unless `oxa.workers.resumeOnStart`
 //!   is false.
@@ -47,13 +47,20 @@ const COMMAND: &str = "oxa worker";
 pub const SETTING_ENABLED: &str = "oxa.workers.enabled";
 /// Setting: the most live workers one session runs.
 pub const SETTING_MAX: &str = "oxa.workers.max";
+pub const SETTING_REPOSITORY: &str = "oxa.workers.repository";
+pub const SETTING_SEND_ACK: &str = "oxa.workers.sendAckSeconds";
+
+/// `oxa.workers.sendAckSeconds` from the user settings only (default 10, 0 = do not wait).
+pub fn send_ack_seconds(settings: &oxa_config::Settings) -> u64 {
+    u64::from(settings.user_u32(SETTING_SEND_ACK, 10))
+}
 /// Env: set in a worker child (`launch::child_env` sets it to `1`). Any value, even empty, means
 /// nested; only an unset variable lets the hook set be built.
 pub const ENV_WORKER_DEPTH: &str = "OXA_WORKER_DEPTH";
 
-const DESCRIPTION: &str = "Background workers: each is a separate oxa process that runs one goal in its own git worktree on branch agent/<name>. Actions: start {name, goal, model?, kind?, job?, reason?, mode?} starts one (name: lowercase letters, digits and dashes, at most 40 characters). Without model the owner's policy (oxa.workers.models) picks one by kind (a job kind such as review, docs or tests); after repeated failures on the same job (job: a stable key such as pr-2127, default the name) it escalates; with no policy the worker uses this session's model. reason is one line on why you chose that model or kind. list shows this session's workers, their model, choice and state; result {name, result: ok or failed, reason} records how a worker's work turned out (call it with failed when review or CI rejects it, so the policy can escalate); stop {name} stops one; send {name, text} delivers a follow-up message to a worker's session inbox and reports its phase. mode is plan, ask, workspace, auto or yolo, never wider than this session; without mode the worker inherits this session's level (a yolo session starts yolo workers, so they can push, open PRs and read CI).";
+const DESCRIPTION: &str = "Background workers: each is a separate oxa process that runs one goal in its own git worktree on branch agent/<name>. Actions: start {name, goal, model?, kind?, job?, reason?, mode?} starts one (name: lowercase letters, digits and dashes, at most 40 characters). Outside Git, a trusted Lead needs the owner to set oxa.workers.repository; no repository tool argument is accepted. Without model the owner's policy (oxa.workers.models) picks one by kind (a job kind such as review, docs or tests); after repeated failures on the same job (job: a stable key such as pr-2127, default the name) it escalates; with no policy the worker uses this session's model. reason is one line on why you chose that model or kind. list shows this session's workers, their model, choice and state; result {name, result: ok or failed, reason} records how a worker's work turned out (call it with failed when review or CI rejects it, so the policy can escalate); stop {name} stops one; send {name, text} delivers a follow-up message to a worker's session inbox and reports its phase. mode is plan, ask, workspace, auto or yolo, never wider than this session; without mode the worker inherits this session's level (a yolo session starts yolo workers, so they can push, open PRs and read CI).";
 
-const SCHEMA: &str = r#"{"type":"object","properties":{"action":{"type":"string","enum":["start","list","stop","send","result"]},"name":{"type":"string"},"goal":{"type":"string"},"text":{"type":"string"},"model":{"type":"string"},"kind":{"type":"string"},"job":{"type":"string"},"reason":{"type":"string"},"result":{"type":"string","enum":["ok","failed"]},"mode":{"type":"string","enum":["plan","ask","workspace","auto","yolo"]}},"required":["action"]}"#;
+const SCHEMA: &str = r#"{"type":"object","properties":{"action":{"type":"string","enum":["start","list","stop","send","result"]},"name":{"type":"string"},"goal":{"type":"string"},"text":{"type":"string"},"retry":{"type":"string"},"withdraw":{"type":"string"},"model":{"type":"string"},"kind":{"type":"string"},"job":{"type":"string"},"reason":{"type":"string"},"result":{"type":"string","enum":["ok","failed"]},"mode":{"type":"string","enum":["plan","ask","workspace","auto","yolo"]}},"required":["action"]}"#;
 
 /// `oxa.workers.enabled` from the user settings only (default true): a project file cannot turn
 /// process launch on or off.
@@ -78,6 +85,8 @@ pub struct WorkerConfig {
     pub cwd: PathBuf,
     /// The binary a worker runs: this executable in production.
     pub oxa_bin: PathBuf,
+    /// Only the trusted live Lead may use the user-configured repository fallback.
+    pub lead_dirs: Option<oxa_config::Dirs>,
     pub agent_dir: PathBuf,
     pub max: usize,
     /// The process supervisor (`proc::start`: the trusted `kill` helper and
@@ -93,8 +102,14 @@ pub struct WorkerConfig {
     pub yolo: YoloSwitch,
     /// `oxa.workers.resumeOnStart`: relaunch dead, unfinished workers when the session opens.
     pub resume_on_start: bool,
+    /// Whether the surface permits a separate `wait` tool.
+    pub advertise_wait: bool,
+    /// `oxa.workers.sendAckSeconds`: how long `send` waits for the worker to take the message; 0 = do not wait.
+    pub send_ack_seconds: u64,
     /// `oxa.workers.models`: the owner's model choice policy (empty: the session model).
     pub models: ModelPolicy,
+    /// #1541: the shared build cache of this repository, for the Workers view (`None`: off).
+    pub cache: Option<crate::worker_cache::CacheView>,
 }
 
 /// What the parent session allows a worker to have.
@@ -111,6 +126,7 @@ pub struct ParentScope {
 /// State shared by the tool and the hook set.
 pub struct WorkerCore {
     cwd: PathBuf,
+    lead_dirs: Mutex<Option<oxa_config::Dirs>>,
     /// Private copy opened from the session executable before model-controlled work starts.
     oxa_bin: PathBuf,
     pin_error: Option<String>,
@@ -119,11 +135,13 @@ pub struct WorkerCore {
     agent_dir: PathBuf,
     max: AtomicUsize,
     models: Mutex<ModelPolicy>,
+    cache: Option<crate::worker_cache::CacheView>,
     sessions_dir: PathBuf,
     parent_env: Vec<(String, String)>,
     parent_scope: ParentScope,
     yolo: Mutex<YoloSwitch>,
     resume_on_start: bool,
+    send_ack_seconds: u64,
     /// The owner Lead session: resume waits for [`WorkerHooks::resume_after_owner_check`].
     hold_resume: AtomicBool,
     /// Explicit owner opt-out: even the post-binding-check resume stays disabled.
@@ -183,6 +201,7 @@ pub(super) fn parse_mode(text: &str) -> Option<WorkerMode> {
 struct HostTools {
     path: std::ffi::OsString,
     project: PathBuf,
+    host_project: PathBuf,
     home: PathBuf,
 }
 
@@ -201,17 +220,8 @@ impl HostTools {
         let cwd_c = cwd
             .canonicalize()
             .map_err(|e| format!("cannot resolve {}: {e}", cwd.display()))?;
-        let project = cwd_c
-            .ancestors()
-            .find(|p| p.join(".git").exists())
-            .ok_or("this directory is not in a git repository")?
-            .to_path_buf();
-        let host_project = project
-            .ancestors()
-            .filter(|p| p.join(".git").exists())
-            .last()
-            .unwrap_or(&project)
-            .to_path_buf();
+        let (project, host_project) =
+            crate::work_cmd::git_boundaries(&cwd_c).ok_or("this directory is not in a git repository")?;
         let home = value("HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
@@ -220,9 +230,14 @@ impl HostTools {
             .map(std::ffi::OsString::from)
             .or_else(|| std::env::var_os("PATH"))
             .unwrap_or_default();
-        let path = crate::netguard::trusted_work_path(&path, &host_project, &home)
+        let path = crate::netguard::trusted_work_path(&path, host_project, &home)
             .ok_or("cannot resolve a trusted PATH")?;
-        Ok(HostTools { path, project, home })
+        Ok(HostTools {
+            path,
+            project: project.to_path_buf(),
+            host_project: host_project.to_path_buf(),
+            home,
+        })
     }
 
     fn program(&self, name: &str) -> Option<PathBuf> {
@@ -241,6 +256,29 @@ fn host_git(tools: &HostTools, git: &Path, dir: &Path, args: &[&str]) -> Command
     let mut command = oxa_work::metadata_git(git, &tools.path, dir, args);
     command.stdin(Stdio::null());
     command
+}
+
+/// Confirm that Git will use the checkout and metadata covered by the permission check.
+fn is_primary_checkout(tools: &HostTools, git: &Path, repo: &Path) -> bool {
+    let metadata = repo.join(".git");
+    if !fs::symlink_metadata(&metadata).is_ok_and(|m| m.is_dir()) {
+        return false;
+    }
+    let matches = |arg, expected: &Path| {
+        host_git(tools, git, repo, &["rev-parse", "--path-format=absolute", arg])
+            .output()
+            .is_ok_and(|out| {
+                out.status.success()
+                    && std::str::from_utf8(&out.stdout).is_ok_and(|path| {
+                        Path::new(path.trim_end_matches('\n'))
+                            .canonicalize()
+                            .ok()
+                            .as_deref()
+                            == Some(expected)
+                    })
+            })
+    };
+    matches("--show-toplevel", repo) && matches("--git-common-dir", &metadata)
 }
 
 /// The identity of the executable a worker runs. Any rename over it or write to it changes the
@@ -445,7 +483,7 @@ fn attempts(records: &[WorkerRecord], job: &str, sessions_dir: &Path) -> Vec<Att
             model: r.model.clone(),
             kind: r.kind.clone(),
             job_matches: r.job_key() == job,
-            failed: model_policy::failed(&r.result, &live_state(r, sessions_dir)),
+            failed: model_policy::failed(&r.result, &live_state(r, sessions_dir), r.stopped),
         })
         .collect()
 }
@@ -461,14 +499,17 @@ impl WorkerCore {
             oxa_bin,
             pin_error,
             cwd: cfg.cwd,
+            lead_dirs: Mutex::new(cfg.lead_dirs),
             agent_dir: cfg.agent_dir,
             max: AtomicUsize::new(cfg.max),
             models: Mutex::new(cfg.models),
+            cache: cfg.cache,
             sessions_dir: cfg.sessions_dir,
             parent_env: cfg.parent_env,
             parent_scope: cfg.parent_scope,
             yolo: Mutex::new(cfg.yolo),
             resume_on_start: cfg.resume_on_start,
+            send_ack_seconds: cfg.send_ack_seconds,
             hold_resume: AtomicBool::new(false),
             resume_allowed: AtomicBool::new(true),
             persistent: AtomicBool::new(false),
@@ -582,6 +623,17 @@ impl WorkerCore {
 
     /// `start`: see the module docs for the order of the checks.
     pub fn start(&self, args: &Value, cwd: &Path, mode: Mode, autonomy: Autonomy) -> ToolOutput {
+        self.start_at(args, cwd, mode, autonomy, None)
+    }
+
+    fn start_at(
+        &self,
+        args: &Value,
+        cwd: &Path,
+        mode: Mode,
+        autonomy: Autonomy,
+        lead: Option<&Path>,
+    ) -> ToolOutput {
         let _gate = lock(&self.gate);
         let name = str_arg(args, "name").unwrap_or("");
         if !valid_name(name) {
@@ -682,12 +734,40 @@ impl WorkerCore {
                 max
             ));
         }
-        let tools = match HostTools::resolve(&self.parent_env, cwd) {
+        let mut tools = match HostTools::resolve(&self.parent_env, cwd) {
             Ok(tools) => tools,
             Err(e) => return ToolOutput::error(format!("worker: {e}")),
         };
+        if let Some(lead) = lead {
+            let Some(path) = crate::netguard::trusted_work_path(&tools.path, lead, &tools.home) else {
+                return ToolOutput::error("worker: cannot resolve a trusted Lead PATH");
+            };
+            tools.path = path;
+            if !self
+                .supervisor
+                .kill_is_trusted_in(&tools.host_project, &tools.home)
+                || !self.supervisor.kill_is_trusted_in(lead, &tools.home)
+            {
+                return ToolOutput::error("worker: the process supervisor's kill helper is inside the repository or is no longer trusted");
+            }
+        }
         let Some(git) = tools.program("git") else {
             return ToolOutput::error("worker: git was not found in a trusted PATH directory");
+        };
+        if lead.is_some() && !is_primary_checkout(&tools, &git, cwd) {
+            return ToolOutput::error(
+                "worker: oxa.workers.repository must name a primary Git checkout with local Git metadata",
+            );
+        }
+        // `env` runs outside the sandbox: resolved from the session's project like every other
+        // host tool, never from a project-controlled PATH entry.
+        let Some(env_bin) = tools.program("env").filter(|bin| {
+            lead.is_none_or(|lead| {
+                bin.canonicalize()
+                    .is_ok_and(|real| !real.starts_with(lead) && !real.starts_with(&tools.host_project))
+            })
+        }) else {
+            return ToolOutput::error("worker: env was not found in a trusted PATH directory");
         };
         let branch = format!("agent/{name}");
         let refname = format!("refs/heads/{branch}");
@@ -789,11 +869,6 @@ impl WorkerCore {
             Err(e) => return ToolOutput::error(format!("worker: {e}")),
         };
         let env = worker_env(&self.parent_env, oxa_proto::offline(), &tools.path);
-        // `env` runs outside the sandbox: resolved from the session's project like every other
-        // host tool, never from a project-controlled PATH entry.
-        let Some(env_bin) = tools.program("env") else {
-            return ToolOutput::error("worker: env was not found in a trusted PATH directory");
-        };
         if let Err(e) = self.check_bin() {
             return ToolOutput::error(format!("worker: {e}"));
         }
@@ -867,6 +942,9 @@ impl WorkerCore {
                 "\nbudget: this worker may use up to {tokens} tokens (--max-tokens, the same allowance as this session; the session and its workers together may use more)"
             ));
         }
+        text.push_str(&format!(
+            "\nreceipt {session_id}: delivered (process group {pgid} started)"
+        ));
         ToolOutput::ok(text)
     }
 
@@ -883,7 +961,8 @@ impl WorkerCore {
         if records.is_empty() {
             return ToolOutput::ok("no workers in this session");
         }
-        let lines: Vec<String> = records.iter().map(|r| describe(r, &self.sessions_dir)).collect();
+        let mut lines: Vec<String> = records.iter().map(|r| describe(r, &self.sessions_dir)).collect();
+        lines.extend(self.cache.as_ref().and_then(crate::worker_cache::describe));
         ToolOutput::ok(lines.join("\n"))
     }
 
@@ -945,25 +1024,38 @@ impl WorkerCore {
             Ok(Some(_)) => {}
             Ok(None) => {
                 return ToolOutput::error(format!(
-                    "worker: cannot stop {name}: this process does not own that worker"
+                    "worker: cannot stop {name}: this process does not own that worker\nreceipt {}: rejected",
+                    records[index].session_id
                 ))
             }
-            Err(e) => return ToolOutput::error(format!("worker: cannot stop {name}: {e}")),
+            Err(e) => {
+                return ToolOutput::error(format!(
+                    "worker: cannot stop {name}: {e}\nreceipt {}: not_delivered",
+                    records[index].session_id
+                ))
+            }
         }
         records[index].stopped = true;
         if let Err(e) = registry::save(&self.agent_dir, &parent, &records) {
             return ToolOutput::error(format!("worker: {e}"));
         }
-        ToolOutput::ok(format!("stopped worker {name}"))
+        ToolOutput::ok(format!(
+            "stopped worker {name}\nreceipt {}: delivered (process group confirmed stopped)",
+            records[index].session_id
+        ))
     }
 
-    /// `send {name, text}`: publish `text` to the inbox of the worker's session. The session id is
-    /// the one in the registry record, never a value from the model. Acceptance means the file was
-    /// published; the child takes it up when its headless goal run watches the inbox.
+    /// `send {name, text}`: publish `text` to the inbox of the worker's session and return a
+    /// receipt: `delivered` once the worker's inbox owner took the file, `not_delivered` when
+    /// `oxa.workers.sendAckSeconds` ran out first, `queued` when the owner turned the wait off.
+    /// `send {name, retry: <id>}` waits again for the same message and `{name, withdraw: <id>}`
+    /// removes it, so a retry never creates a second writer. The session id is the one in the
+    /// registry record, never a value from the model.
     pub fn send(&self, args: &Value) -> ToolOutput {
         let name = str_arg(args, "name").unwrap_or("");
         let text = str_arg(args, "text").unwrap_or("");
-        if text.trim().is_empty() {
+        let (retry, withdraw) = (str_arg(args, "retry"), str_arg(args, "withdraw"));
+        if text.trim().is_empty() && retry.is_none() && withdraw.is_none() {
             return ToolOutput::error("worker: send needs text");
         }
         let (parent, _) = self.session();
@@ -977,14 +1069,41 @@ impl WorkerCore {
         let Some(rec) = records.iter().find(|r| r.name == name) else {
             return ToolOutput::error(format!("worker: no worker named {name:?}"));
         };
-        if let Err(e) = oxa_session::send_inbox(&self.agent_dir, &rec.session_id, text) {
-            return ToolOutput::error(format!("worker: cannot deliver to {name}: {e}"));
+        let phase = label(&live_state(rec, &self.sessions_dir));
+        if let Some(id) = withdraw {
+            return match oxa_session::withdraw_inbox(&self.agent_dir, &rec.session_id, id) {
+                Ok(true) => ToolOutput::ok(format!("receipt {id}: withdrawn; worker phase: {phase}")),
+                Ok(false) => ToolOutput::ok(format!(
+                    "receipt {id}: delivered (already taken); worker phase: {phase}"
+                )),
+                Err(e) => ToolOutput::error(format!("worker: cannot withdraw from {name}: {e}")),
+            };
         }
-        ToolOutput::ok(format!(
-            "delivered to worker {name}: file accepted in the inbox of session {}; worker phase: {}",
-            rec.session_id,
-            label(&live_state(rec, &self.sessions_dir))
-        ))
+        let id = match retry {
+            Some(id) => id.to_owned(),
+            // #2183: the parent's message steers the worker at its next tool boundary.
+            None => match oxa_session::send_inbox_steer_receipt(&self.agent_dir, &rec.session_id, text) {
+                Ok(id) => id,
+                Err(e) => return ToolOutput::error(format!("worker: cannot deliver to {name}: {e}")),
+            },
+        };
+        if self.send_ack_seconds == 0 && retry.is_none() {
+            return ToolOutput::ok(format!(
+                "receipt {id}: queued (file accepted in the inbox of session {}); worker phase: {phase}",
+                rec.session_id
+            ));
+        }
+        let wait = std::time::Duration::from_secs(self.send_ack_seconds);
+        match oxa_session::await_delivery(&self.agent_dir, &rec.session_id, &id, wait) {
+            Ok(oxa_session::DeliveryOutcome::Delivered) => ToolOutput::ok(format!(
+                "receipt {id}: delivered; worker phase: {phase}"
+            )),
+            Ok(oxa_session::DeliveryOutcome::NotDelivered) => ToolOutput::error(format!(
+                "receipt {id}: not_delivered after {} s; worker phase: {phase}. The file is still queued: send {{name: {name:?}, retry: {id:?}}} to wait again or {{name: {name:?}, withdraw: {id:?}}} to remove it",
+                self.send_ack_seconds
+            )),
+            Err(e) => ToolOutput::error(format!("worker: cannot check delivery to {name}: {e}")),
+        }
     }
 
     /// The wait probe for `worker {name}`: `Ok(None)` while the worker runs, `Ok(Some(text))` when
@@ -1159,7 +1278,7 @@ struct WorkerTool {
     core: Arc<WorkerCore>,
 }
 
-fn worker_access(args: &Value, cwd: &Path) -> Result<Vec<Access>, String> {
+fn worker_access(args: &Value, cwd: &Path, external: bool) -> Result<Vec<Access>, String> {
     match str_arg(args, "action") {
         // Listing only reads the worker registry and status through this trusted built-in. It
         // neither launches a command nor asks the network permission gate, including in plan mode.
@@ -1170,13 +1289,17 @@ fn worker_access(args: &Value, cwd: &Path) -> Result<Vec<Access>, String> {
             let Some(path) = worktree_path(cwd, name) else {
                 return Err(format!("worker: invalid name {name:?}"));
             };
-            Ok(vec![
+            let mut access = vec![
                 Access::Exec {
                     command: COMMAND.to_string(),
                     net: true,
                 },
                 Access::Write(path),
-            ])
+            ];
+            if external {
+                access.push(Access::Write(cwd.to_path_buf()));
+            }
+            Ok(access)
         }
         // Stopping owns a host process operation, but needs no network access.
         _ => Ok(vec![Access::Exec {
@@ -1190,6 +1313,42 @@ fn approved_worktree_is_unchanged(path: &Path, approved: &Path) -> bool {
     oxa_perm::resolve_real(path).as_deref() == Some(approved)
 }
 
+impl WorkerTool {
+    // No model input participates in repository selection. Read the user file again so the
+    // retained Lead supervisor cannot keep starting workers after the owner removes the setting.
+    fn external_repository(&self, cwd: &Path) -> Result<Option<PathBuf>, String> {
+        let Some(dirs) = lock(&self.core.lead_dirs).clone() else {
+            return Ok(None);
+        };
+        let canonical = cwd
+            .canonicalize()
+            .map_err(|e| format!("worker: cannot resolve Lead directory: {e}"))?;
+        if crate::work_cmd::git_boundaries(&canonical).is_some() {
+            return Ok(None);
+        }
+        let settings = oxa_config::Settings::load(&dirs, &canonical, false);
+        let repo = settings
+            .user_value(SETTING_REPOSITORY)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(Path::new)
+            .ok_or("worker: outside a Git checkout, set oxa.workers.repository in user settings")?;
+        if !repo.is_absolute() || repo.canonicalize().ok().as_deref() != Some(repo) || !repo.is_dir() {
+            return Err(
+                "worker: oxa.workers.repository must be a canonical absolute checkout directory".into(),
+            );
+        }
+        let trust = oxa_perm::TrustStore::load(&dirs.trust_file());
+        if trust.lookup(&canonical) == Some(false) {
+            return Err("worker: the Lead directory is not trusted".into());
+        }
+        if !trust.trusted_as_approved(repo) {
+            return Err("worker: oxa.workers.repository must be explicitly trusted".into());
+        }
+        Ok(Some(repo.to_path_buf()))
+    }
+}
+
 impl Tool for WorkerTool {
     fn spec(&self) -> &ToolSpec {
         &self.spec
@@ -1199,16 +1358,54 @@ impl Tool for WorkerTool {
     /// network on and for the worktree it writes. `stop` names a network-free command; `list` is
     /// an internal read-only query and requires no external access.
     fn access(&self, args: &Value, cx: &ToolCtx) -> Result<Vec<Access>, String> {
-        worker_access(args, cx.cwd)
+        let repo = if str_arg(args, "action") == Some("start") {
+            self.external_repository(cx.cwd)?
+        } else {
+            None
+        };
+        worker_access(args, repo.as_deref().unwrap_or(cx.cwd), repo.is_some())
     }
 
     fn run(&self, args: &Value, cx: &ToolCtx, _live: &mut dyn FnMut(&str)) -> ToolOutput {
         match str_arg(args, "action") {
             Some("start") => {
                 let name = str_arg(args, "name").unwrap_or("");
-                let Some(path) = worktree_path(cx.cwd, name) else {
+                let external = match self.external_repository(cx.cwd) {
+                    Ok(repo) => repo,
+                    Err(e) => return ToolOutput::error(e),
+                };
+                let repo = external.as_deref().unwrap_or(cx.cwd);
+                let Some(path) = worktree_path(repo, name) else {
                     return ToolOutput::error(format!("worker: invalid name {name:?}"));
                 };
+                if external.is_some() {
+                    // Both write locations must be the ones covered by the policy. Reject symlink
+                    // redirects even if a broad permission happened to approve the redirect.
+                    if [repo, path.as_path()]
+                        .into_iter()
+                        .any(|p| cx.checked_real(p) != Some(p) || !approved_worktree_is_unchanged(p, p))
+                    {
+                        return ToolOutput::error(
+                            "worker: repository and worktree destination need unchanged permission approvals",
+                        );
+                    }
+                    let lead = match cx.cwd.canonicalize() {
+                        Ok(lead) => lead,
+                        Err(e) => {
+                            return ToolOutput::error(format!("worker: cannot resolve Lead directory: {e}"))
+                        }
+                    };
+                    return self.core.start_at(
+                        args,
+                        repo,
+                        cx.mode,
+                        lock(&self.core.yolo).level(),
+                        Some(&lead),
+                    );
+                }
+                if lock(&self.core.lead_dirs).is_some() && cx.checked_real(&path).is_none() {
+                    return ToolOutput::error("worker: worktree destination needs permission approval");
+                }
                 if let Some(approved) = cx.checked_real(&path) {
                     if !approved_worktree_is_unchanged(&path, approved) {
                         return ToolOutput::error(
@@ -1241,11 +1438,15 @@ pub struct WorkerHooks {
 impl WorkerHooks {
     /// The hook set.
     pub fn new(cfg: WorkerConfig) -> WorkerHooks {
+        let mut description = DESCRIPTION.to_string();
+        if cfg.advertise_wait {
+            description.push_str(" When wait is available, use until {kind:\"worker_done\", name} instead of a plain wait to await a worker.");
+        }
         let core = Arc::new(WorkerCore::new(cfg));
         let tool: Arc<dyn Tool> = Arc::new(WorkerTool {
             spec: ToolSpec {
                 name: TOOL_NAME.to_string(),
-                description: DESCRIPTION.to_string(),
+                description,
                 schema_json: SCHEMA.to_string(),
                 class: ToolClass::Exec,
                 exposure: Exposure::Direct,
@@ -1288,14 +1489,22 @@ impl WorkerHooks {
     fn refresh_authority_from(&self, current: &WorkerHooks) {
         let max = current.core.max.load(Ordering::SeqCst);
         let yolo = lock(&current.core.yolo).clone();
+        let lead_dirs = lock(&current.core.lead_dirs).clone();
         let models = lock(&current.core.models).clone();
-        self.refresh_authority(max, &yolo, models);
+        self.refresh_authority(max, &yolo, lead_dirs, models);
     }
 
-    fn refresh_authority(&self, max: usize, yolo: &YoloSwitch, models: ModelPolicy) {
+    fn refresh_authority(
+        &self,
+        max: usize,
+        yolo: &YoloSwitch,
+        lead_dirs: Option<oxa_config::Dirs>,
+        models: ModelPolicy,
+    ) {
         self.core.max.store(max, Ordering::SeqCst);
         *lock(&self.core.models) = models;
         *lock(&self.core.yolo) = yolo.clone();
+        *lock(&self.core.lead_dirs) = lead_dirs;
     }
 
     /// Stop every live worker now, whether or not the hook set is kept across turns.
@@ -1319,12 +1528,13 @@ pub fn retained_owner_workers(
     key: &Path,
     max: usize,
     yolo: &YoloSwitch,
+    lead_dirs: Option<oxa_config::Dirs>,
     models: ModelPolicy,
 ) -> Option<Arc<WorkerHooks>> {
     let all = lock(&OWNER_WORKERS);
     let hooks = all.iter().find(|(k, _)| k == key)?.1.clone();
     drop(all);
-    hooks.refresh_authority(max, yolo, models);
+    hooks.refresh_authority(max, yolo, lead_dirs, models);
     Some(hooks)
 }
 
@@ -1414,7 +1624,7 @@ impl Hooks for WorkerHooks {
         args: &Value,
         _budget: std::time::Duration,
     ) -> Option<Result<Option<String>, String>> {
-        (kind == TOOL_NAME).then(|| self.core.probe(args))
+        matches!(kind, "worker_done" | TOOL_NAME).then(|| self.core.probe(args))
     }
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         vec![self.tool.clone()]
@@ -1526,6 +1736,17 @@ mod tests {
         parent_scope: ParentScope,
         autonomy: Autonomy,
     ) -> WorkerHooks {
+        hooks_with_lead(fake, agent, parent_env, parent_scope, autonomy, None)
+    }
+
+    fn hooks_with_lead(
+        fake: &Path,
+        agent: &Path,
+        parent_env: Vec<(String, String)>,
+        parent_scope: ParentScope,
+        autonomy: Autonomy,
+        lead_dirs: Option<oxa_config::Dirs>,
+    ) -> WorkerHooks {
         let kill = ["/bin/kill", "/usr/bin/kill"]
             .into_iter()
             .map(PathBuf::from)
@@ -1534,6 +1755,7 @@ mod tests {
         WorkerHooks::new(WorkerConfig {
             oxa_bin: fake.to_path_buf(),
             cwd: agent.parent().unwrap().join("repo"),
+            lead_dirs,
             agent_dir: agent.to_path_buf(),
             max: 4,
             supervisor: Supervisor::new(Duration::from_secs(1), kill).expect("supervisor"),
@@ -1542,7 +1764,10 @@ mod tests {
             parent_scope,
             yolo: YoloSwitch::new(autonomy),
             resume_on_start: true,
+            advertise_wait: true,
+            send_ack_seconds: 0,
             models: ModelPolicy::default(),
+            cache: None,
         })
     }
 
@@ -1710,6 +1935,107 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn non_git_lead_starts_a_worker_in_the_configured_repository() {
+        use oxa_proto::{CancelToken, Decision, Policy};
+
+        let (root, repo, agent, fake) = fixture("lead-repo");
+        let cwd = root.join("lead");
+        fs::create_dir(&cwd).unwrap();
+        let repo = repo.canonicalize().unwrap();
+        fs::write(
+            agent.join("settings.json"),
+            json!({"oxa": {"workers": {"repository": repo}}}).to_string(),
+        )
+        .unwrap();
+        let mut dirs = oxa_config::Dirs::under(&root);
+        dirs.agent_dir = agent.clone();
+        let hooks = hooks_with_lead(
+            &fake,
+            &agent,
+            vec![("PATH".into(), "/usr/bin:/bin".into())],
+            ParentScope::default(),
+            Autonomy::Auto,
+            Some(dirs),
+        );
+        set_session(&hooks, "lead-parent");
+        let tool = &hooks.tool;
+        let args = json!({"action": "start", "name": "alpha", "goal": "one", "mode": "yolo"});
+        let mut cx = ToolCtx {
+            cwd: &cwd,
+            spill_dir: &root,
+            sandbox: &oxa_sandbox::NoSandbox,
+            mode: Mode::Workspace,
+            cancel: &CancelToken::default(),
+            env: &[],
+            tune: Default::default(),
+            checked: &[],
+            hidden: None,
+        };
+        let error = tool.access(&args, &cx).unwrap_err();
+        assert!(error.contains("must be explicitly trusted"), "{error}");
+        oxa_perm::TrustStore::default()
+            .save(&agent.join("trust.json"), &repo, true)
+            .unwrap();
+        let policy = oxa_perm::ModePolicy::new().with_yolo(YoloSwitch::new(Autonomy::Auto));
+        let checked: Vec<_> = tool
+            .access(&args, &cx)
+            .unwrap()
+            .into_iter()
+            .filter_map(|access| {
+                let (decision, pin) = policy.decide_pinned(cx.mode, &access, cx.cwd);
+                assert_eq!(decision, Decision::Allow);
+                match access {
+                    Access::Write(path) => Some((path, pin.unwrap())),
+                    _ => None,
+                }
+            })
+            .collect();
+        let denied = tool.run(&args, &cx, &mut |_| {});
+        assert!(denied.is_error && denied.text.contains("permission approvals"));
+        assert!(!worktree_path(&repo, "alpha").unwrap().exists());
+        cx.checked = &checked;
+        let out = tool.run(&args, &cx, &mut |_| {});
+        assert!(!out.is_error, "{}", out.text);
+        let record = registry::load(&agent, "lead-parent").unwrap().remove(0);
+        assert_eq!(record.mode, "auto", "the repository must not widen worker mode");
+        assert_eq!(record.worktree, worktree_path(&repo, "alpha").unwrap());
+        assert!(record.worktree.join(".git").is_file());
+        let branch = Command::new("git")
+            .current_dir(&repo)
+            .args(["rev-parse", "--verify", "refs/heads/agent/alpha"])
+            .output()
+            .unwrap();
+        assert!(
+            branch.status.success(),
+            "the branch must be in the selected repository"
+        );
+        let _ = hooks.core.stop(&json!({"name": "alpha"}));
+
+        fs::remove_file(agent.join("settings.json")).unwrap();
+        // Even a project setting in the orchestration directory cannot choose a repository.
+        fs::create_dir(cwd.join(".oxa")).unwrap();
+        fs::write(
+            cwd.join(".oxa/settings.json"),
+            json!({"oxa": {"workers": {"repository": repo}}}).to_string(),
+        )
+        .unwrap();
+        let mut model_input = args.clone();
+        model_input["repository"] = json!(repo);
+        let error = tool.access(&model_input, &cx).unwrap_err();
+        assert!(
+            error.contains("set oxa.workers.repository in user settings"),
+            "{error}"
+        );
+
+        let in_repo = ToolCtx { cwd: &repo, ..cx };
+        assert!(tool
+            .access(&args, &in_repo)
+            .unwrap()
+            .contains(&Access::Write(record.worktree)));
+        let _ = fs::remove_dir_all(&root);
+    }
+
     fn set_session(hooks: &WorkerHooks, id: &str) {
         *lock(&hooks.core.session) = (id.to_string(), "model-x".to_string());
     }
@@ -1839,7 +2165,7 @@ mod tests {
         let texts: Vec<String> = fs::read_dir(&inbox)
             .unwrap()
             .flatten()
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".msg"))
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".steer"))
             .map(|e| fs::read_to_string(e.path()).unwrap())
             .collect();
         assert_eq!(texts, vec!["please add tests".to_string()]);
@@ -1848,6 +2174,113 @@ mod tests {
         assert!(hooks.core.send(&json!({"name": "alpha", "text": " "})).is_error);
         let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn native_wait_hands_worker_completion_back_to_the_model() {
+        use oxa_fake::{ScriptTurn, ScriptedEngine};
+        use oxa_proto::{AgentEvent, EventSink, HeadlessUi};
+
+        // The worker the wait watches. It exists before the turn starts, with its process
+        // already gone, which is what a finished worker looks like to the probe; this test
+        // asks only that a `wait` on `worker_done` hands that state back to the model.
+        struct FinishDuringWait {
+            agent: PathBuf,
+            parent: String,
+        }
+        impl EventSink for FinishDuringWait {
+            fn emit(&mut self, event: &AgentEvent) {
+                if !matches!(event, AgentEvent::ToolExecutionUpdate { tool_name, .. } if tool_name == "wait")
+                {
+                    return;
+                }
+                let rec = registry::load(&self.agent, &self.parent).unwrap().remove(0);
+                let status = json!({"session_id": rec.session_id, "pid": rec.pid, "phase": "finished",
+                    "outcome": {"type": "oxa_result", "outcome": "done", "exit_code": 0}});
+                fs::create_dir_all(rec.status_file.parent().unwrap()).unwrap();
+                crate::status::atomic(&rec.status_file, &serde_json::to_vec(&status).unwrap()).unwrap();
+            }
+        }
+
+        let (root, repo, agent, fake) = fixture("wait");
+        let hooks = Arc::new(hooks(&fake, &agent));
+        let engine = Arc::new(ScriptedEngine::new(vec![
+            ScriptTurn::tool(
+                "w",
+                "wait",
+                r#"{"seconds":5,"reason":"Review","until":{"kind":"worker_done","name":"alpha"}}"#,
+            ),
+            ScriptTurn::tool(
+                "done",
+                "goal_done",
+                r#"{"status":"complete","evidence":"Review finished."}"#,
+            ),
+        ]));
+        let mut session = oxa_core::Session::open(
+            oxa_core::Deps {
+                engine: engine.clone(),
+                store: Arc::new(oxa_session::MemStore::new()),
+                tools: vec![],
+                hooks: vec![hooks.clone()],
+                policy: Box::new(oxa_perm::ModePolicy::new()),
+                sandbox: Arc::new(oxa_sandbox::NoSandbox),
+                settings: oxa_config::Settings::default(),
+                dirs: oxa_config::Dirs::under(&root),
+                cwd: repo.clone(),
+                selection: Default::default(),
+                resources: Default::default(),
+                model: None,
+                thinking: None,
+                mode: None,
+                session_id: None,
+                jobs: Arc::new(oxa_tools::JobRegistry::new()),
+            },
+            oxa_core::Open::New,
+        )
+        .unwrap();
+        let goal = oxa_session::Goal::new("Review synthetic work.".into(), Default::default(), 1000).unwrap();
+        session.set_goal(Some(goal), &mut oxa_proto::NullSink).unwrap();
+        // The hook set learns the parent session (and model) through the host at attach.
+        let (parent, _) = hooks.core.session();
+        assert_eq!(parent, session.inner().sref.id);
+        // A real launch, so the registry, the status file and the probe are the production ones;
+        // the worker's process is a fake that lingers, so the outcome below is the status file's
+        // own and not a guess from a missing process. The launch asks the session for the model
+        // catalog, which only a run's host pump answers, so the test answers it here.
+        *lock(&hooks.core.host) = Some(Arc::new(CatalogHost(true)));
+        let out = hooks.core.start(
+            &json!({"action": "start", "name": "alpha", "goal": "g"}),
+            &repo,
+            Mode::Workspace,
+            Autonomy::Standard,
+        );
+        assert!(!out.is_error, "{}", out.text);
+        let mut sink = FinishDuringWait {
+            agent: agent.clone(),
+            parent: parent.clone(),
+        };
+        session
+            .prompt(
+                "Wait for the review.".into(),
+                vec![],
+                &mut sink,
+                &mut HeadlessUi::default(),
+            )
+            .unwrap();
+        let outcome = session.stats().outcome.clone();
+        drop(session);
+        hooks.stop_all();
+        fs::remove_dir_all(root).unwrap();
+
+        assert_eq!(outcome, oxa_core::RunOutcome::Done);
+        let requests = engine.requests();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].tools_json.contains("worker_done"));
+        assert!(requests[1]
+            .messages
+            .iter()
+            .any(|m| m.tool_call_id.as_deref() == Some("w")
+                && m.content.as_deref() == Some("worker alpha: finished, outcome done")));
     }
 
     #[test]
@@ -1872,7 +2305,20 @@ mod tests {
         let status = json!({"session_id": rec.session_id, "pid": rec.pid, "phase": "finished",
             "outcome": {"type": "oxa_result", "outcome": "done", "error_class": null, "exit_code": 0}});
         fs::create_dir_all(rec.status_file.parent().unwrap()).unwrap();
+        let mut stale = status.clone();
+        stale["session_id"] = json!("old-worker");
+        fs::write(&rec.status_file, stale.to_string()).unwrap();
+        assert_eq!(
+            hooks.poll_event("worker_done", &args, Duration::from_secs(5)),
+            Some(Ok(None))
+        );
         fs::write(&rec.status_file, status.to_string()).unwrap();
+        set_session(&hooks, "parent-2");
+        assert!(matches!(
+            hooks.poll_event("worker_done", &args, Duration::from_secs(5)),
+            Some(Err(_))
+        ));
+        set_session(&hooks, "parent-1");
         let log: Vec<String> = (1..=25).map(|n| format!("line {n}")).collect();
         fs::write(&rec.log_file, log.join("\n")).unwrap();
         let text = hooks
@@ -2020,6 +2466,7 @@ mod tests {
             &agent,
             4,
             &YoloSwitch::new(Autonomy::Standard),
+            None,
             ModelPolicy::default(),
         )
         .expect("the owner hooks should be retained");
@@ -2053,6 +2500,7 @@ mod tests {
             &agent,
             1,
             &YoloSwitch::new(Autonomy::Standard),
+            None,
             ModelPolicy::default(),
         )
         .expect("the owner hooks should be retained");
@@ -2387,11 +2835,11 @@ mod tests {
     fn worker_list_declares_no_command_or_network_access() {
         let cwd = Path::new("/example/project");
         assert_eq!(
-            worker_access(&json!({"action": "list"}), cwd).unwrap(),
+            worker_access(&json!({"action": "list"}), cwd, false).unwrap(),
             Vec::new()
         );
 
-        let stop = worker_access(&json!({"action": "stop", "name": "alpha"}), cwd).unwrap();
+        let stop = worker_access(&json!({"action": "stop", "name": "alpha"}), cwd, false).unwrap();
         assert_eq!(
             stop,
             vec![Access::Exec {
@@ -2468,7 +2916,9 @@ mod tests {
 
     /// The `--model` values of the launches so far, once there are `count` of them.
     fn launched_models(root: &Path, count: usize) -> Vec<String> {
-        for _ in 0..100 {
+        // Poll for up to 30 s: slow runners (the Arch package check) launch the fake oxa later.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
             let text = fs::read_to_string(root.join("argv.log")).unwrap_or_default();
             let lines: Vec<&str> = text.lines().collect();
             let models: Vec<String> = lines
@@ -2534,6 +2984,46 @@ mod tests {
             "{listed}"
         );
         stop_all(&hooks, &["r1", "r2"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stopped_workers_with_an_interrupted_finish_do_not_escalate() {
+        let (root, repo, agent, _) = fixture("policy-stop-no-escalate");
+        let hooks = hooks_with_policy(
+            &logging_oxa(&root),
+            &agent,
+            policy(json!({"kinds": {"review": ["a", "b"]}, "escalateTo": ["s"]})),
+        );
+        set_session(&hooks, "parent-1");
+        for name in ["t1", "t2"] {
+            let out = start_with(
+                &hooks,
+                &repo,
+                json!({"name": name, "kind": "review", "job": "pr-9"}),
+            );
+            assert!(!out.is_error, "{}", out.text);
+            let stop = hooks.core.stop(&json!({"action": "stop", "name": name}));
+            assert!(!stop.is_error, "{}", stop.text);
+        }
+        // The child answers SIGINT with an interrupted finish, which wins over the stopped marker.
+        for rec in registry::load(&agent, "parent-1").unwrap() {
+            fs::create_dir_all(rec.status_file.parent().unwrap()).unwrap();
+            fs::write(
+                &rec.status_file,
+                json!({"phase": "finished", "outcome": {"outcome": "interrupted"}}).to_string(),
+            )
+            .unwrap();
+        }
+        let third = start_with(
+            &hooks,
+            &repo,
+            json!({"name": "t3", "kind": "review", "job": "pr-9"}),
+        );
+        assert!(!third.is_error, "{}", third.text);
+        assert!(third.text.contains("policy: kind review"), "{}", third.text);
+        assert_ne!(launched_models(&root, 3)[2], "s");
+        stop_all(&hooks, &["t1", "t2", "t3"]);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -2656,7 +3146,7 @@ mod tests {
         assert!(control.is_error);
         assert!(hooks.core.list().text.contains("result ok: fixed"));
         // Recording a result is no launch and needs no external access.
-        let access = worker_access(&json!({"action": "result", "name": "alpha"}), &repo).unwrap();
+        let access = worker_access(&json!({"action": "result", "name": "alpha"}), &repo, false).unwrap();
         assert!(access.is_empty());
         stop_all(&hooks, &["alpha"]);
         let _ = fs::remove_dir_all(&root);
