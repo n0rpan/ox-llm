@@ -396,6 +396,13 @@ pub const ENV_TABLE: &[EnvVar] = &[
         kind: EnvKind::Internal,
     },
     EnvVar {
+        name: "OXA_UNATTENDED",
+        pi_name: None,
+        description: "oxa sets 1 in the environment of a worker it launches: the run is unattended (no person at the keyboard), so it keeps the OS sandbox by default",
+        supported: true,
+        kind: EnvKind::Internal,
+    },
+    EnvVar {
         name: "OXA_WORK_MODEL_DELEGATED",
         pi_name: None,
         description: "oxa work sets 1 in a worker; a restored or project-selected model then never counts as chosen by the owner, while an actual model argument is still admitted by a protected Go key",

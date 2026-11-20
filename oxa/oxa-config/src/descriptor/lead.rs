@@ -32,7 +32,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         Group::Lead,
         "Lead",
         "Shadow mode",
-        "Enable `oxa lead --shadow`: proposals only, no actions.",
+        "Allow `oxa lead --shadow`: proposals only, no actions.",
     )
     .toggle()
     .user_only()

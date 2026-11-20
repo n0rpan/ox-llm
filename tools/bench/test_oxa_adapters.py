@@ -28,6 +28,7 @@ FAKE_OXA = """#!/bin/sh
 [ "$1" = "--version" ] && { echo "oxa 0.0.0-fake"; exit 0; }
 printf '%s\\n' "$@" > "$FAKE_ARGV_FILE"
 env | grep -c 'OXA_ALLOW_HOME_CWD=1' > "$FAKE_ARGV_FILE.env" || true
+[ "${FAKE_OXA_STARTUP_FAILURE:-0}" = 1 ] && exit "${FAKE_OXA_EXIT:-1}"
 while [ $# -gt 0 ]; do
   [ "$1" = "--usage-log" ] && cp "$FAKE_USAGE_FIXTURE" "$2"
   shift
@@ -172,14 +173,18 @@ class AdapterTests(unittest.TestCase):
                     "FAKE_USAGE_FIXTURE": str(HERE / "fixtures/usage.jsonl")}
 
     def _agent(self, module, **kwargs):
-        opts = dict(oxa_binary=str(self.binary), proxy_url="http://172.17.0.1:8089",
+        opts = dict(oxa_binary=str(self.binary), proxy_url="https://bench-proxy.example.invalid:8089",
                     agent_timeout_sec=900, model_name="opencode/kimi-k3")
         opts.update(kwargs)
         return module.OxaAgent(self.logs, **opts)
 
-    def _run(self, module, exit_code=0, instruction="fix the bug", **kwargs):
+    def _run(self, module, exit_code=0, startup_failure=False, instruction="fix the bug", **kwargs):
         agent, ctx = self._agent(module, **kwargs), self.Context()
-        env = FakeEnvironment(self.root, dict(self.env, FAKE_OXA_EXIT=str(exit_code)))
+        env = FakeEnvironment(self.root, dict(
+            self.env,
+            FAKE_OXA_EXIT=str(exit_code),
+            FAKE_OXA_STARTUP_FAILURE="1" if startup_failure else "0",
+        ))
         install = agent.install if module is self.harbor else agent.setup
 
         async def go():
@@ -223,7 +228,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_adapter_margin_is_configurable_from_the_environment(self):
         agent = self.harbor.OxaAgent(self.logs, oxa_binary="x", extra_env={
-            "OXA_BENCH_PROXY_URL": "http://10.0.0.1:1", "OXA_BENCH_AGENT_TIMEOUT_SEC": "1000",
+            "OXA_BENCH_PROXY_URL": "https://bench-proxy.example.invalid:8089", "OXA_BENCH_AGENT_TIMEOUT_SEC": "1000",
             "OXA_BENCH_MARGIN_SEC": "250"})
         self.assertEqual(core.resolve_max_time(agent._timeout, agent._margin), 750)
 
@@ -250,12 +255,30 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual(json.loads(secrets.read_text()), {"opencode": core.STUB_KEY})
                 self.assertEqual(stat.S_IMODE(secrets.stat().st_mode), 0o600)
                 settings = json.loads((home / ".oxa/agent/settings.json").read_text())
-                self.assertEqual(settings["oxa"]["cloud"]["opencode"]["base_url"], "http://172.17.0.1:8089")
+                self.assertEqual(settings["oxa"]["cloud"]["opencode"]["base_url"], "https://bench-proxy.example.invalid:8089")
                 self.assertTrue(settings["oxa"]["engine"]["inProcessCloud"])
         with self.assertRaises(core.BenchError):
             core.check_proxy_url("https://opencode.ai/inference/go")
         with self.assertRaises(core.BenchError):
             core.check_proxy_url("http://user:pw@172.17.0.1:1")
+
+    def test_proxy_url_matches_the_native_transport_policy(self):
+        self.assertEqual(
+            core.check_proxy_url("https://bench-proxy.example.invalid:8089"),
+            "https://bench-proxy.example.invalid:8089",
+        )
+        self.assertEqual(core.check_proxy_url("http://127.0.0.1:8089"), "http://127.0.0.1:8089")
+        for url in (
+            "http://172.17.0.1:8089",
+            "http://bench-proxy.example.invalid:8089",
+            "https://bench-proxy.example.invalid:8089?token=stub",
+            "https://bench-proxy.example.invalid:8089?",
+            "https://bench-proxy.example.invalid:8089/#fragment",
+            "https://bench-proxy.example.invalid:8089/#",
+            "https://bench-proxy.example.invalid:not-a-port",
+        ):
+            with self.subTest(url=url), self.assertRaises(core.BenchError):
+                core.check_proxy_url(url)
 
     def test_only_scorable_exit_codes_pass_through(self):
         for code, ok in ((0, True), (1, True), (130, True), (3, False), (5, False), (8, False)):
@@ -267,6 +290,13 @@ class AdapterTests(unittest.TestCase):
                         self._run(self.harbor, exit_code=code)
                 self.assertEqual((self.root / "logs/agent/oxa.exit").read_text().strip(), str(code))
 
+    def test_exit_one_before_a_model_call_is_an_infrastructure_failure(self):
+        for module in (self.harbor, self.pier):
+            with self.subTest(module=module.__name__):
+                with self.assertRaises(RuntimeError):
+                    self._run(module, exit_code=1, startup_failure=True)
+                self.assertFalse((self.root / "logs/agent/oxa-usage.jsonl").exists())
+
     def test_home_cwd_override_is_opt_in(self):
         self._run(self.harbor)
         self.assertEqual(Path(str(self.argv_file) + ".env").read_text().strip(), "0")
@@ -275,11 +305,11 @@ class AdapterTests(unittest.TestCase):
 
     def test_pier_allowlist_names_only_the_proxy_host(self):
         agent = self._agent(self.pier)
-        self.assertEqual(agent.network_allowlist().domains, ["172.17.0.1"])
+        self.assertEqual(agent.network_allowlist().domains, ["bench-proxy.example.invalid"])
 
     def test_trial_prefix_is_added_to_the_base_url_when_asked(self):
         agent = self._agent(self.harbor, proxy_trial_prefix=True)
-        self.assertEqual(agent._base_url(), "http://172.17.0.1:8089/trial")
+        self.assertEqual(agent._base_url(), "https://bench-proxy.example.invalid:8089/trial")
 
 
 class InstallScriptTests(unittest.TestCase):

@@ -458,7 +458,7 @@ So an unknown harness pays for its prefix **once per engine version**: the first
 after the harness is first used, after an engine or model update, or after "Clear caches".
 Every later request, session, harness switch and restart reuses 97 to 99 % of the prefix
 without the controller knowing the harness. At the 124 tokens/s cold prefill rate used in
-`HARNESSES.md` section 4.1, that one time is about 31 s for 3 900 tokens and about 90 s for
+`HARNESSES.md` (archived) section 4.1, that one time is about 31 s for 3 900 tokens and about 90 s for
 a Cline-sized prompt of 11 000 tokens [E].
 
 ### What learning adds

@@ -631,7 +631,13 @@ impl<'a> Loop<'a> {
     /// reads, the hot or cool theme, and (the first time yolo is switched on in the session)
     /// the banner and a notice that stays in the transcript.
     fn sync_yolo(&mut self) {
+        // #1512 S3: the run's sandbox is fixed at start; the guard label follows it.
+        if self.vm.status.os_sandbox != self.opts.os_sandbox {
+            self.vm.status.os_sandbox = self.opts.os_sandbox;
+            self.dirty = true;
+        }
         let Some(switch) = self.opts.yolo.clone() else {
+            self.sync_guard();
             return;
         };
         let level = switch.level();
@@ -644,6 +650,7 @@ impl<'a> Loop<'a> {
             self.vm.status.autonomy = level;
             self.dirty = true;
         }
+        self.sync_guard();
         let mode = self.permission_mode();
         if self.yolo_shown == Some(mode) {
             return;
@@ -684,6 +691,28 @@ impl<'a> Loop<'a> {
                 self.vm.status.ext_status.remove("yolo");
             }
         }
+    }
+
+    /// #1512 S3: the pi skin shows the guard as an extension status entry, like the yolo one.
+    /// The oxa skin draws it in the HUD instead.
+    fn sync_guard(&mut self) {
+        if self.view.skin.is_oxa() {
+            return;
+        }
+        let label = self.vm.status.guard_label().map(str::to_string);
+        let current = self.vm.status.ext_status.get("sandbox").cloned();
+        if label == current {
+            return;
+        }
+        match label {
+            Some(text) => {
+                self.vm.status.ext_status.insert("sandbox".to_string(), text);
+            }
+            None => {
+                self.vm.status.ext_status.remove("sandbox");
+            }
+        }
+        self.dirty = true;
     }
 
     /// O-182: `/yolo`, the `app.yolo.toggle` key. Off returns to the level before yolo.
@@ -775,14 +804,13 @@ impl<'a> Loop<'a> {
     }
 
     pub(crate) fn animating(&self) -> bool {
-        // C4: with the director, the activity row animates while the director has a deadline.
-        let running = if self.stage_on() {
-            self.stage.next_deadline_ms(now_ms()).is_some()
-        } else {
-            self.running()
-        };
-        running
-            || self.dialogs.is_open()
+        // Active work always refreshes its elapsed time. With the director, a pending scene
+        // deadline can keep the activity row animating as well.
+        activity_refreshing(
+            self.running(),
+            self.stage_on(),
+            self.stage.next_deadline_ms(now_ms()).is_some(),
+        ) || self.dialogs.is_open()
             || self.mouse_sel.dragging
             || now_ms() < self.yolo_banner_until
             || self.arcade.finishing(now_ms())
@@ -1037,10 +1065,7 @@ impl<'a> Loop<'a> {
                 "yolo",
                 "Toggle yolo: full access, no prompts, bash without the sandbox",
             ),
-            (
-                "auto",
-                "Auto mode: no prompts; the sandbox and the deny-list stay on",
-            ),
+            ("auto", "Auto mode: no prompts; dangerous commands still ask"),
             ("debug", "Write a debug dump"),
             ("exit", "Quit oxa"),
         ] {
@@ -1819,6 +1844,8 @@ impl<'a> Loop<'a> {
         if trimmed.is_empty() {
             return;
         }
+        // #1552: the line the owner typed is the one origin that can approve a publication.
+        oxa_proto::owner_reply::typed(&trimmed);
         if let Some(rest) = trimmed.strip_prefix('!') {
             let (excluded, cmd) = match rest.strip_prefix('!') {
                 Some(r) => (true, r),
@@ -3340,6 +3367,10 @@ fn foreground_running(vm: &ViewModel, handle_running: bool, preloading: bool, dr
         || (handle_running && !preloading && !drafting)
 }
 
+fn activity_refreshing(running: bool, stage_on: bool, stage_has_deadline: bool) -> bool {
+    running || (stage_on && stage_has_deadline)
+}
+
 fn settle_worker_done(vm: &mut ViewModel, failed: bool) {
     if vm.status.activity != Activity::Idle {
         apply_event(vm, &AgentEvent::AgentSettled { aborted: false });
@@ -3476,6 +3507,13 @@ mod running_tests {
 
         assert!(!foreground_running(&vm, false, false, false));
         assert!(matches!(vm.blocks[0], Block::Bash { running: false, .. }));
+    }
+
+    /// An active tool without a matching stage scene still needs periodic redraws so its elapsed
+    /// time advances instead of freezing until another event arrives.
+    #[test]
+    fn running_activity_refreshes_without_a_stage_deadline() {
+        assert!(activity_refreshing(true, true, false));
     }
 }
 

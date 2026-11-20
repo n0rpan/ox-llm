@@ -151,6 +151,8 @@ impl Fixture {
                 }
                 "issue" if args[1] == "view" => Self::issue(args[2].parse().unwrap()).to_string(),
                 "issue" if args[1] == "create" => {
+                    // The approved body is a staged descriptor, never a draft-directory file.
+                    assert!(args.last().unwrap().starts_with("/dev/fd/"));
                     let text = std::fs::read_to_string(args.last().unwrap()).unwrap();
                     assert!(text.contains("Candidates rejected as different root causes: #17"));
                     assert!(text.contains(SHA));
@@ -162,6 +164,8 @@ impl Fixture {
                 }
                 "issue" if args[1] == "comment" => {
                     assert_eq!(args[2], "42");
+                    // The approved body is a staged descriptor, never a draft-directory file.
+                    assert!(args.last().unwrap().starts_with("/dev/fd/"));
                     let text = std::fs::read_to_string(args.last().unwrap()).unwrap();
                     assert!(text.contains(&format!("Run: run-{}", self.comments + 1)));
                     assert!(text.contains("oxa version:"));

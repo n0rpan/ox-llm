@@ -39,7 +39,7 @@ Agent kwargs (`--ak key=value` in Harbor, `--agent-kwarg` in Pier) win over the 
 |---|---|---|
 | `oxa_binary` | `OXA_BENCH_BINARY` | required: path of the verified binary |
 | `oxa_sha256` | `OXA_BENCH_SHA256` | the `oxa.sha256` next to a file named `oxa`, if any |
-| `proxy_url` | `OXA_BENCH_PROXY_URL` | required: `http://<bridge-ip>:<port>` of the host proxy; the adapter refuses `opencode.ai` |
+| `proxy_url` | `OXA_BENCH_PROXY_URL` | required: `https://<proxy-host>:<port>` (or HTTP loopback) of the key-injecting proxy; the adapter refuses URLs the native transport would reject and refuses `opencode.ai` |
 | `agent_timeout_sec` | `OXA_BENCH_AGENT_TIMEOUT_SEC` | 3600; set it to the task's agent limit |
 | `margin_sec` | `OXA_BENCH_MARGIN_SEC` | 120; `--max-time` is the timeout minus this |
 | `allow_home_cwd` | `OXA_BENCH_ALLOW_HOME_CWD` | off; sets `OXA_ALLOW_HOME_CWD=1` (record it if used) |
@@ -55,12 +55,12 @@ sh tools/bench/install-oxa.sh <dir-or-url-of-oxa-portable-linux-x86_64> ~/fh-int
 # Terminal-Bench under Harbor
 PYTHONPATH=tools/bench harbor run -d terminal-bench@2.0 -i <task> -m opencode/kimi-k3 \
   --agent-import-path harbor_oxa:OxaAgent --jobs-dir <jobs> -y \
-  --ae OXA_BENCH_PROXY_URL=http://172.17.0.1:8089 --ae OXA_BENCH_BINARY=$HOME/fh-internal/oxa-bin/oxa \
+  --ae OXA_BENCH_PROXY_URL=https://bench-proxy.example.invalid:8089 --ae OXA_BENCH_BINARY=$HOME/fh-internal/oxa-bin/oxa \
   --ak agent_timeout_sec=<task agent timeout>
 # DeepSWE under Pier
 PYTHONPATH=tools/bench pier run -p <deep-swe>/tasks/<task> --model opencode/kimi-k3 \
   --agent-import-path pier_oxa:OxaAgent --jobs-dir <jobs> \
-  --agent-env OXA_BENCH_PROXY_URL=http://172.17.0.1:8089 --agent-env OXA_BENCH_BINARY=$HOME/fh-internal/oxa-bin/oxa \
+  --agent-env OXA_BENCH_PROXY_URL=https://bench-proxy.example.invalid:8089 --agent-env OXA_BENCH_BINARY=$HOME/fh-internal/oxa-bin/oxa \
   --agent-kwarg agent_timeout_sec=3600
 ```
 

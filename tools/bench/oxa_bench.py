@@ -9,6 +9,7 @@ OpenCode base URL points at a host-side proxy that adds the real key.
 """
 
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -58,14 +59,28 @@ def resolve_max_time(agent_timeout_sec, margin_sec=DEFAULT_MARGIN_SEC):
 
 
 def check_proxy_url(url):
-    """The host-side proxy URL the container uses. Never the real provider host."""
+    """A proxy URL accepted by oxa's native OpenCode transport."""
     parts = urlsplit(url or "")
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise BenchError("proxy URL must be http(s)://host:port (set OXA_BENCH_PROXY_URL)")
+    try:
+        parts.port
+    except ValueError as error:
+        raise BenchError("proxy URL has an invalid port") from error
     if parts.hostname.lower().rstrip(".").endswith(UPSTREAM_HOST):
         raise BenchError("proxy URL points at the real provider: containers must use the key-injecting proxy")
     if parts.username or parts.password:
         raise BenchError("proxy URL must not carry credentials")
+    if "?" in url or "#" in url:
+        raise BenchError("proxy URL must not carry a query or fragment")
+    try:
+        address = ipaddress.ip_address(parts.hostname)
+        mapped = getattr(address, "ipv4_mapped", None)
+        loopback = address.is_loopback or bool(mapped and mapped.is_loopback)
+    except ValueError:
+        loopback = parts.hostname.lower() == "localhost"
+    if parts.scheme == "http" and not loopback:
+        raise BenchError("remote proxy URL must use https (http is accepted only on loopback)")
     return url.rstrip("/")
 
 
@@ -140,13 +155,20 @@ def build_argv(instruction, model=DEFAULT_MODEL, max_time=None):
 
 
 def run_script(argv):
-    """Shell script for the run: capture stdout/stderr/exit code, pass only scorable exits as 0."""
-    scored = "|".join(str(c) for c in SCORED_EXIT_CODES)
+    """Capture the run and pass only completed, scorable outcomes as zero."""
     return (
         f"mkdir -p {REMOTE_LOGS}; "
         f"{shlex.join(argv)} > {REMOTE_STDOUT} 2> {REMOTE_STDERR} < /dev/null; rc=$?; "
         f"printf '%s\\n' \"$rc\" > {REMOTE_EXIT}; "
-        f"case $rc in {scored}) exit 0;; *) exit $rc;; esac"
+        "case $rc in "
+        "0|130) exit 0;; "
+        "1) "
+        f"test -s {REMOTE_USAGE_LOG} && "
+        f"grep -Eq '\"request\"[[:space:]]*:[[:space:]]*[1-9][0-9]*' {REMOTE_USAGE_LOG} && "
+        f"grep -q '\"oxa_result\"' {REMOTE_STDERR} && "
+        f"grep -Eq '\"requests\"[[:space:]]*:[[:space:]]*[1-9][0-9]*' {REMOTE_STDERR} && "
+        "exit 0; exit 1;; "
+        "*) exit $rc;; esac"
     )
 
 

@@ -90,7 +90,7 @@ fn live_anthropic_discovery_keeps_the_priced_overlay_and_uses_the_cache() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(output.status.success(), "{stderr}");
         assert!(stdout.contains(MODEL));
-        assert!(!stdout.contains("synthetic-without-price"));
+        assert!(stdout.contains("synthetic-without-price"));
         assert!(stderr.contains("1 offers with unknown pricing"), "{stderr}");
         assert!(!stdout.contains(CREDENTIAL) && !stderr.contains(CREDENTIAL));
     }
@@ -929,6 +929,69 @@ fn invalid_enabled_factory_refuses_without_http_fallback() {
     assert!(http.requests().is_empty());
 }
 
+const RECOMMENDED: &str = "anthropic/claude-haiku-5-5";
+
+#[test]
+fn recommended_catalog_requires_a_configured_provider_and_can_be_disabled() {
+    let env = cloud_env();
+    write_key(&env, &json!({"anthropic": CREDENTIAL}).to_string());
+    let mut settings = json!({"oxa":{"engine":{"inProcessCloud":true,"inProcessLocal":false}}});
+    env.write("home/.oxa/agent/settings.json", &settings.to_string());
+    let listed = run(&env, &["--list-models"], None);
+    success(&listed);
+    let output = String::from_utf8_lossy(&listed.stdout);
+    assert!(output.contains(RECOMMENDED), "{output}");
+    assert!(!output.contains("openrouter/") && !output.contains("openai/") && !output.contains("chatgpt/"));
+    assert!(!output.contains(CREDENTIAL));
+    assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
+
+    settings["oxa"]["cloud"] = json!({"recommended_models":false,"models":{MODEL:{
+        "provider":"anthropic","upstream_model":UPSTREAM,"context_window":4096,"max_output":64
+    }}});
+    env.write("home/.oxa/agent/settings.json", &settings.to_string());
+    let opted_out = run(&env, &["--list-models"], None);
+    success(&opted_out);
+    let output = String::from_utf8_lossy(&opted_out.stdout);
+    assert!(output.contains(MODEL), "{output}");
+    assert!(!output.contains(RECOMMENDED), "{output}");
+}
+
+#[test]
+fn explicit_alias_replaces_the_recommended_route_and_price() {
+    let env = cloud_env();
+    let mock = MockAnthropic::start(vec![Reply::text("Override used", 11, 0, 0, 5)]);
+    let base = mock.base_url();
+    settings(&env, &base, true);
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let models = settings["oxa"]["cloud"]["models"].as_object_mut().unwrap();
+    let mut route = models.remove(MODEL).unwrap();
+    route["pricing"] = json!({"input_per_million":0.02,"output_per_million":0.03});
+    models.insert("anthropic/claude-sonnet-5-5".to_owned(), route);
+    // Making recommendations available must not change the implicit default
+    // to Haiku (which sorts first). The bundled routes also exceed this cap.
+    settings["oxa"]["cloud"]["daily_budget_usd"] = json!(0.01);
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    fs::write(path, settings.to_string()).unwrap();
+    write_key(&env, &json!({"anthropic": CREDENTIAL}).to_string());
+
+    let output = run(
+        &env,
+        &["--no-session", "--no-tools", "-p", "Synthetic prompt"],
+        None,
+    );
+    success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Override used"));
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].body["model"], UPSTREAM);
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    // 11 input at $0.02/M + 5 output at $0.03/M, not the bundled prices.
+    assert!((ledger[0]["cost_usd"].as_f64().unwrap() - 0.00000037).abs() < 1e-12);
+    mock.finish();
+}
+
 #[test]
 fn composed_factory_lists_all_configured_providers_without_credentials_or_http() {
     let env = TestEnv::new();
@@ -954,6 +1017,7 @@ fn composed_factory_lists_all_configured_providers_without_credentials_or_http()
     let output = String::from_utf8_lossy(&result.stdout);
     for provider in ["anthropic", "openrouter", "openai", "chatgpt"] {
         assert!(output.contains(&format!("synthetic-{provider}")), "{output}");
+        assert!(!output.contains(&format!("{provider}/")), "{output}");
     }
     assert_eq!(http.hits("GET", "/v1/models"), 0);
     assert!(http.requests().is_empty());

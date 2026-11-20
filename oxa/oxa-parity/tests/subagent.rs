@@ -434,35 +434,38 @@ fn eng_010() {
     );
 }
 
-/// ENG-011: at most eight children per parent session: more than 8 `tasks` or `chain` steps are
-/// refused as a tool error that starts nothing; eight are accepted.
-/// invariant: O-146 (one engine slot; pi caps only the `tasks` array, oxa caps the chain too and
-/// counts the children that run or wait per parent session).
+/// ENG-011: `oxa.subagent.maxChildren` (8) is a warning threshold: nine `tasks` or `chain` steps
+/// all run, one after another, and the result ends with a warning naming the setting.
+/// invariant: O-146 (one engine slot; pi caps only the `tasks` array; the owner decision of
+/// 2026-11-19 turned the refusal into a warning).
 #[test]
 fn eng_011() {
     let nine: Vec<Value> = (1..=9)
         .map(|i| json!({"agent": "scout", "task": format!("t{i}")}))
         .collect();
     for (shape, want) in [
-        ("tasks", "Too many parallel tasks (9). Max is 8."),
-        ("chain", "Too many chain steps (9). Max is 8."),
+        (
+            "tasks",
+            "Warning: 9 parallel tasks, above oxa.subagent.maxChildren (8).",
+        ),
+        (
+            "chain",
+            "Warning: 9 chain steps, above oxa.subagent.maxChildren (8).",
+        ),
     ] {
         let env = env_with(None);
-        let server = fake(
-            vec![call(json!({ shape: nine })), text("parent done")],
-            FakeOpts::default(),
-        );
+        let mut script = vec![call(json!({ shape: nine }))];
+        script.extend((1..=9).map(|i| text(&format!("r{i}"))));
+        script.push(text("parent done"));
+        let server = fake(script, FakeOpts::default());
         let run = parent(&env, &server.url(), "delegate nine");
         run.ok();
         let reqs = sorted(&server);
-        assert!(any_child(&reqs).is_empty(), "{shape}: no child starts");
-        assert!(
-            !reqs.iter().any(|r| r.max_tokens == 0 && r.snapshot_keep),
-            "{shape}: not even the park"
-        );
-        assert_eq!(tool_result(reqs.last().unwrap()), want, "{shape}");
+        assert_eq!(any_child(&reqs).len(), 9, "{shape}: all nine children run");
+        let result = tool_result(reqs.last().unwrap());
+        assert!(result.contains(want), "{shape}: {result}");
         let end = tool_end(&run.records());
-        assert_eq!(end["isError"], true, "{shape}: a tool error: {end}");
+        assert_eq!(end["isError"], false, "{shape}: not an error: {end}");
     }
     // Exactly eight run, one after another.
     let env = env_with(None);

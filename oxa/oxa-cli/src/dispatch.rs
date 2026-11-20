@@ -3,12 +3,13 @@
 mod lead_owner;
 mod mode;
 
+pub(crate) use lead_owner::lead_model;
 pub use lead_owner::{with_lead_owner, LeadOwnerBinding};
 use mode::headless_argument_error;
 pub use mode::{choose_mode, RunMode};
 
 use crate::hooks::{build_hooks, HookInputs, HookSets};
-use crate::{parse_args, run_config, run_mcp, run_pkg, usage_text, Args, Subcommand};
+use crate::{parse_args, run_config, run_local, run_mcp, run_pkg, usage_text, Args, Subcommand};
 use oxa_config::{
     dirs_from_env, resolve_model, Dirs, Endpoint, Env, Keymap, ModelRef, ModelsConfig, Settings,
 };
@@ -25,7 +26,9 @@ use oxa_perm::{
 };
 use oxa_proto::{codes, Engine, EntryBody, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
 use oxa_resources::{discover, DiscoverOpts, Resources};
-use oxa_rpc::{run_json_outcome_with_inbox, run_print_outcome_with_inbox, serve_outcome_gated, Out};
+use oxa_rpc::{
+    confirm_before_start, run_json_outcome_with_inbox, run_print_outcome_with_inbox, serve_outcome_gated, Out,
+};
 use oxa_sandbox::Bwrap;
 #[cfg(target_os = "linux")]
 use oxa_sandbox::NoSandbox;
@@ -260,7 +263,9 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::Memory
                     | CommandId::MemoryList
                     | CommandId::MemoryShow
-                    | CommandId::MemoryRm => Err(OxaError::new(
+                    | CommandId::MemoryRm
+                    | CommandId::Local
+                    | CommandId::LocalAdd => Err(OxaError::new(
                         codes::USAGE,
                         "registered command handler or arguments are unavailable",
                     )),
@@ -316,15 +321,32 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Subcommand::Memory(words) => crate::run_memory(&words, &dirs, &mut *stdout, &mut *stderr),
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
+            Subcommand::Local(_) if is_agent(env) => Err(OxaError::new(
+                codes::INVALID,
+                "Local model setup requires the owner outside an agent tool",
+            )),
+            Subcommand::Local(words) => run_local(&words, &dirs, &cwd, &mut *stdout),
             Subcommand::Send(words) => match words.as_slice() {
                 [id, text] if oxa_session::valid_inbox_id(id) => {
-                    oxa_session::send_inbox(&dirs.agent_dir, id, text)
-                        .map(|_| 0)
-                        .map_err(|e| OxaError::io("cannot send session message", &e))
+                    let mut piped = String::new();
+                    let read = if text == "-" {
+                        stdin
+                            .read_to_string(&mut piped)
+                            .map(|_| ())
+                            .map_err(|e| OxaError::io("cannot read session message from stdin", &e))
+                    } else {
+                        Ok(())
+                    };
+                    read.and_then(|()| {
+                        let message = if text == "-" { &piped } else { text };
+                        oxa_session::send_inbox(&dirs.agent_dir, id, message)
+                            .map(|_| 0)
+                            .map_err(|e| OxaError::io("cannot send session message", &e))
+                    })
                 }
                 _ => Err(OxaError::new(
                     codes::USAGE,
-                    "Usage: oxa send <session-id> \"text\"",
+                    "Usage: oxa send <session-id> <text|->",
                 )),
             },
             Subcommand::Identity(words) => crate::run_identity(&words, &dirs, env, &mut *stdout),
@@ -446,10 +468,15 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         _ => None,
     };
     let cloud_diagnostics = oxc_gateway::diagnostics::Diagnostics::default();
+    // Input the owner-question handshake read past its own answer; the RPC server replays it.
+    let mut rpc_early: Vec<u8> = Vec::new();
     let prepared = {
         let mut confirm = |notice: &str, question: &str| -> bool {
             if mode == RunMode::Rpc {
-                return false;
+                if !rpc_owner_present(mode, env) {
+                    return false;
+                }
+                return confirm_before_start(&mut *stdin, &mut *stdout, &mut rpc_early, notice, question);
             }
             let _ = writeln!(stdout, "{notice}");
             let _ = write!(stdout, "{question} [y/N] ");
@@ -475,7 +502,13 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     let mut prep = match prepared {
         Ok(p) => p,
         Err(e) if e.code == FORK_DECLINED => {
-            let _ = writeln!(stdout, "Aborted.");
+            // The RPC stream carries JSON records only, and a declined offer is a normal
+            // outcome there: the sentence goes to stderr.
+            if mode == RunMode::Rpc {
+                let _ = writeln!(stderr, "Aborted.");
+            } else {
+                let _ = writeln!(stdout, "Aborted.");
+            }
             return if headless {
                 finish_outcome(Ok(oxa_core::RunOutcome::Interrupted), &mut *stderr)
             } else {
@@ -514,12 +547,13 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         RunMode::Interactive => run_tui(&a, env, &cwd, prep, &mut *stderr, None),
         RunMode::Rpc => {
             let dirs = prep.built.dirs.clone();
+            let replay = std::io::Cursor::new(rpc_early).chain(stdin);
             run_rpc(
                 prep,
                 a.max_time,
                 a.max_tokens,
                 dirs,
-                stdin,
+                Box::new(replay),
                 stdout,
                 &mut *stderr,
                 a2a_enabled,
@@ -657,6 +691,9 @@ struct Built {
     supervised_child: bool,
     /// RPC hosts opt into owner questions; unattended hosts need not handle UI requests.
     ask_owner_present: bool,
+    /// #1552: an interactive session offers `report_publish`, whose approval dialog only a
+    /// person's key press can answer; print, json and RPC runs keep the terminal confirmation.
+    report_dialog: Option<Env>,
     /// The hook sets of the process (E-INT 4), shared by every session it opens.
     hook_sets: HookSets,
     /// O-182: the YOLO switch (`--yolo`, `/yolo`), shared by the policy of every session.
@@ -664,6 +701,9 @@ struct Built {
     /// #202: the sandbox of the bash tool and its background jobs: the session's sandbox,
     /// bypassed while the switch is at yolo (full access).
     bash_sandbox: Arc<oxa_sandbox::FullAccess>,
+    /// #1512 S3: this run requests the OS sandbox (`run_kind::os_sandbox_wanted`). The HUD
+    /// combines this policy with platform support before showing it.
+    os_sandbox: bool,
     /// #1512 S2: the dangerous-command rules of the user settings, shared by every session.
     danger: Arc<DangerRules>,
 }
@@ -706,6 +746,22 @@ impl Built {
                 oxa_tools::AskTool::new(self.dirs.agent_dir.join("asks.jsonl"))
                     .with_owner_present(self.ask_owner_present),
             ));
+        }
+        if !self.supervised_child && !self.lead {
+            if let Some(env) = &self.report_dialog {
+                tools.push(Arc::new(
+                    crate::PublishTool::new(
+                        self.dirs.clone(),
+                        env.clone(),
+                        // Reporting is an owner-consent boundary.  In particular, a trusted
+                        // project's settings must not enable semantic dedupe (and thereby send
+                        // report text to GitHub and the judge) on the owner's behalf.
+                        Settings::load(&self.dirs, &self.cwd, false),
+                        self.cwd.clone(),
+                    )
+                    .with_yolo(self.yolo.clone()),
+                ));
+            }
         }
         if self.lead {
             tools.retain(|tool| crate::lead_preset::READ_TOOLS.contains(&tool.spec().name.as_str()));
@@ -845,12 +901,12 @@ fn prepare(
     // #1512 S2: the dangerous-command rules come from the user settings only.
     let (danger, danger_warnings) = dangerous_rules(&user_settings);
     notices.extend(danger_warnings.into_iter().map(|w| (Level::Warning, w)));
-    // Only user settings may enable this default-off proposal session.
-    if a.lead && !user_settings.bool(crate::lead_preset::SETTING, false) {
+    // The read-only proposal session is on by default; only the user's own `false` turns it off.
+    if a.lead && !user_settings.bool(crate::lead_preset::SETTING, true) {
         return Err(OxaError::new(
             codes::USAGE,
             format!(
-                "lead --shadow is disabled; set \"{}\": true in the user settings.json to enable it",
+                "lead --shadow is turned off; remove \"{}\": false from the user settings.json to use it",
                 crate::lead_preset::SETTING
             ),
         ));
@@ -864,7 +920,7 @@ fn prepare(
     let endpoint = with_api_key(default_endpoint(&models)?, a);
     // E11: a subagent child sends its requests under the parent's child hint (`child.rs`).
     let child = crate::child::ChildIdentity::from_env(env, &mut notices);
-    if !user_settings.bool(crate::in_process::SETTING, false) {
+    if !crate::in_process::cloud_enabled(&user_settings, dirs) {
         notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
     }
 
@@ -953,7 +1009,15 @@ fn prepare(
     };
     let (mut open, session_id) = match owner_open {
         Some((bound, _)) => (Open::Resume(bound.clone()), None),
-        None => choose_open(a, store.as_ref(), cwd, mode, &mut notices, confirm)?,
+        None => choose_open(
+            a,
+            store.as_ref(),
+            cwd,
+            mode,
+            rpc_owner_present(mode, env),
+            &mut notices,
+            confirm,
+        )?,
     };
     let continued_go = if a.model.is_none() && a.continue_ && !owner_chat && !child.nested() {
         continued_go_model(dirs, cwd, &user_settings, store.as_ref(), &mut open)?
@@ -1097,9 +1161,32 @@ fn prepare(
     };
     notices.extend(crate::themes::theme_diagnostics(&theme_sources));
     let theme_paths = crate::themes::theme_paths(&theme_sources);
+    // O-182, #202: one switch for the policy of every session and for the subagent children.
+    // The command line wins; else `permissions.defaultMode` (a project may only lower it).
+    // `--permission-mode workspace|ask` alone keeps its old meaning: the table asks you.
+    let level = a
+        .level
+        .or(match a.permission_mode {
+            Some(Mode::Workspace | Mode::Ask) => Some(oxa_proto::PermissionMode::Standard),
+            _ => None,
+        })
+        .unwrap_or_else(|| settings.default_permission_mode());
+    let yolo = oxa_proto::YoloSwitch::new(level.autonomy());
+    // #1512 S3: who is at the keyboard decides the OS sandbox (`run_kind.rs`): attended runs
+    // have none by default, unattended runs keep bwrap, yolo has none. bwrap is detected either
+    // way: plan mode and offline/net-off commands need it.
+    let kind = crate::run_kind::run_kind(a, env, &child, mode);
+    let yolo_level = matches!(level, oxa_proto::PermissionMode::Yolo);
+    // Keep the configured policy separate from the live yolo override. If the user leaves
+    // startup yolo, FullAccess immediately restores this policy.
+    let os_sandbox = crate::run_kind::os_sandbox_wanted(kind, a, &user_settings);
+    if let Some(text) = crate::run_kind::no_sandbox_notice(kind, os_sandbox, yolo_level) {
+        notices.push((Level::Info, text.to_string()));
+    }
+    let layout = crate::sandbox_layout::layout(env, dirs, cwd, home_workspace, &mut notices);
     let sandbox: Arc<dyn Sandbox> = match Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home) {
         Ok(mut b) => {
-            b.layout = crate::sandbox_layout::layout(env, dirs, cwd, home_workspace, &mut notices);
+            b.layout = layout.clone();
             // #457: each session gets its own directory at /tmp (`Built::deps`).
             let root = oxa_sandbox::scratch_root(&dirs.home);
             match std::fs::create_dir_all(&root) {
@@ -1140,14 +1227,15 @@ fn prepare(
         }
         #[cfg(target_os = "linux")]
         Err(e) => {
-            notices.push((
-                Level::Warning,
-                format!("bwrap is missing or unusable ({}); bash is disabled", e.message),
-            ));
+            // Fail closed only where the OS sandbox is wanted; an attended run works without it.
+            if let Some(text) = crate::run_kind::bwrap_missing_notice(os_sandbox, &e.message) {
+                notices.push((Level::Warning, text));
+            }
             Arc::new(NoSandbox)
         }
     };
-    let sandbox = crate::netguard::with_net(sandbox, &settings);
+    let host_net = crate::netguard::with_net(sandbox, &settings);
+    let sandbox: Arc<dyn Sandbox> = host_net.clone();
     let (sandbox, net_notice) = bash_sandbox(sandbox);
     if let Some(notice) = net_notice {
         notices.push((Level::Warning, notice));
@@ -1186,17 +1274,6 @@ fn prepare(
         }
     }
 
-    // O-182, #202: one switch for the policy of every session and for the subagent children.
-    // The command line wins; else `permissions.defaultMode` (a project may only lower it).
-    // `--permission-mode workspace|ask` alone keeps its old meaning: the table asks you.
-    let level = a
-        .level
-        .or(match a.permission_mode {
-            Some(Mode::Workspace | Mode::Ask) => Some(oxa_proto::PermissionMode::Standard),
-            _ => None,
-        })
-        .unwrap_or_else(|| settings.default_permission_mode());
-    let yolo = oxa_proto::YoloSwitch::new(level.autonomy());
     let table_mode = match (a.permission_mode, level) {
         (None, oxa_proto::PermissionMode::Plan) => Some(Mode::Plan),
         (m, _) => m,
@@ -1217,15 +1294,23 @@ fn prepare(
             format!("permission mode {}: {}", level.as_str(), level.describe()),
         ));
     }
-    let bash_sandbox = Arc::new(oxa_sandbox::FullAccess::new(
-        sandbox.clone(),
-        yolo.clone(),
-        env.get("PATH").unwrap_or(""),
-        dirs.home.clone(),
-        oxa_proto::offline(),
-    ));
-    // Exec hooks keep the wrapped sandbox except under yolo (owner standard: no sandbox
-    // anywhere), see `FullAccess::hook_sandbox`.
+    // The owner's `oxa.sandbox.net = off` (or a runner that owns GitHub) holds for unsandboxed
+    // commands too (#1512 S3).
+    let net_off = env.get(oxa_work::RUNNER_GITHUB_ENV) == Some("1")
+        || crate::run_kind::sandbox_net_off(&settings, &user_settings);
+    let bash_sandbox = Arc::new(
+        oxa_sandbox::FullAccess::new(
+            sandbox.clone(),
+            yolo.clone(),
+            env.get("PATH").unwrap_or(""),
+            dirs.home.clone(),
+            oxa_proto::offline(),
+            net_off,
+        )
+        .with_os_sandbox(os_sandbox)
+        .with_host_controls(layout, host_net),
+    );
+    // Exec hooks keep their dedicated sandbox independently of interactive bash.
     let hook_sandbox = oxa_sandbox::FullAccess::hook_sandbox(&bash_sandbox);
     let hook_inputs = HookInputs {
         args: a,
@@ -1240,7 +1325,8 @@ fn prepare(
         yolo: yolo.clone(),
     };
     let hook_sets = if owner_chat {
-        HookSets::default()
+        // The live owner Lead session: the worker tool only (M1), through the K5a/K5b builder.
+        crate::hooks::build_owner_hooks(&hook_inputs, &mut notices)
     } else {
         build_hooks(&hook_inputs, &mut notices)?
     };
@@ -1307,9 +1393,11 @@ fn prepare(
         mode: table_mode,
         supervised_child: child.nested(),
         ask_owner_present: mode != RunMode::Rpc || env.get("OXA_RPC_OWNER_PRESENT") == Some("1"),
+        report_dialog: (mode == RunMode::Interactive).then(|| env.clone()),
         hook_sets,
         yolo,
         bash_sandbox,
+        os_sandbox,
         danger: Arc::new(danger),
     };
     Ok(Prep {
@@ -1614,6 +1702,7 @@ fn choose_open(
     store: &dyn SessionStore,
     cwd: &Path,
     mode: RunMode,
+    rpc_owner: bool,
     _notices: &mut Vec<(Level, String)>,
     confirm: &mut dyn FnMut(&str, &str) -> bool,
 ) -> Result<(Open, Option<String>), OxaError> {
@@ -1633,7 +1722,9 @@ fn choose_open(
             if let Ok(header) = store.header(&sref) {
                 if header.cwd != cwd {
                     let notice = format!("Session found in different project: {}", header.cwd.display());
-                    if mode == RunMode::Rpc {
+                    // RPC asks the owner over the protocol when a client is listening; without
+                    // one the offer is an error with the way to fork it yourself.
+                    if mode == RunMode::Rpc && !rpc_owner {
                         return Err(OxaError::new(codes::INVALID, notice)
                             .with_hint("use --fork <id> to copy it into this directory"));
                     }
@@ -1671,6 +1762,23 @@ fn choose_open(
         .with_hint(USAGE_HINT));
     }
     Ok((Open::New, None))
+}
+
+fn headless_inbox_enabled(settings: &Settings) -> bool {
+    settings.user_bool("oxa.inbox.headless", true)
+}
+
+#[cfg(test)]
+#[test]
+fn headless_inbox_uses_the_owners_switch_instead_of_the_project() {
+    let project = serde_json::json!({"oxa": {"inbox": {"headless": true}}});
+    let owner = serde_json::json!({"oxa": {"inbox": {"headless": false}}});
+    assert!(!headless_inbox_enabled(&Settings::from_values(owner, project)));
+    let project = serde_json::json!({"oxa": {"inbox": {"headless": false}}});
+    assert!(headless_inbox_enabled(&Settings::from_values(
+        serde_json::json!({}),
+        project,
+    )));
 }
 
 /// The mode runs that print to stdout and exit: `-p` and `--mode json`.
@@ -1728,6 +1836,10 @@ fn run_headless(
     let mut prompts = prompts;
     if let Some(goal) = session.goal() {
         if goal.status == oxa_session::GoalStatus::Pursuing {
+            if crate::run_kind::unattended_os_sandbox(&built.settings) {
+                built.bash_sandbox.require_os_sandbox();
+                notices.retain(|(_, notice)| notice != crate::run_kind::NO_SANDBOX_NOTICE);
+            }
             if starts_goal {
                 let start = oxa_core::prompt::goal_start(&goal.objective);
                 if let Some((text, _parts)) = prompts.first_mut() {
@@ -1847,7 +1959,7 @@ fn run_headless(
             stdout.as_deref_mut().unwrap(),
             stderr,
             &built.dirs.agent_dir,
-            built.settings.user_bool("oxa.inbox.headless", true),
+            headless_inbox_enabled(&built.settings),
         ),
         _ => run_print_outcome_with_inbox(
             &mut session,
@@ -1855,7 +1967,7 @@ fn run_headless(
             stdout.as_deref_mut().unwrap(),
             stderr,
             &built.dirs.agent_dir,
-            built.settings.user_bool("oxa.inbox.headless", true),
+            headless_inbox_enabled(&built.settings),
         ),
     };
     built.result_facts.goal(session.goal());
@@ -1981,7 +2093,14 @@ fn run_tui(
         Some((session, binding)) => (session, Some(binding)),
         None => match open_named(&built, session_id, open, name.as_deref()) {
             Ok(session) => (session, None),
-            Err(e) => return report(stderr, &e),
+            Err(e) => {
+                let code = report(stderr, &e);
+                // A fresh install has no model yet: say how to get one, after the error.
+                if let Some(help) = crate::key_hints::no_model_help(&e, dirs, env) {
+                    let _ = writeln!(stderr, "{help}");
+                }
+                return code;
+            }
         },
     };
     // `--goal` in the terminal: the objective is set at open (`open_named`) and its start leads
@@ -2004,6 +2123,8 @@ fn run_tui(
         Err(error) => return report(stderr, &error),
     };
     notices.extend(startup_notices(&built, &session));
+    // First run only: which optional keys are missing and how to add each. Never blocking.
+    notices.extend(crate::key_hints::first_run_notice(dirs, env, &built.settings));
     let yolo = built.yolo.clone();
     // Its diagnostics are among the startup notices (`prepare`).
     let (keymap, _) = Keymap::load(dirs);
@@ -2065,6 +2186,9 @@ fn run_tui(
                     "The selected Lead session changed.",
                 ));
             }
+            if let Some(workers) = &base.hook_sets.workers {
+                let _ = workers.resume_after_owner_check();
+            }
         }
         base.result_facts.attach(&mut session)?;
         session.set_output_schema(base.output_schema.clone());
@@ -2122,6 +2246,7 @@ fn run_tui(
         #[cfg(not(feature = "share"))]
         engine_status: None,
         yolo: Some(yolo),
+        os_sandbox: crate::run_kind::os_sandbox_active(built.os_sandbox, oxa_proto::OS_SANDBOX),
     };
     let result = if pinned {
         oxa_interactive::run_pinned(session, opts, "oxa lead")
@@ -2491,6 +2616,11 @@ fn write_session_export(
 /// The error code of a declined cross-directory fork offer (CLI-019): `run` prints
 /// "Aborted." and exits 0, as pi does.
 const FORK_DECLINED: &str = "oxa_cli_fork_declined";
+
+/// An RPC client is listening for owner questions (the host sets `OXA_RPC_OWNER_PRESENT=1`).
+fn rpc_owner_present(mode: RunMode, env: &Env) -> bool {
+    mode == RunMode::Rpc && env.get("OXA_RPC_OWNER_PRESENT") == Some("1")
+}
 
 /// One line from `stdin`, read byte by byte (nothing after the newline is consumed).
 fn read_line(stdin: &mut dyn Read) -> String {
@@ -3037,6 +3167,7 @@ mod session_scratch_tests {
             mode: None,
             supervised_child: false,
             ask_owner_present: true,
+            report_dialog: None,
             hook_sets: HookSets::default(),
             bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
                 base.clone(),
@@ -3044,7 +3175,9 @@ mod session_scratch_tests {
                 "",
                 home,
                 false,
+                false,
             )),
+            os_sandbox: false,
             yolo,
             danger: Arc::new(oxa_perm::DangerRules::builtin()),
         };
@@ -3178,9 +3311,12 @@ mod session_scratch_tests {
                     "",
                     env.home(),
                     false,
+                    false,
                 )),
+                os_sandbox: false,
                 yolo,
                 danger: Arc::new(oxa_perm::DangerRules::builtin()),
+                report_dialog: None,
             }
         };
         let policy = build().deps(None).policy;
