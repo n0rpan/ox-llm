@@ -662,6 +662,18 @@ fn open_named(
     name: Option<&str>,
 ) -> Result<Session, OxaError> {
     let mut session = Session::open(built.deps(session_id), open)?;
+    // #1844 PR 2: a fork child continues its parent's prompt instead of prefilling its own. A
+    // seed that cannot be used costs the child its fork, never the run: it works isolated.
+    if let Some(path) = &built.fork_seed {
+        let adopted = oxa_core::ForkSeed::read(path)
+            .and_then(|seed| session.adopt_fork(&seed, &mut oxa_proto::VecSink::default()));
+        if let Err(e) = adopted {
+            eprintln!(
+                "Warning: the fork seed was not used ({}); this child runs isolated and prefills its own context",
+                e.message
+            );
+        }
+    }
     // S1: the owner confirm broker. No broker (a bind failure) means no confirmation is possible.
     let _ = session.enable_owner_confirm(built.yolo.clone());
     session.set_output_schema(built.output_schema.clone());
@@ -709,6 +721,9 @@ struct Built {
     mode: Option<Mode>,
     /// A supervised subagent keeps SIGTERM as immediate supervisor cancellation.
     supervised_child: bool,
+    /// #1844 PR 2: a fork child's seed (its parent's prefix and wire), installed before the
+    /// first prompt so the first request continues the parent's conversation.
+    fork_seed: Option<std::path::PathBuf>,
     /// RPC hosts opt into owner questions; unattended hosts need not handle UI requests.
     ask_owner_present: bool,
     /// #1552: an interactive session offers `report_publish`, whose approval dialog only a
@@ -1441,6 +1456,7 @@ fn prepare(
         thinking,
         mode: table_mode,
         supervised_child: child.nested(),
+        fork_seed: child.fork.clone(),
         ask_owner_present: mode != RunMode::Rpc || env.get("OXA_RPC_OWNER_PRESENT") == Some("1"),
         report_dialog: (mode == RunMode::Interactive).then(|| env.clone()),
         hook_sets,
@@ -3233,6 +3249,7 @@ mod session_scratch_tests {
             thinking: None,
             mode: None,
             supervised_child: false,
+            fork_seed: None,
             ask_owner_present: true,
             report_dialog: None,
             hook_sets: HookSets::default(),
@@ -3321,6 +3338,7 @@ mod session_scratch_tests {
             thinking: None,
             mode: None,
             supervised_child: false,
+            fork_seed: None,
             ask_owner_present: true,
             report_dialog: None,
             hook_sets: HookSets::default(),
@@ -3428,6 +3446,7 @@ mod session_scratch_tests {
                 thinking: None,
                 mode: None,
                 supervised_child: false,
+                fork_seed: None,
                 ask_owner_present: true,
                 hook_sets: HookSets::default(),
                 bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
