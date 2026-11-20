@@ -35,6 +35,12 @@ const BASE: &[Entry] = &[
         example: "oxa status 20260101-120000-abcd",
     },
     Entry {
+        path: &["models"],
+        summary: "List the models the engine serves, as a table or as JSON",
+        usage: &["oxa models [--json]"],
+        example: "oxa models --json",
+    },
+    Entry {
         path: &["usage"],
         summary: "Print today's cloud spend and request sums per usage pool as JSON",
         usage: &["oxa usage --json"],
@@ -233,6 +239,7 @@ const BASE: &[Entry] = &[
             "oxa work board --shadow --repo OWNER/REPO --once",
             "oxa work board --shadow --repo OWNER/REPO --token-stdin [--once] [--app-quota-shadow]",
             "oxa work board --shadow --repo OWNER/REPO --once --review-policy FILE",
+            "oxa work board --shadow --repo OWNER/REPO --token-stdin [--once] [--landing-shadow] [--lead-alarms]",
         ],
         example: "oxa work board --shadow --repo example/project --once",
     },

@@ -38,6 +38,16 @@ and verified merge-group rejection evidence in `queue_rejections`, including the
 removal event time.
 Use `--queue-evidence` to record only the rejection evidence alongside the board.
 
+Add `--lead-alarms` to also record the protected Lead view's stuck-work sources in the
+same sample: the raw `panels` repository record (main required checks with classic
+protection and ruleset requirements, the verified main merge and merge-queue
+membership) and complete `status=queued` Actions pages in `runs`. Each source is
+captured and degraded independently: a missing or oversized record stays absent,
+the sample is never dropped for it, and the Lead view renders that source as
+explicitly unavailable. A main alarm needs one failed required check at the exact
+observed head; failing optional jobs, pending required checks and unobserved
+requirements never page.
+
 To verify the provenance of test-report archives, pass `--queue-report-policy FILE` with an owner-only
 JSON file in a private directory. Set the trusted workflow path, the exact names
 of required checks that consume those reports, and every JUnit producer and artifact.
