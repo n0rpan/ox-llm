@@ -391,6 +391,11 @@ read its result; they never launch builds or tests.
   behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and the user docs (`oxa/docs/pages/`)
   that describe it. Flag a missing update as P2. A change to an ordinary default, limit or budget updates the user
   docs; a missing docs update is P3 and is fixed forward.
+- **ChatGPT plan model list:** the one authenticated catalog request (`GET <chatgpt base>/models` with the plan's
+  bearer token) must stay pinned to the account the cache key names, refresh through the locked path (one retry on
+  `token_expired`), go only to the route's own base, never log or keep the token, refuse a reply that echoes a
+  credential, and never delete an owner's `oxa.cloud.models` route. See `SECURITY.md`. A change that loosens any of
+  these is P1.
 - **Reuse before you write:** search for an existing helper (settings and env parsing, trusted executable lookup,
   private/atomic file writes, subprocess limits, GitHub calls, retry, redaction, test fixtures) and call it. A second
   implementation of the same responsibility is a P2 review finding; a weaker one (looser permissions, symlinks,

@@ -1144,8 +1144,8 @@ impl WorkerHooks {
     }
 
     /// Take the workers back up, after the owner binding was rechecked. Notices for the caller.
-    pub fn resume_after_owner_check(&self) -> Vec<String> {
-        if self.core.resume_allowed.load(Ordering::SeqCst) {
+    pub fn resume_after_owner_check(&self, workers_enabled: bool) -> Vec<String> {
+        if workers_enabled && self.core.resume_allowed.load(Ordering::SeqCst) {
             self.core.resume()
         } else {
             Vec::new()
@@ -1196,8 +1196,23 @@ pub fn kept_owner_workers(key: &Path, made: Arc<WorkerHooks>) -> Arc<WorkerHooks
 
 /// Lead shutdown: stop every worker the owner Lead session started.
 pub fn stop_owner_workers() {
-    let all: Vec<Arc<WorkerHooks>> = lock(&OWNER_WORKERS).iter().map(|(_, h)| h.clone()).collect();
+    // Draining ends this owner service's lifetime. A later service in the same process must build
+    // a new supervisor rather than reuse the stopped hook set.
+    let all: Vec<Arc<WorkerHooks>> = lock(&OWNER_WORKERS).drain(..).map(|(_, h)| h).collect();
     for hooks in all {
+        hooks.stop_all();
+    }
+}
+
+#[cfg(test)]
+fn stop_owner_workers_for(key: &Path) {
+    let hooks = {
+        let mut all = lock(&OWNER_WORKERS);
+        all.iter()
+            .position(|(candidate, _)| candidate == key)
+            .map(|index| all.remove(index).1)
+    };
+    if let Some(hooks) = hooks {
         hooks.stop_all();
     }
 }
@@ -1740,11 +1755,8 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    static OWNER_WORKERS_TEST_LOCK: Mutex<()> = Mutex::new(());
-
     #[test]
     fn lead_started_worker_survives_the_next_owner_turn() {
-        let _serial = lock(&OWNER_WORKERS_TEST_LOCK);
         let (root, repo, agent, fake) = fixture("owner-turn");
         let made = Arc::new(hooks(&fake, &agent));
         // Turn 1: the owner Lead session starts a worker, then its session closes.
@@ -1763,14 +1775,19 @@ mod tests {
         );
         assert!(second.core.list().text.contains("alpha"));
         // Lead shutdown stops the tree.
-        stop_owner_workers();
+        stop_owner_workers_for(&agent);
         assert!(!PathBuf::from(format!("/proc/{}", rec.pid)).exists());
+        let restarted = Arc::new(hooks(&fake, &agent));
+        assert!(Arc::ptr_eq(
+            &kept_owner_workers(&agent, restarted.clone()),
+            &restarted
+        ));
+        stop_owner_workers();
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn retained_owner_workers_refresh_the_current_launch_ceiling() {
-        let _serial = lock(&OWNER_WORKERS_TEST_LOCK);
         let (root, repo, agent, fake) = fixture("owner-authority");
         let first = Arc::new(hooks(&fake, &agent));
         let kept = kept_owner_workers(&agent, first.clone());
@@ -1794,8 +1811,32 @@ mod tests {
         assert!(out.is_error, "{}", out.text);
         assert!(out.text.contains("limit is 1"), "{}", out.text);
         assert!(!worktree_path(&repo, "beta").unwrap().exists());
-        stop_owner_workers();
+        stop_owner_workers_for(&agent);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn owner_worker_test_cleanup_is_scoped_to_its_hook_set() {
+        let (first_root, first_repo, first_agent, first_fake) = fixture("owner-cleanup-first");
+        let first = kept_owner_workers(&first_agent, Arc::new(hooks(&first_fake, &first_agent)));
+        set_session(&first, "parent-first");
+        start_alpha(&first, &first_repo);
+
+        let (second_root, second_repo, second_agent, second_fake) = fixture("owner-cleanup-second");
+        let second = kept_owner_workers(&second_agent, Arc::new(hooks(&second_fake, &second_agent)));
+        set_session(&second, "parent-second");
+        start_alpha(&second, &second_repo);
+        let second_record = registry::load(&second_agent, "parent-second").unwrap().remove(0);
+
+        stop_owner_workers_for(&first_agent);
+        assert!(
+            PathBuf::from(format!("/proc/{}", second_record.pid)).exists(),
+            "cleaning one owner hook set stopped another hook set's worker"
+        );
+
+        stop_owner_workers_for(&second_agent);
+        let _ = fs::remove_dir_all(&first_root);
+        let _ = fs::remove_dir_all(&second_root);
     }
 
     #[test]
@@ -1814,7 +1855,7 @@ mod tests {
         let held = registry::load(&agent, "parent-1").unwrap().remove(0);
         assert_eq!(held.pid, rec.pid, "a worker was relaunched before the recheck");
         // After the recheck the caller resumes explicitly.
-        let notices = hooks.resume_after_owner_check();
+        let notices = hooks.resume_after_owner_check(true);
         assert_eq!(notices.len(), 1, "{notices:?}");
         assert!(notices[0].contains("relaunched"), "{notices:?}");
         let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
@@ -1832,9 +1873,25 @@ mod tests {
         hooks.core.supervisor.stop(rec.pgid).unwrap();
         hooks.suppress_resume();
 
-        assert!(hooks.resume_after_owner_check().is_empty());
+        assert!(hooks.resume_after_owner_check(true).is_empty());
         let held = registry::load(&agent, "parent-1").unwrap().remove(0);
         assert_eq!(held.pid, rec.pid, "one-shot owner relaunched a saved worker");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn explicit_resume_honors_worker_opt_out() {
+        let (root, repo, agent, fake) = fixture("disabled-explicit-resume");
+        let hooks = hooks(&fake, &agent);
+        set_session(&hooks, "parent-1");
+        set_table_mode(&hooks, Mode::Workspace);
+        start_alpha(&hooks, &repo);
+        let rec = registry::load(&agent, "parent-1").unwrap().remove(0);
+        hooks.core.supervisor.stop(rec.pgid).unwrap();
+
+        assert!(hooks.resume_after_owner_check(false).is_empty());
+        let held = registry::load(&agent, "parent-1").unwrap().remove(0);
+        assert_eq!(held.pid, rec.pid, "worker opt-out relaunched a saved worker");
         let _ = fs::remove_dir_all(&root);
     }
 

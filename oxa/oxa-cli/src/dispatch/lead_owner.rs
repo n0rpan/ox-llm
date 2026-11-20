@@ -326,9 +326,15 @@ pub fn with_lead_owner<T>(
     .workspace;
     let mut args = Args::default();
     let prep = binding.prepare_inner(&mut args, env, RunMode::Print, home_workspace, workers)?;
-    let mut session = binding.open(&prep)?;
+    let mut session = binding.open(&prep, workers)?;
     let result = run(&mut session);
-    session.shutdown(&mut oxa_proto::HeadlessUi::default());
+    if workers {
+        // The serving process owns the retained worker hook set. End this chat turn without
+        // shutting that hook set down; lead_serve stops it when the owner service exits.
+        session.close(&mut oxa_proto::HeadlessUi::default());
+    } else {
+        session.shutdown(&mut oxa_proto::HeadlessUi::default());
+    }
     result
 }
 
@@ -448,7 +454,7 @@ impl LeadOwnerBinding {
         &self.session
     }
 
-    pub(super) fn open(&self, prep: &Prep) -> Result<Session, OxaError> {
+    pub(super) fn open(&self, prep: &Prep, workers: bool) -> Result<Session, OxaError> {
         // Verified before any session is opened; nothing starts for an unverified caller.
         self.recheck()?;
         let mut session =
@@ -464,8 +470,8 @@ impl LeadOwnerBinding {
             .sync_tools(&mut oxa_proto::NullSink)
             .map_err(|_| unavailable())?;
         // Only now, with the binding verified, do saved workers start again.
-        if let Some(workers) = &prep.built.hook_sets.workers {
-            let _ = workers.resume_after_owner_check();
+        if let Some(worker_hooks) = &prep.built.hook_sets.workers {
+            let _ = worker_hooks.resume_after_owner_check(workers);
         }
         Ok(session)
     }

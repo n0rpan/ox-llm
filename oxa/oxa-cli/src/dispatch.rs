@@ -30,7 +30,6 @@ use oxa_rpc::{
     confirm_before_start, run_json_outcome_with_inbox, run_print_outcome_with_inbox, serve_outcome_gated, Out,
 };
 use oxa_sandbox::Bwrap;
-#[cfg(target_os = "linux")]
 use oxa_sandbox::NoSandbox;
 use oxa_session::{decode_entry, decode_header, FsStore, MemStore, SessionStore, Tree};
 use std::io::{BufReader, Read, Write};
@@ -215,7 +214,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 let mut args = Args::default();
                 let mut prep = binding.prepare(&mut args, env, mode, home.workspace)?;
                 prep.notices.extend(home.warning.map(|w| (Level::Warning, w)));
-                let session = binding.open(&prep)?;
+                let session = binding.open(&prep, true)?;
                 Ok((args, prep, session, binding))
             })();
             return match result {
@@ -2194,7 +2193,7 @@ fn run_tui(
                 ));
             }
             if let Some(workers) = &base.hook_sets.workers {
-                let _ = workers.resume_after_owner_check();
+                let _ = workers.resume_after_owner_check(true);
             }
         }
         base.result_facts.attach(&mut session)?;

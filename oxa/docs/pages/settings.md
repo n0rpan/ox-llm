@@ -275,6 +275,14 @@ Known provider or configured prices take precedence over this setting.
 When the same provider has several configured base URLs, select the discovery
 endpoint with `oxa.cloud.discovery.<provider>.base_url`.
 
+OpenRouter privacy routing is the owner's choice and is never forced. By
+default oxa sends no `provider` preferences, so your OpenRouter account and
+workspace settings apply. To choose, set `oxa.cloud.openrouter_provider` in user
+settings: `zdr` (`true` or `false`) limits or allows routing by zero data
+retention, and `data_collection` (`allow` or `deny`) controls providers that may
+train on or keep prompts. Values are sent exactly as set; any other key or value
+is refused at load. A client request cannot override them.
+
 The merged catalog is available through the model picker and `--list-models`.
 The LAN guest catalog lists only guest-allowlisted models.
 
@@ -333,12 +341,9 @@ An invalid saved binding refuses the request before provider I/O.
 
 A `chatgpt` route defaults to `https://chatgpt.com/backend-api/codex` and uses the
 existing owner-only `chatgpt-auth.json` beside the key file. It does not discover
-other applications' credentials or start a sign-in. After `oxa login chatgpt` the gateway opens,
-but the plan's models are not listed automatically: the subscription offers no models endpoint and
-no model row is built into the binary, so write one `chatgpt` route per model you want under
-`oxa.cloud.models` (an `upstream_model`, a `context_window` and a `max_output`, with no price);
-a route written that way is listed and usable exactly like a keyed provider's. The optional
-user-only `oxa.cloud.subscription_limits` object (positive integer
+other applications' credentials or start a sign-in. After `oxa login chatgpt` the plan models
+(`chatgpt/<model>` for every model the plan's own list offers, fetched live from `GET https://chatgpt.com/backend-api/codex/models` with your token, cached like the other provider lists) exist without a route in your settings; the window comes from that list, the output limit from OpenRouter's public catalog, and they are unpriced subscription routes;
+the optional user-only `oxa.cloud.subscription_limits` object (positive integer
 `daily_requests` and `daily_tokens`) only adds warnings. The separate optional `oxa.cloud.subscription` refresh object
 accepts a public `client_id` override (`[A-Za-z0-9_.-]{1,128}`); its default is the
 experimental public identity approved in #252. The refresh endpoint is fixed at

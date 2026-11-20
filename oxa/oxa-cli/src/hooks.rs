@@ -88,10 +88,18 @@ pub struct HookInputs<'a> {
 /// One builder for every session that starts workers: the ordinary one and the live owner Lead
 /// session ([`build_owner_hooks`]), so both use the same launch, limits (`oxa.workers.max`) and
 /// supervisor.
+#[derive(Clone, Copy)]
+enum WorkerToolScope {
+    /// The ordinary session's tool switches also constrain its worker.
+    Inherit,
+    /// The switches select the sole tool exposed to Lead, not its worker's tools.
+    LeadExposure,
+}
+
 fn build_worker_hooks(
     i: &HookInputs<'_>,
     notices: &mut Vec<(Level, String)>,
-    inherit_tool_scope: bool,
+    tool_scope: WorkerToolScope,
 ) -> Option<Arc<WorkerHooks>> {
     // Off in a worker child (`OXA_WORKER_DEPTH` set, even to an empty value: `Env::get` treats
     // empty as unset, so the pairs are read directly), under `--no-session` (a worker persists
@@ -142,8 +150,10 @@ fn build_worker_hooks(
                                 // The live Lead's worker-only allowlist describes the tools exposed
                                 // to Lead, not the tools its coding workers may use. Ordinary parent
                                 // sessions still narrow their children exactly as before.
-                                tools: inherit_tool_scope.then_some(i.args.tools.clone()).flatten(),
-                                no_tools: inherit_tool_scope && i.args.no_tools,
+                                tools: matches!(tool_scope, WorkerToolScope::Inherit)
+                                    .then_some(i.args.tools.clone())
+                                    .flatten(),
+                                no_tools: matches!(tool_scope, WorkerToolScope::Inherit) && i.args.no_tools,
                                 no_builtin_tools: i.args.no_builtin_tools,
                                 no_mcp: i.args.no_mcp,
                                 no_web_search: i.args.no_web_search,
@@ -188,7 +198,7 @@ fn build_worker_hooks(
 /// (`args.lead`) never reaches this and stays read-only.
 pub(crate) fn build_owner_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> HookSets {
     let mut sets = HookSets::default();
-    if let Some(workers) = build_worker_hooks(i, notices, false) {
+    if let Some(workers) = build_worker_hooks(i, notices, WorkerToolScope::LeadExposure) {
         sets.hooks.push(workers.clone());
         sets.workers = Some(workers);
     }
@@ -354,7 +364,7 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
     }
 
     // ---- builtin:worker (K5a) ----
-    if let Some(workers) = build_worker_hooks(i, notices, true) {
+    if let Some(workers) = build_worker_hooks(i, notices, WorkerToolScope::Inherit) {
         sets.hooks.push(workers.clone());
         sets.workers = Some(workers);
     }
@@ -536,6 +546,7 @@ mod tests {
         let args = Args {
             tools: Some(vec![worker_tool::TOOL_NAME.to_string()]),
             no_tools: true,
+            offline: true,
             ..Args::default()
         };
         let cwd = test.work();
@@ -552,6 +563,30 @@ mod tests {
             !child_scope.no_tools,
             "Lead's no-tools baseline leaked into its worker"
         );
+        assert!(
+            child_scope.offline,
+            "the parent's execution policy was not inherited"
+        );
+        let (child_args, _) = crate::workers::launch::child_argv(
+            &crate::workers::launch::WorkerSpec {
+                name: "lead-child".into(),
+                session_id: "synthetic-session".into(),
+                model: "synthetic-model".into(),
+                goal_file: "/synthetic/goal".into(),
+                mode: None,
+                max_tokens: None,
+                exclude_tools: Vec::new(),
+                session_dir: None,
+                narrowing: child_scope,
+            },
+            oxa_proto::Mode::Workspace,
+            oxa_proto::Autonomy::Standard,
+        )
+        .unwrap();
+        assert!(child_args.iter().any(|arg| arg == "--offline"));
+        assert!(!child_args
+            .iter()
+            .any(|arg| arg == "--tools=worker" || arg == "--no-tools"));
         // Only the worker hook set: no extensions, MCP or subagent in the owner session.
         assert!(sets.extensions.is_none() && sets.mcp.is_none() && sets.subagent.is_none());
         // The same off switches as everywhere: a worker child gets none.
