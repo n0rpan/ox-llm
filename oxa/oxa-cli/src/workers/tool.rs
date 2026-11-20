@@ -469,7 +469,7 @@ fn attempts(records: &[WorkerRecord], job: &str, sessions_dir: &Path) -> Vec<Att
             model: r.model.clone(),
             kind: r.kind.clone(),
             job_matches: r.job_key() == job,
-            failed: model_policy::failed(&r.result, &live_state(r, sessions_dir)),
+            failed: model_policy::failed(&r.result, &live_state(r, sessions_dir), r.stopped),
         })
         .collect()
 }
@@ -2795,6 +2795,46 @@ mod tests {
             "{listed}"
         );
         stop_all(&hooks, &["r1", "r2"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stopped_workers_with_an_interrupted_finish_do_not_escalate() {
+        let (root, repo, agent, _) = fixture("policy-stop-no-escalate");
+        let hooks = hooks_with_policy(
+            &logging_oxa(&root),
+            &agent,
+            policy(json!({"kinds": {"review": ["a", "b"]}, "escalateTo": ["s"]})),
+        );
+        set_session(&hooks, "parent-1");
+        for name in ["t1", "t2"] {
+            let out = start_with(
+                &hooks,
+                &repo,
+                json!({"name": name, "kind": "review", "job": "pr-9"}),
+            );
+            assert!(!out.is_error, "{}", out.text);
+            let stop = hooks.core.stop(&json!({"action": "stop", "name": name}));
+            assert!(!stop.is_error, "{}", stop.text);
+        }
+        // The child answers SIGINT with an interrupted finish, which wins over the stopped marker.
+        for rec in registry::load(&agent, "parent-1").unwrap() {
+            fs::create_dir_all(rec.status_file.parent().unwrap()).unwrap();
+            fs::write(
+                &rec.status_file,
+                json!({"phase": "finished", "outcome": {"outcome": "interrupted"}}).to_string(),
+            )
+            .unwrap();
+        }
+        let third = start_with(
+            &hooks,
+            &repo,
+            json!({"name": "t3", "kind": "review", "job": "pr-9"}),
+        );
+        assert!(!third.is_error, "{}", third.text);
+        assert!(third.text.contains("policy: kind review"), "{}", third.text);
+        assert_ne!(launched_models(&root, 3)[2], "s");
+        stop_all(&hooks, &["t1", "t2", "t3"]);
         let _ = fs::remove_dir_all(&root);
     }
 
