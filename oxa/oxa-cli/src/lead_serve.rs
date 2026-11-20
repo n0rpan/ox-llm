@@ -676,10 +676,13 @@ impl Source {
 
     /// The exact id of the session the Lead's workers belong to: its owner binding's.
     fn parent_session(&self) -> Option<&str> {
-        self.owner.as_ref().map(|owner| match &owner.start {
-            OwnerSession::Dedicated(binding) => binding.session_id(),
-            OwnerSession::Attached(attached) => attached.session_id(),
-        })
+        self.owner
+            .as_ref()
+            .and_then(|owner| owner.start.as_ref())
+            .map(|start| match start {
+                OwnerSession::Dedicated(binding) => binding.session_id(),
+                OwnerSession::Attached(attached) => attached.session_id(),
+            })
     }
 
     /// The one observation every page, and the live fingerprint, is built from. The bounded
