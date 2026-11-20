@@ -237,7 +237,7 @@ Session files are `0600`. The Brave key is never written to a session, an export
 
 ### Publishing
 
-`oxa work --publish` and lane pushes scan the commits they would push and refuse a private key, a known token format, an opaque credential assignment or quoted literal, a `Bearer` header, a URL password, lines added to a secret-store file such as `.env`, or the value of a secret-named variable or setting. An empty secret-store file and `.env.example` are checked by content, not refused by name. A credential deleted in a later commit still blocks publication: rewrite the unpublished commits. The details are in [../work.md](../work.md#what-the-publication-scan-refuses).
+`oxa work --publish` and lane pushes scan the commits they would push and refuse a private key, a known token format, an opaque credential assignment or quoted literal (also names ending in `_key` or `credentials`, and a JSON value under an unchanged `"password":` line), a `Bearer` or `Basic` authorization header, a URL password, lines added to a secret-store file such as `.env`, or the value of a secret-named variable or setting. An empty secret-store file and `.env.example` are checked by content, not refused by name. A credential deleted in a later commit still blocks publication: rewrite the unpublished commits. The details are in [../work.md](../work.md#what-the-publication-scan-refuses).
 
 ## Checklist
 

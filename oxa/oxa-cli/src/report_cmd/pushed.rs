@@ -79,6 +79,23 @@ fn opaque_value(value: &str) -> bool {
             .any(|ch| ch.is_ascii_digit() || !(ch.is_alphabetic() || matches!(ch, '_' | '.' | ':')))
 }
 
+/// A relative file path such as `config/service-account.json`: path characters only, a `/`,
+/// no URL scheme and a file extension on the last segment. Base64 never holds a `.`, so an
+/// encoded credential is not mistaken for one.
+fn relative_file_path(value: &str) -> bool {
+    let value = value.trim().trim_matches(['"', '\'']);
+    let Some((_, name)) = value.rsplit_once('/') else {
+        return false;
+    };
+    let ext = name.rsplit_once('.').map_or("", |(_, ext)| ext);
+    !value.contains("://")
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-'))
+        && (1..=5).contains(&ext.len())
+        && ext.chars().all(|ch| ch.is_ascii_alphanumeric())
+}
+
 /// Whether a quoted value of a secret-named key is a literal credential. A quoted string is
 /// data (a single-quoted shell word or a JSON/YAML string), so a `$` inside it counts as part
 /// of the value; only a whole variable reference (`${NAME}`, `$(cmd)`, a double-quoted
@@ -184,7 +201,7 @@ fn environment_secret_assignment(text: &str) -> bool {
             .expect("environment secret assignment pattern")
         })
         .captures_iter(text)
-        .any(|found| opaque_value(&found[1]))
+        .any(|found| opaque_value(&found[1]) && !relative_file_path(&found[1]))
 }
 
 /// An assignment (`NAME=value`, `name: value`, `"name": "value"`) whose name ends in a
@@ -208,6 +225,7 @@ fn key_named_assignment(text: &str) -> bool {
             value.chars().count() >= MIN_KEY_VALUE_CHARS
                 && opaque_value(value)
                 && !value.starts_with(['/', '~', '.'])
+                && !relative_file_path(value)
                 && !value.contains("://")
         })
 }
@@ -243,7 +261,7 @@ fn prefixed_assignment(text: &str) -> bool {
             .expect("prefixed assignment pattern")
         })
         .captures_iter(text)
-        .any(|found| opaque_value(found[1].trim()))
+        .any(|found| opaque_value(found[1].trim()) && !relative_file_path(&found[1]))
 }
 
 /// A PuTTY private key is a line-oriented format, not PEM: `PuTTY-User-Key-File-N` and
@@ -437,7 +455,9 @@ impl PushScan {
         // The scrubber's keyed, `Bearer ..` and URL-credential patterns, which catch
         // an opaque credential copied from a project file that no configured value matches.
         let value_of = |text: &str| text.split_whitespace().last().unwrap_or_default().to_string();
-        if p.keyed.captures_iter(text).any(|found| opaque_value(&found[2]))
+        if p.keyed
+            .captures_iter(text)
+            .any(|found| opaque_value(&found[2]) && !relative_file_path(&found[2]))
             || quoted_secret_literal(text)
             || environment_secret_assignment(text)
             || prefixed_assignment(text)
@@ -725,6 +745,32 @@ mod tests {
                 text: &text,
             };
             assert!(scan.check(&item).is_none(), "{text}");
+        }
+    }
+
+    #[test]
+    fn relative_credential_file_paths_pass_in_templates() {
+        let scan = PushScan::new(
+            &Env::from_pairs(&[]),
+            &Settings::from_values(json!({}), json!({})),
+        );
+        for text in [
+            "GOOGLE_APPLICATION_CREDENTIALS=config/service-account.json",
+            "SIGNING_KEY=secrets/dev/signing-key.pem",
+            "CLIENT_SECRET_FILE=conf/oauth/client-secret.json",
+            "service_secret: certs/prod/tls.key",
+        ] {
+            assert!(scan.check(&added(".env.example", text)).is_none(), "{text}");
+            assert!(
+                scan.check(&added("deploy/app/.env.example", text)).is_none(),
+                "{text}"
+            );
+        }
+        for text in [
+            "ENCRYPTION_KEY=Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MA/b64==",
+            "GOOGLE_APPLICATION_CREDENTIALS=abcdEFGH1234ijklMNOP5678",
+        ] {
+            assert!(scan.check(&added(".env.example", text)).is_some(), "{text}");
         }
     }
 
