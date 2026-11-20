@@ -1483,7 +1483,12 @@ pub(crate) fn peel(words: &[String], unknown_in: bool) -> Peeled {
                 i = skip_flags(words, i + 1, XARGS_WITH_ARG);
             }
             "nice" => i = skip_flags(words, i + 1, &["-n", "--adjustment"]),
-            "nohup" | "command" | "builtin" | "setsid" => i = skip_flags(words, i + 1, &[]),
+            "nohup" | "command" | "builtin" => i = skip_flags(words, i + 1, &[]),
+            "setsid" => {
+                // It may fork even without an explicit flag; execution order is not proved.
+                out.unknown = true;
+                i = skip_flags(words, i + 1, &[]);
+            }
             "time" => i = skip_flags(words, i + 1, &["-f", "-o"]),
             "exec" => {
                 let from = i + 1;

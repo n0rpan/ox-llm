@@ -416,6 +416,7 @@ fn unordered_pushes_and_ref_writing_plumbing_ask() {
     for c in [
         "(sleep 1; git push origin HEAD) & git switch main",
         "git push origin HEAD &",
+        "setsid -f flock lock git push origin HEAD; git switch main",
         "git send-pack https://example.invalid/other.git HEAD:refs/heads/main",
     ] {
         assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{c}");
