@@ -101,6 +101,7 @@ fn facts(user: &Settings, dirs: &Dirs, cwd: &Path, env: &Env) -> Facts {
         Some(goal) => {
             let asks = goal.lead.as_ref().map_or(0, |lead| lead.open_asks.len());
             let state = match goal.status {
+                // Cancellation keeps Lead's open asks, but a terminal goal cannot await its owner.
                 GoalStatus::Done | GoalStatus::Canceled => "idle",
                 _ if asks > 0 => "awaiting_owner",
                 GoalStatus::Pursuing => "pursuing",
@@ -267,6 +268,10 @@ mod tests {
         let test = TestEnv::new();
         let dirs = Dirs::under(test.root());
         let id = owner_lead(&test, &dirs, true);
+        let awaiting = section_for(&test, &dirs);
+        assert_eq!(awaiting["state"], "awaiting_owner");
+        assert_eq!(awaiting["open_asks"], 1);
+
         let store = FsStore::new(dirs.sessions_dir.clone());
         let session = store.resolve(&id).unwrap();
         store.acquire(&session).unwrap();
