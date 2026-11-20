@@ -94,7 +94,7 @@ impl Client {
                 };
                 if data == b"[DONE]" {
                     let reported_cost = stream.reported_cost;
-                    let (completed, chunks) = stream.finish()?;
+                    let (completed, chunks) = stream.finish(rules.is_some())?;
                     // Trust metering only after a complete protocol, but save it
                     // before a callback can cancel final delivery or opt out.
                     *terminal_usage = completed.usage;
@@ -333,9 +333,14 @@ impl<'a> Stream<'a> {
         }
         Ok(out)
     }
-    fn finish(mut self) -> Result<(Completed, Vec<Value>), Error> {
+    fn finish(mut self, named: bool) -> Result<(Completed, Vec<Value>), Error> {
         let reason = self.reason.ok_or(Error::Protocol)?;
-        let usage = self.usage.ok_or(Error::Protocol)?;
+        let usage = self.usage;
+        // Compatible providers may ignore include_usage. Only [DONE] reaches
+        // this finalizer; tool validation still runs before any call is released.
+        if usage.is_none() && !(named && matches!(reason, "stop" | "tool_calls")) {
+            return Err(Error::Protocol);
+        }
         let mut out = Vec::new();
         let text = self.redactor.finish(Field::Content);
         self.text.push_str(&text);
@@ -391,7 +396,7 @@ impl<'a> Stream<'a> {
             json!({"id":"chatcmpl_openrouter","object":"chat.completion.chunk","created":self.created,
             "model":self.model,"choices":[{"index":0,"delta":{},"finish_reason":reason}]}),
         );
-        if self.include_usage {
+        if let Some(usage) = usage.filter(|_| self.include_usage) {
             let mut normalized = usage.openai();
             normalized["completion_tokens_details"]["reasoning_tokens"] = json!(self.reasoning_tokens);
             if let Some(cost) = self.reported_cost {
@@ -406,7 +411,7 @@ impl<'a> Stream<'a> {
             Completed {
                 assistant,
                 native_blocks: Vec::new(),
-                usage: Some(usage),
+                usage,
                 finish_reason: reason,
             },
             out,

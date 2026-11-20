@@ -369,6 +369,8 @@ Use `subscription` for token accounting or `metered` for USD accounting. When a
 provider does not publish rates, an owner model entry can supply them; public
 catalog prices for other providers do not apply. A model entry can supply limits
 and an upstream model ID, but cannot change the named provider's URL or key.
+A named Chat Completions provider can finish a reply or tool call without reporting
+usage. The ledger retains a conservative reservation instead of recording zero usage.
 
 Private settlement rows live in `<agent directory>/cloud-ledger/`. Listing only explicitly configured routes
 reads neither the key nor the ledger and contacts no provider. `daily_budget_usd` is
