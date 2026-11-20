@@ -676,7 +676,7 @@ impl Source {
 
     /// The exact id of the session the Lead's workers belong to: its owner binding's.
     fn parent_session(&self) -> Option<&str> {
-        self.owner.as_ref().map(|owner| match &owner.session {
+        self.owner.as_ref().map(|owner| match &owner.start {
             OwnerSession::Dedicated(binding) => binding.session_id(),
             OwnerSession::Attached(attached) => attached.session_id(),
         })
