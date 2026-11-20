@@ -13,11 +13,7 @@ use oxa_proto::{
     CancelToken, CommandSpec, CompactReason, Engine, EntryBody, FrozenPrefix, HookPoint, HookReply, Hooks,
     Mode, OxaError, Policy, ThinkingLevel, Tool, Ui, Value, VecSink, WireMsg,
 };
-<<<<<<< HEAD
 use oxa_resources::{ResourceSource, Resources, Skill};
-=======
-use oxa_resources::Resources;
->>>>>>> origin/main
 use oxa_sandbox::NoSandbox;
 use oxa_session::{Goal, GoalBudget, MemStore, SessionStore, Transcript, Tree};
 use sha2::{Digest, Sha256};
@@ -62,10 +58,7 @@ fn build(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Vec<Arc<dyn Hooks>>) -> 
         dirty: std::sync::atomic::AtomicBool::new(false),
         gate: Default::default(),
         wait_wake: CancelToken::new(),
-<<<<<<< HEAD
-=======
         wake: Default::default(),
->>>>>>> origin/main
     });
     SessionState {
         goal: None,
@@ -75,14 +68,10 @@ fn build(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Vec<Arc<dyn Hooks>>) -> 
         hooks,
         policy: Box::new(ModePolicy::new()) as Box<dyn Policy>,
         sandbox: Arc::new(NoSandbox),
-<<<<<<< HEAD
         settings: Settings::from_values(
             serde_json::json!({"compaction": {"reactivateSkills": true}}),
             Value::Object(Default::default()),
         ),
-=======
-        settings: Settings::default(),
->>>>>>> origin/main
         dirs: Dirs::under(env.root()),
         cwd: cwd.clone(),
         all_tools: Vec::new(),
@@ -314,7 +303,6 @@ fn hook_prompt_sections_survive_compaction() {
     let after = section(&st, "hook-policy").expect("hook section after compaction");
     assert!(after.contains("HOOK POLICY TEXT"), "{after}");
 }
-<<<<<<< HEAD
 
 // ---------------------------------------------------------------------------------------------
 // C2: the skills active before a compaction are listed in its summary
@@ -493,5 +481,3 @@ fn no_skill_no_block() {
     assert!(head.contains("SUMMARY ONE"), "{head}");
     assert!(!head.contains("<active-skills>"), "{head}");
 }
-=======
->>>>>>> origin/main
