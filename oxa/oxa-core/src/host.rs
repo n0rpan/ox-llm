@@ -1565,6 +1565,86 @@ mod tests {
         }
     }
 
+    /// A UI whose owner accepts confirmation dialogs.
+    struct ConfirmUi;
+
+    impl Ui for ConfirmUi {
+        fn select(&mut self, _: &str, _: &[String], _: Option<u32>) -> Option<usize> {
+            None
+        }
+        fn confirm(&mut self, _: &str, _: &str, _: Option<u32>) -> Option<bool> {
+            Some(true)
+        }
+        fn input(&mut self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+        fn editor(&mut self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+        fn notify(&mut self, _: &str, _: Level) {}
+        fn set_status(&mut self, _: &str, _: Option<&str>) {}
+        fn set_widget(&mut self, _: &str, _: Option<&[String]>, _: oxa_proto::Placement) {}
+        fn set_title(&mut self, _: &str) {}
+        fn set_editor_text(&mut self, _: &str) {}
+        fn ask_access(&mut self, _: &Access) -> Answer {
+            Answer::Deny
+        }
+    }
+
+    /// #1820: a session without extension hosts still pumps its owner-confirm broker while a
+    /// tool runs, so the available owner can approve the tool child's request.
+    #[test]
+    fn owner_confirm_is_pumped_without_extension_hosts() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::UnixStream;
+
+        let mut f = fixture();
+        assert!(
+            f.st.host_rx.is_none(),
+            "the regression requires no extension host"
+        );
+        let broker = crate::owner_confirm::OwnerConfirm::start(
+            &f.env.tmp().join("confirm"),
+            oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard),
+        )
+        .expect("start broker");
+        *f.st
+            .shared
+            .gate
+            .owner_confirm
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(broker.clone());
+
+        let socket = broker.sock_path().to_path_buf();
+        let mut sink = VecSink::default();
+        let mut ui = ConfirmUi;
+        let answer = pumped(
+            &mut f.st,
+            Serve::Run,
+            &mut sink,
+            &mut ui,
+            &mut |_| {},
+            move |_| {
+                let mut stream = UnixStream::connect(socket).expect("connect");
+                writeln!(
+                    stream,
+                    "{}",
+                    json!({"question": "publish the change?", "preview_sha256": "abc"})
+                )
+                .expect("request");
+                let mut line = String::new();
+                std::io::BufReader::new(stream)
+                    .read_line(&mut line)
+                    .expect("reply");
+                serde_json::from_str::<Value>(&line).expect("JSON reply")
+            },
+        );
+
+        assert_eq!(answer["answer"], "yes");
+        assert_eq!(answer["source"], "dialog");
+        broker.close();
+    }
+
     /// Serve the pending requests on this thread until `handle` finishes.
     fn serve_until_done<T: Send + 'static>(f: &mut Fixture, handle: std::thread::JoinHandle<T>) -> T {
         let mut sink = VecSink::default();
