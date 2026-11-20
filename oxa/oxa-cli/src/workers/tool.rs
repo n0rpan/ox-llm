@@ -14,7 +14,7 @@
 //! * `Hooks::shutdown` stops every worker through the supervisor.
 //! * K5b: `send {name, text}` publishes `text` to the worker's session inbox (the writer behind
 //!   `oxa send`) and reports the delivery and the worker's phase. The child id is read from the
-//!   registry record of `name`. `poll_event("worker", {name})` is done when the worker finished
+//!   registry record of `name`. `poll_event("worker_done", {name})` is done when the worker finished
 //!   or its process is gone. On `session_start` (startup, resume) each dead, unfinished worker is
 //!   relaunched through the same launch path (`resume.rs`) unless `oxa.workers.resumeOnStart`
 //!   is false.
@@ -50,7 +50,7 @@ pub const SETTING_MAX: &str = "oxa.workers.max";
 /// nested; only an unset variable lets the hook set be built.
 pub const ENV_WORKER_DEPTH: &str = "OXA_WORKER_DEPTH";
 
-const DESCRIPTION: &str = "Background workers: each is a separate oxa process that runs one goal in its own git worktree on branch agent/<name>. Actions: start {name, goal, model?, mode?} starts one (name: lowercase letters, digits and dashes, at most 40 characters); list shows this session's workers and their state; stop {name} stops one; send {name, text} delivers a follow-up message to a worker's session inbox and reports its phase. mode is plan, ask, workspace, auto or yolo, never wider than this session; without mode the worker inherits this session's level (a yolo session starts yolo workers, so they can push, open PRs and read CI).";
+const DESCRIPTION: &str = "Background workers: each is a separate oxa process that runs one goal in its own git worktree on branch agent/<name>. Actions: start {name, goal, model?, mode?} starts one (name: lowercase letters, digits and dashes, at most 40 characters); list shows this session's workers and their state; stop {name} stops one; send {name, text} delivers a follow-up message to a worker's session inbox and reports its phase. When wait is available, use until {kind:\"worker_done\", name} instead of a plain wait to await a worker. mode is plan, ask, workspace, auto or yolo, never wider than this session; without mode the worker inherits this session's level (a yolo session starts yolo workers, so they can push, open PRs and read CI).";
 
 const SCHEMA: &str = r#"{"type":"object","properties":{"action":{"type":"string","enum":["start","list","stop","send"]},"name":{"type":"string"},"goal":{"type":"string"},"text":{"type":"string"},"model":{"type":"string"},"mode":{"type":"string","enum":["plan","ask","workspace","auto","yolo"]}},"required":["action"]}"#;
 
@@ -1277,7 +1277,7 @@ impl Hooks for WorkerHooks {
         args: &Value,
         _budget: std::time::Duration,
     ) -> Option<Result<Option<String>, String>> {
-        (kind == TOOL_NAME).then(|| self.core.probe(args))
+        matches!(kind, "worker_done" | TOOL_NAME).then(|| self.core.probe(args))
     }
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         vec![self.tool.clone()]
@@ -1712,6 +1712,82 @@ mod tests {
     }
 
     #[test]
+    fn native_wait_hands_worker_completion_back_to_the_model() {
+        use oxa_fake::{ScriptTurn, ScriptedEngine};
+        use oxa_proto::{AgentEvent, EventSink, HeadlessUi};
+
+        struct FinishDuringWait(Option<registry::WorkerRecord>);
+        impl EventSink for FinishDuringWait {
+            fn emit(&mut self, event: &AgentEvent) {
+                if !matches!(event, AgentEvent::ToolExecutionUpdate { tool_name, .. } if tool_name == "wait")
+                {
+                    return;
+                }
+                let Some(rec) = self.0.take() else { return };
+                let status = json!({"session_id": rec.session_id, "pid": rec.pid, "phase": "finished",
+                    "outcome": {"type": "oxa_result", "outcome": "done", "exit_code": 0}});
+                fs::create_dir_all(rec.status_file.parent().unwrap()).unwrap();
+                crate::status::atomic(&rec.status_file, &serde_json::to_vec(&status).unwrap()).unwrap();
+            }
+        }
+
+        let (root, repo, agent, fake) = fixture("wait");
+        let hooks = Arc::new(hooks(&fake, &agent));
+        let engine = Arc::new(ScriptedEngine::new(vec![
+            ScriptTurn::tool(
+                "w",
+                "wait",
+                r#"{"seconds":5,"reason":"Review","until":{"kind":"worker_done","name":"alpha"}}"#,
+            ),
+            ScriptTurn::text("Review finished."),
+        ]));
+        let mut session = oxa_core::Session::open(
+            oxa_core::Deps {
+                engine: engine.clone(),
+                store: Arc::new(oxa_session::MemStore::new()),
+                tools: vec![],
+                hooks: vec![hooks.clone()],
+                policy: Box::new(oxa_perm::ModePolicy::new()),
+                sandbox: Arc::new(oxa_sandbox::NoSandbox),
+                settings: oxa_config::Settings::default(),
+                dirs: oxa_config::Dirs::under(&root),
+                cwd: repo.clone(),
+                selection: Default::default(),
+                resources: Default::default(),
+                model: None,
+                thinking: None,
+                mode: None,
+                session_id: None,
+                jobs: Arc::new(oxa_tools::JobRegistry::new()),
+            },
+            oxa_core::Open::New,
+        )
+        .unwrap();
+        start_alpha(&hooks, &repo);
+        let (parent, _) = hooks.core.session();
+        let rec = registry::load(&agent, &parent).unwrap().remove(0);
+        session
+            .prompt(
+                "Wait for the review.".into(),
+                vec![],
+                &mut FinishDuringWait(Some(rec)),
+                &mut HeadlessUi::default(),
+            )
+            .unwrap();
+        drop(session);
+        hooks.stop_all();
+        fs::remove_dir_all(root).unwrap();
+
+        let requests = engine.requests();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1]
+            .messages
+            .iter()
+            .any(|m| m.tool_call_id.as_deref() == Some("w")
+                && m.content.as_deref() == Some("worker alpha: finished, outcome done")));
+    }
+
+    #[test]
     fn worker_probe_reports_finished_outcome() {
         let (root, repo, agent, fake) = fixture("probe");
         let hooks = hooks(&fake, &agent);
@@ -1733,7 +1809,20 @@ mod tests {
         let status = json!({"session_id": rec.session_id, "pid": rec.pid, "phase": "finished",
             "outcome": {"type": "oxa_result", "outcome": "done", "error_class": null, "exit_code": 0}});
         fs::create_dir_all(rec.status_file.parent().unwrap()).unwrap();
+        let mut stale = status.clone();
+        stale["session_id"] = json!("old-worker");
+        fs::write(&rec.status_file, stale.to_string()).unwrap();
+        assert_eq!(
+            hooks.poll_event("worker_done", &args, Duration::from_secs(5)),
+            Some(Ok(None))
+        );
         fs::write(&rec.status_file, status.to_string()).unwrap();
+        set_session(&hooks, "parent-2");
+        assert!(matches!(
+            hooks.poll_event("worker_done", &args, Duration::from_secs(5)),
+            Some(Err(_))
+        ));
+        set_session(&hooks, "parent-1");
         let log: Vec<String> = (1..=25).map(|n| format!("line {n}")).collect();
         fs::write(&rec.log_file, log.join("\n")).unwrap();
         let text = hooks

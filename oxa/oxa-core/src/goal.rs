@@ -593,7 +593,7 @@ impl Control {
                 cx.cancel,
                 &self.interrupt,
                 &self.shared.wait_wake,
-                remaining.min(if until["kind"] == "job_done" {
+                remaining.min(if matches!(kind, "job_done" | "worker_done") {
                     Duration::from_millis(250).min(self.wait.poll)
                 } else {
                     self.wait.poll
