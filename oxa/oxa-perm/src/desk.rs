@@ -1,6 +1,6 @@
 //! #1512 S5: the approval desk. A run with no one to ask (`!Ui::interactive`) files a dangerous
 //! command here instead of pausing; the owner answers with `oxa send <session> --approve <id>`
-//! Answers come only from the desk, never from the inbox text path.
+//! (or the lead web approvals page). Answers come only from the desk, never from the inbox text path.
 //!
 //! Storage: `<agent_dir>/approvals/`, mode 0700; one `<id>.json` per request, mode 0600. Files
 //! are written under a private temporary name and renamed into place, so a symlink at a record

@@ -24,7 +24,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// One `gh` or `git` call must finish within this.
 const CALL_DEADLINE: Duration = Duration::from_secs(20);
@@ -164,10 +164,17 @@ impl ProbeHooks {
         serde_json::from_str(&out).map_err(|_| "gh printed output that is not JSON".to_string())
     }
 
-    fn ci(&self, args: &Value, budget: Duration) -> Result<Option<String>, String> {
+    fn remaining(deadline: Instant) -> Result<Duration, String> {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| "the wait deadline expired during the GitHub probe".to_string())
+    }
+
+    fn ci(&self, args: &Value, deadline: Instant) -> Result<Option<String>, String> {
         let sha = valid_sha(args["sha"].as_str())?;
         let workflow = valid_workflow(args["workflow"].as_str())?;
-        let repo = self.repo(budget)?;
+        let repo = self.repo(Self::remaining(deadline)?)?;
         let runs = self.gh(
             &[
                 "run",
@@ -183,7 +190,7 @@ impl ProbeHooks {
                 "-L",
                 "5",
             ],
-            budget,
+            Self::remaining(deadline)?,
         )?;
         // Only a run of exactly this head counts; the newest one decides.
         let run = runs
@@ -207,7 +214,10 @@ impl ProbeHooks {
         let mut text = format!("{workflow} run {id} at {sha}: {conclusion}");
         if conclusion != "success" {
             let id = id.to_string();
-            let jobs = self.gh(&["run", "view", &id, "-R", &repo, "--json", "jobs"], budget)?;
+            let jobs = self.gh(
+                &["run", "view", &id, "-R", &repo, "--json", "jobs"],
+                Self::remaining(deadline)?,
+            )?;
             let failed: Vec<String> = jobs["jobs"]
                 .as_array()
                 .into_iter()
@@ -231,12 +241,12 @@ impl ProbeHooks {
         Ok(Some(text))
     }
 
-    fn pr_merged(&self, args: &Value, budget: Duration) -> Result<Option<String>, String> {
+    fn pr_merged(&self, args: &Value, deadline: Instant) -> Result<Option<String>, String> {
         let pr = args["pr"]
             .as_u64()
             .filter(|n| *n > 0)
             .ok_or("pr must be a positive integer")?;
-        let repo = self.repo(budget)?;
+        let repo = self.repo(Self::remaining(deadline)?)?;
         let pr_arg = pr.to_string();
         let view = self.gh(
             &[
@@ -248,7 +258,7 @@ impl ProbeHooks {
                 "--json",
                 "state,mergedAt,headRefOid",
             ],
-            budget,
+            Self::remaining(deadline)?,
         )?;
         let merged = view["state"].as_str() == Some("MERGED")
             || view["mergedAt"].as_str().is_some_and(|m| !m.is_empty());
@@ -358,9 +368,10 @@ impl Hooks for ProbeHooks {
         if budget.is_zero() {
             return Some(Ok(None));
         }
+        let deadline = Instant::now() + budget;
         Some(match kind {
-            "ci" => self.ci(args, budget),
-            "pr_merged" => self.pr_merged(args, budget),
+            "ci" => self.ci(args, deadline),
+            "pr_merged" => self.pr_merged(args, deadline),
             _ => self.read_probe(kind, args, budget).map(Some),
         })
     }
@@ -397,7 +408,7 @@ mod tests {
             for d in [&bin, &work, &home] {
                 mk(d);
             }
-            let script = "#!/bin/sh\ndir=\"$(dirname \"$0\")\"\necho \"$@\" >> \"$dir/calls\"\necho \"host=$GH_HOST\" >> \"$dir/hosts\"\ncase \"$1 $2\" in\n  \"run list\") cat \"$dir/run_list.json\" ;;\n  \"run view\") cat \"$dir/run_view.json\" ;;\n  \"pr view\") cat \"$dir/pr_view.json\" ;;\n  *) exit 2 ;;\nesac\n";
+            let script = "#!/bin/sh\ndir=\"$(dirname \"$0\")\"\necho \"$@\" >> \"$dir/calls\"\necho \"host=$GH_HOST\" >> \"$dir/hosts\"\n[ ! -f \"$dir/delay\" ] || sleep \"$(cat \"$dir/delay\")\"\ncase \"$1 $2\" in\n  \"run list\") cat \"$dir/run_list.json\" ;;\n  \"run view\") cat \"$dir/run_view.json\" ;;\n  \"pr view\") cat \"$dir/pr_view.json\" ;;\n  *) exit 2 ;;\nesac\n";
             let gh = bin.join("gh");
             std::fs::write(&gh, script).unwrap();
             std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -493,6 +504,26 @@ mod tests {
             .calls()
             .unwrap()
             .contains("run view 11 -R acme/widgets --json jobs"));
+    }
+
+    #[test]
+    fn ci_probe_shares_one_deadline_across_subprocesses() {
+        let f = Fake::new("shared-deadline");
+        f.answer(
+            "run_list",
+            &format!(
+                r#"[{{"databaseId":11,"status":"completed","conclusion":"failure","headSha":"{SHA}"}}]"#
+            ),
+        );
+        f.answer("run_view", r#"{"jobs":[]}"#);
+        std::fs::write(f.bin.join("delay"), "0.25").unwrap();
+
+        let started = Instant::now();
+        assert!(f.poll_within(ci_args(SHA), Duration::from_millis(400)).is_err());
+        assert!(
+            started.elapsed() < Duration::from_millis(650),
+            "each subprocess must not receive a fresh 400ms budget"
+        );
     }
 
     #[test]

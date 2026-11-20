@@ -29,7 +29,7 @@ mod settings;
 pub use descriptor::sheet::{Page, PageRow};
 pub use descriptor::{
     descriptor, descriptors, fields_of, in_group, Apply, Control, Descriptor, Group, Item, MapKind, Options,
-    Range, Unit, WebEdit,
+    Range, SchemaInfo, Unit, WebEdit,
 };
 pub use descriptor_value::{check, current, display_value, parse_input, search, Shown};
 pub use dirs::dirs_from_env;

@@ -870,7 +870,7 @@ fn tui_006() {
         &[
             "oxa-tui/src/highlight.rs",
             "oxa-tui/src/markdown.rs",
-            "oxa-config/src/schema.rs",
+            "oxa-config/src/descriptor/display.rs",
         ],
         &["syntect", "table", "markdown.codeBlockIndent"],
     );

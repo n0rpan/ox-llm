@@ -53,8 +53,9 @@ class ReleaseAssets(unittest.TestCase):
         dev = (W / 'dev-build.yml').read_text()
         self.assertRegex(dev, r'on:\s*\n  push:\s*\n    branches: \[main\]')
         self.assertNotIn('pull_request', dev)
-        # A running dev build finishes; only the newest pending push is kept.
-        self.assertIn('group: dev-build\n  cancel-in-progress: false', dev)
+        # A running push build finishes; only the newest pending push is kept, and the nightly
+        # qualification has its own group so it never delays a push.
+        self.assertIn('group: dev-build-${{ github.event_name }}\n  cancel-in-progress: false', dev)
         # Publication moves only forward, checked before any create or upload.
         publish = dev.split('  publish:', 1)[1]
         self.assertLess(publish.index('compare/$GITHUB_SHA...main'), publish.index('gh release create dev'))
@@ -62,7 +63,8 @@ class ReleaseAssets(unittest.TestCase):
         self.assertIn('uses: ./.github/workflows/release-build.yml', dev)
         self.assertIn('needs: [version, build]', dev)
         self.assertNotIn('contents: write', dev.split('  publish:', 1)[0])
-        self.assertIn("github.ref == 'refs/heads/main'", dev.split('  publish:', 1)[1])
+        # A nightly or dispatched run qualifies without republishing the same commit.
+        self.assertIn("github.event_name == 'push'", dev.split('  publish:', 1)[1])
         self.assertIn('for arch in aarch64 x86_64', dev)
         release_commands = [line.strip() for line in dev.splitlines()
                             if 'gh release create ' in line or 'gh release edit ' in line]
