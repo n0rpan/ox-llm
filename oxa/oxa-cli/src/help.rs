@@ -233,6 +233,7 @@ const BASE: &[Entry] = &[
             "oxa work board --shadow --repo OWNER/REPO --once",
             "oxa work board --shadow --repo OWNER/REPO --token-stdin [--once] [--app-quota-shadow]",
             "oxa work board --shadow --repo OWNER/REPO --once --review-policy FILE",
+            "oxa work board --shadow --repo OWNER/REPO --token-stdin [--once] [--landing-shadow] [--lead-alarms]",
         ],
         example: "oxa work board --shadow --repo example/project --once",
     },
