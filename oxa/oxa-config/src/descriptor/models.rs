@@ -259,6 +259,28 @@ pub const ENTRIES: &[Descriptor] = &[
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
     d(
+        "retry.localMaxTotalMs",
+        Group::Models,
+        "Requests and retries",
+        "Local engine retry budget",
+        "Whole retry wait when this machine's engine fails; waiting cannot fix it.",
+    )
+    .key(Kind::Number, "5000")
+    .number(Unit::Ms)
+    .apply(Apply::Reload)
+    .web(WebEdit::Edit),
+    d(
+        "retry.identical5xxRetries",
+        Group::Models,
+        "Requests and retries",
+        "Repeated error retries",
+        "Retries of the same 5xx body from one endpoint; overload replies keep the long backoff.",
+    )
+    .key(Kind::Number, "2")
+    .control(Control::Number)
+    .apply(Apply::Reload)
+    .web(WebEdit::Edit),
+    d(
         "oxa.emptyReplyRetries",
         Group::Models,
         "Requests and retries",

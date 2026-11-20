@@ -12,6 +12,7 @@ compaction.enabled|Bool|true|true
 compaction.keepRecentTokens|Number|4000|true
 compaction.modelOverrides|Object|null|true
 compaction.profile|Enum(["auto", "local", "cloud"])|"auto"|true
+compaction.reactivateSkills|Bool|false|true
 compaction.reserveTokens|Number|16384|true
 defaultModel|String|null|true
 defaultProjectTrust|Enum(["ask", "always", "never"])|"ask"|true
@@ -126,6 +127,8 @@ prompts|StringList|[]|true
 quietStartup|Any|false|true
 retry.baseDelayMs|Number|2000|true
 retry.enabled|Bool|true|true
+retry.identical5xxRetries|Number|2|true
+retry.localMaxTotalMs|Number|5000|true
 retry.maxAgentDelayMs|Number|60000|true
 retry.maxRetries|Number|10|true
 retry.provider.maxRetries|Number|0|true
@@ -206,6 +209,8 @@ Models|retry.enabled
 Models|retry.maxRetries
 Models|retry.baseDelayMs
 Models|retry.maxAgentDelayMs
+Models|retry.localMaxTotalMs
+Models|retry.identical5xxRetries
 Models|oxa.emptyReplyRetries
 Models|retry.provider.maxRetries
 Models|retry.provider.maxRetryDelayMs

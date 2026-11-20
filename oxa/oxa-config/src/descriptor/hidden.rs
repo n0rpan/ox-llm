@@ -7,6 +7,16 @@ use crate::schema::Kind;
 
 /// The hidden rows, sorted by key.
 pub(super) const ENTRIES: &[Descriptor] = &[
+    // C2: skills active before a compaction come back after it when the owner opts in.
+    d(
+        "compaction.reactivateSkills",
+        Group::Advanced,
+        "",
+        "compaction.reactivateSkills",
+        "",
+    )
+    .key(Kind::Bool, "false")
+    .hidden(),
     // #1512 S2: exact rule keys saved by "always allow" in a dangerous-command prompt; user
     // settings only (a project value is never read).
     d(
