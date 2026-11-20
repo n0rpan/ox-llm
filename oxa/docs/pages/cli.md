@@ -106,6 +106,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa status <session-id\|session-file> [--session-dir <dir>]` | read a saved session's progress and stall signal without contacting an engine |
 | `oxa send <session-id> <text\|->` | queue one follow-up for the session's TUI or RPC owner; `-` reads standard input |
 | `oxa config [-l]` | print every setting with its value and where it comes from |
+| `oxa local add <model.gguf> [--name ALIAS] [--ctx N] [--max-output N] [--margin-bytes N] [--enable] [--replace] [--engine-dir DIR] [-- LAUNCH ARGS]` | write the native local engine settings for one GGUF from the engine's own admission report, see [Local models](#local-models) |
 | `oxa mcp <command>` | manage MCP servers, see below |
 | `oxa memory <list\|show\|rm>` | list the memory index, show one memory entry, or remove one entry and its index line, see [Memory commands](#memory-commands) |
 | `oxa identity [--refresh] [--offline]` | show the identity text of the system prompt; `--refresh` rewrites it from this machine and the engine, and `--offline` skips the engine |
@@ -142,6 +143,19 @@ Metered cloud aliases need `oxa.engine.inProcessCloud`, a configured price, and 
 `oxa report-issue draft` takes `--title <text>` (required), and the notes either inline with `--notes <text>` or from a file with `--notes-file <path>` (relative paths are taken from the current directory). It writes the draft under `issue-drafts/` in the agent directory and prints its path; it posts nothing. `oxa report-issue submit <draft>` posts it after you type `yes` in a terminal. Inside an interactive oxa session, ask for the draft to be published instead: in yolo it posts at once and shows the result; otherwise oxa shows the exact text in an approval dialog (or you type `yes`), and the model can request it but never answer it.
 
 `oxa config` lists the settings as oxa resolves them.
+
+### Local models
+
+`oxa local add <model.gguf>` lets the owner wire one local model into the native local engine. Run it outside an agent tool. It needs no hand-written limits:
+
+1. It finds `oxe` and `oxe-server` in the directory of the running `oxa` executable. There is no PATH or current-directory search; `--engine-dir DIR` names another installation explicitly.
+2. It runs `oxe admission --json` for the model and launch profile. The engine reads only the GGUF header and reports `kv_bytes_per_position`, `scratch_bytes`, `mtp_state_bytes` and `margin_bytes` from its own allocation code, the context window, and the complete launch arguments the numbers are valid for.
+3. It writes `oxa.local` (the `binary`, `models.<alias>.model` and `arguments`, and `limits.<alias>` with `context_window`, `max_output` and `allocation_budget`) into your **user** settings file only, after copying the existing file to `settings.json.bak-<unix seconds>` next to it (mode 0600). Project settings are never read or written.
+4. It sets `oxa.engine.inProcessLocal` to `true` only when you pass `--enable`.
+
+Options: `--name` is the model alias (default: the lowercased file name without extension), `--ctx` the context in positions (default: the model's own `context_length`), `--max-output` a narrower output limit (default: the context window, the engine's own bound), `--margin-bytes` the host margin (default: the engine's documented 1 GiB), `--replace` overwrites an existing alias. Everything after `--` is passed to the engine as launch arguments, for example `-- --oxe-cpus 0-7 --spec-type draft-mtp`. The admission report resolves them with the same rules as `oxe-server` and the written `arguments` are the resolved list.
+
+A value that the report or an option does not supply is an explained error and nothing is written: oxa never guesses a limit. The generated `oxa.local` is also checked by the same code that loads it at startup before the file is touched. At load time oxa still requires `MemAvailable` to cover the model file plus the budget; see [native local configuration](../../oxc-local/CONFIGURATION.md).
 
 ### Experimental ChatGPT sign-in
 
@@ -218,8 +232,16 @@ $ oxa memory rm <name>
 | `--usage-log <file>` | write one JSONL record per model call (tokens, duration, model, turn); owner-only file, no message text |
 | `--stall-timeout <seconds>` | flag a session as stalled after this long without progress; a signal that never cancels the run |
 | `--export <input> [output]` | export a session file to HTML and exit |
+
 | `--tui-mode <mode>` | `fullscreen` (default) or `regular` |
 | `--verbose` | show more start-up information |
+
+The live, owner-authorized Lead service exposes only the `worker` tool. It may create Git
+worktrees and launch, list, steer, or stop child `oxa` processes; workers remain supervised across
+service chat turns. New launches obey the current permission mode and the user-only
+`oxa.workers.enabled` and `oxa.workers.max` settings. The `oxa lead --shadow` preset is read-only,
+and standalone one-shot `oxa lead chat <message>` exposes no tools because its process cannot keep
+a background worker alive for a later turn.
 
 ### Sessions
 
@@ -271,6 +293,7 @@ See [tools.md](tools.md) for the tool names.
 | `--share-model <alias>` | share one native local model during the interactive owner session in a build with the `share` feature, repeat to select more aliases |
 | `--share-bind <address>` | set an explicit bind address for `--share-model`. Sharing uses the Tailscale interface by default |
 | `--offline` | offline mode: oxa's own non-local connections are refused, bash has no network, `web_search` is off, and `!cmd` and stdio MCP servers run without network. What it does not cover is in [security.md](security.md#offline-mode) |
+| `--sandbox` | run bash and hooks in the OS sandbox (bubblewrap) for this interactive run, as `oxa.sandbox.interactive` does. Without it an interactive run has no OS sandbox: bash runs with your rights and dangerous commands ask. Unattended runs (subagents, workers, `oxa work`, headless goals) keep the sandbox |
 
 See [security.md](security.md).
 
@@ -353,6 +376,7 @@ These are set by oxa for its own child processes, or are test hooks. They are no
 - `OXA_SESSION_HINT`: a parent sets `<parent session id>.s<n>` in a subagent child, and every chat request of the child names it.
 - `OXA_CHILD_SOFT_TOKENS`: a parent may set the soft compaction limit of a subagent child; it overrides `oxa.compaction.softTokens`.
 - `OXA_WORKER_DEPTH`: oxa sets `1` in the environment of a lead worker session.
+- `OXA_UNATTENDED`: oxa sets `1` in the environment of a worker it launches; the run counts as unattended and keeps the OS sandbox by default.
 - `OXA_WORK_MODEL_DELEGATED`: `oxa work` sets `1` in a worker; a restored or project-selected model then never counts as chosen by the owner, while an actual model argument is still admitted by a protected Go key.
 - `OXA_WORKTREE_TRUST_SOURCE`: `oxa work` names the trusted source checkout of a managed worktree; it counts only in `--mode json`, and only when the checkout, the trust record and the approved resources verify.
 - `OXA_RUNNER_OWNS_GITHUB`: `oxa work` sets `1` in a worker: the runner owns GitHub access, so the worker runs no `gh`.

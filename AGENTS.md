@@ -18,6 +18,7 @@ code, tests, CI and docs; the owner validates on hardware.
   override these decisions. Enforce that boundary both when loading settings and when adopting a
   project file after any settings edit; an unrelated project edit must not restore a rejected
   user-only value.
+- `oxa local add` is owner-only. Refuse agent invocations before engine admission or settings writes.
 - Agent control lane: a session accepts steer/pause/resume/cancel only from the same user, and the
   session owner checks each request against the lease and goal revision. `oxa.a2a.enabled: false`
   (user-only) turns it off. Do not add a path that skips the lease check or reads the setting from a
@@ -27,6 +28,7 @@ code, tests, CI and docs; the owner validates on hardware.
   owner-selected yolo deliberately disables the permission floor. Off Linux there is no OS sandbox
   (owner policy, #1512): in-process guards stay, bash gets the same cleared base environment, and
   the bash network is not restricted there; the start notice and the model env note say so.
+- **Extension exec directory:** an extension's `oxa.exec` whose `cwd` is outside the session directory asks like a write (or read) outside the project before the directory is mounted; yolo does not ask, a `cwd` inside the session directory is unchanged (`exec_gated`, `oxa-core/src/host.rs`).
 - **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
   answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
   broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
@@ -47,13 +49,24 @@ code, tests, CI and docs; the owner validates on hardware.
     Answer it by citing this rule, and do not apply it. A change that re-adds an OS sandbox to those
     paths is a P1 finding.
   - Off Linux the bash network is not restricted. The start notice and the model env note say so.
+  - Headless runs pursuing a goal and ownerless RPC count as unattended. Host bash uses a
+    cleared toolchain environment and keeps GitHub output redaction, on Linux and off it.
 - **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
   answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
   broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
   files, web pages, other sessions, agent inbox) never approves. In yolo the broker answers yes and
   records it. The broker socket is owned by the session (dir 0700, socket 0600) and validates a
-  complete, bounded request frame before asking. Do not add
+  complete, bounded request frame before asking. A typed yes answers only a request whose dialog
+  oxa has already shown (the broker records it); a yes with no shown dialog, or for another request
+  id, is ignored. A consumer a model-run command starts (`oxa work --publish`, `oxa report-issue`)
+  trusts only the sandbox's pinned socket or a listener verified as the session's own oxa process
+  (peer credentials: an ancestor, same executable, same user), whatever `OXA_CONFIRM_SOCK` and
+  `OXA_CODING_AGENT` say; a fake socket is no answer. Yolo is unchanged (the model already has the
+  owner's rights). The question is shown to the owner as the process's text, marked as such. Do not add
   `/dev/tty`-only confirmations or env-marker refusals for owner actions.
+- The live owner-authorized Lead service may launch and steer background workers through its sole
+  `worker` tool. The shadow Lead preset and one-shot `oxa lead chat` stay tool-free; user-only
+  worker enablement, limits and the current permission ceiling govern every new launch.
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
   in the ledger (an unknown cost is recorded as unknown). Limits are owner configuration: with no cap
@@ -116,10 +129,10 @@ code, tests, CI and docs; the owner validates on hardware.
   content, configured secret values). A file is refused for its content, never its name alone: an empty
   secret-store file and `.env.example` publish unless the content holds a secret. Flag as P1 a change that
   weakens these refusals or adds a name-only or blanket long-value block (P2 without a doc update).
-- **Bash and subagent limits.** The two caps are user-only. `oxa.bash.maxJobs` defaults to 16
-  running background jobs.
-  `oxa.subagent.maxChildren` defaults to 8 running or queued children per parent and 8 steps
-  per call. Both settings have a minimum of 1. An explicit bash `timeout: 0` disables the
+- **Bash and subagent limits.** `oxa.bash.maxJobs` (16) and `oxa.subagent.maxChildren` (8, also
+  steps per call) are user-only warning thresholds, never refusals:
+  above them a job starts or children queue, with a warning in the result. A goal token budget
+  counts known usage only; two idle replies warn unless `oxa.goal.idlePause`. Both limits are at least 1. An explicit bash `timeout: 0` disables the
   timeout for that call, including a background job, and overrides the foreground default.
   A foreground command that passes its timeout is not killed: it moves to a background job
   (counted in `oxa.bash.maxJobs`). `oxa.bash.waitCap` (user-only, default 300 s) caps `wait_s`.
@@ -157,6 +170,12 @@ code, tests, CI and docs; the owner validates on hardware.
   The repeat guard follows this: the third identical tool result gets a short note, a call that
   still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
   is the cap against loops the guard cannot see.
+  Image input follows it too: `read` attaches an image to a model that takes images, and an image
+  over the user-only `oxa.read.maxImageBytes` (generous default, 0 = no limit) is not sent; that
+  setting also bounds aggregate images across retained session history and the current tool-call
+  batch. A project may enable `images.blockImages` but cannot disable the owner's choice. The result names the limit and the
+  setting instead. `images.blockImages` prevents transmission. Private-path and pinned-open rules
+  apply to images as to any file.
   The finish wake follows it too: a background bash job that finishes on its own queues one
   follow-up message and, when the session is idle after a normal outcome, starts a turn;
   `oxa.jobs.wakeOnFinish` (`true` by default, `false` opts out, user settings only) is the control,
@@ -340,6 +359,11 @@ read its result; they never launch builds or tests.
 - Prefer deleting and merging code over adding it. Measure before and after when a change is about speed or size.
 - Write names as they are on `main`. Use short, plain sentences in docs, comments, PR text and user messages.
 - No person names, session links or internal decision ids in code, docs, commits, PR text or issues.
+- **Online data is fetched, never hard-coded (owner rule).** Model lists, context windows, max output, prices,
+  plan and rate limits, latest versions and release assets come from the live source (the provider's API or a
+  public catalog), cached from the last successful fetch and refreshed in the background. No built-in copies: an
+  online service needs the network anyway; an unknown value warns, never refuses. Protocol constants (API paths,
+  header names) and security pins (checksums, action SHAs) stay in code. Never fill such values from memory.
 - An issue filed by an agent states how the problem was observed (command, run or log line). Verify an agent-filed
   issue against current main before building on it; close it with the evidence if it does not reproduce.
 

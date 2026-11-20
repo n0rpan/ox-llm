@@ -119,11 +119,11 @@ fn continue_restores_a_pursuing_goal_without_rereading_the_objective_file() {
 }
 
 #[test]
-fn broken_request_usage_survives_restart_without_granting_another_goal_allowance() {
+fn broken_request_usage_is_recorded_as_unknown_and_does_not_stop_the_goal() {
     let env = TestEnv::new();
     env.write(
         "home/.oxa/agent/settings.json",
-        r#"{"retry":{"enabled":false},"oxa":{"bootPreload":false,"envNote":false},"cacheWarming":"off"}"#,
+        r#"{"retry":{"enabled":false},"oxa":{"bootPreload":false,"envNote":false,"goal":{"failureBackoffSeconds":0}},"cacheWarming":"off"}"#,
     );
     env.write("work/goal.txt", "Finish synthetic work.");
     let mut cut = ScriptTurn::text(&"synthetic partial output ".repeat(100));
@@ -133,12 +133,15 @@ fn broken_request_usage_survives_restart_without_granting_another_goal_allowance
     let output = run(&env, &first, &["--goal", "goal.txt", "--max-tokens", "100000"]);
     let record = result(&output);
     assert_eq!(record["goal"]["unknown_requests"], 1);
-    assert_eq!(record["goal"]["status"], "blocked");
+    assert_eq!(
+        record["goal"]["status"], "pursuing",
+        "unknown spend is not an exhausted budget"
+    );
     let next = FakeServer::start(
         vec![ScriptTurn::tool(
             "done",
             "goal_done",
-            r#"{"status":"complete","evidence":"Must not get a fresh allowance"}"#,
+            r#"{"status":"complete","evidence":"Unknown spend did not stop the goal"}"#,
         )],
         FakeOpts::default(),
     )
@@ -149,9 +152,9 @@ fn broken_request_usage_survives_restart_without_granting_another_goal_allowance
         &["--continue", record["session_id"].as_str().unwrap()],
     );
     let resumed = result(&output);
-    assert_eq!(resumed["outcome"], "blocked");
+    assert_eq!(resumed["outcome"], "done");
     assert_eq!(resumed["goal"]["unknown_requests"], 1);
-    assert!(next.requests().is_empty());
+    assert_eq!(next.requests().len(), 1);
 }
 
 #[test]
@@ -272,7 +275,7 @@ fn goal_first_request_preserves_piped_constraints() {
 }
 
 #[test]
-fn ambiguous_ledger_error_preserves_unknown_usage_across_process_restart() {
+fn ambiguous_ledger_error_keeps_unknown_usage_across_restart_and_the_goal_goes_on() {
     let env = bounded_goal_env();
     let first=FakeServer::start(vec![ScriptTurn::fault(Fault::Http {status:503,body:serde_json::json!({"error":{"type":"cloud_error","code":"cloud_ledger_unavailable","message":"Synthetic ambiguous settlement failure"}}).to_string()})],FakeOpts::default()).unwrap();
     let output = run(&env, &first, &["--goal", "goal.txt", "--max-tokens", "100000"]);
@@ -283,7 +286,7 @@ fn ambiguous_ledger_error_preserves_unknown_usage_across_process_restart() {
         "an actual HTTP request reached the fake engine"
     );
     assert_eq!(record["goal"]["unknown_requests"], 1);
-    assert_eq!(record["goal"]["status"], "blocked");
+    assert_eq!(record["goal"]["status"], "pursuing");
     let next = FakeServer::start(vec![completed_turn()], FakeOpts::default()).unwrap();
     let output = run(
         &env,
@@ -292,8 +295,8 @@ fn ambiguous_ledger_error_preserves_unknown_usage_across_process_restart() {
     );
     let resumed = result(&output);
     assert_eq!(resumed["goal"]["unknown_requests"], 1);
-    assert_eq!(resumed["outcome"], "blocked");
-    assert!(next.requests().is_empty());
+    assert_eq!(resumed["outcome"], "done");
+    assert_eq!(next.requests().len(), 1);
 }
 
 #[test]
@@ -360,7 +363,7 @@ fn explicit_continue_resumes_a_paused_goal_without_resetting_its_budget_or_objec
         let env = TestEnv::new();
         env.write(
             "home/.oxa/agent/settings.json",
-            r#"{"retry":{"enabled":false},"oxa":{"bootPreload":false,"envNote":false},"cacheWarming":"off"}"#,
+            r#"{"retry":{"enabled":false},"oxa":{"bootPreload":false,"envNote":false,"goal":{"idlePause":true}},"cacheWarming":"off"}"#,
         );
         env.write(
             "work/goal.txt",

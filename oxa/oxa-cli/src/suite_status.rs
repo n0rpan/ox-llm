@@ -2,9 +2,10 @@
 //!
 //! Read-only: no model, no network request and no write. Key files are checked by `stat` only;
 //! their contents and their paths never leave this module. The object carries the envelope and
-//! the `local` and `cloud` sections, and `sessions` and `workers` (see `sessions.rs`). `lead` and
-//! `usage_state` arrive with their own slices, so a reader must treat an absent section as "not
-//! reported yet".
+//! the `local` and `cloud` sections, `sessions` and `workers` (see `sessions.rs`), and the `lead`
+//! section (see `lead.rs`). `usage_state` arrives with its own slice, so a reader must treat an
+//! absent section as "not reported yet".
+mod lead;
 mod sessions;
 
 use crate::in_process;
@@ -39,6 +40,7 @@ pub(crate) fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Re
         &mut value,
         sessions::scan(&sessions_dir, &dirs.agent_dir, generated),
     );
+    value["lead"] = lead::section(&user, dirs, cwd, env);
     writeln!(out, "{value}").map_err(|e| OxaError::io("cannot write suite status", &e))?;
     Ok(0)
 }
@@ -227,7 +229,6 @@ fn cloud_section(user: &Settings, dirs: &Dirs) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxa_config::Env;
     use oxa_fake::TestEnv;
     use oxa_proto::codes;
 

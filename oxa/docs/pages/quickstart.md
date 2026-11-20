@@ -31,13 +31,14 @@ Create the file private before a key goes in it, then paste the key in your edit
 
 ```console
 $ mkdir -p ~/.config/oxc/llm
-$ install -m 600 /dev/null ~/.config/oxc/llm/cloud-secrets.json
+$ [ -e ~/.config/oxc/llm/cloud-secrets.json ] || install -m 600 /dev/null ~/.config/oxc/llm/cloud-secrets.json
+$ chmod 600 ~/.config/oxc/llm/cloud-secrets.json
 ```
 
 The Brave Search key for `web_search` is a file of its own that holds only the key. This stores it without showing it on screen or in the shell history:
 
 ```console
-$ (umask 077; read -rs KEY && printf '%s\n' "$KEY" > ~/.oxa/agent/brave-search.key)
+$ (umask 077; mkdir -p ~/.oxa/agent && read -rs KEY && printf '%s\n' "$KEY" > ~/.oxa/agent/brave-search.key && chmod 600 ~/.oxa/agent/brave-search.key)
 ```
 
 Without a Brave key the `web_search` tool is not offered to the model at all. The ChatGPT plan uses no key: sign in with `oxa login chatgpt --experimental`.

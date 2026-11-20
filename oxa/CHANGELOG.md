@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Limits warn and record instead of blocking (owner decision 2026-11-19). `oxa.bash.maxJobs` and `oxa.subagent.maxChildren` are warning thresholds: a job or child above them starts (children queue) and the result carries a warning. A goal token budget counts known usage only; a request with unknown usage is recorded (`unknown_requests`) with one warning and no longer counts as exhausted. Two replies without a tool call give a warning and the goal keeps pursuing; `oxa.goal.idlePause: true` restores the pause.
+- On a cloud model with a known window, `oxa.toolOutputCap`, `oxa.subagent.resultCap` and `oxa.subagent.softTokens` scale with the window unless you set them; local models are unchanged. `read`, `grep`, `find` and `ls` now honour an `oxa.toolOutputCap` above 16 KiB.
+
 ### Fixed
 
 - `oxa send` never refuses the owner's text for size (yolo power plan, S14). A message over 256 KiB is kept in full in the session's private, tool-readable spill directory, and a short follow-up names that file. `oxa wipe` removes spill files with the session. See [cli.md](docs/pages/cli.md).
@@ -11,10 +16,11 @@
 - `oxa work` starts a new task branch at its published head (`origin/<branch>`) when that tip descends from the captured base, instead of always at the base. A task for an already pushed pull-request branch now audits and continues that head rather than redoing work from a tree that predates it; several diverging tips or an unrelated one keep the base. See [work.md](docs/work.md).
 ### Added
 
+- Cloud resilience defaults: the stream silence limit (`httpIdleTimeoutMs`) is now 900 s (was 300 s) and `retry.maxRetries` is 10 (was 3), with the existing capped backoff (60 s) and `Retry-After` handling. A cloud reply with no text and no tool call is asked once more (`oxa.emptyReplyRetries`, default 1, `0` = off). All three are owner settings. See [settings.md](docs/pages/settings.md).
 - Owner questions over RPC (yolo power plan S15): when an RPC client declares an owner (`OXA_RPC_OWNER_PRESENT=1`), the fork offer for `--session <id>` from another directory is an `extension_ui_request` `confirm` the owner answers with `confirmed: true`, instead of an error. Input read while waiting is replayed to the session. See [rpc.md](docs/pages/rpc.md).
 - `oxa-a2a` and `oxa-orchestrator` are linked into the `oxa` binary (Linux); the cargo features `managed-steering`, `a2a-control`, `agent-host`, `core` and `a2a` are gone. New user-only setting `oxa.a2a.enabled` (default true): when false, sessions use the plain file inbox and `nativeSteering` is refused. No listener is added by this change.
 - Owner confirm broker (yolo power plan S1): each session exports `OXA_CONFIRM_SOCK`, a private unix socket through which oxa commands ask the owner. Yolo answers yes and records it, standard and auto show a dialog, and the owner's typed message answers a waiting one. Commands move to it in later slices.
-- `--usage-log FILE` (#1592): one JSONL record per model call (prompt, cached and output tokens, duration, model, turn), owner-only file, no message text. Reasoning tokens are null until the engine reports them.
+- `--usage-log FILE` (#1592): one JSONL record per model call (prompt, cached and output tokens, duration, model, turn), owner-only file, no message text. Reasoning tokens are null until the engine reports them. Each record also carries `prefix_sha256` and `prefix_bytes`: the digest and size of the frozen prefix (system prompt + tool list) that call sent, so a prefix that changes between calls is visible without any content in the log.
 - `oxa work --pr N --model MODEL` (#1019): the unattended packet for a pull request carries its title, body, reviews, issue comments and the names of failing checks at the current head, and the task branch is the pull request's own head branch. Review text and check names are labelled as data and bounded (reviews to 16 KiB, 40 check names); only failing checks travel, never passing ones. Malformed review or check lists are refused, never silently dropped.
 
 ### Changed

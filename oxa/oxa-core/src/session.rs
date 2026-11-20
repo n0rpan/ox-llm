@@ -715,6 +715,14 @@ impl Session {
         crate::reload(&mut self.st, sink, ui)
     }
 
+    /// Bring the prefix in line with this Session's tool selection: a resumed session replays the
+    /// prefix it stored, so a tool the session did not declare then (or one it no longer offers)
+    /// only changes on a new epoch. Returns `true` when one was opened; nothing changed otherwise.
+    pub fn sync_tools(&mut self, sink: &mut dyn EventSink) -> Result<bool, OxaError> {
+        self.ensure_idle()?;
+        crate::open_epoch(&mut self.st, "tools", false, sink)
+    }
+
     /// `!cmd` (`excluded = false`) / `!!cmd` (`true`).
     pub fn user_bash(
         &mut self,
