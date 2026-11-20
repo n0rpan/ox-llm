@@ -549,8 +549,8 @@ impl BashTool {
                     .wait(id, remaining.min(Duration::from_secs(3600)), cx.cancel);
             }
             if let Ok((read, fresh)) = self.jobs.read_bytes_from(id, shown) {
+                shown += fresh.len() as u64;
                 sink(&fresh);
-                shown = read.total;
                 last_read = Some(read);
             }
             if cx.cancel.is_cancelled() {
@@ -560,7 +560,9 @@ impl BashTool {
                 // Output written after the last read (the job ended in between).
                 let output = done.output;
                 if (output.len() as u64) > shown {
-                    sink(&output[shown as usize..]);
+                    for chunk in output[shown as usize..].chunks(crate::jobs::FOLLOW_CHUNK_CAP) {
+                        sink(chunk);
+                    }
                 }
                 return Followed::Done(oxa_proto::ExecResult {
                     output,
