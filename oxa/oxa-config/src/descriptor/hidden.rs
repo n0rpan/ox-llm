@@ -56,6 +56,16 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         .key(Kind::Number, "16")
         .hidden()
         .user_only(),
+    d(
+        "oxa.bash.ciPollHint",
+        Group::Advanced,
+        "",
+        "oxa.bash.ciPollHint",
+        "",
+    )
+    .key(Kind::Bool, "true")
+    .hidden()
+    .user_only(),
     // Longest a bash job read blocks, in seconds (default 300; at least 1).
     d("oxa.bash.waitCap", Group::Advanced, "", "oxa.bash.waitCap", "")
         .key(Kind::Number, "300")
