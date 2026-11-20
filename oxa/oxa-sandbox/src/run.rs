@@ -69,6 +69,26 @@ pub fn run_argv_stdin(
     execute(cmd, prog, Some(stdin), timeout_s, cancel, live, true)
 }
 
+/// Run a resolved command with only the environment chosen by the caller.
+pub(crate) fn run_argv_cleared(
+    argv: &[String],
+    env: &[(String, String)],
+    stdin: Option<&[u8]>,
+    timeout_s: Option<u32>,
+    cancel: &CancelToken,
+    live: &mut dyn FnMut(&[u8]),
+    capture: bool,
+) -> ExecResult {
+    let Some((prog, args)) = argv.split_first() else {
+        return spawn_failed("no command to run".to_string());
+    };
+    let mut cmd = Command::new(prog);
+    cmd.args(args)
+        .env_clear()
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    execute(cmd, prog, stdin, timeout_s, cancel, live, capture)
+}
+
 /// Run `argv` (optionally feeding `stdin`) so that only this child inherits the listed close-on-exec descriptors.
 pub(crate) fn run_argv_fds(
     argv: &[String],
@@ -121,17 +141,16 @@ pub fn run_unsandboxed_capture(
 /// (what bwrap gives the model's bash: [`crate::bwrap::base_env`]).
 fn unsandboxed_command(s: &ExecSpec, base: Option<&[(String, String)]>) -> Command {
     let mut cmd = Command::new("bash");
-    cmd.arg("-c").arg(&s.command).current_dir(&s.cwd);
+    cmd.arg("-c").arg(&s.command).current_dir(&s.cwd).env_clear();
+    // Nothing is inherited: exactly `base`, or the spec's own environment.
     match base {
-        Some(env) => cmd
-            .env_clear()
-            .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str()))),
+        Some(env) => cmd.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str()))),
         None => cmd.envs(s.env.iter().map(|(k, v)| (k.as_str(), v.as_str()))),
     };
     cmd
 }
 
-/// [`run_unsandboxed_capture`] with an optional exact environment (`None` = inherit).
+/// [`run_unsandboxed_capture`] with an optional exact environment (`None` = the spec's own).
 pub(crate) fn run_unsandboxed_env(
     s: &ExecSpec,
     base: Option<&[(String, String)]>,
@@ -146,8 +165,8 @@ pub(crate) fn run_unsandboxed_env(
     r
 }
 
-/// [`run_unsandboxed`] with `stdin` fed to the command and then closed (exec hooks).
-pub(crate) fn run_unsandboxed_stdin(
+/// [`run_unsandboxed_stdin`] with an exact environment (exec hooks).
+pub(crate) fn run_unsandboxed_stdin_env(
     s: &ExecSpec,
     stdin: &[u8],
     cancel: &CancelToken,
@@ -158,6 +177,24 @@ pub(crate) fn run_unsandboxed_stdin(
     let mut r = execute(cmd, "bash", Some(stdin), s.timeout_s, cancel, live, true);
     r.unsandboxed = true;
     r
+}
+
+/// [`run_unsandboxed`] with `stdin` written to the command's standard input and then closed.
+/// Used by explicitly host-side callers that must provide standard input. The child starts from
+/// an empty environment plus `s.env`, like every other unsandboxed model command.
+pub fn run_unsandboxed_stdin(
+    s: &ExecSpec,
+    stdin: &[u8],
+    cancel: &CancelToken,
+    live: &mut dyn FnMut(&[u8]),
+) -> ExecResult {
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c")
+        .arg(&s.command)
+        .current_dir(&s.cwd)
+        .env_clear()
+        .envs(s.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    execute(cmd, "bash", Some(stdin), s.timeout_s, cancel, live, true)
 }
 
 /// [`run_unsandboxed_stdin`] with the process environment plus `s.env`, like bash under yolo.

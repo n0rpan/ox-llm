@@ -243,7 +243,7 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
 
     // ---- builtin:worker (K5a) ----
     // Off in a worker child (`OXA_WORKER_DEPTH` set, even to an empty value: `Env::get` treats
-    // empty as unset, so the pairs are read directly) and when `oxa.workers.enabled` is false.
+    // empty as unset, so the pairs are read directly) and when `oxa.workers.enabled` is false (user settings only).
     let worker_depth = i
         .env
         .pairs()
@@ -293,6 +293,8 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
                                 no_mcp: i.args.no_mcp,
                                 no_web_search: i.args.no_web_search,
                                 no_extensions: i.args.no_extensions,
+                                no_skills: i.args.no_skills,
+                                no_prompt_templates: i.args.no_prompt_templates,
                             },
                         };
                         let agent_dir = if i.dirs.agent_dir.is_absolute() {
@@ -302,6 +304,7 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
                         };
                         let workers = Arc::new(WorkerHooks::new(WorkerConfig {
                             oxa_bin: bin,
+                            cwd: i.cwd.to_path_buf(),
                             agent_dir,
                             max: worker_tool::max_workers(i.settings),
                             supervisor,
@@ -309,6 +312,7 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
                             parent_env: i.env.pairs().to_vec(),
                             parent_scope,
                             yolo: i.yolo.clone(),
+                            resume_on_start: crate::workers::resume::enabled(i.settings),
                         }));
                         sets.hooks.push(workers.clone());
                         sets.workers = Some(workers);

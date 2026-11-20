@@ -30,6 +30,7 @@ const SUBAGENT_RULE: &str =
 const SUBAGENT_CHECK_RULE: &str =
     "A subagent's summary can be wrong: before you rely on a claim from it for an edit, read the cited lines yourself";
 /// 2026-11-19: the done check, added with the output diet when `bash` is declared.
+const WAIT_RULE: &str = "Use wait, never sleep-poll";
 const VERIFY_RULE: &str =
     "Before you call a task done, run the project's own tests or checks and report the result; if you ran none, say so";
 const SHOW_PATHS: &str = "Show file paths clearly when working with files";
@@ -160,8 +161,9 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// rule; hashes copied from the `stable sha256` lines of this test in CI.
 /// 2026-11-19: #1552 updates the built-in report-issue skill description.
 /// 2026-11-19: N1 changed the bash tool text (wait cap 300, timeout moves to a background job).
-const DEFAULT_STABLE_SHA: &str = "6e8b2b42f28555b2fad0217a64efad92c350dd193de4e34821a98e3d9d83e1b7";
-const DEFAULT_STABLE_SHA_SUBAGENT: &str = "faf3003090abc984e2435f74f87b2a767f0eb5e8aa91e6335e9ece2d9d3729ae";
+/// 2026-11-19: `wait` is declared in every session (tool entry and rule line).
+const DEFAULT_STABLE_SHA: &str = "3170f110e8493755c36e27f20f50deed8ecda2dcbfdba9359d6c860fbb9a95a1";
+const DEFAULT_STABLE_SHA_SUBAGENT: &str = "5c94e172fbe760599323e00499af2077aba439d10a6b55148ba9991096f642d1";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
 fn has_date(s: &str) -> bool {
@@ -290,7 +292,8 @@ fn prefix_bytes_and_the_anchor() {
         let (on, off) = (get("diet on"), get("diet off"));
         let line = |t: &str| t.len() + 3;
         let mut cost: i64 = DIET_RULES.iter().map(|r| line(r) as i64).sum::<i64>() - line(CONCISE) as i64
-            + line(VERIFY_RULE) as i64;
+            + line(VERIFY_RULE) as i64
+            + line(WAIT_RULE) as i64;
         if subagent {
             cost += line(SUBAGENT_RULE) as i64 + line(SUBAGENT_CHECK_RULE) as i64;
         }

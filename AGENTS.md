@@ -18,6 +18,7 @@ code, tests, CI and docs; the owner validates on hardware.
   override these decisions. Enforce that boundary both when loading settings and when adopting a
   project file after any settings edit; an unrelated project edit must not restore a rejected
   user-only value.
+- `oxa local add` is owner-only. Refuse agent invocations before engine admission or settings writes.
 - Agent control lane: a session accepts steer/pause/resume/cancel only from the same user, and the
   session owner checks each request against the lease and goal revision. `oxa.a2a.enabled: false`
   (user-only) turns it off. Do not add a path that skips the lease check or reads the setting from a
@@ -27,6 +28,7 @@ code, tests, CI and docs; the owner validates on hardware.
   owner-selected yolo deliberately disables the permission floor. Off Linux there is no OS sandbox
   (owner policy, #1512): in-process guards stay, bash gets the same cleared base environment, and
   the bash network is not restricted there; the start notice and the model env note say so.
+- **Extension exec directory:** an extension's `oxa.exec` whose `cwd` is outside the session directory asks like a write (or read) outside the project before the directory is mounted; yolo does not ask, a `cwd` inside the session directory is unchanged (`exec_gated`, `oxa-core/src/host.rs`).
 - **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
   answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
   broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
@@ -47,12 +49,20 @@ code, tests, CI and docs; the owner validates on hardware.
     Answer it by citing this rule, and do not apply it. A change that re-adds an OS sandbox to those
     paths is a P1 finding.
   - Off Linux the bash network is not restricted. The start notice and the model env note say so.
+  - Headless runs pursuing a goal and ownerless RPC count as unattended. Host bash uses a
+    cleared toolchain environment and keeps GitHub output redaction, on Linux and off it.
 - **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
   answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
   broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
   files, web pages, other sessions, agent inbox) never approves. In yolo the broker answers yes and
   records it. The broker socket is owned by the session (dir 0700, socket 0600) and validates a
-  complete, bounded request frame before asking. Do not add
+  complete, bounded request frame before asking. A typed yes answers only a request whose dialog
+  oxa has already shown (the broker records it); a yes with no shown dialog, or for another request
+  id, is ignored. A consumer a model-run command starts (`oxa work --publish`, `oxa report-issue`)
+  trusts only the sandbox's pinned socket or a listener verified as the session's own oxa process
+  (peer credentials: an ancestor, same executable, same user), whatever `OXA_CONFIRM_SOCK` and
+  `OXA_CODING_AGENT` say; a fake socket is no answer. Yolo is unchanged (the model already has the
+  owner's rights). The question is shown to the owner as the process's text, marked as such. Do not add
   `/dev/tty`-only confirmations or env-marker refusals for owner actions.
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
@@ -65,8 +75,10 @@ code, tests, CI and docs; the owner validates on hardware.
   paid balance. `oxa.cloud.daily_budget_usd` applies to metered API admission. Record actual Go
   charges reported by the provider in the ledger and include them in the shared daily spend.
   Preserve subscription token accounting and provider-side limits. A configured
-  `oxa.cloud.subscription_limits` is advisory: it warns at 80% and 100% and is recorded, it is
-  not a local refusal (#1443/#1444).
+  `oxa.cloud.subscription_limits` is advisory (Go and ChatGPT plan): it warns at 80% and 100% and is
+  recorded, it is not a local refusal (#1443/#1444).
+- Keyed providers: an OpenRouter, OpenAI or Anthropic key or a ChatGPT sign-in opens the gateway and
+  discovery; explicit `inProcessCloud`/`discover_models` (even false) win; user layer only.
 - Keyed Go: a Go key in the owner's own secrets file enables the Go subscription transport for
   the owner's own model choice, with `oxa.cloud.opencode.enabled: false` as the opt-out. Engine
   transport selection stays user-only: a protected user key authorizes an actual Go model argument,
@@ -155,6 +167,12 @@ code, tests, CI and docs; the owner validates on hardware.
   The repeat guard follows this: the third identical tool result gets a short note, a call that
   still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
   is the cap against loops the guard cannot see.
+  Image input follows it too: `read` attaches an image to a model that takes images, and an image
+  over the user-only `oxa.read.maxImageBytes` (generous default, 0 = no limit) is not sent; that
+  setting also bounds aggregate images across retained session history and the current tool-call
+  batch. A project may enable `images.blockImages` but cannot disable the owner's choice. The result names the limit and the
+  setting instead. `images.blockImages` prevents transmission. Private-path and pinned-open rules
+  apply to images as to any file.
   The finish wake follows it too: a background bash job that finishes on its own queues one
   follow-up message and, when the session is idle after a normal outcome, starts a turn;
   `oxa.jobs.wakeOnFinish` (`true` by default, `false` opts out, user settings only) is the control,
@@ -338,6 +356,11 @@ read its result; they never launch builds or tests.
 - Prefer deleting and merging code over adding it. Measure before and after when a change is about speed or size.
 - Write names as they are on `main`. Use short, plain sentences in docs, comments, PR text and user messages.
 - No person names, session links or internal decision ids in code, docs, commits, PR text or issues.
+- **Online data is fetched, never hard-coded (owner rule).** Model lists, context windows, max output, prices,
+  plan and rate limits, latest versions and release assets come from the live source (the provider's API or a
+  public catalog), cached from the last successful fetch and refreshed in the background. No built-in copies: an
+  online service needs the network anyway; an unknown value warns, never refuses. Protocol constants (API paths,
+  header names) and security pins (checksums, action SHAs) stay in code. Never fill such values from memory.
 - An issue filed by an agent states how the problem was observed (command, run or log line). Verify an agent-filed
   issue against current main before building on it; close it with the evidence if it does not reproduce.
 

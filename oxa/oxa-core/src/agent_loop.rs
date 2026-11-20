@@ -242,6 +242,7 @@ fn run_inner(
         };
         let thinking_on = !wrapping_up && crate::think::request_thinking(st, TurnKind::Chat);
         let mut retried = false;
+        let mut empty_retries: u32 = 0;
         let mut replays: u32 = 0;
         let turn = loop {
             // A run that continues after a persisted cut, failure or wrap-up is still foreground
@@ -451,6 +452,28 @@ fn run_inner(
                 sink.emit(&AgentEvent::Notice {
                     level: Level::Info,
                     text: crate::think::OVERRUN_NOTICE.to_string(),
+                });
+                continue;
+            }
+            // A cloud reply that ended normally with no text and no tool call is asked again
+            // (`oxa.emptyReplyRetries`, default 1); the empty reply is never kept.
+            if st.info.caps.remote
+                && !wrapping_up
+                && turn.finish == Finish::Stop
+                && turn.msg.tool_calls.is_empty()
+                && turn.msg.content.as_deref().is_none_or(|c| c.trim().is_empty())
+                && empty_retries < st.settings.empty_reply_retries()
+                && st.auto_retry
+                && st.settings.retry().enabled
+                && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) == 0
+                && !st.shared.cancel.is_cancelled()
+            {
+                empty_retries += 1;
+                account_discarded(st, &turn);
+                opts.idem_key = String::new();
+                sink.emit(&AgentEvent::Notice {
+                    level: Level::Info,
+                    text: "the model returned an empty reply; asking again".to_string(),
                 });
                 continue;
             }
