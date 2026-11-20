@@ -96,7 +96,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Optional zdr (true/false) and data_collection (allow/deny) sent to OpenRouter; unset sends nothing.",
     )
     .control(Control::Raw)
-    .apply(Apply::Reload)
+    .apply(Apply::Restart)
     .web(WebEdit::Confirm)
     .user_only()
     .widens("Changes which OpenRouter providers may serve your requests and how they may retain data."),
