@@ -267,9 +267,9 @@ pub mod errors {
     pub const BASH_NO_OUTPUT: &str = "(no output)";
     pub const BASH_ABORTED: &str = "Command aborted";
     pub const BASH_NO_EXIT_CODE: &str = "Command terminated without an exit code";
-    /// Appended to a result when the command looked backgrounded (a line ending in `&`, or `nohup`).
-    pub const BASH_BACKGROUND_STOPPED: &str =
-        "If this command started background processes (nohup or a trailing &), they were stopped when the call ended. Run long jobs in the foreground within the timeout.";
+    /// Appended to a result when part of the command ran detached (`&`, `nohup`, `setsid`, `disown`).
+    pub const BASH_DETACHED: &str =
+        "Part of this command ran in the background (an `&`, `nohup`, `setsid` or `disown`). Its output and exit status are not in this result. A `cd` before the `&` applies only to the backgrounded part; later commands ran in the session folder. In the OS sandbox the background process ends with the call; without it (yolo, or no sandbox) it keeps running and oxa does not track it. To run something that can be read, waited for or stopped, use bash with {\"background\":true}.";
     pub const BASH_BAD_TIMEOUT: &str = "Invalid timeout: must be a finite number of seconds";
     pub fn bash_exit(code: i32) -> String {
         format!("Command exited with code {code}")

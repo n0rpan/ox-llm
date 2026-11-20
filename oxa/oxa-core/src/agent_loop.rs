@@ -800,6 +800,21 @@ fn run_inner(
                             continue;
                         }
                     }
+                    // One nudge per open fact (unproven edits, running jobs): the goal stays
+                    // pursuing for one more turn, then the completion goes through.
+                    if !wrapping_up && !st.shared.has_input() {
+                        match crate::done::finish_decision(st, &mut done, true) {
+                            crate::done::FinishDecision::Nudge(text) => {
+                                pending_completion = goal.defer_completion();
+                                crate::goal::checkpoint(st, false, sink)?;
+                                crate::done::send_nudge(st, text, sink, ui, run_msgs)?;
+                                continue;
+                            }
+                            crate::done::FinishDecision::End { unresolved } => {
+                                crate::done::record_end(st, &done, &unresolved, sink)?;
+                            }
+                        }
+                    }
                 }
                 crate::goal::checkpoint(st, false, sink)?;
                 return Ok(RunEnd::Stopped);
@@ -965,6 +980,17 @@ fn run_inner(
         }
         if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
             crate::goal::checkpoint(st, false, sink)?;
+            if pending_completion.is_some() && turn.finish != Finish::Length && !st.shared.has_input() {
+                match crate::done::finish_decision(st, &mut done, true) {
+                    crate::done::FinishDecision::Nudge(text) => {
+                        crate::done::send_nudge(st, text, sink, ui, run_msgs)?;
+                        continue;
+                    }
+                    crate::done::FinishDecision::End { unresolved } => {
+                        crate::done::record_end(st, &done, &unresolved, sink)?;
+                    }
+                }
+            }
             if let Some(evidence) = pending_completion.take() {
                 if goal.pursuing() {
                     goal.finish_completion(evidence)?;
@@ -1020,6 +1046,17 @@ fn run_inner(
                     .to_string(),
             });
             continue;
+        }
+        if turn.finish != Finish::Length && !st.shared.has_input() {
+            match crate::done::finish_decision(st, &mut done, false) {
+                crate::done::FinishDecision::Nudge(text) => {
+                    crate::done::send_nudge(st, text, sink, ui, run_msgs)?;
+                    continue;
+                }
+                crate::done::FinishDecision::End { unresolved } => {
+                    crate::done::record_end(st, &done, &unresolved, sink)?;
+                }
+            }
         }
         return Ok(RunEnd::Stopped);
     }

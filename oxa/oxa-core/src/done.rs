@@ -37,6 +37,9 @@ pub(crate) struct DoneState {
     tree: Option<u64>,
     /// The "prove it" state of the run (B4a).
     pub(crate) proof: Proof,
+    /// Each finish fact gets one nudge turn per run ([`finish_decision`]).
+    nudged_unproven: bool,
+    nudged_jobs: bool,
 }
 
 /// Whether the run changed files and no check has passed since the last change (B4a). Only
@@ -65,9 +68,8 @@ impl Proof {
         self.edited
     }
 
-    /// The run changed files and no check has passed since the last change. Read by the
-    /// "prove it" turn (B4b); until then only the tests read it.
-    #[allow(dead_code)]
+    /// The run changed files and no check has passed since the last change. Read by
+    /// [`finish_decision`].
     pub(crate) fn unproven(&self) -> bool {
         self.edited && !self.checked
     }
@@ -237,7 +239,10 @@ impl DoneState {
                 "bash" => {
                     let args = serde_json::from_str::<serde_json::Value>(&call.args_raw).ok();
                     let exited_zero = res.ui["exit"].as_i64() == Some(0) && res.ui["timedOut"] != true;
+                    // A detached part ran without its output or exit status being seen.
+                    let detached = res.ui["detached"] == true;
                     if exited_zero
+                        && !detached
                         && args
                             .as_ref()
                             .is_some_and(|args| crate::think::executed_check(&call.name, args).is_some())
@@ -252,7 +257,8 @@ impl DoneState {
 
     /// Start of a run: remember the tree, so a later `bash` change can be told apart.
     pub(crate) fn begin(&mut self, st: &SessionState) {
-        if !st.settings.done_commands().is_empty() {
+        // Prove-it needs the fingerprint too, so a bash-made edit counts as a change.
+        if !st.settings.done_commands().is_empty() || prove_it(st) {
             self.tree = tree_fingerprint(&st.cwd);
         }
     }
@@ -280,6 +286,130 @@ impl DoneState {
         let now = tree_fingerprint(&st.cwd);
         self.observe_tree(now, file_edit);
     }
+}
+
+/// `oxa.done.proveIt` (user settings, default on): a run that changed files and ran no passing
+/// check afterwards gets one turn asking for proof.
+fn prove_it(st: &SessionState) -> bool {
+    st.settings.user_bool("oxa.done.proveIt", true)
+}
+
+/// What is still open when a run or goal is about to end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FinishFact {
+    /// Files changed and no passing check ran since.
+    Unproven,
+    /// Background jobs (ids) still running.
+    JobsRunning(Vec<String>),
+}
+
+pub(crate) enum FinishDecision {
+    /// The run may end; these facts are still true (warn and record, never a block).
+    End { unresolved: Vec<FinishFact> },
+    /// One more user turn, once per fact and run.
+    Nudge(String),
+}
+
+/// The one decision before a run or goal ends. Each fact that is true now gets one nudge turn in
+/// this run; after that the run ends and the caller records what was left ([`record_end`]).
+/// Nothing is asked of a cancelled run, a failed done check, a blocked goal or a read-only run.
+pub(crate) fn finish_decision(
+    st: &SessionState,
+    state: &mut DoneState,
+    goal_completion: bool,
+) -> FinishDecision {
+    let none = || FinishDecision::End {
+        unresolved: Vec::new(),
+    };
+    if st.shared.cancel.is_cancelled()
+        || st.stats.done_failed
+        || st
+            .goal
+            .as_ref()
+            .is_some_and(|g| g.snapshot().status == oxa_session::GoalStatus::Blocked)
+    {
+        return none();
+    }
+    let mut facts = Vec::new();
+    if prove_it(st) && state.proof.unproven() {
+        facts.push(FinishFact::Unproven);
+    }
+    let headless = crate::is_headless();
+    if st.settings.user_bool("oxa.done.waitForJobs", true) && (goal_completion || headless) {
+        let running: Vec<String> = st
+            .jobs
+            .list()
+            .into_iter()
+            .filter(|j| j.status == oxa_tools::JobStatus::Running)
+            .map(|j| j.id)
+            .collect();
+        if !running.is_empty() {
+            facts.push(FinishFact::JobsRunning(running));
+        }
+    }
+    for fact in &facts {
+        match fact {
+            FinishFact::Unproven if !state.nudged_unproven => {
+                state.nudged_unproven = true;
+                return FinishDecision::Nudge(crate::prompt::PROVE_IT_NUDGE.to_string());
+            }
+            FinishFact::JobsRunning(ids) if !state.nudged_jobs => {
+                state.nudged_jobs = true;
+                return FinishDecision::Nudge(crate::prompt::jobs_nudge(ids, headless));
+            }
+            _ => {}
+        }
+    }
+    FinishDecision::End { unresolved: facts }
+}
+
+/// The run ends: keep what the nudges did not settle in the session stats, and say so once.
+pub(crate) fn record_end(
+    st: &mut SessionState,
+    state: &DoneState,
+    unresolved: &[FinishFact],
+    sink: &mut dyn EventSink,
+) -> Result<(), OxaError> {
+    st.stats.proved = state.proof.edited().then(|| !state.proof.unproven());
+    st.stats.jobs_left = 0;
+    for fact in unresolved {
+        let text = match fact {
+            FinishFact::Unproven => "Run ended without a passing check after its last edit".to_string(),
+            FinishFact::JobsRunning(ids) => {
+                st.stats.jobs_left = ids.len() as u32;
+                format!("Run ended with background jobs still running: {}", ids.join(" "))
+            }
+        };
+        crate::agent_loop::persist(
+            st,
+            EntryBody::Shown {
+                text: text.clone(),
+                why: shown_why::NOTICE,
+            },
+            sink,
+        )?;
+        sink.emit(&AgentEvent::Notice {
+            level: Level::Warning,
+            text,
+        });
+    }
+    Ok(())
+}
+
+/// Send a finish nudge as the next user message, with an info notice for the user.
+pub(crate) fn send_nudge(
+    st: &mut SessionState,
+    text: String,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+    run_msgs: &mut Vec<EventMessage>,
+) -> Result<(), OxaError> {
+    sink.emit(&AgentEvent::Notice {
+        level: Level::Info,
+        text: "The run is about to end with work not settled; asking the model to finish it first."
+            .to_string(),
+    });
+    crate::agent_loop::push_user(st, text, sink, ui, run_msgs)
 }
 
 /// Run the checks when due. `Some(text)` = a failure to send to the model for another round.

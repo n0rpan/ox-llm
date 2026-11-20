@@ -115,6 +115,11 @@ pub struct Stats {
     /// The current prompt/triggered operation exhausted its `done` repair rounds. Reset
     /// when new agent work is claimed; process-wide aggregation lives in the drivers.
     pub done_failed: bool,
+    /// The last run's finish decision: `Some(true)` an edit was followed by a passing check,
+    /// `Some(false)` it was not, `None` the run changed no file.
+    pub proved: Option<bool>,
+    /// Background jobs still running when the last run ended (after the finish nudge).
+    pub jobs_left: u32,
     /// Whether the current agent operation's last reply stopped at its output token limit.
     pub output_truncated: bool,
     /// Terminal result of the last prompt or extension-triggered run.
@@ -1177,6 +1182,8 @@ impl Session {
         let guard = self.begin_foreground()?;
         crate::progress::notify(&self.st, crate::Progress::RunStart);
         self.st.stats.done_failed = false;
+        self.st.stats.proved = None;
+        self.st.stats.jobs_left = 0;
         self.st.stats.output_truncated = false;
         crate::goal::begin(&self.st);
         Ok(guard)

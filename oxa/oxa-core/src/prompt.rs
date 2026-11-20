@@ -674,6 +674,25 @@ Report honestly: what you changed, what you ran, what still fails or is unchecke
 /// question (see [`ends_unfinished`]).
 pub const HEADLESS_NUDGE: &str = "Nobody can answer you and the task is not finished. Do not stop on a plan, a promise or a question: do the next step now with a tool call. If something blocks you, say what blocks you and what you tried; if you are done, say what you ran to check it.";
 
+/// The finish decision's nudge for a run that changed files and ran no passing check since
+/// (`oxa.done.proveIt`). One per run.
+pub const PROVE_IT_NUDGE: &str = "You changed files and no check has passed since your last change. Run the project's check for what you changed (tests, build or lint) and fix what fails, or say in one line why no check exists. Then finish.";
+
+/// The finish decision's nudge for background jobs still running when a goal completes or a
+/// headless run ends (`oxa.done.waitForJobs`). One per run.
+pub fn jobs_nudge(ids: &[String], headless: bool) -> String {
+    let names = ids.join(", ");
+    let ends = if headless {
+        " This run is headless: the jobs are stopped when it ends."
+    } else {
+        ""
+    };
+    let first = &ids[0];
+    format!(
+        "Background jobs are still running: {names}.{ends} Either wait for them (`wait` with until {{\"kind\":\"job_done\",\"job\":\"{first}\"}}, or `bash` with {{\"job\":\"{first}\",\"wait_s\":60}}) and use their result, or stop them with `bash` {{\"job\":\"{first}\",\"kill\":true}} if they are not needed. Then finish."
+    )
+}
+
 /// FH-N2: whether a final reply ends on a plan or a promise ("I will ...", "let me ...", "next
 /// step ...", a line ending in a colon), or on a question when `edited` is false (no file
 /// changed in the run: after edits a closing "anything else?" is politeness, not an open

@@ -78,6 +78,19 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     )
     .key(Kind::Bool, "false")
     .hidden(),
+    // The finish decision: one nudge turn per open fact before a run or goal ends.
+    d("oxa.done.proveIt", Group::Advanced, "", "oxa.done.proveIt", "")
+        .key(Kind::Bool, "true")
+        .hidden(),
+    d(
+        "oxa.done.waitForJobs",
+        Group::Advanced,
+        "",
+        "oxa.done.waitForJobs",
+        "",
+    )
+    .key(Kind::Bool, "true")
+    .hidden(),
     // V020-OPTIMIZE #1 / #2: unset = on.
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     // K3: a headless print or JSON run of a persisted session with a pursuing goal takes
