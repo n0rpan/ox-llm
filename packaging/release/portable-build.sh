@@ -21,6 +21,8 @@ export PATH="$CARGO_HOME/bin:$PATH"
 export RUSTFLAGS="-C target-cpu=x86-64 --remap-path-prefix=$root=/usr/src/ox-llm --remap-path-prefix=$CARGO_HOME=/usr/src/cargo --remap-path-prefix=$RUSTUP_HOME=/usr/src/rust"
 export CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=symbols CARGO_INCREMENTAL=0
 export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2}
+# Stamp the release name (no leading v) into the binary, as build.sh does.
+if [ -n "${VERSION:-}" ]; then export OX_BUILD_VERSION=${VERSION#v}; fi
 (cd oxa && cargo build --release --locked -p oxa-cli --bin oxa -p oxa-fake --bin oxa-fake)
 out=$root/dist-portable
 rm -rf "$out"

@@ -1,0 +1,1 @@
+- Dev builds report their full version (#2114): `oxa --version`, `oxe --version`, the new `oxe-server --version`, `oxa status --json` and report-issue facts print e.g. `0.2.2-dev.29+1d3c121`, stamped at build time from the release name through `OX_BUILD_VERSION`. A build from source still prints the package version, and the engine fingerprint stays on it.

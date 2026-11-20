@@ -93,7 +93,10 @@ Every push to `main` publishes a rolling `dev` prerelease, built with the same r
 ```console
 $ tools/lab/dev-update.sh
 $ ~/.local/state/oxc/dev-builds/default/bin/oxa --version
+oxa 0.2.2-dev.29+1d3c121
 ```
+
+A dev build reports the full release version: the number of main commits since the last stable tag and the source commit. `oxe --version`, `oxe-server --version`, `oxa status --json` and the report-issue system facts print the same value.
 
 The script needs Linux, Bash, `curl`, `jq`, `tar` and the GitHub CLI (`gh`). It uses no login. It checks the sums and the provenance against this repository's `main` and its dev workflow before it switches to the new build. It keeps the current build and the one before it, and it changes no stable install, no service and no `PATH`. The details are in [DEV.md](../../../docs/DEV.md).
 

@@ -32,14 +32,22 @@ class ReleaseAssets(unittest.TestCase):
             manifest = Path(temporary) / 'Cargo.toml'
             manifest.write_text('[workspace.package]\nversion = "9.8.7"\n\n[profile.release]\n')
 
-            derived = subprocess.run([resolver, '', manifest], text=True, capture_output=True, check=True)
+            env = {k: v for k, v in os.environ.items() if k not in ('GITHUB_EVENT_NAME', 'GITHUB_SHA')}
+            derived = subprocess.run([resolver, '', manifest], text=True, capture_output=True, check=True, env=env)
             explicit = subprocess.run([resolver, 'v1.2.3', manifest], text=True,
-                                      capture_output=True, check=True)
+                                      capture_output=True, check=True, env=env)
             self.assertEqual(derived.stdout, 'v9.8.7\n')
             self.assertEqual(explicit.stdout, 'v1.2.3\n')
+            # A pull request gets a name of its own, so its build proves the version stamp.
+            pr_env = dict(env, GITHUB_EVENT_NAME='pull_request', GITHUB_SHA='0123456789abcdef0123456789abcdef01234567')
+            pr = subprocess.run([resolver, '', manifest], text=True, capture_output=True, check=True, env=pr_env)
+            self.assertEqual(pr.stdout, 'v9.8.7-pr+0123456\n')
+            named = subprocess.run([resolver, 'v1.2.3', manifest], text=True, capture_output=True, check=True,
+                                   env=pr_env)
+            self.assertEqual(named.stdout, 'v1.2.3\n')
 
             manifest.write_text('[workspace]\nmembers = []\n')
-            missing = subprocess.run([resolver, '', manifest], text=True, capture_output=True)
+            missing = subprocess.run([resolver, '', manifest], text=True, capture_output=True, env=env)
             self.assertNotEqual(missing.returncode, 0)
             self.assertIn('no workspace version', missing.stderr)
 

@@ -67,7 +67,7 @@ names=$(ls -A /usr/share/ox-llm/memlat | sort | tr '\n' ' ')
 for path in /usr/share/ox-llm/memlat/*; do
   [ -f "$path" ] && [ ! -L "$path" ] && [ "$(stat -c %a "$path")" = 644 ] || fail "bad template: $path"
 done
-for binary in oxa oxe; do
+for binary in oxa oxe oxe-server; do
   out=$(run "$binary" --version)
   case $out in *"$expected"*) ;; *) fail "$binary --version: $out";; esac
   echo "$out"
