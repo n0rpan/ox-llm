@@ -4,11 +4,14 @@
 //!
 //! * **Permission ladder.** plan < ask < workspace (standard) < auto < yolo. A worker never runs
 //!   wider than its parent: a requested mode above the parent's ceiling is clamped to it and a
-//!   notice is returned. `yolo` is passed only when the parent runs in yolo and `yolo` was asked
-//!   for explicitly; a worker without a requested mode runs in `workspace`.
-//! * **Worktrees.** `git -c core.hooksPath=/dev/null worktree add -b agent/<name>
-//!   <repo-parent>/.oxa-worktrees/<repo>/<name> <base>`: hooks are off for the checkout.
-//! * **Child env.** `OXA_WORKER_DEPTH=1`; the parent's `OXA_TRUST_PROJECT` and `OXA_SESSION_HINT`
+//!   notice is returned. A worker without a requested mode inherits its parent's ceiling (yolo
+//!   parent, yolo worker; auto, auto; workspace, workspace; plan, plan); an explicit narrower
+//!   mode still wins.
+//! * **Worktrees.** `git -c core.hooksPath=/dev/null worktree add --no-checkout -b agent/<name>
+//!   <repo-parent>/.oxa-worktrees/<repo>/<name> <base>`: metadata only on the host, so no hook,
+//!   smudge filter or `.gitattributes` callback of the repository runs outside the sandbox. The
+//!   caller materializes the files inside the sandbox (`oxa work --supervise`, checkout).
+//! * **Child env.** `OXA_WORKER_DEPTH=1`, `OXA_UNATTENDED=1` (#1512 S3); the parent's `OXA_TRUST_PROJECT` and `OXA_SESSION_HINT`
 //!   are not inherited.
 //! * **Integration boundary (K4).** `child_env` copies whatever GitHub token variables the caller
 //!   puts in the parent environment. A runner-owned packet must go through the existing worker
@@ -50,9 +53,40 @@ pub struct WorkerSpec {
     pub model: String,
     /// Path of the goal file, passed to `--goal`.
     pub goal_file: String,
-    /// The requested mode; `None` means `workspace`. `Some(WorkerMode::Yolo)` is the only way to
-    /// ask for yolo.
+    /// The requested mode; `None` means the parent's ceiling. An explicit narrower mode wins;
+    /// a wider one is clamped to the ceiling.
     pub mode: Option<WorkerMode>,
+    /// The parent's token allowance (`--max-tokens`): the child may not spend more than it.
+    pub max_tokens: Option<u64>,
+    /// The parent's explicit tool exclusions (`--no-bash`, `-xt`): the child keeps them.
+    pub exclude_tools: Vec<String>,
+    /// The parent's resolved session directory, when it is not the default one.
+    pub session_dir: Option<std::path::PathBuf>,
+    /// The parent's other narrowing switches (`--offline`, `--tools`, `-nt`, `-nbt`, `--no-mcp`,
+    /// `--no-web-search`, `-ne`, `-ns`, `-np`): a worker is never wider than its parent.
+    pub narrowing: Narrowing,
+}
+
+/// The parent's narrowing command-line switches, as `args.rs` parses them. Every one reaches the
+/// worker; a new narrowing flag in `args.rs` must be added here too (`worker_inherits_every_narrowing_flag`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Narrowing {
+    pub offline: bool,
+    /// An explicit `--no-approve` must not fall back to project auto-trust in the child.
+    pub no_approve: bool,
+    /// `--no-context-files`: do not rediscover repository instructions in the worker checkout.
+    pub no_context_files: bool,
+    /// `--tools <list>`: the allowlist.
+    pub tools: Option<Vec<String>>,
+    pub no_tools: bool,
+    pub no_builtin_tools: bool,
+    pub no_mcp: bool,
+    pub no_web_search: bool,
+    pub no_extensions: bool,
+    /// `--no-skills`: the worker checkout's skills stay out of the child's prompt too.
+    pub no_skills: bool,
+    /// `--no-prompt-templates`: likewise for prompt templates.
+    pub no_prompt_templates: bool,
 }
 
 /// The name rule: `[a-z0-9][a-z0-9-]{0,39}`.
@@ -87,11 +121,17 @@ fn ceiling(parent_mode: Mode, parent_autonomy: Autonomy) -> WorkerMode {
 
 /// A value passed as its own argv element: it must not be empty, must not look like a flag, and
 /// must not hold control characters.
-fn check_value(label: &str, value: &str) -> Result<(), String> {
+pub(super) fn check_value(label: &str, value: &str) -> Result<(), String> {
     if value.is_empty() || value.starts_with('-') || value.chars().any(char::is_control) {
         return Err(format!("invalid worker {label}: {value:?}"));
     }
     Ok(())
+}
+
+/// K5b: the level a resumed worker runs at: the level recorded when it started, never wider than
+/// the ceiling the parent's table mode and autonomy give now (as for a first launch).
+pub(super) fn resume_mode(recorded: WorkerMode, parent_mode: Mode, parent_autonomy: Autonomy) -> WorkerMode {
+    recorded.min(ceiling(parent_mode, parent_autonomy))
 }
 
 /// The argv of the child (without the program): `--mode json --session-id <id> --model <m>
@@ -109,8 +149,8 @@ pub fn child_argv(
     check_value("session id", &spec.session_id)?;
     check_value("model", &spec.model)?;
     check_value("goal file", &spec.goal_file)?;
-    let wanted = spec.mode.unwrap_or(WorkerMode::Workspace);
     let ceil = ceiling(parent_mode, parent_autonomy);
+    let wanted = spec.mode.unwrap_or(ceil);
     let mode = wanted.min(ceil);
     let notice = (mode < wanted).then(|| {
         format!(
@@ -121,7 +161,7 @@ pub fn child_argv(
             mode.as_arg()
         )
     });
-    let args = [
+    let mut args = [
         "--mode",
         "json",
         "--session-id",
@@ -137,7 +177,63 @@ pub fn child_argv(
     ]
     .map(str::to_string)
     .to_vec();
+    // The parent's own limits and scope reach the child, so starting a worker is not a way
+    // around them.
+    args.extend(scope_args(
+        spec.max_tokens,
+        &spec.exclude_tools,
+        spec.session_dir.as_deref(),
+        &spec.narrowing,
+    )?);
     Ok((args, notice))
+}
+
+/// The shared launch and resume arguments for the parent's allowance, scope and session directory.
+pub(super) fn scope_args(
+    max_tokens: Option<u64>,
+    exclude_tools: &[String],
+    session_dir: Option<&Path>,
+    n: &Narrowing,
+) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    if let Some(tokens) = max_tokens {
+        args.push(format!("--max-tokens={tokens}"));
+    }
+    if !exclude_tools.is_empty() {
+        let excluded: Vec<&str> = exclude_tools.iter().map(String::as_str).collect();
+        check_value("excluded tool", &excluded.join(","))?;
+        args.push(format!("--exclude-tools={}", excluded.join(",")));
+    }
+    if let Some(tools) = &n.tools {
+        let allowed: Vec<&str> = tools.iter().map(String::as_str).collect();
+        for tool in &allowed {
+            // `--tools=<list>` is one argument, so a `+name` / `-name` patch entry (CLI-027)
+            // cannot read as a flag; the name itself still may not start with a dash.
+            check_value("allowed tool", tool.strip_prefix(['+', '-']).unwrap_or(tool))?;
+        }
+        args.push(format!("--tools={}", allowed.join(",")));
+    }
+    for (on, flag) in [
+        (n.offline, "--offline"),
+        (n.no_approve, "--no-approve"),
+        (n.no_context_files, "--no-context-files"),
+        (n.no_tools, "--no-tools"),
+        (n.no_builtin_tools, "--no-builtin-tools"),
+        (n.no_mcp, "--no-mcp"),
+        (n.no_web_search, "--no-web-search"),
+        (n.no_extensions, "--no-extensions"),
+        (n.no_skills, "--no-skills"),
+        (n.no_prompt_templates, "--no-prompt-templates"),
+    ] {
+        if on {
+            args.push(flag.to_string());
+        }
+    }
+    if let Some(dir) = session_dir {
+        check_value("session directory", &dir.to_string_lossy())?;
+        args.push(format!("--session-dir={}", dir.display()));
+    }
+    Ok(args)
 }
 
 /// The git commands that create a worker's worktree, one argv each (program first). Hooks are
@@ -165,6 +261,7 @@ pub fn worktree_argv(repo: &Path, name: &str, base: &str) -> Vec<Vec<String>> {
         "core.hooksPath=/dev/null".into(),
         "worktree".into(),
         "add".into(),
+        "--no-checkout".into(),
         "-b".into(),
         format!("agent/{name}"),
         path,
@@ -173,19 +270,32 @@ pub fn worktree_argv(repo: &Path, name: &str, base: &str) -> Vec<Vec<String>> {
 }
 
 /// The environment of a worker: the parent's, without the trust and session-hint variables, and
-/// with `OXA_WORKER_DEPTH=1`.
-pub fn child_env(parent_env: &[(String, String)]) -> Vec<(String, String)> {
+/// with `OXA_WORKER_DEPTH=1` and `OXA_UNATTENDED=1` (#1512 S3: a worker never has a person at
+/// the keyboard, so its OS sandbox stays on). An inherited unattended marker is dropped first.
+/// `offline` is the parent's own policy (`--offline` sets it without any variable): the child is
+/// told, so it cannot reach the network behind the parent's back.
+pub fn child_env(parent_env: &[(String, String)], offline: bool) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = parent_env
         .iter()
+        .map(|(k, v)| {
+            if k == "OXA_OFFLINE" && offline {
+                (k.clone(), "1".to_string())
+            } else {
+                (k.clone(), v.clone())
+            }
+        })
         .filter(|(k, _)| {
             !matches!(
                 k.as_str(),
-                "OXA_TRUST_PROJECT" | "OXA_SESSION_HINT" | "OXA_WORKER_DEPTH"
+                "OXA_TRUST_PROJECT" | "OXA_SESSION_HINT" | "OXA_WORKER_DEPTH" | "OXA_UNATTENDED"
             )
         })
-        .cloned()
         .collect();
+    if offline && !env.iter().any(|(k, _)| k == "OXA_OFFLINE") {
+        env.push(("OXA_OFFLINE".into(), "1".into()));
+    }
     env.push(("OXA_WORKER_DEPTH".into(), "1".into()));
+    env.push((oxa_proto::names::ENV_UNATTENDED.into(), "1".into()));
     env
 }
 
@@ -200,6 +310,10 @@ mod tests {
             model: "gpt-x".into(),
             goal_file: "/work/goal.md".into(),
             mode,
+            max_tokens: None,
+            exclude_tools: Vec::new(),
+            session_dir: None,
+            narrowing: Narrowing::default(),
         }
     }
 
@@ -229,10 +343,24 @@ mod tests {
         assert_eq!(perm(&args), "workspace");
         assert!(!args.iter().any(|a| a == "yolo"));
         assert!(notice.is_some());
-        // No requested mode: workspace, no notice, never yolo.
+        // No requested mode under a yolo parent: yolo, no notice.
         let (args, notice) = child_argv(&spec(None), Mode::Workspace, Autonomy::Yolo).unwrap();
+        assert_eq!(perm(&args), "yolo");
+        assert!(notice.is_none());
+        // An explicit narrower mode under yolo still wins.
+        let (args, notice) = child_argv(
+            &spec(Some(WorkerMode::Workspace)),
+            Mode::Workspace,
+            Autonomy::Yolo,
+        )
+        .unwrap();
         assert_eq!(perm(&args), "workspace");
         assert!(notice.is_none());
+        // No requested mode inherits the other ceilings too.
+        let (args, _) = child_argv(&spec(None), Mode::Workspace, Autonomy::Standard).unwrap();
+        assert_eq!(perm(&args), "workspace");
+        let (args, _) = child_argv(&spec(None), Mode::Plan, Autonomy::Yolo).unwrap();
+        assert_eq!(perm(&args), "plan");
         // Yolo parent with yolo asked for explicitly: yolo, no notice.
         let (args, notice) =
             child_argv(&spec(Some(WorkerMode::Yolo)), Mode::Workspace, Autonomy::Yolo).unwrap();
@@ -261,9 +389,9 @@ mod tests {
         assert_eq!(perm(&args), "auto");
         assert!(!args.iter().any(|a| a == "yolo"));
         assert!(notice.is_some());
-        // An auto parent with no requested mode still runs workspace.
+        // An auto parent with no requested mode inherits auto.
         let (args, notice) = child_argv(&spec(None), Mode::Workspace, Autonomy::Auto).unwrap();
-        assert_eq!(perm(&args), "workspace");
+        assert_eq!(perm(&args), "auto");
         assert!(notice.is_none());
         // The argv value is read back by the real CLI parser as auto, not as standard prompts.
         let pair = ["--permission-mode".to_string(), perm(&auto_args).to_string()];
@@ -316,6 +444,85 @@ mod tests {
     }
 
     #[test]
+    fn child_argv_carries_the_parent_limits_and_scope() {
+        let mut spec = spec(None);
+        spec.max_tokens = Some(5000);
+        spec.exclude_tools = vec!["bash".into(), "web_search".into()];
+        spec.session_dir = Some(std::path::PathBuf::from("/work/sessions"));
+        let (args, _) = child_argv(&spec, Mode::Workspace, Autonomy::Standard).unwrap();
+        for expected in [
+            "--max-tokens=5000",
+            "--exclude-tools=bash,web_search",
+            "--session-dir=/work/sessions",
+        ] {
+            assert!(args.iter().any(|a| a == expected), "{expected}: {args:?}");
+        }
+        // A value that would read as a flag is refused rather than forwarded.
+        let mut bad = spec.clone();
+        bad.exclude_tools = vec!["--yolo".into()];
+        assert!(child_argv(&bad, Mode::Workspace, Autonomy::Standard).is_err());
+    }
+
+    #[test]
+    fn worker_inherits_every_narrowing_flag() {
+        let mut spec = spec(None);
+        spec.narrowing = Narrowing {
+            offline: true,
+            no_approve: true,
+            no_context_files: true,
+            tools: Some(vec!["read".into(), "grep".into()]),
+            no_tools: true,
+            no_builtin_tools: true,
+            no_mcp: true,
+            no_web_search: true,
+            no_extensions: true,
+            no_skills: true,
+            no_prompt_templates: true,
+        };
+        let (args, _) = child_argv(&spec, Mode::Workspace, Autonomy::Standard).unwrap();
+        for expected in [
+            "--offline",
+            "--no-approve",
+            "--no-context-files",
+            "--tools=read,grep",
+            "--no-tools",
+            "--no-builtin-tools",
+            "--no-mcp",
+            "--no-web-search",
+            "--no-extensions",
+            "--no-skills",
+            "--no-prompt-templates",
+        ] {
+            assert!(args.iter().any(|a| a == expected), "{expected}: {args:?}");
+        }
+        // The child's own parser accepts every forwarded flag.
+        let mut argv = vec!["oxa".to_string()];
+        argv.extend(args.iter().cloned());
+        assert!(crate::args::parse_args(&argv, &[]).is_ok(), "{argv:?}");
+        let parsed = crate::args::parse_args(&argv, &[]).unwrap();
+        assert!(parsed.offline && parsed.no_tools && parsed.no_builtin_tools);
+        assert_eq!(parsed.approve, Some(false));
+        assert!(parsed.no_mcp && parsed.no_web_search && parsed.no_extensions);
+        assert!(parsed.no_skills && parsed.no_prompt_templates);
+        assert_eq!(parsed.tools, Some(vec!["read".to_string(), "grep".to_string()]));
+        // No narrowing flag, none forwarded.
+        let (plain, _) = child_argv(&self::spec(None), Mode::Workspace, Autonomy::Standard).unwrap();
+        assert!(!plain
+            .iter()
+            .any(|a| a.starts_with("--no-") || a == "--offline" || a.starts_with("--tools")));
+        // A `-name` / `+name` patch selection is forwarded in the one-argument form.
+        spec.narrowing.tools = Some(vec!["-ls".into(), "+codemode".into()]);
+        let (patched, _) = child_argv(&spec, Mode::Workspace, Autonomy::Standard).expect("patch selection");
+        assert!(
+            patched.contains(&"--tools=-ls,+codemode".to_string()),
+            "{patched:?}"
+        );
+        // A value that would read as a flag is refused.
+        spec.narrowing.tools = Some(vec!["--yolo".into()]);
+        assert!(child_argv(&spec, Mode::Workspace, Autonomy::Standard).is_err());
+    }
+
+    #[test]
     fn worktree_argv_disables_git_hooks_and_uses_agent_branch() {
         let argv = worktree_argv(Path::new("/home/u/Work/ox-llm"), "k2-slice", "origin/main");
         assert_eq!(
@@ -326,6 +533,7 @@ mod tests {
                 "core.hooksPath=/dev/null",
                 "worktree",
                 "add",
+                "--no-checkout",
                 "-b",
                 "agent/k2-slice",
                 "/home/u/Work/.oxa-worktrees/ox-llm/k2-slice",
@@ -345,12 +553,42 @@ mod tests {
             ("HOME".to_string(), "/home/u".to_string()),
         ];
         assert_eq!(
-            child_env(&parent),
+            child_env(&parent, false),
             vec![
                 ("HOME".to_string(), "/home/u".to_string()),
                 ("OXA_WORKER_DEPTH".to_string(), "1".to_string()),
+                ("OXA_UNATTENDED".to_string(), "1".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn worker_child_env_sets_oxa_unattended() {
+        // An inherited marker is replaced by the worker's own single marker.
+        let parent = vec![
+            ("OXA_UNATTENDED".to_string(), "0".to_string()),
+            ("HOME".to_string(), "/home/u".to_string()),
+        ];
+        let env = child_env(&parent, false);
+        let marks: Vec<&(String, String)> = env.iter().filter(|(k, _)| k == "OXA_UNATTENDED").collect();
+        assert_eq!(marks, vec![&("OXA_UNATTENDED".to_string(), "1".to_string())]);
+    }
+
+    #[test]
+    fn child_env_carries_the_parent_offline_policy() {
+        let parent = vec![("HOME".to_string(), "/home/u".to_string())];
+        assert!(child_env(&parent, true)
+            .iter()
+            .any(|(k, v)| k == "OXA_OFFLINE" && v == "1"));
+        assert!(!child_env(&parent, false).iter().any(|(k, _)| k == "OXA_OFFLINE"));
+        // A value left in the parent environment cannot turn the policy off.
+        let stale = vec![("OXA_OFFLINE".to_string(), "0".to_string())];
+        assert!(child_env(&stale, true)
+            .iter()
+            .any(|(k, v)| k == "OXA_OFFLINE" && v == "1"));
+        assert!(child_env(&stale, false)
+            .iter()
+            .any(|(k, v)| k == "OXA_OFFLINE" && v == "0"));
     }
 
     #[test]

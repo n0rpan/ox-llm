@@ -1,6 +1,4 @@
 //! B3 acceptance tests: Agent loop.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_compact::CompactPolicy;
@@ -122,6 +120,7 @@ fn build(
         modes: Mutex::new((QueueMode::All, QueueMode::OneAtATime)),
         dirty: std::sync::atomic::AtomicBool::new(false),
         gate: Default::default(),
+        wake: Default::default(),
     });
     SessionState {
         goal: None,
@@ -712,6 +711,78 @@ fn remote_length_recovery_drops_the_cut_reply() {
         .any(|m| m.content.as_deref() == Some("UNFINISHED_PARTIAL")));
     assert!(!st.stats.output_truncated);
     assert!(st.tree.entries().iter().any(|e| matches!(&e.body, EntryBody::Shown { text, why } if text == "UNFINISHED_PARTIAL" && *why == shown_why::CUT)));
+}
+
+/// An empty cloud reply is asked again once with a fresh key; the empty reply is not kept.
+#[test]
+fn remote_empty_reply_is_retried_once() {
+    let env = TestEnv::new();
+    let eng = Arc::new(
+        ScriptedEngine::new(vec![ScriptTurn::text(""), ScriptTurn::text("real answer")]).with_remote(),
+    );
+    let mut st = build(
+        &env,
+        eng.clone(),
+        Arc::new(MemStore::new()),
+        vec![],
+        Mode::Workspace,
+        vec![],
+    );
+    say(&mut st, "do the task");
+    let (end, _) = run(&mut st);
+    assert_eq!(end, RunEnd::Stopped);
+    let requests = eng.requests();
+    assert_eq!(requests.len(), 2);
+    assert_ne!(requests[0].idem_key, requests[1].idem_key);
+    assert_eq!(
+        st.transcript.wire().last().unwrap().content.as_deref(),
+        Some("real answer")
+    );
+}
+
+/// Only one empty retry by default: a second empty reply ends the run as before.
+#[test]
+fn remote_empty_reply_retry_is_bounded_and_cloud_only() {
+    let env = TestEnv::new();
+    let eng = Arc::new(
+        ScriptedEngine::new(vec![
+            ScriptTurn::text(""),
+            ScriptTurn::text(""),
+            ScriptTurn::text("late"),
+        ])
+        .with_remote(),
+    );
+    let mut st = build(
+        &env,
+        eng.clone(),
+        Arc::new(MemStore::new()),
+        vec![],
+        Mode::Workspace,
+        vec![],
+    );
+    say(&mut st, "do the task");
+    let _ = run(&mut st);
+    assert_eq!(
+        eng.requests().len(),
+        2,
+        "one retry, then the second empty reply is final"
+    );
+    let env = TestEnv::new();
+    let local = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text(""),
+        ScriptTurn::text("late"),
+    ]));
+    let mut st = build(
+        &env,
+        local.clone(),
+        Arc::new(MemStore::new()),
+        vec![],
+        Mode::Workspace,
+        vec![],
+    );
+    say(&mut st, "do the task");
+    let _ = run(&mut st);
+    assert_eq!(local.requests().len(), 1, "a local model is not asked again");
 }
 
 /// The existing byte-N replay and new length recovery complete one run together.
@@ -1616,4 +1687,49 @@ fn optional_thinking_budget_flows_through_the_policy_only_for_supported_local_re
             "cap={cap}, remote={remote}, thinking={thinking}"
         );
     }
+}
+
+/// #1512 S2: a dangerous command with no one to ask is refused with the matched rule; nobody
+/// declined it, and the tool never runs.
+#[test]
+fn prepare_dangerous_unattended_error_names_rule() {
+    let env = TestEnv::new();
+    let runs = Arc::new(AtomicUsize::new(0));
+    let r1 = Arc::clone(&runs);
+    let bash = tool_with(
+        "bash",
+        ToolClass::Exec,
+        Box::new(|_a: &Value, _cx: &ToolCtx| {
+            Ok(vec![Access::Exec {
+                command: "git push --force origin main".to_string(),
+                net: false,
+            }])
+        }),
+        Box::new(move |_a: &Value, _c: &ToolCtx| {
+            r1.fetch_add(1, Ordering::SeqCst);
+            ToolOutput::ok("pushed")
+        }),
+    )
+    .0;
+    let turns = vec![
+        turn_calls(vec![("b1", "bash", "{}")]),
+        ScriptTurn::text("understood"),
+    ];
+    let (mut st, _eng) = scripted_state(&env, turns, vec![bash], Mode::Workspace);
+    st.policy =
+        Box::new(ModePolicy::new().with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new()));
+    say(&mut st, "push");
+    let (end, _) = run(&mut st);
+    assert_eq!(end, RunEnd::Stopped);
+    let refused = tool_text(&st.transcript.wire()[2]);
+    assert_ne!(refused, tool_errors::DENIED_BY_USER);
+    assert!(
+        refused.starts_with("Refused: dangerous command (git-push-force: "),
+        "{refused}"
+    );
+    assert!(
+        refused.ends_with("This run has no one to approve it; nobody declined it."),
+        "{refused}"
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 0, "a refused command never runs");
 }

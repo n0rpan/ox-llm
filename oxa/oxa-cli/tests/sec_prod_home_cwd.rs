@@ -53,7 +53,7 @@ fn go(
     (code, text(&out), text(&err))
 }
 
-const REFUSED: &str = "oxa was started in";
+const REFUSED: &str = "cd into a project directory first";
 const UNREACHABLE: &str = "http://127.0.0.1:9";
 
 fn refused_in(env: &TestEnv, cwd: &Path) {
@@ -129,6 +129,28 @@ fn a_project_below_home_is_fine() {
         false,
     );
     assert_eq!(code, 0, "{err}");
+    assert_eq!(out.trim(), "ok");
+}
+
+#[test]
+fn home_cwd_yolo_flag_warns_only() {
+    // S11: `--yolo` on the command line is the owner's opt-in: the start warns and goes on in
+    // print mode, with no question and no refusal, and the warning is on stderr only.
+    let env = TestEnv::new();
+    let home = env.home();
+    let server = FakeServer::start(vec![ScriptTurn::text("ok")], FakeOpts::default()).unwrap();
+    let (code, out, err) = go(
+        &env,
+        &server.url(),
+        &home,
+        &[],
+        &["-p", "--yolo", "--no-session", "x"],
+        "",
+        false,
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("--yolo on the command line"), "{err}");
+    assert!(!err.contains(REFUSED), "{err}");
     assert_eq!(out.trim(), "ok");
 }
 

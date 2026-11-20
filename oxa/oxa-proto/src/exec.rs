@@ -126,12 +126,6 @@ pub trait Sandbox: Send + Sync {
     fn for_session(&self) -> Option<std::sync::Arc<dyn Sandbox>> {
         None
     }
-    /// A credential this sandbox hands to its commands (the GitHub token): bash output that
-    /// would show it is masked, also for runs that bypass the sandbox (`yolo`). `None` (the
-    /// default) = nothing to mask. Output only: this never blocks a command.
-    fn output_secret(&self) -> Option<String> {
-        None
-    }
     /// The exact `bwrap` argv (without the leading `bwrap`) for `s`. Pure; golden-tested.
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String>;
     /// Run `s`, streaming output chunks to `live`. Cancel and timeout kill the process group.
@@ -271,28 +265,24 @@ impl PermissionMode {
     pub fn describe(self) -> &'static str {
         self.describe_with(OS_SANDBOX)
     }
-    /// [`describe`](Self::describe) for a platform with or without an OS sandbox. Without one the
-    /// text never says the bash sandbox is on: commands run with the user's rights (and are
-    /// disabled while the bash network is off, which that platform cannot enforce).
+    /// [`describe`](Self::describe) for a run with or without the OS sandbox. Without one the
+    /// text never says the bash sandbox is on: it says there is none and that dangerous commands
+    /// ask (#1512 S3: interactive runs are unsandboxed by default and the floor prompt stays).
     pub fn describe_with(self, os_sandbox: bool) -> &'static str {
         match (self, os_sandbox) {
             (PermissionMode::Standard, true) => {
                 "prompts before actions outside the workspace; sandbox and deny-list on"
             }
-            // No OS sandbox: bash runs as the user, and it is disabled while the bash network is
-            // off (that setting cannot be enforced there).
             (PermissionMode::Standard, false) => {
-                "prompts before actions outside the workspace; no OS sandbox on this platform: \
-                 bash runs with your user rights, and is disabled while the bash network is off; \
-                 the deny-list stays on"
+                "prompts before actions outside the workspace; no OS sandbox, dangerous commands \
+                 ask; deny-list on"
             }
             (PermissionMode::Auto, true) => {
                 "no prompts; the bash sandbox, the deny-list and the protected paths stay on"
             }
             (PermissionMode::Auto, false) => {
-                "no prompts; no OS sandbox on this platform: bash runs with your user rights, and \
-                 is disabled while the bash network is off; the deny-list and the protected paths \
-                 stay on"
+                "no prompts; no OS sandbox, dangerous commands still ask; the deny-list and \
+                 protected paths stay on"
             }
             (PermissionMode::Yolo, _) => {
                 "full access: no prompts, bash runs without the sandbox in your own environment, \
@@ -401,4 +391,13 @@ pub trait Policy: Send {
     fn path_filter_for_mode(&self, _mode: Mode) -> Option<std::sync::Arc<dyn crate::PathFilter>> {
         self.path_filter()
     }
+    /// #1512 S2: the dangerous-command floor for `a` (an exec of `cwd`): one `(key, "rule: reason")`
+    /// per matching rule that no grant covers. Empty = no dangerous prompt. The key is what a
+    /// session or always grant stores ([`Policy::grant_danger`]).
+    fn danger_ask(&self, _a: &Access, _cwd: &Path) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    /// #1512 S2: remember the keys of [`Policy::danger_ask`] for this session (`Session` and
+    /// `Always` answers). Never covers any other access.
+    fn grant_danger(&mut self, _keys: &[String]) {}
 }

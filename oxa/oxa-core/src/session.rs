@@ -13,8 +13,10 @@ use oxa_proto::{
 };
 use oxa_session::{MemStore, SessionRef, SessionStore, Transcript, Tree};
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+static NEXT_CONFIRM_BROKER: AtomicU64 = AtomicU64::new(1);
 
 /// What a session is built from. `tools` are the built-ins to offer (normally
 /// `oxa_tools::builtin_tools()`); hook tools are added from `hooks` at each epoch.
@@ -126,6 +128,7 @@ pub struct Session {
     pub(crate) st: SessionState,
     /// O-152: the boot preload ran (or was skipped) for the session entered last.
     preloaded: bool,
+    startup_limit: Option<Box<dyn Send>>,
 }
 
 /// The CLI-level choices of [`Session::open`]. `None` in [`enter`] means a switch inside a
@@ -216,6 +219,8 @@ impl Session {
             session_id,
             jobs,
         } = d;
+        // W4: `oxa.jobs.wakeOnFinish` (default on, user settings only) is applied by
+        // `sync_job_wake` once the state exists.
         // H: `defaultModel` (pi settings.md "Startup model ID") when no model was chosen and the
         // engine serves it; otherwise the engine's own model, as before.
         let model = match model {
@@ -309,7 +314,22 @@ impl Session {
         let mut sink = VecSink::default();
         let mut ui = HeadlessUi::default();
         enter(&mut st, how, Some(&cli), &mut sink, &mut ui)?;
-        Ok(Session { st, preloaded: false })
+        let session = Session {
+            st,
+            preloaded: false,
+            startup_limit: None,
+        };
+        session.bind_jobs_owner();
+        sync_job_wake(&session.st);
+        // The hook is always installed: `wake_job` asks the live setting, which a reload updates.
+        let handle = session.handle();
+        session
+            .st
+            .jobs
+            .set_on_finish(Arc::new(move |job: oxa_tools::JobDone| {
+                handle.wake_job(&job);
+            }));
+        Ok(session)
     }
 
     /// Run one user prompt to settlement (blocks). A line naming an extension command runs it
@@ -422,6 +442,34 @@ impl Session {
         });
     }
 
+    /// Start the owner confirm broker (a per-session unix socket, dir 0700, socket 0600) and
+    /// export it to tool children as `OXA_CONFIRM_SOCK`. `yolo` is the session's switch: in
+    /// yolo the broker answers yes and records it; otherwise the owner's dialog answer or
+    /// typed message decides. A bind failure leaves the session without a broker.
+    pub fn enable_owner_confirm(&mut self, yolo: oxa_proto::YoloSwitch) -> std::io::Result<()> {
+        // SDK sessions in one process share `Dirs`. Give each broker a distinct short
+        // path so it cannot unlink another session's socket when rebinding.
+        let dir = self.st.dirs.tmp_dir.join(format!(
+            "confirm-{}-{}",
+            std::process::id(),
+            NEXT_CONFIRM_BROKER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let broker = crate::owner_confirm::OwnerConfirm::start(&dir, yolo)?;
+        let old = self
+            .st
+            .shared
+            .gate
+            .owner_confirm
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .replace(broker);
+        if let Some(old) = old {
+            old.close();
+        }
+        refresh_tool_env(&mut self.st);
+        Ok(())
+    }
+
     /// Install a progress observer for this session and subsequent in-process switches.
     pub fn set_progress_observer(&mut self, observer: Arc<dyn crate::ProgressObserver>) {
         *self
@@ -516,13 +564,21 @@ impl Session {
         crate::navigate(&mut self.st, target, summarize, instructions, sink, ui)
     }
 
+    /// W4: name the session now bound as the owner of the jobs started from here on. A job
+    /// that started earlier keeps its own owner, so its wake never lands in a later session.
+    fn bind_jobs_owner(&self) {
+        self.st.jobs.set_owner(&self.st.sref.id);
+    }
+
     /// `/fork`: new session file from the branch ending at `entry`; this session switches to it.
     pub fn fork(&mut self, entry: &str) -> Result<SessionRef, OxaError> {
         let _guard = self.begin()?;
         let mut ui = HeadlessUi::default();
         let r = crate::fork_at(&mut self.st, entry, &mut ui);
         if r.is_ok() {
+            drop(self.startup_limit.take());
             self.st.jobs.reset();
+            self.bind_jobs_owner();
         }
         r
     }
@@ -533,7 +589,9 @@ impl Session {
         let mut ui = HeadlessUi::default();
         let r = crate::clone_current(&mut self.st, &mut ui);
         if r.is_ok() {
+            drop(self.startup_limit.take());
             self.st.jobs.reset();
+            self.bind_jobs_owner();
         }
         r
     }
@@ -548,6 +606,8 @@ impl Session {
         crate::fire::session_shutdown(&mut self.st, reason, target.as_deref(), sink, ui);
         self.st.jobs.reset();
         enter(&mut self.st, how, None, sink, ui)?;
+        drop(self.startup_limit.take());
+        self.bind_jobs_owner();
         self.preloaded = false;
         Ok(())
     }
@@ -653,6 +713,14 @@ impl Session {
     pub fn reload(&mut self, sink: &mut dyn EventSink, ui: &mut dyn Ui) -> Result<bool, OxaError> {
         self.ensure_idle()?;
         crate::reload(&mut self.st, sink, ui)
+    }
+
+    /// Bring the prefix in line with this Session's tool selection: a resumed session replays the
+    /// prefix it stored, so a tool the session did not declare then (or one it no longer offers)
+    /// only changes on a new epoch. Returns `true` when one was opened; nothing changed otherwise.
+    pub fn sync_tools(&mut self, sink: &mut dyn EventSink) -> Result<bool, OxaError> {
+        self.ensure_idle()?;
+        crate::open_epoch(&mut self.st, "tools", false, sink)
     }
 
     /// `!cmd` (`excluded = false`) / `!!cmd` (`true`).
@@ -854,10 +922,16 @@ impl Session {
         &self.st
     }
 
+    /// Keep the startup limit armed until this session closes or switches files.
+    pub fn hold_startup_limit(&mut self, limit: impl Send + 'static) {
+        self.startup_limit = Some(Box::new(limit));
+    }
+
     /// Leave this session without stopping the hook sets: fire `SessionShutdown` and drop the
     /// host. For a front end that replaces the session object by another one built from the
     /// same hook sets (`/new`, `/resume`, fork): the new session attaches its own host.
     pub fn close(&mut self, ui: &mut dyn Ui) {
+        drop(self.startup_limit.take());
         crate::progress::notify(&self.st, crate::Progress::Closing);
         let mut sink = VecSink::default();
         observe_hooks(
@@ -867,6 +941,9 @@ impl Session {
             &mut sink,
             ui,
         );
+        if let Some(broker) = self.st.shared.owner_confirm() {
+            broker.close();
+        }
         self.st.host_rx = None;
         self.st.host_deferred.clear();
         self.st.jobs.kill_all();
@@ -1732,10 +1809,20 @@ fn latest_of(store: &dyn SessionStore, cwd: &std::path::Path) -> Option<SessionR
         .map(|m| m.sref)
 }
 
+/// W4: apply `oxa.jobs.wakeOnFinish` (user settings only) to the live session. Called at open and
+/// after each settings replacement, so a reload turns wakes off or on without a restart.
+pub(crate) fn sync_job_wake(st: &SessionState) {
+    st.shared
+        .set_job_wake_enabled(st.settings.user_bool("oxa.jobs.wakeOnFinish", true));
+}
+
 /// Point the per-session paths at the current session id.
 pub(crate) fn attach_ids(st: &mut SessionState) {
     let id = st.sref.id.clone();
     st.shared.bind_session(&id);
+    // W4: every identity switch (open, fork, clone, navigation, extension fork) names the new
+    // session as the owner of the jobs started from here on.
+    st.jobs.set_owner(&id);
     st.spill_dir = st.dirs.tmp_dir.join(&id);
     st.policy.set_spill_dir(&st.spill_dir);
     // Fork/clone history still names its ancestors' spills, even after those sessions are
@@ -1764,6 +1851,12 @@ pub(crate) fn refresh_tool_env(st: &mut SessionState) {
     ));
     env.push(("AI_AGENT".to_string(), names::AI_AGENT.to_string()));
     env.push(("OXA_CODING_AGENT".to_string(), "true".to_string()));
+    if let Some(broker) = st.shared.owner_confirm() {
+        env.push((
+            crate::owner_confirm::SOCK_ENV.to_string(),
+            broker.sock_path().to_string_lossy().into_owned(),
+        ));
+    }
     st.tool_env = env;
 }
 
@@ -2297,6 +2390,31 @@ mod tests {
             session_id: None,
             jobs: Arc::new(oxa_tools::JobRegistry::new()),
         }
+    }
+
+    /// W4: the wake switch follows the setting at open and after a reload (user layer only).
+    #[test]
+    fn wake_setting_follows_open_and_reload() {
+        let env = oxa_fake::TestEnv::new();
+        let mut d = deps(&env, Arc::new(MemStore::new()));
+        d.settings = Settings::from_values(
+            serde_json::json!({"oxa": {"jobs": {"wakeOnFinish": false}}}),
+            serde_json::Value::Null,
+        );
+        let mut s = Session::open(d, Open::New).expect("open");
+        assert!(!s.st.shared.job_wake_enabled());
+        s.st.settings = Settings::from_values(serde_json::Value::Null, serde_json::Value::Null);
+        sync_job_wake(&s.st);
+        assert!(s.st.shared.job_wake_enabled(), "the default is on");
+        s.st.settings = Settings::from_values(
+            serde_json::Value::Null,
+            serde_json::json!({"oxa": {"jobs": {"wakeOnFinish": false}}}),
+        );
+        sync_job_wake(&s.st);
+        assert!(
+            s.st.shared.job_wake_enabled(),
+            "a project file cannot turn wakes off"
+        );
     }
 
     /// A published foreground start is itself exclusive, even before the session claim is

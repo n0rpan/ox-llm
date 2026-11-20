@@ -36,6 +36,7 @@ pub use offline::{no_network_argv, offline_argv};
 pub use run::PinnedCwd;
 pub use run::{
     die_with_parent, run_argv, run_argv_capture, run_argv_stdin, run_unsandboxed, run_unsandboxed_capture,
+    run_unsandboxed_stdin,
 };
 pub use scratch::{scratch_root, user_cache_home, Scratch};
 pub use unsandboxed::Unsandboxed;
@@ -44,6 +45,16 @@ pub use unsandboxed::Unsandboxed;
 /// bubblewrap). It must never be replaced by wording that suggests isolation.
 pub const NO_OS_SANDBOX_NOTICE: &str =
     "no OS sandbox on this platform: commands run with your full user rights";
+
+/// The pinned location of the session-owned confirmation socket inside bwrap.
+///
+/// Tool commands may change their environment, so confirmation clients must trust this mount
+/// point rather than an arbitrary path supplied through `OXA_CONFIRM_SOCK`. The sandbox replaces
+/// `/run` with its own tmpfs before creating this mount point, so neither a workspace mounted at
+/// `/tmp` nor a pre-existing symlink can make the pathname replaceable by the tool child.
+pub const OWNER_CONFIRM_SOCK: &str = "/run/oxa-owner-confirm.sock";
+/// Environment variable carrying the host confirmation socket into the sandbox builder.
+pub const OWNER_CONFIRM_SOCK_ENV: &str = "OXA_CONFIRM_SOCK";
 
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox};
 use std::path::{Path, PathBuf};
@@ -236,7 +247,10 @@ impl Bwrap {
         live: &mut dyn FnMut(&[u8]),
         capture: bool,
     ) -> ExecResult {
-        let (public, secret) = split_secrets(s);
+        let (mut public, secret) = split_secrets(s);
+        if public.env.iter().any(|(key, _)| key == OWNER_CONFIRM_SOCK_ENV) {
+            bwrap::keep_broker_only_if(&mut public, bwrap::denies_nested_userns(&self.bwrap));
+        }
         use std::os::fd::AsRawFd;
         let pinned: Vec<(&Path, std::fs::File)> = Vec::new();
         #[cfg(target_os = "linux")]
@@ -369,52 +383,6 @@ fn canonical_root_contains(root: &Path, path: &Path) -> bool {
 #[cfg(all(test, target_os = "linux"))]
 mod secret_tests {
     use super::*;
-
-    #[test]
-    fn masking_no_sandbox_keeps_the_replaced_sandboxes_secret() {
-        struct Secret;
-        impl Sandbox for Secret {
-            fn check(&self) -> Result<(), OxaError> {
-                Ok(())
-            }
-            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
-                Vec::new()
-            }
-            fn run(&self, _s: &ExecSpec, _c: &CancelToken, _l: &mut dyn FnMut(&[u8])) -> ExecResult {
-                ExecResult {
-                    output: Vec::new(),
-                    exit: Some(0),
-                    timed_out: false,
-                    unsandboxed: true,
-                }
-            }
-            fn output_secret(&self) -> Option<String> {
-                Some("ghp_KEPT_OFFLINE".into())
-            }
-        }
-        // Off Linux, bash_sandbox swaps a network sandbox it cannot enforce for this.
-        let swapped = MaskingNoSandbox::new(Arc::new(Secret));
-        assert_eq!(
-            swapped.output_secret().as_deref(),
-            Some("ghp_KEPT_OFFLINE"),
-            "the output mask survives the platform-sandbox swap"
-        );
-        // Execution behaves as NoSandbox: the refused check and run.
-        assert!(swapped.check().is_err());
-        let spec = ExecSpec {
-            command: "true".into(),
-            cwd: "/".into(),
-            writable: true,
-            net: false,
-            timeout_s: Some(10),
-            env: Vec::new(),
-        };
-        let r = swapped.run(&spec, &CancelToken::new(), &mut |_| {});
-        assert!(
-            String::from_utf8_lossy(&r.output).contains("bwrap is not available"),
-            "execution stays the NoSandbox refusal"
-        );
-    }
 
     #[test]
     fn bwrap_child_receives_a_socket_descriptor() {
@@ -707,35 +675,5 @@ impl Sandbox for NoSandbox {
             timed_out: false,
             unsandboxed: false,
         }
-    }
-}
-
-/// A caller that cannot enforce a refused network swaps its sandbox for [`NoSandbox`] (off
-/// Linux, `dispatch::bash_sandbox` does exactly that). Yolo's output mask must not depend on
-/// that enforcement: this keeps the replaced sandbox's [`Sandbox::output_secret`] — the
-/// GitHub token, discovered lazily as on every other path — while behaving as `NoSandbox`
-/// for execution, so unsandboxed commands still never print the credential.
-pub struct MaskingNoSandbox {
-    source: Arc<dyn Sandbox>,
-}
-
-impl MaskingNoSandbox {
-    pub fn new(source: Arc<dyn Sandbox>) -> Self {
-        Self { source }
-    }
-}
-
-impl Sandbox for MaskingNoSandbox {
-    fn check(&self) -> Result<(), OxaError> {
-        NoSandbox.check()
-    }
-    fn bwrap_args(&self, s: &ExecSpec) -> Vec<String> {
-        NoSandbox.bwrap_args(s)
-    }
-    fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
-        NoSandbox.run(s, c, live)
-    }
-    fn output_secret(&self) -> Option<String> {
-        self.source.output_secret()
     }
 }

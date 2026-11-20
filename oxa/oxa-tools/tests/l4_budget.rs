@@ -62,6 +62,7 @@ fn tuned(cap: u32) -> ToolTune {
         bash_timeout_s: 120,
         bash_wait_cap_s: 300,
         output_cap_bytes: cap,
+        ..Default::default()
     }
 }
 

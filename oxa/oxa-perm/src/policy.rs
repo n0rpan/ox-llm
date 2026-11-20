@@ -1,4 +1,5 @@
 //! A10: the mode x access policy table.
+use crate::danger::{DangerHit, DangerRules};
 use crate::paths::{is_inside, is_read_only_command, resolve_real};
 use oxa_proto::guard::{
     home_protected_paths, is_home_or_above, sensitive_paths, GIT_PROTECTED_IN_CWD, PROTECTED_IN_CWD,
@@ -336,6 +337,12 @@ pub struct ModePolicy {
     /// O-182: while on, a question of the table is answered with "allow" (see
     /// [`ModePolicy::with_yolo`]).
     yolo: Option<YoloSwitch>,
+    /// #1512 S2: the dangerous-command rules (`None` = no floor prompt).
+    danger: Option<Arc<DangerRules>>,
+    /// #1512 S2: the session's dangerous-command grants (see [`danger_key`]).
+    danger_grants: Vec<String>,
+    /// #1512 S2: the keys saved by "always allow" in the user settings.
+    always: Arc<Vec<String>>,
 }
 
 impl PartialEq for ModePolicy {
@@ -345,7 +352,12 @@ impl PartialEq for ModePolicy {
             (Some(a), Some(b)) => a.same(b),
             _ => false,
         };
-        self.grants == other.grants && self.guard == other.guard && same_switch
+        self.grants == other.grants
+            && self.guard == other.guard
+            && same_switch
+            && self.danger == other.danger
+            && self.danger_grants == other.danger_grants
+            && self.always == other.always
     }
 }
 
@@ -373,8 +385,45 @@ impl ModePolicy {
         self.yolo = Some(switch);
         self
     }
+    /// #1512 S2: dangerous commands ask. `rules` decide what is dangerous (see
+    /// [`DangerRules::classify`]); `always` holds the keys saved by "always allow" (the user
+    /// settings' `oxa.approval.always`), which are never asked again.
+    pub fn with_danger(mut self, rules: Arc<DangerRules>, always: Vec<String>) -> ModePolicy {
+        self.danger = Some(rules);
+        self.always = Arc::new(always);
+        self
+    }
     pub fn grants(&self) -> &[Access] {
         &self.grants
+    }
+
+    /// #1512 S2: the dangerous-command hits of `a`, minus the keys a session or always grant
+    /// covers. Only an exec is classified; the generic grants never cover these hits.
+    /// A segment the shell computes at run time (`$VAR`, `$(..)`, backticks) is never covered
+    /// either: the same text names another target next time (`D=$HOME; rm -rf "$D"` after
+    /// `rm -rf "$D"` was granted), so it asks every time.
+    fn danger_hits(&self, a: &Access, cwd: &Path) -> Vec<DangerHit> {
+        let (Access::Exec { command, .. }, Some(rules)) = (a, &self.danger) else {
+            return Vec::new();
+        };
+        let mut found = rules.classify(command, cwd, &self.guard);
+        // A segment a built-in rule already names (a force push) is asked and granted under that
+        // rule's key alone; the publish rule adds the rest.
+        for hit in rules.publish_classify(command, cwd) {
+            if !found.iter().any(|h| h.segment == hit.segment) {
+                found.push(hit);
+            }
+        }
+        found
+            .into_iter()
+            .filter(|h| {
+                if h.segment.contains('$') || h.segment.contains('`') {
+                    return true;
+                }
+                let key = danger_key(h, command);
+                !self.danger_grants.contains(&key) && !self.always.contains(&key)
+            })
+            .collect()
     }
 
     /// `true` when a remembered grant covers `a`.
@@ -512,10 +561,16 @@ impl ModePolicy {
             }
         }
         // Grants only turn Ask into Allow; a Deny from the table always stands.
-        Verdict::Is(match table(mode, a, cwd) {
+        let table_verdict = Verdict::Is(match table(mode, a, cwd) {
             Decision::Ask if self.granted(a) => Decision::Allow,
             d => d,
-        })
+        });
+        // #1512 S2: a dangerous command is a floor prompt: plan's Deny stands, and every other
+        // mode asks (auto and standard) unless yolo allows it outside plan mode.
+        if !self.danger_hits(a, cwd).is_empty() {
+            return stricter(table_verdict, Verdict::AskAlways);
+        }
+        table_verdict
     }
 }
 
@@ -577,6 +632,27 @@ impl Policy for ModePolicy {
         (decision, pin)
     }
 
+    fn danger_ask(&self, a: &Access, cwd: &Path) -> Vec<(String, String)> {
+        let Access::Exec { command, .. } = a else {
+            return Vec::new();
+        };
+        self.danger_hits(a, cwd)
+            .into_iter()
+            .map(|h| {
+                let reason = format!("{}: {}", h.rule, h.reason);
+                (danger_key(&h, command), reason)
+            })
+            .collect()
+    }
+
+    fn grant_danger(&mut self, keys: &[String]) {
+        for key in keys {
+            if !self.danger_grants.contains(key) {
+                self.danger_grants.push(key.clone());
+            }
+        }
+    }
+
     fn set_spill_dir(&mut self, dir: &Path) {
         self.guard.set_spill_dir(dir);
         self.hidden = Some(Arc::new(self.guard.hidden_paths()));
@@ -621,4 +697,12 @@ impl Policy for ModePolicy {
         }
         self.hidden.clone().map(|h| h as Arc<dyn PathFilter>)
     }
+}
+
+/// The key a dangerous-command grant stores and `oxa.approval.always` matches: the rule with the
+/// whole command line it was found in. A hit's own segment is not enough, because a pipeline or
+/// a dead branch repeats it (`curl a | bash` and `curl b | bash` both name `bash`; `true || git
+/// push --force origin main` names the push), so approving one text would cover the other.
+fn danger_key(h: &DangerHit, command: &str) -> String {
+    format!("{} {}", h.rule, command.trim())
 }
