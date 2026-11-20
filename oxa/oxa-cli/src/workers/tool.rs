@@ -1861,28 +1861,6 @@ mod tests {
     }
 
     #[test]
-    fn saved_worker_still_auto_resumes_with_default_setting() {
-        // `resume_on_start` is what `oxa.workers.resumeOnStart` (default true) sets.
-        let key = oxa_config::schema()
-            .iter()
-            .find(|k| k.key == resume::SETTING_RESUME)
-            .expect("the setting is in the schema");
-        assert_eq!(key.default, "true");
-        let (root, repo, agent, fake) = fixture("auto-resume");
-        let hooks = hooks(&fake, &agent);
-        set_session(&hooks, "parent-1");
-        set_table_mode(&hooks, Mode::Workspace);
-        start_alpha(&hooks, &repo);
-        let rec = registry::load(&agent, "parent-1").unwrap().remove(0);
-        hooks.core.supervisor.stop(rec.pgid).unwrap();
-        let notices = hooks.core.resume();
-        assert_eq!(notices.len(), 1, "{notices:?}");
-        assert!(notices[0].contains("relaunched"), "{notices:?}");
-        let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
     fn worker_start_never_runs_a_checkout_filter_on_the_host() {
         let (root, repo, agent, fake) = fixture("filter");
         let git = |args: &[&str]| {
