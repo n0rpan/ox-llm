@@ -43,7 +43,12 @@ enum Part {
         close: &'static str,
     },
     /// `${NAME<op><operand>}`: the head up to the operator, and the operand.
-    Param { head: String, operand: String },
+    Param {
+        head: String,
+        operand: String,
+        /// The `${` sat inside double quotes, where `'` is an ordinary character.
+        dq: bool,
+    },
 }
 
 fn is_sep(c: char) -> bool {
@@ -82,7 +87,7 @@ fn mask(command: &str, scrub: &dyn Fn(&str) -> String, depth: usize) -> String {
             i += 1;
             continue;
         }
-        let (mut parts, next) = read_parts(&chars, i, true);
+        let (mut parts, next) = read_parts(&chars, i, true, false);
         i = next.max(i + 1);
         let first = match parts.first() {
             Some(Part::Lit(text)) => Some(text.clone()),
@@ -134,13 +139,13 @@ fn render(parts: &[Part], secret: bool, scrub: &dyn Fn(&str) -> String, depth: u
                 out.push_str(&mask(inner, scrub, depth + 1));
                 out.push_str(close);
             }
-            Part::Param { head, operand } => {
+            Part::Param { head, operand, dq } => {
                 out.push_str(head);
                 if depth > MAX_DEPTH {
                     out.push_str(&scrub(operand));
                 } else {
                     let chars: Vec<char> = operand.chars().collect();
-                    let (inner, _) = read_parts(&chars, 0, false);
+                    let (inner, _) = read_parts(&chars, 0, false, *dq);
                     out.push_str(&render(&inner, secret, scrub, depth + 1));
                 }
                 out.push('}');
@@ -153,6 +158,10 @@ fn render(parts: &[Part], secret: bool, scrub: &dyn Fn(&str) -> String, depth: u
 /// A literal run in a secret context: `<secret>`, unless it holds only quote and escape
 /// characters (a fully expanded value still reads as written).
 fn mask_literal(text: &str) -> String {
+    // Backstop: text that still holds an expansion is code the shell runs, never a value.
+    if text.contains("$(") || text.contains('`') || text.contains("${") {
+        return text.to_string();
+    }
     if text.chars().any(|c| !matches!(c, '"' | '\'' | '\\')) {
         SECRET.to_string()
     } else {
@@ -162,11 +171,11 @@ fn mask_literal(text: &str) -> String {
 
 /// Reads one word (or, with `split` false, the whole text) into parts from `start`. Returns the
 /// parts and the index after them. An unterminated quote or substitution makes the rest literal.
-fn read_parts(chars: &[char], start: usize, split: bool) -> (Vec<Part>, usize) {
+fn read_parts(chars: &[char], start: usize, split: bool, init_double: bool) -> (Vec<Part>, usize) {
     let n = chars.len();
     let mut parts: Vec<Part> = Vec::new();
     let mut lit = String::new();
-    let (mut single, mut double) = (false, false);
+    let (mut single, mut double) = (false, init_double);
     let mut p = start;
     let flush = |parts: &mut Vec<Part>, lit: &mut String| {
         if !lit.is_empty() {
@@ -184,6 +193,27 @@ fn read_parts(chars: &[char], start: usize, split: bool) -> (Vec<Part>, usize) {
                 lit.push(*next);
             }
             p += 2;
+            continue;
+        }
+        if c == '$' && !single && !double && chars.get(p + 1) == Some(&'\'') {
+            // `$'...'`: ANSI-C quoting, where a backslash escapes the next character.
+            lit.push_str("$'");
+            p += 2;
+            while p < n && chars[p] != '\'' {
+                if chars[p] == '\\' {
+                    lit.push('\\');
+                    p += 1;
+                    if p >= n {
+                        break;
+                    }
+                }
+                lit.push(chars[p]);
+                p += 1;
+            }
+            if p < n {
+                lit.push('\'');
+                p += 1;
+            }
             continue;
         }
         if c == '\'' && !double {
@@ -238,10 +268,10 @@ fn read_parts(chars: &[char], start: usize, split: bool) -> (Vec<Part>, usize) {
                         p = n;
                     }
                 },
-                Some('{') => match scan_brace(chars, p + 2) {
+                Some('{') => match scan_brace(chars, p + 2, double) {
                     Some((inner, np)) => {
                         flush(&mut parts, &mut lit);
-                        parts.push(param(&inner));
+                        parts.push(param(&inner, double));
                         p = np;
                     }
                     None => {
@@ -275,11 +305,11 @@ fn read_parts(chars: &[char], start: usize, split: bool) -> (Vec<Part>, usize) {
 }
 
 /// The text up to the `}` that closes a `${` opened just before `start`, and the index after it.
-fn scan_brace(chars: &[char], start: usize) -> Option<(String, usize)> {
+fn scan_brace(chars: &[char], start: usize, in_double: bool) -> Option<(String, usize)> {
     let mut depth = 1usize;
     let mut s = String::new();
     let mut p = start;
-    let (mut single, mut double) = (false, false);
+    let (mut single, mut double) = (false, in_double);
     while p < chars.len() {
         let c = chars[p];
         if c == '\\' && !single {
@@ -317,7 +347,7 @@ fn scan_brace(chars: &[char], start: usize) -> Option<(String, usize)> {
 
 /// `${NAME<op><operand>}` split into the head (`${NAME<op>`) and its operand. A form with no
 /// operator (`${NAME}`, `${#NAME}`) is kept as written.
-fn param(inner: &str) -> Part {
+fn param(inner: &str, dq: bool) -> Part {
     let chars: Vec<char> = inner.chars().collect();
     let mut k = 0usize;
     while k < chars.len() && (chars[k].is_ascii_alphanumeric() || chars[k] == '_') {
@@ -355,6 +385,7 @@ fn param(inner: &str) -> Part {
     Part::Param {
         head: format!("${{{head}"),
         operand,
+        dq,
     }
 }
 
@@ -381,6 +412,20 @@ mod tests {
             r#"password="${UNSET:+<secret>}" git push"#
         );
         assert_eq!(plain("token=demo&&rm -rf x"), "token=<secret>&&rm -rf x");
+    }
+
+    #[test]
+    fn a_quote_inside_double_quotes_cannot_hide_a_substitution() {
+        let out = plain(r#"password="${X:-'}$(rm -rf /srv/data)'}" git push --force origin main"#);
+        assert!(out.contains("$(rm -rf /srv/data)"), "{out}");
+        assert!(out.contains("git push --force origin main"), "{out}");
+    }
+
+    #[test]
+    fn an_ansi_c_quote_cannot_hide_the_command_after_it() {
+        let out = plain(r#"password=$'\'' rm -rf /srv/data #'"#);
+        assert!(out.contains("rm -rf /srv/data"), "{out}");
+        assert!(!out.contains("password=<secret>rm"), "{out}");
     }
 
     #[test]
