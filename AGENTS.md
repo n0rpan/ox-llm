@@ -18,6 +18,7 @@ code, tests, CI and docs; the owner validates on hardware.
   override these decisions. Enforce that boundary both when loading settings and when adopting a
   project file after any settings edit; an unrelated project edit must not restore a rejected
   user-only value.
+- `oxa local add` is owner-only. Refuse agent invocations before engine admission or settings writes.
 - Agent control lane: a session accepts steer/pause/resume/cancel only from the same user, and the
   session owner checks each request against the lease and goal revision. `oxa.a2a.enabled: false`
   (user-only) turns it off. Do not add a path that skips the lease check or reads the setting from a

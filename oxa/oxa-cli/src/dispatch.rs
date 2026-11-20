@@ -8,7 +8,7 @@ use mode::headless_argument_error;
 pub use mode::{choose_mode, RunMode};
 
 use crate::hooks::{build_hooks, HookInputs, HookSets};
-use crate::{parse_args, run_config, run_mcp, run_pkg, usage_text, Args, Subcommand};
+use crate::{parse_args, run_config, run_local, run_mcp, run_pkg, usage_text, Args, Subcommand};
 use oxa_config::{
     dirs_from_env, resolve_model, Dirs, Endpoint, Env, Keymap, ModelRef, ModelsConfig, Settings,
 };
@@ -262,7 +262,9 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::Memory
                     | CommandId::MemoryList
                     | CommandId::MemoryShow
-                    | CommandId::MemoryRm => Err(OxaError::new(
+                    | CommandId::MemoryRm
+                    | CommandId::Local
+                    | CommandId::LocalAdd => Err(OxaError::new(
                         codes::USAGE,
                         "registered command handler or arguments are unavailable",
                     )),
@@ -318,6 +320,11 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Subcommand::Memory(words) => crate::run_memory(&words, &dirs, &mut *stdout, &mut *stderr),
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
+            Subcommand::Local(_) if is_agent(env) => Err(OxaError::new(
+                codes::INVALID,
+                "Local model setup requires the owner outside an agent tool",
+            )),
+            Subcommand::Local(words) => run_local(&words, &dirs, &cwd, &mut *stdout),
             Subcommand::Send(words) => match words.as_slice() {
                 [id, text] if oxa_session::valid_inbox_id(id) => {
                     let mut piped = String::new();
