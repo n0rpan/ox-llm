@@ -97,14 +97,6 @@ fn run(oxa: serde_json::Value, turns: Vec<ScriptTurn>) -> Run {
     }
 }
 
-fn user_messages(engine: &ScriptedEngine, request: usize) -> usize {
-    engine.requests()[request]
-        .messages
-        .iter()
-        .filter(|m| m.role == Role::User)
-        .count()
-}
-
 fn notices(sink: &VecSink, prefix: &str) -> usize {
     sink.0
         .iter()
@@ -124,7 +116,9 @@ fn edit_without_a_check_gets_one_nudge_then_ends_with_a_warning() {
     );
     let requests = r.engine.requests();
     assert_eq!(requests.len(), 3);
-    assert_eq!(user_messages(&r.engine, 2), user_messages(&r.engine, 1) + 1);
+    // The extra turn is a user message after the first final reply.
+    assert_eq!(requests[1].messages.last().map(|m| m.role), Some(Role::Tool));
+    assert_eq!(requests[2].messages.last().map(|m| m.role), Some(Role::User));
     assert_eq!(r.session.stats().proved, Some(false));
     assert_eq!(notices(&r.sink, "Run ended without a passing check"), 1);
 }
