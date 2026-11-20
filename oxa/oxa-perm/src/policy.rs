@@ -163,7 +163,8 @@ impl PathGuard {
     /// `dir` (absolute) holds a deny-list entry or the agent directory: removing it recursively
     /// takes a credential or agent path along.
     pub fn denies_within(&self, dir: &Path) -> bool {
-        self.deny.iter().any(|d| is_inside(d, dir)) || is_inside(&self.agent_dir, dir)
+        self.deny.iter().any(|d| is_inside(d, dir))
+            || (!self.agent_dir.as_os_str().is_empty() && is_inside(&self.agent_dir, dir))
     }
 
     /// Like [`PathGuard::denies`] for a read, with skills, inherited output and pasted images
