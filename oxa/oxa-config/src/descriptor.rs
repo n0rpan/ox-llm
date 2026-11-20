@@ -443,6 +443,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn openrouter_provider_is_restart_only() {
+        // The gateway copies the preferences once at startup; /reload does not rebuild it.
+        let e = descriptor("oxa.cloud.openrouter_provider").expect("descriptor");
+        assert_eq!(e.apply, Apply::Restart);
+    }
+
+    #[test]
     fn builder_sets_fields() {
         let e = d(
             "oxa.bash.defaultTimeout",
