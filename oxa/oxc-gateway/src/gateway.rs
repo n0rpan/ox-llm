@@ -319,6 +319,20 @@ impl Gateway {
         driver.shutdown_timeout(Duration::from_secs(1));
         result.map_err(Error::Upstream)
     }
+    /// Add bundled meter-priced alternatives after configured routes and discovery.
+    pub fn add_recommended_models(
+        &mut self,
+        models: impl IntoIterator<Item = (crate::catalog::Model, crate::pricing::Price)>,
+    ) -> Result<(), Error> {
+        self.runtime
+            .add_recommended_models(models)
+            .map_err(Error::Refused)
+    }
+
+    pub fn recommended_models(&self) -> &std::collections::BTreeSet<String> {
+        self.runtime.recommended_models()
+    }
+
     pub fn discovery(&self) -> impl Iterator<Item = crate::catalog::ModelInfo<'_>> {
         self.runtime.discovery()
     }

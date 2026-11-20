@@ -233,6 +233,14 @@ point discovery at a proxy. Offline mode
 refuses before opening the gateway; configuration or gateway failures are returned
 directly. Project settings cannot enable this transport or change its cloud policy.
 
+The native gateway includes recommended Anthropic, OpenAI and OpenRouter models
+when the corresponding API key is configured. These built-in routes use the
+providers' standard endpoints and bundled prices. An entry in `oxa.cloud.models`
+with the same alias replaces the entire recommendation, including its pricing.
+Set `oxa.cloud.recommended_models` to `false` in user settings to disable all
+recommendations without disabling configured models or live discovery. The
+built-in catalog makes no discovery requests and does not grant guest access.
+
 The OpenCode Go subscription is the exception to that switch: a Go key in the
 owner's secrets file (`~/.config/oxc/llm/cloud-secrets.json`, the `opencode`
 entry) already enables the Go transport for an actual Go model argument, including
