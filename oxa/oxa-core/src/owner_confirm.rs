@@ -242,26 +242,10 @@ impl Drop for AskpassWindow {
 /// command, or a raw client of the socket, is neither. Linux only; elsewhere `false`.
 #[cfg(target_os = "linux")]
 fn peer_is_sudo_askpass(stream: &UnixStream) -> bool {
-    use std::os::fd::AsRawFd;
-    let mut cred = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
+    let Some((peer, peer_uid, me)) = oxa_sandbox::peer_pid_uid(stream) else {
+        return false;
     };
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    // SAFETY: getsockopt on a socket this function borrows, into a ucred of the stated length.
-    let rc = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            std::ptr::addr_of_mut!(cred).cast(),
-            &mut len,
-        )
-    };
-    // SAFETY: geteuid has no preconditions.
-    let me = unsafe { libc::geteuid() };
-    if rc != 0 || cred.pid <= 0 || cred.uid != me {
+    if peer_uid != me {
         return false;
     }
     let exe_of = |pid: u32| {
@@ -269,7 +253,6 @@ fn peer_is_sudo_askpass(stream: &UnixStream) -> bool {
             .ok()
             .map(|p| PathBuf::from(p.to_string_lossy().trim_end_matches(" (deleted)")))
     };
-    let peer = cred.pid as u32;
     let (Some(own), Some(theirs)) = (exe_of(std::process::id()), exe_of(peer)) else {
         return false;
     };

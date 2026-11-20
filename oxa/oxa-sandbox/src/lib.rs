@@ -677,3 +677,37 @@ impl Sandbox for NoSandbox {
         }
     }
 }
+
+/// The pid and uid of the process on the other end of a unix socket (`SO_PEERCRED`), and this
+/// process's effective uid. `None` when the kernel gives no credentials.
+#[cfg(target_os = "linux")]
+pub fn peer_pid_uid(stream: &std::os::unix::net::UnixStream) -> Option<(u32, u32, u32)> {
+    use std::os::fd::AsRawFd;
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: getsockopt on a socket the caller borrows, into a ucred of the stated length.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::addr_of_mut!(cred).cast(),
+            &mut len,
+        )
+    };
+    if rc != 0 || cred.pid <= 0 {
+        return None;
+    }
+    // SAFETY: geteuid has no preconditions.
+    let me = unsafe { libc::geteuid() };
+    Some((cred.pid as u32, cred.uid, me))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn peer_pid_uid(_: &std::os::unix::net::UnixStream) -> Option<(u32, u32, u32)> {
+    None
+}

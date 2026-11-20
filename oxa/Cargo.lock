@@ -1248,7 +1248,6 @@ dependencies = [
 name = "oxa-core"
 version = "0.2.1"
 dependencies = [
- "libc",
  "oxa-compact",
  "oxa-config",
  "oxa-engine",
