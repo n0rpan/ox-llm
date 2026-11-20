@@ -1200,15 +1200,16 @@ pub fn retained_owner_workers(key: &Path, max: usize, yolo: &YoloSwitch) -> Opti
 /// The workers and their supervisor are the same on every owner turn.
 pub fn kept_owner_workers(key: &Path, made: Arc<WorkerHooks>) -> Arc<WorkerHooks> {
     let mut all = lock(&OWNER_WORKERS);
-    if let Some((_, hooks)) = all.iter().find(|(k, _)| k == key) {
+    if let Some(hooks) = all.iter().find(|(k, _)| k == key).map(|(_, hooks)| hooks.clone()) {
+        drop(all);
         // `retained_owner_workers` returns this same Arc to the next HTTP owner session after
         // applying its current authority. Do not read and rewrite its mutex-protected authority:
-        // besides being redundant, doing both while the registry is locked used to relock the
-        // same non-reentrant mutex and deadlock the owner service.
-        if !Arc::ptr_eq(hooks, &made) {
+        // besides being redundant, doing both used to relock the same non-reentrant mutex and
+        // deadlock the owner service. Authority refresh never needs the registry lock either.
+        if !Arc::ptr_eq(&hooks, &made) {
             hooks.refresh_authority_from(&made);
         }
-        return hooks.clone();
+        return hooks;
     }
     made.keep_across_turns();
     all.push((key.to_path_buf(), made.clone()));
