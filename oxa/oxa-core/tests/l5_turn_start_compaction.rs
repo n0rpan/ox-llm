@@ -444,6 +444,13 @@ fn resumed_goal_accounts_turn_start_summary_before_any_new_chat() {
                     .is_some_and(|text| text.starts_with("Continue"))),
                 "accepted input must remain stored even when the budget blocks generation"
             );
+            let goal = resumed.goal().unwrap();
+            if failed && remaining > 0 {
+                // A compaction request that failed has unknown spend: it is recorded and
+                // shown, and it does not by itself block the goal.
+                assert_eq!(goal.unknown_requests, 1);
+                continue;
+            }
             assert_eq!(
                 kinds(&engine),
                 if remaining == 0 {
@@ -453,11 +460,8 @@ fn resumed_goal_accounts_turn_start_summary_before_any_new_chat() {
                 },
                 "no generating chat after the goal's turn-start budget is spent"
             );
-            let goal = resumed.goal().unwrap();
             assert_eq!(goal.status, GoalStatus::Blocked);
-            if failed && remaining > 0 {
-                assert_eq!(goal.unknown_requests, 1);
-            } else {
+            {
                 assert_eq!(goal.unknown_requests, 0);
                 if remaining > 0 {
                     assert!(goal.tokens_used > spent_before);

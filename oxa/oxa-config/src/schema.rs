@@ -148,6 +148,14 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.approval.always", Kind::StringList, "[]"),
     // #1512: dangerous-command rules (+id/-id/cmd:..); user settings only.
     key("oxa.approval.dangerous", Kind::StringList, "[]"),
+    // #1512 S5: what an unattended run does with a dangerous command (no one to ask): refuse it,
+    // file an approval request, or `auto` (refuse under the OS sandbox, request without it).
+    // User settings only.
+    key(
+        "oxa.approval.unattended",
+        Kind::Enum(&["auto", "refuse", "request"]),
+        "\"auto\"",
+    ),
     // F5: seconds; unset = 120; 0 = none.
     key("oxa.bash.defaultTimeout", Kind::Number, "null"),
     // Background jobs that may run at once (`bash {background: true}`); at least 1.
@@ -184,6 +192,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.github.tokenTtlSeconds", Kind::Number, "null"),
     // R1: the first wait after a transient request failure of a pursuing goal; `0` opts out.
     key("oxa.goal.failureBackoffSeconds", Kind::Number, "60"),
+    key("oxa.goal.idlePause", Kind::Bool, "false"),
     // K3: a headless print or JSON run of a persisted session with a pursuing goal takes
     // `oxa send` follow-ups from the session inbox for the run; false = off.
     key("oxa.inbox.headless", Kind::Bool, "true"),
@@ -232,11 +241,15 @@ const SCHEMA: &[KeyDef] = &[
     ),
     key("oxa.sampling.seed", Kind::Number, "null"),
     key("oxa.sandbox.allowHomeWrite", Kind::Bool, "false"),
+    // #1512 S3: the OS sandbox of an interactive (attended) run; user settings only.
+    key("oxa.sandbox.interactive", Kind::Bool, "false"),
     key("oxa.sandbox.net", Kind::Enum(&["on", "off"]), "\"on\""),
     // B2 (lane harden): extra binds of the bash sandbox; user settings only.
     key("oxa.sandbox.readPaths", Kind::StringList, "[]"),
     // RP6: host runtime sockets (docker, podman) bound into bash; user settings only.
     key("oxa.sandbox.sockets", Kind::StringList, "[]"),
+    // #1512 S3: the OS sandbox of an unattended run (workers, subagents, headless goals).
+    key("oxa.sandbox.unattended", Kind::Bool, "true"),
     key("oxa.sandbox.writePaths", Kind::StringList, "[]"),
     // Skills another product synced into `~/.agents/skills` (`synced/`); off = skipped.
     key("oxa.share.remoteModels", Kind::StringList, "[]"),
@@ -282,8 +295,13 @@ const SCHEMA: &[KeyDef] = &[
     // The worker runner reads this list from owner settings only.
     key("oxa.work.localChecks", Kind::StringList, "[\"cargo check\"]"),
     // K5a: the `worker` tool (never in a worker child) and the most live workers a session runs.
+    // The `oxa.workers.*` keys are user settings only: a project file cannot start processes,
+    // raise a limit or change the stop timing (`Settings::user_bool`, `user_u32`, `user_value`).
     key("oxa.workers.enabled", Kind::Bool, "true"),
     key("oxa.workers.max", Kind::Number, "4"),
+    // K5b: relaunch the unfinished, dead workers of a session when it is opened again. User
+    // settings only: a project file can neither enable nor disable it (`Settings::user_bool`).
+    key("oxa.workers.resumeOnStart", Kind::Bool, "true"),
     // K4: seconds a worker gets after SIGINT before its process group gets SIGTERM.
     key("oxa.workers.stopGraceSeconds", Kind::Number, "10"),
     key("packages", Kind::Any, "[]"),

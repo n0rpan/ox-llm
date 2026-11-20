@@ -80,9 +80,15 @@ class ReleaseAssets(unittest.TestCase):
     def test_arch_consumers_accept_the_versioned_archive(self):
         # release-build names the archive ox-llm-v<version>-linux-<arch>; the PKGBUILD wants the
         # unprefixed pkgver name, so arch-test.sh must map one to the other.
-        t = (W.parents[1] / 'packaging/release/arch-test.sh').read_text()
+        root = W.parents[1]
+        t = (root / 'packaging/release/arch-test.sh').read_text()
         self.assertIn('ox-llm-v*-linux-$(uname -m).tar.gz', t)
-        self.assertIn('ox-llm-0.2.0-linux-$(uname -m).tar.gz', t)
+        # The unprefixed copy must carry the version being released: read it from the workspace
+        # manifest, so a bump that forgets this script fails here instead of hardcoding a second
+        # copy of the number to update on every release.
+        version = re.search(r'(?m)^version = "([0-9]+\.[0-9]+\.[0-9]+)"',
+                            (root / 'oxa/Cargo.toml').read_text()).group(1)
+        self.assertIn(f'ox-llm-{version}-linux-$(uname -m).tar.gz', t)
 
     def test_release_build_needs_no_python(self):
         root = W.parents[1]

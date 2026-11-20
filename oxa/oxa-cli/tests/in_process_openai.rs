@@ -98,7 +98,7 @@ fn live_openai_ids_filter_the_configured_overlay_and_reuse_the_cache() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains(MODEL));
         assert!(!stdout.contains("synthetic-not-offered"));
-        assert!(!stdout.contains("synthetic-unknown-metadata"));
+        assert!(stdout.contains("synthetic-unknown-metadata"));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             stderr.contains("1 offers with unknown pricing and 1 with unknown limits"),
@@ -147,7 +147,7 @@ fn live_openrouter_discovery_uses_the_key_scoped_priced_text_offers() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stdout.contains("openrouter/vendor/synthetic-priced"), "{stdout}");
-        assert!(!stdout.contains("synthetic-unpriced"));
+        assert!(stdout.contains("synthetic-unpriced"));
         assert!(stderr.contains("1 offers with unknown pricing"), "{stderr}");
         assert!(!stdout.contains(KEY) && !stderr.contains(KEY));
     }
@@ -259,7 +259,7 @@ fn unpriced_discovery_uses_owner_rates_for_admission_and_estimated_ledger_spend(
     );
     fs::write(&path, user.to_string()).unwrap();
     let unpriced = run(&env, &["--list-models"], None);
-    assert!(!String::from_utf8_lossy(&unpriced.stdout).contains(MODEL));
+    assert!(String::from_utf8_lossy(&unpriced.stdout).contains(MODEL));
     assert_eq!(peer.requests().len(), 1);
 
     user["oxa"]["cloud"]["unpriced_discovered_pricing"] = pricing;

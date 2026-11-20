@@ -27,6 +27,11 @@ pub struct NetSandbox {
     gh_source: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
     /// How long a token read from `gh_source` stays in use; `None` = for the whole process.
     gh_ttl: Option<std::time::Duration>,
+    /// Every credential the owner's GitHub CLI holds (all accounts and hosts), found lazily
+    /// once for output redaction on host-rights paths. Unlike `gh_token` this does not depend
+    /// on the bash network: a token file is readable with the network off too.
+    host_secrets: Arc<std::sync::OnceLock<Vec<String>>>,
+    host_source: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
 }
 
 /// The token in use, when it was read, and every token this process has used: a replaced
@@ -57,29 +62,71 @@ fn redact(bytes: &[u8], tokens: &[String]) -> Vec<u8> {
     out
 }
 
-/// A streaming redactor: holds back at most `token.len() - 1` bytes (a suffix that could be the
-/// start of the token) between chunks; [`StreamRedactor::finish`] flushes them at EOF.
-#[derive(Default)]
+/// A streaming redactor: always holds back the last `longest_token - 1` bytes between chunks,
+/// whatever they are; [`StreamRedactor::finish`] flushes them at EOF. The hold-back is
+/// content-independent on purpose (see [`StreamRedactor::push`]). The token set can be
+/// refreshed while chunks arrive (a source may hand out a new token mid-command), and a token
+/// that was replaced stays in the set: earlier output or files may still hold it.
 struct StreamRedactor {
+    tokens: Vec<Vec<u8>>,
     pending: Vec<u8>,
 }
 
 impl StreamRedactor {
-    /// Feed a chunk; returns the bytes now safe to show.
-    fn push(&mut self, chunk: &[u8], tokens: &[String]) -> Vec<u8> {
-        self.pending.extend_from_slice(chunk);
-        let mut out = Vec::new();
-        let mut i = 0;
-        let buf = &self.pending;
-        while i < buf.len() {
-            let rest = &buf[i..];
-            if tokens
+    fn new(token: &str) -> Self {
+        Self::many(&[token])
+    }
+
+    /// Several secrets at once; the longest is tried first at every position.
+    fn many<S: AsRef<str>>(tokens: &[S]) -> Self {
+        let mut sr = StreamRedactor {
+            tokens: Vec::new(),
+            pending: Vec::new(),
+        };
+        sr.refresh(tokens);
+        sr
+    }
+
+    /// Take the token set as it is now. The set only grows (a replaced token stays), so the
+    /// hold-back only widens and the bytes already emitted stay decided on full data.
+    fn refresh<S: AsRef<str>>(&mut self, tokens: &[S]) {
+        let same = self.tokens.len() == tokens.len()
+            && tokens
                 .iter()
-                .any(|t| t.len() > rest.len() && t.as_bytes().starts_with(rest))
-            {
-                break; // a longer token may complete in the next chunk
-            }
-            if let Some(t) = tokens.iter().find(|t| rest.starts_with(t.as_bytes())) {
+                .all(|t| self.tokens.iter().any(|x| x == t.as_ref().as_bytes()));
+        if same {
+            return;
+        }
+        self.tokens = tokens
+            .iter()
+            .map(|t| t.as_ref().as_bytes().to_vec())
+            .filter(|t| !t.is_empty())
+            .collect();
+        self.tokens.sort_by_key(|t| std::cmp::Reverse(t.len()));
+    }
+
+    /// Feed a chunk; returns the bytes now safe to show.
+    ///
+    /// The hold-back does not depend on the content. Holding back only a tail that *is* a prefix
+    /// of a secret would be a prefix oracle: with no OS sandbox and `--offline`, a command can
+    /// print a guess and sleep, and a job reading the live stream before EOF learns from the byte
+    /// count whether the guess is a true prefix of the secret. Here the number of bytes shown
+    /// after `n` bytes arrived depends only on `n`.
+    fn push(&mut self, chunk: &[u8]) -> Vec<u8> {
+        self.pending.extend_from_slice(chunk);
+        let longest = self.tokens.iter().map(|t| t.len()).max().unwrap_or(0);
+        let hold = longest.saturating_sub(1);
+        let Some(emit) = self.pending.len().checked_sub(hold).filter(|e| *e > 0) else {
+            return Vec::new();
+        };
+        // Any secret that starts before `emit` ends inside `pending` (start + len <=
+        // emit - 1 + hold + 1 = pending.len()), so every position decided here is decided on
+        // full data.
+        let buf = &self.pending;
+        let mut out = Vec::with_capacity(emit);
+        let mut i = 0;
+        while i < emit {
+            if let Some(t) = self.tokens.iter().find(|t| buf[i..].starts_with(t)) {
                 out.extend_from_slice(REDACTED.as_bytes());
                 i += t.len();
             } else {
@@ -91,9 +138,20 @@ impl StreamRedactor {
         out
     }
 
-    /// EOF: check held bytes against any tokens registered since the last chunk.
-    fn finish(&mut self, tokens: &[String]) -> Vec<u8> {
-        redact(&std::mem::take(&mut self.pending), tokens)
+    /// EOF: the held-back tail is shorter than the longest token, so it cannot hold that one, but
+    /// it can hold a shorter token whole. Mask every token in it, longest first as in
+    /// [`StreamRedactor::many`], and flush.
+    fn finish(&mut self) -> Vec<u8> {
+        let mut out = std::mem::take(&mut self.pending);
+        for t in &self.tokens {
+            if !t.is_empty() && out.windows(t.len()).any(|window| window == *t) {
+                out = redact(
+                    &out,
+                    std::slice::from_ref(&String::from_utf8_lossy(t).into_owned()),
+                );
+            }
+        }
+        out
     }
 }
 
@@ -106,7 +164,22 @@ impl NetSandbox {
             gh_token: Arc::new(std::sync::Mutex::new(TokenState::default())),
             gh_source: None,
             gh_ttl: None,
+            host_secrets: Arc::new(std::sync::OnceLock::new()),
+            host_source: None,
         }
+    }
+
+    /// The credentials to scrub from the output of commands that run with the user's own
+    /// rights (no OS sandbox), whatever the bash network setting: `source` runs lazily, once,
+    /// at the first such command, and returns every GitHub CLI token on the machine (all
+    /// accounts, all hosts), so `gh auth token --user other` or a read of the token file is
+    /// scrubbed too.
+    pub fn with_host_secrets_lazy(
+        mut self,
+        source: impl Fn() -> Vec<String> + Send + Sync + 'static,
+    ) -> NetSandbox {
+        self.host_source = Some(Arc::new(source));
+        self
     }
 
     /// #52: the GitHub token (from `gh auth token`, read outside the sandbox) to pass to
@@ -247,20 +320,27 @@ impl NetSandbox {
         if s.net && !consulted {
             self.token();
         }
-        if self.gh_source.is_none() && self.redaction_tokens().is_empty() {
-            return run(&s, live);
+        let first = self.redaction_tokens();
+        if first.is_empty() {
+            let mut r = run(&s, live);
+            if s.net {
+                self.note_rejected(&r.output);
+            }
+            return r;
         }
         // The source registers a refreshed token before returning it for
         // injection. Commands already running must check that same history.
-        let mut sr = StreamRedactor::default();
+        let mut sr = StreamRedactor::many(&first);
         let mut r = run(&s, &mut |b: &[u8]| {
-            let o = sr.push(b, &self.redaction_tokens());
+            sr.refresh(&self.redaction_tokens());
+            let o = sr.push(b);
             if !o.is_empty() {
                 live(&o);
             }
         });
         let tokens = self.redaction_tokens();
-        let tail = sr.finish(&tokens);
+        sr.refresh(&tokens);
+        let tail = sr.finish();
         if !tail.is_empty() {
             live(&tail);
         }
@@ -268,6 +348,54 @@ impl NetSandbox {
             self.note_rejected(&r.output);
         }
         r.output = redact(&r.output, &tokens);
+        r
+    }
+
+    /// The secrets to scrub on a host-rights path: the session token (when the network is on)
+    /// and every GitHub CLI credential, found once. Never empty-handed for a missing `gh`.
+    fn host_redaction_secrets(&self) -> Vec<String> {
+        let mut all: Vec<String> = self.token().into_iter().collect();
+        let found = self.host_secrets.get_or_init(|| match &self.host_source {
+            Some(source) => source(),
+            None => Vec::new(),
+        });
+        for t in found {
+            let t = t.trim();
+            if !t.is_empty() && !all.iter().any(|x| x == t) {
+                all.push(t.to_string());
+            }
+        }
+        all
+    }
+
+    /// [`redacted_run`](Self::redacted_run) for commands that run with the user's rights:
+    /// scrubs every GitHub credential, whether or not the command has the network (a file-backed
+    /// token reads the same with the network off). The environment stays cleared; nothing is
+    /// injected.
+    pub(crate) fn redact_host_output(
+        &self,
+        live: &mut dyn FnMut(&[u8]),
+        run: impl FnOnce(&mut dyn FnMut(&[u8])) -> ExecResult,
+    ) -> ExecResult {
+        let secrets = self.host_redaction_secrets();
+        if secrets.is_empty() {
+            return run(live);
+        }
+        let refs: Vec<&str> = secrets.iter().map(String::as_str).collect();
+        let mut sr = StreamRedactor::many(&refs);
+        let mut r = run(&mut |b: &[u8]| {
+            let o = sr.push(b);
+            if !o.is_empty() {
+                live(&o);
+            }
+        });
+        let tail = sr.finish();
+        if !tail.is_empty() {
+            live(&tail);
+        }
+        for t in &secrets {
+            r.output = redact(&r.output, std::slice::from_ref(t));
+        }
         r
     }
 
@@ -298,6 +426,8 @@ impl Sandbox for NetSandbox {
             gh_token: self.gh_token.clone(),
             gh_source: self.gh_source.clone(),
             gh_ttl: self.gh_ttl,
+            host_secrets: self.host_secrets.clone(),
+            host_source: self.host_source.clone(),
         }))
     }
     fn check(&self) -> Result<(), OxaError> {
@@ -514,6 +644,32 @@ mod tests {
         }
     }
 
+    /// Host-rights output is scrubbed of every GitHub credential with the network off too: a
+    /// file-backed token reads the same offline, and another account's token is a secret too.
+    #[test]
+    fn host_output_redacts_every_account_with_the_network_off() {
+        let inner: Arc<dyn Sandbox> = Arc::new(Echo(Mutex::new(vec![])));
+        let n = NetSandbox::new(inner, false, true)
+            .with_host_secrets_lazy(|| vec!["SYNTH_ACCOUNT_A".into(), "SYNTH_ACCOUNT_B".into()]);
+        let mut live = Vec::new();
+        let r = n.redact_host_output(&mut |b| live.extend_from_slice(b), |live| {
+            live(b"a=SYNTH_ACCOUNT_A b=SYNTH_ACC");
+            live(b"OUNT_B end");
+            ExecResult {
+                output: b"a=SYNTH_ACCOUNT_A b=SYNTH_ACCOUNT_B end".to_vec(),
+                exit: Some(0),
+                timed_out: false,
+                unsandboxed: false,
+            }
+        });
+        let live = String::from_utf8(live).unwrap();
+        assert_eq!(live, "a=[redacted] b=[redacted] end");
+        assert_eq!(
+            String::from_utf8(r.output).unwrap(),
+            "a=[redacted] b=[redacted] end"
+        );
+    }
+
     /// Streaming like a background job: records env, emits the token in the live stream only.
     struct Stream(Mutex<Vec<Vec<(String, String)>>>, usize);
     impl Sandbox for Stream {
@@ -537,6 +693,65 @@ mod tests {
                 timed_out: false,
                 unsandboxed: false,
             }
+        }
+    }
+
+    /// Codex security review on #1563 (follow-up #1808): the live output must not be a prefix
+    /// oracle. Two streams of the same length that differ only in whether they share a prefix
+    /// with the token show exactly the same number of bytes after every chunk, so a job reading
+    /// the stream before EOF learns nothing, and a token split across chunks is still masked.
+    #[test]
+    fn stream_hold_back_is_independent_of_token_prefixes() {
+        const T: &str = "SYNTH_BG_TOKEN_9";
+        fn per_push(chunks: &[&str]) -> (Vec<usize>, String) {
+            let mut sr = StreamRedactor::new(T);
+            let mut lens = Vec::new();
+            let mut all = Vec::new();
+            for c in chunks {
+                let o = sr.push(c.as_bytes());
+                lens.push(o.len());
+                all.extend_from_slice(&o);
+            }
+            let tail = sr.finish();
+            lens.push(tail.len());
+            all.extend_from_slice(&tail);
+            (lens, String::from_utf8(all).unwrap())
+        }
+        let probes: &[(&[&str], &[&str])] = &[
+            // A true prefix vs a wrong guess of the same length, then the job "sleeps".
+            (&["x ", "SYNTH_BG"], &["x ", "QYNTH_BG"]),
+            (&["SYNTH_BG_TOKEN_"], &["QYNTH_BG_TOKEN_"]),
+            (&["S"], &["Q"]),
+            (
+                &["abc", "SYNTH", "_BG_T", "OKEN_", "X done"],
+                &["abc", "SYNTZ", "_BG_T", "OKEN_", "X done"],
+            ),
+            (
+                &["0123456789abcdefSYNTH_BG_TOKEN_"],
+                &["0123456789abcdefQQQQQQQQQQQQQQQ"],
+            ),
+        ];
+        for (a, b) in probes {
+            let (la, oa) = per_push(a);
+            let (lb, ob) = per_push(b);
+            assert_eq!(
+                la, lb,
+                "shown bytes per chunk depend on the token: {a:?} vs {b:?}"
+            );
+            assert!(!oa.contains(T) && !ob.contains(T));
+            assert_eq!(oa.len(), a.concat().len(), "no full token, nothing replaced");
+        }
+        // Past the hold-back a full token is masked wherever the chunks split it, and several
+        // secrets share one content-independent hold-back sized by the longest.
+        let full = "pre SYNTH_BG_TOKEN_9 mid SYNTH_BG_TOKEN_9 post";
+        for at in 0..=full.len() {
+            let (head, tail) = full.split_at(at);
+            let mut sr = StreamRedactor::many(&[T, "SHORT_SECRET"]);
+            let mut shown = sr.push(head.as_bytes());
+            shown.extend_from_slice(&sr.push(tail.as_bytes()));
+            shown.extend_from_slice(&sr.finish());
+            let shown = String::from_utf8(shown).unwrap();
+            assert_eq!(shown, "pre [redacted] mid [redacted] post", "split at {at}");
         }
     }
 
@@ -832,11 +1047,13 @@ mod tests {
     }
 
     #[test]
-    fn stream_waits_for_a_longer_token_that_shares_a_prefix() {
-        let tokens = vec!["synthetic-long".into(), "synthetic".into()];
-        let mut redactor = StreamRedactor::default();
-        assert!(redactor.push(b"synthetic", &tokens).is_empty());
-        assert_eq!(redactor.push(b"-long", &tokens), REDACTED.as_bytes());
-        assert!(redactor.finish(&tokens).is_empty());
+    fn a_longer_token_that_shares_a_prefix_is_still_masked() {
+        // Longest first at every position: the chunk split inside `synthetic-long` is masked
+        // whole, never as the shorter `synthetic` plus a visible tail.
+        let tokens = vec!["synthetic-long".to_string(), "synthetic".to_string()];
+        let mut redactor = StreamRedactor::many(&tokens);
+        assert!(redactor.push(b"synthetic").is_empty());
+        assert_eq!(redactor.push(b"-long"), REDACTED.as_bytes());
+        assert!(redactor.finish().is_empty());
     }
 }

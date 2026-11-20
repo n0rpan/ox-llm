@@ -532,6 +532,25 @@ impl Settings {
         set_nested(&mut root, key, value);
         self.persist(&path, root, project)
     }
+    /// Change one key of the USER file with its current on-disk value: under the file's write
+    /// lock, `change` receives the value the file holds right now (not this instance's possibly
+    /// stale copy) and returns the value to store, so two concurrent updates merge instead of
+    /// one replacing the other's work. An error from `change` writes nothing.
+    pub fn update_user(
+        &mut self,
+        dirs: &Dirs,
+        key: &str,
+        change: impl FnOnce(Option<&Value>) -> Result<Value, OxaError>,
+    ) -> Result<(), OxaError> {
+        check_key_shape(key)?;
+        let path = dirs.settings_file();
+        let _lock = lock_for_write(&path)?;
+        let mut root = read_object_for_write(&path)?;
+        let current = lookup_in(&root, key).cloned();
+        let value = change(current.as_ref())?;
+        set_nested(&mut root, key, value);
+        self.persist(&path, root, false)
+    }
     /// Remove `key` from the user file (`project = false`) or the project file, pruning parent
     /// objects it leaves empty; every other key stays as it is. Nothing is written when the
     /// file does not hold the key. A symbolic link at the settings path is refused, not followed.
@@ -654,6 +673,15 @@ fn lookup<'a>(layer: &'a Value, key: &str) -> Option<&'a Value> {
     Some(cur)
 }
 
+fn lookup_in<'a>(root: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
+    let mut parts = key.split('.');
+    let mut cur = root.get(parts.next()?)?;
+    for part in parts {
+        cur = cur.as_object()?.get(part)?;
+    }
+    Some(cur)
+}
+
 /// Remove `key` (dotted) from `root`, pruning the parent objects it leaves empty. False when the
 /// key is absent, in which case nothing changed.
 fn remove_nested(root: &mut Map<String, Value>, key: &str) -> bool {
@@ -682,6 +710,27 @@ fn remove_path(obj: &mut Map<String, Value>, parts: &[&str]) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_reader_rejects_symbolic_links() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!("oxa-settings-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("workspace.json");
+        let link = dir.join("settings.json");
+        std::fs::write(&target, r#"{"done":["echo injected"]}"#).unwrap();
+        symlink(&target, &link).unwrap();
+
+        let mut diagnostics = Vec::new();
+        assert_eq!(read_layer(&link, &mut diagnostics), Value::Null);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("symbolic link"));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn empty_reply_retries_are_user_only() {
@@ -902,6 +951,14 @@ fn fail_safe_user_layer() -> Value {
 /// is a diagnostic and an empty object.
 fn read_layer(path: &Path, diagnostics: &mut Vec<Diagnostic>) -> Value {
     let source = path.display().to_string();
+    // Approval records the project settings path itself. Following a link here would let a
+    // writable target change without changing the approved link, including during live reload.
+    // Refuse links at the read boundary so startup, reload and the small inspection helpers all
+    // share the same rule.
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        diagnostics.push(warn(&source, "settings file must not be a symbolic link"));
+        return Value::Null;
+    }
     match std::fs::read_to_string(path) {
         Ok(text) => match serde_json::from_str::<Value>(&text) {
             Ok(v @ Value::Object(_)) => v,

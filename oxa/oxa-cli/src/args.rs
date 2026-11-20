@@ -56,6 +56,8 @@ pub enum Subcommand {
     Pkg(String, Vec<String>),
     /// `oxa config ..`.
     Config(Vec<String>),
+    /// `oxa local add <model.gguf> ..`: the words after `local`.
+    Local(Vec<String>),
     /// O-152: `oxa identity [--refresh] [--offline]`.
     Identity(Vec<String>),
     /// O-152: `oxa report-issue draft|submit ..`.
@@ -78,7 +80,8 @@ pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -
     use oxa_interactive::command_registry::CommandId;
     // Admission belongs exclusively to the oxe binary.
     // Declared in the registry for discovery, help and surfaces, but parsed and handled by the
-    // legacy path below; the registry route must not take them over.
+    // legacy path below; the registry route must not take them over. #1512 S5: `send` keeps its
+    // legacy parser (follow-ups and approval answers).
     !matches!(
         id,
         CommandId::Admission
@@ -86,10 +89,14 @@ pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -
             | CommandId::Status
             | CommandId::WorkStatus
             | CommandId::WorkBoard
+            | CommandId::Send
+            | CommandId::SendApprovals
             | CommandId::Memory
             | CommandId::MemoryList
             | CommandId::MemoryShow
             | CommandId::MemoryRm
+            | CommandId::Local
+            | CommandId::LocalAdd
     )
 }
 
@@ -234,6 +241,8 @@ pub struct Args {
     pub version: bool,
     /// The hard offline switch (see the help text).
     pub offline: bool,
+    /// #1512 S3: the OS sandbox (bwrap) for this attended run, as `oxa.sandbox.interactive`.
+    pub sandbox: bool,
     /// Explicitly expose only these native local aliases for the current owner session.
     #[cfg(feature = "share")]
     pub share_models: Vec<String>,
@@ -291,7 +300,16 @@ const COMMANDS: &[(&str, &str)] = &[
         "oxa send <session-id> <text|->",
         "Queue a session follow-up; use - to read the text from stdin",
     ),
+    (
+        "oxa send <session-id> --approve <request-id> once|session|always|deny",
+        "Answer a dangerous-command approval request of an unattended run",
+    ),
+    ("oxa send --approvals", "List the approval requests that wait for an answer"),
     ("oxa config [-l]", "Print every setting with its value and source"),
+    (
+        "oxa local add <model.gguf> [--ctx N] [--enable] [-- <launch args>]",
+        "Wire a local GGUF into the native local engine settings from the engine's admission report",
+    ),
     (
         "oxa mcp <command>",
         "Manage MCP servers: add, remove, list, login, logout",
@@ -495,6 +513,10 @@ const OPTIONS: &[(&str, &str)] = &[
         "Hard offline switch: non-local connections refused, bash has no network, web_search off",
     ),
     (
+        "--sandbox",
+        "Run bash in the OS sandbox (bwrap) for this interactive run; hooks are always sandboxed; default: no OS sandbox, dangerous commands ask",
+    ),
+    (
         "--                ",
         "End option parsing; treat the remaining arguments as messages and files",
     ),
@@ -541,6 +563,7 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         #[cfg(not(feature = "share"))]
         "share" => return Err(usage("this build does not include sharing")),
         "config" => Subcommand::Config(rest.to_vec()),
+        "local" => Subcommand::Local(rest.to_vec()),
         "identity" => Subcommand::Identity(rest.to_vec()),
         "report-issue" => Subcommand::ReportIssue(rest.to_vec()),
         "wipe" => Subcommand::Wipe(rest.to_vec()),
@@ -981,6 +1004,10 @@ fn parse_flag(
         "--offline" => {
             no_value(inline, flag)?;
             a.offline = true;
+        }
+        "--sandbox" => {
+            no_value(inline, flag)?;
+            a.sandbox = true;
         }
         "--yolo" => {
             no_value(inline, flag)?;

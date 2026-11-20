@@ -146,66 +146,42 @@ impl Client {
             .as_array()
             .ok_or(Error::Protocol)?
             .iter()
-            .map(|model| {
-                let pricing = &model["pricing"];
-                // Prices are decimal strings in this API, never binary floats.
-                let rate = |value: &serde_json::Value| match value {
-                    serde_json::Value::Null => Ok(None),
-                    serde_json::Value::String(text) => parse_price(text),
-                    _ => Err(Error::Protocol.into()),
-                };
-                let parameters = match &model["supported_parameters"] {
-                    serde_json::Value::Null => &[][..],
-                    serde_json::Value::Array(parameters) => parameters.as_slice(),
-                    _ => return Err(Error::Protocol.into()),
-                };
-                if parameters.iter().any(|parameter| !parameter.is_string()) {
-                    return Err(Error::Protocol.into());
-                }
-                Ok(Model {
-                    id: model["id"]
-                        .as_str()
-                        .filter(|id| !id.is_empty())
-                        .ok_or(Error::Protocol)?
-                        .into(),
-                    context_length: model["context_length"].as_u64().ok_or(Error::Protocol)?,
-                    max_completion_tokens: match &model["top_provider"]["max_completion_tokens"] {
-                        serde_json::Value::Null => None,
-                        value => Some(value.as_u64().ok_or(Error::Protocol)?),
-                    },
-                    prompt_price_per_token: rate(&pricing["prompt"])?,
-                    completion_price_per_token: rate(&pricing["completion"])?,
-                    cache_read_price_per_token: rate(&pricing["input_cache_read"])?,
-                    cache_write_price_per_token: rate(&pricing["input_cache_write"])?,
-                    tools: parameters
-                        .iter()
-                        .any(|parameter| parameter.as_str() == Some("tools")),
-                })
-            })
+            .map(parse_model)
             .collect()
     }
 
+    /// The public catalog: no key, no account, nothing about the caller is sent. A row that does
+    /// not parse is skipped, so one odd entry never discards the rest of the metadata.
+    pub async fn public_models(&self) -> Result<Vec<Model>, Failure> {
+        let response = tokio::time::timeout(self.timeout, self.get_inner("models", None))
+            .await
+            .map_err(|_| Error::Transport)??;
+        Ok(response["data"]
+            .as_array()
+            .ok_or(Error::Protocol)?
+            .iter()
+            .filter_map(|model| parse_model(model).ok())
+            .collect())
+    }
+
     async fn get(&self, path: &str, key: &Key) -> Result<serde_json::Value, Failure> {
-        tokio::time::timeout(self.timeout, self.get_inner(path, key))
+        tokio::time::timeout(self.timeout, self.get_inner(path, Some(key)))
             .await
             .map_err(|_| Error::Transport)?
     }
 
-    async fn get_inner(&self, path: &str, key: &Key) -> Result<serde_json::Value, Failure> {
+    async fn get_inner(&self, path: &str, key: Option<&Key>) -> Result<serde_json::Value, Failure> {
         use reqwest::header::{HeaderValue, ACCEPT, AUTHORIZATION};
         const MAX_BODY: usize = 8 * 1024 * 1024;
         let endpoint = self.base.join(path).map_err(|_| Error::Endpoint)?;
-        let mut bearer =
-            HeaderValue::from_str(&format!("Bearer {}", key.expose())).map_err(|_| Error::Setup)?;
-        bearer.set_sensitive(true);
-        let mut response = self
-            .http
-            .get(endpoint)
-            .header(AUTHORIZATION, bearer)
-            .header(ACCEPT, "application/json")
-            .send()
-            .await
-            .map_err(|_| Error::Transport)?;
+        let mut request = self.http.get(endpoint).header(ACCEPT, "application/json");
+        if let Some(key) = key {
+            let mut bearer =
+                HeaderValue::from_str(&format!("Bearer {}", key.expose())).map_err(|_| Error::Setup)?;
+            bearer.set_sensitive(true);
+            request = request.header(AUTHORIZATION, bearer);
+        }
+        let mut response = request.send().await.map_err(|_| Error::Transport)?;
         let status = response.status().as_u16();
         let mut body = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(|_| Error::Transport)? {
@@ -217,14 +193,53 @@ impl Client {
         if status != 200 {
             return Err(Failure {
                 error: Error::Http(status),
-                refusal: Some(classify_refusal(status, &body, key)),
+                refusal: key.map(|key| classify_refusal(status, &body, key)),
             });
         }
         let mut value = serde_json::from_slice(&body).map_err(|_| Error::Protocol)?;
         // Even successful provider replies must not echo a credential in Debug.
-        crate::redaction::value(&mut value, key);
+        if let Some(key) = key {
+            crate::redaction::value(&mut value, key);
+        }
         Ok(value)
     }
+}
+
+fn parse_model(model: &serde_json::Value) -> Result<Model, Failure> {
+    let pricing = &model["pricing"];
+    // Prices are decimal strings in this API, never binary floats.
+    let rate = |value: &serde_json::Value| match value {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(text) => parse_price(text),
+        _ => Err(Error::Protocol.into()),
+    };
+    let parameters = match &model["supported_parameters"] {
+        serde_json::Value::Null => &[][..],
+        serde_json::Value::Array(parameters) => parameters.as_slice(),
+        _ => return Err(Error::Protocol.into()),
+    };
+    if parameters.iter().any(|parameter| !parameter.is_string()) {
+        return Err(Error::Protocol.into());
+    }
+    Ok(Model {
+        id: model["id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or(Error::Protocol)?
+            .into(),
+        context_length: model["context_length"].as_u64().ok_or(Error::Protocol)?,
+        max_completion_tokens: match &model["top_provider"]["max_completion_tokens"] {
+            serde_json::Value::Null => None,
+            value => Some(value.as_u64().ok_or(Error::Protocol)?),
+        },
+        prompt_price_per_token: rate(&pricing["prompt"])?,
+        completion_price_per_token: rate(&pricing["completion"])?,
+        cache_read_price_per_token: rate(&pricing["input_cache_read"])?,
+        cache_write_price_per_token: rate(&pricing["input_cache_write"])?,
+        tools: parameters
+            .iter()
+            .any(|parameter| parameter.as_str() == Some("tools")),
+    })
 }
 
 /// Classify one refusal without retaining its untrusted message or body. Unknown

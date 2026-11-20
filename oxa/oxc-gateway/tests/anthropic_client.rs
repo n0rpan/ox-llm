@@ -19,6 +19,7 @@ fn chat<'a>(base: &'a str, payload: &'a Value) -> Chat<'a> {
         max_output: Some(16),
         payload,
         created: 1700000000,
+        provider: None,
     }
 }
 fn payload() -> Value {

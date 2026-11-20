@@ -5,12 +5,59 @@ use oxa_fake::{parse_script, FakeOpts, FakeServer, TestEnv};
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// Per doc command: the wall-clock limit before the child is killed.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[cfg(unix)]
+#[test]
+fn quickstart_brave_key_command_secures_an_existing_file() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let env = TestEnv::new();
+    let key_path = env.agent_dir().join("brave-search.key");
+    fs::write(&key_path, "old synthetic value\n").expect("write existing key file");
+    fs::set_permissions(&key_path, fs::Permissions::from_mode(0o644))
+        .expect("set unsafe starting permissions");
+
+    let page = fs::read_to_string(repo_root().join("docs/pages/quickstart.md")).expect("read quickstart.md");
+    let command = page
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("$ ")
+                .filter(|command| command.contains("brave-search.key"))
+        })
+        .expect("Brave key setup command");
+    let mut child = Command::new("bash")
+        .args(["-c", command])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", env.home())
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("run Brave key setup command");
+    child
+        .stdin
+        .take()
+        .expect("command stdin")
+        .write_all(b"new synthetic value\n")
+        .expect("enter synthetic key");
+    assert!(child.wait().expect("wait for command").success());
+
+    assert_eq!(
+        fs::metadata(&key_path).expect("key metadata").mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        fs::read_to_string(key_path).expect("read resulting key"),
+        "new synthetic value\n"
+    );
+}
 
 // ----- helpers -------------------------------------------------------------------------------
 
@@ -318,6 +365,7 @@ fn memory_store_policy_is_documented_everywhere() {
         }
     }
 }
+
 /// The user guide must match the owner sandbox policy: watched CLI sessions rely on approvals and
 /// in-process guards, while unattended non-yolo runs retain Bubblewrap.
 #[test]

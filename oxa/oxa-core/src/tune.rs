@@ -75,10 +75,22 @@ fn cap_set(settings: &Settings) -> bool {
 
 /// The per-epoch tool tuning for a context of `n_ctx` tokens (0 = unknown) and the budget soft
 /// point `soft` ([`budget_soft`], 0 = unknown).
+#[cfg(test)]
 pub(crate) fn tune_for(settings: &Settings, n_ctx: u32, soft: u32, images: bool) -> ToolTune {
+    tune_for_model(settings, n_ctx, soft, images, false)
+}
+
+/// [`tune_for`] for a cloud (`cloud_model`) or local model: a cloud window scales the output cap.
+pub(crate) fn tune_for_model(
+    settings: &Settings,
+    n_ctx: u32,
+    soft: u32,
+    images: bool,
+    cloud_model: bool,
+) -> ToolTune {
     // L4: the first page of `read` is cut at most at 8 KiB within the output cap; `grep`,
     // `find`, `ls` and the other reads at the output cap itself.
-    let cap = u32::try_from(output_cap_for(settings, n_ctx, soft)).unwrap_or(u32::MAX);
+    let cap = u32::try_from(output_cap_for_model(settings, n_ctx, soft, cloud_model)).unwrap_or(u32::MAX);
     let (read_page_lines, read_page_bytes) = if is_small(n_ctx) {
         (SMALL_PAGE_LINES, PAGE_BYTES.min(cap))
     } else {
@@ -102,19 +114,31 @@ pub(crate) fn tune_for(settings: &Settings, n_ctx: u32, soft: u32, images: bool)
 /// Recompute `st.tune` from the current settings and the engine's context window. Call it
 /// wherever one of those changes without a new epoch (see the module doc).
 pub(crate) fn refresh(st: &mut SessionState) {
-    st.tune = tune_for(
+    st.tune = tune_for_model(
         &st.settings,
         st.info.n_ctx,
         budget_soft(st),
         st.info.images == Some(true),
+        st.info.caps.remote,
     );
 }
 
 /// R5 and L4: the output cap for `n_ctx` tokens and the budget soft point `soft`. It is the
 /// setting, reduced to the small-context cap (R5) and, unless the user set
 /// `oxa.toolOutputCap`, to the budget of the working size ([`budget_cap`]).
+#[cfg(test)]
 pub(crate) fn output_cap_for(settings: &Settings, n_ctx: u32, soft: u32) -> usize {
-    let mut cap = settings.tool_output_cap();
+    output_cap_for_model(settings, n_ctx, soft, false)
+}
+
+/// [`output_cap_for`] on a cloud (`cloud_model`) or local model. On a cloud window the unset
+/// default scales with the window ([`Settings::cloud_caps`]); an owner value wins and a local
+/// model keeps the 16 KiB default.
+pub(crate) fn output_cap_for_model(settings: &Settings, n_ctx: u32, soft: u32, cloud_model: bool) -> usize {
+    let mut cap = settings
+        .cloud_caps(cloud_model, n_ctx)
+        .tool_output
+        .unwrap_or_else(|| settings.tool_output_cap());
     if let Some(small) = small_output_cap(n_ctx) {
         cap = cap.min(small as usize);
     }
@@ -128,7 +152,7 @@ pub(crate) fn output_cap_for(settings: &Settings, n_ctx: u32, soft: u32) -> usiz
 
 /// [`output_cap_for`] for the session's context and budget soft point.
 pub(crate) fn output_cap(st: &SessionState) -> usize {
-    output_cap_for(&st.settings, st.info.n_ctx, budget_soft(st))
+    output_cap_for_model(&st.settings, st.info.n_ctx, budget_soft(st), st.info.caps.remote)
 }
 
 /// R5: the kept tail in tokens. On a small context it keeps [`SMALL_KEEP_TOKENS`] unless the
@@ -149,6 +173,21 @@ mod tests {
 
     fn none() -> Settings {
         Settings::from_values(json!({}), json!({}))
+    }
+
+    #[test]
+    fn a_cloud_window_raises_the_default_cap_and_the_owner_value_wins() {
+        let s = none();
+        assert_eq!(output_cap_for_model(&s, 200_000, 0, true), 37_500);
+        assert_eq!(
+            output_cap_for_model(&s, 200_000, 0, false),
+            16_384,
+            "local unchanged"
+        );
+        let owner = Settings::from_values(json!({"oxa": {"toolOutputCap": 30000}}), json!({}));
+        assert_eq!(output_cap_for_model(&owner, 200_000, 0, true), 30_000);
+        let tight = Settings::from_values(json!({"oxa": {"toolOutputCap": 4000}}), json!({}));
+        assert_eq!(output_cap_for_model(&tight, 200_000, 0, true), 4_000);
     }
 
     #[test]

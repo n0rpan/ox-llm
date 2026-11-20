@@ -23,7 +23,7 @@ Every tool call has an access class: `Read`, `Write`, `Exec` (a command), `Net` 
 | MCP tool that its server marks read-only | allow | allow | ask |
 | MCP tool, other | deny | ask | ask |
 
-In `workspace`, bash runs without a routine permission question. Interactive sessions still ask before dangerous commands and run bash without an OS sandbox; unattended non-yolo runs use the sandbox described below. Bash has network access in `workspace` and `ask` modes by default (see [Network](#network)). An extension `exec` that asks for network is asked for in `workspace` and `ask`, and refused in `plan`.
+In `workspace`, bash runs without a routine permission question. Interactive sessions still ask before dangerous commands and run bash without an OS sandbox; unattended non-yolo runs use the sandbox described below;an interactive run can opt into it with `--sandbox` or `oxa.sandbox.interactive`. Bash has network access in `workspace` and `ask` modes by default (see [Network](#network)). An extension `exec` that asks for network is asked for in `workspace` and `ask`, and refused in `plan`.
 
 - When oxa asks, it offers "Allow once", "Allow for this session", and "Deny". A session grant covers the same path directory, command, host or tool for the rest of the run. Grants are kept in memory and never written to disk. A grant never overrides a deny.
 - Plan mode is for reading and planning. It refuses writes, the `subagent` tool, `web_search`, and every command that is not read-only.
@@ -68,7 +68,7 @@ $ alias yoxa='oxa --yolo'
 
 ## The bash sandbox
 
-On Linux, unattended non-yolo bash runs in a `bubblewrap` (`bwrap`) sandbox. Without a usable `bwrap`, the bash tool is disabled for those runs and oxa says so at start-up. Interactive CLI bash runs without an OS sandbox by design and relies on dangerous-command approval plus the in-process guards. Yolo never uses `bwrap`, including for workers, subagents, headless sessions and other unattended work it starts.
+On Linux, unattended non-yolo bash runs in a `bubblewrap` (`bwrap`) sandbox. Without a usable `bwrap`, the bash tool is disabled for those runs and oxa says so at start-up. Interactive CLI bash runs without an OS sandbox by design and relies on dangerous-command approval plus the in-process guards. Yolo never uses `bwrap`, including for workers, subagents, headless sessions and other unattended work it starts. This includes ownerless RPC and headless runs that start or resume a pursuing goal. An interactive run can opt into it with `--sandbox` or `oxa.sandbox.interactive`. Exec hooks keep their dedicated sandbox and no-network policy except under yolo. Host bash uses a cleared environment with toolchain variables and keeps GitHub output redaction. Network-disabled model bash also masks host runtime IPC.
 
 Off Linux (macOS) there is no OS sandbox. Bash and exec hooks run as `bash -c` with your full user rights, every result is flagged as unsandboxed, and oxa says so at start-up and to the model. The guards that live inside oxa stay: the file tools' denials and protected paths, credential masking, permissions and trust, and `--offline` for oxa's own provider and network calls. Bash gets the same cleared base environment as the Linux sandbox (a fixed `PATH`, `HOME`, `LANG`, `TERM`, toolchain variables), so credential variables of the oxa process are not inherited. A refused bash network cannot be enforced there: when `oxa.sandbox.net: "off"` or `--offline` asks for one, bash is disabled for that run (start-up and the model's environment note say so) instead of running a command with the network the owner turned off. With the network on, commands run as you and every result is flagged unsandboxed.
 
@@ -130,7 +130,7 @@ These paths are masked inside the sandbox, and the file tools refuse them in `st
 
 The list applies to your `$HOME` and also to the home of your account from the passwd database, so starting oxa with another `HOME` never exposes the real `~/.ssh` or the cloud keys.
 
-Exception for the GitHub CLI: in a sandbox with network access (not `--offline`), `~/.config/gh` is bound read-only so `gh` works (its host list and token file are readable there). With `--offline` there is no network and `gh` fails. A token in the system keyring is not reachable from inside the sandbox, so at start-up, when the network is on and `gh` is installed, oxa runs `gh auth token` once outside the sandbox (3 second limit; any failure is ignored). It passes the result to commands that have the network as `GH_TOKEN`, with `GH_HOST=github.com`. This happens in workspace and full modes with network only, never with `--offline` or `oxa.sandbox.net: off`. The token is not logged and is not in the session file, the transcript or the prompt. An exact copy of it in command output is replaced with `[redacted]` before the model sees it. Any command that has the network can use the token, for example to call the GitHub API, so log in with a token that has only the scopes you accept. It is handed to bwrap through a pipe, not on its command line, so other processes of your user cannot read it from the process list. Every other entry stays masked.
+Exception for the GitHub CLI: in a sandbox with network access (not `--offline`), `~/.config/gh` is bound read-only so `gh` works (its host list and token file are readable there). With `--offline` there is no network and `gh` fails. A token in the system keyring is not reachable from inside the sandbox, so at start-up, when the network is on and `gh` is installed, oxa runs `gh auth token` once outside the sandbox (3 second limit; any failure is ignored). It passes the result to commands that have the network as `GH_TOKEN`, with `GH_HOST=github.com`. This happens in workspace and full modes with network only, never with `--offline` or `oxa.sandbox.net: off`. The token is not logged and is not in the session file, the transcript or the prompt. An exact copy of it in command output is replaced with `[redacted]` before the model sees it. While a command runs, its live output always lags by one byte less than the token's length, whatever the bytes are, so a partial match is never visible in how much output has appeared. Any command that has the network can use the token, for example to call the GitHub API, so log in with a token that has only the scopes you accept. It is handed to bwrap through a pipe, not on its command line, so other processes of your user cannot read it from the process list. Every other entry stays masked.
 
 The token is read again after `oxa.github.tokenTtlSeconds` (300 when unset) and right after a command whose output shows a rejected credential (`HTTP 401`, `Bad credentials`, `Invalid username or token`), so a one-hour app token keeps working in a long session. A token from the parent environment (`GH_TOKEN`) is replaced by the one read. A token that was replaced stays redacted. `oxa.github.tokenCommand` (user settings only, an argv list that prints the token; no shell) names another source, for example a script that mints an app token; it runs outside the sandbox with your environment, so only you can set it, and a project file cannot. The runner's publish path (`oxa work --publish`) uses the same command, when set, for `gh` and `git push`; without it, publishing keeps using the stored `gh` login.
 GitHub reads without a token in the sandbox: the `wait` tool accepts the host-side read probes `pr_view`, `pr_checks`, `run_log_failed` and `issue_view`. They run `gh` outside the sandbox with your login, read only, in fixed argument vectors with a number from the call and the repository from the `origin` remote (github.com only). `gh` must be found in a trusted PATH directory. A failed-step log is cut to its last 24 KB and scrubbed of credentials before the model sees it. They refuse with `--offline` and in a runner-owned worker session. The token never enters the sandbox.
@@ -243,7 +243,20 @@ Session files are `0600`. The Brave key is never written to a session, an export
 
 ### Publishing
 
-`oxa work --publish` and lane pushes scan the commits they would push and refuse a private key, a known token format, an opaque credential assignment or quoted literal, a `Bearer` header, a URL password, lines added to a secret-store file such as `.env`, or the value of a secret-named variable or setting. An empty secret-store file and `.env.example` are checked by content, not refused by name. A credential deleted in a later commit still blocks publication: rewrite the unpublished commits. The details are in [../work.md](../work.md#what-the-publication-scan-refuses).
+`oxa work --publish` and lane pushes scan the commits they would push. The scan refuses:
+
+- private keys and known token formats;
+- opaque credential assignments and quoted literals, including names ending in `_key` or
+  `credentials`;
+- a changed JSON value whose secret key (for example, `"password":`) is on an unchanged line;
+- `Bearer` or `Basic` authorization headers and URL passwords; and
+- content added to a secret-store file such as `.env`, or the value of a secret-named variable or
+  setting.
+
+Files are judged by their content, not their name: an empty secret-store file and `.env.example`
+can be published when they contain no secret. A credential deleted in a later commit still blocks
+publication, so rewrite the unpublished commits. The detailed rules and examples are in
+[../work.md](../work.md#what-the-publication-scan-refuses).
 
 ## Checklist
 
