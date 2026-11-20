@@ -1426,11 +1426,15 @@ pub(crate) struct Peeled {
     pub(crate) start: usize,
     privileged: bool,
     /// The targets are not known (`xargs`).
-    unknown: bool,
+    pub(crate) unknown: bool,
     /// Scripts run by the wrapper (`su -c`, `flock -c`, `env -S`).
-    inline: Vec<String>,
+    pub(crate) inline: Vec<String>,
     /// The directory the wrapper runs the command in (`env -C`, `env --chdir`).
-    dir: Option<String>,
+    pub(crate) dir: Option<String>,
+    /// Every wrapper word was the exact trusted name (`env`, not `./env`). A path-qualified
+    /// spelling is an executable of the caller's choice that only shares the basename, so
+    /// callers that classify the peeled words cannot treat the result as proved.
+    pub(crate) exact: bool,
 }
 
 /// Skips assignments, reserved words and the wrappers that run another command.
@@ -1441,6 +1445,7 @@ pub(crate) fn peel(words: &[String], unknown_in: bool) -> Peeled {
         unknown: unknown_in,
         inline: Vec::new(),
         dir: None,
+        exact: true,
     };
     let mut i = 0usize;
     loop {
@@ -1450,6 +1455,7 @@ pub(crate) fn peel(words: &[String], unknown_in: bool) -> Peeled {
         if i >= words.len() {
             break;
         }
+        let at = i;
         match base_name(&words[i]) {
             // `function f { rm -rf /; }`: the name, then the body (`{` is reserved).
             "function" => i += 2,
@@ -1502,6 +1508,12 @@ pub(crate) fn peel(words: &[String], unknown_in: bool) -> Peeled {
                 None => i = skip_positional(words, i + 1, &["-w", "--timeout", "-E", "--conflict-exit-code"]),
             },
             _ => break,
+        }
+        // The word at `at` was consumed as a wrapper. A path-qualified spelling (`./command`,
+        // `/tmp/env`) is an executable of the caller's choice, not the trusted wrapper, so the
+        // peeled words are not a proved classification of what will run.
+        if words[at].contains('/') {
+            out.exact = false;
         }
     }
     out.start = i.min(words.len());

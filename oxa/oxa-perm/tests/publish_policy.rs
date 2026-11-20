@@ -338,6 +338,40 @@ fn command_launcher_classifies_the_wrapped_push() {
 }
 
 #[test]
+fn wrapper_semantics_keep_the_publish_floor() {
+    let cwd = repo("my-branch");
+    // A wrapper is peeled only when its whole semantics reach the classification: a
+    // path-qualified word is an executable of the caller's choice and not the wrapper it
+    // spells, `env -C` runs the wrapped command in another directory, `env -S`/`su -c`/
+    // `watch` carry an inline script, `xargs` appends arguments the command line does not
+    // show, and assignments inside `env` reach the wrapped command.
+    for c in [
+        "./command git push origin HEAD",
+        "/usr/bin/env git push origin HEAD",
+        "env -C vendor/other gh pr create --title t --body b",
+        "env --chdir=vendor/other git push origin HEAD",
+        "env -S 'gh pr merge 5 --squash'",
+        "env -S 'git push origin HEAD:main'",
+        "su -c 'gh pr merge 5 --squash'",
+        "watch git push origin HEAD:main",
+        "env GH_REPO=o/other gh pr create --title t --body b",
+        "env GIT_CONFIG_COUNT=1 git push origin HEAD",
+        "xargs -a refs.txt git push origin HEAD",
+        "xargs git push origin HEAD",
+    ] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{c}");
+    }
+    // Exact wrappers without extra semantics still classify the wrapped command.
+    for c in [
+        "command git push origin HEAD",
+        "env git push origin HEAD",
+        "env -i git push origin HEAD",
+    ] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Allow, "{c}");
+    }
+}
+
+#[test]
 fn argv_rewriting_wrapper_keeps_publish_floor() {
     let cwd = repo("my-branch");
     let command = "sh drop-second git ignored push origin HEAD:main";
@@ -488,4 +522,58 @@ fn gh_mutation_is_bound_to_the_recorded_repository() {
         decide(&cwd, Autonomy::Auto, "GH_REPO=o/other gh pr comment --body hi"),
         Decision::Ask
     );
+}
+
+#[test]
+fn gh_mutation_fingerprint_includes_remotes_after_risky_settings() {
+    let cwd = repo("my-branch");
+    set_config(
+        &cwd,
+        "[push]\n\tdefault = simple\n[remote \"origin\"]\n\turl = https://github.com/o/r.git\n",
+    );
+    let command = "gh pr comment --body hi";
+    assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Allow);
+
+    set_config(
+        &cwd,
+        "[push]\n\tdefault = simple\n[remote \"origin\"]\n\turl = https://github.com/o/other.git\n",
+    );
+    assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask);
+}
+
+#[test]
+fn gh_mutation_fingerprint_preserves_origin_url_order() {
+    let cwd = repo("my-branch");
+    set_config(
+        &cwd,
+        "[remote \"origin\"]\n\turl = https://github.com/o/r.git\n[push]\n\tdefault = simple\n[remote \"origin\"]\n\turl = https://github.com/o/other.git\n",
+    );
+    let command = "gh pr comment --body hi";
+    assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Allow);
+
+    set_config(
+        &cwd,
+        "[remote \"origin\"]\n\turl = https://github.com/o/other.git\n[push]\n\tdefault = simple\n[remote \"origin\"]\n\turl = https://github.com/o/r.git\n",
+    );
+    assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask);
+}
+
+#[test]
+fn gh_mutation_fails_closed_when_config_includes_another_file() {
+    for include in [
+        "[include]\n\tpath = project.inc\n",
+        "[includeIf \"gitdir:~/project/\"]\n\tpath = project.inc\n",
+    ] {
+        let cwd = repo("my-branch");
+        set_config(
+            &cwd,
+            &format!("{include}[remote \"origin\"]\n\turl = https://github.com/o/r.git\n"),
+        );
+
+        assert_eq!(
+            decide(&cwd, Autonomy::Auto, "gh pr comment --body hi"),
+            Decision::Ask,
+            "{include} must invalidate the repository fingerprint"
+        );
+    }
 }
