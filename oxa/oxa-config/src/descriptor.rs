@@ -12,6 +12,7 @@ mod display;
 mod lead;
 mod models;
 mod safety;
+pub mod sheet;
 mod tools;
 
 use std::sync::OnceLock;
