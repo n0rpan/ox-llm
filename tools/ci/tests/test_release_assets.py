@@ -76,7 +76,7 @@ class ReleaseAssets(unittest.TestCase):
         self.assertIn('tools/ci/dev_version.py', dev)
         result = subprocess.run(['python3', '-I', 'tools/ci/dev_version.py', 'abc1234'], cwd=W.parents[1],
                                 text=True, capture_output=True, check=True)
-        self.assertRegex(result.stdout.strip(), r'^v\d+\.\d+\.\d+-dev\.abc1234$')
+        self.assertRegex(result.stdout.strip(), r'^v\d+\.\d+\.\d+-dev\.\d+\+abc1234$')
 
     def test_release_environment_resolves_itself_when_sourced_by_a_workflow(self):
         with tempfile.TemporaryDirectory() as temporary:
