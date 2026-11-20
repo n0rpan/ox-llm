@@ -281,8 +281,13 @@ const SCHEMA: &[KeyDef] = &[
     // The worker runner reads this list from owner settings only.
     key("oxa.work.localChecks", Kind::StringList, "[\"cargo check\"]"),
     // K5a: the `worker` tool (never in a worker child) and the most live workers a session runs.
+    // The `oxa.workers.*` keys are user settings only: a project file cannot start processes,
+    // raise a limit or change the stop timing (`Settings::user_bool`, `user_u32`, `user_value`).
     key("oxa.workers.enabled", Kind::Bool, "true"),
     key("oxa.workers.max", Kind::Number, "4"),
+    // K5b: relaunch the unfinished, dead workers of a session when it is opened again. User
+    // settings only: a project file can neither enable nor disable it (`Settings::user_bool`).
+    key("oxa.workers.resumeOnStart", Kind::Bool, "true"),
     // K4: seconds a worker gets after SIGINT before its process group gets SIGTERM.
     key("oxa.workers.stopGraceSeconds", Kind::Number, "10"),
     key("packages", Kind::Any, "[]"),

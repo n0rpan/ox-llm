@@ -711,6 +711,27 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[cfg(unix)]
+    #[test]
+    fn settings_reader_rejects_symbolic_links() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!("oxa-settings-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("workspace.json");
+        let link = dir.join("settings.json");
+        std::fs::write(&target, r#"{"done":["echo injected"]}"#).unwrap();
+        symlink(&target, &link).unwrap();
+
+        let mut diagnostics = Vec::new();
+        assert_eq!(read_layer(&link, &mut diagnostics), Value::Null);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("symbolic link"));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn empty_reply_retries_are_user_only() {
         let user_two = Settings::from_values(
@@ -930,6 +951,14 @@ fn fail_safe_user_layer() -> Value {
 /// is a diagnostic and an empty object.
 fn read_layer(path: &Path, diagnostics: &mut Vec<Diagnostic>) -> Value {
     let source = path.display().to_string();
+    // Approval records the project settings path itself. Following a link here would let a
+    // writable target change without changing the approved link, including during live reload.
+    // Refuse links at the read boundary so startup, reload and the small inspection helpers all
+    // share the same rule.
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        diagnostics.push(warn(&source, "settings file must not be a symbolic link"));
+        return Value::Null;
+    }
     match std::fs::read_to_string(path) {
         Ok(text) => match serde_json::from_str::<Value>(&text) {
             Ok(v @ Value::Object(_)) => v,
