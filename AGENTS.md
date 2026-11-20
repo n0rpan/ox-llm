@@ -160,6 +160,9 @@ code, tests, CI and docs; the owner validates on hardware.
   the access it grants. Yolo needs no entry.
 - **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
   registry with its surfaces and help (P1 if added outside it or without an exception reason).
+- The publish text heuristic must not mistake a literal script filename in a direct shell invocation
+  for inline `git push` text. Script-file commands keep normal mode permissions; the remaining
+  publish and dangerous-command checks still apply.
 - An explicit owner CLI `--auto` or `--yolo` permits starting at home, root, or a parent of home
   with a warning. Settings and environment opt-ins retain their own rules. Interactive `--max-time`
   and `--max-tokens` stop the watched startup session at its wrap-up boundary, before later prompts.
