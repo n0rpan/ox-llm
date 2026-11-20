@@ -450,11 +450,11 @@ mod tests {
             // A real expansion stays visible; the literal credential run around it is masked.
             (
                 r#"password="opaque-example$USER" git push --force origin main"#,
-                "password=&quot;&lt;secret&gt;$USER&quot; git push",
+                "password=&lt;secret&gt;$USER&quot; git push",
             ),
             (
                 r#"password="opaque-example${USER}" git push --force origin main"#,
-                "password=&quot;&lt;secret&gt;${USER}&quot; git push",
+                "password=&lt;secret&gt;${USER}&quot; git push",
             ),
             (
                 r#"TOKEN=opaque-example$USER git push --force origin main"#,
