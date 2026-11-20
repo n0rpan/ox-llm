@@ -139,20 +139,21 @@ class WorkflowRunners(unittest.TestCase):
         for image in ('macos-13', 'macos-15-intel', 'ubuntu-latest', 'self-hosted'):
             self.assertTrue(problems('macos.yml', text.replace('macos-15', image)), image)
 
-    def test_macos_workflow_stays_out_of_merge_queue(self):
+    def test_macos_is_gated_through_checks_not_its_own_triggers(self):
         text = (WORKFLOWS / 'macos.yml').read_text()
-        self.assertNotIn('merge_group', text)
-
-    def test_macos_runs_only_on_main_dispatch_and_platform_paths(self):
-        text = (WORKFLOWS / 'macos.yml').read_text()
+        self.assertNotIn('  pull_request:', text)
+        self.assertNotIn('merge_group:', text)
         self.assertIn("branches: ['main']", text)
-        self.assertNotIn("'agent/**'", text)
         self.assertIn('workflow_dispatch:', text)
-        for path in ('oxa/oxa-session/**', 'oxa/oxa-sandbox/**', 'oxa/oxa-cli/**',
-                     'oxa/oxc-gateway/**', 'packaging/macos/**', '.github/workflows/macos*.yml',
-                     'oxa/Cargo.lock'):
-            self.assertIn(f"'{path}'", text)
-        self.assertNotIn("'oxa/**'", text)
+        self.assertIn('workflow_call:', text)
+        self.assertNotIn('non-required', text)
+        checks = (WORKFLOWS / 'checks.yml').read_text()
+        block = checks[checks.index('\n  macos:\n'):checks.index('\n  oxa-nightly-arm:')]
+        self.assertIn('uses: ./.github/workflows/macos.yml', block)
+        self.assertIn("needs.changes.outputs.oxa == 'true'", block)
+        self.assertIn("github.event_name == 'merge_group'", block)
+        self.assertIn("github.event_name == 'pull_request'", block)
+        self.assertNotIn("'push'", block)
 
     def test_lane_skips_branches_with_an_open_pr(self):
         text = (WORKFLOWS / 'lane.yml').read_text()

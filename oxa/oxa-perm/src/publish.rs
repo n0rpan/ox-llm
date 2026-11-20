@@ -3,8 +3,8 @@
 //! line that publish or mutate GitHub beyond that, and the floor prompt of `danger.rs` asks (or
 //! routes to the lead's approvals desk) for them. Yolo is unchanged: it never reaches this rule.
 //!
-//! Allowed without a question (they produce no hit): `git push [origin [HEAD|<branch>|
-//! HEAD:<branch>]]` of the session repo's current non-default branch with only `-u`/`-q`/`-v`
+//! Allowed without a question (they produce no hit): `git push origin <HEAD|branch|
+//! HEAD:branch>` of the session repo's current non-default branch with only `-u`/`-q`/`-v`
 //! flags; `gh pr create|edit|comment` with no PR argument, repo override, head override or
 //! body file; read-only `gh` (`pr view|checks|diff|status|list`, `run view|watch|list`,
 //! `issue view|list`, `repo view`, `api` GET). A line that mixes such a command with any other
@@ -238,6 +238,11 @@ fn git_globals(rest: &[String]) -> (usize, Vec<String>, bool) {
                 opaque = true;
             }
             k += 2;
+        } else if a.starts_with("--config-env=") {
+            // Unlike most `--option=value` spellings this value is not just an
+            // argument: Git reads the named variable and installs it as config.
+            opaque = true;
+            k += 1;
         } else if matches!(
             a,
             "-c" | "--config-env" | "--git-dir" | "--work-tree" | "--namespace"
@@ -313,12 +318,10 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
             s => pos.push(s),
         }
     }
-    if config_risky(&wd, &current, pos.len() < 2) || !urls_unchanged(cwd, &wd) {
+    if config_risky(&wd, &current, false) || !urls_unchanged(cwd, &wd) {
         return Kind::Unsafe;
     }
     let ok = match pos.as_slice() {
-        [] => true,
-        ["origin"] => true,
         ["origin", spec] => {
             if let Some((src, dst)) = spec.split_once(':') {
                 let src = src.strip_prefix("refs/heads/").unwrap_or(src);
@@ -458,16 +461,7 @@ fn gh_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
                     || ["--field", "--raw-field", "--input"]
                         .iter()
                         .any(|l| a.as_str() == *l || a.starts_with(&format!("{l}=")))
-            }) || api_short_method_is_mutating(rest)
-                || rest
-                    .windows(2)
-                    .any(|w| matches!(w[0].as_str(), "-X" | "--method") && !w[1].eq_ignore_ascii_case("GET"))
-                || rest.iter().any(|a| {
-                    a.strip_prefix("--method=")
-                        .is_some_and(|m| !m.eq_ignore_ascii_case("GET"))
-                        || a.strip_prefix("-X")
-                            .is_some_and(|m| !m.is_empty() && !m.eq_ignore_ascii_case("GET"))
-                });
+            }) || api_method_is_mutating(rest);
             if mutating {
                 Kind::Unsafe
             } else {
@@ -486,9 +480,16 @@ fn gh_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
     }
 }
 
-/// `gh` accepts clusters such as `-iXDELETE`; locate the method option inside a short cluster.
-fn api_short_method_is_mutating(rest: &[String]) -> bool {
+/// `gh` accepts clusters such as `-iXDELETE`; locate the method option before deciding that the
+/// request is read-only. A missing method value is unsafe too.
+fn api_method_is_mutating(rest: &[String]) -> bool {
     rest.iter().enumerate().any(|(i, arg)| {
+        if arg == "--method" {
+            return rest.get(i + 1).is_none_or(|m| !m.eq_ignore_ascii_case("GET"));
+        }
+        if let Some(method) = arg.strip_prefix("--method=") {
+            return !method.eq_ignore_ascii_case("GET");
+        }
         let Some(short) = arg.strip_prefix('-').filter(|s| !s.starts_with('-')) else {
             return false;
         };
@@ -841,5 +842,5 @@ fn is_alias(globals: &[String], name: &str, cwd: &Path, dirs: &[String]) -> bool
             return true;
         }
     }
-    names.iter().any(|n| *n == name)
+    names.contains(&name)
 }
