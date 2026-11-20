@@ -2056,3 +2056,18 @@ mod comment_packet_tests {
         assert!(thread.starts_with("--- comment by a ---\nx"));
     }
 }
+
+/// The one `OWNER/NAME` shape check for a repository named on a command line or in a
+/// call: two non-empty parts of ASCII letters, digits, `-`, `_` and `.`, neither part
+/// `.` or `..` and neither starting with `-` (so it can never read as a flag). It validates a shape only; it grants no access.
+pub fn valid_repository(repo: &str) -> bool {
+    repo.split('/').count() == 2
+        && repo.split('/').all(|part| {
+            !part.is_empty()
+                && !matches!(part, "." | "..")
+                && !part.starts_with('-')
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+        })
+}
