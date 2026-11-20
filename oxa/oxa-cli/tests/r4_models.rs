@@ -168,11 +168,11 @@ fn models_native_discovery_reads_neither_credentials_nor_ledger() {
     assert!(!env.agent_dir().join("cloud-ledger").exists());
 }
 
-/// An explicitly enabled OpenCode Go that cannot work fails the listing exactly the way it
-/// fails `--list-models`: the engine selection is shared, and the hint names the setting. The
-/// listing still reads no credential content and writes no ledger.
+/// An explicitly enabled OpenCode Go that cannot work does not block the listing: the
+/// engine selection is shared with `--list-models`, the configured models are served and
+/// the listing still reads no credential content and writes no ledger.
 #[test]
-fn models_fails_on_explicitly_broken_go_like_list_models() {
+fn models_ignores_explicitly_broken_go_like_list_models() {
     let env = TestEnv::new();
     env.write(
         "home/.oxa/agent/settings.json",
@@ -202,17 +202,9 @@ fn models_fails_on_explicitly_broken_go_like_list_models() {
         &env.work(),
         &["models", "--json"],
     );
-    assert_ne!(captured.code, 0);
-    assert!(
-        captured.err.contains("OpenCode Go: broken"),
-        "stderr: {}",
-        captured.err
-    );
-    assert!(
-        captured.err.contains("User setting: oxa.cloud.opencode.enabled"),
-        "stderr: {}",
-        captured.err
-    );
+    assert_eq!(captured.code, 0, "stderr: {}", captured.err);
+    let value: Value = serde_json::from_str(captured.out.trim()).expect("catalog JSON");
+    assert_eq!(value["models"][0]["id"], "configured-cloud");
     assert!(!env.home().join(".config/oxc/llm/cloud-secrets.json").exists());
     assert!(!env.agent_dir().join("cloud-ledger").exists());
 }
