@@ -173,6 +173,26 @@ wrote a new ask and `stuck_assigned` when assignments covered every signal,
 alongside the `stuck` object carrying the signal names, the per-PR report and
 the ask ids written this pass.
 
+The loop reads one observation per pass (the Board sample and the runner
+situation) and every rule is a derivation over it:
+
+- `overdue_queue` escalates only a PR that is still in the merge queue at the
+  alarmed head; an unobserved queue or a PR that left it gives no ask.
+- `publish_pending` counts a local acceptance as published only when the
+  publication's PR head is the accepted commit.
+- `review_held` reports each PR with unresolved review threads (queued PRs first,
+  then oldest thread first, within the report bound): exact head, thread counts,
+  oldest thread age, authors, `incomplete` when the thread page was cut off, and
+  the assignee. `queued_findings:<pr>` and the ask `lead:stuck:queued-findings:<pr>`
+  mark such a PR in the queue at its exact head; the signal ending on a later
+  pass is the recorded dequeue.
+- A stall with no report row that has an assignee and no escalation does not end
+  the pass: it still proposes the next Board action, with `stuck.signals` attached.
+
+A current (not outdated) unresolved review thread holds landing in the Reader's
+plan ahead of enqueue, retry and already-queued, and proposes a dequeue for a
+queued PR.
+
 ## Event integration after L1
 
 Consume the runner's sequenced events and bounded situation file after L1 is on

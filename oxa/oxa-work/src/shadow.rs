@@ -218,6 +218,41 @@ mod tests {
         assert!(refused);
     }
 
+    #[test]
+    fn an_oversized_sample_drops_queued_run_pages_before_the_app_quota() {
+        if crate::lock_process::in_parent() {
+            return;
+        }
+        let path = path("degrade");
+        let mut log = open_log(&path).unwrap();
+        let window = GitHubWindow {
+            limit: 5000,
+            remaining: 4000,
+            resets_at: 600,
+        };
+        let page = serde_json::json!({"workflow_runs": "x".repeat(120_000)});
+        run_with_landing(
+            &mut log,
+            true,
+            || {
+                Ok(LandingSample {
+                    runs: Some(vec![page.clone(); 9]),
+                    app_quota: Some(AppQuota {
+                        core: Some(window),
+                        graphql: None,
+                    }),
+                    ..LandingSample::default()
+                })
+            },
+            |_| {},
+        )
+        .unwrap();
+        let line: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(line.get("runs").is_none());
+        assert_eq!(line["app_quota"]["core"]["remaining"], 4000);
+    }
+
     fn snapshot_bytes() -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "schema_version": 1,
@@ -363,8 +398,25 @@ pub struct LandingDecision {
     pub queue: Option<QueueObservation>,
     #[serde(skip)]
     pub latest_reviews: landing::LatestReviews,
+    /// Review threads read in the same batch as the review comments (#1549).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads: Option<ThreadHold>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub would_notify_rejection: Option<RejectionNotice>,
+}
+
+/// The unresolved review threads of one PR, as read by the Reader. `incomplete` is
+/// reported, never treated as zero: the page was cut off or a node was malformed.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ThreadHold {
+    pub unresolved: u32,
+    /// Unresolved and not outdated: the threads that hold landing.
+    pub current: u32,
+    /// Creation time (unix seconds) of the oldest unresolved thread; 0 when unknown.
+    pub oldest_at: u64,
+    /// Distinct thread authors, at most four.
+    pub authors: Vec<String>,
+    pub incomplete: bool,
 }
 
 #[derive(Serialize)]
@@ -452,16 +504,16 @@ pub fn run_with_landing(
         let mut line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
         // The Lead sample bound is fixed: the largest optional records degrade
         // first, and a degraded record is an explicit partial observation.
-        if line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
-            sample.app_quota = None;
-            line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
-        }
-        if line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
-            sample.runs = None;
-            line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
-        }
-        if line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
-            sample.panels = None;
+        // The App quota is small and decides whether the rest may be read: it goes last.
+        for step in 0..3 {
+            if line.len() as u64 <= MAX_LEAD_SAMPLE_BYTES {
+                break;
+            }
+            match step {
+                0 => sample.runs = None,
+                1 => sample.panels = None,
+                _ => sample.app_quota = None,
+            }
             line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
         }
         if line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
