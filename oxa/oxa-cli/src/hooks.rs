@@ -194,6 +194,7 @@ fn build_worker_hooks(
                             parent_scope,
                             yolo: i.yolo.clone(),
                             resume_on_start: crate::workers::resume::enabled(i.settings),
+                            send_ack_seconds: worker_tool::send_ack_seconds(i.settings),
                             models,
                         }));
                         return Some(workers);

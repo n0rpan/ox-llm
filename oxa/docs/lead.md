@@ -193,28 +193,24 @@ A current (not outdated) unresolved review thread holds landing in the Reader's
 plan ahead of enqueue, retry and already-queued, and proposes a dequeue for a
 queued PR.
 
-## Event integration after L1
+Three more rules close the loop on what the Lead cannot see or send:
 
-Consume the runner's sequenced events and bounded situation file after L1 is on
-main. Persist the last processed cursor with the lead session; coalesce events
-arriving during a turn and reread the situation at the next safe turn boundary.
-Reconnect using the runner's supported cursor/recovery contract. Do not add a
-timer that repeatedly asks the model for status, and do not tail logs to recover
-facts. Reuse the session inbox (#651) for delivery and goal mode (#709) for an
-unattended period; neither is implemented by the lead. A missing event interface
-must remain explicitly unavailable.
+- **GitHub reserve.** The owner setting `oxa.lead.github_reserve` (user settings
+  only, unset = no gate) keeps requests back per App resource. With it,
+  `oxa work board --app-quota-shadow` reads one free `rate_limit` per sample for
+  fresh core and graphql windows, and runs only its optional reads (`lead_panels`,
+  `queued_run_pages`, `sample_test_reports`) while the window stays above the
+  reserve. The gate sits in the Reader's two transports before a request is
+  launched or charged, so required reads are never held. Each deferral is a
+  warning and a `quota_deferred` entry in the sample (`awaiting_observation` or the
+  reset time); the Lead state repeats it. Model and subscription limits are untouched.
+- **Receipts.** `oxa send` and the worker tool's `send` return a receipt id
+  (`delivered`, `not_delivered` or `queued`) because the owner removes the inbox
+  file only after accepting it. `retry` checks the same message again and
+  `withdraw` removes it, so a retry never creates a second writer. Worker `start`
+  and `stop` results carry the same `receipt <id>: ...` line.
+- **Refused review identity.** When the reviewer account answers a review request
+  with its account-not-connected refusal and posts no summary afterwards, the
+  decision is `requester_rejected`: nothing is re-sent under that identity, and the
+  Lead escalates `lead:stuck:review-identity:<pr>` (signal `review_rejected:<pr>`).
 
-## Acceptance still required
-
-Use a fake engine and temporary runner state to verify restricted tools across
-open/reopen, typed owner entries, action rejection under holds, stale decisions,
-missing/corrupt state, and multiline/overflow fact cards. Drive the real TUI in
-tmux and the print driver against the same runner fixture. After L1, verify
-event cursor recovery and coalescing without polling. Final acceptance is an
-orchestrator's shadow comparison first, then a supervised session where the
-orchestrator steers through the lead's interface. File each wrong/missing action,
-unsupported fact, ignored hold or required step-around with its stage, card and
-input state. Only a supervised session with no step-around advances to the
-owner's evening on the helper machine itself with the merge queue (no ssh
-placement or task queue required). This requires the owner's environment and
-is not established by fixture tests.

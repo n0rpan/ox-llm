@@ -303,11 +303,15 @@ fn queue_of(mut panels: Value, prs: &[(u64, String)]) -> Value {
     panels
 }
 
-/// Add the Reader's per-PR landing record to an already written sample.
-fn add_landing(path: &Path, landing: Value) {
+/// Add one Reader record (`landing`, `reviews`, ...) to an already written sample.
+fn add_field(path: &Path, key: &str, value: Value) {
     let mut sample: Value = serde_json::from_str(fs::read_to_string(path).unwrap().trim()).unwrap();
-    sample["landing"] = landing;
+    sample[key] = value;
     fs::write(path, format!("{sample}\n")).unwrap();
+}
+
+fn add_landing(path: &Path, landing: Value) {
+    add_field(path, "landing", landing);
 }
 
 fn escalated(state: &Value) -> Vec<String> {
@@ -449,6 +453,37 @@ fn a_thread_held_pr_is_reported_with_its_head_age_and_owner() {
         .find(|row| row["pr"] == json!(90))
         .unwrap();
     assert_eq!(row["incomplete"], json!(true), "an incomplete page is reported");
+}
+
+#[test]
+fn a_refused_review_identity_is_escalated_never_waited_on() {
+    // #1457: the reviewer refused the requester; the Lead says so instead of waiting.
+    let (_test, _dirs, board, _situation, _id, command) = lead_test();
+    let now = oxa_proto::time::now_ms() / 1000;
+    write_sample(
+        &board,
+        now,
+        &[(50, Action::WaitReview, true, None, None)],
+        Some(panels_record(now, 10 * 60)),
+    );
+    add_field(
+        &board,
+        "reviews",
+        json!({"50": {"decision": {"requester_rejected": {"reviewer": "codex"}}, "requests": []}}),
+    );
+    add_field(
+        &board,
+        "quota_deferred",
+        json!([{"work": "queued_run_pages", "resource": "core", "awaiting_observation": true}]),
+    );
+    let state = run_once(&command, None);
+    assert_eq!(state["state"], "stuck_escalated", "{state}");
+    assert_eq!(escalated(&state), ["lead:stuck:review-identity:50"]);
+    assert!(state["stuck"]["signals"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("review_rejected:50")));
+    assert_eq!(state["quota_deferred"][0]["work"], "queued_run_pages");
 }
 
 #[test]

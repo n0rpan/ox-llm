@@ -623,7 +623,8 @@ fn send_writes_an_inbox_message_without_contacting_the_engine() {
         let env = TestEnv::new();
         let r = go(&env, &closed_url(), &words);
         assert_eq!(r.code, 0, "{words:?}: {}", r.err);
-        assert!(r.out.is_empty());
+        let receipt: serde_json::Value = serde_json::from_str(r.out.trim()).unwrap();
+        assert_eq!(receipt["outcome"], "queued", "{words:?}: {}", r.out);
         let dirs = oxa_config::Dirs::under(env.root());
         let files: Vec<_> = std::fs::read_dir(dirs.agent_dir.join("inbox/session-638"))
             .unwrap()
@@ -639,6 +640,48 @@ fn send_writes_an_inbox_message_without_contacting_the_engine() {
             "send must not start inference"
         );
     }
+}
+
+#[test]
+fn send_wait_reports_not_delivered_with_exit_3_and_retry_publishes_nothing() {
+    let env = TestEnv::new();
+    let r = go(
+        &env,
+        &closed_url(),
+        &["send", "session-639", "hello", "--wait", "0"],
+    );
+    assert_eq!(r.code, 3, "{}", r.err);
+    let receipt: serde_json::Value = serde_json::from_str(r.out.trim()).unwrap();
+    assert_eq!(receipt["outcome"], "not_delivered");
+    let id = receipt["id"].as_str().unwrap().to_owned();
+    let dir = oxa_config::Dirs::under(env.root())
+        .agent_dir
+        .join("inbox/session-639");
+    // A retry checks the same file again and never publishes a second one.
+    let r = go(&env, &closed_url(), &["send", "session-639", "--retry", &id]);
+    assert_eq!(r.code, 3, "{}", r.err);
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    // Once the owner has taken the file the same retry is delivered.
+    std::fs::remove_file(dir.join(&id)).unwrap();
+    let r = go(&env, &closed_url(), &["send", "session-639", "--retry", &id]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(r.out.trim()).unwrap()["outcome"],
+        "delivered"
+    );
+    // An undelivered message can be withdrawn.
+    let r = go(
+        &env,
+        &closed_url(),
+        &["send", "session-639", "again", "--wait", "0"],
+    );
+    let id = serde_json::from_str::<serde_json::Value>(r.out.trim()).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let r = go(&env, &closed_url(), &["send", "session-639", "--withdraw", &id]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
 }
 
 #[test]

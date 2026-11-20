@@ -237,6 +237,21 @@ impl Stuck {
         }
     }
 
+    /// The reviewer refused the configured requester account: nothing is re-sent under
+    /// that identity, so the owner must connect an account or change the requester.
+    fn review_rejected(&mut self, rejected: &[u64], revision: u64) {
+        for number in rejected {
+            self.signals.push(format!("review_rejected:{number}"));
+            self.escalations.push(OpenGoalAsk {
+                id: format!("lead:stuck:review-identity:{number}"),
+                revision,
+                question: format!(
+                    "The reviewer refused the review requester for PR #{number}; set the review policy requester to an account connected to the reviewer."
+                ),
+            });
+        }
+    }
+
     /// PRs held by unresolved review threads, queued ones first and then the
     /// oldest thread first, within the report bound. A cut-off thread page is
     /// reported as incomplete, never as zero (#1549). A held PR that is queued
@@ -311,6 +326,7 @@ fn stuck_signals(obs: &Observation, revision: u64) -> Stuck {
             stuck.queued_runs(runs, revision);
         }
         stuck.review_held(obs, revision);
+        stuck.review_rejected(&obs.review_rejected, revision);
     }
     stuck.publish_pending(&obs.unpublished(), revision);
     stuck
@@ -496,6 +512,10 @@ pub(crate) fn run(
         if let Some(cause) = obs.cause {
             state["cause"] = cause.text().into();
             state["hint"] = cause.hint().into();
+        }
+        if !obs.quota_deferred.is_empty() {
+            // Say why a source is absent: the owner's App reserve deferred it.
+            state["quota_deferred"] = serde_json::to_value(&obs.quota_deferred).unwrap_or_default();
         }
         if obs.fresh() {
             state["board_observed_at"] = obs.board.observed_at.into();
