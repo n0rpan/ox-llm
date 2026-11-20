@@ -1,0 +1,1 @@
+- GitHub Release notes now include the pending changelog fragments from the tagged source. Each PR keeps its entry in a separate file, so concurrent changes no longer edit the same changelog section.
