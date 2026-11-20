@@ -491,6 +491,15 @@ impl Session {
         });
     }
 
+    /// Install the publication side of the owner confirm broker (call after
+    /// [`Session::enable_owner_confirm`]): the broker's publish requests are prepared, shown
+    /// and posted by `publisher`, in this process. No-op without a broker.
+    pub fn set_owner_publisher(&mut self, publisher: Arc<dyn crate::owner_confirm::Publisher>) {
+        if let Some(broker) = self.st.shared.owner_confirm() {
+            broker.set_publisher(publisher);
+        }
+    }
+
     /// Start the owner confirm broker (a per-session unix socket, dir 0700, socket 0600) and
     /// export it to tool children as `OXA_CONFIRM_SOCK`. `yolo` is the session's switch: in
     /// yolo the broker answers yes and records it; otherwise the owner's dialog answer or

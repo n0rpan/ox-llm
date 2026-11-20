@@ -267,10 +267,56 @@ fn submit_never_posts_without_an_explicit_yes() {
     }
 }
 
+/// Privacy text is not a refusal: it is replaced, and the text the owner approved is the text
+/// that is posted (#1591).
 #[test]
-fn submit_refuses_a_draft_with_unscrubbed_text() {
+fn submit_posts_privacy_text_scrubbed_and_the_approved_text_is_the_posted_text() {
     let env = TestEnv::new();
     let draft = write_draft(&env, "Bug", "Reach me at someone@example.com from /home/dave/x");
+    let mut asked = String::new();
+    let mut posted = String::new();
+    let mut out = Vec::new();
+    let code = submit(
+        &draft,
+        &repo_settings(Some("owner/ox-llm")),
+        &ctx(),
+        &mut |question: &str| {
+            asked = question.to_string();
+            Some(true)
+        },
+        &mut |_: &str, args: &[String]| {
+            let file = args
+                .iter()
+                .position(|a| a == "--body-file")
+                .map(|i| args[i + 1].clone())
+                .unwrap();
+            posted = std::fs::read_to_string(file).unwrap();
+            Some((0, "https://github.com/owner/ox-llm/issues/2\n".to_string()))
+        },
+        &mut out,
+    )
+    .unwrap();
+    assert_eq!(code, 0, "{}", String::from_utf8_lossy(&out));
+    assert!(
+        !posted.contains("someone@example.com") && !posted.contains("/home/dave"),
+        "{posted}"
+    );
+    assert!(
+        asked.contains(&posted),
+        "the approved text holds exactly the posted body"
+    );
+}
+
+/// A secret is refused in every mode: no question, no `gh`.
+#[test]
+fn submit_refuses_a_draft_with_a_secret() {
+    let env = TestEnv::new();
+    let label = "OPENSSH PRIVATE KEY";
+    let draft = write_draft(
+        &env,
+        "Bug",
+        &format!("-----BEGIN {label}-----\nsynthetic fixture\n-----END {label}-----"),
+    );
     let mut asked = false;
     let mut ran = false;
     let mut out = Vec::new();
@@ -291,7 +337,7 @@ fn submit_refuses_a_draft_with_unscrubbed_text() {
     .unwrap();
     assert_eq!(code, 1);
     assert!(!asked && !ran);
-    assert!(String::from_utf8(out).unwrap().contains("scrubber"));
+    assert!(String::from_utf8(out).unwrap().contains("never posted"));
 }
 
 #[test]
@@ -353,10 +399,8 @@ fn submit_posts_the_exact_text_after_yes() {
     );
     assert_eq!(
         confirmation,
-        format!(
-            "Post this issue publicly to owner/ox-llm?\n\nTitle: Engine stalls\n\n{body}\n\nType yes to post: "
-        ),
-        "the broker must display and record the exact publication"
+        format!("Repository: owner/ox-llm\nTitle: Engine stalls\n\n{body}\n\nType yes to post: "),
+        "the owner approves the exact rendered publication, once"
     );
     assert!(String::from_utf8(out)
         .unwrap()

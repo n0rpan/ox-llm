@@ -8,11 +8,14 @@
 //! the identity facts (version, machine, OS, models). No controller is called. Never prompts, transcripts, file contents,
 //! emails, home paths, user or host names, IP addresses or secrets.
 mod publish_tool;
+mod publisher;
 mod pushed;
 mod semantic;
 pub(crate) use pushed::PushScan;
 
+use oxa_core::owner_confirm::Publication;
 pub use publish_tool::PublishTool;
+pub(crate) use publisher::{BrokerGate, LocalGate, NoGate, PublishGate, ReportPublisher};
 
 use oxa_config::{Dirs, Env, Settings};
 use oxa_proto::{codes, OxaError};
@@ -327,13 +330,19 @@ pub(super) fn submit_with_storage(
     runner: Runner<'_>,
     out: &mut dyn Write,
 ) -> Result<i32, OxaError> {
-    Ok(
-        match submit_record(draft, storage, settings, ctx, confirm, runner, out)? {
-            Submission::Created(_) | Submission::Commented(_) => 0,
-            Submission::Local(_) => 1,
-            Submission::Disabled => 3,
-        },
-    )
+    let mut gate = LocalGate::new(ctx, confirm, "\n\nType yes to post: ");
+    Ok(submission_code(submit_record(
+        draft, storage, settings, ctx, &mut gate, runner, out,
+    )?))
+}
+
+/// The exit code of a submission: 0 posted, 1 kept locally, 3 reporting is off.
+fn submission_code(submission: Submission) -> i32 {
+    match submission {
+        Submission::Created(_) | Submission::Commented(_) => 0,
+        Submission::Local(_) => 1,
+        Submission::Disabled => 3,
+    }
 }
 
 pub(crate) enum Submission {
@@ -357,19 +366,15 @@ pub(crate) fn report_ledger(dirs: &Dirs) -> PathBuf {
 
 pub(crate) use semantic::judge as judge_report;
 
-/// The question before a dedupe comment: the exact comment and where it goes (issue and URL).
-pub(crate) fn comment_question(repo: &str, issue: u64, body: &str) -> String {
-    format!(
-        "Comment on {repo}#{issue}?\nDestination: https://github.com/{repo}/issues/{issue}\n\n{body}\n\nType yes to post: "
-    )
-}
-
+/// Post a saved draft through `gate`: one `approve` per post (a new issue, a semantic new issue
+/// or a dedupe comment), then `gate.post`. `runner` runs the semantic search and judge, and the
+/// post for an in-process gate.
 pub(crate) fn submit_record(
     draft: &Path,
     storage: &Path,
     settings: &Settings,
     ctx: &ScrubCtx,
-    confirm: Confirm<'_>,
+    gate: &mut dyn PublishGate,
     runner: Runner<'_>,
     out: &mut dyn Write,
 ) -> Result<Submission, OxaError> {
@@ -383,45 +388,51 @@ pub(crate) fn submit_record(
             "not an oxa issue draft (expected `Title: ..`, a blank line, the body)",
         )
     })?;
-    let control = |text: &str| {
-        text.chars().any(|ch| (ch.is_control() && !matches!(ch, '\n' | '\t'))
-            || matches!(ch, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
-    };
-    if scrub(&title, ctx) != title || scrub(&body, ctx) != body || control(&title) || control(&body) {
-        writeln!(
-            out,
-            "Not posted: the draft contains text the scrubber removes (an email, a home path, a name or a secret). Run `oxa report-issue draft` again."
-        )
-        .map_err(w)?;
-        return Ok(Submission::Local("draft needs scrubbing".into()));
-    }
     let Some(repo) = report_target(settings) else {
         writeln!(out, "{REPORT_DISABLED}\nDraft: {}", draft.display()).map_err(w)?;
         return Ok(Submission::Disabled);
     };
+    let publication_of = |issue: Option<u64>, title: &str, body: &str| Publication {
+        repository: repo.clone(),
+        issue,
+        title: title.to_string(),
+        body: body.to_string(),
+        note: None,
+    };
+    let declined =
+        |gate: &dyn PublishGate, out: &mut dyn Write, what: &str| -> Result<Submission, OxaError> {
+            match gate.reason() {
+                Some(reason) => writeln!(out, "Not posted: {reason}"),
+                None => writeln!(out, "Not posted ({what})."),
+            }
+            .map_err(w)?;
+            Ok(Submission::Local(
+                gate.reason().unwrap_or_else(|| format!("{what} was declined")),
+            ))
+        };
     let mut publication = if semantic_reporting(settings) {
         writeln!(out, "Repository: {repo}\nTitle: {title}\n\n{body}\n").map_err(w)?;
         let daily_limit = semantic::daily_new(settings);
-        match semantic::plan(storage, &repo, (&title, &body), ctx, daily_limit, confirm, runner) {
+        match semantic::plan(storage, &repo, (&title, &body), ctx, daily_limit, gate, runner) {
             Ok(publication) => Some(publication),
             Err(reason) => {
+                let reason = match gate.reason() {
+                    Some(more) => format!("{reason}; {more}"),
+                    None => reason.to_string(),
+                };
                 writeln!(out, "Kept locally at {} ({reason}).", draft.display()).map_err(w)?;
-                return Ok(Submission::Local(reason.into()));
+                return Ok(Submission::Local(reason));
             }
         }
     } else {
         writeln!(out, "Repository: {repo}\nTitle: {title}\n\n{body}\n").map_err(w)?;
-        // The broker displays and records this string, so keep the exact publication in the
-        // confirmation itself. The caller's stdout may be redirected or hidden from the owner.
-        match confirm(&format!(
-            "Post this issue publicly to {repo}?\n\nTitle: {title}\n\n{body}\n\nType yes to post: "
-        )) {
+        match gate.approve(&publication_of(None, &title, &body)) {
             Some(true) => {}
-            Some(false) => {
-                writeln!(out, "Not posted.").map_err(w)?;
-                return Ok(Submission::Local("publication was declined".into()));
-            }
+            Some(false) => return declined(gate, out, "publication"),
             None => {
+                if let Some(reason) = gate.reason() {
+                    writeln!(out, "Not posted: {reason}").map_err(w)?;
+                }
                 writeln!(
                     out,
                     "Not posted: confirmation needs a terminal. Run `oxa report-issue submit {}` yourself in a terminal.",
@@ -435,33 +446,22 @@ pub(crate) fn submit_record(
         }
         None
     };
-    let body = publication
-        .as_ref()
-        .map_or(body.as_str(), |plan| plan.body.as_str());
     let issue = publication.as_ref().and_then(|plan| plan.issue);
-    let number;
-    let mut args = if let Some(issue) = issue {
-        if confirm(&comment_question(&repo, issue, body)) != Some(true) {
-            writeln!(out, "Comment retained locally at {}.", draft.display()).map_err(w)?;
-            return Ok(Submission::Local("comment requires confirmation".into()));
+    if let Some(issue) = issue {
+        // A dedupe comment is its own post: its exact text and destination are approved here.
+        let comment = publication.as_ref().map_or("", |plan| plan.body.as_str());
+        match gate.approve(&publication_of(Some(issue), "", comment)) {
+            Some(true) => {}
+            _ => {
+                writeln!(out, "Comment retained locally at {}.", draft.display()).map_err(w)?;
+                return Ok(Submission::Local(
+                    gate.reason()
+                        .unwrap_or_else(|| "comment requires confirmation".into()),
+                ));
+            }
         }
-        number = issue.to_string();
-        vec!["issue", "comment", &number, "--repo", &repo]
-    } else {
-        vec!["issue", "create", "--repo", &repo, "--title", &title]
-    };
-    // Hand `gh` exactly the bytes that were displayed and approved. The draft lives in a
-    // model-writable directory, so its pathname could be swapped between the owner's yes and
-    // `gh` opening it; the body as an argument fails past the kernel's argument size. The
-    // approved bytes go into a staged descriptor nothing else can name or change.
-    let staged =
-        ApprovedBody::stage(body).map_err(|e| OxaError::io("cannot stage the approved issue body", &e))?;
-    let body_path = staged.path();
-    args.extend(["--body-file", &body_path]);
-    let args: Vec<String> = args.into_iter().map(str::to_string).collect();
-    let result = runner("gh", &args);
-    drop(staged);
-    match result {
+    }
+    match gate.post(runner) {
         Some((0, stdout)) => {
             if let Some(plan) = &mut publication {
                 if plan.record_created(&repo, &stdout).is_err() {
@@ -476,10 +476,12 @@ pub(crate) fn submit_record(
                 Submission::Created(url)
             })
         }
-        Some((code, _)) => {
+        Some((code, detail)) => {
+            let detail = gate.reason().unwrap_or(detail);
             writeln!(
                 out,
-                "GitHub did not confirm the write (exit {code}). Draft retained at {}.",
+                "GitHub did not confirm the write (exit {code}: {}). Draft retained at {}.",
+                detail.trim(),
                 draft.display()
             )
             .map_err(w)?;
@@ -946,8 +948,9 @@ pub fn run_report_issue(
             writeln!(out, "Draft: {}\n\nTitle: {title}\n\n{body}\n", path.display()).map_err(w)?;
             writeln!(
                 out,
-                "Nothing was posted. To post it, run `oxa report-issue submit {}` in a terminal. \
-In an interactive oxa session, ask for it to be published: the approval dialog shows this exact text and only the owner's key press posts it.",
+                "Nothing was posted yet. Show the text above to the owner, then run `oxa report-issue submit {}` \
+(or ask for it to be published in an interactive oxa session): oxa asks the owner to approve exactly this \
+text and posts it itself.",
                 path.display()
             )
             .map_err(w)?;
@@ -958,18 +961,47 @@ In an interactive oxa session, ask for it to be published: the approval dialog s
                 return Err(usage("submit takes the draft path"));
             };
             let settings = Settings::load(dirs, cwd, false);
-            let mut confirm = tty_confirm(env);
             let mut publish_runner = submit_runner(dirs, cwd, env, &settings);
             let draft = cwd.join(draft);
-            submit_with_storage(
-                &draft,
-                &report_ledger(dirs),
-                &settings,
-                &ctx,
-                &mut confirm,
-                &mut publish_runner,
-                out,
-            )
+            let storage = report_ledger(dirs);
+            // A tool child hands the fields to the session's broker, which prepares, shows,
+            // holds and posts: a fake listener cannot post, so nothing needs verifying. A tool
+            // child without a broker can ask nobody. A manual terminal asks through /dev/tty.
+            let submission = if let Some(sock) = env.get(oxa_core::owner_confirm::SOCK_ENV) {
+                let mut gate = BrokerGate::new(Path::new(sock));
+                submit_record(
+                    &draft,
+                    &storage,
+                    &settings,
+                    &ctx,
+                    &mut gate,
+                    &mut publish_runner,
+                    out,
+                )?
+            } else if env.get("OXA_CODING_AGENT").is_some() {
+                submit_record(
+                    &draft,
+                    &storage,
+                    &settings,
+                    &ctx,
+                    &mut NoGate,
+                    &mut publish_runner,
+                    out,
+                )?
+            } else {
+                let mut confirm = tty_confirm(env);
+                let mut gate = LocalGate::new(&ctx, &mut confirm, "\n\nType yes to post: ");
+                submit_record(
+                    &draft,
+                    &storage,
+                    &settings,
+                    &ctx,
+                    &mut gate,
+                    &mut publish_runner,
+                    out,
+                )?
+            };
+            Ok(submission_code(submission))
         }
         _ => Err(usage("report-issue needs `draft` or `submit`")),
     }

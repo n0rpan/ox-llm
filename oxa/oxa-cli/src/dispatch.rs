@@ -676,6 +676,9 @@ fn open_named(
     }
     // S1: the owner confirm broker. No broker (a bind failure) means no confirmation is possible.
     let _ = session.enable_owner_confirm(built.yolo.clone());
+    if let Some(publisher) = &built.owner_publisher {
+        session.set_owner_publisher(publisher.clone());
+    }
     session.set_output_schema(built.output_schema.clone());
     if let Some(goal) = &built.goal {
         session.set_goal(Some(goal.clone()), &mut oxa_proto::VecSink::default())?;
@@ -694,6 +697,9 @@ fn open_interactive_session(base: &Built, deps: Deps, how: Open) -> Result<Sessi
     let mut session = Session::open(deps, how)?;
     // No broker (a bind failure) means no confirmation is possible, matching the initial open.
     let _ = session.enable_owner_confirm(base.yolo.clone());
+    if let Some(publisher) = &base.owner_publisher {
+        session.set_owner_publisher(publisher.clone());
+    }
     Ok(session)
 }
 
@@ -729,6 +735,9 @@ struct Built {
     /// #1552: an interactive session offers `report_publish`, whose approval dialog only a
     /// person's key press can answer; print, json and RPC runs keep the terminal confirmation.
     report_dialog: Option<Env>,
+    /// The parent's side of a report publication, installed in the session's owner confirm
+    /// broker so a tool child's `oxa report-issue submit` is posted by this process.
+    owner_publisher: Option<Arc<dyn oxa_core::owner_confirm::Publisher>>,
     /// The hook sets of the process (E-INT 4), shared by every session it opens.
     hook_sets: HookSets,
     /// O-182: the YOLO switch (`--yolo`, `/yolo`), shared by the policy of every session.
@@ -1501,6 +1510,13 @@ fn prepare(
         fork_seed: child.fork.clone(),
         ask_owner_present: mode != RunMode::Rpc || env.get("OXA_RPC_OWNER_PRESENT") == Some("1"),
         report_dialog: (mode == RunMode::Interactive).then(|| env.clone()),
+        owner_publisher: Some(Arc::new(crate::report_cmd::ReportPublisher::new(
+            dirs,
+            env,
+            // The semantic-dedupe consent is the owner's, as for the in-session tool.
+            &Settings::load(dirs, cwd, false),
+            cwd,
+        ))),
         hook_sets,
         yolo,
         bash_sandbox,
@@ -3319,6 +3335,7 @@ mod session_scratch_tests {
             fork_seed: None,
             ask_owner_present: true,
             report_dialog: None,
+            owner_publisher: None,
             hook_sets: HookSets::default(),
             bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
                 base.clone(),
@@ -3408,6 +3425,7 @@ mod session_scratch_tests {
             fork_seed: None,
             ask_owner_present: true,
             report_dialog: None,
+            owner_publisher: None,
             hook_sets: HookSets::default(),
             bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
                 base,
@@ -3530,6 +3548,7 @@ mod session_scratch_tests {
                 approval_desk: None,
                 unattended: UnattendedMode::default(),
                 report_dialog: None,
+                owner_publisher: None,
             }
         };
         let policy = build().deps(None).policy;

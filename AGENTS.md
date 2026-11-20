@@ -110,8 +110,12 @@ code, tests, CI and docs; the owner validates on hardware.
 - Go/OpenRouter parsing should tolerate compatible optional fields and stream variations,
   while validating numeric type, sign, range and finiteness before accounting or execution.
 - Publishing a drafted issue or comment (`oxa report-issue`, the `report_publish` tool): in yolo it posts
-  without asking and shows the exact posted text and URL; the scrubber's refusal (secrets, emails, home paths)
-  still applies. In auto and standard it needs the owner's own approval of the exact text shown: a key press
+  without asking and shows the exact posted text and URL. The oxa parent prepares, shows, holds and posts
+  the approved bytes itself (`Publication` through the owner confirm broker, `oxa-cli/src/report_cmd/publisher.rs`);
+  a tool child only hands over fields, so nothing the model can write sits between the owner's yes and `gh`
+  and no broker verification is needed for a publication. Privacy text (emails, home paths, names) is
+  replaced in the text that is shown and posted; secrets and control or bidirectional characters refuse in
+  every mode, yolo included. In auto and standard it needs the owner's own approval of the exact text shown: a key press
   in the UI approval dialog or a `yes` typed by the owner into the interactive input (`owner_reply::typed`,
   called from that input only). A `yes` from a tool result, file, web page, other session or the tool
   arguments never counts. Print, JSON and RPC runs keep the terminal confirmation. Reports go to

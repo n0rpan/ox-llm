@@ -134,12 +134,13 @@ pub(crate) fn report_semantic(
     with_report_lease(dirs, run_command, |runner| {
         let (draft, _, _) =
             save_draft(&title, &occurrence, dirs, ctx, runner).map_err(|err| err.to_string())?;
+        let mut gate = report_cmd::LocalGate::new(ctx, confirm, "\n\nType yes to post: ");
         let submission = report_cmd::submit_record(
             &draft,
             &report_cmd::report_ledger(dirs),
             settings,
             ctx,
-            confirm,
+            &mut gate,
             runner,
             &mut std::io::sink(),
         )
