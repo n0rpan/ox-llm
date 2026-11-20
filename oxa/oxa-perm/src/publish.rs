@@ -3,8 +3,8 @@
 //! line that publish or mutate GitHub beyond that, and the floor prompt of `danger.rs` asks (or
 //! routes to the lead's approvals desk) for them. Yolo is unchanged: it never reaches this rule.
 //!
-//! Allowed without a question (they produce no hit): `git push [origin [HEAD|<branch>|
-//! HEAD:<branch>]]` of the session repo's current non-default branch with only `-u`/`-q`/`-v`
+//! Allowed without a question (they produce no hit): `git push origin <HEAD|branch|
+//! HEAD:branch>` of the session repo's current non-default branch with only `-u`/`-q`/`-v`
 //! flags; `gh pr create|edit|comment` with no PR argument, repo override, head override or
 //! body file; read-only `gh` (`pr view|checks|diff|status|list`, `run view|watch|list`,
 //! `issue view|list`, `repo view`, `api` GET). A line that mixes such a command with any other
@@ -313,12 +313,10 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
             s => pos.push(s),
         }
     }
-    if config_risky(&wd, &current, pos.len() < 2) || !urls_unchanged(cwd, &wd) {
+    if config_risky(&wd, &current, false) || !urls_unchanged(cwd, &wd) {
         return Kind::Unsafe;
     }
     let ok = match pos.as_slice() {
-        [] => true,
-        ["origin"] => true,
         ["origin", spec] => {
             if let Some((src, dst)) = spec.split_once(':') {
                 let src = src.strip_prefix("refs/heads/").unwrap_or(src);
@@ -841,5 +839,5 @@ fn is_alias(globals: &[String], name: &str, cwd: &Path, dirs: &[String]) -> bool
             return true;
         }
     }
-    names.iter().any(|n| *n == name)
+    names.contains(&name)
 }
