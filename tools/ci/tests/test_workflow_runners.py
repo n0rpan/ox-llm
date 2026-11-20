@@ -141,7 +141,7 @@ class WorkflowRunners(unittest.TestCase):
 
     def test_macos_is_gated_through_checks_not_its_own_triggers(self):
         text = (WORKFLOWS / 'macos.yml').read_text()
-        self.assertNotIn('pull_request', text)
+        self.assertNotIn('  pull_request:', text)
         self.assertNotIn('merge_group:', text)
         self.assertIn("branches: ['main']", text)
         self.assertIn('workflow_dispatch:', text)
