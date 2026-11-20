@@ -12,6 +12,25 @@ mod quotas;
 pub use filters::{Filter, Query};
 pub use pages::{Page, Prompt};
 
+/// One protected stuck-work observation, decoded from the Reader's record. `None`
+/// on a field means that source was not observed; an absent source is never
+/// rendered healthy or alarming, and the page says so explicitly (#1391).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Alarms {
+    /// Main required-CI failure at the observed head; optional job failures,
+    /// pending states and unobserved requirements stay quiet (#1634).
+    pub main_red: Option<bool>,
+    /// Verified-merge stall at the record's observation time. `None` when no
+    /// verified merge establishes the age.
+    pub main_merge_stalled: Option<bool>,
+    /// Stalled queued-run ids from one complete fresh observation.
+    pub stalled_runs: Option<Vec<u64>>,
+    /// Merge-queue membership with exact heads; `None` when unobserved.
+    pub queue: Option<Vec<PullRequest>>,
+    /// Queue-age alarms the landing policy raised, bound to board heads.
+    pub overdue_queue: Option<Vec<PullRequest>>,
+}
+
 /// Borrowed presentation inputs, not a second runner state store. None means unavailable.
 #[derive(Default)]
 pub struct View<'a> {
@@ -23,16 +42,17 @@ pub struct View<'a> {
     pub owner_goal: Option<(&'a oxa_session::Goal, oxa_core::goal::GoalObservation<'a>)>,
     pub board: Option<&'a Board>,
     pub situation: Option<&'a Snapshot>,
+    /// Open owner asks read live from the authorized durable Lead Session, with
+    /// their original revisions. Distinct from the runner situation: an absent
+    /// runner source never hides these, and vice versa.
+    pub durable_asks: Option<&'a [oxa_session::OpenGoalAsk]>,
     /// C's selected checkpoint observation; the renderer never acquires runner state.
     pub selected_task_usage: Option<&'a oxa_work::Result<Option<oxa_work::TaskUsage>>>,
     pub github_quotas: Option<&'a crate::lead_quota::GitHubQuotas>,
     pub model_plan: Option<&'a oxc_gateway::status::chatgpt_usage::Usage>,
-    pub main_red: bool,
-    pub main_merge_stalled: bool,
-    pub stalled_runs: &'a [u64],
-    pub queue: Option<&'a [PullRequest]>,
-    /// Exact PR heads for which the landing policy raised its queue age alarm.
-    pub overdue_queue: &'a [PullRequest],
+    /// Stuck-work signals from one protected observation. `None` when no alarm
+    /// record reached this page.
+    pub alarms: Option<&'a Alarms>,
     /// Source issue and its reported checkbox states; these do not establish validation.
     pub release: Option<(u64, &'a [(bool, String)])>,
     /// Serving process self-image digest, supplied by the authenticated native caller.
@@ -203,54 +223,100 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
 }
 
 fn attention(html: &mut String, view: &View<'_>) {
-    let ask_count = view.situation.map_or(0, |s| s.asks.len());
-    let overdue: Vec<_> = view
-        .queue
-        .into_iter()
-        .flatten()
-        .filter(|pr| view.overdue_queue.contains(pr))
-        .collect();
-    let alarm =
-        view.main_red || view.main_merge_stalled || !view.stalled_runs.is_empty() || !overdue.is_empty();
-    if alarm || ask_count > 0 {
+    let asks = view.situation.map_or(0, |s| s.asks.len()) + view.durable_asks.map_or(0, |asks| asks.len());
+    let alarms = view.alarms;
+    // The queue-age alarm binds each PR to its exact observed head: membership
+    // and landing age must come from the same protected record.
+    let overdue: Vec<&PullRequest> = alarms
+        .and_then(|a| match (a.queue.as_deref(), a.overdue_queue.as_deref()) {
+            (Some(queue), Some(overdue)) => {
+                Some(queue.iter().filter(|pr| overdue.contains(pr)).collect::<Vec<_>>())
+            }
+            _ => None,
+        })
+        .unwrap_or_default();
+    let main_red = alarms.and_then(|a| a.main_red);
+    let merge_stalled = alarms.and_then(|a| a.main_merge_stalled);
+    let stalled_runs = alarms.and_then(|a| a.stalled_runs.as_deref());
+    let alarm = main_red == Some(true)
+        || merge_stalled == Some(true)
+        || stalled_runs.is_some_and(|runs| !runs.is_empty())
+        || !overdue.is_empty();
+    // An absent alarm source is never healthy: it renders its own explicit
+    // unavailable state instead of silence (#1391).
+    let unavailable = alarms.is_none()
+        || main_red.is_none()
+        || merge_stalled.is_none()
+        || stalled_runs.is_none()
+        || alarms.is_some_and(|a| a.queue.is_none() || a.overdue_queue.is_none());
+    if alarm || asks > 0 || unavailable {
         let (role, icon, label) = if alarm {
             ("alert", "!", "Alarm")
-        } else {
+        } else if asks > 0 {
             ("status", "?", "Needs you")
+        } else {
+            ("status", "?", "Unavailable")
         };
         let _ = write!(
             html,
             "<section id=attention role={role}><p class=severity><span aria-hidden=true>{icon}</span> {label}</p><h2>Needs attention</h2><ul>"
         );
-        if ask_count > 0 {
+        if asks > 0 {
             let _ = write!(
                 html,
-                "<li><a href=#asks>Unanswered owner decisions ({ask_count})</a></li>"
+                "<li><a href=#asks>Unanswered owner decisions ({asks})</a></li>"
             );
         }
-        if view.main_red {
-            html.push_str("<li>Checks on main are failing.</li>");
+        match main_red {
+            Some(true) => html.push_str("<li>Checks on main are failing.</li>"),
+            Some(false) => {}
+            None => html.push_str(
+                "<li>Main checks unavailable. No protected main observation reached this page.</li>",
+            ),
         }
-        if view.main_merge_stalled {
-            html.push_str("<li>No PR merged into main for 45 minutes or more at the last observation.</li>");
+        match merge_stalled {
+            Some(true) => html
+                .push_str("<li>No PR merged into main for 45 minutes or more at the last observation.</li>"),
+            Some(false) => {}
+            None => html.push_str(
+                "<li>No-merge alarm unavailable. The last verified main merge was not observed.</li>",
+            ),
         }
-        for pr in overdue {
-            let _ = write!(
-                html,
-                "<li><a href=/board#queue>PR #{} has waited too long in the merge queue</a></li>",
-                pr.number
+        let queue = alarms.and_then(|a| a.queue.as_deref());
+        if queue.is_none() {
+            html.push_str(
+                "<li>Merge queue membership unavailable. No protected queue observation reached this page.</li>",
             );
-        }
-        if !view.stalled_runs.is_empty() {
-            let _ = write!(
-                html,
-                "<li><details><summary>Workflow runs queued for more than 15 minutes ({})</summary><ul>",
-                view.stalled_runs.len()
-            );
-            for id in view.stalled_runs {
-                let _ = write!(html, "<li>Run {id}</li>");
+        } else {
+            for pr in overdue {
+                let _ = write!(
+                    html,
+                    "<li><a href=/board#queue>PR #{} has waited too long in the merge queue</a></li>",
+                    pr.number
+                );
             }
-            html.push_str("</ul></details></li>");
+            if alarms.is_some_and(|a| a.overdue_queue.is_none()) {
+                html.push_str(
+                    "<li>Queue age unavailable. No protected landing observation reached this page.</li>",
+                );
+            }
+        }
+        match stalled_runs {
+            None => html.push_str(
+                "<li>Queued workflow runs unavailable. No complete protected run observation reached this page.</li>",
+            ),
+            Some(runs) if !runs.is_empty() => {
+                let _ = write!(
+                    html,
+                    "<li><details><summary>Workflow runs queued for more than 15 minutes ({})</summary><ul>",
+                    runs.len()
+                );
+                for id in runs {
+                    let _ = write!(html, "<li>Run {id}</li>");
+                }
+                html.push_str("</ul></details></li>");
+            }
+            Some(_) => {}
         }
         html.push_str("</ul>");
         if alarm {
@@ -444,7 +510,7 @@ fn workers(html: &mut String, view: &View<'_>, now: u64) {
 
 fn queue(html: &mut String, view: &View<'_>) {
     html.push_str("<section id=queue><h2>Merge queue</h2>");
-    if let Some(queue) = view.queue {
+    if let Some(queue) = view.alarms.and_then(|a| a.queue.as_deref()) {
         for (index, pr) in queue.iter().enumerate() {
             let _ = write!(html, "<article>{}. PR #{}</article>", index + 1, pr.number);
         }
@@ -492,8 +558,27 @@ fn asks(html: &mut String, view: &View<'_>, now: u64) {
         if s.asks.is_empty() {
             html.push_str("<p>No open asks in these runner facts.</p>");
         }
+    } else if view.durable_asks.is_some() {
+        html.push_str("<p>Runner asks unavailable. No runner observation reached this page; the Lead Session asks below are a separate source.</p>");
     } else {
-        html.push_str("<p>Owner asks unavailable. No runner observation reached this page, so open decisions cannot be shown; the source did not say why.</p>");
+        html.push_str("<p>Owner asks unavailable. No runner or Lead Session observation reached this page, so open decisions cannot be shown; the source did not say why.</p>");
+    }
+    if let Some(durable) = view.durable_asks {
+        html.push_str("<p class=muted>Lead Session asks · read live from the authorized durable Session</p>");
+        html.push_str("<div class=ask-cards>");
+        for ask in durable {
+            let _ = write!(
+                html,
+                "<article><p class=muted>Ask {} · revision {}</p><h3>{}</h3><p>Options, recommendation and meanwhile are unavailable in these facts; this page grants no permission to resolve an ask.</p></article>",
+                escape(&ask.id),
+                ask.revision,
+                escape(&ask.question)
+            );
+        }
+        html.push_str("</div>");
+        if durable.is_empty() {
+            html.push_str("<p>No open asks in the Lead Session.</p>");
+        }
     }
     html.push_str("</section>");
 }
@@ -990,16 +1075,26 @@ mod tests {
 
         let board = Board::default();
         let situation = observed_asks();
-        let queue = [];
+        // A complete fresh healthy observation stays quiet: no alarm and no
+        // unavailable state renders in the attention block.
+        let alarms = Alarms {
+            main_red: Some(false),
+            main_merge_stalled: Some(false),
+            stalled_runs: Some(vec![]),
+            queue: Some(vec![]),
+            overdue_queue: Some(vec![]),
+        };
         let empty = View {
             board: Some(&board),
             situation: Some(&situation),
-            queue: Some(&queue),
+            alarms: Some(&alarms),
             ..Default::default()
         };
         let home = document_for(Page::Home, &empty, 100);
         assert!(home.contains("No open PRs in this snapshot"));
         assert!(home.contains("Queue empty at observation"));
+        assert!(!home.contains("Checks on main are failing"));
+        assert!(!home.contains("role=alert"));
         assert!(!home.contains("No board observation reached this page"));
         assert!(!home.contains("No runner observation reached this page"));
         let missing_item = document_for(Page::Item(17), &empty, 100);
@@ -1143,7 +1238,10 @@ mod tests {
             &View {
                 board: Some(&board),
                 situation: Some(&snapshot),
-                main_red: true,
+                alarms: Some(&Alarms {
+                    main_red: Some(true),
+                    ..Alarms::default()
+                }),
                 ..View::default()
             },
             100,
@@ -1154,6 +1252,10 @@ mod tests {
         assert!(html.contains("<details class=home-work><summary>Observed work</summary>"));
         assert!(!html.contains("<details class=home-work open"));
         assert!(html.contains("role=alert"));
+        // A partial observation keeps the active alarm visible and names the
+        // sources that did not reach the page (#1391).
+        assert!(html.contains("Checks on main are failing."));
+        assert!(html.contains("Merge queue membership unavailable"));
         for ask in &snapshot.asks {
             assert!(html.contains(&escape(&ask.question)));
         }
@@ -1530,11 +1632,14 @@ return true;
             head: "b".repeat(40),
             ..active.clone()
         };
-        let render = |queue, overdue_queue| {
+        let render = |queue: Option<&[PullRequest]>, overdue: Option<&[PullRequest]>| {
             content(
                 &View {
-                    queue,
-                    overdue_queue,
+                    alarms: Some(&Alarms {
+                        queue: queue.map(<[PullRequest]>::to_vec),
+                        overdue_queue: overdue.map(<[PullRequest]>::to_vec),
+                        ..Alarms::default()
+                    }),
                     ..View::default()
                 },
                 100,
@@ -1546,16 +1651,32 @@ return true;
             number: 18,
             head: "a".repeat(40),
         }];
-        for (queue, alarms) in [
-            (None, overdue.as_slice()),
-            (Some(queue.as_slice()), stale.as_slice()),
-            (Some(queue.as_slice()), other.as_slice()),
-            (Some(queue.as_slice()), &[]),
+        // An alarm binds the PR to its exact observed head: an older head, another
+        // PR and an observed-empty landing record all stay quiet.
+        for (queue, overdue) in [
+            (Some(queue.as_slice()), Some(stale.as_slice())),
+            (Some(queue.as_slice()), Some(other.as_slice())),
+            (Some(queue.as_slice()), Some(&[])),
         ] {
-            assert!(!render(queue, alarms).contains("Needs attention"));
+            let page = render(queue, overdue);
+            assert!(!page.contains("waited too long"), "{overdue:?}");
+            assert!(!page.contains("role=alert"));
+            assert!(!page.contains("membership unavailable"));
+            assert!(!page.contains("Queue age unavailable"));
         }
-        let page = render(Some(&queue), &overdue);
+        // Unobserved membership never becomes a quiet alarm: the page says the
+        // queue was not observed, even when the landing record raised the age.
+        let unobserved = render(None, Some(overdue.as_slice()));
+        assert!(unobserved.contains("Merge queue membership unavailable"));
+        assert!(!unobserved.contains("waited too long"));
+        assert!(!unobserved.contains("role=alert"));
+        // A landing record with no observation of its own is explicit as well.
+        let no_landing = render(Some(queue.as_slice()), None);
+        assert!(no_landing.contains("Queue age unavailable"));
+        assert!(!no_landing.contains("waited too long"));
+        let page = render(Some(&queue), Some(&overdue));
         assert!(page.contains("PR #17 has waited too long in the merge queue"));
+        assert!(page.contains("role=alert"));
         assert!(!page.contains(&queue[0].head));
     }
 
@@ -1598,43 +1719,50 @@ return true;
     }
     #[test]
     fn known_alarms_have_visible_severity_and_keep_their_observed_evidence() {
-        let queue = [PullRequest {
+        let queue = vec![PullRequest {
             number: 17,
             head: "a".repeat(40),
         }];
-        let runs = [29];
-        for (view, evidence) in [
+        let runs = vec![29];
+        for (alarms, evidence) in [
             (
-                View {
-                    main_red: true,
-                    ..View::default()
+                Alarms {
+                    main_red: Some(true),
+                    ..Alarms::default()
                 },
                 "Checks on main are failing.",
             ),
             (
-                View {
-                    main_merge_stalled: true,
-                    ..View::default()
+                Alarms {
+                    main_merge_stalled: Some(true),
+                    ..Alarms::default()
                 },
                 "No PR merged into main for 45 minutes",
             ),
             (
-                View {
-                    stalled_runs: &runs,
-                    ..View::default()
+                Alarms {
+                    stalled_runs: Some(runs.clone()),
+                    ..Alarms::default()
                 },
                 "Run 29",
             ),
             (
-                View {
-                    queue: Some(&queue),
-                    overdue_queue: &queue,
-                    ..View::default()
+                Alarms {
+                    queue: Some(queue.clone()),
+                    overdue_queue: Some(queue.clone()),
+                    ..Alarms::default()
                 },
                 "PR #17 has waited too long",
             ),
         ] {
-            let html = content_for(Page::Home, &view, 100);
+            let html = content_for(
+                Page::Home,
+                &View {
+                    alarms: Some(&alarms),
+                    ..View::default()
+                },
+                100,
+            );
             let banner = html
                 .split("<section id=attention")
                 .nth(1)
@@ -1677,7 +1805,10 @@ return true;
             Page::Home,
             &View {
                 situation: Some(&snapshot),
-                main_red: true,
+                alarms: Some(&Alarms {
+                    main_red: Some(true),
+                    ..Alarms::default()
+                }),
                 ..View::default()
             },
             100,
@@ -1696,52 +1827,119 @@ return true;
             number: 17,
             head: "b".repeat(40),
         }];
+        // Unknown is not healthy: observed membership without a landing record, or
+        // a landing record without membership, stays explicit and never alarms.
         for situation in [None, Some(&snapshot)] {
-            for (queue, overdue_queue) in [
-                (None, queue.as_slice()),
-                (Some(queue.as_slice()), old_head.as_slice()),
-                (Some(queue.as_slice()), &[]),
+            for (queue, overdue_queue, expected) in [
+                (None, Some(queue.as_slice()), "Merge queue membership unavailable"),
+                (Some(queue.as_slice()), None, "Queue age unavailable"),
             ] {
                 let unknown = content_for(
                     Page::Home,
                     &View {
                         situation,
-                        queue,
-                        overdue_queue,
+                        alarms: Some(&Alarms {
+                            queue: queue.map(<[PullRequest]>::to_vec),
+                            overdue_queue: overdue_queue.map(<[PullRequest]>::to_vec),
+                            ..Alarms::default()
+                        }),
                         ..View::default()
                     },
                     100,
                 );
-                assert!(!unknown.contains("id=attention"));
-                assert!(!unknown.contains("role=alert") && !unknown.contains("All good"));
+                let banner = unknown
+                    .split("<section id=attention")
+                    .nth(1)
+                    .unwrap()
+                    .split("</section>")
+                    .next()
+                    .unwrap();
+                assert!(banner.contains(expected));
+                assert!(banner.contains("role=status"));
+                assert!(!banner.contains("role=alert") && !banner.contains("All good"));
+            }
+            // Complete healthy observations stay quiet with and without asks.
+            let healthy = |queue: Option<&[PullRequest]>, overdue: Option<&[PullRequest]>| Alarms {
+                main_red: Some(false),
+                main_merge_stalled: Some(false),
+                stalled_runs: Some(vec![]),
+                queue: queue.map(<[PullRequest]>::to_vec),
+                overdue_queue: overdue.map(<[PullRequest]>::to_vec),
+            };
+            for (queue, overdue_queue) in [
+                (Some(queue.as_slice()), Some(old_head.as_slice())),
+                (Some(queue.as_slice()), Some(&[])),
+            ] {
+                let alarms = healthy(queue, overdue_queue);
+                let quiet = content_for(
+                    Page::Home,
+                    &View {
+                        situation,
+                        alarms: Some(&alarms),
+                        ..View::default()
+                    },
+                    100,
+                );
+                assert!(!quiet.contains("id=attention"));
+                assert!(!quiet.contains("role=alert") && !quiet.contains("All good"));
             }
         }
     }
 
     #[test]
-    fn only_failed_main_rollups_render_an_alarm() {
-        for (state, red) in [
-            ("ERROR", true),
-            ("FAILURE", true),
-            ("SUCCESS", false),
-            ("PENDING", false),
-            ("EXPECTED", false),
-            ("", false),
-        ] {
-            let response = serde_json::json!({"data":{"repository":{
-                "main":{"target":{"statusCheckRollup":{"state":state}}},
+    fn main_alarm_pages_only_on_a_failed_required_check_from_the_panels_record() {
+        // #1634: required-success with optional failure, pending with optional
+        // failure, and a true required failure; the alarm shows only for the third.
+        let head = "c".repeat(40);
+        let repository = |rows: serde_json::Value| {
+            serde_json::json!({"data":{"repository":{
+                "id":"example-repo",
+                "main":{
+                    "refUpdateRule":{"requiredStatusCheckContexts":["gate"]},
+                    "rules":{"totalCount":0,"nodes":[]},
+                    "target":{"oid":head, "statusCheckRollup":{"contexts":{
+                        "pageInfo":{"hasNextPage":false}, "nodes":rows
+                    }}}
+                },
                 "mergeQueue":null
-            }}});
-            let panels = crate::lead_panels::parse(&serde_json::to_vec(&response).unwrap(), None).unwrap();
+            }}})
+        };
+        let check = |name: &str, status: &str, conclusion: &str| serde_json::json!({"name":name, "status":status, "conclusion":conclusion});
+        let optional = check("macos", "COMPLETED", "FAILURE");
+        let healthy = |main_red: bool| Alarms {
+            main_red: Some(main_red),
+            main_merge_stalled: Some(false),
+            stalled_runs: Some(vec![]),
+            queue: Some(vec![]),
+            overdue_queue: Some(vec![]),
+        };
+        for (rows, red) in [
+            (
+                vec![check("gate", "COMPLETED", "SUCCESS"), optional.clone()],
+                false,
+            ),
+            (
+                vec![check("gate", "in_progress", "FAILURE"), optional.clone()],
+                false,
+            ),
+            (vec![check("gate", "COMPLETED", "FAILURE"), optional], true),
+        ] {
+            let panels = crate::lead_panels::parse(
+                &serde_json::to_vec(&repository(serde_json::json!(rows))).unwrap(),
+                None,
+            )
+            .unwrap();
+            assert_eq!(panels.main_red, red, "{rows:?}");
+            let alarms = healthy(panels.main_red);
             let page = content(
                 &View {
-                    main_red: panels.main_red,
+                    alarms: Some(&alarms),
                     ..View::default()
                 },
                 100,
             );
-            assert_eq!(page.contains("Checks on main are failing."), red, "{state}");
-            assert_eq!(page.contains("Needs attention"), red, "{state}");
+            assert_eq!(page.contains("Checks on main are failing."), red, "{rows:?}");
+            assert_eq!(page.contains("role=alert"), red, "{rows:?}");
         }
     }
     #[test]
@@ -1751,7 +1949,8 @@ return true;
         let head = "c".repeat(40);
         let response = json!({"data":{"repository":{
             "id":"example-repo",
-            "main":{"target":{"oid":head, "associatedPullRequests":{
+            "main":{"refUpdateRule":null, "rules":{"totalCount":0,"nodes":[]},
+                "target":{"oid":head, "associatedPullRequests":{
                 "pageInfo":{"hasNextPage":false},
                 "nodes":[{"repository":{"id":"example-repo"}, "baseRefName":"main",
                     "mergeCommit":{"oid":head}, "mergedAt":"1970-01-02T00:00:00Z"}]
@@ -1760,9 +1959,16 @@ return true;
         }}});
         let render_at = |payload: &Value, sampled_at| {
             let panels = crate::lead_panels::parse(&serde_json::to_vec(payload).unwrap(), None).unwrap();
+            let alarms = Alarms {
+                main_merge_stalled: Some(panels.main_merge_stalled(sampled_at)),
+                main_red: Some(panels.main_red),
+                stalled_runs: Some(vec![]),
+                queue: panels.queue.clone(),
+                overdue_queue: Some(vec![]),
+            };
             content(
                 &View {
-                    main_merge_stalled: panels.main_merge_stalled(sampled_at),
+                    alarms: Some(&alarms),
                     ..View::default()
                 },
                 sampled_at + 3600,

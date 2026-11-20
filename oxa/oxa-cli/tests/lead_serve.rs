@@ -3,7 +3,7 @@ use oxa_fake::TestEnv;
 use std::{
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     process::{Child, Command, Stdio},
     time::Duration,
 };
@@ -557,4 +557,256 @@ fn refused_chat_posts_record_allowlisted_facts_in_the_real_service_journal() {
         assert!(!journal.contains("prompt"));
         assert!(!journal.contains(authority));
     });
+}
+
+/// One protected stuck-work record for the Lead view: panels (main checks,
+/// verified merge, queue membership), landing (queue age at the exact head) and
+/// queued-run pages, each independently optional (#1391).
+fn stuck_record(
+    now: u64,
+    main_red: bool,
+    merged_seconds_before: u64,
+    queued_prs: Option<usize>,
+    overdue: bool,
+    runs: Option<bool>,
+) -> serde_json::Value {
+    let merged = (now.saturating_sub(merged_seconds_before)) * 1000;
+    let merged = format!("{}Z", &oxa_session::iso_from_ms(merged)[..19]);
+    let head = "a".repeat(40);
+    let entries = [serde_json::json!({
+        "number":17,"head":head,"release_pinned":false,"action":"ready",
+        "lease":null,"attempts_today":0,"eligible":true
+    })];
+    let merge_queue = match queued_prs {
+        None => serde_json::Value::Null,
+        Some(count) => serde_json::json!({"entries":{"totalCount":count,"nodes":(0..count)
+            .map(|_| serde_json::json!({"pullRequest":{"number":17,"headRefOid":head}}))
+            .collect::<Vec<_>>()}}),
+    };
+    let mut record = serde_json::json!({
+        "schema_version":1,"observed_at":now,
+        "board":{"observed_at":now,"entries":entries},
+        "panels":{
+            "id":"example-repo",
+            "refUpdateRule":{"requiredStatusCheckContexts":["gate"]},
+            "rules":{"totalCount":0,"nodes":[]},
+            "target":{
+                "oid":head,
+                "statusCheckRollup":{"contexts":{"pageInfo":{"hasNextPage":false},"nodes":[
+                    {"name":"gate","status":"COMPLETED",
+                     "conclusion": if main_red { "FAILURE" } else { "SUCCESS" }}
+                ]}},
+                "associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[
+                    {"repository":{"id":"example-repo"},"baseRefName":"main",
+                     "mergeCommit":{"oid":head},"mergedAt":merged}
+                ]}
+            },
+            "mergeQueue":merge_queue
+        }
+    });
+    if overdue {
+        record["landing"] = serde_json::json!({
+            "17":{"next":"already_queued","queue_alarm":true,
+                  "queue":{"enqueued_at":0,"group_head":null}}
+        });
+    } else {
+        record["landing"] = serde_json::json!({
+            "17":{"next":"already_queued","queue_alarm":false,
+                  "queue":{"enqueued_at":now,"group_head":null}}
+        });
+    }
+    if let Some(stalled) = runs {
+        let mut rows = Vec::new();
+        if stalled {
+            let updated = (now.saturating_sub(3600)) * 1000;
+            let updated = format!("{}Z", &oxa_session::iso_from_ms(updated)[..19]);
+            rows.push(serde_json::json!({"id":29,"status":"queued","updated_at":updated}));
+        }
+        record["runs"] = serde_json::json!([{"total_count":rows.len(),"workflow_runs":rows}]);
+    }
+    record
+}
+
+fn write_record(directory: &std::path::Path, record: &serde_json::Value) -> std::path::PathBuf {
+    let sample = directory.join("board.jsonl");
+    std::fs::write(&sample, format!("{record}\n")).unwrap();
+    std::fs::set_permissions(&sample, std::fs::Permissions::from_mode(0o600)).unwrap();
+    sample
+}
+
+#[test]
+fn protected_view_shows_every_stuck_signal_and_keeps_missing_sources_explicit() {
+    let test = TestEnv::new();
+    std::fs::set_permissions(test.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reservation.local_addr().unwrap().port();
+    test.write(
+        "home/.oxa/agent/settings.json",
+        &serde_json::json!({"oxa":{"lead":{"serve":{"enabled":true,"port":port}}}}).to_string(),
+    );
+    let directory = test.root().join("alarm-inputs");
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let now = oxa_proto::time::now_ms() / 1000;
+    let authority = format!("127.0.0.1:{port}");
+    drop(reservation);
+
+    // One active record carries every signal: main red, the 45-minute no-merge,
+    // the over-age queue membership and a stalled queued run.
+    let sample = write_record(
+        &directory,
+        &stuck_record(now, true, 46 * 60, Some(1), true, Some(true)),
+    );
+    let server = start(&test, &sample);
+    let page = get(port, "/", &authority, "");
+    for expected in [
+        "role=alert",
+        "Checks on main are failing.",
+        "No PR merged into main for 45 minutes or more at the last observation.",
+        "PR #17 has waited too long in the merge queue",
+        "Workflow runs queued for more than 15 minutes (1)",
+        "Run 29",
+    ] {
+        assert!(page.contains(expected), "{expected}");
+    }
+    drop(server);
+
+    // A partial observation keeps the active alarms and names the missing source.
+    let sample = write_record(&directory, &stuck_record(now, true, 46 * 60, Some(1), true, None));
+    let server = start(&test, &sample);
+    let page = get(port, "/", &authority, "");
+    assert!(page.contains("Checks on main are failing."));
+    assert!(page.contains("PR #17 has waited too long"));
+    assert!(page.contains("Queued workflow runs unavailable."), "{page}");
+    drop(server);
+
+    // An absent panels record leaves its signals explicitly unavailable: the
+    // landing age alone cannot claim queue membership it never observed.
+    let mut partial = stuck_record(now, false, 10 * 60, None, true, None);
+    partial.as_object_mut().unwrap().remove("panels");
+    let sample = write_record(&directory, &partial);
+    let server = start(&test, &sample);
+    let page = get(port, "/", &authority, "");
+    for expected in [
+        "Main checks unavailable.",
+        "No-merge alarm unavailable.",
+        "Merge queue membership unavailable.",
+        "role=status",
+    ] {
+        assert!(page.contains(expected), "{expected}");
+    }
+    assert!(!page.contains("waited too long"), "{page}");
+    assert!(!page.contains("role=alert"), "{page}");
+    drop(server);
+
+    // A routine healthy read stays quiet: no attention section at all.
+    let sample = write_record(
+        &directory,
+        &stuck_record(now, false, 10 * 60, Some(0), false, Some(false)),
+    );
+    let _server = start(&test, &sample);
+    let page = get(port, "/", &authority, "");
+    assert!(!page.contains("id=attention"), "{page}");
+    assert!(page.contains("Queue empty at observation"), "{page}");
+}
+
+#[test]
+fn authorized_durable_asks_reach_the_protected_view_as_a_live_readback() {
+    // The one authenticated live readback (#1391): an ask the Lead loop wrote to
+    // the durable Session is read live by the protected view through the
+    // registered owner-bound caller, with its original revision.
+    let test = TestEnv::new();
+    let dirs = oxa_config::Dirs::under(test.root());
+    std::fs::set_permissions(&dirs.agent_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let uid = std::fs::metadata(test.root()).unwrap().uid();
+    let project = test.work().canonicalize().unwrap();
+    let id = oxa_cli::LeadOwnerBinding::create(&dirs, &project, uid).unwrap();
+    let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reservation.local_addr().unwrap().port();
+    let authority = "lead.example.invalid";
+    let settings = test.write(
+        "home/.oxa/agent/settings.json",
+        &serde_json::json!({"oxa":{"lead":{
+            "sessionId":id,
+            "serve":{"enabled":true,"port":port,"identity":"tailscale","owner_chat":true,
+                "allowed_identities":["owner@example.invalid"],
+                "proxy":{"uid":uid,"authority":authority}}
+        }}})
+        .to_string(),
+    );
+    std::fs::set_permissions(&settings, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let directory = test.root().join("live-inputs");
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let now = oxa_proto::time::now_ms() / 1000;
+    let sample = write_record(&directory, &stuck_record(now, true, 46 * 60, None, false, None));
+    drop(reservation);
+
+    // The Lead loop escalates the red unowned PR into the durable Session.
+    let looped = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .env_clear()
+        .envs(test.envs("http://127.0.0.1:1"))
+        .current_dir(&project)
+        .env("OXA_LEAD_BOARD_LOG", &sample)
+        .args(["--offline", "lead", "run", "--once"])
+        .output()
+        .unwrap();
+    assert!(looped.status.success(), "{looped:?}");
+    let state: serde_json::Value = serde_json::from_slice(&looped.stdout).unwrap();
+    assert_eq!(state["state"], "stuck_escalated", "{state}");
+    let ask_id = state["stuck"]["escalated"][0].as_str().unwrap().to_owned();
+
+    let mut invocation = command(&test);
+    invocation
+        .args(["lead", "serve"])
+        .env("OXA_LEAD_BOARD_LOG", &sample)
+        .stdout(Stdio::piped())
+        .stderr(std::fs::File::create(test.root().join("lead-live.stderr")).unwrap());
+    let mut child = Running(invocation.spawn().unwrap());
+    let stdout = child.0.stdout.take().unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let line = line.unwrap_or_default();
+            let found = line.contains("listening");
+            let _ = send.send(line);
+            if found {
+                break;
+            }
+        }
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let line = receive
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .expect("lead serve did not report its listener");
+        if line.contains("listening") {
+            break;
+        }
+    }
+
+    let login = "Tailscale-User-Login: owner@example.invalid\r\n";
+    let page = get(port, "/", authority, login);
+    assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+    assert!(page.contains("Checks on main are failing."), "{page}");
+    assert!(page.contains("Unanswered owner decisions (1)"), "{page}");
+    let asks = get(port, "/asks", authority, login);
+    assert!(asks.contains(&ask_id), "{asks}");
+    assert!(asks.contains("revision"), "{asks}");
+    assert!(
+        asks.contains("read live from the authorized durable Session"),
+        "{asks}"
+    );
+    // The runner situation stays a separate source: its absence never hides the
+    // durable asks and never claims they were observed empty.
+    assert!(asks.contains("Runner asks unavailable."), "{asks}");
+    // The durable ask never reaches an unauthorized peer.
+    let refused = get(
+        port,
+        "/",
+        authority,
+        "Tailscale-User-Login: guest@example.invalid\r\n",
+    );
+    assert!(refused.starts_with("HTTP/1.1 403"));
+    drop(child);
 }
