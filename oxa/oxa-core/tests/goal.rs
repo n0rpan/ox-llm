@@ -22,6 +22,13 @@ impl oxa_core::ProgressObserver for GoalStatusTrace {
     }
 }
 fn deps(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<ScriptedEngine>) -> Deps {
+    let engine: Arc<dyn oxa_proto::Engine> = engine;
+    deps_engine(env, store, engine)
+}
+
+/// [`deps`] over any engine: a test that rewrites the engine's replies cannot use the scripted
+/// type directly.
+fn deps_engine(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<dyn oxa_proto::Engine>) -> Deps {
     Deps {
         engine,
         store,
@@ -44,6 +51,16 @@ fn deps(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<ScriptedEngine>
         session_id: None,
         jobs: oxa_core::fresh_jobs(),
     }
+}
+
+/// [`deps`] with the owner's `oxa.goal.idlePause`: two replies without an action pause the goal.
+fn idle_pause_deps(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<ScriptedEngine>) -> Deps {
+    let mut d = deps(env, store, engine);
+    d.settings = Settings::from_values(
+        serde_json::json!({"oxa": {"envNote": false, "goal": {"idlePause": true}}}),
+        serde_json::json!({}),
+    );
+    d
 }
 
 fn objective(budget: GoalBudget) -> Goal {
@@ -364,14 +381,15 @@ fn a_control_bound_to_a_different_file_rejects_an_equal_id_and_revision() {
 }
 
 #[test]
-fn ordinary_prefix_unchanged_and_two_idle_turns_stall_with_one_fixed_continuation() {
+fn ordinary_prefix_unchanged_and_two_idle_turns_stall_with_one_fixed_continuation_when_the_owner_set_idle_pause(
+) {
     let env = TestEnv::new();
     let engine = Arc::new(ScriptedEngine::new(vec![
         ScriptTurn::text("Idle"),
         ScriptTurn::text("Still idle"),
     ]));
     let store = Arc::new(MemStore::new());
-    let mut session = Session::open(deps(&env, store.clone(), engine.clone()), Open::New).unwrap();
+    let mut session = Session::open(idle_pause_deps(&env, store.clone(), engine.clone()), Open::New).unwrap();
     let ordinary = session.inner().prefix.clone();
     let mut sink = VecSink::default();
     session
@@ -405,11 +423,13 @@ fn ordinary_prefix_unchanged_and_two_idle_turns_stall_with_one_fixed_continuatio
     let sref = session.inner().sref.clone();
     session.shutdown(&mut HeadlessUi::default());
     drop(session);
-    let mut resumed = Session::open(deps(&env, store, engine), Open::Resume(sref)).unwrap();
+    let mut resumed = Session::open(idle_pause_deps(&env, store, engine), Open::Resume(sref)).unwrap();
     assert_eq!(resumed.goal(), Some(goal));
     resumed.set_goal(None, &mut sink).unwrap();
     assert_eq!(resumed.inner().prefix, ordinary);
-    assert!(resumed.inner().active.get("wait").is_none());
+    // `wait` is declared in every session, goal or not (wait_everywhere.rs).
+    assert!(resumed.inner().active.get("wait").is_some());
+    assert!(resumed.inner().active.get("goal_done").is_none());
 }
 #[test]
 fn done_closes_all_calls_without_running_later_calls_or_requesting_another_reply() {
@@ -1469,6 +1489,128 @@ fn goal_command_clear_fails_when_store_sync_fails() {
     session.shutdown(&mut HeadlessUi::default());
 }
 
+/// An engine whose replies carry no usage, like an upstream the embedded gateway accepts a
+/// finished reply from without one (the ledger settles that request as `usage_missing`).
+struct Unreported(Arc<ScriptedEngine>);
+impl oxa_proto::Engine for Unreported {
+    fn info(&self, target: Option<&str>) -> Result<oxa_proto::EngineInfo, oxa_proto::OxaError> {
+        self.0.info(target)
+    }
+    fn count_tokens(&self, text: &str) -> Result<u32, oxa_proto::OxaError> {
+        self.0.count_tokens(text)
+    }
+    fn chat(
+        &self,
+        r: &oxa_proto::ChatRequest,
+        cancel: &oxa_proto::CancelToken,
+        on: &mut dyn FnMut(oxa_proto::StreamEvent),
+    ) -> Result<oxa_proto::AssistantTurn, oxa_proto::OxaError> {
+        let mut turn = self.0.chat(r, cancel, on)?;
+        turn.usage = oxa_proto::Usage::unreported();
+        Ok(turn)
+    }
+}
+
+#[test]
+fn a_reply_without_usage_charges_the_goal_as_uncertain() {
+    let env = TestEnv::new();
+    let scripted = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("First answer."),
+        ScriptTurn::text("Second answer."),
+    ]));
+    let engine: Arc<dyn oxa_proto::Engine> = Arc::new(Unreported(scripted.clone()));
+    let mut session = Session::open(deps_engine(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+    session
+        .set_goal(
+            Some(objective(GoalBudget {
+                max_tokens: Some(1_000_000),
+                ..Default::default()
+            })),
+            &mut VecSink::default(),
+        )
+        .unwrap();
+    // The unknown spend is recorded; it does not end the run.
+    let _ = session.prompt(
+        "Start".into(),
+        vec![],
+        &mut VecSink::default(),
+        &mut HeadlessUi::default(),
+    );
+    let goal = session.goal().unwrap();
+    assert!(
+        goal.unknown_requests >= 1,
+        "an unreported usage is unknown spend, not zero"
+    );
+    assert!(
+        !goal.exhausted(),
+        "unknown spend is not an exhausted token budget"
+    );
+    assert_ne!(
+        goal.status,
+        GoalStatus::Blocked,
+        "unknown spend does not block the goal"
+    );
+    assert!(
+        scripted.requests().len() >= 2,
+        "the goal went on after the unreported reply"
+    );
+}
+
+#[test]
+fn two_idle_replies_warn_and_the_goal_keeps_pursuing_by_default() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("Idle"),
+        ScriptTurn::text("Still idle"),
+        ScriptTurn::tool(
+            "finish",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Finished after two idle replies."}"#,
+        ),
+    ]));
+    let mut session =
+        Session::open(deps(&env, Arc::new(MemStore::new()), engine.clone()), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    session
+        .prompt(
+            "Start the stored goal".into(),
+            vec![],
+            &mut sink,
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        engine.requests().len(),
+        3,
+        "the goal was pursued past the second idle reply"
+    );
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Done);
+    let notices: Vec<String> = sink
+        .0
+        .iter()
+        .filter_map(|event| match event {
+            oxa_proto::AgentEvent::Notice { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        notices
+            .iter()
+            .filter(|t| t.contains("two replies without an action; still pursuing"))
+            .count(),
+        1,
+        "{notices:?}"
+    );
+    assert!(
+        !notices.iter().any(|t| t.starts_with("Goal paused")),
+        "{notices:?}"
+    );
+    session.shutdown(&mut HeadlessUi::default());
+}
+
 #[test]
 fn idle_pause_records_reason() {
     use oxa_core::goal::parse_goal_command;
@@ -1479,7 +1621,7 @@ fn idle_pause_records_reason() {
         ScriptTurn::text("Still idle"),
     ]));
     let store = Arc::new(MemStore::new());
-    let mut session = Session::open(deps(&env, store, engine), Open::New).unwrap();
+    let mut session = Session::open(idle_pause_deps(&env, store, engine), Open::New).unwrap();
     let mut sink = VecSink::default();
     let statuses = Arc::new(GoalStatusTrace::default());
     session.set_progress_observer(statuses.clone());

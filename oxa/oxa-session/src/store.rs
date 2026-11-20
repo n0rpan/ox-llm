@@ -686,17 +686,21 @@ fn body_fields(body: &EntryBody, ts_ms: u64, private: bool) -> (&'static str, Ma
         }
         EntryBody::Usage { kind, usage } => {
             let mut u = Map::new();
-            u.insert("input".into(), Value::from(usage.prompt));
-            u.insert("output".into(), Value::from(usage.completion));
-            // Not reported is not a miss: leave `cacheRead` out (decoded as `cached_missing`).
-            if !usage.cached_missing {
-                u.insert("cacheRead".into(), Value::from(usage.cached));
+            if usage.unreported {
+                u.insert("unreported".into(), Value::Bool(true));
+            } else {
+                u.insert("input".into(), Value::from(usage.prompt));
+                u.insert("output".into(), Value::from(usage.completion));
+                // Not reported is not a miss: leave `cacheRead` out (decoded as `cached_missing`).
+                if !usage.cached_missing {
+                    u.insert("cacheRead".into(), Value::from(usage.cached));
+                }
+                u.insert("cacheWrite".into(), Value::from(0u32));
+                u.insert(
+                    "totalTokens".into(),
+                    Value::from(u64::from(usage.prompt) + u64::from(usage.completion)),
+                );
             }
-            u.insert("cacheWrite".into(), Value::from(0u32));
-            u.insert(
-                "totalTokens".into(),
-                Value::from(u64::from(usage.prompt) + u64::from(usage.completion)),
-            );
             f.insert("kind".into(), Value::from(kind.as_str()));
             f.insert("usage".into(), Value::Object(u));
             "usage"
@@ -1145,6 +1149,9 @@ fn decode_part(v: &Value) -> Result<Part, OxaError> {
 
 /// pi's usage object; `cost` and `totalTokens` are derived, not stored separately.
 fn decode_usage(o: &Map<String, Value>) -> Usage {
+    if o.get("unreported").and_then(Value::as_bool) == Some(true) {
+        return Usage::unreported();
+    }
     let num = |k: &str| {
         o.get(k)
             .and_then(Value::as_u64)
@@ -1156,6 +1163,7 @@ fn decode_usage(o: &Map<String, Value>) -> Usage {
         completion: num("output"),
         cached: num("cacheRead"),
         cached_missing: o.get("cacheRead").and_then(Value::as_u64).is_none(),
+        unreported: false,
     }
 }
 

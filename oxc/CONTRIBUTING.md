@@ -4,7 +4,7 @@ Thanks for looking. This is a lab: we try ideas, measure them honestly and keep 
 
 ## Two repositories
 
-- **oxc/** (this one): controller, OpenAI-compatible API, harness integrations, benchmark and qualification tools, results and docs. Python.
+- **oxc/** (this one): benchmark and qualification results, receipt tools and docs. The Python controller was removed (#951).
 - **engine/**: the Rust engines (`oxe` MoE, Flash SSD streaming, `oxi` images) and their vendored kernels.
 
 Open issues where the code lives; if unsure, open it here.

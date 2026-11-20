@@ -40,7 +40,7 @@ Same warm-up protocol (three 128-token synthetic requests), then fresh processes
 
 The original unmatched 89.43 s CPP arm is excluded. The historical 64.0 s direct run generated 479 tokens versus 957 in the first new CPP arm, and used a different direct path/first prompt (5,540 versus5,544 initial tokens); it is not the new control. Earlier provisional 32.4%/27.6% figures are replaced by the 22.2% median. Sample output counts: Ornith CPP 957/791/791 versus Rust 746/661/661; Qwen CPP 718/537/586 versus Rust 535/670/670. One protected repair task does not establish broad quality superiority.
 
-[Per-arm and per-request metadata](../benchmarks/results/rust-integrated-server-qualification.json), [sampling capture](../benchmarks/results/rust-integrated-sampling.json), [summarizer](../benchmarks/roofline/summarize_integrated_server.py). Raw synthetic output/oracles stay private. Lightweight repeats completed in about 13 minutes of serial wall time (plus the separate off diagnostic and build), under the lease.
+[Per-arm and per-request metadata](../benchmarks/results/rust-integrated-server-qualification.json), [sampling capture](../benchmarks/results/rust-integrated-sampling.json), summarizer. Raw synthetic output/oracles stay private. Lightweight repeats completed in about 13 minutes of serial wall time (plus the separate off diagnostic and build), under the lease.
 
 ## Follow-up: faster MTP seeding (not promoted)
 

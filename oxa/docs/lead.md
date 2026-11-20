@@ -4,8 +4,8 @@ The lead is an ordinary oxa session with an embedded, lead-only `lead` skill.
 Its instructions are exported as `oxa_resources::LEAD_SKILL` for the preset;
 ordinary sessions neither discover nor install this skill. It does not enable
 runner access by itself.
-Shadow is disabled by default. Enable `"oxa.lead.shadow": true` in the user's
-`settings.json`; project settings cannot enable it. Then `oxa lead --shadow`
+Shadow is on by default. `"oxa.lead.shadow": false` in the user's
+`settings.json` turns it off; project settings cannot change it. `oxa lead --shadow`
 opens an ordinary TUI or print session restricted to
 `read`, `grep`, `find` and `ls`. It embeds the lead instructions in every prefix
 epoch and enforces the proposal schema. For example:
