@@ -51,23 +51,30 @@ fn decide(cwd: &Path, level: Autonomy, command: &str) -> Decision {
 fn own_branch_publish_is_allowed() {
     let cwd = repo("my-branch");
     for c in [
-        "git push",
         "git push origin HEAD",
         "git push -u origin my-branch",
         "git push origin HEAD:my-branch",
-        "GIT_TERMINAL_PROMPT=0 git push",
+        "GIT_TERMINAL_PROMPT=0 git push origin HEAD",
         "git -C . push origin HEAD",
-        "git status && git push",
-        "git push && gh pr create --title t --body b",
+        "git status && git push origin HEAD",
+        "git push origin HEAD && gh pr create --title t --body b",
         "gh pr checks",
         "gh pr view --json state",
         "gh run watch 12 --exit-status",
         "gh api repos/o/r/pulls/1/comments",
-        "git push 2>&1 | tail -n 5",
+        "git push origin HEAD 2>&1 | tail -n 5",
     ] {
         for level in [Autonomy::Standard, Autonomy::Auto] {
             assert_eq!(decide(&cwd, level, c), Decision::Allow, "{c}");
         }
+    }
+}
+
+#[test]
+fn push_without_an_explicit_refspec_asks() {
+    let cwd = repo("my-branch");
+    for c in ["git push", "git push origin"] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{c}");
     }
 }
 
@@ -155,7 +162,7 @@ fn configured_push_destinations_ask() {
         &cwd,
         "[branch \"my-branch\"]\n\tremote = origin\n\tmerge = refs/heads/my-branch\n",
     );
-    assert_eq!(decide(&cwd, Autonomy::Auto, "git push"), Decision::Allow);
+    assert_eq!(decide(&cwd, Autonomy::Auto, "git push"), Decision::Ask);
 }
 
 #[test]
@@ -261,7 +268,7 @@ fn origin_url_change_after_baseline_asks() {
         let cwd = repo("my-branch");
         set_config(&cwd, "[remote \"origin\"]\n\turl = https://github.com/o/r\n");
         // The first command of the session records the baseline.
-        assert_eq!(decide(&cwd, Autonomy::Auto, "git push"), Decision::Allow);
+        assert_eq!(decide(&cwd, Autonomy::Auto, "git status"), Decision::Allow);
         assert_eq!(
             decide(&cwd, Autonomy::Auto, "git push origin HEAD"),
             Decision::Allow
