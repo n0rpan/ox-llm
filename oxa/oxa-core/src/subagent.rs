@@ -298,6 +298,8 @@ struct Config {
     remote_concurrency: usize,
     /// `oxa.subagent.maxChildren`: children per parent session and tasks or steps per call.
     max_children: usize,
+    /// `oxa.onExceed.subagentChildren` is not `warn`: a call above the cap is refused.
+    enforce_children: bool,
     /// `oxa.subagent.isolated`: local children run in their own session and prefix (#1844).
     isolated: bool,
 }
@@ -311,6 +313,7 @@ impl Default for Config {
             small_context: false,
             remote_concurrency: DEFAULT_REMOTE_CONCURRENCY,
             max_children: MAX_PARALLEL_TASKS,
+            enforce_children: false,
             isolated: false,
         }
     }
@@ -459,6 +462,9 @@ impl SubagentHooks {
                 as usize)
                 .clamp(1, max_children),
             max_children,
+            enforce_children: settings
+                .on_exceed(oxa_config::Budget::SubagentChildren)
+                .enforces(),
             isolated: settings.bool(SETTING_ISOLATED, false),
         };
         *lock(&self.inner.settings) = settings.clone();
@@ -910,10 +916,21 @@ impl Tool for SubagentTool {
         if modes != 1 {
             return ToolOutput::error(T::INVALID_MODE.replace("{available}", &available_list(&inner.agents)));
         }
-        let max = lock(&inner.config).max_children;
+        let (max, enforce) = {
+            let config = lock(&inner.config);
+            (config.max_children, config.enforce_children)
+        };
         // `oxa.subagent.maxChildren` is a warning threshold: a call above it runs (children go
         // one after another or at the remote concurrency) and the result carries the warning.
+        // The owner can make it a refusal with `oxa.onExceed.subagentChildren`.
         let mut warnings: Vec<String> = Vec::new();
+        let asked = chain.len().max(tasks.len());
+        if enforce && asked > max {
+            let text = T::REFUSED_TOO_MANY
+                .replace("{n}", &asked.to_string())
+                .replace("{max}", &max.to_string());
+            return ToolOutput::error(text.clone()).exceeded("subagentChildren", &text);
+        }
         let (shape, items) = if !chain.is_empty() {
             if chain.len() > max {
                 warnings.push(
@@ -970,7 +987,16 @@ impl Tool for SubagentTool {
         // counted against `oxa.subagent.maxChildren`. Reserved before this call waits for its
         // turn, so a call queued behind the running one counts too. Above the limit the call
         // still runs, queued, with a warning.
-        let (budget, over) = Budget::reserve(inner, &limits.session_id, items.len());
+        let (budget, over) = match Budget::reserve(inner, &limits.session_id, items.len(), enforce) {
+            Ok(reserved) => reserved,
+            Err(pending) => {
+                let text = T::REFUSED_TOO_MANY_SESSION
+                    .replace("{pending}", &pending.to_string())
+                    .replace("{n}", &items.len().to_string())
+                    .replace("{max}", &max.to_string());
+                return ToolOutput::error(text.clone()).exceeded("subagentChildren", &text);
+            }
+        };
         // A call whose own size passed the limit already carries that warning.
         if let Some(pending) = over.filter(|pending| *pending > 0) {
             warnings.push(
@@ -1090,11 +1116,16 @@ impl Tool for SubagentTool {
             text.push_str("\n\n");
             text.push_str(warning);
         }
-        ToolOutput {
+        let out = ToolOutput {
             images: Vec::new(),
             text,
             is_error,
             ui: details,
+        };
+        if warnings.is_empty() {
+            out
+        } else {
+            out.exceeded("subagentChildren", &warnings.join(" "))
         }
     }
 }
@@ -1199,22 +1230,33 @@ impl<'a> Budget<'a> {
     /// Reserve `n` children for `session`. The second value is `Some(children already running
     /// or waiting)` when that passes `oxa.subagent.maxChildren`: a warning, the reservation
     /// still stands.
-    fn reserve(inner: &'a Inner, session: &str, n: usize) -> (Budget<'a>, Option<usize>) {
+    ///
+    /// With `enforce` (`oxa.onExceed.subagentChildren`) an over-cap reservation is not made:
+    /// `Err(children already running or waiting)`.
+    fn reserve(
+        inner: &'a Inner,
+        session: &str,
+        n: usize,
+        enforce: bool,
+    ) -> Result<(Budget<'a>, Option<usize>), usize> {
         let max = lock(&inner.config).max_children;
         let mut pending = lock(&inner.pending);
         let now = pending.get(session).copied().unwrap_or(0);
+        if enforce && now.saturating_add(n) > max {
+            return Err(now);
+        }
         // The warning names what was already in flight: with nothing pending, this call's own
         // size is the per-call warning's business, not a session one.
         let over = now > 0 && now.saturating_add(n) > max;
         pending.insert(session.to_string(), now.saturating_add(n));
-        (
+        Ok((
             Budget {
                 inner,
                 session: session.to_string(),
                 left: n,
             },
             over.then_some(now),
-        )
+        ))
     }
 
     fn release(&mut self, n: usize) {
@@ -2018,9 +2060,9 @@ mod limit_tests {
     fn children_above_the_limit_are_reserved_with_a_warning_not_refused() {
         let settings = Settings::from_values(json!({"oxa": {"subagent": {"maxChildren": 3}}}), json!({}));
         let hooks = SubagentHooks::new(PathBuf::from("unused"), Vec::new()).with_settings(&settings);
-        let (first, over) = Budget::reserve(&hooks.inner, "s", 3);
+        let (first, over) = Budget::reserve(&hooks.inner, "s", 3, false).unwrap();
         assert_eq!(over, None, "at the limit is not above it");
-        let (second, over) = Budget::reserve(&hooks.inner, "s", 2);
+        let (second, over) = Budget::reserve(&hooks.inner, "s", 2, false).unwrap();
         assert_eq!(over, Some(3), "two more on top of three running or queued warn");
         assert_eq!(
             lock(&hooks.inner.pending).get("s").copied(),
@@ -2030,5 +2072,23 @@ mod limit_tests {
         drop(second);
         drop(first);
         assert!(lock(&hooks.inner.pending).get("s").is_none());
+    }
+
+    #[test]
+    fn an_enforcing_owner_refuses_children_above_the_cap_and_reserves_nothing() {
+        let user = json!({"oxa": {"subagent": {"maxChildren": 3}, "onExceed": {"subagentChildren": "stop"}}});
+        // A project file cannot switch enforcement on or off.
+        let project = json!({"oxa": {"onExceed": {"subagentChildren": "warn"}}});
+        let settings = Settings::from_values(user, project);
+        let hooks = SubagentHooks::new(PathBuf::from("unused"), Vec::new()).with_settings(&settings);
+        assert!(lock(&hooks.inner.config).enforce_children);
+        let (first, _) = Budget::reserve(&hooks.inner, "s", 2, true).unwrap();
+        assert_eq!(Budget::reserve(&hooks.inner, "s", 2, true).err(), Some(2));
+        assert_eq!(
+            lock(&hooks.inner.pending).get("s").copied(),
+            Some(2),
+            "the refused call reserved nothing"
+        );
+        drop(first);
     }
 }

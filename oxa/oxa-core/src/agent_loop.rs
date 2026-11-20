@@ -121,6 +121,11 @@ pub fn run_loop(
     // last reply): `message_start` / `message_end` each, and they open `agent_end.messages`.
     let opening = crate::fire::opening_messages(st);
     let result = run_inner(st, sink, ui, &mut run_msgs, &opening);
+    // A failed run records why its pursuing goal stopped; `/goal resume` (or the a2a resume)
+    // continues it in this session.
+    if let Ok(RunEnd::Failed(error)) = &result {
+        crate::goal::record_failure(st, error, sink)?;
+    }
     crate::goal::checkpoint(st, false, sink)?;
     drop(steering);
     crate::think::end_run(st, ui);
@@ -155,6 +160,11 @@ fn run_inner(
     // Consecutive transient failures of one logical request. This state lives inside the run so
     // recovery preserves done checks, the turn limit and the request idempotency key.
     let mut goal_failures: u32 = 0;
+    // #2183: when a tool boundary of a pursuing goal first saw a follow-up that is still queued.
+    let mut follow_up_seen: Option<std::time::Instant> = None;
+    // Replies in a row without a tool call while a goal is pursued: the first continues, the
+    // second adds one nudge, the third and later wait before the next request. Run-local.
+    let mut idle_streak: u32 = 0;
     // `oxa.maxTurns` (default unset: no limit): model replies of this run (#507).
     let max_turns = st.settings.u32(crate::repeat::MAX_TURNS, 0);
     'turns: loop {
@@ -387,7 +397,7 @@ fn run_inner(
                         let deadline = std::time::Instant::now() + delay;
                         loop {
                             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                            let has_input = !crate::queue::lock(&shared.queue).steering.is_empty();
+                            let has_input = shared.has_steering();
                             let ended = crate::goal::wait_failure_backoff(
                                 st,
                                 if has_input {
@@ -758,7 +768,9 @@ fn run_inner(
                 crate::fire::message(st, HookPoint::MessageEnd, &msg, sink, ui);
                 tool_msgs.push(msg);
             }
+            idle_streak = 0;
             done.note_edits(&results);
+            st.stats.ci_polls += results.iter().filter(|r| r.ui["ciPoll"] == true).count() as u32;
             done.note_proof(&calls, &results);
             done.note_bash(st, &results);
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
@@ -800,11 +812,27 @@ fn run_inner(
                             continue;
                         }
                     }
+                    // One nudge per open fact (unproven edits, running jobs): the goal stays
+                    // pursuing for one more turn, then the completion goes through.
+                    if !wrapping_up && !st.shared.has_input() {
+                        match crate::done::finish_decision(st, &mut done, true) {
+                            crate::done::FinishDecision::Nudge(text) => {
+                                pending_completion = goal.defer_completion();
+                                crate::goal::checkpoint(st, false, sink)?;
+                                crate::done::send_nudge(st, text, sink, ui, run_msgs)?;
+                                continue;
+                            }
+                            crate::done::FinishDecision::End { unresolved } => {
+                                crate::done::record_end(st, &done, &unresolved, sink)?;
+                            }
+                        }
+                    }
                 }
                 crate::goal::checkpoint(st, false, sink)?;
                 return Ok(RunEnd::Stopped);
             }
             crate::goal::checkpoint(st, false, sink)?;
+            announce_exceeded(st, &results, sink)?;
 
             if st.shared.cancel.is_cancelled() || wrapping_up {
                 return Ok(wrap_up_failure.map_or(RunEnd::Aborted, RunEnd::Failed));
@@ -878,6 +906,14 @@ fn run_inner(
             }
             // Steering drains after the tool batch, each message as a user message.
             deliver_steering(st, sink, ui, run_msgs)?;
+            // #2183: a pursuing goal can call tools without ever stopping or waiting, so a
+            // follow-up is not left behind such a turn for ever: one that has waited
+            // `oxa.goal.followUpMaxWaitSeconds` is delivered at this tool boundary.
+            if crate::goal::follow_up_due(st, &mut follow_up_seen) {
+                for text in drain_follow_ups(st, sink) {
+                    push_user(st, text, sink, ui, run_msgs)?;
+                }
+            }
             // A wait that input woke hands that input to the model now: a follow-up is
             // otherwise only drained when the run stops, after the model has answered
             // the wait result without it.
@@ -965,6 +1001,17 @@ fn run_inner(
         }
         if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
             crate::goal::checkpoint(st, false, sink)?;
+            if pending_completion.is_some() && turn.finish != Finish::Length && !st.shared.has_input() {
+                match crate::done::finish_decision(st, &mut done, true) {
+                    crate::done::FinishDecision::Nudge(text) => {
+                        crate::done::send_nudge(st, text, sink, ui, run_msgs)?;
+                        continue;
+                    }
+                    crate::done::FinishDecision::End { unresolved } => {
+                        crate::done::record_end(st, &done, &unresolved, sink)?;
+                    }
+                }
+            }
             if let Some(evidence) = pending_completion.take() {
                 if goal.pursuing() {
                     goal.finish_completion(evidence)?;
@@ -973,15 +1020,34 @@ fn run_inner(
                 return Ok(RunEnd::Stopped);
             }
             let was_pursuing = goal.pursuing();
-            let (snapshot, idle_noted) = goal.stopped(st.settings.user_bool("oxa.goal.idlePause", false));
+            let idle_action = crate::goal::idle_action(st, &goal, max_turns);
+            let (mut snapshot, idle_noted) = goal.stopped(idle_action.enforces());
+            let mut idle_stopped = None;
+            if idle_action == oxa_config::OnExceed::Stop
+                && was_pursuing
+                && snapshot.status == oxa_session::GoalStatus::Paused
+            {
+                let reason = snapshot.pause_reason.clone().unwrap_or_default();
+                snapshot = goal.stop_because(&reason);
+                idle_stopped = Some(reason);
+            }
             crate::goal::save_checkpoint(st, &snapshot, sink)?;
             if idle_noted {
                 crate::goal::announce_idle(sink);
+                crate::goal::record_notice(st, crate::goal::IDLE_NOTICE.into(), sink)?;
             }
             if was_pursuing && snapshot.status == oxa_session::GoalStatus::Paused {
                 if let Some(reason) = snapshot.pause_reason.as_deref() {
                     crate::goal::announce_pause(reason, sink);
+                    crate::goal::record_notice(st, format!("Goal paused: {reason}; /goal resume"), sink)?;
                 }
+            }
+            if let Some(reason) = idle_stopped {
+                crate::goal::record_exceeded(
+                    st,
+                    format!("Goal stopped: {reason} (oxa.onExceed.goalIdle is stop)"),
+                    sink,
+                )?;
             }
             if goal.pursuing() && st.active.get("goal_done").is_none() {
                 // The owner's tool selection removed the goal controls: the continue
@@ -997,7 +1063,49 @@ fn run_inner(
                 if st.shared.has_input() {
                     return Ok(RunEnd::Stopped);
                 }
-                push_user(st, crate::prompt::GOAL_CONTINUE.into(), sink, ui, run_msgs)?;
+                idle_streak += 1;
+                // A reply that matched the output schema is an answer, not an idle reply: say
+                // that it was recorded and what comes next (a wait or goal_done).
+                let answered = st.output_schema.is_some();
+                let mut text = if answered {
+                    crate::prompt::GOAL_CONTINUE_AFTER_ANSWER
+                } else {
+                    crate::prompt::GOAL_CONTINUE
+                };
+                if idle_streak == 2 {
+                    text = crate::prompt::GOAL_IDLE_NUDGE;
+                } else if let Some(delay) = crate::goal::idle_wait(st, &goal, idle_streak) {
+                    let note = format!(
+                        "Goal idle: {idle_streak} replies without an action; waiting {} s (oxa.goal.idleBackoffSeconds; oxa.goal.idlePause pauses instead)",
+                        delay.as_secs()
+                    );
+                    st.shared.wait_wake.reset();
+                    persist(
+                        st,
+                        EntryBody::Shown {
+                            text: note.clone(),
+                            why: shown_why::NOTICE,
+                        },
+                        sink,
+                    )?;
+                    sink.emit(&AgentEvent::Notice {
+                        level: Level::Info,
+                        text: note,
+                    });
+                    if st.shared.has_input() {
+                        return Ok(RunEnd::Stopped);
+                    }
+                    match crate::goal::wait_failure_backoff(st, delay) {
+                        crate::goal::BackoffEnd::Aborted => return Ok(RunEnd::Aborted),
+                        crate::goal::BackoffEnd::RetryStopped => return Ok(RunEnd::Stopped),
+                        crate::goal::BackoffEnd::Elapsed => {}
+                    }
+                    st.shared.wait_wake.reset();
+                    if st.shared.has_input() {
+                        return Ok(RunEnd::Stopped);
+                    }
+                }
+                push_user(st, text.into(), sink, ui, run_msgs)?;
                 continue;
             }
         }
@@ -1020,6 +1128,17 @@ fn run_inner(
                     .to_string(),
             });
             continue;
+        }
+        if turn.finish != Finish::Length && !st.shared.has_input() {
+            match crate::done::finish_decision(st, &mut done, false) {
+                crate::done::FinishDecision::Nudge(text) => {
+                    crate::done::send_nudge(st, text, sink, ui, run_msgs)?;
+                    continue;
+                }
+                crate::done::FinishDecision::End { unresolved } => {
+                    crate::done::record_end(st, &done, &unresolved, sink)?;
+                }
+            }
         }
         return Ok(RunEnd::Stopped);
     }
@@ -1162,6 +1281,32 @@ fn drain_follow_ups(st: &SessionState, sink: &mut dyn EventSink) -> Vec<String> 
         sink.emit(&AgentEvent::QueueUpdate { steering, follow_up });
     }
     taken
+}
+
+/// An owner budget a tool result exceeded (`oxa.onExceed`): one warning notice and one recorded
+/// `Shown` entry per result, whatever the action was (warn, or a refused call).
+fn announce_exceeded(
+    st: &mut SessionState,
+    results: &[crate::exec::CallResult],
+    sink: &mut dyn EventSink,
+) -> Result<(), OxaError> {
+    for result in results {
+        if let Some((_, notice)) = oxa_proto::ToolOutput::exceeded_notice(&result.ui) {
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Warning,
+                text: notice.to_string(),
+            });
+            persist(
+                st,
+                EntryBody::Shown {
+                    text: notice.to_string(),
+                    why: shown_why::NOTICE,
+                },
+                sink,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Persist a body and announce the entry. A dropped reply (aborted, failed, cut) ends the

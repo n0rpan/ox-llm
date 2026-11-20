@@ -10,7 +10,8 @@ use crate::dispatch::lead_owner::{private_directory, private_file, unavailable, 
 use oxa_config::Dirs;
 use oxa_proto::{Entry, EntryBody, OxaError, Role};
 use oxa_session::{
-    decode_entry, decode_header, lock_holder, send_inbox, session_files_under, SessionHeader, SessionRef,
+    decode_entry, decode_header, lock_holder, send_inbox_steer, session_files_under, SessionHeader,
+    SessionRef,
 };
 use std::{
     fs::File,
@@ -224,11 +225,6 @@ impl AttachedSession {
         })
     }
 
-    /// The id, to mark the attached row in the list.
-    pub(crate) fn id(&self) -> &str {
-        &self.session.id
-    }
-
     /// The settings still select this id, the file is the one proven at load, and the
     /// directories are still owner-only.
     pub(crate) fn recheck(&self) -> Result<(), OxaError> {
@@ -240,6 +236,11 @@ impl AttachedSession {
             return Err(unavailable());
         }
         Ok(())
+    }
+
+    /// The attached session's exact id.
+    pub(crate) fn session_id(&self) -> &str {
+        &self.session.id
     }
 
     /// The first characters of the id, for the page heading.
@@ -264,10 +265,11 @@ impl AttachedSession {
     }
 
     /// Publish the owner's text into the session's inbox, as `oxa send <id> <text>` does. The
-    /// session reads it at its next turn; it is a follow-up for the model, never an approval.
+    /// session takes it at its next tool boundary (a steer, #2183), or as its next prompt when
+    /// idle; it is a message for the model, never an approval.
     pub(crate) fn send(&self, text: &str) -> Result<(), OxaError> {
         self.recheck()?;
-        send_inbox(&self.dirs.agent_dir, &self.session.id, text).map_err(|_| unavailable())
+        send_inbox_steer(&self.dirs.agent_dir, &self.session.id, text).map_err(|_| unavailable())
     }
 }
 

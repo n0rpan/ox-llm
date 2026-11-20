@@ -7,6 +7,13 @@ use std::path::{Path, PathBuf};
 mod native_queue;
 pub(crate) use native_queue::authenticate_native_claim;
 
+/// The nearest and outermost Git boundaries of a canonical directory, without running Git.
+pub(crate) fn git_boundaries(cwd: &Path) -> Option<(&Path, &Path)> {
+    let mut repos = cwd.ancestors().filter(|path| path.join(".git").exists());
+    let nearest = repos.next()?;
+    Some((nearest, repos.last().unwrap_or(nearest)))
+}
+
 pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs) -> Result<bool, String> {
     crate::dispatch::project_trusted(
         &crate::Args::default(),
@@ -104,16 +111,8 @@ pub(crate) fn run(
         let binary: PathBuf = std::env::current_exe().map_err(|e| e.to_string())?;
         // Find the source boundary from files before executing any host tool.
         let cwd_c = cwd.canonicalize().map_err(|e| e.to_string())?;
-        let project = cwd_c
-            .ancestors()
-            .find(|p| p.join(".git").exists())
-            .ok_or("oxa work requires a Git repository")?;
         // Nested repository metadata cannot bless code from an outer project.
-        let host_project = project
-            .ancestors()
-            .filter(|p| p.join(".git").exists())
-            .last()
-            .unwrap_or(project);
+        let (project, host_project) = git_boundaries(&cwd_c).ok_or("oxa work requires a Git repository")?;
         let host_path = crate::netguard::trusted_work_path(
             std::ffi::OsStr::new(env.get("PATH").unwrap_or("")),
             host_project,
@@ -501,7 +500,12 @@ fn configure_lane(policy: &mut oxa_work::RunPolicy, root: &Path, env: &Env, dirs
     if ask && !policy.push_approved {
         let question = "Lane acceptance will push each accepted commit to origin and wait for lane CI. Type yes to allow pushes for this run: ";
         if let Some(socket) = env.get(oxa_core::owner_confirm::SOCK_ENV) {
-            policy.push_approved = oxa_core::owner_confirm::ask(Path::new(socket), question) == Some(true);
+            policy.push_approved = oxa_core::owner_confirm::ask(
+                Path::new(socket),
+                &oxa_core::owner_confirm::Request::ask("Allow lane pushes", question),
+            )
+            .answer()
+                == Some(true);
         } else if !agent_launched(env) {
             policy.push_approved = crate::report_cmd::tty_confirm(env)(question) == Some(true);
         }

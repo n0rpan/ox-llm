@@ -576,7 +576,40 @@ fn stage_bytes(bytes: &[u8]) -> std::io::Result<std::fs::File> {
 /// (`OXA_CODING_AGENT` set) gets `None`. A manual terminal asks through `/dev/tty` (never stdin, so
 /// piped input cannot confirm) and gets `None` without one.
 pub(crate) fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
-    tty_confirm_with(env, oxa_core::owner_confirm::ask, ask_verified)
+    tty_confirm_with(env, ask_broker, ask_verified)
+}
+
+/// The structured request for a question text: the broker shows the title and the body as
+/// separate fields.
+fn confirm_request(question: &str) -> oxa_core::owner_confirm::Request {
+    oxa_core::owner_confirm::Request::ask("Confirm with the owner", question)
+}
+
+/// The caller's answer from the broker's reply. When nobody answered, the broker's reason is
+/// printed to stderr, so "no answer" is never the only text (a request over the owner's size
+/// limit says its size, the limit and the variable that changes it).
+fn answer_of(reply: oxa_core::owner_confirm::Reply, question: &str) -> Option<bool> {
+    let answer = reply.answer();
+    if answer.is_none() {
+        match reply.reason.as_deref() {
+            Some("too_large") => eprintln!(
+                "Not confirmed: the request is {} bytes and the owner confirm broker accepts at most {} \
+                 (change it with OXA_CONFIRM_MAX_REQUEST_BYTES).",
+                question.len(),
+                reply.limit.unwrap_or_default()
+            ),
+            Some("unreachable") | None => {}
+            Some(reason) => eprintln!("Not confirmed: the owner confirm broker could not ask ({reason})."),
+        }
+    }
+    answer
+}
+
+fn ask_broker(sock: &Path, question: &str) -> Option<bool> {
+    answer_of(
+        oxa_core::owner_confirm::ask(sock, &confirm_request(question)),
+        question,
+    )
 }
 
 /// Connect to `sock`, require the peer to be the session's own oxa process, then ask on that
@@ -586,7 +619,10 @@ fn ask_verified(sock: &Path, question: &str) -> Option<bool> {
     if !peer_is_session_oxa(&stream) {
         return None;
     }
-    oxa_core::owner_confirm::ask_on(stream, question)
+    answer_of(
+        oxa_core::owner_confirm::ask_on(stream, &confirm_request(question)),
+        question,
+    )
 }
 
 /// `true` when the process that owns the listening socket is this process's ancestor, runs the
