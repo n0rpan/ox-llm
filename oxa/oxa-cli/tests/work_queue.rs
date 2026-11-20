@@ -760,7 +760,8 @@ fn a_monitor_error_drains_admitted_workers_before_returning() {
         offline: true,
         runner_owns_github: false,
         autonomy: Default::default(),
-        autonomy_now: None,
+        worker_github: Default::default(),
+        authority_now: None,
         storage: env.agent_dir().join("work/monitor-fixture"),
     };
     let result = oxa_work::run_queue(

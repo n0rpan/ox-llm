@@ -109,6 +109,7 @@ oxa.toolOutputCap|Number|16384|true
 oxa.toolRepair|Bool|true|true
 oxa.toolRepeatGuard|Bool|true|true
 oxa.tools.wait|Bool|true|true
+oxa.work.workerGithub|Enum(["runner", "broker", "worker"])|null|true
 oxa.wait.maxSeconds|Number|86400|true
 oxa.wait.pollSeconds|Number|30|true
 oxa.webSearch.enabled|Bool|true|true

@@ -975,7 +975,8 @@ mod scan_tests {
             offline: false,
             runner_owns_github: false,
             autonomy: Default::default(),
-            autonomy_now: None,
+            worker_github: Default::default(),
+            authority_now: None,
             storage: dir.path().join("storage"),
         };
         git_ok(dir.path(), &["init", "-q", "-b", "main"]);

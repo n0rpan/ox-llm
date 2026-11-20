@@ -154,6 +154,17 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     d("oxa.tools.wait", Group::Advanced, "", "oxa.tools.wait", "")
         .key(Kind::Bool, "true")
         .hidden(),
+    // Read from the user layer only. Unset follows the mode: yolo `worker`, auto `broker`,
+    // standard `runner`.
+    d(
+        "oxa.work.workerGithub",
+        Group::Advanced,
+        "",
+        "oxa.work.workerGithub",
+        "",
+    )
+    .key(Kind::Enum(&["runner", "broker", "worker"]), "null")
+    .hidden(),
     // W2: the `wait` tool's `until` conditions, answered by hook sets (`Hooks::poll_event`).
     d(
         "oxa.wait.maxSeconds",
