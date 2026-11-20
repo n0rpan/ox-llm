@@ -2,12 +2,15 @@
 
 ## v0.2.1 Rust-only upgrade boundary
 
-The v0.2.1 release target (#763) installs native `oxa` and `oxe-server`, retaining
-the approved native MEMLAT utility and four inert templates, with
-native cloud/local selection: no Python runtime dependency, Python payload,
-`oxc`/diagnostics wrappers, controller daemon or service on port 8092. Packaging
-must qualify that exact artifact. See [native install and upgrade](NATIVE-INSTALL.md)
-for the owner-facing v0.2.0 upgrade procedure.
+The combined Linux tarballs and both Arch variants have exactly four commands
+in `usr/bin/`: `oxa`, `oxe`, `oxe-server` and `local-ai-memlat-boot`. Standalone
+`oxe` stays in the payload (#1394): the engine tools support other clients and
+LAN sharing without running the `oxa` agent. The payload also contains licence
+files and the four inert [MEMLAT templates](NATIVE-INSTALL.md#recovery-and-scope) under
+`usr/share/ox-llm/memlat/`. It has no Python runtime dependency, Python payload,
+`oxc`/diagnostics wrappers, controller daemon or service on port 8092. The
+v0.2.1 release target (#763) requires qualification on the exact artifacts.
+See [native install and upgrade](NATIVE-INSTALL.md) for the upgrade procedure.
 
 Keep provider keys in `~/.config/oxc/llm/cloud-secrets.json` and the compatible
 ChatGPT token in `~/.config/oxc/llm/chatgpt-auth.json`, under the same user HOME.
@@ -61,7 +64,9 @@ downloads no model.
 Each architecture produces a tarball containing a standard `usr/` tree, its exact
 source archive, `SHA256SUMS`, `SBOM.cdx.json`, `TOOLCHAIN.txt`, and
 `REPRODUCIBILITY.txt`, retained as workflow artifacts for seven days.
-The CycloneDX 1.6 SBOM inventories Cargo's locked workspace resolution (including
+The CPU artifact jobs unpack each tarball and require the four approved
+executables before running the no-Python checks against the archive. The
+CycloneDX 1.6 SBOM inventories Cargo's locked workspace resolution (including
 build/test dependencies and registry source checksums) and every shipped file's
 SHA-256. It is an inventory, not a claim of
 vulnerability clearance or a minimal runtime dependency graph.

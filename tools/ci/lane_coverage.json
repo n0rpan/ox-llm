@@ -1,0 +1,28 @@
+{
+  "workspaces": {
+    "oxa": {
+      "packages": "all"
+    },
+    "engine": {
+      "packages": [
+        "server",
+        "gguf",
+        "tokenizer",
+        "sched",
+        "chat"
+      ]
+    }
+  },
+  "contract": [
+    ".github/workflows/lane.yml",
+    "tools/ci/lane-nextest.toml",
+    "tools/ci/lane_coverage.json",
+    "tools/ci/lane_queue.py",
+    "tools/ci/lane_run.py",
+    "tools/ci/lane_select.py",
+    "tools/ci/rust_cache_key.py",
+    "tools/ci/tests/test_lane_queue.py",
+    "tools/ci/tests/test_lane_run.py",
+    "tools/ci/tests/test_lane_select.py"
+  ]
+}

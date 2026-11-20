@@ -798,17 +798,23 @@ impl Handle {
         *lock(&self.shared.gate.token_budget) = tokens;
     }
 
-    /// Remove startup-only limits after their watcher has stopped, preserving
-    /// any wrap-up already requested by a process signal.
-    pub fn clear_startup_limits(&self) {
-        self.set_token_budget(None);
-        for reason in [WrapUpReason::TimeLimit, WrapUpReason::TokenLimit] {
-            let _ = self.shared.gate.wrap_up.compare_exchange(
-                reason as u8,
-                0,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            );
+    /// Carry the invocation-wide limits of the previous session into this one (a resume,
+    /// fork, clone, `/new` or an extension swap). The previous session is idle at the swap,
+    /// so copying is race-free; a handle that shares the same state is left alone.
+    pub fn inherit_run(&self, from: &Handle) {
+        if Arc::ptr_eq(&self.shared, &from.shared) {
+            return;
+        }
+        let (src, dst) = (&from.shared.gate, &self.shared.gate);
+        *lock(&dst.token_budget) = *lock(&src.token_budget);
+        *lock(&dst.run_tokens_used) = *lock(&src.run_tokens_used);
+        dst.usage_unreported
+            .store(src.usage_unreported.load(Ordering::SeqCst), Ordering::SeqCst);
+        let reason = src.wrap_up.load(Ordering::SeqCst);
+        if reason != 0 {
+            let _ = dst
+                .wrap_up
+                .compare_exchange(0, reason, Ordering::SeqCst, Ordering::SeqCst);
         }
     }
 
@@ -1080,18 +1086,19 @@ mod tests {
     }
 
     #[test]
-    fn clearing_startup_limits_releases_the_token_budget_but_preserves_signal_wrap_up() {
-        let handle = handle(QueueMode::All, QueueMode::All);
-        handle.set_token_budget(Some(10));
-        handle.account_tokens(10);
-        assert_eq!(handle.wrap_up_reason(), Some(WrapUpReason::TokenLimit));
-        handle.clear_startup_limits();
-        assert_eq!(handle.remaining_tokens(), None);
-        assert_eq!(handle.wrap_up_reason(), None);
-
-        handle.request_wrap_up(WrapUpReason::Signal);
-        handle.clear_startup_limits();
-        assert_eq!(handle.wrap_up_reason(), Some(WrapUpReason::Signal));
+    fn inherit_run_carries_budget_tally_and_wrap_up() {
+        let from = handle(QueueMode::All, QueueMode::All);
+        from.set_token_budget(Some(100));
+        from.account_tokens(30);
+        from.request_wrap_up(WrapUpReason::Signal);
+        let to = handle(QueueMode::All, QueueMode::All);
+        to.inherit_run(&from);
+        assert_eq!(to.remaining_tokens(), Some(70));
+        assert_eq!(to.run_tokens_used(), 30);
+        assert_eq!(to.wrap_up_reason(), Some(WrapUpReason::Signal));
+        // The same state (an in-place fork keeps its Handle) is left alone.
+        to.inherit_run(&to.clone());
+        assert_eq!(to.remaining_tokens(), Some(70));
     }
 
     #[test]

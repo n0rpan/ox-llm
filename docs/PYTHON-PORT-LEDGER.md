@@ -312,16 +312,18 @@ merge. This clears the packaging SHIP condition for #951 rows 021
   `test_studio_security.py`. The destination still invokes Studio.
 
 The [#763](https://github.com/oxstack/ox-llm/issues/763) packaging requirement
-remains open. The tested packages contain standalone `oxe`, which still needs
-an explicit release allowlist decision. Each source slice still requires
-its caller and evidence gates and the indexed pre-removal archive.
+remains open. The release allowlist retains standalone `oxe` (#1394) in both
+combined Linux tarballs and both Arch variants, so the engine tools remain
+available for other clients and LAN sharing without running the `oxa` agent.
+Each source slice still requires its caller and evidence gates and the indexed
+pre-removal archive.
 
 The [tag publisher](https://github.com/oxstack/ox-llm/blob/6341445c49c39b7a5d6cb2b486df58c2cd4b5e0b/.github/workflows/release.yml#L68-L104)
 combines the tested CPU archive type with standalone `dist-*` outputs. Its
 checks require ARM archives for `oxe-server`, `oxe-server-flash`, `oxi`, and
 `oxa`, and it [publishes the assembled archive set](https://github.com/oxstack/ox-llm/blob/6341445c49c39b7a5d6cb2b486df58c2cd4b5e0b/.github/workflows/release.yml#L146-L147).
-The [generated notes](https://github.com/oxstack/ox-llm/blob/6341445c49c39b7a5d6cb2b486df58c2cd4b5e0b/.github/workflows/release.yml#L128-L132) still describe Python controller
-wrappers and link the legacy cloud-only quickstart. For #763, reconcile the
+The [generated notes](https://github.com/oxstack/ox-llm/blob/6341445c49c39b7a5d6cb2b486df58c2cd4b5e0b/.github/workflows/release.yml#L128-L132) at that revision described Python controller
+wrappers and linked the legacy cloud-only quickstart. For #763, reconcile the
 published asset list and native install notes, then verify checksums, membership,
 and no-Python install behavior on the approved release bytes.
 
@@ -333,8 +335,9 @@ container had no Python interpreter before or after installation. The
 installed `oxa` matched the executable in the archive, printed `oxa 0.2.0`,
 answered a fixture-backed chat turn, and served the synthetic Lead board on
 loopback. `0.2.0` is the pre-bump package version at that source.
-[#1394](https://github.com/oxstack/ox-llm/issues/1394) retains the standalone
-`oxe` allowlist discrepancy and the public release payload checks.
+[#1394](https://github.com/oxstack/ox-llm/issues/1394) reconciles the combined
+payload allowlist and checks its commands in the built tarballs. This is not
+qualification of the final published assets for #763.
 [#1414](https://github.com/oxstack/ox-llm/pull/1414) landed the native docs
 quickstart at `b385abf1`, removing the legacy controller endpoint override.
 

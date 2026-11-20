@@ -14,7 +14,8 @@ background service: you start `oxa`, and `oxa` starts what it needs.
 
 **Stable.** Each release attaches `ox-llm-<version>-linux-aarch64.tar.gz` and
 `ox-llm-<version>-linux-x86_64.tar.gz` with `SHA256SUMS`, an SBOM and build provenance. The
-archive holds one `usr/` tree with `oxa`, `oxe` and `oxe-server`.
+archive holds one `usr/` tree with `oxa`, `oxe`, `oxe-server` and
+`local-ai-memlat-boot`, plus licence files and four inert MEMLAT templates.
 
 ```console
 $ sha256sum -c SHA256SUMS

@@ -84,14 +84,20 @@ pub fn check_reason(text: &str) -> Result<String, String> {
 }
 
 /// Whether an earlier worker counts as a failed attempt: the caller's recorded result wins; else a
-/// dead process, or a finished outcome other than done / nothing_to_do. A stop does not count.
-pub fn failed(result: &str, state: &WorkerState) -> bool {
+/// dead process, or a finished outcome other than done / nothing_to_do. A stop does not count,
+/// whether the record is marked `stopped` (the child may have written `finished / interrupted`
+/// since, which wins over the marker in the state) or the outcome is `interrupted` (a SIGINT from a
+/// stop or the parent's shutdown: a resume case, not a model result).
+pub fn failed(result: &str, state: &WorkerState, stopped: bool) -> bool {
     match result {
         "failed" => true,
         "ok" => false,
+        _ if stopped => false,
         _ => match state {
             WorkerState::Dead => true,
-            WorkerState::Finished(outcome) => !matches!(outcome.as_str(), "done" | "nothing_to_do"),
+            WorkerState::Finished(outcome) => {
+                !matches!(outcome.as_str(), "done" | "nothing_to_do" | "interrupted")
+            }
             _ => false,
         },
     }
@@ -339,11 +345,16 @@ mod tests {
 
     #[test]
     fn recorded_result_beats_process_state() {
-        assert!(failed("failed", &WorkerState::Finished("done".into())));
-        assert!(!failed("ok", &WorkerState::Dead));
-        assert!(failed("", &WorkerState::Dead));
-        assert!(failed("", &WorkerState::Finished("blocked".into())));
-        assert!(!failed("", &WorkerState::Finished("nothing_to_do".into())));
-        assert!(!failed("", &WorkerState::Stopped));
+        assert!(failed("failed", &WorkerState::Finished("done".into()), false));
+        assert!(!failed("ok", &WorkerState::Dead, false));
+        assert!(failed("", &WorkerState::Dead, false));
+        assert!(failed("", &WorkerState::Finished("blocked".into()), false));
+        assert!(!failed("", &WorkerState::Finished("nothing_to_do".into()), false));
+        assert!(!failed("", &WorkerState::Stopped, false));
+        // A stop that the child answered with an interrupted finish, or a stopped record that died.
+        assert!(!failed("", &WorkerState::Finished("interrupted".into()), false));
+        assert!(!failed("", &WorkerState::Finished("blocked".into()), true));
+        assert!(!failed("", &WorkerState::Dead, true));
+        assert!(failed("failed", &WorkerState::Stopped, true));
     }
 }
