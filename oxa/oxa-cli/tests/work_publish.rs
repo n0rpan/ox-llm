@@ -118,7 +118,8 @@ fn exercise_save_recovery(test_name: &str, case: SaveRecovery) {
             terminate_binary: Some("/usr/bin/kill".into()),
             runner_owns_github: false,
             autonomy: Default::default(),
-            autonomy_now: None,
+            worker_github: Default::default(),
+            authority_now: None,
             offline: false,
             storage: root.join("home/.oxa/agent/work/save-recovery"),
         };
