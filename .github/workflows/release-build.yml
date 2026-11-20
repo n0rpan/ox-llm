@@ -4,9 +4,13 @@ on:
   workflow_call:
     inputs:
       version:
-        description: release tag, used in the archive names
+        description: release tag (SemVer, may carry +build metadata); recorded in the SBOM
         type: string
         default: v0.2.0
+      file_version:
+        description: version used in archive file names ('+' written as '.'); defaults to version
+        type: string
+        default: ''
   workflow_dispatch:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -30,6 +34,7 @@ defaults:
 
 env:
   VERSION: ${{ inputs.version || 'v0.2.0' }}
+  FILE_VERSION: ${{ inputs.file_version || inputs.version || 'v0.2.0' }}
   CARGO_HOME: /opt/cargo
   RUSTUP_HOME: /opt/rustup
   CARGO_BUILD_JOBS: '2'
@@ -90,7 +95,7 @@ jobs:
           done
           cmp /build/first.tar.gz /build/second.tar.gz
           arch=$(uname -m)
-          cp /build/first.tar.gz "$GITHUB_WORKSPACE/dist/ox-llm-$VERSION-linux-$arch.tar.gz"
+          cp /build/first.tar.gz "$GITHUB_WORKSPACE/dist/ox-llm-$FILE_VERSION-linux-$arch.tar.gz"
           echo 'PASS: two clean builds in different source/target directories produced identical payload tarballs.' \
             > "$GITHUB_WORKSPACE/dist/REPRODUCIBILITY.txt"
           { rustc --version; cargo --version; cc --version; c++ --version; ld --version; rpm -q glibc libstdc++; } \
@@ -100,7 +105,7 @@ jobs:
         run: |
           set -euo pipefail
           source packaging/release/environment.sh
-          artifact="$GITHUB_WORKSPACE/dist/ox-llm-$VERSION-linux-$(uname -m).tar.gz"
+          artifact="$GITHUB_WORKSPACE/dist/ox-llm-$FILE_VERSION-linux-$(uname -m).tar.gz"
           extracted=$(mktemp -d)
           sandbox=$(mktemp -d)
           trap 'rm -rf "$extracted" "$sandbox"' EXIT
@@ -128,9 +133,9 @@ jobs:
         run: |
           cd /build/first
           mkdir -p /build/payload
-          tar -xzf "$GITHUB_WORKSPACE/dist/ox-llm-$VERSION-linux-$(uname -m).tar.gz" -C /build/payload
+          tar -xzf "$GITHUB_WORKSPACE/dist/ox-llm-$FILE_VERSION-linux-$(uname -m).tar.gz" -C /build/payload
           packaging/release/sbom.sh /build/payload "$GITHUB_WORKSPACE/dist/SBOM.cdx.json"
-          cp "$GITHUB_WORKSPACE/dist/SBOM.cdx.json" "$GITHUB_WORKSPACE/dist/ox-llm-$VERSION-linux-$(uname -m).sbom.cdx.json"
+          cp "$GITHUB_WORKSPACE/dist/SBOM.cdx.json" "$GITHUB_WORKSPACE/dist/ox-llm-$FILE_VERSION-linux-$(uname -m).sbom.cdx.json"
           # No build path or home directory in any shipped binary.
           for binary in /build/payload/usr/bin/*; do
             for prefix in /build/first /build/second "$HOME" /opt/cargo /opt/rustup; do
