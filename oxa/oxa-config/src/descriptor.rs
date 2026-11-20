@@ -15,6 +15,7 @@ mod hidden;
 mod lead;
 mod models;
 mod safety;
+pub mod sheet;
 mod tools;
 
 use crate::schema::Kind;

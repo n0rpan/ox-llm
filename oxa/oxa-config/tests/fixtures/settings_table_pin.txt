@@ -225,6 +225,7 @@ Budgets|oxa.cloud.models
 Budgets|oxa.cloud.unpriced_discovered_pricing
 Budgets|oxa.cloud.openrouter_provider
 Budgets|oxa.cloud.discovery
+Budgets|oxa.cloud.model_rules
 Budgets|oxa.cloud.subscription
 Budgets|oxa.maxTurns
 Tools|defaultTools
