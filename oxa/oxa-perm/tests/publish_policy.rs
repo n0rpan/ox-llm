@@ -472,3 +472,57 @@ fn gh_mutation_is_bound_to_the_recorded_repository() {
         Decision::Ask
     );
 }
+
+#[test]
+fn gh_mutation_fingerprint_includes_remotes_after_risky_settings() {
+    let cwd = repo("my-branch");
+    set_config(
+        &cwd,
+        "[push]\n\tdefault = simple\n[remote \"origin\"]\n\turl = https://github.com/o/r.git\n",
+    );
+    let command = "gh pr comment --body hi";
+    assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Allow);
+
+    set_config(
+        &cwd,
+        "[push]\n\tdefault = simple\n[remote \"origin\"]\n\turl = https://github.com/o/other.git\n",
+    );
+    assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask);
+}
+
+#[test]
+fn gh_mutation_fingerprint_preserves_origin_url_order() {
+    let cwd = repo("my-branch");
+    set_config(
+        &cwd,
+        "[remote \"origin\"]\n\turl = https://github.com/o/r.git\n[push]\n\tdefault = simple\n[remote \"origin\"]\n\turl = https://github.com/o/other.git\n",
+    );
+    let command = "gh pr comment --body hi";
+    assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Allow);
+
+    set_config(
+        &cwd,
+        "[remote \"origin\"]\n\turl = https://github.com/o/other.git\n[push]\n\tdefault = simple\n[remote \"origin\"]\n\turl = https://github.com/o/r.git\n",
+    );
+    assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask);
+}
+
+#[test]
+fn gh_mutation_fails_closed_when_config_includes_another_file() {
+    for include in [
+        "[include]\n\tpath = project.inc\n",
+        "[includeIf \"gitdir:~/project/\"]\n\tpath = project.inc\n",
+    ] {
+        let cwd = repo("my-branch");
+        set_config(
+            &cwd,
+            &format!("{include}[remote \"origin\"]\n\turl = https://github.com/o/r.git\n"),
+        );
+
+        assert_eq!(
+            decide(&cwd, Autonomy::Auto, "gh pr comment --body hi"),
+            Decision::Ask,
+            "{include} must invalidate the repository fingerprint"
+        );
+    }
+}
