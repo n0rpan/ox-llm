@@ -328,11 +328,32 @@ impl Runtime {
         {
             return Err(catalog_error(error));
         }
+        #[cfg(feature = "upstream-openai")]
+        if provider == Provider::ChatGpt {
+            // The plan has no API key: a usable sign-in and refresh settings are the credential.
+            return Ok(self.subscription.as_ref().and_then(|_| {
+                crate::openai::chatgpt_tokens::read(&self.token_path)
+                    .ok()
+                    .map(|record| Key::for_account(record.account_id()))
+            }));
+        }
         Ok(self
             .key_file
             .as_ref()
             .ok()
             .and_then(|file| file.read(provider.as_str()).ok()))
+    }
+
+    /// The token file and refresh settings a ChatGPT-plan model list needs.
+    #[cfg(feature = "upstream-openai")]
+    pub(crate) fn plan(&self) -> Option<crate::catalog_discovery::Plan<'_>> {
+        let subscription = self.subscription.as_ref()?;
+        Some(crate::catalog_discovery::Plan {
+            token_path: &self.token_path,
+            refresh_endpoint: &subscription.refresh_endpoint,
+            client_id: &subscription.client_id,
+            timeout: subscription.timeout,
+        })
     }
 
     pub(crate) fn add_recommended_models(
@@ -439,6 +460,24 @@ impl Runtime {
                     (None, Some(output)) => Some((UNKNOWN_CONTEXT.max(output), output)),
                     _ => None,
                 };
+                if source.provider() == Provider::ChatGpt {
+                    // A plan model is an unpriced subscription route with advisory limits.
+                    missing_limits += usize::from(limits.is_none());
+                    let (context, output) = limits.unwrap_or((UNKNOWN_CONTEXT, UNKNOWN_OUTPUT));
+                    let Ok(model) = Model::new(
+                        alias,
+                        source.provider(),
+                        &offer.id,
+                        source.base(),
+                        context,
+                        output,
+                    ) else {
+                        continue;
+                    };
+                    billings.insert(alias.into(), Billing::Subscription);
+                    routes.push(model);
+                    continue;
+                }
                 let price = match (self.billings.get(alias), offer.price.as_ref()) {
                     (Some(Billing::Metered(configured)), live) if configured.is_estimated() => live.cloned(),
                     (Some(Billing::Metered(configured)), Some(live)) => {
@@ -475,6 +514,17 @@ impl Runtime {
                 estimated_price += usize::from(price.is_estimated());
                 billings.insert(alias.into(), Billing::Metered(price));
                 routes.push(model);
+            }
+        }
+        if source.provider() == Provider::ChatGpt {
+            // The picker list is not authority to delete an owner's route: owner entries win.
+            for model in configured {
+                if routes.iter().all(|route| route.info().id != model.info().id) {
+                    if let Some(billing) = self.billings.get(model.info().id) {
+                        billings.insert(model.info().id.into(), billing.clone());
+                    }
+                    routes.push(model);
+                }
             }
         }
         let catalog = Catalog::new(Access::Enabled, routes).map_err(catalog_error)?;
@@ -985,6 +1035,46 @@ mod discovery_budget_tests {
     #[test]
     fn discovery_cannot_lower_configured_token_limits() {
         assert_discovered_price_floor(1, 1, 1);
+    }
+
+    #[cfg(feature = "upstream-openai")]
+    #[test]
+    fn a_configured_plan_route_survives_a_list_that_omits_it() {
+        let base = crate::openai::client::SUBSCRIPTION_BASE;
+        let owner = Model::new(
+            "chatgpt/owner-pick",
+            Provider::ChatGpt,
+            "owner-pick",
+            base,
+            4096,
+            64,
+        )
+        .unwrap();
+        let mut runtime = Runtime::new(
+            [(owner, Some(Billing::Subscription))],
+            PathBuf::from("/synthetic/credentials.json"),
+            PathBuf::from("/synthetic/ledger"),
+            Options {
+                access: Access::Enabled,
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        let source = Source::new(Provider::ChatGpt, base).unwrap();
+        let offer = Offer {
+            public: false,
+            id: "listed".into(),
+            context: Some(1000),
+            max_output: Some(10),
+            price: None,
+        };
+        runtime.apply_provider_catalog(&source, vec![offer]).unwrap();
+        assert!(runtime.catalog.resolve(Some("chatgpt/owner-pick")).is_ok());
+        assert!(runtime.catalog.resolve(Some("chatgpt/listed")).is_ok());
+        assert!(matches!(
+            runtime.billings.get("chatgpt/owner-pick"),
+            Some(Billing::Subscription)
+        ));
     }
 
     fn assert_discovered_price_floor(live_input: u32, context: u32, output: u32) {
