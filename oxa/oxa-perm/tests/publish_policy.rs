@@ -416,6 +416,7 @@ fn unordered_pushes_and_ref_writing_plumbing_ask() {
     for c in [
         "(sleep 1; git push origin HEAD) & git switch main",
         "git push origin HEAD &",
+        "coproc git push origin HEAD",
         "setsid -f flock lock git push origin HEAD; git switch main",
         "command time -o timing.txt gh pr view && git push origin HEAD",
         "command time --output=timing.txt gh pr view && git push origin HEAD",

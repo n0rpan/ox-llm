@@ -1461,6 +1461,7 @@ pub(crate) fn peel(words: &[String], unknown_in: bool) -> Peeled {
             "function" => i += 2,
             // `coproc cmd ...` or `coproc NAME { ...; }`.
             "coproc" => {
+                out.unknown = true;
                 i += 1;
                 if words.get(i + 1).map(String::as_str) == Some("{") {
                     i += 1;
