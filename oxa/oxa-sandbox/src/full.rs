@@ -8,10 +8,7 @@
 //! bash runs with the user's rights too; the approval floor of the policy
 //! asks about dangerous commands. The owner's `oxa.sandbox.net = off` then holds: such a
 //! command goes through bwrap without network, and is refused without bwrap.
-use crate::run::run_unsandboxed_stdin_inherit;
-use crate::{
-    offline_argv, run_argv_stdin, run_unsandboxed_capture, run_unsandboxed_stdin, Layout, NetSandbox,
-};
+use crate::{run_unsandboxed_capture, run_unsandboxed_stdin, Layout, NetSandbox};
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox, YoloSwitch};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -321,30 +318,6 @@ impl Sandbox for FullAccess {
             return run_unsandboxed_stdin(&spec, stdin, c, live);
         }
         self.run_without_network(s, Some(stdin), c, live, true)
-    }
-}
-
-impl FullAccess {
-    /// `run_with_stdin` with the user's rights (bash under yolo), keeping the offline rule.
-    fn run_host_stdin(
-        &self,
-        s: &ExecSpec,
-        stdin: &[u8],
-        c: &CancelToken,
-        live: &mut dyn FnMut(&[u8]),
-    ) -> ExecResult {
-        if !self.offline {
-            return run_unsandboxed_stdin_inherit(s, stdin, c, live);
-        }
-        match self.launch_argv(s) {
-            Ok(argv) => run_argv_stdin(&argv, &[], stdin, s.timeout_s, c, live),
-            Err(e) => ExecResult {
-                output: e.to_string().into_bytes(),
-                exit: None,
-                timed_out: false,
-                unsandboxed: false,
-            },
-        }
     }
 }
 

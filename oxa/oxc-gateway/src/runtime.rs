@@ -48,6 +48,7 @@ pub struct Runtime {
     diagnostics: Option<crate::diagnostics::Diagnostics>,
     catalog: Catalog,
     billings: BTreeMap<String, Billing>,
+    configured_models: BTreeSet<String>,
     recommended: BTreeSet<String>,
     unpriced_discovered: BTreeMap<String, crate::pricing::Price>,
     #[cfg(feature = "share")]
@@ -177,6 +178,7 @@ impl Runtime {
         }
         let mut billings = BTreeMap::new();
         let mut routes = Vec::new();
+        let mut configured_models = BTreeSet::new();
         for (model, billing) in models {
             if matches!(model.info().provider, Provider::ChatGpt | Provider::OpenCode)
                 != matches!(billing, Some(Billing::Subscription))
@@ -186,6 +188,7 @@ impl Runtime {
             if let Some(billing) = billing {
                 billings.insert(model.info().id.to_owned(), billing);
             }
+            configured_models.insert(model.info().id.to_owned());
             routes.push(model);
         }
         let catalog = Catalog::new(options.access, routes).map_err(catalog_error)?;
@@ -198,6 +201,7 @@ impl Runtime {
             diagnostics: None,
             catalog,
             billings,
+            configured_models,
             recommended: BTreeSet::new(),
             unpriced_discovered: BTreeMap::new(),
             #[cfg(feature = "share")]
@@ -519,7 +523,9 @@ impl Runtime {
         if source.provider() == Provider::ChatGpt {
             // The picker list is not authority to delete an owner's route: owner entries win.
             for model in configured {
-                if routes.iter().all(|route| route.info().id != model.info().id) {
+                if self.configured_models.contains(model.info().id)
+                    && routes.iter().all(|route| route.info().id != model.info().id)
+                {
                     if let Some(billing) = self.billings.get(model.info().id) {
                         billings.insert(model.info().id.into(), billing.clone());
                     }
@@ -1037,10 +1043,9 @@ mod discovery_budget_tests {
         assert_discovered_price_floor(1, 1, 1);
     }
 
-    #[cfg(feature = "upstream-openai")]
     #[test]
-    fn a_configured_plan_route_survives_a_list_that_omits_it() {
-        let base = crate::openai::client::SUBSCRIPTION_BASE;
+    fn a_configured_plan_route_survives_refresh_when_a_discovered_route_does_not() {
+        let base = "https://example.invalid/chatgpt";
         let owner = Model::new(
             "chatgpt/owner-pick",
             Provider::ChatGpt,
@@ -1071,6 +1076,9 @@ mod discovery_budget_tests {
         runtime.apply_provider_catalog(&source, vec![offer]).unwrap();
         assert!(runtime.catalog.resolve(Some("chatgpt/owner-pick")).is_ok());
         assert!(runtime.catalog.resolve(Some("chatgpt/listed")).is_ok());
+        runtime.apply_provider_catalog(&source, Vec::new()).unwrap();
+        assert!(runtime.catalog.resolve(Some("chatgpt/owner-pick")).is_ok());
+        assert!(runtime.catalog.resolve(Some("chatgpt/listed")).is_err());
         assert!(matches!(
             runtime.billings.get("chatgpt/owner-pick"),
             Some(Billing::Subscription)

@@ -212,10 +212,10 @@ async fn a_second_token_expired_reply_is_not_retried_again() {
 }
 
 #[tokio::test]
-async fn a_reply_echoing_the_token_of_an_earlier_attempt_is_refused() {
+async fn a_reply_echoing_the_original_refresh_token_is_refused_after_two_refreshes() {
     // The stored token is already expired locally, so attempt 1 refreshes it (retiring the
     // stored one); the backend then says token_expired for the refreshed token, attempt 2 refreshes
-    // again, and the final reply echoes the first refreshed token.
+    // again, and the final reply echoes the original refresh token retired by attempt 1.
     let (_home, path) = Home::new("echo-earlier");
     let past = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - 10;
     fs::write(
@@ -235,7 +235,7 @@ async fn a_reply_echoing_the_token_of_an_earlier_attempt_is_refused() {
     ]);
     let backend = MockOpenAi::start(vec![
         Reply::error(401, "token_expired", "synthetic expiry"),
-        Reply::json(json!({"models":[{"slug":"synthetic-first-access"}]})),
+        Reply::json(json!({"models":[{"slug":"synthetic-refresh"}]})),
     ]);
     let endpoint = refresher.base_url();
     let refresh = Refresh {

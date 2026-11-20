@@ -290,10 +290,9 @@ fn opens_block_scalar(row: &str) -> bool {
         return false;
     };
     let marker = &text[at + 1..];
-    let mut chars = marker.chars().peekable();
     let mut chomp = false;
     let mut indent = false;
-    while let Some(c) = chars.next() {
+    for c in marker.chars() {
         match c {
             '+' | '-' if !chomp => chomp = true,
             '1'..='9' if !indent => indent = true,

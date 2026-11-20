@@ -31,7 +31,6 @@ pub(crate) fn resync(st: &SessionState) {
 // allocation to every successful refresh solely to reduce this short-lived enum's stack size.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, PartialEq)]
-#[allow(clippy::large_enum_variant)]
 pub(crate) enum Refresh {
     /// Same stamps: nothing was read.
     Unchanged,
