@@ -265,6 +265,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::MemoryList
                     | CommandId::MemoryShow
                     | CommandId::MemoryRm
+                    | CommandId::Models
                     | CommandId::Local
                     | CommandId::LocalAdd => Err(OxaError::new(
                         codes::USAGE,
@@ -315,6 +316,9 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 &mut *stdout,
             ),
             Subcommand::Status(words) => crate::status::run(&words, &dirs, &cwd, env, &mut *stdout),
+            Subcommand::Models(words) => {
+                crate::models_cmd::run(&words, &dirs, &cwd, env, &mut *stdout, &mut *stderr)
+            }
             Subcommand::Work(words) => {
                 return crate::work_cmd::run(&words, &cwd, env, &dirs, &mut *stdout, &mut *stderr)
             }
@@ -2441,7 +2445,7 @@ pub(crate) fn stream_silence_timeout(settings: &Settings) -> Option<u64> {
 
 /// The provider column: the controller's `remote_provider`, else the remote model id's
 /// provider prefix (or `cloud` for an unprefixed id); the endpoint name for a local one.
-fn row_provider(endpoint: &str, info: &oxa_proto::EngineInfo) -> String {
+pub(crate) fn row_provider(endpoint: &str, info: &oxa_proto::EngineInfo) -> String {
     match (info.caps.remote, info.caps.remote_provider) {
         (_, Some(p)) => p.to_string(),
         (true, None) => info
@@ -2455,7 +2459,7 @@ fn row_provider(endpoint: &str, info: &oxa_proto::EngineInfo) -> String {
 }
 
 /// `--list-models [search]`: a table of the engine's models (pi's columns), sorted by id.
-fn list_models(
+pub(crate) fn list_models(
     engine: &dyn Engine,
     provider: &str,
     search: Option<&str>,
@@ -2818,7 +2822,7 @@ fn write_notices(err: &mut dyn Write, notices: Vec<(Level, String)>) {
     write_diagnostics(err, notices.into_iter());
 }
 
-fn write_diagnostics(err: &mut dyn Write, notices: impl Iterator<Item = (Level, String)>) {
+pub(crate) fn write_diagnostics(err: &mut dyn Write, notices: impl Iterator<Item = (Level, String)>) {
     for (level, text) in notices {
         let label = match level {
             Level::Info => "Info",

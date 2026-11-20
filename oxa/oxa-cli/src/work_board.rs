@@ -339,6 +339,35 @@ impl<'a> Reader<'a> {
         }
         serde_json::from_str(body).map_err(|_| "invalid GitHub Actions metadata".into())
     }
+
+    /// The lead panels repository record for one observation: main required
+    /// checks, the verified merge and queue membership. Validated with the shared
+    /// parser before it is stored, so a malformed capture is refused at the source.
+    fn lead_panels(&mut self) -> Result<Value, String> {
+        let (repository, _) =
+            self.repository_read(&crate::lead_panels::fields(None).map_err(String::from)?)?;
+        crate::lead_panels::parse_repository(&repository, None)?;
+        Ok(repository)
+    }
+
+    /// Complete `status=queued` Actions pages, bounded to the shared run policy's
+    /// connection limit. An observation beyond it stays absent rather than partial.
+    fn queued_run_pages(&mut self) -> Result<Vec<Value>, String> {
+        const PAGE: u64 = 100;
+        const MAX_RUNS: u64 = 1_000;
+        let first = self.actions_json("runs?status=queued&per_page=100")?;
+        let total = first["total_count"].as_u64().ok_or("missing queued-run count")?;
+        if total > MAX_RUNS {
+            return Err("queued-run connection exceeds the observed limit".into());
+        }
+        let pages = total.div_ceil(PAGE).max(1);
+        let mut rows = vec![first];
+        for page in 2..=pages {
+            let path = format!("runs?status=queued&per_page=100&page={page}");
+            rows.push(self.actions_json(&path)?);
+        }
+        Ok(rows)
+    }
 }
 
 /// Complete one pull request's changed-file connection with bounded
@@ -464,7 +493,9 @@ fn nodes(value: &Value) -> Result<&Vec<Value>, String> {
     Ok(rows)
 }
 
-fn check_outcome(check: &Value) -> Option<&str> {
+/// A check outcome reports failure only once its run completed; an active run is
+/// pending whatever conclusion GitHub retained from an earlier attempt.
+pub(crate) fn check_outcome(check: &Value) -> Option<&str> {
     match check["status"].as_str() {
         Some("COMPLETED") => check["conclusion"].as_str(),
         // GitHub can retain a prior conclusion while the check is active.
@@ -473,7 +504,10 @@ fn check_outcome(check: &Value) -> Option<&str> {
     }
 }
 
-fn required_contexts(base: &Value) -> Result<BTreeSet<&str>, String> {
+/// The required check contexts of one base ref: its classic protection plus active
+/// repository and organization rulesets. Shared by the PR snapshot and the main
+/// panels projection.
+pub(crate) fn required_contexts(base: &Value) -> Result<BTreeSet<&str>, String> {
     if !base.is_object() {
         return Err("missing PR base requirements".into());
     }
@@ -754,10 +788,11 @@ pub(crate) fn run(
     // Existing parser declaration; migrate command/flag metadata together in #1062.
     let (repo, options) = match args {
         [shadow, flag, repo, options @ ..] if shadow == "--shadow" && flag == "--repo" => (repo, options),
-        _ => return Err("usage: oxa work board --shadow --repo OWNER/REPO [--once] [--token-stdin] [--app-quota-shadow] [--review-policy FILE] [--queue-evidence] [--landing-shadow] [--queue-report-policy FILE]".into()),
+        _ => return Err("usage: oxa work board --shadow --repo OWNER/REPO [--once] [--token-stdin] [--app-quota-shadow] [--review-policy FILE] [--queue-evidence] [--landing-shadow] [--lead-alarms] [--queue-report-policy FILE]".into()),
     };
     let (mut once, mut streamed, mut review_file) = (false, false, None);
     let (mut queue_evidence, mut landing_shadow, mut quota_shadow) = (false, false, false);
+    let mut lead_alarms = false;
     let mut report_file = None;
     let mut options = options.iter();
     while let Some(option) = options.next() {
@@ -767,6 +802,7 @@ pub(crate) fn run(
             "--queue-evidence" => queue_evidence = true,
             "--landing-shadow" => landing_shadow = true,
             "--app-quota-shadow" => quota_shadow = true,
+            "--lead-alarms" => lead_alarms = true,
             "--queue-report-policy" if report_file.is_none() => {
                 report_file = Some(options.next().ok_or("missing queue report policy file")?);
             }
@@ -870,6 +906,28 @@ pub(crate) fn run(
             } else {
                 (BTreeMap::new(), None)
             };
+            // Opt-in alarm records for the protected Lead view (#1391). Each source
+            // fails independently, so one missing record never hides the others and a
+            // degraded sample stays an explicit partial observation.
+            let (panels, runs) = if lead_alarms {
+                let panels = match reader.lead_panels() {
+                    Ok(panels) => Some(panels),
+                    Err(error) => {
+                        eprintln!("oxa work: lead panels unavailable in this sample: {error}");
+                        None
+                    }
+                };
+                let runs = match reader.queued_run_pages() {
+                    Ok(runs) => Some(runs),
+                    Err(error) => {
+                        eprintln!("oxa work: queued-run observation unavailable in this sample: {error}");
+                        None
+                    }
+                };
+                (panels, runs)
+            } else {
+                (None, None)
+            };
             reader.time_left().map_err(QueryError::message)?;
             Ok(oxa_work::shadow::LandingSample {
                 board,
@@ -877,6 +935,8 @@ pub(crate) fn run(
                 queue_rejections,
                 landing,
                 landing_main,
+                panels,
+                runs,
                 app_quota: reader
                     .app_quota
                     .as_ref()

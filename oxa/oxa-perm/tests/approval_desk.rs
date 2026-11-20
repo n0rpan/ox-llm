@@ -4,7 +4,7 @@ use oxa_fake::TestEnv;
 use oxa_perm::{ApprovalDesk, DangerHit, DangerRules, ModePolicy, UnattendedMode};
 use oxa_proto::{Access, Decision, Mode, Policy};
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 const DANGEROUS: &str = "git push --force origin main";
@@ -45,21 +45,6 @@ fn request_id(text: &str) -> String {
         .and_then(|rest| rest.get(..16))
         .unwrap_or_default()
         .to_string()
-}
-
-/// How many stored records of the desk carry `status`.
-fn records_with(agent: &Path, status: &str) -> usize {
-    let needle = format!("\"status\":\"{status}\"");
-    std::fs::read_dir(agent.join("approvals"))
-        .expect("desk directory")
-        .filter_map(Result::ok)
-        .filter(|e| e.file_name().to_string_lossy().ends_with(".json"))
-        .filter(|e| {
-            std::fs::read_to_string(e.path())
-                .unwrap_or_default()
-                .contains(&needle)
-        })
-        .count()
 }
 
 #[test]
@@ -250,6 +235,30 @@ fn desk_grants_cover_only_the_reviewed_command_line() {
     );
 }
 
+#[test]
+fn desk_grant_does_not_ignore_semantic_trailing_whitespace() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
+
+    let escaped_space = exec("rm -rf /tmp/reviewed\\ ");
+    assert_eq!(p.decide(Mode::Workspace, &escaped_space, &cwd), Decision::Ask);
+    let request = p
+        .danger_unattended(&escaped_space, &cwd)
+        .expect("approval request");
+    desk.answer(&request_id(&request), "session")
+        .expect("owner approves the exact command");
+    assert_eq!(p.decide(Mode::Workspace, &escaped_space, &cwd), Decision::Allow);
+
+    let escaped_newline = exec("rm -rf /tmp/reviewed\\\n");
+    assert_eq!(
+        p.decide(Mode::Workspace, &escaped_newline, &cwd),
+        Decision::Ask,
+        "approval for a path ending in a space must not cover a path without it"
+    );
+}
+
 /// Two processes can create the desk at the same instant: the second must keep working with the
 /// directory the first made instead of disabling approval requests for its whole process.
 #[test]
@@ -287,9 +296,9 @@ fn desk_symlinked_dir_is_refused() {
 }
 
 #[test]
-fn unattended_auto_with_os_sandbox_refuses_and_records() {
+fn unattended_auto_with_os_sandbox_refuses_without_recording() {
     let env = TestEnv::new();
-    let (desk, agent) = open_desk(&env);
+    let (desk, _) = open_desk(&env);
     let cwd = env.work();
     let mut p = policy(&desk, "s1", UnattendedMode::Auto, true);
     assert_eq!(p.decide(Mode::Workspace, &exec(DANGEROUS), &cwd), Decision::Ask);
@@ -308,7 +317,10 @@ fn unattended_auto_with_os_sandbox_refuses_and_records() {
         desk.pending().expect("pending").is_empty(),
         "a refusal is not a request"
     );
-    assert_eq!(records_with(&agent, "refused"), 1);
+    assert!(
+        desk.records().expect("records").is_empty(),
+        "refused model-controlled commands must not consume persistent storage"
+    );
 }
 
 #[test]
@@ -330,7 +342,7 @@ fn unattended_auto_without_os_sandbox_requests() {
 #[test]
 fn unattended_refuse_setting_overrides_auto() {
     let env = TestEnv::new();
-    let (desk, agent) = open_desk(&env);
+    let (desk, _) = open_desk(&env);
     let cwd = env.work();
     // Without the OS sandbox `auto` would request; `refuse` refuses.
     let mut p = policy(&desk, "s1", UnattendedMode::Refuse, false);
@@ -340,7 +352,29 @@ fn unattended_refuse_setting_overrides_auto() {
     assert!(!text.contains("OS sandbox"), "{text}");
     assert!(text.contains("oxa.approval.unattended"), "{text}");
     assert!(desk.pending().expect("pending").is_empty());
-    assert_eq!(records_with(&agent, "refused"), 1);
+    assert!(
+        desk.records().expect("records").is_empty(),
+        "an explicit refusal must not create an approval record"
+    );
+}
+
+#[test]
+fn repeated_unattended_refusals_do_not_grow_the_approval_desk() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let mut p = policy(&desk, "s1", UnattendedMode::Refuse, false);
+
+    for i in 0..100 {
+        let command = format!("git push --force origin hostile-{i}");
+        let text = p.danger_unattended(&exec(&command), &cwd).expect("refusal");
+        assert!(text.starts_with("Refused: dangerous command ("), "{text}");
+    }
+
+    assert!(
+        desk.records().expect("records").is_empty(),
+        "repeated refusals must leave the approval desk empty"
+    );
 }
 
 #[test]
@@ -385,7 +419,7 @@ fn unattended_approval_cannot_replay_opaque_shell_input() {
     let (desk, _) = open_desk(&env);
     let cwd = env.work();
     let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
-    let command = "cat example.txt | sh";
+    let command = "cat reviewed.sh | sh";
     let cmd = exec(command);
     let refusal = p.danger_unattended(&cmd, &cwd).expect("refusal");
     assert!(refusal.contains("cannot be verified for unattended replay"));
@@ -403,8 +437,12 @@ fn unattended_approval_cannot_replay_opaque_shell_input() {
             "pending",
         )
         .expect("existing request");
-    assert!(desk.answer(&old_request, "once").is_err());
-    assert!(desk.answer(&old_request, "always").is_err());
+    for answer in ["once", "session", "always"] {
+        assert!(
+            desk.answer(&old_request, answer).is_err(),
+            "{answer} must not authorize mutable shell input"
+        );
+    }
     assert!(desk.answer(&old_request, "deny").is_ok());
     assert_eq!(p.decide(Mode::Workspace, &cmd, &cwd), Decision::Ask);
 }
@@ -449,7 +487,10 @@ fn unattended_approval_cannot_replay_file_fed_input() {
         let old = desk
             .record("s1", &cwd, command, &saved, "pending")
             .expect("old request");
-        desk.answer(&old, "session").expect("owner answer");
+        assert!(
+            desk.answer(&old, "session").is_err(),
+            "{command}: a historical request cannot authorize mutable input"
+        );
         assert_eq!(p.decide(Mode::Workspace, &cmd, &cwd), Decision::Ask, "{command}");
         desk.forget_session("s1").ok();
     }
@@ -458,6 +499,43 @@ fn unattended_approval_cannot_replay_file_fed_input() {
         !p.danger_ask(&exec("xargs rm -rf < targets"), &cwd).is_empty(),
         "the recursive delete is classified"
     );
+}
+
+/// The shell parser joins a continued executable name before mutable-input policy is applied.
+#[test]
+fn unattended_approval_refuses_continued_xargs() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let command = "cat targets | xa\\\nrgs rm -rf";
+    let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
+    let cmd = exec(command);
+
+    assert!(!p.danger_ask(&cmd, &cwd).is_empty());
+    let refusal = p.danger_unattended(&cmd, &cwd).expect("refusal");
+    assert!(refusal.contains("cannot be verified for unattended replay"));
+    assert!(desk.pending().expect("pending").is_empty());
+}
+
+/// A redirection inside an inline script is still a file the command acts on, and a command the
+/// shell parser cannot read is refused rather than taken as fixed: neither reviewed text pins
+/// what `targets` holds, so a replay must not carry an approval.
+#[test]
+fn unattended_approval_refuses_inline_scripts_and_unparsed_input() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    for command in ["sh -c 'xargs rm -rf < targets'", "xargs rm -rf < targets \\"] {
+        let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
+        let cmd = exec(command);
+        assert!(!p.danger_ask(&cmd, &cwd).is_empty(), "{command}");
+        let refusal = p.danger_unattended(&cmd, &cwd).expect("refusal");
+        assert!(
+            refusal.contains("cannot be verified for unattended replay"),
+            "{command}: {refusal}"
+        );
+        assert!(desk.pending().expect("pending").is_empty(), "{command}");
+    }
 }
 
 #[test]

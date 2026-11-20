@@ -31,7 +31,15 @@ fn state(
     turns: Vec<ScriptTurn>,
     settings: serde_json::Value,
 ) -> (SessionState, Arc<ScriptedEngine>) {
-    let eng = Arc::new(ScriptedEngine::new(turns));
+    state_on(env, Arc::new(ScriptedEngine::new(turns)), settings)
+}
+
+/// [`state`] over an engine built by the test (a remote model, another endpoint).
+fn state_on(
+    env: &TestEnv,
+    eng: Arc<ScriptedEngine>,
+    settings: serde_json::Value,
+) -> (SessionState, Arc<ScriptedEngine>) {
     let engine: Arc<dyn Engine> = eng.clone();
     let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
     let cwd = env.work();
@@ -230,6 +238,8 @@ fn backoff_table() {
         max_retries: 3,
         base_delay_ms: 2000,
         max_delay_ms: 60000,
+        local_max_total_ms: 5000,
+        identical_5xx_retries: 2,
     };
     let table = [1u32, 2, 3, 4, 5, 6].map(|a| backoff_ms(a, &p));
     assert_eq!(
@@ -856,4 +866,94 @@ fn a_replayed_cut_stream_counts_as_a_request() {
     assert_eq!(eng.requests().len(), 2);
     assert_eq!(st.stats.requests, 2, "the cut request and the replay");
     assert_eq!(st.stats.assistant_messages, 1);
+}
+
+/// #2050: a local engine that keeps failing is not waited for like a cloud provider. The
+/// whole wait stays inside `retry.localMaxTotalMs`, and the give-up says how to fix the
+/// engine. The bodies differ, so only the local budget can stop it.
+#[test]
+fn a_local_engine_failure_gives_up_within_its_short_budget() {
+    let env = TestEnv::new();
+    let turns = (0..20)
+        .map(|i| {
+            ScriptTurn::fault(Fault::Http {
+                status: 500,
+                body: format!("the local engine broke ({i})"),
+            })
+        })
+        .collect();
+    let eng = Arc::new(ScriptedEngine::new(turns));
+    let (mut st, eng) = state_on(
+        &env,
+        eng,
+        json!({"retry": {"enabled": true, "maxRetries": 10, "baseDelayMs": 20, "localMaxTotalMs": 60}}),
+    );
+    say(&mut st, "hi");
+    let mut sink = VecSink::default();
+    let err = chat_with_retry(&mut st, &opts(), &mut sink, &mut HeadlessUi::default())
+        .expect_err("a local engine that keeps failing gives up");
+    assert_eq!(err.code, codes::ENGINE_HTTP);
+    let waited: u64 = retry_starts(&sink.0).iter().map(|(_, _, ms)| *ms).sum();
+    assert!(
+        waited <= 60,
+        "the local budget bounds the whole wait, waited {waited} ms"
+    );
+    assert_eq!(eng.requests().len(), 3, "two retries inside the budget");
+    assert!(eng.remaining() > 0, "the script was far from exhausted");
+    assert!(
+        err.hint.is_some(),
+        "the give-up says how to restart the engine: {err}"
+    );
+}
+
+/// #2050: the same plain 5xx body stops after `retry.identical5xxRetries`, while a cloud 503
+/// (overload) keeps the configured retries: a provider that is briefly overloaded recovers.
+#[test]
+fn identical_5xx_bodies_stop_early_and_a_cloud_503_keeps_retrying() {
+    let env = TestEnv::new();
+    let body = "the provider broke".to_string();
+    let turns = (0..6)
+        .map(|_| {
+            ScriptTurn::fault(Fault::Http {
+                status: 500,
+                body: body.clone(),
+            })
+        })
+        .collect();
+    let eng = Arc::new(ScriptedEngine::new(turns).with_remote());
+    let (mut st, eng) = state_on(
+        &env,
+        eng,
+        json!({"retry": {"enabled": true, "maxRetries": 10, "baseDelayMs": 1, "identical5xxRetries": 2}}),
+    );
+    say(&mut st, "hi");
+    let mut sink = VecSink::default();
+    let err = chat_with_retry(&mut st, &opts(), &mut sink, &mut HeadlessUi::default())
+        .expect_err("the identical answer stops the retries");
+    assert_eq!(err.code, codes::ENGINE_HTTP);
+    assert_eq!(
+        eng.requests().len(),
+        3,
+        "one request and two retries of the same body"
+    );
+    assert!(err.hint.is_some(), "the give-up names the repeated error");
+
+    // A cloud 503 with a wait stays on the configured retry count.
+    let env2 = TestEnv::new();
+    let turns = (0..5)
+        .map(|_| ScriptTurn::fault(Fault::Busy { retry_after: Some(0) }))
+        .collect();
+    let eng2 = Arc::new(ScriptedEngine::new(turns).with_remote());
+    let (mut st2, eng2) = state_on(
+        &env2,
+        eng2,
+        json!({"retry": {"enabled": true, "maxRetries": 4, "baseDelayMs": 1, "identical5xxRetries": 2}}),
+    );
+    say(&mut st2, "hi");
+    let mut sink2 = VecSink::default();
+    let err = chat_with_retry(&mut st2, &opts(), &mut sink2, &mut HeadlessUi::default())
+        .expect_err("the configured retries are spent");
+    assert_eq!(err.code, codes::ENGINE_BUSY);
+    assert_eq!(eng2.requests().len(), 5, "the 503 keeps the long policy");
+    assert_eq!(retry_starts(&sink2.0).len(), 4);
 }

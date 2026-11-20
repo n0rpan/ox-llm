@@ -285,6 +285,8 @@ pub(crate) struct Loop<'a> {
     /// OXA's look: the activity shown last and when it began (the elapsed time and the spinner).
     act_kind: Option<std::mem::Discriminant<Activity>>,
     act_since: u64,
+    /// The retry attempt shown last: each attempt waits anew, so its countdown restarts (#2050).
+    act_attempt: u32,
     /// OXA's look: when the theme was (re)built and when its palette file was last looked at.
     palette_checked_ms: u64,
     /// The theme line of the splash (`oxa-omarchy (tokyo-night)`), set when a theme is installed.
@@ -450,6 +452,7 @@ impl<'a> Loop<'a> {
             last_frame: Vec::new(),
             act_kind: None,
             act_since: 0,
+            act_attempt: 0,
             palette_checked_ms: now_ms(),
             theme_label: String::new(),
             palette: None,
@@ -1297,8 +1300,13 @@ impl<'a> Loop<'a> {
     /// time and the spinner frame).
     fn timed_status(&mut self, mut status: StatusModel) -> StatusModel {
         let kind = std::mem::discriminant(&status.activity);
-        if self.act_kind != Some(kind) {
+        let attempt = match status.activity {
+            Activity::Retrying { attempt, .. } => attempt,
+            _ => 0,
+        };
+        if self.act_kind != Some(kind) || self.act_attempt != attempt {
             self.act_kind = Some(kind);
+            self.act_attempt = attempt;
             self.act_since = now_ms();
         }
         status.activity_ms = now_ms().saturating_sub(self.act_since);
@@ -3377,10 +3385,12 @@ fn settle_worker_done(vm: &mut ViewModel, failed: bool) {
     }
     // A failed `user_bash` command has no stored entry to replace its live block.
     if failed {
-        for block in &mut vm.blocks {
-            if let Block::Bash { running, .. } = block {
-                *running = false;
-            }
+        if let Some(Block::Bash { running, .. }) = vm
+            .blocks
+            .iter_mut()
+            .find(|block| matches!(block, Block::Bash { running: true, .. }))
+        {
+            *running = false;
         }
     }
 }
@@ -3493,6 +3503,21 @@ mod running_tests {
 
         vm.blocks[0] = bash(false);
         assert!(!foreground_running(&vm, false, false, false));
+    }
+
+    /// A worker error only belongs to the command the sequential worker just finished; a
+    /// queued command must retain its live block for its own streamed output and result.
+    #[test]
+    fn failed_user_bash_leaves_queued_block_running() {
+        let mut vm = ViewModel {
+            blocks: vec![bash(true), bash(true)],
+            ..Default::default()
+        };
+
+        settle_worker_done(&mut vm, true);
+
+        assert!(matches!(vm.blocks[0], Block::Bash { running: false, .. }));
+        assert!(matches!(vm.blocks[1], Block::Bash { running: true, .. }));
     }
 
     /// A worker error can precede the stored bash entry, but it still completes the command.

@@ -192,6 +192,11 @@ Bash has network access by default in `workspace` and `ask` modes. `oxa.sandbox.
 
 This matters because the model can be steered by text it reads. A steered model can run a command that sends what bash can read to any host. Bash can read the project, the system files, and the parts of your home directory that the deny-list does not mask. In `ask` mode you approve each command, but the approval does not show where the command sends its output. When the project holds secrets, set `oxa.sandbox.net: "off"`, use `ask` mode, or run with `--offline`.
 
+`oxa work --publish` and its opt-in lane acceptance scan the exact commits that a push would add
+to its destination and refuse credential-like content before sending anything. The runner, not
+the worker, owns GitHub credentials. A lane candidate also cannot change GitHub workflows or the
+lane runner; submit those CI-control changes separately for normal review. Every commit the push would add is checked, not only the diff from the saved base. The push itself needs the owner's confirmation through the session broker; outside a session, the terminal or `OXA_WORK_OWNER_CONFIRMED=1` compatibility paths are ignored while a coding-agent marker (`OXA_CODING_AGENT`, `AI_AGENT`, `OXA_SUBAGENT_DEPTH`) is set. A green lane run counts only when its plan and a lane test job actually succeeded, and only for what the lane tests: changes under `engine/` or `fuzz/` stay on the hosted route.
+
 ### web_search
 
 `web_search` sends its query text to Brave Search. The model writes the query, and it can copy text from files it read. In `workspace` mode the tool runs without a prompt. In `plan` mode it is denied, because plan mode has no network. In `ask` mode it asks first. To keep the tool out of a session, use `--no-web-search`, `OXA_WEB_SEARCH=0`, or `--offline`.
