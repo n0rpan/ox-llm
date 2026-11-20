@@ -6,6 +6,8 @@
 //!   pending. A run for another commit never counts.
 //! * `{"kind":"pr_merged","pr":<n>}`: done when the pull request is merged; closed without a
 //!   merge is an error (it can never merge by waiting).
+//! * `{"kind":"pr_activity","pr":<n>,"head":<40 hex>}`: see `pr_activity.rs`; done when a review or
+//!   PR comment is new, the head moved, or the PR is merged or closed.
 //!
 //! SECURITY. This runs `gh` with the owner's login, outside the sandbox, on arguments a model
 //! chose. So: `gh` is started with an argument vector (never a shell), in fixed shapes; `sha`
@@ -43,6 +45,8 @@ pub(crate) struct ProbeHooks {
     /// A runner-owned `oxa work` worker has no GitHub access (AGENTS.md); the runner owns
     /// every GitHub call, including these probes.
     runner_owns_github: bool,
+    /// What `wait until pr_activity` has already seen, per PR (`pr_activity.rs`).
+    pub(crate) activity: Mutex<std::collections::HashMap<u64, crate::pr_activity::ActivityBaseline>>,
 }
 
 impl ProbeHooks {
@@ -54,6 +58,7 @@ impl ProbeHooks {
             repo: Mutex::new(None),
             runner_owns_github: std::env::var_os(oxa_work::RUNNER_GITHUB_ENV)
                 .is_some_and(|value| value == "1"),
+            activity: Mutex::default(),
         }
     }
 
@@ -85,6 +90,7 @@ impl ProbeHooks {
             path: Some(path.as_os_str().to_os_string()),
             repo: Mutex::new(Some(repo.to_string())),
             runner_owns_github,
+            activity: Mutex::default(),
         }
     }
 
@@ -178,7 +184,7 @@ impl ProbeHooks {
         serde_json::from_str(&out).map_err(|_| "gh printed output that is not JSON".to_string())
     }
 
-    fn remaining(deadline: Instant) -> Result<Duration, String> {
+    pub(crate) fn remaining(deadline: Instant) -> Result<Duration, String> {
         deadline
             .checked_duration_since(Instant::now())
             .filter(|remaining| !remaining.is_zero())
@@ -289,7 +295,7 @@ impl ProbeHooks {
 }
 
 /// A 40-character hex commit id, lowercased.
-fn valid_sha(sha: Option<&str>) -> Result<String, String> {
+pub(crate) fn valid_sha(sha: Option<&str>) -> Result<String, String> {
     match sha {
         Some(s) if s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit()) => Ok(s.to_ascii_lowercase()),
         _ => Err("sha must be a full 40-character hex commit id".into()),
@@ -361,7 +367,11 @@ impl Hooks for ProbeHooks {
         args: &Value,
         budget: Duration,
     ) -> Option<Result<Option<String>, String>> {
-        if kind != "ci" && kind != "pr_merged" && !crate::gh_probe::is_read_kind(kind) {
+        if kind != "ci"
+            && kind != "pr_merged"
+            && kind != "pr_activity"
+            && !crate::gh_probe::is_read_kind(kind)
+        {
             return None;
         }
         if self.runner_owns_github {
@@ -373,7 +383,7 @@ impl Hooks for ProbeHooks {
         }
         if oxa_proto::offline() {
             return Some(Err(oxa_proto::offline_error(
-                "wait until ci / pr_merged (GitHub)",
+                "wait until ci / pr_merged / pr_activity (GitHub)",
             )
             .to_string()));
         }
@@ -386,6 +396,7 @@ impl Hooks for ProbeHooks {
         Some(match kind {
             "ci" => self.ci(args, deadline),
             "pr_merged" => self.pr_merged(args, deadline),
+            "pr_activity" => self.pr_activity(args, deadline),
             _ => self.read_probe(kind, args, budget).map(Some),
         })
     }

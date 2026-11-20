@@ -349,7 +349,7 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
     }
 
     // ---- wait probes (W3) ----
-    // `wait` with `until` kind `ci` / `pr_merged`: answered through `gh`, no tools or prompt text.
+    // `wait` with `until` kind `ci` / `pr_merged` / `pr_activity`: answered through `gh`, no tools or prompt text.
     sets.hooks
         .push(Arc::new(crate::wait_probe::ProbeHooks::new(i.cwd, &i.dirs.home)));
 
