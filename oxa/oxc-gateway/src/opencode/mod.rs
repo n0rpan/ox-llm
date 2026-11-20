@@ -1,5 +1,6 @@
 //! OpenCode Go protocol fields. Admission, key reads and subscription billing
 //! stay with the native gateway; no sign-in, credential store or paid fallback.
+use crate::model_rules::{Route, Rules};
 use bigdecimal::BigDecimal;
 use num_traits::{Signed, Zero};
 use reqwest::{
@@ -241,10 +242,16 @@ impl Model {
             .push("completions");
         Ok(url)
     }
-    /// Canonical chat-shaped messages/tools pass through; no model-name table.
+    /// Canonical chat-shaped messages/tools pass through; the model rule table adds per-id quirks.
     /// Route/usage controls come from the trusted caller, never model JSON.
     pub fn request(&self, payload: &Value) -> Result<Value, Error> {
+        self.request_with(payload, &Rules::default())
+    }
+    /// [`Model::request`] with the model rule table: thinking format, reasoning replay, token
+    /// field and output cap by model id, built-in rows plus the owner's overrides.
+    pub fn request_with(&self, payload: &Value, rules: &Rules) -> Result<Value, Error> {
         self.chat_endpoint()?;
+        let rule = rules.resolve(Route::Cloud, &self.id);
         let mut body = payload.as_object().cloned().ok_or(Error::Request)?;
         if !body.get("messages").is_some_and(Value::is_array) {
             return Err(Error::Request);
@@ -252,7 +259,11 @@ impl Model {
         body.insert("model".into(), self.id.clone().into());
         body.insert("stream".into(), true.into());
         body.insert("stream_options".into(), serde_json::json!({"include_usage":true}));
-        let mut output = u64::from(self.max_output);
+        let mut output = u64::from(self.max_output).min(rule.max_output.map_or(u64::MAX, u64::from));
+        let requested = body
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         for field in ["max_tokens", "max_completion_tokens"] {
             if let Some(v) = body.remove(field) {
                 output = output.min(v.as_u64().filter(|n| *n > 0).ok_or(Error::Request)?);
@@ -285,6 +296,7 @@ impl Model {
         ] {
             body.remove(field);
         }
+        rule.apply(&mut body, requested.as_deref());
         Ok(Value::Object(body))
     }
 }

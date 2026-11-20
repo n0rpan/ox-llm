@@ -78,14 +78,15 @@ fetch() {
 }
 fetch "https://api.github.com/repos/$repo/releases/tags/dev" "$work/release.json" 5242880
 sha=$(jq -er 'select(.tag_name=="dev" and .prerelease and (.draft|not)) | .target_commitish | select(test("^[0-9a-f]{40}$"))' "$work/release.json")
-suffix="-dev.${sha:0:7}-macos-arm64.tar.gz"
+suffix=".${sha:0:7}-macos-arm64.tar.gz"
 archive=$(jq -er --arg suffix "$suffix" \
-  '[.assets[]|select(.state=="uploaded" and (.name|startswith("ox-llm-v")) and (.name|endswith($suffix)))|.name] | select(length>0) | sort_by(sub("^ox-llm-v";"")|split("-")[0]|split(".")|map(tonumber)) | .[-1]' "$work/release.json") || {
+  '[.assets[]|select(.state=="uploaded" and (.name|startswith("ox-llm-v")) and (.name|endswith($suffix)))|.name] | select(length>0) | sort_by((sub("^ox-llm-v";"")|split("-")[0]|split(".")|map(tonumber)) + [([capture("-dev\\.(?<n>[0-9]+)\\.[0-9a-f]{7}-")|.n|tonumber]|.[0] // 0)]) | .[-1]' "$work/release.json") || {
   echo "The dev release for commit $sha has no macos-arm64 asset; keeping the current install unchanged" >&2
   exit 1
 }
 version=${archive#ox-llm-}; version=${version%-macos-arm64.tar.gz}
-[[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*-dev\.[0-9a-f]{7}$ ]]
+[[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*-dev\.([0-9]+\.)?[0-9a-f]{7}$ ]]
+semver=$(sed -E 's/(-dev\.[0-9]+)\.([0-9a-f]{7})$/\1+\2/' <<<"$version")  # file names use '.', the version uses '+'
 download() {
   local url
   url=$(jq -er --arg name "$1" '[.assets[]|select(.state=="uploaded" and .name==$name)|.browser_download_url] | select(length==1) | .[0]' "$work/release.json")
@@ -128,7 +129,7 @@ fi
 if command -v codesign >/dev/null && ! codesign -v "$work/payload/usr/bin/oxa" 2>/dev/null; then
   echo 'Warning: codesign -v rejected the new oxa binary; it may not start on this Mac' >&2
 fi
-jq -n --arg sha "$sha" --arg version "$version" --arg digest "$digest" \
+jq -n --arg sha "$sha" --arg version "$semver" --arg digest "$digest" \
   --arg time "$(date -u +%FT%TZ)" --arg archive "$archive" \
   '{channel:"dev",platform:"macos-arm64",source_sha:$sha,version:$version,archive:$archive,sha256:$digest,installed_at:$time}' \
   > "$work/payload/receipt.json"
@@ -166,4 +167,4 @@ if test "$old" != "releases/$id"; then
     }
   done
 fi
-printf 'Installed dev %s (%s); receipt: %s/current/receipt.json\nRollback: previous build at %s/previous\n' "$version" "$sha" "$prefix" "$prefix"
+printf 'Installed dev %s (%s); receipt: %s/current/receipt.json\nRollback: previous build at %s/previous\n' "$semver" "$sha" "$prefix" "$prefix"
