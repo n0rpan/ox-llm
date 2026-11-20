@@ -193,7 +193,10 @@ pub fn resolve_toolset(all: &[Arc<dyn Tool>], sel: &ToolSelection) -> (Toolset, 
                 let base = if sel.no_tools || allowlist {
                     is_named
                 } else {
-                    default_tools.is_none() || in_default(&spec.name)
+                    // `wait` (every session) is a default member `defaultTools` edits keep.
+                    default_tools.is_none()
+                        || in_default(&spec.name)
+                        || t.default_selected() && kept_by_edits(&default_edits, &spec.name)
                 };
                 (base && (!sel.no_builtin || is_named), true)
             }

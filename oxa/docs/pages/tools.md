@@ -22,7 +22,7 @@ Tool names, descriptions and schemas are part of the system prompt. They stay th
 
 ### Output limits
 
-- Any tool output sent to the model is capped at `oxa.toolOutputCap` bytes (16384 by default). Output above the cap is cut and says so. When `oxa.compaction.softTokens` is set or the engine publishes a compaction point, one tool result is at most a quarter of it (three bytes per token, never below 2048 bytes), unless `oxa.toolOutputCap` is set. Only the first page of a `read` (no `offset` or `limit`) is at most 8 KiB; `grep`, `find`, `ls` and a `read` with `offset` or `limit` are cut at the cap itself, with a note inside the cap that says how to go on. See [tools-context.md](tools-context.md).
+- Any tool output sent to the model is capped at `oxa.toolOutputCap` bytes (16384 by default; on a cloud model 3/16 of its window in bytes unless you set it). Output above the cap is cut and says so. When `oxa.compaction.softTokens` is set or the engine publishes a compaction point, one tool result is at most a quarter of it (three bytes per token, never below 2048 bytes), unless `oxa.toolOutputCap` is set. Only the first page of a `read` (no `offset` or `limit`) is at most 8 KiB; `grep`, `find`, `ls` and a `read` with `offset` or `limit` are cut at the cap itself, with a note inside the cap that says how to go on. See [tools-context.md](tools-context.md).
 - `read`, `grep`, `find` and `ls` apply their own line or match limits first.
 - For bash, the full output is kept in a file, and the model is told where it is.
 
@@ -40,7 +40,7 @@ In a headless run (`-p`, `--mode json`) with the output diet on, the prompt adds
 | `--no-mcp` | no MCP servers connect and no MCP tools are offered |
 | `defaultTools` setting | the list of tools on by default. Names may include `subagent`, `web_search`, `codemode` and `tool_search`, and a list can be patched with `+name` and `-name` |
 
-With the output diet on (the default) the rules also tell the model to run the project's own checks before it calls a task done (when `bash` is on), and to use `wait` instead of polling (when a goal is pursued).
+With the output diet on (the default) the rules also tell the model to run the project's own checks before it calls a task done (when `bash` is on), and to use `wait` instead of polling (whenever `wait` is declared, which is every session unless `oxa.tools.wait` is `false`). `wait` takes seconds, and optionally `until` `ci`, `pr_merged`, `job_done` (a background bash job id) or a GitHub read probe; a message the owner types ends it early.
 
 Examples:
 
@@ -122,8 +122,8 @@ normal permission checks remain in force.
 - Shapes: `{agent, task}` for one child; `{tasks: [...]}` for several, run one after another in order; `{chain: [...]}` for steps where each step can use `{previous}`, the output of the step before.
 - Agents are Markdown files in `~/.oxa/agent/agents/` and, in a trusted project, `.oxa/agents/`. The file has a `name` and a `description` in its front matter, and its body is the child's system prompt. A project agent with the same name replaces the user agent. A `model:` in an agent file is used when that model or the session's model runs in the cloud; with a local session and a local `model:` it is ignored with a warning (one local model is loaded) and the child uses the session's model.
 - The child is a new oxa process in JSON print mode, with the same model, permission mode and tools, and no session file. It runs on its own compaction limit ([compaction.md](compaction.md)).
-- Local children run one at a time. When children of a `tasks` call run on a cloud model, up to `oxa.subagent.remoteConcurrency` (8) run at once; results still come back in call order. A call with more tasks than `oxa.subagent.maxChildren` (8) is refused.
-- The result is the child's final text, capped at `oxa.subagent.resultCap` (6144 bytes). A longer result is cut and the full text is saved to a file under the agent directory's `tmp/`.
+- Local children run one at a time. When children of a `tasks` call run on a cloud model, up to `oxa.subagent.remoteConcurrency` (8) run at once; results still come back in call order. A call with more tasks than `oxa.subagent.maxChildren` (8) still runs, queued, and its result ends with a warning.
+- The result is the child's final text, capped at `oxa.subagent.resultCap` (6144 bytes; scaled with the window of a cloud model unless you set it). A longer result is cut and the full text is saved to a file under the agent directory's `tmp/`.
 - Interrupting the parent stops the child: SIGTERM to its process group, then SIGKILL after 2 seconds.
 - Plan mode refuses the tool, because it runs a process.
 

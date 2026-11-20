@@ -259,7 +259,7 @@ fn unpriced_discovery_uses_owner_rates_for_admission_and_estimated_ledger_spend(
     );
     fs::write(&path, user.to_string()).unwrap();
     let unpriced = run(&env, &["--list-models"], None);
-    assert!(!String::from_utf8_lossy(&unpriced.stdout).contains(MODEL));
+    assert!(String::from_utf8_lossy(&unpriced.stdout).contains(MODEL));
     assert_eq!(peer.requests().len(), 1);
 
     user["oxa"]["cloud"]["unpriced_discovered_pricing"] = pricing;

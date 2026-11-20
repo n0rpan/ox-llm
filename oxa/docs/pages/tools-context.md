@@ -68,7 +68,7 @@ usage, so reported reasoning tokens can be one greater than the text cap.
   suggests `grep` to find a part.
 - **Output cap on a small context.** On a model with a context below 32K tokens, the cap on one
   tool output is set from the context window: about 12% of the window, at roughly three bytes
-  per token, and at least 2 KiB. A larger context keeps the cap of `oxa.toolOutputCap`.
+  per token, and at least 2 KiB. A larger local context keeps the cap of `oxa.toolOutputCap`; on a cloud model the unset cap scales with the window (3/16 of it in bytes, at least 16 KiB).
 - **Kept tail after a compaction.** On a small context, the recent messages kept after a
   compaction are about 2000 tokens, unless `compaction.keepRecentTokens` is set. See
   [compaction.md](compaction.md).
@@ -79,8 +79,8 @@ usage, so reported reasoning tokens can be one greater than the text cap.
   compaction point, one tool result is at most a quarter of it (three bytes per token, never
   below 2048 bytes), unless `oxa.toolOutputCap` is set. Only the first page of a `read` (no
   `offset` or `limit`) is at most 8 KiB; `grep`, `find`, `ls` and a `read` with `offset` or
-  `limit` are cut at the cap itself (16 KiB by default on a large context), never above
-  16 KiB. A cut ends with a note inside the cap: the next `offset` for `read`, a narrower
+  `limit` are cut at the cap itself (16 KiB by default on a large local context; 3/16 of the
+  window on a cloud model; a higher `oxa.toolOutputCap` applies too). A cut ends with a note inside the cap: the next `offset` for `read`, a narrower
   search for `grep`, `find` and `ls`.
 - **Count form of a large `grep`.** When the matches are more than the `limit`, `grep` answers
   with the total and one count per file (`<path>: <n> matches`) instead of the lines. Narrow
