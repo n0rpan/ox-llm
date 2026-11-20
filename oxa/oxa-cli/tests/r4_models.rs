@@ -177,11 +177,21 @@ fn models_fails_on_explicitly_broken_go_like_list_models() {
     env.write(
         "home/.oxa/agent/settings.json",
         &json!({
+            "defaultModel": "configured-cloud",
             "oxa": {
                 "engine": {"inProcessCloud": true},
                 "cloud": {
                     "discover_models": true,
-                    "opencode": {"enabled": true, "base_url": "http://127.0.0.1:9"}
+                    "opencode": {"enabled": true, "base_url": "http://127.0.0.1:9"},
+                    "subscription_limits": {"daily_requests": 2, "daily_tokens": 1000},
+                    "models": {"configured-cloud": {
+                        "provider": "anthropic",
+                        "upstream_model": "synthetic-model",
+                        "base_url": "http://127.0.0.1:9",
+                        "context_window": 32000,
+                        "max_output": 1024,
+                        "pricing": {"input_per_million": 1, "output_per_million": 2}
+                    }}
                 }
             }
         })
