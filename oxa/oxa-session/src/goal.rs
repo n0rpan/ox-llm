@@ -155,7 +155,7 @@ impl Goal {
     }
     /// [`Goal::stopped`] with the owner's idle rule: with `pause_idle` two replies without a
     /// tool call pause the goal; without it (the default) they are only counted (`idle_stops`
-    /// reaches 2) and pursuit goes on.
+    /// reaches 2) and pursuit goes on; the caller then nudges once and waits between requests.
     pub fn stopped_with(&mut self, had_tools: bool, pause_idle: bool) -> bool {
         if self.status != GoalStatus::Pursuing {
             return false;

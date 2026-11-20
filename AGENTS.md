@@ -150,7 +150,7 @@ code, tests, CI and docs; the owner validates on hardware.
 - **Bash and subagent limits.** `oxa.bash.maxJobs` (16) and `oxa.subagent.maxChildren` (8, also
   steps per call) are user-only warning thresholds, never refusals:
   above them a job starts or children queue, with a warning in the result. A goal token budget
-  counts known usage only; two idle replies warn unless `oxa.goal.idlePause`. Both limits are at least 1. An explicit bash `timeout: 0` disables the
+  counts known usage only; two idle replies warn and nudge once, then wait (`oxa.goal.idleBackoffSeconds`, default 60, doubling, `0` off) unless `oxa.goal.idlePause`. Both limits are at least 1. An explicit bash `timeout: 0` disables the
   timeout for that call, including a background job, and overrides the foreground default.
   A foreground command that passes its timeout is not killed: it moves to a background job
   (counted in `oxa.bash.maxJobs`). `oxa.bash.waitCap` (user-only, default 300 s) caps `wait_s`.

@@ -740,6 +740,13 @@ pub fn ends_unfinished(text: &str, edited: bool) -> bool {
 }
 
 /// Goal controls are declared only for an explicitly active stored goal.
+/// The continuation after a reply that matched the output schema while the goal is still pursued:
+/// the answer is recorded and does not end the goal.
+pub const GOAL_CONTINUE_AFTER_ANSWER: &str = "Your answer was recorded; it does not end the goal. Next, call wait (until something changes), do the next piece of work, or call goal_done with evidence if the goal is complete or blocked.";
+
+/// The one nudge after a second reply in a row without an action.
+pub const GOAL_IDLE_NUDGE: &str = "Two replies in a row had no action. Do one of these now: make a tool call for the next piece of work; call wait with seconds and a reason if you are waiting for something; or call goal_done with evidence if the goal is complete or blocked.";
+
 pub const GOAL_CONTINUE: &str = "Continue pursuing the stored goal. Use wait when no work is available. Call goal_done with evidence only when complete or blocked.";
 pub fn goal_start(objective: &str) -> String {
     format!("Pursue this stored goal until complete or blocked. Use wait when no work is available; call goal_done with evidence to finish.\n\n{objective}")

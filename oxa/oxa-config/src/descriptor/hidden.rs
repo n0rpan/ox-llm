@@ -69,6 +69,16 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     )
     .key(Kind::Number, "60")
     .hidden(),
+    // An idle goal (replies without a tool call): the first wait after the nudge; `0` opts out.
+    d(
+        "oxa.goal.idleBackoffSeconds",
+        Group::Advanced,
+        "",
+        "oxa.goal.idleBackoffSeconds",
+        "",
+    )
+    .key(Kind::Number, "60")
+    .hidden(),
     d(
         "oxa.goal.idlePause",
         Group::Advanced,

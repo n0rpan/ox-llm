@@ -593,6 +593,7 @@ fn session_loop(
             #[cfg(target_os = "linux")]
             Job::GoalControl(control) => {
                 let id = control.id().to_owned();
+                let resume = control.is_resume();
                 let mut sink = cmd_run::OutSink(cx.out.clone());
                 let receipt = oxa_proto::panic::contain(|| control.apply(&mut cx.session, &mut sink))
                     .unwrap_or_else(|_| json!({"id": id, "error": codes::INTERNAL}));
@@ -601,6 +602,24 @@ fn session_loop(
                     let mut gate = lock(&gate);
                     gate.control_pending = false;
                     gate.pending -= 1;
+                    // An applied resume on the idle session starts exactly one continuation
+                    // run, the same prompt `/goal resume` runs. A busy session refused the
+                    // transition, so no run starts then.
+                    if resume && receipt["applied"] == true && !gate.closed {
+                        let prompt = Job::Command {
+                            cmd: RpcCommand {
+                                id: None,
+                                kind: "prompt".into(),
+                                body: json!({"message": oxa_core::prompt::GOAL_CONTINUE}),
+                            },
+                            reply: false,
+                            claimed: false,
+                        };
+                        gate.pending += 1;
+                        if tx.send(prompt).is_err() {
+                            gate.pending -= 1;
+                        }
+                    }
                     write_control_receipt(&cx.out, receipt);
                     if gate.pending == 0 {
                         for response in std::mem::take(&mut gate.after_jobs) {
