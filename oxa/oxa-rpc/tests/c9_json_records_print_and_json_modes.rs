@@ -1,6 +1,4 @@
 //! C9 acceptance tests: JSON records, print and json modes.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_config::{Dirs, Settings};
@@ -56,6 +54,15 @@ fn open_with_hooks(
     engine: &Arc<ScriptedEngine>,
     hooks: Vec<Arc<dyn oxa_proto::Hooks>>,
 ) -> Session {
+    open_with(env, engine, hooks, ToolSelection::default())
+}
+
+fn open_with(
+    env: &TestEnv,
+    engine: &Arc<ScriptedEngine>,
+    hooks: Vec<Arc<dyn oxa_proto::Hooks>>,
+    selection: ToolSelection,
+) -> Session {
     let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(env.agent_dir().join("sessions")));
     let engine_dyn: Arc<dyn Engine> = engine.clone();
     let deps = Deps {
@@ -72,7 +79,7 @@ fn open_with_hooks(
         ),
         dirs: Dirs::under(env.root()),
         cwd: env.work(),
-        selection: ToolSelection::default(),
+        selection,
         resources: Default::default(),
         model: None,
         thinking: None,
@@ -675,7 +682,15 @@ fn print_warns_on_tool_markup_without_tools() {
     let env = TestEnv::new();
     let markup = "<tool_calls><invoke name=\"exec_command\"></invoke></tool_calls>";
     let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text(markup)]));
-    let mut session = open(&env, &engine);
+    let mut session = open_with(
+        &env,
+        &engine,
+        Vec::new(),
+        ToolSelection {
+            no_tools: true,
+            ..ToolSelection::default()
+        },
+    );
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let code = run_print(&mut session, prompt("review"), &mut out, &mut err).unwrap();
     assert_eq!(code, 0);
@@ -684,7 +699,15 @@ fn print_warns_on_tool_markup_without_tools() {
 
     // Plain text: no warning.
     let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("fine")]));
-    let mut session = open(&env, &engine);
+    let mut session = open_with(
+        &env,
+        &engine,
+        Vec::new(),
+        ToolSelection {
+            no_tools: true,
+            ..ToolSelection::default()
+        },
+    );
     let (mut out, mut err) = (Vec::new(), Vec::new());
     run_print(&mut session, prompt("review"), &mut out, &mut err).unwrap();
     assert!(err.is_empty());
@@ -703,7 +726,15 @@ fn stdin_prepend() {
     let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text(
         "they are about a missing file",
     )]));
-    let mut session = open(&env, &engine);
+    let mut session = open_with(
+        &env,
+        &engine,
+        Vec::new(),
+        ToolSelection {
+            no_tools: true,
+            ..ToolSelection::default()
+        },
+    );
     let mut out = Vec::new();
     let mut err = Vec::new();
     run_print(

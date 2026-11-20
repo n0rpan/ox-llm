@@ -110,8 +110,11 @@ impl Client {
 
 fn request(chat: &Chat<'_>) -> Result<Value, Error> {
     let mut body = json!({"model":chat.upstream_model,"stream":true,
-        "provider":{"zdr":true,"data_collection":"deny"},
         "stream_options":{"include_usage":true}});
+    // Owner routing preferences only; with none configured nothing is added.
+    if let Some(provider) = chat.provider {
+        body["provider"] = provider.clone();
+    }
     // Local-only template/cache knobs and caller provider overrides never cross
     // the boundary. Tools and history retain the standard Chat Completions shape.
     for field in [

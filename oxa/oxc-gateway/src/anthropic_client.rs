@@ -48,6 +48,8 @@ pub struct Chat<'a> {
     pub max_output: Option<u64>,
     pub payload: &'a Value,
     pub created: u64,
+    /// Owner OpenRouter routing preferences; `None` adds nothing to the request.
+    pub provider: Option<&'a Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

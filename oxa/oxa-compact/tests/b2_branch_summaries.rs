@@ -1,6 +1,4 @@
 //! B2 acceptance tests: Branch summaries.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 //! (These tests touch no files: the session tree and the wire are built in memory.)
 

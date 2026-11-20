@@ -335,8 +335,11 @@ fn subscription_processes_share_token_holds_actual_usage_and_request_counts() {
     let mut second = Worker::subscription(&home.path(), limits);
     assert_eq!(first.reserve(), "reserved");
     assert_eq!(second.reserve(), "reserved");
-    let mut blocked = Worker::subscription(&home.path(), limits);
-    assert_eq!(blocked.reserve(), "subscription_limit_exceeded");
+    // Limits are advisory: a third worker is admitted past them.
+    let mut over = Worker::subscription(&home.path(), limits);
+    assert_eq!(over.reserve(), "reserved");
+    over.send("release");
+    assert_eq!(over.read(), "done");
     first.send("settle");
     assert_eq!(first.read(), "done");
     let mut third = Worker::subscription(&home.path(), limits);
@@ -347,8 +350,10 @@ fn subscription_processes_share_token_holds_actual_usage_and_request_counts() {
     );
     second.send("settle");
     assert_eq!(second.read(), "done");
-    let mut request_blocked = Worker::subscription(&home.path(), limits);
-    assert_eq!(request_blocked.reserve(), "subscription_limit_exceeded");
+    let mut request_over = Worker::subscription(&home.path(), limits);
+    assert_eq!(request_over.reserve(), "reserved");
+    request_over.send("release");
+    assert_eq!(request_over.read(), "done");
     third.send("release");
     assert_eq!(third.read(), "done");
     let rows: Vec<Value> = fs::read_to_string(home.path())
@@ -375,7 +380,8 @@ fn crashed_subscription_processes_keep_unknown_token_holds() {
         first.send(command);
         assert_eq!(first.child.wait().unwrap().code(), Some(23));
         let mut next = Worker::subscription(&home.path(), limits);
-        assert_eq!(next.reserve(), "subscription_limit_exceeded");
+        // The crashed hold still counts toward the advisory limits but never blocks.
+        assert_eq!(next.reserve(), "reserved");
     }
 }
 
