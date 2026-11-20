@@ -1325,7 +1325,8 @@ fn prepare(
         yolo: yolo.clone(),
     };
     let hook_sets = if owner_chat {
-        HookSets::default()
+        // The live owner Lead session: the worker tool only (M1), through the K5a/K5b builder.
+        crate::hooks::build_owner_hooks(&hook_inputs, &mut notices)
     } else {
         build_hooks(&hook_inputs, &mut notices)?
     };
@@ -2184,6 +2185,9 @@ fn run_tui(
                     codes::INVALID,
                     "The selected Lead session changed.",
                 ));
+            }
+            if let Some(workers) = &base.hook_sets.workers {
+                let _ = workers.resume_after_owner_check();
             }
         }
         base.result_facts.attach(&mut session)?;

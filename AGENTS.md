@@ -64,6 +64,9 @@ code, tests, CI and docs; the owner validates on hardware.
   `OXA_CODING_AGENT` say; a fake socket is no answer. Yolo is unchanged (the model already has the
   owner's rights). The question is shown to the owner as the process's text, marked as such. Do not add
   `/dev/tty`-only confirmations or env-marker refusals for owner actions.
+- The live owner-authorized Lead service may launch and steer background workers through its sole
+  `worker` tool. The shadow Lead preset and one-shot `oxa lead chat` stay tool-free; user-only
+  worker enablement, limits and the current permission ceiling govern every new launch.
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
   in the ledger (an unknown cost is recorded as unknown). Limits are owner configuration: with no cap

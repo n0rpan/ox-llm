@@ -311,6 +311,7 @@ impl LeadOwnerBinding {
 pub fn with_lead_owner<T>(
     binding: &LeadOwnerBinding,
     env: &Env,
+    workers: bool,
     run: impl FnOnce(&mut Session) -> Result<T, OxaError>,
 ) -> Result<T, OxaError> {
     let home_workspace = crate::home_cwd::check(
@@ -324,7 +325,7 @@ pub fn with_lead_owner<T>(
     )?
     .workspace;
     let mut args = Args::default();
-    let prep = binding.prepare(&mut args, env, RunMode::Print, home_workspace)?;
+    let prep = binding.prepare_inner(&mut args, env, RunMode::Print, home_workspace, workers)?;
     let mut session = binding.open(&prep)?;
     let result = run(&mut session);
     session.shutdown(&mut oxa_proto::HeadlessUi::default());
@@ -338,6 +339,17 @@ impl LeadOwnerBinding {
         env: &Env,
         mode: RunMode,
         home_workspace: bool,
+    ) -> Result<Prep, OxaError> {
+        self.prepare_inner(args, env, mode, home_workspace, true)
+    }
+
+    fn prepare_inner(
+        &self,
+        args: &mut Args,
+        env: &Env,
+        mode: RunMode,
+        home_workspace: bool,
+        workers: bool,
     ) -> Result<Prep, OxaError> {
         let binding = self;
         let dirs = &binding.dirs;
@@ -355,13 +367,20 @@ impl LeadOwnerBinding {
         }
         args.no_extensions = true;
         args.no_tools = true;
+        // Nothing but the worker tool (M1): `no_tools` drops every other tool and the worker
+        // tool is the one named exception.
+        args.tools = Some(if workers {
+            vec![crate::workers::tool::TOOL_NAME.to_string()]
+        } else {
+            Vec::new()
+        });
         args.no_skills = true;
         // Prepare through the ordinary gateway, then require the configured Lead
         // route to match its resolved model ID exactly.
         let route = lead_model(dirs, binding.uid)?;
         args.model = route.clone();
         let interactive = mode == RunMode::Interactive;
-        let prep = prepare(
+        let mut prep = prepare(
             args,
             env,
             dirs,
@@ -388,7 +407,41 @@ impl LeadOwnerBinding {
                 ));
             }
         }
+        if workers {
+            self.keep_workers(&mut prep, mode);
+        } else if let Some(workers) = &prep.built.hook_sets.workers {
+            // A one-shot process cannot supervise work after returning. It has no tool and must
+            // not briefly relaunch a saved child during SessionStart either.
+            workers.suppress_resume();
+        }
         Ok(prep)
+    }
+
+    /// The worker tool of the owner Lead session: saved workers are resumed only after the owner
+    /// binding was rechecked (`open`), and outside a terminal session the one hook set (supervisor
+    /// and children) of this process is used on every chat turn, so a worker the Lead started
+    /// outlives the turn that started it. Children stop at lead shutdown or Ctrl-C of the tree
+    /// (`stop_owner_workers`), and when the terminal session closes.
+    fn keep_workers(&self, prep: &mut Prep, mode: RunMode) {
+        let Some(made) = prep.built.hook_sets.workers.clone() else {
+            return;
+        };
+        let workers = if mode == RunMode::Interactive {
+            made
+        } else {
+            let kept = crate::workers::tool::kept_owner_workers(&self.dirs.agent_dir, made.clone());
+            if !Arc::ptr_eq(&kept, &made) {
+                let old = Arc::as_ptr(&made) as *const ();
+                for hook in &mut prep.built.hook_sets.hooks {
+                    if Arc::as_ptr(hook) as *const () == old {
+                        *hook = kept.clone();
+                    }
+                }
+                prep.built.hook_sets.workers = Some(kept.clone());
+            }
+            kept
+        };
+        workers.hold_resume();
     }
 
     pub(super) fn session_ref(&self) -> &SessionRef {
@@ -396,11 +449,23 @@ impl LeadOwnerBinding {
     }
 
     pub(super) fn open(&self, prep: &Prep) -> Result<Session, OxaError> {
+        // Verified before any session is opened; nothing starts for an unverified caller.
         self.recheck()?;
-        let session = open_named(&prep.built, None, prep.open.clone(), None).map_err(|_| unavailable())?;
+        let mut session =
+            open_named(&prep.built, None, prep.open.clone(), None).map_err(|_| unavailable())?;
         self.recheck()?;
         if session.inner().sref != self.session {
             return Err(unavailable());
+        }
+        // The dedicated session keeps one history across surfaces, but a one-shot chat declares no
+        // tools while the terminal declares `worker`: a replayed stored prefix would keep the
+        // other surface's tool set, so the terminal asks for its own before the first prompt.
+        session
+            .sync_tools(&mut oxa_proto::NullSink)
+            .map_err(|_| unavailable())?;
+        // Only now, with the binding verified, do saved workers start again.
+        if let Some(workers) = &prep.built.hook_sets.workers {
+            let _ = workers.resume_after_owner_check();
         }
         Ok(session)
     }
