@@ -214,3 +214,29 @@ Three more rules close the loop on what the Lead cannot see or send:
   decision is `requester_rejected`: nothing is re-sent under that identity, and the
   Lead escalates `lead:stuck:review-identity:<pr>` (signal `review_rejected:<pr>`).
 
+
+## Event integration after L1
+
+Consume the runner's sequenced events and bounded situation file after L1 is on
+main. Persist the last processed cursor with the lead session; coalesce events
+arriving during a turn and reread the situation at the next safe turn boundary.
+Reconnect using the runner's supported cursor/recovery contract. Do not add a
+timer that repeatedly asks the model for status, and do not tail logs to recover
+facts. Reuse the session inbox (#651) for delivery and goal mode (#709) for an
+unattended period; neither is implemented by the lead. A missing event interface
+must remain explicitly unavailable.
+
+## Acceptance still required
+
+Use a fake engine and temporary runner state to verify restricted tools across
+open/reopen, typed owner entries, action rejection under holds, stale decisions,
+missing/corrupt state, and multiline/overflow fact cards. Drive the real TUI in
+tmux and the print driver against the same runner fixture. After L1, verify
+event cursor recovery and coalescing without polling. Final acceptance is an
+orchestrator's shadow comparison first, then a supervised session where the
+orchestrator steers through the lead's interface. File each wrong/missing action,
+unsupported fact, ignored hold or required step-around with its stage, card and
+input state. Only a supervised session with no step-around advances to the
+owner's evening on the helper machine itself with the merge queue (no ssh
+placement or task queue required). This requires the owner's environment and
+is not established by fixture tests.
