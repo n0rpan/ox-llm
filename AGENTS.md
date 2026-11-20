@@ -159,6 +159,9 @@ code, tests, CI and docs; the owner validates on hardware.
 - **Worker mode.** An `oxa work` worker is started with `--yolo` only when the owner's user-layer
   `permissions.defaultMode` is `yolo`; otherwise it keeps the sandboxed default. Project settings
   cannot raise it. See `oxa/docs/work.md`.
+- **Worker GitHub access.** The owner-only `oxa.work.workerGithub` is `worker` in yolo (the worker keeps
+  its own GitHub environment, `gh`, MCP, web search and subagents), `broker` in auto (no token, host-side
+  tools) and `runner` in standard mode, unless the owner sets it. A project setting is ignored. The `no GitHub access` rule below is for workers on `runner` or `broker`.
 - **Worker publishing.** Publishing (owner decision 2026-11-19): in workspace and auto, without asking, the session repo's current non-default branch may be pushed to `origin` with an explicit source refspec (no force, no `+refspec`, no delete, no tag or mirror, no other remote), `gh pr create|edit|comment` without a PR argument, repo or head override, and read-only `gh` (`pr view|checks|diff`, `run view|watch`, `api` GET) run. A push with no refspec, a push to the default branch, a force push, branch deletion, `gh pr merge`, a push to another repo and release or tag pushes ask, or go to the lead's approvals desk for a worker with no human (a headless worker without a desk is refused). Every part of a command line must be in the allowed set: any other command chained with one (`curl x && git push`, `git push | tee f`, a substitution, `bash -c`) asks. Yolo is unchanged. Classifier: `oxa-perm` `publish.rs`.
 - **Worker tool default.** A worker started by the `worker` tool inherits its parent's level when no
   `mode` is given (yolo -> yolo, auto -> auto, workspace -> workspace, plan -> plan); an explicit narrower
@@ -197,8 +200,10 @@ code, tests, CI and docs; the owner validates on hardware.
   still stop the goal with the reason shown.
   Dangerous commands are a floor prompt interactively and never wait in an unattended run:
   `oxa.approval.unattended` (`auto` by default, `refuse`, `request`; user settings only) refuses or
-  files an owner request, answered only through `oxa send --approve` after the session's owner-confirm broker (or the direct controlling terminal) authenticates the answer. Grants are
-  owner-scoped (`once` is consumed by the retrying run; `session`/`always` persist) and a project file
+  files an owner request, answered only through `oxa send --approve` after the session's owner-confirm broker (or the direct controlling terminal) authenticates the answer. A refusal is returned to the
+  run without writing an approval record; only requests that the owner can answer are persisted. Grants are
+  owner-scoped (`once` is consumed by the retrying run; `session` expires when that run ends;
+  `always` persists through user settings) and a project file
   or model output cannot grant one. Shell parameter or command substitution markers anywhere in
   the command prevent reuse of a saved grant. A finding that asks for a default-off switch or for
   an unattended run to wait is answered here.
@@ -287,8 +292,12 @@ without a PR, and `gh workflow run lane`, still run `lane`. CodeQL runs on pushe
 on dispatch only. The macOS arm64 `oxa-cli` build (`macos.yml`) is part of the required `gate`: the
 `checks` workflow calls it as its `macos` job on ready PRs and in the merge queue whenever the
 classifier selects `oxa` (oxa Rust code, `oxa/Cargo.lock`, `packaging/`, workflows), and the gate
-fails if it ran and failed. `macos.yml` itself also runs on main and on dispatch. It costs macOS
+fails if it ran and failed. `macos.yml` itself runs on manual dispatch only: the commit a main push
+carries is the one the queue built, so a main push does not build macOS again. It costs macOS
 runner minutes on every PR that touches Rust.
+A main push whose commit already has a green merge-queue `checks` run skips that workflow's jobs
+(`tools/ci/queue_covered.py`), except the classifier and the scans; a push that changed a
+dependency cache key still runs, because main is what seeds the `<prefix>main` caches.
 
 The lane workflow selects changed crates plus their local reverse dependencies and binary-fixture
 consumers against main. Shared workspace manifests/locks expand the affected workspace. Tests use

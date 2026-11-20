@@ -324,7 +324,10 @@ pub fn activity_text(status: &StatusModel) -> Option<String> {
             max_attempts,
             delay_ms,
         } => {
-            let secs = delay_ms.div_ceil(1000);
+            // #2050: a live countdown, so the user sees the wait shrink instead of one fixed
+            // number. `activity_ms` is the time in this retry state.
+            let left = delay_ms.saturating_sub(status.activity_ms);
+            let secs = left.div_ceil(1000);
             Some(format!("Retrying in {secs}s ({attempt}/{max_attempts})"))
         }
         Activity::Blocked => Some("Waiting for input...".to_string()),

@@ -55,6 +55,26 @@ fn work_status_declaration_matches_the_existing_cli_route() {
 }
 
 #[test]
+fn models_declaration_matches_the_existing_cli_route() {
+    let words: Vec<String> = ["models", "--json"].iter().map(|w| w.to_string()).collect();
+    let resolved = parse_cli(&words).expect("declared CLI route");
+    assert_eq!(resolved.command.id, CommandId::Models);
+    assert_eq!(resolved.args, &["--json"]);
+    assert_eq!(resolved.command.surfaces.cli, Availability::Supported);
+    for surface in [Surface::Slash, Surface::Menu, Surface::Web] {
+        assert!(
+            matches!(resolved.command.surfaces.at(surface), Availability::Exception(_)),
+            "Models declares {surface:?} without a handler"
+        );
+    }
+    let parsed = oxa_cli::parse_args(&words, &[]).unwrap();
+    assert!(
+        matches!(parsed.subcommand, Some(oxa_cli::Subcommand::Models(rest))
+        if rest == ["--json"])
+    );
+}
+
+#[test]
 fn memory_verbs_are_declared_with_their_surfaces() {
     for (words, id) in [
         (vec!["memory"], CommandId::Memory),

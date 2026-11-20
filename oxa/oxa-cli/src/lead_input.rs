@@ -1,6 +1,6 @@
 //! Bounded, read-only access to existing board samples and typed runner situation exports.
 //! These functions return facts, never raw file content or input-bearing diagnostics.
-use oxa_proto::work::{Snapshot, MAX_SNAPSHOT_BYTES};
+use oxa_proto::work::{PullRequest, Snapshot, MAX_SNAPSHOT_BYTES};
 use oxa_work::board::{Action, Board, MAX_OPEN_PULL_REQUESTS};
 use oxa_work::shadow::{AppQuota, MAX_LEAD_SAMPLE_BYTES};
 use std::{
@@ -47,8 +47,20 @@ pub fn board(path: &Path, uid: u32) -> Result<Board> {
     board_and_app_quota(path, uid).map(|(board, _)| board)
 }
 
+/// One complete Reader sample: the shared board plus every typed stuck-work
+/// source that record carries. Each alarm field is `None` when its source was
+/// not observed; the caller renders that state explicitly (#1391).
+pub struct Sample {
+    pub board: Board,
+    pub app_quota: Option<AppQuota>,
+    pub alarms: crate::lead_page::Alarms,
+}
+
 /// Read the most recent complete Reader sample within the existing tail bound.
-pub(crate) fn board_and_app_quota(path: &Path, uid: u32) -> Result<(Board, Option<AppQuota>)> {
+/// The board and its bounds stay strict: a malformed board refuses the record.
+/// Alarm sources fail per source, so one missing or invalid source never hides
+/// the others or the board itself.
+pub fn sample(path: &Path, uid: u32) -> Result<Sample> {
     let mut file = open(path, uid)?;
     let length = file.metadata().map_err(|_| "cannot inspect board sample")?.len();
     let start = length.saturating_sub(MAX_LEAD_SAMPLE_BYTES + 1);
@@ -68,13 +80,24 @@ pub(crate) fn board_and_app_quota(path: &Path, uid: u32) -> Result<(Board, Optio
             return Err("board sample exceeds limit");
         }
         let line = &tail[previous.map_or(0, |p| p + 1)..end];
-        let (board, app_quota, publication) = decode_board_sample(line)?;
-        if !publication {
-            return Ok((board, app_quota));
+        let decoded = decode_board_sample(line)?;
+        if !decoded.publication {
+            let alarms = decode_alarms(line, &decoded.board, decoded.board.observed_at);
+            return Ok(Sample {
+                board: decoded.board,
+                app_quota: decoded.app_quota,
+                alarms,
+            });
         }
         // Publication rows carry a Board for journal replay, not a Reader observation.
         end = previous.ok_or("no Reader board sample")?;
     }
+}
+
+/// Read the most recent complete Reader sample's board and App quota.
+pub(crate) fn board_and_app_quota(path: &Path, uid: u32) -> Result<(Board, Option<AppQuota>)> {
+    let record = sample(path, uid)?;
+    Ok((record.board, record.app_quota))
 }
 
 /// Fixed, path-free operator causes for a failed protected observation read.
@@ -143,7 +166,77 @@ pub(crate) fn board_cause(error: &'static str) -> BoardCause {
     }
 }
 
-fn decode_board_sample(line: &[u8]) -> Result<(Board, Option<AppQuota>, bool)> {
+struct DecodedSample {
+    board: Board,
+    app_quota: Option<AppQuota>,
+    publication: bool,
+}
+
+/// One landing record row as the protected view needs it: the queue-age alarm the
+/// landing policy already decided, and the queue observation that established it.
+#[derive(serde::Deserialize)]
+struct LandingRow {
+    queue_alarm: bool,
+    queue: Option<oxa_work::shadow::QueueObservation>,
+}
+
+/// Decode every alarm source one record carries. Each source is independent: a
+/// missing or invalid record leaves that source unobserved (`None`) instead of
+/// failing the board, and the shared parsers keep their own policy results
+/// without this module recomputing any age.
+fn decode_alarms(line: &[u8], board: &Board, observed_at: u64) -> crate::lead_page::Alarms {
+    let record: serde_json::Value = serde_json::from_slice(line).unwrap_or_else(|_| serde_json::Value::Null);
+    let panels = record
+        .get("panels")
+        .filter(|value| !value.is_null())
+        .and_then(|value| crate::lead_panels::parse_repository(value, None).ok());
+    let (main_red, main_merge_stalled, queue) = match &panels {
+        None => (None, None, None),
+        Some(panels) => (
+            Some(panels.main_red),
+            panels
+                .main_merged_at()
+                .map(|_| panels.main_merge_stalled(observed_at)),
+            panels.queue.clone(),
+        ),
+    };
+    // Bind each queue-age alarm to the exact PR head of the same record's Board
+    // entry, and require the landing record's own queue observation.
+    let overdue_queue = record
+        .get("landing")
+        .filter(|value| !value.is_null())
+        .and_then(|value| {
+            let rows: std::collections::BTreeMap<u64, LandingRow> =
+                serde_json::from_value(value.clone()).ok()?;
+            Some(
+                board
+                    .entries
+                    .iter()
+                    .filter(|entry| {
+                        rows.get(&entry.number)
+                            .is_some_and(|row| row.queue_alarm && row.queue.is_some())
+                    })
+                    .map(|entry| PullRequest {
+                        number: entry.number,
+                        head: entry.head.clone(),
+                    })
+                    .collect(),
+            )
+        });
+    let stalled_runs = record
+        .get("runs")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|pages| crate::lead_runs::stalled(pages, observed_at).ok());
+    crate::lead_page::Alarms {
+        main_red,
+        main_merge_stalled,
+        stalled_runs,
+        queue,
+        overdue_queue,
+    }
+}
+
+fn decode_board_sample(line: &[u8]) -> Result<DecodedSample> {
     if line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
         return Err("board sample exceeds limit");
     }
@@ -179,7 +272,11 @@ fn decode_board_sample(line: &[u8]) -> Result<(Board, Option<AppQuota>, bool)> {
         Some(_) => return Err("invalid publication sample"),
         None => false,
     };
-    Ok((board, app_quota, publication))
+    Ok(DecodedSample {
+        board,
+        app_quota,
+        publication,
+    })
 }
 
 /// Consume the runner's existing versioned situation document, not worker transcripts/logs.

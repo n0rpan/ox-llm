@@ -1063,9 +1063,16 @@ fn gate_at(
     match a {
         Access::Exec { command, net } if cwd != session_cwd => {
             let located = Access::Exec {
-                command: format!("cd {} && {command}", shell_quote(&cwd.to_string_lossy())),
+                command: format!(
+                    "cd {} && cd {} && {command}",
+                    shell_quote(&session_cwd.to_string_lossy()),
+                    shell_quote(&cwd.to_string_lossy())
+                ),
                 net: *net,
             };
+            // The wrapper keeps the session directory as the classifier's workspace boundary.
+            // `exec_gated` supplies a canonical cwd, so that real directory is also part of the
+            // exact command identity an unattended approval records and revalidates.
             gate_pinned_in(st, &located, &session_cwd, ui).map(|_| ())
         }
         _ => gate_pinned_in(st, a, cwd, ui).map(|_| ()),
@@ -1141,7 +1148,7 @@ fn gate_pinned_in(
 }
 
 /// Sandboxed command: policy first, then the sandbox (no unsandboxed fallback).
-fn exec_gated(st: &mut SessionState, spec: ExecSpec, ui: &mut dyn Ui) -> Result<Value, OxaError> {
+fn exec_gated(st: &mut SessionState, mut spec: ExecSpec, ui: &mut dyn Ui) -> Result<Value, OxaError> {
     if spec.net {
         oxa_proto::check_online("a command with network access")?; // P4: no network grant offline
     }
@@ -1156,6 +1163,14 @@ fn exec_gated(st: &mut SessionState, spec: ExecSpec, ui: &mut dyn Ui) -> Result<
         };
         gate(st, &mount, ui)?;
     }
+    // Pin the directory before checking an exec grant, then hand that same real directory to
+    // the sandbox. A symlink swap cannot move execution after its approval was revalidated.
+    spec.cwd = std::fs::canonicalize(&spec.cwd).map_err(|e| {
+        OxaError::new(
+            codes::INVALID,
+            format!("cannot resolve exec cwd {}: {e}", spec.cwd.display()),
+        )
+    })?;
     gate_at(
         st,
         &Access::Exec {
@@ -1836,6 +1851,62 @@ mod tests {
             net: false,
         };
         assert!(gate_at(&mut f.st, &build, &inside, &mut headless).is_ok());
+    }
+
+    /// An unattended extension approval is bound to the real execution directory, not the
+    /// session root. Retargeting a symlink cwd therefore needs a new owner approval.
+    #[cfg(unix)]
+    #[test]
+    fn extension_exec_approval_is_bound_to_its_canonical_cwd() {
+        let mut f = fixture();
+        let desk =
+            Arc::new(oxa_perm::ApprovalDesk::open(&f.env.root().join("agent")).expect("approval desk"));
+        f.st.policy = Box::new(
+            oxa_perm::ModePolicy::new()
+                .with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new())
+                .with_desk(
+                    desk.clone(),
+                    "s1".into(),
+                    oxa_perm::UnattendedMode::Request,
+                    false,
+                ),
+        );
+        let repo_a = f.env.work().join("repo-a");
+        let repo_b = f.env.work().join("repo-b");
+        std::fs::create_dir_all(&repo_a).unwrap();
+        std::fs::create_dir_all(&repo_b).unwrap();
+        let link = f.env.work().join("repo");
+        std::os::unix::fs::symlink(&repo_a, &link).unwrap();
+        let spec = || ExecSpec {
+            command: "git push --force origin main".into(),
+            cwd: link.clone(),
+            writable: false,
+            net: false,
+            timeout_s: None,
+            env: Vec::new(),
+        };
+        let mut headless = HeadlessUi::default();
+
+        let request = exec_gated(&mut f.st, spec(), &mut headless).expect_err("owner approval requested");
+        let request_id = request
+            .message
+            .strip_prefix("Needs owner approval (request ")
+            .and_then(|text| text.split_once("): "))
+            .map(|(id, _)| id)
+            .expect("request id in refusal");
+        desk.answer(request_id, "session").expect("approve request");
+        assert_eq!(
+            exec_gated(&mut f.st, spec(), &mut headless)
+                .expect_err("sandbox unavailable")
+                .code,
+            codes::NO_SANDBOX
+        );
+
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&repo_b, &link).unwrap();
+        let next =
+            exec_gated(&mut f.st, spec(), &mut headless).expect_err("retargeted cwd needs another approval");
+        assert!(next.message.starts_with("Needs owner approval (request "));
     }
 
     /// O-386: a host request posted while the front end waits (instead of polling) wakes it, so

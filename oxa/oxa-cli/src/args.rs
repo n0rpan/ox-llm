@@ -56,6 +56,8 @@ pub enum Subcommand {
     Pkg(String, Vec<String>),
     /// `oxa config ..`.
     Config(Vec<String>),
+    /// `oxa models [--json]`: the words after `models`. Known words are never prompts (#1542).
+    Models(Vec<String>),
     /// `oxa local add <model.gguf> ..`: the words after `local`.
     Local(Vec<String>),
     /// O-152: `oxa identity [--refresh] [--offline]`.
@@ -95,6 +97,7 @@ pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -
             | CommandId::MemoryList
             | CommandId::MemoryShow
             | CommandId::MemoryRm
+            | CommandId::Models
             | CommandId::Local
             | CommandId::LocalAdd
     )
@@ -277,6 +280,10 @@ const COMMANDS: &[(&str, &str)] = &[
     (
         "oxa status <session-id|session-file>",
         "Read a saved session's current progress and stall signal",
+    ),
+    (
+        "oxa models [--json]",
+        "List the models the engine serves, as a table or as JSON",
     ),
     (
         "oxa install <source> [-l]",
@@ -569,6 +576,7 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         "wipe" => Subcommand::Wipe(rest.to_vec()),
         "send" => Subcommand::Send(rest.to_vec()),
         "status" => Subcommand::Status(rest.to_vec()),
+        "models" => Subcommand::Models(rest.to_vec()),
         "work" => Subcommand::Work(rest.to_vec()),
         "auth" => return Err(OxaError::unsupported("the auth command")),
         _ => return Ok(None),
