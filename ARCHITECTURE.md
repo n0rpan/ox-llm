@@ -88,10 +88,18 @@ oxa lead --loopback HTTP--> browser page; oxa work/lead --> GitHub (board, revie
 ## CI (`.github/workflows`)
 
 - `checks.yml` runs on PRs, pushes, the merge queue and nightly. It calls `build.yml` (engine MoE,
-  Flash, the oxa test archive and its shards) and runs the lab shards, the documentation links job,
-  the path-filter tests and the secret scans.
-- Also: `lane.yml` (per-lane affected-crate tests), `macos.yml`, `release-build.yml`, `release.yml`,
-  `dev-build.yml`, `go-review.yml` and `retirement-audit.yml`.
+  Flash, the oxa test archive and its shards) and runs the documentation links job, the path-filter
+  tests and the secret scans.
+- `lane.yml` runs the affected-crate tests for a lane; `e2e.yml` runs the real-model prompt and tool
+  loop; `oracle.yml` checks the gate and cache controls.
+- Also: `macos.yml`, `release-build.yml`, `release.yml`, `dev-build.yml`, `codeql.yml`,
+  `go-review.yml`.
+
+| Unit | Root | Lockfile |
+|---|---|---|
+| engine | `engine/Cargo.toml` (workspace) | `engine/Cargo.lock` |
+| oxa | `oxa/Cargo.toml` (workspace) | `oxa/Cargo.lock` |
+| repository | none | none |
 
 ## Naming traps
 

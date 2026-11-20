@@ -83,6 +83,7 @@ pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -
         id,
         CommandId::Admission
             | CommandId::Help
+            | CommandId::Status
             | CommandId::WorkStatus
             | CommandId::WorkBoard
             | CommandId::Memory
@@ -129,7 +130,7 @@ pub struct Args {
     pub output_schema: Option<String>,
     /// Stored goal objective from a UTF-8 file (print/JSON).
     pub goal: Option<String>,
-    /// Soft runtime limit for print, JSON and RPC modes (`--max-time`, seconds).
+    /// Soft runtime limit for a run in any mode (`--max-time`, seconds).
     pub max_time: Option<std::time::Duration>,
     /// Flag a saved active session after this long without progress.
     pub stall_timeout: Option<std::time::Duration>,
@@ -233,6 +234,8 @@ pub struct Args {
     pub version: bool,
     /// The hard offline switch (see the help text).
     pub offline: bool,
+    /// #1512 S3: the OS sandbox (bwrap) for this attended run, as `oxa.sandbox.interactive`.
+    pub sandbox: bool,
     /// Explicitly expose only these native local aliases for the current owner session.
     #[cfg(feature = "share")]
     pub share_models: Vec<String>,
@@ -287,8 +290,8 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     ("oxa logout chatgpt", "Remove the owner ChatGPT token record"),
     (
-        "oxa send <session-id> \"text\"",
-        "Queue a session follow-up for its TUI, RPC owner or headless goal run",
+        "oxa send <session-id> <text|->",
+        "Queue a session follow-up; use - to read the text from stdin",
     ),
     ("oxa config [-l]", "Print every setting with its value and source"),
     (
@@ -360,7 +363,7 @@ const OPTIONS: &[(&str, &str)] = &[
     ("--goal <file>", "Pursue and persist this goal until complete, blocked, stalled or interrupted"),
     (
         "--max-time <seconds>",
-        "Gracefully wrap up a headless run after this time (fractional seconds allowed)",
+        "Gracefully wrap up a run after this time (fractional seconds allowed)",
     ),
     (
         "--stall-timeout <seconds>",
@@ -368,7 +371,7 @@ const OPTIONS: &[(&str, &str)] = &[
     ),
     (
         "--max-tokens <N>",
-        "Gracefully wrap up a headless run after N new prompt + output tokens (cached tokens are free)",
+        "Gracefully wrap up a run after N new prompt + output tokens (cached tokens are free)",
     ),
     (
         "--usage-log <file>",
@@ -492,6 +495,10 @@ const OPTIONS: &[(&str, &str)] = &[
     (
         "--offline",
         "Hard offline switch: non-local connections refused, bash has no network, web_search off",
+    ),
+    (
+        "--sandbox",
+        "Run bash in the OS sandbox (bwrap) for this interactive run; hooks are always sandboxed; default: no OS sandbox, dangerous commands ask",
     ),
     (
         "--                ",
@@ -980,6 +987,10 @@ fn parse_flag(
         "--offline" => {
             no_value(inline, flag)?;
             a.offline = true;
+        }
+        "--sandbox" => {
+            no_value(inline, flag)?;
+            a.sandbox = true;
         }
         "--yolo" => {
             no_value(inline, flag)?;

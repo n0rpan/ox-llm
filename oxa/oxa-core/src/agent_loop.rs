@@ -148,6 +148,8 @@ fn run_inner(
     let mut wrapping_up = false;
     let mut wrap_up_failure = None;
     let mut length_recoveries = 0;
+    // FH-N2: a headless run gets one nudge when its final reply ends on a plan or a promise.
+    let mut headless_nudged = false;
     // The repeat guard warns the user once per run (`repeat.rs`, #1448).
     let mut repeat_warned = false;
     // Consecutive transient failures of one logical request. This state lives inside the run so
@@ -240,6 +242,7 @@ fn run_inner(
         };
         let thinking_on = !wrapping_up && crate::think::request_thinking(st, TurnKind::Chat);
         let mut retried = false;
+        let mut empty_retries: u32 = 0;
         let mut replays: u32 = 0;
         let turn = loop {
             // A run that continues after a persisted cut, failure or wrap-up is still foreground
@@ -449,6 +452,28 @@ fn run_inner(
                 sink.emit(&AgentEvent::Notice {
                     level: Level::Info,
                     text: crate::think::OVERRUN_NOTICE.to_string(),
+                });
+                continue;
+            }
+            // A cloud reply that ended normally with no text and no tool call is asked again
+            // (`oxa.emptyReplyRetries`, default 1); the empty reply is never kept.
+            if st.info.caps.remote
+                && !wrapping_up
+                && turn.finish == Finish::Stop
+                && turn.msg.tool_calls.is_empty()
+                && turn.msg.content.as_deref().is_none_or(|c| c.trim().is_empty())
+                && empty_retries < st.settings.empty_reply_retries()
+                && st.auto_retry
+                && st.settings.retry().enabled
+                && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) == 0
+                && !st.shared.cancel.is_cancelled()
+            {
+                empty_retries += 1;
+                account_discarded(st, &turn);
+                opts.idem_key = String::new();
+                sink.emit(&AgentEvent::Notice {
+                    level: Level::Info,
+                    text: "the model returned an empty reply; asking again".to_string(),
                 });
                 continue;
             }
@@ -906,6 +931,26 @@ fn run_inner(
                 push_user(st, crate::prompt::GOAL_CONTINUE.into(), sink, ui, run_msgs)?;
                 continue;
             }
+        }
+        if crate::is_headless()
+            && !headless_nudged
+            && turn.finish != Finish::Length
+            && !st.shared.cancel.is_cancelled()
+            && !st.shared.has_input()
+            && turn
+                .msg
+                .content
+                .as_deref()
+                .is_some_and(|c| crate::prompt::ends_unfinished(c, done.proof.edited()))
+        {
+            headless_nudged = true;
+            push_user(st, crate::prompt::HEADLESS_NUDGE.to_string(), sink, ui, run_msgs)?;
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Info,
+                text: "The reply ended on a plan or a question in a headless run; asking it to continue."
+                    .to_string(),
+            });
+            continue;
         }
         return Ok(RunEnd::Stopped);
     }

@@ -226,6 +226,18 @@ pub const ENTRIES: &[Descriptor] = &[
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
     d(
+        "oxa.emptyReplyRetries",
+        Group::Models,
+        "Requests and retries",
+        "Empty reply retries",
+        "Ask again when a cloud model returns no text and no tool call. 0 = off.",
+    )
+    .number(Unit::Count)
+    .zero("off")
+    .user_only()
+    .apply(Apply::Reload)
+    .web(WebEdit::Edit),
+    d(
         "retry.provider.maxRetries",
         Group::Models,
         "Requests and retries",
@@ -277,7 +289,7 @@ mod tests {
 
     #[test]
     fn models_keys_exist_in_schema() {
-        assert_eq!(ENTRIES.len(), 24);
+        assert_eq!(ENTRIES.len(), 25);
         let mut seen = std::collections::HashSet::new();
         for e in ENTRIES {
             assert_eq!(e.group, Group::Models, "{}", e.key);

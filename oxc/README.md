@@ -73,12 +73,6 @@ The CPU lists assume the X1E80100 core layout. The server listens on loopback on
 The source package provides read-only diagnostics and installation tooling; it is not a complete
 live-user installer. See [reproduction](docs/REPRODUCE.md) for engine setup.
 
-Model-free checks run anywhere with Python 3:
-
-```sh
-PYTHONPATH=src python3 -B -m oxc doctor
-```
-
 ## Supported models
 
 | Model | Role | Engine | Context |
