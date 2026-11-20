@@ -332,7 +332,7 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
         return Kind::Other;
     }
     let push = &rest[k + 1..];
-    if moved || env_unsafe(all) || all.iter().any(|w| dynamic(w)) {
+    if opaque || moved || env_unsafe(all) || all.iter().any(|w| dynamic(w)) {
         return Kind::Unsafe;
     }
     let wd = if dirs.is_empty() {
