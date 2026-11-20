@@ -1,6 +1,4 @@
 //! D1 acceptance tests: Main loop and regular mode.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_config::{Dirs, Keymap, Settings};
@@ -168,6 +166,7 @@ fn interactive_opts(env: &TestEnv) -> InteractiveOpts {
         gated: Vec::new(),
         engine_status: None,
         yolo: None,
+        os_sandbox: false,
     }
 }
 

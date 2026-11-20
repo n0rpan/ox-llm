@@ -222,13 +222,30 @@ fn unlink_at(parent: &File, name: &CStr, flags: libc::c_int) -> io::Result<bool>
 
 /// Publish exactly one message without contacting an engine or requiring a running owner.
 pub fn send_inbox(agent_dir: &Path, id: &str, text: &str) -> io::Result<()> {
-    if text.len() > INBOX_MESSAGE_BYTES {
+    if text.len() <= INBOX_MESSAGE_BYTES {
+        return publish(agent_dir, id, "msg", text);
+    }
+    // `Dirs::tmp_dir` is `<agent_dir>/tmp`; the active session installs its own child as the
+    // narrowly scoped readable spill exception without exposing the rest of the agent directory.
+    let spill_root = agent_dir.join("tmp");
+    if !valid_inbox_id(id) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "inbox message exceeds 256 KiB",
+            "invalid session id for inbox",
         ));
     }
-    publish(agent_dir, id, "msg", text)
+    DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&spill_root)?;
+    let spill = publish_into(&Directory::open(&spill_root)?.child(id)?, "txt", text)?;
+    let path = spill_root.join(id).join(spill);
+    let pointer = format!(
+        "The message is {} bytes, too large to queue inline. Its full text is in the private file {}; read that file.",
+        text.len(),
+        path.display()
+    );
+    publish(agent_dir, id, "msg", &pointer)
 }
 
 /// Publish a control packet for a trusted, already resolved session reference.
@@ -252,13 +269,13 @@ fn control_extension(session: &SessionRef) -> String {
 }
 
 fn publish(agent_dir: &Path, id: &str, extension: &str, text: &str) -> io::Result<()> {
-    let dir = directory(agent_dir, id)?;
-    publish_into(&dir, extension, text)
+    directory(agent_dir, id).and_then(|dir| publish_into(&dir, extension, text).map(|_| ()))
 }
 
 /// The write, rename and cleanup run through the pinned directory descriptor, never
 /// through the saved pathname, so a replaced or renamed path cannot redirect them.
-fn publish_into(dir: &Directory, extension: &str, text: &str) -> io::Result<()> {
+/// Returns the published file name inside that directory.
+fn publish_into(dir: &Directory, extension: &str, text: &str) -> io::Result<String> {
     let name = format!(
         "{:032}-{}",
         std::time::SystemTime::now()
@@ -306,7 +323,7 @@ fn publish_into(dir: &Directory, extension: &str, text: &str) -> io::Result<()> 
         // SAFETY: one component of the live pinned descriptor.
         unsafe { libc::unlinkat(dir.file.as_raw_fd(), temp.as_ptr(), 0) };
     }
-    result
+    result.map(|_| format!("{name}.{extension}"))
 }
 
 /// The retry signal of a running [`Inbox`]: cheap to clone and to call from any thread.

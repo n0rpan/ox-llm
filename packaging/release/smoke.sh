@@ -3,7 +3,7 @@
 # Needs only bash, coreutils and curl. SMOKE_VERSION overrides the expected version.
 set -euo pipefail
 export LC_ALL=C
-expected=${SMOKE_VERSION:-0.2.0}
+expected=${SMOKE_VERSION:-0.2.1}
 sandbox=$(mktemp -d)
 fixtures=$(mktemp -d)
 server=

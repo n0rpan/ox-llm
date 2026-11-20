@@ -265,28 +265,24 @@ impl PermissionMode {
     pub fn describe(self) -> &'static str {
         self.describe_with(OS_SANDBOX)
     }
-    /// [`describe`](Self::describe) for a platform with or without an OS sandbox. Without one the
-    /// text never says the bash sandbox is on: commands run with the user's rights (and are
-    /// disabled while the bash network is off, which that platform cannot enforce).
+    /// [`describe`](Self::describe) for a run with or without the OS sandbox. Without one the
+    /// text never says the bash sandbox is on: it says there is none and that dangerous commands
+    /// ask (#1512 S3: interactive runs are unsandboxed by default and the floor prompt stays).
     pub fn describe_with(self, os_sandbox: bool) -> &'static str {
         match (self, os_sandbox) {
             (PermissionMode::Standard, true) => {
                 "prompts before actions outside the workspace; sandbox and deny-list on"
             }
-            // No OS sandbox: bash runs as the user, and it is disabled while the bash network is
-            // off (that setting cannot be enforced there).
             (PermissionMode::Standard, false) => {
-                "prompts before actions outside the workspace; no OS sandbox on this platform: \
-                 bash runs with your user rights, and is disabled while the bash network is off; \
-                 the deny-list stays on"
+                "prompts before actions outside the workspace; no OS sandbox, dangerous commands \
+                 ask; deny-list on"
             }
             (PermissionMode::Auto, true) => {
                 "no prompts; the bash sandbox, the deny-list and the protected paths stay on"
             }
             (PermissionMode::Auto, false) => {
-                "no prompts; no OS sandbox on this platform: bash runs with your user rights, and \
-                 is disabled while the bash network is off; the deny-list and the protected paths \
-                 stay on"
+                "no prompts; no OS sandbox, dangerous commands still ask; the deny-list and \
+                 protected paths stay on"
             }
             (PermissionMode::Yolo, _) => {
                 "full access: no prompts, bash runs without the sandbox in your own environment, \
@@ -394,5 +390,24 @@ pub trait Policy: Send {
     /// plan mode, while plan mode must keep the floor. Other policies retain their filter.
     fn path_filter_for_mode(&self, _mode: Mode) -> Option<std::sync::Arc<dyn crate::PathFilter>> {
         self.path_filter()
+    }
+    /// #1512 S2: the dangerous-command floor for `a` (an exec of `cwd`): one `(key, "rule: reason")`
+    /// per matching rule that no grant covers. Empty = no dangerous prompt. The key is what a
+    /// session or always grant stores ([`Policy::grant_danger`]).
+    fn danger_ask(&self, _a: &Access, _cwd: &Path) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    /// #1512 S2: remember the keys of [`Policy::danger_ask`] for this session (`Session` and
+    /// `Always` answers). Never covers any other access.
+    fn grant_danger(&mut self, _keys: &[String]) {}
+    /// #1512 S3/S5: the owner's session id for approval requests (bound once the session has
+    /// its id). Never a grant by itself.
+    fn set_session_id(&mut self, _id: &str) {}
+    /// #1512 S5: in a run with no one to ask (`!Ui::interactive`) a dangerous command that
+    /// needs an answer is not paused for. `Some(text)` is the tool error (a refusal, or a request
+    /// the owner answers with `oxa send --approve`); `None` = no unattended answer, the caller
+    /// asks the `Ui` as before.
+    fn danger_unattended(&mut self, _a: &Access, _cwd: &Path) -> Option<String> {
+        None
     }
 }

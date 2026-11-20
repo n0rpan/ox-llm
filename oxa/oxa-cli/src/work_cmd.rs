@@ -170,12 +170,17 @@ pub(crate) fn run(
             offline: oxa_proto::offline(),
             runner_owns_github: false,
             autonomy: runner_autonomy(&oxa_config::Settings::load(dirs, &root, false)),
-            // Re-read for every launch: lowering `permissions.defaultMode` revokes yolo for the
+            worker_github: runner_worker_github(&oxa_config::Settings::load(dirs, &root, false)),
+            // Re-read for every launch, like the autonomy level: lowering
+            // `permissions.defaultMode` (or pinning `runner`) revokes worker GitHub for the
             // tasks a running queue has not started yet.
-            autonomy_now: Some({
+            authority_now: Some({
                 let (dirs, root) = (dirs.clone(), root.clone());
-                std::sync::Arc::new(move || runner_autonomy(&oxa_config::Settings::load(&dirs, &root, false)))
-                    as std::sync::Arc<dyn Fn() -> oxa_proto::Autonomy + Send + Sync>
+                std::sync::Arc::new(move || {
+                    let settings = oxa_config::Settings::load(&dirs, &root, false);
+                    (runner_autonomy(&settings), runner_worker_github(&settings))
+                })
+                    as std::sync::Arc<dyn Fn() -> (oxa_proto::Autonomy, oxa_work::WorkerGithub) + Send + Sync>
             }),
             storage: dirs.agent_dir.join("work").join(key),
         };
@@ -502,11 +507,13 @@ impl Context {
                 Some(&dirs.home),
             )
             .unwrap_or_else(|| PathBuf::from("/unavailable/gh"));
+            let scan = crate::report_cmd::PushScan::new(env, &oxa_config::Settings::load(dirs, root, true));
             record = locked.publish(
                 root,
                 binary,
                 &gh,
                 &|_: &oxa_work::Record| Ok(()),
+                &|item| scan.check(item),
                 &mut crate::report_cmd::tty_confirm(env),
             )?;
         }
@@ -626,6 +633,17 @@ fn runner_autonomy(settings: &oxa_config::Settings) -> oxa_proto::Autonomy {
     }
 }
 
+/// GitHub access of the runner's workers. The setting is read from the user layer only; unset
+/// follows the owner's mode (yolo `worker`, auto `broker`, standard `runner`).
+fn runner_worker_github(settings: &oxa_config::Settings) -> oxa_work::WorkerGithub {
+    oxa_work::WorkerGithub::resolve(
+        settings
+            .user_value("oxa.work.workerGithub")
+            .and_then(|v| v.as_str()),
+        settings.default_permission_mode(),
+    )
+}
+
 #[cfg(test)]
 mod queue_option_tests {
     use super::queue_options;
@@ -665,8 +683,30 @@ mod queue_option_tests {
 
 #[cfg(test)]
 mod registration_tests {
-    use super::{registered_native_worker, runner_autonomy};
+    use super::{registered_native_worker, runner_autonomy, runner_worker_github};
+    use oxa_work::WorkerGithub::{Broker, Runner, Worker};
     use serde_json::json;
+
+    #[test]
+    fn worker_github_is_user_only() {
+        let project =
+            json!({"oxa": {"work": {"workerGithub": "worker"}}, "permissions": {"defaultMode": "yolo"}});
+        let settings =
+            oxa_config::Settings::from_values(json!({"permissions": {"defaultMode": "standard"}}), project);
+        assert_eq!(runner_worker_github(&settings), Runner);
+        let user = |mode: &str, github: Option<&str>| {
+            let mut value = json!({"permissions": {"defaultMode": mode}});
+            if let Some(github) = github {
+                value["oxa"] = json!({"work": {"workerGithub": github}});
+            }
+            runner_worker_github(&oxa_config::Settings::from_values(value, json!({})))
+        };
+        assert_eq!(user("yolo", None), Worker);
+        assert_eq!(user("auto", None), Broker);
+        assert_eq!(user("standard", None), Runner);
+        assert_eq!(user("yolo", Some("runner")), Runner);
+        assert_eq!(user("standard", Some("broker")), Broker);
+    }
 
     #[test]
     fn project_cannot_raise_worker_mode() {

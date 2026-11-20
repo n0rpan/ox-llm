@@ -7,6 +7,19 @@ own settings (`permissions.defaultMode` in the user layer) say `yolo`, the runne
 every worker with `--yolo`: no prompts and no tool sandbox. Without yolo nothing changes.
 A project's settings are not read for this and cannot raise the worker mode.
 
+## Worker GitHub access
+
+For a task whose GitHub access the runner owns, `oxa.work.workerGithub` (owner settings only)
+says what the worker keeps. Unset follows the owner's mode:
+
+| Mode | Value | The worker gets |
+|---|---|---|
+| yolo | `worker` | its own GitHub environment and `gh`, MCP, web search and subagents; the packet guidance allows `git` and `gh` |
+| auto | `broker` | no token and no `gh`; the runner's packet guidance stays until the host-side GitHub tools land |
+| standard | `runner` | today's behaviour: no GitHub access, the runner's packet only |
+
+An explicit owner value wins in every mode. A project setting is ignored.
+
 `oxa work board --shadow --repo OWNER/REPO --once` captures a read-only GitHub sample.
 For continuous five-minute sampling use `--token-stdin`: the caller supplies a fresh
 newline-terminated App token on a private pipe before each sample. No token is
@@ -312,6 +325,28 @@ A publication failure keeps a publication checkpoint; another `--publish` retrie
 without replaying the agent. Offline mode refuses network publication.
 Before each push, the runner asks through the controlling terminal for approval
 of the accepted commit, branch and PR destination. Piped input cannot approve it.
+
+### What the publication scan refuses
+
+Before it asks for approval, `--publish` (and a lane push) scans every commit it would push
+that `origin` does not have: the commit objects, the names of added files and every added
+line. It refuses, and names only the file and line, when it finds a private key, a known
+access token format (GitHub, Anthropic, AWS, Slack, Google, GitLab; also when a letter or digit
+directly precedes the prefix), a `password`/`token`/`secret`-style assignment or quoted
+literal with an opaque value (spaces inside quotes do not hide it), an assignment to a name
+ending in `_key` or `credentials` with a long opaque value (`ENCRYPTION_KEY=...`; paths, URLs
+and `${VAR}` references pass), a `Bearer`/`Basic` header (also as a quoted `"Authorization"`
+key) or URL password, or the value of a secret-named environment variable or setting. A JSON
+value edited under an unchanged key line is scanned together with that key. Lines added to a
+secret store (`.env`, `credentials`, key and certificate files, registry logins such as
+`.docker/config.json`) are refused. An empty secret-store file and a template such as
+`.env.example` are not refused by name: they publish unless their content holds one of the
+secrets above. A path that itself contains secret text is refused and withheld.
+
+Deleting a credential in a later commit does not unblock publication, because the earlier
+commit is still pushed. Rewrite the unpublished commits (`git rebase` or a fresh branch), and
+rotate a credential that left the machine. The scan reads only git objects; it does not
+change them.
 
 `--report-problems` independently authorizes filing the task's own structured
 problem notes using the `report-issue` workflow. This flag must be launched by the

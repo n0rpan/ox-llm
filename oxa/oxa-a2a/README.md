@@ -1,6 +1,6 @@
 # oxa-a2a
 
-This inert library implements an original,
+This library implements an original,
 text/data-only wire profile for [A2A 0.3.0](https://a2a-protocol.org/v0.3.0/specification/).
 The upstream specification/schema is
 [Apache-2.0 licensed](https://github.com/a2aproject/A2A/blob/v0.3.0/LICENSE).
@@ -12,7 +12,7 @@ This is selected profile coverage, not full upstream-suite conformance.
 
 Current scope: typed messages/tasks/events/cards, JSON-RPC envelope validation,
 task identity checks, a bounded SSE data reader, authenticated loopback HTTP
-client and an owned mock agent. The optional `agent-host` feature adds bounded
+client and an owned mock agent. It also provides bounded
 collection and a server for owned backends. File parts and unknown
 required extensions fail closed. Cards cannot change the registered endpoint.
 The client provides send, get, stream, cancel and resubscribe. Streams bind
@@ -22,7 +22,7 @@ the first reply. Bound Message replies must carry the requested identity fields;
 unbound new-task/direct-reply requests remain supported. Tests exercise
 absolute deadlines, output limits, bad auth, malformed HTTP and protocol errors.
 
-With `agent-host`, `ResponseBudget` bounds aggregate incoming wire bytes across requests, including
+`ResponseBudget` bounds aggregate incoming wire bytes across requests, including
 HTTP headers and optional fields that decoding ignores. Shared readers reserve
 before reading. Unused observation allowance can fund cleanup without increasing
 the aggregate allowance. `collect::Collector` binds task/context identity,
@@ -36,7 +36,7 @@ supports completed echo tasks or paused tasks that can be canceled or steered.
 It is a development fixture, with no models or tools. Unsupported send
 configuration fails explicitly, including push-notification configuration.
 
-With `agent-host`, `server::Server` explicitly starts an authenticated loopback-only listener for
+`server::Server` explicitly starts an authenticated loopback-only listener for
 trusted `Backend` implementations. It serves send/get/cancel and live streaming
 or resubscription through bounded task snapshots. It limits simultaneous
 handlers, leaves one slot available for non-streaming control requests, caps
@@ -45,7 +45,7 @@ Cancellation must produce a terminal task state; an unverified acknowledgment
 is an error. The backend must supply bounded methods and join its owned work
 on shutdown. No models, tools or arbitrary plugins implement this trait.
 
-Limits: responses require Content-Length by default. With `agent-host`, SSE
+Limits: responses require Content-Length by default. SSE
 also supports explicit Connection: close framing for live updates. Chunked transfer encoding remains
 unsupported. No production TLS/remote adapter exists yet. Only explicitly
 registered loopback development agents are eligible; a loopback oxc proxy is
@@ -53,14 +53,11 @@ not thereby proven local or offline. This crate itself launches no workers.
 Permission envelopes, production credentials and worker
 budget enforcement belong to orchestration and are not supplied by wire types.
 
-`agent-host` is off by default. A normal library check with no features compiles
-neither the server/collector nor aggregate-budget state. Enabling the feature
-still opens no socket until the caller explicitly constructs a client/server.
-The crate remains unlinked from the CLI; there are no installed listeners or
-worker launches. Ordinary tests use test-only self-feature unification so the
-34 wire/collector/loopback/host cases are included in the workspace inventory.
+The crate is linked into `oxa` (Linux) and compiled into the release binary. Nothing opens a
+socket until the caller explicitly constructs a client or server; this crate itself starts no
+listener and launches no workers. The user-only setting `oxa.a2a.enabled` (default true) gates
+the run-time use. The 34 wire/collector/loopback/host cases run in the ordinary workspace test
+inventory.
 
-Run `cargo test --locked -p oxa-a2a` from `oxa/`. The workspace registration
-adds this crate to ordinary hosted checks without linking it into `oxa`.
-It reuses serde/serde_json; no new external dependency is introduced. Manifest
+Run `cargo test --locked -p oxa-a2a` from `oxa/`. It reuses serde/serde_json; no new external dependency is introduced. Manifest
 registration is explicitly subject to architect/coordinator review.

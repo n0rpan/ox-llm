@@ -73,6 +73,12 @@ pub trait Ui: Send {
     /// The permission prompt. Non-interactive implementations return [`Answer::Deny`]
     /// (print/json: Ask -> Deny); RPC relays it as an extension-UI `confirm`.
     fn ask_access(&mut self, a: &Access) -> Answer;
+    /// The dangerous-command prompt (#1512 S2): `reasons` are one `rule: reason` line per hit,
+    /// `keys` the grant keys of the same hits ([`crate::Policy::danger_ask`]). The default is
+    /// [`DangerAnswer::Deny`]: a `Ui` that cannot ask never consents.
+    fn ask_dangerous(&mut self, _a: &Access, _reasons: &[String], _keys: &[String]) -> DangerAnswer {
+        DangerAnswer::Deny
+    }
 
     // ---- optional surface (defaults = not available) ----
     /// Current prompt editor text.
@@ -94,6 +100,31 @@ pub trait Ui: Send {
     fn interactive(&self) -> bool {
         false
     }
+    /// The publication approval dialog: shows `body` exactly, with Approve and Deny (Deny
+    /// focused), and returns `Some(true)` only when the person pressed Approve. Only a UI that
+    /// a person answers by key implements it; the default (print, json, RPC, hooks, tests)
+    /// answers `None`, which callers treat as "not approved". Never relay it to a model, an
+    /// extension or a timeout, and never skip it for yolo.
+    fn approve_publication(&mut self, _title: &str, _body: &str) -> Option<bool> {
+        None
+    }
+    /// A handle that dismisses dialogs currently waiting in this UI. RPC uses this so an
+    /// owner reply delivered through another authenticated input path can release a session
+    /// thread waiting in [`Ui::confirm`].
+    fn dialog_canceller(&self) -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
+        None
+    }
+}
+
+/// The answer to the dangerous-command prompt (#1512 S2). `Once` runs the command this time;
+/// `Session` and `Always` also remember its rule keys (`Always` also saves them to the user's
+/// settings); `Deny` refuses it. Deny is the answer of every `Ui` that cannot ask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DangerAnswer {
+    Once,
+    Session,
+    Always,
+    Deny,
 }
 
 /// The non-interactive `Ui`: dialogs answer `None`, permission asks answer `Deny`, notifications

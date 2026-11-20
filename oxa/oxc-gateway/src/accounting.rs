@@ -239,10 +239,9 @@ impl Budget {
         model: &Model,
         output: u64,
     ) -> Result<Hold, Refusal> {
+        // Subscription limits are advisory for every subscription route: crossing them warns and
+        // records, and unset limits warn nothing. They never refuse a request.
         let go = model.provider == "opencode";
-        if !go && limits.is_none() {
-            return Err(SubscriptionLimits::missing());
-        }
         if !ledger_enabled {
             return Err(Refusal::ledger());
         }
@@ -276,15 +275,8 @@ impl Budget {
         state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
         let held = shared.subscription_reserved().map_err(|_| Refusal::ledger())?;
         let used = state.reader.subscription();
-        let budget_warning = if go {
-            let total = used.add(held)?.add(required)?;
-            limits.and_then(|limits| limits.go_warning(total))
-        } else {
-            limits
-                .ok_or_else(SubscriptionLimits::missing)?
-                .check(used, held, required)?;
-            None
-        };
+        let total = used.add(held)?.add(required)?;
+        let budget_warning = limits.and_then(|limits| limits.advisory_warning(total, go));
         let id = shared
             .insert_subscription(tokens)
             .map_err(|_| Refusal::ledger())?;
