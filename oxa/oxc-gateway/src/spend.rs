@@ -24,34 +24,27 @@ pub struct SpendReader {
     tail: Vec<u8>,
     bytes_read: u64,
 }
-pub(crate) fn valid_provider(value: &Value) -> bool {
-    value.as_str().is_some_and(|name| {
-        !name.is_empty()
-            && name.len() <= 128
-            && name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-    })
+pub(crate) fn builtin_provider(value: &Value) -> bool {
+    matches!(
+        value.as_str(),
+        Some("anthropic" | "openai" | "openai-chat" | "openrouter" | "chatgpt" | "opencode")
+    )
 }
 
 pub(crate) fn subscription_provider(value: &Value) -> bool {
-    valid_provider(value)
-        && !matches!(
-            value.as_str(),
-            Some("anthropic" | "openai" | "openai-chat" | "openrouter")
-        )
+    matches!(value.as_str(), Some("chatgpt" | "opencode"))
 }
 
 /// Budget accounting accepts an estimate only when it is explicitly classified
 /// and no actual cost field is present. Older settled rows keep their format,
 /// including estimate-only OpenCode rows that earlier binaries recorded.
-pub(crate) fn budget_cost(row: &Value) -> Option<f64> {
+pub(crate) fn budget_cost(row: &Value, configured: bool) -> Option<f64> {
     let value = match (row.get("cost_usd"), row.get("estimated_cost_usd")) {
         (Some(cost), None) => cost,
         (None, Some(estimate))
             if matches!(row["settled"].as_str(), Some("estimated" | "reserved"))
                 && row["billing"] == "metered"
-                && valid_provider(&row["remote_provider"])
+                && (configured || builtin_provider(&row["remote_provider"]))
                 && row["remote_provider"] != "chatgpt" =>
         {
             estimate
@@ -170,7 +163,10 @@ impl SpendReader {
             if row["remote"] != true {
                 continue;
             }
-            let cost = budget_cost(&row);
+            // The private writer sets this marker from route metadata. The
+            // display name may have been redacted and is not the authority.
+            let configured = row["configured_provider"] == true;
+            let cost = budget_cost(&row, configured);
             if cost.is_none() && !unknown_go_cost(&row) {
                 return Err(io::ErrorKind::InvalidData.into());
             }
@@ -198,7 +194,7 @@ impl SpendReader {
                 {
                     if (value == "subscription" && cost.is_some_and(|n| n != 0.0))
                         || (value == "metered" && cost.is_none_or(|n| n <= 0.0))
-                        || !subscription_provider(&row["remote_provider"])
+                        || !(configured || subscription_provider(&row["remote_provider"]))
                     {
                         return Err(io::ErrorKind::InvalidData.into());
                     }

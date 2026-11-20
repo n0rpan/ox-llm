@@ -795,11 +795,17 @@ impl Runtime {
                 let fields = unpaid(model, self.billings.get(alias));
                 let _ = daily.budget().write_unpaid(|| {
                     entry
-                        .append_redacting(&fields, error.status, Some(error.code), &|value| {
-                            if let Some(credential) = &credential {
-                                credential.redact(value);
-                            }
-                        })
+                        .append_redacting(
+                            &fields,
+                            error.status,
+                            Some(error.code),
+                            model.configured_route().map(|route| route.provider()),
+                            &|value| {
+                                if let Some(credential) = &credential {
+                                    credential.redact(value);
+                                }
+                            },
+                        )
                         .map(|_| ())
                 });
             }
@@ -819,7 +825,13 @@ impl Runtime {
                 let fields = unpaid(model, self.billings.get(alias));
                 let _ = daily.budget().write_unpaid(|| {
                     entry
-                        .append(&fields, error.status, Some(error.code), None)
+                        .append_redacting(
+                            &fields,
+                            error.status,
+                            Some(error.code),
+                            model.configured_route().map(|route| route.provider()),
+                            &|_| {},
+                        )
                         .map(|_| ())
                 });
             }
@@ -993,7 +1005,13 @@ impl<'a> Call<'a> {
                     fields["cost_usd"] = json!(0.0);
                 }
             }
-            saved = entry.append_redacting(&fields, status, error, &|value| self.credential.redact(value))?;
+            saved = entry.append_redacting(
+                &fields,
+                status,
+                error,
+                self.model.configured_route().map(|route| route.provider()),
+                &|value| self.credential.redact(value),
+            )?;
             Ok(())
         })?;
         if saved["settled"] == "usage" {

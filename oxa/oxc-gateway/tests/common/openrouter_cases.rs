@@ -1153,6 +1153,7 @@ async fn named_deepseek_tool_turn_replays_reasoning_and_settles_tokens_only() {
     assert_eq!(ledger.len(), 2);
     for row in ledger {
         assert_eq!(row["remote_provider"], "demo");
+        assert_eq!(row["configured_provider"], true);
         assert_eq!(row["billing"], "subscription");
         assert_eq!(row["completion_tokens"], 5);
         assert_eq!(row["cost_usd"], 0.0);
