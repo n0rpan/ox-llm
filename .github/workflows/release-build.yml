@@ -61,12 +61,9 @@ jobs:
           persist-credentials: false
       - name: Version from the workspace when the caller gave none
         run: |
-          if [ -z "$VERSION" ]; then
-            v=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' oxa/Cargo.toml | head -1)
-            [ -n "$v" ] || { echo "no workspace version in oxa/Cargo.toml" >&2; exit 1; }
-            echo "VERSION=v$v" >> "$GITHUB_ENV"
-          fi
-          echo "version: ${VERSION:-v$v}"
+          VERSION=$(packaging/release/version.sh "$VERSION")
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version: $VERSION"
       - name: GCC 16 and pinned Rust 1.99.1
         run: packaging/release/setup.sh
       - name: Immutable source archive
@@ -170,12 +167,9 @@ jobs:
           persist-credentials: false
       - name: Version from the workspace when the caller gave none
         run: |
-          if [ -z "$VERSION" ]; then
-            v=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' oxa/Cargo.toml | head -1)
-            [ -n "$v" ] || { echo "no workspace version in oxa/Cargo.toml" >&2; exit 1; }
-            echo "VERSION=v$v" >> "$GITHUB_ENV"
-          fi
-          echo "version: ${VERSION:-v$v}"
+          VERSION=$(packaging/release/version.sh "$VERSION")
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version: $VERSION"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-build-x86_64
@@ -212,12 +206,9 @@ jobs:
           persist-credentials: false
       - name: Version from the workspace when the caller gave none
         run: |
-          if [ -z "$VERSION" ]; then
-            v=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' oxa/Cargo.toml | head -1)
-            [ -n "$v" ] || { echo "no workspace version in oxa/Cargo.toml" >&2; exit 1; }
-            echo "VERSION=v$v" >> "$GITHUB_ENV"
-          fi
-          echo "version: ${VERSION:-v$v}"
+          VERSION=$(packaging/release/version.sh "$VERSION")
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version: $VERSION"
       # The debian:bullseye-slim container prepares itself inside the checked-out tree, so the
       # workflow installs nothing itself (`tools/ci/apt_install.sh` is the Ubuntu path and needs
       # sudo). See packaging/release/portable-bootstrap.sh.
@@ -245,12 +236,9 @@ jobs:
           persist-credentials: false
       - name: Version from the workspace when the caller gave none
         run: |
-          if [ -z "$VERSION" ]; then
-            v=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' oxa/Cargo.toml | head -1)
-            [ -n "$v" ] || { echo "no workspace version in oxa/Cargo.toml" >&2; exit 1; }
-            echo "VERSION=v$v" >> "$GITHUB_ENV"
-          fi
-          echo "version: ${VERSION:-v$v}"
+          VERSION=$(packaging/release/version.sh "$VERSION")
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version: $VERSION"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: oxa-portable-linux-x86_64
