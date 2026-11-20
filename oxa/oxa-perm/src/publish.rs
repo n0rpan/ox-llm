@@ -52,7 +52,6 @@ enum Kind {
 /// The segments of `stages` that need an approval, re-joined by the caller's `segment`.
 pub(crate) fn publish_hits(stages: &[Stage], cwd: &Path) -> Vec<String> {
     let unordered = stages.iter().any(|st| st.background || st.mark.is_some());
-    let mutation = stages.iter().any(|st| mutates_repo_state(&st.words));
     let kinds: Vec<(usize, Kind)> = {
         let mut moved = false;
         let mut out = Vec::new();
@@ -66,7 +65,7 @@ pub(crate) fn publish_hits(stages: &[Stage], cwd: &Path) -> Vec<String> {
                 moved = true;
             }
             if kind == Kind::Allowed
-                && (unordered || mutation || st.redirects.iter().any(|(op, t)| !harmless_redirect(op, t)))
+                && (unordered || st.redirects.iter().any(|(op, t)| !harmless_redirect(op, t)))
             {
                 kind = Kind::Unsafe;
             }
@@ -841,5 +840,5 @@ fn is_alias(globals: &[String], name: &str, cwd: &Path, dirs: &[String]) -> bool
             return true;
         }
     }
-    names.iter().any(|n| *n == name)
+    names.contains(&name)
 }
