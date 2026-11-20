@@ -125,7 +125,7 @@ fn api_admission_owns_the_fresh_key_and_uses_trusted_private_usage() {
 }
 
 #[test]
-fn subscription_admission_requires_limits_before_credentials_and_audits_the_refusal() {
+fn subscription_admission_without_limits_is_not_refused_for_limits() {
     let fixture = skeleton::Fixture::for_endpoint("https://example.invalid");
     fs::write(
         fixture.key_path.parent().unwrap().join("chatgpt-auth.json"),
@@ -145,22 +145,14 @@ fn subscription_admission_requires_limits_before_credentials_and_audits_the_refu
         },
     )
     .unwrap();
+    // No caps are configured: admission goes on to the credentials (invalid here) and the
+    // refusal is about them, never about missing limits.
     let error = runtime.begin(&payload(), Context::default()).err().unwrap();
-    assert_eq!(
-        (error.status, error.code),
-        (403, "subscription_limits_not_configured")
-    );
-    let rows = rows(&fixture);
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["billing"], "subscription");
-    assert_eq!(rows[0]["subscription_requests"], 0);
-    assert_eq!(rows[0]["subscription_tokens"], 0);
-    assert_eq!(rows[0]["status"], 403);
-    assert_eq!(rows[0]["error"], "subscription_limits_not_configured");
+    assert_ne!(error.code, "subscription_limits_not_configured");
 }
 
 #[test]
-fn subscription_owns_an_account_bound_handle_and_zero_usd_settlement_enforces_request_caps() {
+fn subscription_owns_an_account_bound_handle_and_zero_usd_settlement_counts_requests_against_advisory_caps() {
     let fixture = skeleton::Fixture::for_endpoint("https://example.invalid");
     tokens(&fixture, "synthetic-access");
     let runtime = Runtime::new(
@@ -209,8 +201,12 @@ fn subscription_owns_an_account_bound_handle_and_zero_usd_settlement_enforces_re
     assert_eq!(row["settled"], "usage");
     assert!(!row.to_string().contains("synthetic-access"));
     assert!(!row.to_string().contains("synthetic-refresh"));
-    let error = runtime.begin(&payload(), Context::default()).err().unwrap();
-    assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
+    // The request cap is advisory: a second request is admitted past it.
+    runtime
+        .begin(&payload(), Context::default())
+        .unwrap()
+        .finish(Outcome::Complete, 200, None)
+        .unwrap();
 }
 
 #[test]

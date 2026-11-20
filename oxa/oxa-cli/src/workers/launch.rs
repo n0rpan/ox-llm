@@ -10,7 +10,7 @@
 //!   <repo-parent>/.oxa-worktrees/<repo>/<name> <base>`: metadata only on the host, so no hook,
 //!   smudge filter or `.gitattributes` callback of the repository runs outside the sandbox. The
 //!   caller materializes the files inside the sandbox (`oxa work --supervise`, checkout).
-//! * **Child env.** `OXA_WORKER_DEPTH=1`; the parent's `OXA_TRUST_PROJECT` and `OXA_SESSION_HINT`
+//! * **Child env.** `OXA_WORKER_DEPTH=1`, `OXA_UNATTENDED=1` (#1512 S3); the parent's `OXA_TRUST_PROJECT` and `OXA_SESSION_HINT`
 //!   are not inherited.
 //! * **Integration boundary (K4).** `child_env` copies whatever GitHub token variables the caller
 //!   puts in the parent environment. A runner-owned packet must go through the existing worker
@@ -62,7 +62,7 @@ pub struct WorkerSpec {
     /// The parent's resolved session directory, when it is not the default one.
     pub session_dir: Option<std::path::PathBuf>,
     /// The parent's other narrowing switches (`--offline`, `--tools`, `-nt`, `-nbt`, `--no-mcp`,
-    /// `--no-web-search`, `-ne`): a worker is never wider than its parent.
+    /// `--no-web-search`, `-ne`, `-ns`, `-np`): a worker is never wider than its parent.
     pub narrowing: Narrowing,
 }
 
@@ -82,6 +82,10 @@ pub struct Narrowing {
     pub no_mcp: bool,
     pub no_web_search: bool,
     pub no_extensions: bool,
+    /// `--no-skills`: the worker checkout's skills stay out of the child's prompt too.
+    pub no_skills: bool,
+    /// `--no-prompt-templates`: likewise for prompt templates.
+    pub no_prompt_templates: bool,
 }
 
 /// The name rule: `[a-z0-9][a-z0-9-]{0,39}`.
@@ -116,11 +120,17 @@ fn ceiling(parent_mode: Mode, parent_autonomy: Autonomy) -> WorkerMode {
 
 /// A value passed as its own argv element: it must not be empty, must not look like a flag, and
 /// must not hold control characters.
-fn check_value(label: &str, value: &str) -> Result<(), String> {
+pub(super) fn check_value(label: &str, value: &str) -> Result<(), String> {
     if value.is_empty() || value.starts_with('-') || value.chars().any(char::is_control) {
         return Err(format!("invalid worker {label}: {value:?}"));
     }
     Ok(())
+}
+
+/// K5b: the level a resumed worker runs at: the level recorded when it started, never wider than
+/// the ceiling the parent's table mode and autonomy give now (as for a first launch).
+pub(super) fn resume_mode(recorded: WorkerMode, parent_mode: Mode, parent_autonomy: Autonomy) -> WorkerMode {
+    recorded.min(ceiling(parent_mode, parent_autonomy))
 }
 
 /// The argv of the child (without the program): `--mode json --session-id <id> --model <m>
@@ -168,15 +178,31 @@ pub fn child_argv(
     .to_vec();
     // The parent's own limits and scope reach the child, so starting a worker is not a way
     // around them.
-    if let Some(tokens) = spec.max_tokens {
+    args.extend(scope_args(
+        spec.max_tokens,
+        &spec.exclude_tools,
+        spec.session_dir.as_deref(),
+        &spec.narrowing,
+    )?);
+    Ok((args, notice))
+}
+
+/// The shared launch and resume arguments for the parent's allowance, scope and session directory.
+pub(super) fn scope_args(
+    max_tokens: Option<u64>,
+    exclude_tools: &[String],
+    session_dir: Option<&Path>,
+    n: &Narrowing,
+) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    if let Some(tokens) = max_tokens {
         args.push(format!("--max-tokens={tokens}"));
     }
-    if !spec.exclude_tools.is_empty() {
-        let excluded: Vec<&str> = spec.exclude_tools.iter().map(String::as_str).collect();
+    if !exclude_tools.is_empty() {
+        let excluded: Vec<&str> = exclude_tools.iter().map(String::as_str).collect();
         check_value("excluded tool", &excluded.join(","))?;
         args.push(format!("--exclude-tools={}", excluded.join(",")));
     }
-    let n = &spec.narrowing;
     if let Some(tools) = &n.tools {
         let allowed: Vec<&str> = tools.iter().map(String::as_str).collect();
         for tool in &allowed {
@@ -195,16 +221,18 @@ pub fn child_argv(
         (n.no_mcp, "--no-mcp"),
         (n.no_web_search, "--no-web-search"),
         (n.no_extensions, "--no-extensions"),
+        (n.no_skills, "--no-skills"),
+        (n.no_prompt_templates, "--no-prompt-templates"),
     ] {
         if on {
             args.push(flag.to_string());
         }
     }
-    if let Some(dir) = &spec.session_dir {
+    if let Some(dir) = session_dir {
         check_value("session directory", &dir.to_string_lossy())?;
         args.push(format!("--session-dir={}", dir.display()));
     }
-    Ok((args, notice))
+    Ok(args)
 }
 
 /// The git commands that create a worker's worktree, one argv each (program first). Hooks are
@@ -241,8 +269,10 @@ pub fn worktree_argv(repo: &Path, name: &str, base: &str) -> Vec<Vec<String>> {
 }
 
 /// The environment of a worker: the parent's, without the trust and session-hint variables, and
-/// with `OXA_WORKER_DEPTH=1`. `offline` is the parent's own policy (`--offline` sets it without
-/// any variable): the child is told, so it cannot reach the network behind the parent's back.
+/// with `OXA_WORKER_DEPTH=1` and `OXA_UNATTENDED=1` (#1512 S3: a worker never has a person at
+/// the keyboard, so its OS sandbox stays on). An inherited unattended marker is dropped first.
+/// `offline` is the parent's own policy (`--offline` sets it without any variable): the child is
+/// told, so it cannot reach the network behind the parent's back.
 pub fn child_env(parent_env: &[(String, String)], offline: bool) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = parent_env
         .iter()
@@ -256,7 +286,7 @@ pub fn child_env(parent_env: &[(String, String)], offline: bool) -> Vec<(String,
         .filter(|(k, _)| {
             !matches!(
                 k.as_str(),
-                "OXA_TRUST_PROJECT" | "OXA_SESSION_HINT" | "OXA_WORKER_DEPTH"
+                "OXA_TRUST_PROJECT" | "OXA_SESSION_HINT" | "OXA_WORKER_DEPTH" | "OXA_UNATTENDED"
             )
         })
         .collect();
@@ -264,6 +294,7 @@ pub fn child_env(parent_env: &[(String, String)], offline: bool) -> Vec<(String,
         env.push(("OXA_OFFLINE".into(), "1".into()));
     }
     env.push(("OXA_WORKER_DEPTH".into(), "1".into()));
+    env.push((oxa_proto::names::ENV_UNATTENDED.into(), "1".into()));
     env
 }
 
@@ -430,6 +461,8 @@ mod tests {
             no_mcp: true,
             no_web_search: true,
             no_extensions: true,
+            no_skills: true,
+            no_prompt_templates: true,
         };
         let (args, _) = child_argv(&spec, Mode::Workspace, Autonomy::Standard).unwrap();
         for expected in [
@@ -442,6 +475,8 @@ mod tests {
             "--no-mcp",
             "--no-web-search",
             "--no-extensions",
+            "--no-skills",
+            "--no-prompt-templates",
         ] {
             assert!(args.iter().any(|a| a == expected), "{expected}: {args:?}");
         }
@@ -453,6 +488,7 @@ mod tests {
         assert!(parsed.offline && parsed.no_tools && parsed.no_builtin_tools);
         assert_eq!(parsed.approve, Some(false));
         assert!(parsed.no_mcp && parsed.no_web_search && parsed.no_extensions);
+        assert!(parsed.no_skills && parsed.no_prompt_templates);
         assert_eq!(parsed.tools, Some(vec!["read".to_string(), "grep".to_string()]));
         // No narrowing flag, none forwarded.
         let (plain, _) = child_argv(&self::spec(None), Mode::Workspace, Autonomy::Standard).unwrap();
@@ -506,8 +542,21 @@ mod tests {
             vec![
                 ("HOME".to_string(), "/home/u".to_string()),
                 ("OXA_WORKER_DEPTH".to_string(), "1".to_string()),
+                ("OXA_UNATTENDED".to_string(), "1".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn worker_child_env_sets_oxa_unattended() {
+        // An inherited marker is replaced by the worker's own single marker.
+        let parent = vec![
+            ("OXA_UNATTENDED".to_string(), "0".to_string()),
+            ("HOME".to_string(), "/home/u".to_string()),
+        ];
+        let env = child_env(&parent, false);
+        let marks: Vec<&(String, String)> = env.iter().filter(|(k, _)| k == "OXA_UNATTENDED").collect();
+        assert_eq!(marks, vec![&("OXA_UNATTENDED".to_string(), "1".to_string())]);
     }
 
     #[test]

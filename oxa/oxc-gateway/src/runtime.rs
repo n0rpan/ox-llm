@@ -13,12 +13,15 @@ pub use crate::history::HistorySeal;
 use auth::Credential;
 pub use auth::{OpenAiAuthHandle, Subscription};
 use serde_json::{json, Value};
-#[cfg(feature = "share")]
-use std::collections::BTreeSet;
+
+/// Window and output assumed for a discovered model no catalog gives limits for: small enough to
+/// be safe on any current model, so an unknown model works without a promise it cannot keep.
+const UNKNOWN_CONTEXT: u32 = 128_000;
+const UNKNOWN_OUTPUT: u32 = 8_192;
 #[cfg(feature = "upstream-openai")]
 use std::path::Path;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::{Arc, OnceLock},
 };
@@ -45,6 +48,7 @@ pub struct Runtime {
     diagnostics: Option<crate::diagnostics::Diagnostics>,
     catalog: Catalog,
     billings: BTreeMap<String, Billing>,
+    recommended: BTreeSet<String>,
     unpriced_discovered: BTreeMap<String, crate::pricing::Price>,
     #[cfg(feature = "share")]
     guest_models: BTreeSet<String>,
@@ -192,6 +196,7 @@ impl Runtime {
             diagnostics: None,
             catalog,
             billings,
+            recommended: BTreeSet::new(),
             unpriced_discovered: BTreeMap::new(),
             #[cfg(feature = "share")]
             guest_models: BTreeSet::new(),
@@ -211,7 +216,13 @@ impl Runtime {
     }
 
     pub fn discovery(&self) -> impl Iterator<Item = ModelInfo<'_>> {
-        self.catalog.models().filter(|model| supported(model.provider))
+        let models = || self.catalog.models().filter(|model| supported(model.provider));
+        models()
+            .filter(move |model| !self.recommended.contains(model.id))
+            .chain(models().filter(move |model| self.recommended.contains(model.id)))
+    }
+    pub(crate) fn recommended_models(&self) -> &BTreeSet<String> {
+        &self.recommended
     }
     /// Trusted user settings, keyed by the exact discovered public alias.
     pub fn with_unpriced_discovered_pricing(mut self, raw: &Value) -> Result<Self, Refusal> {
@@ -300,6 +311,57 @@ impl Runtime {
             .and_then(|file| file.read(provider.as_str()).ok()))
     }
 
+    pub(crate) fn add_recommended_models(
+        &mut self,
+        models: impl IntoIterator<Item = (Model, crate::pricing::Price)>,
+    ) -> Result<(), Refusal> {
+        let candidates: Vec<_> = models
+            .into_iter()
+            .filter(|(model, _)| {
+                let info = model.info();
+                model.configured_route().is_none()
+                    && matches!(
+                        info.provider,
+                        Provider::Anthropic | Provider::OpenRouter | Provider::OpenAi
+                    )
+                    && supported(info.provider)
+                    && self.catalog.configured(info.id).is_none()
+            })
+            .collect();
+        let mut available = Vec::new();
+        for provider in [Provider::Anthropic, Provider::OpenRouter, Provider::OpenAi] {
+            if candidates
+                .iter()
+                .any(|(model, _)| model.info().provider == provider)
+                && self.catalog_key(provider)?.is_some()
+            {
+                available.push(provider);
+            }
+        }
+        let (models, billings): (Vec<_>, Vec<_>) = candidates
+            .into_iter()
+            .filter(|(model, _)| available.contains(&model.info().provider))
+            .map(|(model, price)| {
+                let billing = (model.info().id.to_owned(), Billing::Metered(price));
+                (model, billing)
+            })
+            .unzip();
+        if !models.is_empty() {
+            self.catalog = Catalog::new(
+                Access::Enabled,
+                self.catalog
+                    .models()
+                    .filter_map(|info| self.catalog.configured(info.id).cloned())
+                    .chain(models),
+            )
+            .map_err(catalog_error)?;
+            self.recommended
+                .extend(billings.iter().map(|(alias, _)| alias.clone()));
+            self.billings.extend(billings);
+        }
+        Ok(())
+    }
+
     pub(crate) fn apply_provider_catalog(
         &mut self,
         source: &Source,
@@ -345,9 +407,14 @@ impl Runtime {
                 // Discovery may raise the owner's configured reservation bounds.
                 let context = offer.context.max(fallback_info.map(|info| info.context_window));
                 let max_output = offer.max_output.max(fallback_info.map(|info| info.max_output));
-                let limits = context
-                    .zip(max_output)
-                    .filter(|(context, output)| output <= context);
+                // What nobody can tell is not refused: a conservative generic window and, for a price
+                // nobody lists, an unpriced route whose usage is recorded with unknown cost.
+                let limits = match (context, max_output) {
+                    (Some(context), Some(output)) if output <= context => Some((context, output)),
+                    (Some(context), None) => Some((context, UNKNOWN_OUTPUT.min(context))),
+                    (None, Some(output)) => Some((UNKNOWN_CONTEXT.max(output), output)),
+                    _ => None,
+                };
                 let price = match (self.billings.get(alias), offer.price.as_ref()) {
                     (Some(Billing::Metered(configured)), live) if configured.is_estimated() => live.cloned(),
                     (Some(Billing::Metered(configured)), Some(live)) => {
@@ -357,23 +424,20 @@ impl Runtime {
                     (_, live) => live.cloned(),
                 }
                 .or_else(|| self.unpriced_discovered.get(alias).cloned());
+                let (context, output) = limits.unwrap_or((UNKNOWN_CONTEXT, UNKNOWN_OUTPUT));
                 let price = price.filter(|price| {
-                    limits.is_none_or(|(context, output)| {
-                        price
-                            .reservation(
-                                source.provider().as_str(),
-                                &offer.id,
-                                u64::from(context),
-                                u64::from(output),
-                            )
-                            .is_some_and(f64::is_finite)
-                    })
+                    price
+                        .reservation(
+                            source.provider().as_str(),
+                            &offer.id,
+                            u64::from(context),
+                            u64::from(output),
+                        )
+                        .is_some_and(f64::is_finite)
                 });
                 missing_price += usize::from(price.is_none());
                 missing_limits += usize::from(limits.is_none());
-                let (Some(price), Some((context, output))) = (price, limits) else {
-                    continue;
-                };
+                let price = price.unwrap_or_else(crate::pricing::Price::unpriced);
                 let Ok(model) = Model::new(
                     alias,
                     source.provider(),
@@ -591,8 +655,6 @@ impl Runtime {
             }
             if matches!(billing, Billing::Metered(_)) {
                 policy::daily_budget(&self.cap, self.ledger_enabled, Some(0.0), 0.0, 0.0)?;
-            } else if self.subscription_limits.is_none() && model.info().provider != Provider::OpenCode {
-                return Err(crate::billing::SubscriptionLimits::missing());
             } else if !self.ledger_enabled {
                 return Err(Refusal::ledger());
             }
@@ -933,6 +995,7 @@ mod discovery_budget_tests {
         .unwrap();
         let source = Source::new(provider, base).unwrap();
         let offer = Offer {
+            public: false,
             id: upstream.into(),
             context: Some(context),
             max_output: Some(output),

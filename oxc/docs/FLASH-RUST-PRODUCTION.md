@@ -1,6 +1,6 @@
 # Flash on the Rust server (production)
 
-**In production on the Rust engine, with the prefix store** (installed profile checked 2026-11-12): server SHA-256 `f60e9cc4…` (release `oxe-flash-prefix-f60e9cc4`), validation `flash-prefix-o39-composite-o43-qualified`, a fixed 14 GiB expert cache (`--flash-cache-gib 14`; the opt-in cache preference is separate, see [FLASH-CACHE18.md](FLASH-CACHE18.md)), 16K context, plain expert sidecar, 29 GiB scope, zero model swap and 1 GiB host floor. Its predecessor was package2 `8e5240a` / `a6912dd3` ([qualification and rollback](FLASH-PACKAGE2.md)).
+**In production on the Rust engine, with the prefix store** (installed profile checked 2026-11-12): server SHA-256 `f60e9cc4…` (release `oxe-flash-prefix-f60e9cc4`), validation `flash-prefix-o39-composite-o43-qualified`, a fixed 14 GiB expert cache (`--flash-cache-gib 14`; the opt-in cache preference is separate, see FLASH-CACHE18.md), 16K context, plain expert sidecar, 29 GiB scope, zero model swap and 1 GiB host floor. Its predecessor was package2 `8e5240a` / `a6912dd3` (qualification and rollback).
 
 The panel and `oxc status` do not copy this page: they derive Flash's status from the installed profile's own `validation` (qualified for exactly the engine hash it launches) and the receipts it names (`model_catalog.qualification`). With every shard verified, the storage row shows `ready` only when that check passes; otherwise `weights-ready-testing`.
 
@@ -171,7 +171,7 @@ Idle unload is 600 s. To free the memory at once: `oxc unload`, or `POST /_local
 
 ## Memory policy 29 GiB / 1 GiB (inherited)
 
-When the Flash profile carries `flash_memory` (see `docs/FLASH-MEMORY-SCOPE.md`, staged separately by
+When the Flash profile carries `flash_memory` (see `archived docs/FLASH-MEMORY-SCOPE.md`, staged separately by
 `tools/stage_flash_memory.py`), the Rust engine starts in its own 29 GiB scope: required available memory is
 the measured peak + 1 GiB, the admitted budget may be 29 GiB, a 21 GiB cache is allowed (`--cache-gib 21`), and
 the memory guard watches the engine's own scope. Without the key the package keeps the 28 GiB unit limit, the

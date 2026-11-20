@@ -2,7 +2,7 @@
 
 Both MoEs now use installed bbc2990 with VL15, 32K context and MTP depth 1 without a context cutoff. In matched depth0/1 ABBA screens, Ornith decode time fell 11.9–26.0% across 4K–32K; Qwen fell 18.1–23.1% across 2K–16K. Final protected tasks, installed-unit regressions and zero-swap guards passed. [Exact scope, controls and rollback](MTP-CONTEXT.md). Historical tables below retain their original tools and dates.
 
-Ornith candidate 2 is installed as of 2026-11-11. The matched fixed 2K-token controller request fell from 13.267 to 10.164 s (−23.4%). VL15 lowered short-prompt MTP decode time by 21.4%, with identical generated hashes. Both protected tasks and the installed-unit regression passed. [Configuration, controls and measured limits](lab-notes/MOE-CANDIDATE2.md).
+Ornith candidate 2 is installed as of 2026-11-11. The matched fixed 2K-token controller request fell from 13.267 to 10.164 s (−23.4%). VL15 lowered short-prompt MTP decode time by 21.4%, with identical generated hashes. Both protected tasks and the installed-unit regression passed. Configuration, controls and measured limits.
 
 
 Updated 2026-11-10. Yoga Slim 7x 83ED, BIOS NHCN62WW, kernel 7.3.0-40-omarchy, opt-in SCMI memlat boot. Measured CPU read ceiling: **115.85 GB/s**, three alternating repetitions. Ornith is now the approved everyday/OpenCode default; Qwen remains selectable. Service cap is 28 GiB with model swap disabled; see the promotion checkpoint below. [Methods and raw results](ROOFLINE.md).
@@ -39,7 +39,7 @@ Native llama-bench, CPU-only qualified kernels, repack enabled, f16 KV, batch/ub
 | Qwen3.8-27B Q4_K_M | 5.151 | 5.405, six unpinned | +4.9% vs four unpinned | 15.821 | 85.5 /73.8% | pp128:21.65; pp512 pending |
 | Arete-27B Q4_K_M | 4.929 | 5.358, six unpinned | +8.7% vs four unpinned | 16.477 | 88.3 /76.2% | pp128:21.78; pp512 pending |
 
-Flash has a separate post-memlat fixed353 CLI baseline: **4.057 tok/s**, exact answer and independent oracle pass. It is not comparable to this target-only llama-bench table. [Streamer prerequisites](FLASH-MEMLAT-PREREQUISITES.md).
+Flash has a separate post-memlat fixed353 CLI baseline: **4.057 tok/s**, exact answer and independent oracle pass. It is not comparable to this target-only llama-bench table. Streamer prerequisites.
 
 Tensor sweep is descriptor-derived target weights, including the separate output head, excluding the full input embedding and MTP block. It is **not a DRAM counter**; KV/activation/cache traffic is omitted. Never multiply an MTP accepted-token rate by this target-only proxy. The native benchmark does not use MTP. pp4k and pp16k remain outstanding on the new boot. Results across different models are not quality rankings.
 
