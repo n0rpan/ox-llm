@@ -198,8 +198,10 @@ fn build_worker_hooks(
                             parent_scope,
                             yolo: i.yolo.clone(),
                             resume_on_start: crate::workers::resume::enabled(i.settings),
+                            advertise_wait: matches!(tool_scope, WorkerToolScope::Inherit),
                             send_ack_seconds: worker_tool::send_ack_seconds(i.settings),
                             models,
+                            cache: crate::worker_cache::view(i.settings, &i.dirs.home, i.env, i.cwd),
                         }));
                         return Some(workers);
                     }
@@ -579,6 +581,11 @@ mod tests {
         );
         assert!(sets.workers.is_some(), "{notices:?}");
         assert_eq!(tool_names(&sets), vec!["worker".to_string()]);
+        assert!(sets
+            .hooks
+            .iter()
+            .flat_map(|h| h.tools())
+            .all(|t| !t.spec().description.contains("worker_done")));
         let child_scope = sets.workers.as_ref().unwrap().parent_narrowing();
         assert_eq!(child_scope.tools, None, "Lead's allowlist leaked into its worker");
         assert!(

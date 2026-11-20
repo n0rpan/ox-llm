@@ -55,7 +55,7 @@ worker gets an `escalateTo` id), then the row of the kind, then `default`, then 
 session model. The lead records how a worker's work turned out with
 `worker result {name, result: ok|failed, reason}`; a worker that ended `done` but
 whose PR failed review or CI must be recorded `failed`, otherwise only dead or
-not-done workers count toward escalation. `worker list` shows each worker's model,
+not-done workers count toward escalation. `worker list` ends with the shared build cache path and its size (a warning only when you set `oxa.workers.cacheWarnGb`) and shows each worker's model,
 the why-line of the choice and the recorded result. A model id the live catalog does
 not know only warns. History is per lead session for now.
 
@@ -183,9 +183,10 @@ situation) and every rule is a derivation over it:
 - `review_held` reports each PR with unresolved review threads (queued PRs first,
   then oldest thread first, within the report bound): exact head, thread counts,
   oldest thread age, authors, `incomplete` when the thread page was cut off, and
-  the assignee. `queued_findings:<pr>` and the ask `lead:stuck:queued-findings:<pr>`
-  mark such a PR in the queue at its exact head; the signal ending on a later
-  pass is the recorded dequeue.
+  the assignee. Only a current thread holds landing or escalates: an
+  outdated-only hold is reported and never asks. `queued_findings:<pr>` and the
+  ask `lead:stuck:queued-findings:<pr>` mark such a PR in the queue at its exact
+  head; the signal ending on a later pass is the recorded dequeue.
 - A stall with no report row that has an assignee and no escalation does not end
   the pass: it still proposes the next Board action, with `stuck.signals` attached.
 

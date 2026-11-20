@@ -444,7 +444,15 @@ fn a_thread_held_pr_is_reported_with_its_head_age_and_owner() {
     assert_eq!(row["assignee"], json!("idle-worker"));
     assert!((3600..3700).contains(&row["oldest_thread_age_secs"].as_u64().unwrap()));
     assert_eq!(row["incomplete"], json!(false));
-    assert_eq!(state["state"], "stuck_assigned", "{state}");
+    // The hold is a report only: the pass still proposes the next Board action.
+    assert_eq!(state["state"], "awaiting_owner", "{state}");
+    assert!(
+        state["asks"][0]["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("lead:board:"),
+        "{state}"
+    );
 
     add_landing(&board, json!({"90": held(true)}));
     let state = run_once(&command, None);
@@ -550,6 +558,28 @@ fn a_queued_pr_with_a_current_thread_is_escalated_for_dequeue() {
         .as_array()
         .unwrap()
         .contains(&json!("queued_findings:95")));
+}
+
+#[test]
+fn a_queued_pr_with_only_outdated_threads_is_not_escalated() {
+    let (_test, _dirs, board, _situation, _id, command) = lead_test();
+    let now = oxa_proto::time::now_ms() / 1000;
+    let panels = queue_of(panels_record(now, 10 * 60), &[(95, "a".repeat(40))]);
+    write_sample(
+        &board,
+        now,
+        &[(95, Action::Ready, true, None, None)],
+        Some(panels),
+    );
+    add_landing(
+        &board,
+        json!({"95": {"queue_alarm": false, "queue": {"enqueued_at": now - 60}, "threads": {
+            "unresolved": 1, "current": 0, "oldest_at": now - 120, "authors": ["reviewer"], "incomplete": false,
+        }}}),
+    );
+    let state = run_once(&command, None);
+    assert!(escalated(&state).is_empty(), "{state}");
+    assert!(!state["asks"].to_string().contains("queued-findings"), "{state}");
 }
 
 #[test]

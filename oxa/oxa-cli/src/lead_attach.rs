@@ -9,7 +9,9 @@
 use crate::dispatch::lead_owner::{private_directory, private_file, unavailable, user_settings};
 use oxa_config::Dirs;
 use oxa_proto::{Entry, OxaError};
-use oxa_session::{decode_entry, decode_header, lock_holder, send_inbox, session_files_under, SessionRef};
+use oxa_session::{
+    decode_entry, decode_header, lock_holder, send_inbox_steer, session_files_under, SessionRef,
+};
 use std::{
     fs::File,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
@@ -138,10 +140,11 @@ impl AttachedSession {
     }
 
     /// Publish the owner's text into the session's inbox, as `oxa send <id> <text>` does. The
-    /// session reads it at its next turn; it is a follow-up for the model, never an approval.
+    /// session takes it at its next tool boundary (a steer, #2183), or as its next prompt when
+    /// idle; it is a message for the model, never an approval.
     pub(crate) fn send(&self, text: &str) -> Result<(), OxaError> {
         self.recheck()?;
-        send_inbox(&self.dirs.agent_dir, &self.session.id, text).map_err(|_| unavailable())
+        send_inbox_steer(&self.dirs.agent_dir, &self.session.id, text).map_err(|_| unavailable())
     }
 }
 

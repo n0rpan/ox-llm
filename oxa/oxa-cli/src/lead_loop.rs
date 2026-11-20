@@ -274,7 +274,10 @@ impl Stuck {
     /// at its exact head is also escalated: it is the owner's to dequeue, and
     /// the signal ending on a later pass is the recorded outcome (#1673).
     fn review_held(&mut self, obs: &Observation, revision: u64) {
+        // Outdated-only threads do not hold landing (the landing plan holds on
+        // `current > 0`); an incomplete page stays reported, never as zero.
         let mut held = obs.thread_holds();
+        held.retain(|h| h.hold.current > 0 || h.hold.incomplete);
         if held.is_empty() {
             return;
         }
@@ -300,6 +303,7 @@ impl Stuck {
                 "pr": h.number,
                 "head": h.head,
                 "reason": "unresolved review threads",
+                "held": true,
                 "threads": h.hold.unresolved,
                 "current": h.hold.current,
                 "oldest_thread_age_secs": (h.hold.oldest_at > 0).then(|| now.saturating_sub(h.hold.oldest_at)),
@@ -308,14 +312,14 @@ impl Stuck {
                 "assignee": owner,
             }));
         }
-        for h in held.iter().filter(|h| h.queued) {
+        for h in held.iter().filter(|h| h.queued && h.hold.current > 0) {
             self.signals.push(format!("queued_findings:{}", h.number));
             self.escalations.push(OpenGoalAsk {
                 id: format!("lead:stuck:queued-findings:{}", h.number),
                 revision,
                 question: format!(
-                    "PR #{} is in the merge queue at {} with {} unresolved review threads ({} current). Dequeue it so the findings are addressed.",
-                    h.number, h.head, h.hold.unresolved, h.hold.current
+                    "PR #{} is in the merge queue at {} with {} current unresolved review threads. Dequeue it so the findings are addressed.",
+                    h.number, h.head, h.hold.current
                 ),
             });
         }
@@ -378,8 +382,13 @@ fn tick(binding: &LeadOwnerBinding, obs: &Observation) -> Result<Value, OxaError
         // Signals with neither a report row that has an owner nor an escalation
         // (a stall whose only rows are ready PRs) leave the pass free to propose
         // the next Board action instead of ending in a silent assignment (#2088).
-        let acted =
-            !stuck.escalations.is_empty() || stuck.report.iter().any(|row| row["assignee"].is_string());
+        // A review_held row is information, not an assignment: it never ends the
+        // pass, or the proposal loop starves on the normal lab state.
+        let acted = !stuck.escalations.is_empty()
+            || stuck
+                .report
+                .iter()
+                .any(|row| row["held"] != true && row["assignee"].is_string());
         let attach = |mut value: Value| {
             if !stuck.empty() {
                 value["stuck"] = serde_json::json!({

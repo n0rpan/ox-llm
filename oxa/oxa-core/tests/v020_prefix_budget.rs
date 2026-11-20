@@ -162,9 +162,9 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// 2026-11-19: #1552 updates the built-in report-issue skill description.
 /// 2026-11-19: N1 changed the bash tool text (wait cap 300, timeout moves to a background job).
 /// 2026-11-19: `wait` is declared in every session (tool entry and rule line).
-/// 2026-11-20: the `wait` tool description lists `pr_activity{pr,head}`.
-const DEFAULT_STABLE_SHA: &str = "1ed961bbbdf33d90f9d1e99e85877d08ede0bced6529a6c427f8fa126b3a9535";
-const DEFAULT_STABLE_SHA_SUBAGENT: &str = "d40f779e46d53297ba77994f2eccad4b5623fa9279dfba4fdbfb3eedd9cdb3f3";
+/// 2026-11-20: the `wait` tool description names `ci` and `pr_merged` first, with an example, and lists `pr_activity{pr,head}`.
+const DEFAULT_STABLE_SHA: &str = "42913883f4a32153356048d6a2c680baebd2681d041f9195f3172925b2b653ad";
+const DEFAULT_STABLE_SHA_SUBAGENT: &str = "65a4cd205fb73627d4f89d2d54710e04c1e9b8b1d24ea76f894f06c4045cc71c";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
 fn has_date(s: &str) -> bool {

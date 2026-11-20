@@ -32,8 +32,9 @@ The `/chat` page shows the newest part of the session's transcript (user and ass
 tool call with a short masked argument preview, short result previews) and whether the session is
 running. It refreshes like the other pages, and the page says when older history is not shown.
 The message form sends exactly like `oxa send <id> <text>`: the text goes into the session's
-inbox and the session reads it at its next turn, also if it is not running yet. The service takes
-no session lock, opens no provider and spends no model tokens. A message is a follow-up for the
+inbox as a steer: a busy session reads it after its running tool calls, an idle one starts a
+turn with it, also if it is not running yet. The service takes
+no session lock, opens no provider and spends no model tokens. A message is text for the
 model, never an approval: answer approvals on the approvals page. The same identity, origin and
 CSRF checks as before apply, the session file must stay private to your user, and a refused send
 is written to the service journal with stage `recheck`, reason `binding` or `inbox`.
