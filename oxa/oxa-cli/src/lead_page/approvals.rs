@@ -313,6 +313,7 @@ mod tests {
             reasons: vec!["rm: <recursive>".into(), "password=opaque-example".into()],
             status: "pending".into(),
             used: false,
+            run_nonce: "0123456789abcdef".into(),
             created_ms: 0,
             answered_ms: None,
         }];
@@ -361,6 +362,7 @@ mod tests {
             reasons: vec!["rm:\u{2066} recursive".into()],
             status: "pending".into(),
             used: false,
+            run_nonce: "0123456789abcdef".into(),
             created_ms: 0,
             answered_ms: None,
         }];
@@ -395,6 +397,7 @@ mod tests {
             reasons: vec![],
             status: "pending".into(),
             used: false,
+            run_nonce: "0123456789abcdef".into(),
             created_ms: 0,
             answered_ms: None,
         }];
@@ -424,6 +427,7 @@ mod tests {
             reasons: vec![],
             status: "pending".into(),
             used: false,
+            run_nonce: "0123456789abcdef".into(),
             created_ms: 0,
             answered_ms: None,
         }];
@@ -470,6 +474,7 @@ mod tests {
                 reasons: vec![],
                 status: "pending".into(),
                 used: false,
+                run_nonce: "0123456789abcdef".into(),
                 created_ms: 0,
                 answered_ms: None,
             }];
@@ -526,6 +531,7 @@ mod tests {
                 reasons: vec![],
                 status: "pending".into(),
                 used: false,
+                run_nonce: "0123456789abcdef".into(),
                 created_ms: 0,
                 answered_ms: None,
             }];
