@@ -18,8 +18,6 @@ use serde_json::{json, Value};
 /// be safe on any current model, so an unknown model works without a promise it cannot keep.
 const UNKNOWN_CONTEXT: u32 = 128_000;
 const UNKNOWN_OUTPUT: u32 = 8_192;
-#[cfg(feature = "share")]
-use std::collections::BTreeSet;
 #[cfg(feature = "upstream-openai")]
 use std::path::Path;
 use std::{
