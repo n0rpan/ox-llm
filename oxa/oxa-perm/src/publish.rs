@@ -147,12 +147,21 @@ fn is_local(words: &[String], redirects: &[(String, String)]) -> bool {
         return false;
     }
     let args: Vec<&String> = words.iter().skip_while(|w| is_assignment(w)).collect();
-    match args.first().map(|w| base(w)) {
+    match args.first().map(|w| w.as_str()) {
         Some("git") => {
             let rest: Vec<String> = args[1..].iter().map(|s| s.to_string()).collect();
             !git_globals(&rest).2 && git_sub(&rest).is_some_and(|sub| GIT_LOCAL.contains(&sub.as_str()))
         }
-        Some(n) => LOCAL.contains(&n),
+        Some(n) => {
+            LOCAL.contains(&n)
+                && !(n == "sort"
+                    && args.iter().skip(1).any(|a| {
+                        a.as_str() == "-o"
+                            || a.starts_with("-o")
+                            || a.as_str() == "--output"
+                            || a.starts_with("--output=")
+                    }))
+        }
         None => true,
     }
 }
@@ -176,9 +185,12 @@ fn env_unsafe(words: &[String]) -> bool {
 
 fn kind_of(words: &[String], cwd: &Path, moved: bool) -> Kind {
     let args: Vec<String> = words.iter().skip_while(|w| is_assignment(w)).cloned().collect();
-    let Some(name) = args.first().map(|w| base(w).to_string()) else {
+    let Some(name) = args.first().cloned() else {
         return Kind::Other;
     };
+    if matches!(base(&name), "git" | "gh") && !matches!(name.as_str(), "git" | "gh") {
+        return Kind::Unsafe;
+    }
     match name.as_str() {
         "git" => git_kind(words, &args, cwd, moved),
         "gh" => gh_kind(words, &args, moved),
@@ -302,17 +314,17 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
         [] => true,
         ["origin"] => true,
         ["origin", spec] => {
-            let spec = spec.strip_prefix("HEAD:").unwrap_or(spec);
-            let spec = spec.strip_prefix("refs/heads/").unwrap_or(spec);
-            let spec = if let Some((src, dst)) = spec.split_once(':') {
-                if src != dst && src != "HEAD" {
+            if let Some((src, dst)) = spec.split_once(':') {
+                let src = src.strip_prefix("refs/heads/").unwrap_or(src);
+                let dst = dst.strip_prefix("refs/heads/").unwrap_or(dst);
+                if src != current && src != "HEAD" {
                     return Kind::Unsafe;
                 }
-                dst
+                dst == current
             } else {
-                spec
-            };
-            spec == "HEAD" || spec == current
+                let spec = spec.strip_prefix("refs/heads/").unwrap_or(spec);
+                spec == "HEAD" || spec == current
+            }
         }
         _ => false,
     };
@@ -618,7 +630,12 @@ fn scan_config(dir: &Path, branch: &str, implicit: bool) -> (bool, Vec<String>) 
             };
             let head = &line[1..end];
             let (name, s) = match head.split_once('"') {
-                Some((n, rest)) => (n.trim(), Some(rest.trim_end_matches('"').to_string())),
+                Some((n, rest)) => {
+                    let Some(quoted) = rest.strip_suffix('"').and_then(unescape_subsection) else {
+                        return (true, fp);
+                    };
+                    (n.trim(), Some(quoted))
+                }
                 None => match head.split_once('.') {
                     // Git's legacy `[section.subsection]` form lower-cases the subsection.
                     Some((n, r)) => (n, Some(r.to_ascii_lowercase())),
@@ -666,6 +683,20 @@ fn scan_config(dir: &Path, branch: &str, implicit: bool) -> (bool, Vec<String>) 
     }
     fp.sort();
     (false, fp)
+}
+
+/// Git drops a backslash before the following character in a quoted subsection name.
+fn unescape_subsection(raw: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            out.push(chars.next()?);
+        } else {
+            out.push(c);
+        }
+    }
+    Some(out)
 }
 
 /// (git dir, common dir) of the repository around `dir`; a worktree's `.git` is a file.

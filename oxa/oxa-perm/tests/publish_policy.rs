@@ -359,3 +359,30 @@ fn unparsed_commands_keep_the_publish_floor() {
     let command = format!("git push origin HEAD:main; echo {nested}");
     assert_eq!(decide(&cwd, Autonomy::Auto, &command), Decision::Ask);
 }
+
+#[test]
+fn escaped_config_refspecs_and_explicit_head_destinations_ask() {
+    let cwd = repo("my-branch");
+    set_config(&cwd, "[remote \"ori\\gin\"]\n\tpush = HEAD:refs/heads/main\n");
+    assert_eq!(decide(&cwd, Autonomy::Auto, "git push origin"), Decision::Ask);
+
+    let cwd = repo("my-branch");
+    for command in [
+        "git push origin HEAD:HEAD",
+        "git push origin HEAD:refs/heads/HEAD",
+    ] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask, "{command}");
+    }
+}
+
+#[test]
+fn local_writers_and_path_qualified_publish_tools_ask() {
+    let cwd = repo("my-branch");
+    for command in [
+        "printf 'ref: refs/heads/main\\n' | sort -o .git/HEAD && git push origin HEAD",
+        "./git push origin HEAD",
+        "/tmp/gh pr create --title t --body b",
+    ] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask, "{command}");
+    }
+}
