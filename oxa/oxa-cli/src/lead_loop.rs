@@ -115,6 +115,8 @@ fn idle_worker(board: &Board, now: u64) -> Option<String> {
 /// asks stays the caller's job against the goal store's revision.
 #[derive(Default)]
 struct Stuck {
+    /// Workers whose process is gone or stopped: never an assignee.
+    gone: BTreeSet<String>,
     signals: Vec<String>,
     report: Vec<Value>,
     escalations: Vec<OpenGoalAsk>,
@@ -125,11 +127,25 @@ impl Stuck {
         self.signals.is_empty()
     }
 
+    /// A candidate whose binding is Dead or Stopped is not an owner: the signal says so and
+    /// the row gets none, so the existing no-worker escalation fires (#1382).
+    fn live_assignee(&mut self, candidate: Option<String>) -> Option<String> {
+        let name = candidate?;
+        if !self.gone.contains(&name) {
+            return Some(name);
+        }
+        let signal = format!("worker_gone:{name}");
+        if !self.signals.contains(&signal) {
+            self.signals.push(signal);
+        }
+        None
+    }
+
     /// An idle worker takes a red main when one exists; otherwise the owner is
     /// the assignee of last resort and the pass escalates (#1451).
     fn main_red(&mut self, board: &Board, revision: u64, now: u64) {
         self.signals.push("main_red".into());
-        match idle_worker(board, now) {
+        match self.live_assignee(idle_worker(board, now)) {
             Some(worker) => self.report.push(serde_json::json!({
                 "subject": "main",
                 "reason": "required checks on main failed",
@@ -159,7 +175,7 @@ impl Stuck {
             .collect();
         for entry in blocking {
             let assignee = if entry.action == Action::FixRequiredCi {
-                match assignee(board, entry, now) {
+                match self.live_assignee(assignee(board, entry, now)) {
                     Some(worker) => Some(worker),
                     None => {
                         self.escalations.push(OpenGoalAsk {
@@ -276,12 +292,13 @@ impl Stuck {
         self.signals.push("review_held".into());
         let (now, budget) = (obs.now_ms / 1000, REPORT_ROWS.saturating_sub(self.report.len()));
         for h in held.iter().take(budget) {
-            let owner = obs
+            let candidate = obs
                 .board
                 .entries
                 .iter()
                 .find(|entry| entry.number == h.number)
                 .and_then(|entry| assignee(&obs.board, entry, now));
+            let owner = self.live_assignee(candidate);
             self.report.push(serde_json::json!({
                 "pr": h.number,
                 "head": h.head,
@@ -314,7 +331,10 @@ impl Stuck {
 /// record never manufactures an escalation. A standing ask is its own action, so
 /// it is reported through `asks` and never re-escalated here.
 fn stuck_signals(obs: &Observation, revision: u64) -> Stuck {
-    let mut stuck = Stuck::default();
+    let mut stuck = Stuck {
+        gone: obs.gone_workers().into_iter().map(str::to_owned).collect(),
+        ..Stuck::default()
+    };
     if obs.fresh() {
         let (board, alarms, now) = (&obs.board, &obs.alarms, obs.now_ms / 1000);
         if alarms.main_red == Some(true) {
@@ -509,7 +529,11 @@ pub(crate) fn run(
     let mut previous = None;
     loop {
         let (binding, uid) = binding(dirs, cwd, env)?;
-        let obs = Observation::read(board_path, situation_path, uid, oxa_proto::time::now_ms());
+        let obs = Observation::read(board_path, situation_path, uid, oxa_proto::time::now_ms()).with_workers(
+            &dirs.agent_dir,
+            &dirs.sessions_dir,
+            binding.session_id(),
+        );
         let mut state = match tick(&binding, &obs) {
             Ok(state) => state,
             Err(error) if !once && error.code == codes::BUSY => {

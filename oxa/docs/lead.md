@@ -216,6 +216,12 @@ Three more rules close the loop on what the Lead cannot see or send:
   Lead escalates `lead:stuck:review-identity:<pr>` (signal `review_rejected:<pr>`).
 
 
+- **Worker gone.** The loop reads the Lead session's worker registry with each pass. A
+  stall-report assignee whose worker is Dead or Stopped adds `worker_gone:<name>` and
+  gets no assignee, so the existing no-worker escalation asks the owner instead of
+  reporting `stuck_assigned`.
+
+
 ## Event integration after L1
 
 Consume the runner's sequenced events and bounded situation file after L1 is on

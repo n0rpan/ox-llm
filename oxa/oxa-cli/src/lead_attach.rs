@@ -113,6 +113,11 @@ impl AttachedSession {
         Ok(())
     }
 
+    /// The attached session's exact id.
+    pub(crate) fn session_id(&self) -> &str {
+        &self.session.id
+    }
+
     /// The first characters of the id, for the page heading.
     pub(crate) fn short_id(&self) -> String {
         self.session.id.chars().take(8).collect()

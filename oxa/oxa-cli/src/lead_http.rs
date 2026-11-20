@@ -118,8 +118,24 @@ pub fn serve(
     authorize: impl Fn(&TcpStream, &Request<'_>) -> bool + Send + Sync + 'static,
     render: impl Fn(Page, bool) -> String + Send + Sync + 'static,
 ) -> std::io::Result<()> {
-    serve_fixed(listener, authorize, render, None, None, None)
+    serve_fixed(listener, authorize, render, None, None, None, None)
 }
+
+/// The authenticated live route `/events/live` (#1366): a change fingerprint the
+/// caller derives from one observation, and the digest of the serving executable so a
+/// replaced binary makes the page reload. Without it the route does not exist and the
+/// page keeps its polling fallback.
+pub(crate) struct Live {
+    pub fingerprint: Box<dyn Fn() -> u64 + Send + Sync>,
+    pub running_sha256: Option<String>,
+    /// How often the fingerprint is compared (one second in service).
+    pub poll: Duration,
+}
+
+/// A live stream ends after this long; the client's normal rotation reconnects.
+const LIVE_LIFETIME: Duration = Duration::from_secs(300);
+const LIVE_KEEP_ALIVE: Duration = Duration::from_secs(15);
+const LIVE_WRITE: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub(crate) struct FixedForm {
@@ -152,7 +168,9 @@ pub(crate) fn serve_fixed(
     form: Option<FixedForm>,
     owner: Option<OwnerForm>,
     refusals: Option<RefusalLog>,
+    live: Option<Live>,
 ) -> std::io::Result<()> {
+    let live = live.map(Arc::new);
     if !listener.local_addr()?.ip().is_loopback() {
         return Err(std::io::ErrorKind::PermissionDenied.into());
     }
@@ -168,6 +186,7 @@ pub(crate) fn serve_fixed(
         let form = form.clone();
         let owner = owner.clone();
         let refusals = refusals.clone();
+        let live = live.clone();
         std::thread::spawn(move || {
             let _slot = slot;
             let _ = connection_fixed(
@@ -177,6 +196,7 @@ pub(crate) fn serve_fixed(
                 form.as_ref(),
                 owner.as_ref(),
                 refusals.as_ref(),
+                live.as_deref(),
             );
         });
     }
@@ -200,7 +220,7 @@ pub fn connection(
     authorize: impl FnOnce(&TcpStream, &Request<'_>) -> bool,
     render: impl FnOnce(Page, bool) -> String,
 ) -> std::io::Result<()> {
-    connection_fixed(stream, authorize, render, None, None, None)
+    connection_fixed(stream, authorize, render, None, None, None, None)
 }
 
 fn connection_fixed(
@@ -210,6 +230,7 @@ fn connection_fixed(
     form: Option<&FixedForm>,
     owner: Option<&OwnerForm>,
     refusals: Option<&RefusalLog>,
+    live: Option<&Live>,
 ) -> std::io::Result<()> {
     let start = Instant::now();
     let bytes: Vec<u8>;
@@ -383,6 +404,12 @@ fn connection_fixed(
             };
             Ok((r.path, page))
         });
+    // The live stream starts only after the same authorization as every other path.
+    if let (Ok((path, None)), Some(live)) = (&allowed, live) {
+        if *path == "/events/live" {
+            return stream_live(&mut stream, live, form.is_some() || owner.is_some());
+        }
+    }
     let location = match &allowed {
         Ok((_, Some(target))) => format!("Location: {target}\r\n"),
         _ => String::new(),
@@ -414,6 +441,40 @@ fn connection_fixed(
         &[headers.as_bytes(), body.as_bytes()],
         Duration::from_secs(5),
     )
+}
+
+/// `text/event-stream` with no length: `retry` and one `lead-update` at once, another
+/// whenever the fingerprint changes, a keep-alive comment while quiet, and an end after
+/// [`LIVE_LIFETIME`]. Each write has its own deadline, so a stalled reader frees its slot.
+fn stream_live(stream: &mut TcpStream, live: &Live, has_form: bool) -> std::io::Result<()> {
+    let form_action = if has_form { "'self'" } else { "'none'" };
+    let referrer = if has_form { "same-origin" } else { "no-referrer" };
+    let headers = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action {form_action}\r\nReferrer-Policy: {referrer}\r\n\r\n");
+    let update = format!(
+        "event: lead-update\ndata: {{\"running_sha256\":{}}}\n\n",
+        live.running_sha256
+            .as_deref()
+            .map_or_else(|| "null".to_owned(), |digest| format!("\"{digest}\""))
+    );
+    write_response(
+        stream,
+        &[headers.as_bytes(), b"retry: 5000\n", update.as_bytes()],
+        LIVE_WRITE,
+    )?;
+    let (began, mut quiet, mut last) = (Instant::now(), Instant::now(), (live.fingerprint)());
+    while began.elapsed() < LIVE_LIFETIME {
+        std::thread::sleep(live.poll);
+        let now = (live.fingerprint)();
+        if now != last {
+            last = now;
+            quiet = Instant::now();
+            write_response(stream, &[update.as_bytes()], LIVE_WRITE)?;
+        } else if quiet.elapsed() >= LIVE_KEEP_ALIVE {
+            quiet = Instant::now();
+            write_response(stream, &[b": keep-alive\n\n"], LIVE_WRITE)?;
+        }
+    }
+    Ok(())
 }
 
 fn write_response(stream: &mut TcpStream, parts: &[&[u8]], budget: Duration) -> std::io::Result<()> {
@@ -727,6 +788,7 @@ mod tests {
                     None,
                     Some(&owner),
                     Some(&refusals),
+                    None,
                 )
                 .unwrap();
             });
@@ -869,6 +931,7 @@ mod tests {
                     None,
                     Some(&owner),
                     Some(&refusals),
+                    None,
                 )
                 .unwrap();
             });
@@ -982,6 +1045,74 @@ mod tests {
         }
     }
 
+    fn live_client(allowed: bool, live: Live) -> TcpStream {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        std::thread::spawn(move || {
+            let _ = connection_fixed(
+                server,
+                move |_, _| allowed,
+                |_, _| panic!("the live route renders nothing"),
+                None,
+                None,
+                None,
+                Some(&live),
+            );
+        });
+        client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        client
+            .write_all(b"GET /events/live HTTP/1.1\r\nHost: example.invalid\r\n\r\n")
+            .unwrap();
+        client
+    }
+
+    fn read_updates(client: &mut TcpStream, want: usize) -> String {
+        let (mut text, mut buffer) = (String::new(), [0u8; 1024]);
+        while text.matches("event: lead-update").count() < want {
+            let read = client.read(&mut buffer).unwrap();
+            assert!(read > 0, "stream ended early: {text}");
+            text.push_str(&String::from_utf8_lossy(&buffer[..read]));
+        }
+        text
+    }
+
+    #[test]
+    fn live_route_is_authorized_first_and_streams_changes_and_recovers_after_disconnect() {
+        use std::sync::atomic::AtomicU64;
+        let (reads, value) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicU64::new(1)));
+        let live = || {
+            let (reads, value) = (reads.clone(), value.clone());
+            Live {
+                fingerprint: Box::new(move || {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    value.load(Ordering::SeqCst)
+                }),
+                running_sha256: Some("a".repeat(64)),
+                poll: Duration::from_millis(20),
+            }
+        };
+        // Unauthorized: refused before the fingerprint is ever read.
+        let mut refused = live_client(false, live());
+        let mut reply = String::new();
+        refused.read_to_string(&mut reply).unwrap();
+        assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+        // Authorized: the first update at once, a second only after the fingerprint changes.
+        let mut client = live_client(true, live());
+        let first = read_updates(&mut client, 1);
+        assert!(first.contains("Content-Type: text/event-stream"), "{first}");
+        assert!(!first.contains("Content-Length"), "{first}");
+        assert!(first.contains("retry: 5000"), "{first}");
+        assert!(first.contains(&format!("data: {{\"running_sha256\":\"{}\"}}", "a".repeat(64))));
+        value.store(2, Ordering::SeqCst);
+        read_updates(&mut client, 1);
+        // A client that went away gets a fresh stream with an event on reconnect.
+        drop(client);
+        let mut again = live_client(true, live());
+        read_updates(&mut again, 1);
+    }
+
     #[test]
     fn slow_reader_cannot_reset_the_total_response_write_budget() {
         use std::sync::atomic::AtomicBool;
@@ -1050,6 +1181,7 @@ mod approval_transport_tests {
                 None,
                 Some(&owner),
                 Some(&refusals),
+                None,
             )
             .unwrap();
         });
@@ -1147,6 +1279,7 @@ mod approval_transport_tests {
                 None,
                 None,
                 Some(&refusals),
+                None,
             )
             .unwrap();
         });
