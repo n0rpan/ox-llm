@@ -107,7 +107,7 @@ fn model_list(value: Option<&Value>, key: &str, notices: &mut Vec<String>) -> Ve
         ));
         return Vec::new();
     };
-    let mut out = Vec::new();
+    let mut out: Vec<String> = Vec::new();
     for item in items {
         match item.as_str() {
             Some(id) if check_value("model", id).is_ok() => {
