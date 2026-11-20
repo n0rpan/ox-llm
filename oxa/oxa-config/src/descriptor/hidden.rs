@@ -255,6 +255,27 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     )
     .key(Kind::Bool, "true")
     .hidden(),
+    // How long `worker send` waits for the worker to take the message before it reports
+    // `not_delivered`; 0 does not wait. User settings only.
+    d(
+        "oxa.workers.sendAckSeconds",
+        Group::Advanced,
+        "",
+        "oxa.workers.sendAckSeconds",
+        "",
+    )
+    .key(Kind::Number, "10")
+    .hidden(),
+    // Requests kept back per App resource for required Lead reads (#1413). Unset = no gate.
+    d(
+        "oxa.lead.github_reserve",
+        Group::Advanced,
+        "",
+        "oxa.lead.github_reserve",
+        "",
+    )
+    .key(Kind::Number, "null")
+    .hidden(),
     // K4: seconds a worker gets after SIGINT before its process group gets SIGTERM.
     d(
         "oxa.workers.stopGraceSeconds",

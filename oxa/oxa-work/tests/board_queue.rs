@@ -194,6 +194,7 @@ fn the_owner_journal_matches_only_the_previously_queued_head_and_group() {
                             queue_alarm: false,
                             latest_reviews: LatestReviews::Clear,
                             would_notify_rejection: None,
+                            threads: None,
                             queue: Some(QueueObservation {
                                 enqueued_at: prior.observed_at - 5,
                                 group_head: Some(GROUP.into()),
@@ -286,6 +287,7 @@ fn the_owner_journal_matches_only_the_previously_queued_head_and_group() {
                             queue: queued,
                             latest_reviews: reviews,
                             would_notify_rejection: None,
+                            threads: None,
                         },
                     )]),
                     ..Default::default()
