@@ -420,9 +420,11 @@ fn a_queue_launch_approves_lane_tasks_from_the_owner_environment() {
         r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"Finish task","lane_ci":true}]"#,
     );
     let path = configure(&env);
+    env.write("home/lane-pass", "");
     let server = oxa_fake::FakeServer::start(edits(), oxa_fake::FakeOpts::default()).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
     command
+        .env_clear()
         .args([
             "work",
             "--queue",
@@ -434,7 +436,6 @@ fn a_queue_launch_approves_lane_tasks_from_the_owner_environment() {
             "--once",
         ])
         .current_dir(env.work().join("project"))
-        .env_clear()
         .envs(env.envs(&server.url()))
         .env("PATH", path)
         .env("OXA_WORK_OWNER_CONFIRMED", "1");
