@@ -11,9 +11,10 @@ Two conditions, both required:
 - the workflow's merge-queue run at this commit completed and succeeded (a failed, cancelled
   or still-running queue run never dedupes), and
 - the push changed no dependency input (a Cargo manifest, a lockfile, `rust-toolchain*`,
-  `.cargo/` configuration, the contract requirements). Main is what seeds the `<prefix>main`
-  caches, and a queue run cannot write those. When a dependency key is new, the main run must
-  happen to save it; skipping would make every later run rebuild dependencies from scratch.
+  `.cargo/` configuration, the contract requirements, the toolchain setup script and the workflows
+  that pin the compiler and flags). Main is what seeds the `<prefix>main` caches, and a queue run
+  cannot write those. When a dependency key is new, the main run must happen to save it; skipping
+  would make every later run rebuild dependencies from scratch.
 
 Any doubt answers "not covered", so the full run happens: no git history for the pushed
 range, an API failure, no merge-queue run at the commit, or an input we cannot classify.
@@ -33,12 +34,23 @@ import urllib.request
 # contract's pinned requirements, which key the x86_64 stub job's pip cache.
 DEPENDENCY_NAMES = ('Cargo.toml', 'Cargo.lock', 'rust-toolchain', 'rust-toolchain.toml',
                     'requirements.txt')
+# The cache key also covers the compiler version and the compilation flags, and these two define
+# them: the toolchain setup script and the workflows that pin `RUST_VERSION` and the `CARGO_*`
+# environment. Editing either makes a new key exactly as a lockfile edit does.
+TOOLCHAIN_PATHS = ('engine/tools/ci/setup_toolchain.sh',)
 
 
 def dependency_inputs(paths):
     """The changed paths that change a dependency cache key."""
-    return [path for path in paths
-            if Path(path).name in DEPENDENCY_NAMES or '.cargo' in Path(path).parts[:-1]]
+    inputs = []
+    for path in paths:
+        parts = Path(path).parts
+        if (parts and parts[-1] in DEPENDENCY_NAMES
+                or '.cargo' in parts[:-1]
+                or parts[:2] == ('.github', 'workflows')
+                or '/'.join(parts) in TOOLCHAIN_PATHS):
+            inputs.append(path)
+    return inputs
 
 
 def covered(runs, sha, changed):

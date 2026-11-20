@@ -46,7 +46,10 @@ class Covered(unittest.TestCase):
     def test_a_dependency_input_change_must_run_on_main(self):
         for path in ('engine/Cargo.toml', 'engine/Cargo.lock', 'oxa/Cargo.toml', 'oxa/Cargo.lock',
                      'rust-toolchain.toml', '.cargo/config.toml', 'engine/.cargo/config.toml',
-                     'tools/openai-contract/requirements.txt'):
+                     'tools/openai-contract/requirements.txt',
+                     # the toolchain and flag definitions the cache key also covers
+                     '.github/workflows/build.yml', '.github/workflows/checks.yml',
+                     'engine/tools/ci/setup_toolchain.sh'):
             with self.subTest(path=path):
                 skip, reason = QUEUE.covered([run()], SHA, ['oxa/src/lib.rs', path])
                 self.assertFalse(skip)
@@ -61,7 +64,8 @@ class Covered(unittest.TestCase):
         self.assertEqual(QUEUE.dependency_inputs(['oxa/src/lib.rs', 'engine/Cargo.lock', 'README.md',
                                                   '.cargo/config.toml']),
                          ['engine/Cargo.lock', '.cargo/config.toml'])
-        self.assertEqual(QUEUE.dependency_inputs(['oxa/src/Cargo.toml.txt', 'engine/target/debug/x']), [])
+        self.assertEqual(QUEUE.dependency_inputs(['oxa/src/Cargo.toml.txt', 'engine/target/debug/x',
+                                                  '.github/CODEOWNERS']), [])
 
 
 if __name__ == '__main__':
