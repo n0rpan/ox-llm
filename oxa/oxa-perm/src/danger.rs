@@ -1872,18 +1872,12 @@ pub(crate) fn has_mutable_input(text: &str) -> bool {
             || w.ends_with("/parallel")
             || w.starts_with("--files-from")
     };
-    // A backslash-newline continues a word (`xa\<newline>rgs` is `xargs`): join it before
-    // splitting, then also check the words the shell parser itself produces.
-    let joined = text.replace("\\\r\n", "").replace("\\\n", "");
-    joined.contains('<')
-        || joined
-            .split(|c: char| c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')' | '{' | '}'))
-            // Shell quoting and escapes inside a word do not change the command it names:
-            // `x'a'rgs`, `"xargs"` and `xa\rgs` are all `xargs`.
-            .map(|w| w.replace(['\'', '"', '\\'], ""))
-            .any(|w| is_reader(&w))
-        || parse_line(&joined)
-            .is_some_and(|stages| stages.iter().any(|st| st.words.iter().any(|w| is_reader(w))))
+    parse_line(text).is_some_and(|stages| {
+        stages.iter().any(|stage| {
+            stage.redirects.iter().any(|(op, _)| op.contains('<'))
+                || stage.words.iter().any(|word| is_reader(word))
+        })
+    })
 }
 
 /// Where a brace expansion (`{a,b}`, `{1..3}`) starts in `w`, if it has one. `{}` (the
