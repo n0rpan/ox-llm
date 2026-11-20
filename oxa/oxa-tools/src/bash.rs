@@ -574,6 +574,9 @@ impl BashTool {
             }
             let expired = limit.is_some_and(|l| started.elapsed() >= Duration::from_secs(u64::from(l)));
             if expired {
+                // The complete buffer is needed if the foreground command finishes, but a
+                // detached command may run indefinitely. Retain only its ring-buffer tail.
+                let _ = self.jobs.bound_output(id);
                 let secs = limit.unwrap_or(0);
                 // This job is no longer a foreground result, so retain only the normal
                 // background tail before returning control to the caller.
@@ -2265,6 +2268,39 @@ mod poll_tests {
     }
 
     #[test]
+    fn detached_foreground_job_switches_to_bounded_output() {
+        struct Flood;
+
+        impl Sandbox for Flood {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+            fn run(&self, _s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+                let chunk = [b'x'; 8192];
+                while !c.is_cancelled() {
+                    live(&chunk);
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                ExecResult {
+                    output: Vec::new(),
+                    exit: None,
+                    timed_out: false,
+                    unsandboxed: false,
+                }
+            }
+        }
+
+        let jobs = Arc::new(JobRegistry::new());
+        let tool =
+            BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone()).with_sandbox(Arc::new(Flood));
+        let (out, _) = job_call(&tool, json!({"command": "yes", "timeout": 1}));
+        assert_eq!(out.ui["movedToBackground"], json!(true));
+        assert_eq!(jobs.buffered_len("job-1"), Some(crate::jobs::BUFFER_CAP));
+    }
+
     fn command_past_its_timeout_keeps_bounded_output() {
         let (tx, rx) = channel();
         tx.send(vec![b'x'; crate::jobs::BUFFER_CAP * 2]).unwrap();
