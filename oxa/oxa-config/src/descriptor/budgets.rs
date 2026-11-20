@@ -150,6 +150,19 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
     d(
+        "oxa.onExceed",
+        Group::Budgets,
+        "Run limits",
+        "What happens when a budget is exceeded",
+        "Per budget: warn (show and record), pause (goals) or stop (refuse the call or block the goal).",
+    )
+    .key(Kind::Object, "{}")
+    .control(Control::Raw)
+    .apply(Apply::Reload)
+    .web(WebEdit::ReadOnly)
+    .advanced()
+    .user_only(),
+    d(
         "oxa.run.wrapUpTokens",
         Group::Budgets,
         "Run limits",

@@ -87,10 +87,17 @@ pub(super) fn run(
     }) {
         return Err("native queue execution requires the owner outside an agent tool".into());
     }
-    // The existing supervisor receives the runner's offline switch. Keep
-    // credential mounts and network off for deterministic steps until the
-    // supervisor also inherits the worker's runner-owned GitHub policy.
-    context.policy.offline = true;
+    // #1376: the publication hold is not offline. The worker keeps the runner's real offline
+    // switch, so a provider-backed model works. The hold is enforced by runner-owned GitHub
+    // isolation: the worker never receives a credential, GitHub adapters or MCP (even for an
+    // owner in yolo), and `supervise()` strips GitHub from deterministic steps for a native
+    // task. Nothing is pushed (`push_approved` stays false; `--publish` is refused).
+    context.policy.worker_github = oxa_work::WorkerGithub::Runner;
+    let (live, fallback) = (context.policy.authority_now.take(), context.policy.autonomy);
+    context.policy.authority_now = Some(Arc::new(move || {
+        let autonomy = live.as_ref().map_or(fallback, |now| now().0);
+        (autonomy, oxa_work::WorkerGithub::Runner)
+    }));
     let context = Arc::new(context);
     let root = &context.cwd;
     let config = config.canonicalize().map_err(|_| "board config unavailable")?;

@@ -6,62 +6,46 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-pub(crate) struct LimitWatcher {
+/// Who receives SIGTERM for this run.
+#[derive(Clone, Copy)]
+pub(crate) enum SigtermOwner {
+    /// The run registers the handler itself (headless, RPC).
+    Signal,
+    /// Interactive: the terminal's handler sets this flag on the first SIGTERM and the run's
+    /// watcher polls it, so the second SIGTERM still restores the terminal and kills.
+    Terminal(&'static AtomicBool),
+}
+
+/// The invocation's limits, SIGINT/SIGTERM handling and watcher. It belongs to the process,
+/// not to one session: `attach` hands it to every session the run opens (resume picker,
+/// `/new`, `/resume`, `/fork`, `/clone`, extension swaps), and the new session inherits the
+/// remaining token budget and any wrap-up already requested. The deadline lives in the
+/// watcher, and the subagent hooks (shared by all sessions) carry it to children.
+pub(crate) struct Run {
     stop: Arc<(Mutex<bool>, Condvar)>,
     worker: Option<JoinHandle<()>>,
     signals: Vec<signal_hook::SigId>,
-}
-
-/// Owns the watcher and the limit state it installs for the startup session.
-pub(crate) struct StartupLimit {
-    watcher: Option<LimitWatcher>,
-    handle: Handle,
+    current: Arc<Mutex<Handle>>,
     subagent: Option<Arc<SubagentHooks>>,
 }
 
-impl StartupLimit {
+impl Run {
+    /// Watch `handle` from now on. It takes over the previous session's token tally, budget
+    /// and wrap-up request, so a limit survives a session swap.
+    pub fn attach(&self, handle: Handle) {
+        let mut current = self.current.lock().unwrap_or_else(|p| p.into_inner());
+        handle.inherit_run(&current);
+        *current = handle;
+    }
+
     pub fn start(
         handle: Handle,
         max_time: Option<Duration>,
         max_tokens: Option<u64>,
         supervised_child: bool,
         subagent: Option<Arc<SubagentHooks>>,
+        sigterm: SigtermOwner,
     ) -> Result<Self, OxaError> {
-        let watcher = LimitWatcher::start(
-            handle.clone(),
-            max_time,
-            max_tokens,
-            supervised_child,
-            subagent.as_deref(),
-        )?;
-        Ok(Self {
-            watcher,
-            handle,
-            subagent,
-        })
-    }
-}
-
-impl Drop for StartupLimit {
-    fn drop(&mut self) {
-        // Join first: the old watcher must not request another wrap-up after the
-        // shared handle has been released to a fork or clone.
-        drop(self.watcher.take());
-        self.handle.clear_startup_limits();
-        if let Some(subagent) = &self.subagent {
-            subagent.set_deadline(None);
-        }
-    }
-}
-
-impl LimitWatcher {
-    pub fn start(
-        handle: Handle,
-        max_time: Option<Duration>,
-        max_tokens: Option<u64>,
-        supervised_child: bool,
-        subagent: Option<&oxa_core::SubagentHooks>,
-    ) -> Result<Option<Self>, OxaError> {
         handle.set_token_budget(max_tokens);
         // The parent's abort and kernel parent-death signal both use SIGTERM. A child
         // must exit on that signal, while the root owns cooperative run termination.
@@ -73,11 +57,13 @@ impl LimitWatcher {
                     .ok_or_else(|| OxaError::new(codes::USAGE, "--max-time is too large"))
             })
             .transpose()?;
-        if let Some(subagent) = subagent {
+        if let Some(subagent) = &subagent {
             subagent.set_deadline(deadline);
         }
         // The time notes (70% and 90%) need the window, not only the deadline.
         handle.set_time_limit(deadline.map(|at| (started, at)));
+        let current = Arc::new(Mutex::new(handle));
+        let watched = current.clone();
         let terminated = Arc::new(AtomicBool::new(false));
         // Register escalation first: the first SIGTERM sets the flag below; any
         // subsequent signal takes its default action even if the watcher is blocked.
@@ -93,7 +79,11 @@ impl LimitWatcher {
                 OxaError::io("cannot install the SIGINT handler", &error)
             })?;
         let mut signals = vec![interrupt_signal, interrupt_escalate];
-        if !supervised_child {
+        let terminal_flag = match sigterm {
+            SigtermOwner::Terminal(flag) => Some(flag),
+            SigtermOwner::Signal => None,
+        };
+        if !supervised_child && terminal_flag.is_none() {
             let escalate = signal_hook::flag::register_conditional_default(
                 signal_hook::consts::SIGTERM,
                 terminated.clone(),
@@ -125,9 +115,13 @@ impl LimitWatcher {
                 let mut stopped = lock.lock().unwrap_or_else(|p| p.into_inner());
                 let mut requested = false;
                 while !*stopped {
+                    let handle = watched.lock().unwrap_or_else(|p| p.into_inner()).clone();
                     if interrupted.load(Ordering::SeqCst) {
                         handle.interrupt();
                         return;
+                    }
+                    if terminal_flag.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+                        terminated.store(true, Ordering::SeqCst);
                     }
                     let reason = if requested {
                         None
@@ -163,15 +157,17 @@ impl LimitWatcher {
                 return Err(OxaError::io("cannot start the wrap-up watcher", &error));
             }
         };
-        Ok(Some(Self {
+        Ok(Self {
             stop,
             worker: Some(worker),
             signals,
-        }))
+            current,
+            subagent,
+        })
     }
 }
 
-impl Drop for LimitWatcher {
+impl Drop for Run {
     fn drop(&mut self) {
         let (lock, wake) = &*self.stop;
         *lock.lock().unwrap_or_else(|p| p.into_inner()) = true;
@@ -181,6 +177,9 @@ impl Drop for LimitWatcher {
         }
         for signal in self.signals.drain(..) {
             signal_hook::low_level::unregister(signal);
+        }
+        if let Some(subagent) = &self.subagent {
+            subagent.set_deadline(None);
         }
     }
 }
@@ -219,11 +218,9 @@ mod tests {
                 oxa_core::Open::New,
             )
             .unwrap();
-            let watcher = LimitWatcher::start(session.handle(), None, None, false, None)
-                .unwrap()
-                .unwrap();
+            let run = Run::start(session.handle(), None, None, false, None, SigtermOwner::Signal).unwrap();
             // Deliberately prevent the cooperative watcher from making progress.
-            let _stuck = watcher.stop.0.lock().unwrap();
+            let _stuck = run.stop.0.lock().unwrap();
             let delivered = Arc::new(AtomicBool::new(false));
             let _probe = signal_hook::flag::register(signal_hook::consts::SIGINT, delivered.clone()).unwrap();
             println!("synthetic-ready");

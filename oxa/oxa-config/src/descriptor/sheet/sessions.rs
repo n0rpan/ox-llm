@@ -9,7 +9,6 @@ pub(super) const TITLE: &str = "Sessions and compaction";
 
 #[rustfmt::skip]
 pub(super) const ROWS: &[PageRow] = &[
-    row("oxa.run.wrapUpTokens", "number (tokens)", "unset", "output cap of the final wrap-up turn of a run ended by `--max-time`, `--max-tokens` or SIGTERM; unset is the model's output limit, at most 4096. User settings only"),
     row("sessionDir", "string", "`null`", "session storage; `--session-dir` and `OXA_SESSION_DIR` win over it"),
     row("compaction.enabled", "bool", "`true`", "compact automatically; `false` keeps only the emergency compaction"),
     row("compaction.reserveTokens", "number", "`16384`", "room kept free for the summary and the next reply"),

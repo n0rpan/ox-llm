@@ -56,7 +56,12 @@ $ gh attestation verify ox-llm-<version>-linux-aarch64.tar.gz --repo oxstack/ox-
 
 The checksum shows that the download is intact. The attestation shows that this repository's release workflow built it.
 
-The archive holds one `usr/` tree. Extract it into a fresh directory of its own:
+The combined archive holds one `usr/` tree. Its commands are `oxa`, `oxe`,
+`oxe-server` and `local-ai-memlat-boot`; it also contains licence files and four
+inert MEMLAT templates. Standalone `oxe` is included for using the engine tools
+with other clients or sharing on a LAN without running the `oxa` agent.
+Both Arch recipes install the same commands. Extract the archive into a fresh
+directory of its own:
 
 ```console
 $ mkdir ~/ox-llm-<version>
