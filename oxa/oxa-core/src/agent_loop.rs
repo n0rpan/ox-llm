@@ -121,6 +121,11 @@ pub fn run_loop(
     // last reply): `message_start` / `message_end` each, and they open `agent_end.messages`.
     let opening = crate::fire::opening_messages(st);
     let result = run_inner(st, sink, ui, &mut run_msgs, &opening);
+    // A failed run records why its pursuing goal stopped; `/goal resume` (or the a2a resume)
+    // continues it in this session.
+    if let Ok(RunEnd::Failed(error)) = &result {
+        crate::goal::record_failure(st, error, sink)?;
+    }
     crate::goal::checkpoint(st, false, sink)?;
     drop(steering);
     crate::think::end_run(st, ui);
@@ -155,6 +160,9 @@ fn run_inner(
     // Consecutive transient failures of one logical request. This state lives inside the run so
     // recovery preserves done checks, the turn limit and the request idempotency key.
     let mut goal_failures: u32 = 0;
+    // Replies in a row without a tool call while a goal is pursued: the first continues, the
+    // second adds one nudge, the third and later wait before the next request. Run-local.
+    let mut idle_streak: u32 = 0;
     // `oxa.maxTurns` (default unset: no limit): model replies of this run (#507).
     let max_turns = st.settings.u32(crate::repeat::MAX_TURNS, 0);
     'turns: loop {
@@ -758,6 +766,7 @@ fn run_inner(
                 crate::fire::message(st, HookPoint::MessageEnd, &msg, sink, ui);
                 tool_msgs.push(msg);
             }
+            idle_streak = 0;
             done.note_edits(&results);
             st.stats.ci_polls += results.iter().filter(|r| r.ui["ciPoll"] == true).count() as u32;
             done.note_proof(&calls, &results);
@@ -799,6 +808,21 @@ fn run_inner(
                             crate::goal::checkpoint(st, false, sink)?;
                             repair?;
                             continue;
+                        }
+                    }
+                    // One nudge per open fact (unproven edits, running jobs): the goal stays
+                    // pursuing for one more turn, then the completion goes through.
+                    if !wrapping_up && !st.shared.has_input() {
+                        match crate::done::finish_decision(st, &mut done, true) {
+                            crate::done::FinishDecision::Nudge(text) => {
+                                pending_completion = goal.defer_completion();
+                                crate::goal::checkpoint(st, false, sink)?;
+                                crate::done::send_nudge(st, text, sink, ui, run_msgs)?;
+                                continue;
+                            }
+                            crate::done::FinishDecision::End { unresolved } => {
+                                crate::done::record_end(st, &done, &unresolved, sink)?;
+                            }
                         }
                     }
                 }
@@ -967,6 +991,17 @@ fn run_inner(
         }
         if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
             crate::goal::checkpoint(st, false, sink)?;
+            if pending_completion.is_some() && turn.finish != Finish::Length && !st.shared.has_input() {
+                match crate::done::finish_decision(st, &mut done, true) {
+                    crate::done::FinishDecision::Nudge(text) => {
+                        crate::done::send_nudge(st, text, sink, ui, run_msgs)?;
+                        continue;
+                    }
+                    crate::done::FinishDecision::End { unresolved } => {
+                        crate::done::record_end(st, &done, &unresolved, sink)?;
+                    }
+                }
+            }
             if let Some(evidence) = pending_completion.take() {
                 if goal.pursuing() {
                     goal.finish_completion(evidence)?;
@@ -1018,7 +1053,49 @@ fn run_inner(
                 if st.shared.has_input() {
                     return Ok(RunEnd::Stopped);
                 }
-                push_user(st, crate::prompt::GOAL_CONTINUE.into(), sink, ui, run_msgs)?;
+                idle_streak += 1;
+                // A reply that matched the output schema is an answer, not an idle reply: say
+                // that it was recorded and what comes next (a wait or goal_done).
+                let answered = st.output_schema.is_some();
+                let mut text = if answered {
+                    crate::prompt::GOAL_CONTINUE_AFTER_ANSWER
+                } else {
+                    crate::prompt::GOAL_CONTINUE
+                };
+                if idle_streak == 2 {
+                    text = crate::prompt::GOAL_IDLE_NUDGE;
+                } else if let Some(delay) = crate::goal::idle_wait(st, &goal, idle_streak) {
+                    let note = format!(
+                        "Goal idle: {idle_streak} replies without an action; waiting {} s (oxa.goal.idleBackoffSeconds; oxa.goal.idlePause pauses instead)",
+                        delay.as_secs()
+                    );
+                    st.shared.wait_wake.reset();
+                    persist(
+                        st,
+                        EntryBody::Shown {
+                            text: note.clone(),
+                            why: shown_why::NOTICE,
+                        },
+                        sink,
+                    )?;
+                    sink.emit(&AgentEvent::Notice {
+                        level: Level::Info,
+                        text: note,
+                    });
+                    if st.shared.has_input() {
+                        return Ok(RunEnd::Stopped);
+                    }
+                    match crate::goal::wait_failure_backoff(st, delay) {
+                        crate::goal::BackoffEnd::Aborted => return Ok(RunEnd::Aborted),
+                        crate::goal::BackoffEnd::RetryStopped => return Ok(RunEnd::Stopped),
+                        crate::goal::BackoffEnd::Elapsed => {}
+                    }
+                    st.shared.wait_wake.reset();
+                    if st.shared.has_input() {
+                        return Ok(RunEnd::Stopped);
+                    }
+                }
+                push_user(st, text.into(), sink, ui, run_msgs)?;
                 continue;
             }
         }
@@ -1041,6 +1118,17 @@ fn run_inner(
                     .to_string(),
             });
             continue;
+        }
+        if turn.finish != Finish::Length && !st.shared.has_input() {
+            match crate::done::finish_decision(st, &mut done, false) {
+                crate::done::FinishDecision::Nudge(text) => {
+                    crate::done::send_nudge(st, text, sink, ui, run_msgs)?;
+                    continue;
+                }
+                crate::done::FinishDecision::End { unresolved } => {
+                    crate::done::record_end(st, &done, &unresolved, sink)?;
+                }
+            }
         }
         return Ok(RunEnd::Stopped);
     }
