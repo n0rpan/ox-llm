@@ -732,3 +732,66 @@ fn dangerous_dialog_always_write_failure_still_grants_session() {
     reply.send(DangerAnswer::Session).unwrap();
     assert_eq!(rx.recv().unwrap(), DangerAnswer::Session);
 }
+
+/// #1772: a command with a second line shows two dialog lines, so a second command on a new
+/// line is visibly a second line, and an escape sequence still cannot rewrite the dialog.
+#[test]
+fn dangerous_dialog_keeps_shell_line_boundaries() {
+    let mut host = DialogHost::new();
+    let mut vm = ViewModel::default();
+    let theme = Theme::plain();
+    let (tx, _rx) = channel();
+    host.handle(
+        UiRequest::AskDangerous {
+            access: Access::Exec {
+                command: "echo safe # note\nrm -rf /srv/data \u{1b}[2J".into(),
+                net: false,
+            },
+            reasons: vec!["rm-recursive-outside: recursive delete".into()],
+            keys: vec!["rm-recursive-outside rm -rf /srv/data".into()],
+            reply: tx,
+        },
+        &mut vm,
+        0,
+    );
+    let text = host.render(100, &theme).join("\n");
+    assert!(
+        text.lines()
+            .any(|l| l.contains("echo safe") && !l.contains("rm -rf")),
+        "{text}"
+    );
+    assert!(
+        text.lines()
+            .any(|l| l.contains("rm -rf /srv/data") && !l.contains("echo safe")),
+        "{text}"
+    );
+    assert!(!text.contains('\u{1b}'), "{text:?}");
+}
+
+/// #1772: two sessions that loaded their settings before either saved each add a different
+/// always key, and both keys are in the user file afterwards.
+#[test]
+fn concurrent_always_saves_keep_both_keys() {
+    let env = TestEnv::new();
+    let dirs = Dirs::under(env.root());
+    let cwd = env.work();
+    let mut first = Settings::load(&dirs, &cwd, false);
+    let mut second = Settings::load(&dirs, &cwd, false);
+    append_always(&mut first, &dirs, &cwd, &["rule-a command a".to_string()]).unwrap();
+    append_always(&mut second, &dirs, &cwd, &["rule-b command b".to_string()]).unwrap();
+    append_always(&mut second, &dirs, &cwd, &["rule-b command b".to_string()]).unwrap();
+    let user = std::fs::read_to_string(dirs.settings_file()).unwrap();
+    assert!(user.contains("rule-a command a"), "{user}");
+    assert_eq!(user.matches("rule-b command b").count(), 1, "{user}");
+}
+
+/// #1942: a typed `yes` after a session switch does not approve the digest that waited in the
+/// previous session. The driver's `rebind` withdraws it with this call.
+#[test]
+fn a_session_switch_withdraws_a_pending_typed_consent() {
+    let digest = "d10-1942-digest";
+    oxa_proto::owner_reply::await_reply(digest);
+    oxa_proto::owner_reply::clear();
+    oxa_proto::owner_reply::typed("yes");
+    assert!(!oxa_proto::owner_reply::take_approved(digest));
+}

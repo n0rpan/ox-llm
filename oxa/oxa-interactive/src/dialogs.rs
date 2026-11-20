@@ -381,7 +381,13 @@ impl DialogHost {
             } => {
                 // The command and the reasons come from the model: strip escape sequences and
                 // other control characters so they cannot rewrite the dialog around them.
-                let mut lines = vec![sanitize_dialog_text(&access_prompt(&access).1)];
+                // Each shell line is its own dialog line, so a second command on a new line is visibly
+                // a second line (#1772).
+                let mut lines: Vec<String> = access_prompt(&access)
+                    .1
+                    .split('\n')
+                    .map(sanitize_dialog_text)
+                    .collect();
                 lines.extend(reasons.iter().map(|r| format!("- {}", sanitize_dialog_text(r))));
                 let mut list = choice_list(&DANGER_LABELS);
                 // Deny is focused by default: a stray Enter never runs a dangerous command.

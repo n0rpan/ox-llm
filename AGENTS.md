@@ -459,6 +459,11 @@ read its result; they never launch builds or tests.
 - Keep engine transport selection, native binary/launch configuration, `allowRemote`, share authority, login/token
   paths and `oxa.inbox.headless` user-only. A project file must never override these decisions.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
+- **Approval views (#1772, #1942):** every view of a dangerous command masks through the one
+  `oxa_perm::mask_command` (named assignments, flag operands, URL credentials, literals in `${...}`) and never
+  masks executable text; do not add a per-shape masker. The dialog shows shell lines as dialog lines. An approval
+  is saved for the session (ends with the run) or always (the exact `<rule> <command>` key in user settings,
+  merged under the settings lock). A typed publication `yes` is withdrawn on a session switch.
 - **Sandbox standard (owner decision, #1512 and 2026-11-19). Do not add an OS sandbox outside these rules:**
   - **Interactive CLI the owner talks to:** no OS sandbox by default, on Linux and macOS alike. A
     dangerous command gets an owner approval (once, this session, always, deny), never bwrap.

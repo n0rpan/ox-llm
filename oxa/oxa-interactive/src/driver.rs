@@ -975,6 +975,9 @@ impl<'a> Loop<'a> {
     /// the new session from here on.
     fn rebind(&mut self, handle: Handle) {
         self.abort_requested = false;
+        // A typed consent belongs to the session that asked: a pending or approved digest of
+        // the previous session is withdrawn (#1942).
+        oxa_proto::owner_reply::clear();
         // Join the old callback before draining its queue back into the editor.
         self.inbox = None;
         let old = std::mem::replace(&mut self.handle, handle);
@@ -3558,17 +3561,28 @@ const APPROVAL_ALWAYS: &str = "oxa.approval.always";
 pub fn append_always(
     settings: &mut Settings,
     dirs: &Dirs,
-    cwd: &Path,
+    _cwd: &Path,
     keys: &[String],
 ) -> Result<(), OxaError> {
-    let mut list = Settings::load(dirs, cwd, false).list(APPROVAL_ALWAYS);
-    for key in keys {
-        if !list.contains(key) {
-            list.push(key.clone());
+    // Under the user file's write lock, merge into the list the FILE holds now: two sessions
+    // saving at once keep each other's keys (#1772).
+    settings.update_user(dirs, APPROVAL_ALWAYS, |current| {
+        let mut list: Vec<String> = current
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for key in keys {
+            if !list.contains(key) {
+                list.push(key.clone());
+            }
         }
-    }
-    let value = Value::Array(list.into_iter().map(Value::String).collect());
-    settings.set(dirs, cwd, APPROVAL_ALWAYS, value, false)
+        Ok(Value::Array(list.into_iter().map(Value::String).collect()))
+    })
 }
 
 /// The project trust question (D10 `ask_trust`'s question) drawn directly on `term`, for the

@@ -17,6 +17,13 @@ Treat as **high** severity:
 Skill reactivation after compaction is a user-only opt-in. A project setting cannot add
 the skill reactivation instructions to later turns.
 
+A dangerous-command approval can be saved for the session or always. A session grant ends with the
+run; an always grant is the exact `<rule> <command>` key in the owner's user settings, written under
+the settings write lock. The approval views (dialog, lead page, `oxa approve`) show what runs: named
+assignments (`token=`), flag operands (`--password x`), URL credentials and literals inside parameter
+expansions are masked; executable text (commands, `$(...)`, `${NAME:-` heads) is never masked. A typed
+`yes` for a publication belongs to the session that asked and is withdrawn on a session switch.
+
 Saved dangerous-command grants cover a reviewed literal command. Shell parameter or command
 substitution markers in any stage make saved grants inapplicable, including markers before a hit.
 The native cloud gateway's default recommendations use only configured API-key providers
