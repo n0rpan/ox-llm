@@ -14,6 +14,7 @@
 //! open must not hang `run` (acceptance: "background writer case").
 
 mod bwrap;
+pub mod door;
 mod full;
 mod gitdirs;
 mod layout;

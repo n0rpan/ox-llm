@@ -510,7 +510,7 @@ impl OwnerConfirm {
     }
 
     fn bind(yolo: YoloSwitch, limits: Limits) -> std::io::Result<(Arc<Self>, OwnedFd)> {
-        let (parent_end, child_end) = door::pair()?;
+        let (parent_end, child_end) = oxa_sandbox::door::pair()?;
         let broker = Arc::new(OwnerConfirm {
             yolo,
             door: child_end,
@@ -952,7 +952,7 @@ impl Drop for OwnerConfirm {
 /// Serve the streams clients send through the door until the broker closes or is dropped.
 fn door_loop(door: OwnedFd, broker: Weak<OwnerConfirm>) {
     loop {
-        match door::wait_readable(&door, 100) {
+        match oxa_sandbox::door::wait_readable(&door, 100) {
             Ok(true) => {}
             Ok(false) => {
                 match broker.upgrade() {
@@ -962,7 +962,7 @@ fn door_loop(door: OwnedFd, broker: Weak<OwnerConfirm>) {
             }
             Err(_) => return,
         }
-        let stream = match door::recv_stream(&door) {
+        let stream = match oxa_sandbox::door::recv_stream(&door) {
             Ok(Some(stream)) => stream,
             // A datagram that is not exactly one stream socket is dropped.
             Ok(None) => continue,
@@ -1686,11 +1686,9 @@ mod tests {
     #[test]
     fn owner_confirm_door_leaves_no_file_and_is_close_on_exec_in_the_parent() {
         let b = OwnerConfirm::start(YoloSwitch::new(Autonomy::Standard)).expect("start");
-        // SAFETY: fcntl F_GETFD on the broker's own descriptor.
-        let flags = unsafe { libc::fcntl(b.door_fd(), libc::F_GETFD) };
         assert!(
-            flags >= 0 && flags & libc::FD_CLOEXEC != 0,
-            "the parent end is close-on-exec"
+            oxa_sandbox::door::is_cloexec(b.door_fd()),
+            "the parent's door end is close-on-exec"
         );
         b.close();
     }
