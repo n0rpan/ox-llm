@@ -324,12 +324,18 @@ fn merge_alias(
     local: &mut Value,
     name: &str,
     server: &Path,
+    home: &Path,
     model_entry: Value,
     limits: &Value,
     replace: bool,
 ) -> Result<(), OxaError> {
     let root = object(local, "oxa.local")?;
     let server_path = server.to_string_lossy().into_owned();
+    // The supervisor clears its environment. Pin the resolved owner home so the server's
+    // `default` disk caches remain absolute and cannot fall back to the launch directory.
+    let environment = root.entry("environment").or_insert_with(|| json!({}));
+    object(environment, "oxa.local.environment")?
+        .insert("HOME".into(), Value::String(home.to_string_lossy().into_owned()));
     match root.get("binary").and_then(Value::as_str) {
         Some(existing) if existing != server_path => {
             return Err(invalid(format!(
@@ -446,7 +452,15 @@ fn add(args: &AddArgs, dirs: &Dirs, cwd: &Path, out: &mut dyn Write) -> Result<i
     let model_entry = json!({"model": gguf.to_string_lossy(), "arguments": arguments});
     settings.update_user(dirs, "oxa.local", |current| {
         let mut local = current.cloned().unwrap_or_else(|| json!({}));
-        merge_alias(&mut local, &name, &server, model_entry, &limits, args.replace)?;
+        merge_alias(
+            &mut local,
+            &name,
+            &server,
+            &dirs.home,
+            model_entry,
+            &limits,
+            args.replace,
+        )?;
         // The real consumer must accept what is written (no process, file or socket is opened).
         oxc_local::configured_local_engine(
             Some(&local),
@@ -612,7 +626,15 @@ mod tests {
             settings
                 .update_user(&dirs, "oxa.local", |current| {
                     let mut local = current.cloned().unwrap_or_else(|| json!({}));
-                    merge_alias(&mut local, name, server, json!({"model": name}), &limits, false)?;
+                    merge_alias(
+                        &mut local,
+                        name,
+                        server,
+                        &root,
+                        json!({"model": name}),
+                        &limits,
+                        false,
+                    )?;
                     Ok(local)
                 })
                 .unwrap();
@@ -624,7 +646,7 @@ mod tests {
         // The duplicate check sees what is on disk, not the stale snapshot.
         let dup = first.update_user(&dirs, "oxa.local", |current| {
             let mut local = current.cloned().unwrap_or_else(|| json!({}));
-            merge_alias(&mut local, "b", server, json!({}), &limits, false)?;
+            merge_alias(&mut local, "b", server, &root, json!({}), &limits, false)?;
             Ok(local)
         });
         assert!(dup.is_err());

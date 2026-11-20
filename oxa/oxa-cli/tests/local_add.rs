@@ -149,6 +149,7 @@ fn local_add_writes_user_settings_from_admission_report() {
     let r = report(4096);
     let local = &settings["oxa"]["local"];
     assert_eq!(local["binary"], dir.join("oxe-server").to_str().unwrap());
+    assert_eq!(local["environment"]["HOME"], env.home().to_str().unwrap());
     assert_eq!(
         local["models"]["synthetic-local"]["model"],
         model.to_str().unwrap()
