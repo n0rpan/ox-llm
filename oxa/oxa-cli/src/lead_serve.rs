@@ -522,6 +522,32 @@ struct Source {
     owner: Option<Arc<OwnerChat>>,
     desk: Option<ApprovalDesk>,
 }
+/// The stable part of the worker bindings: a status age that merely grows each second
+/// is not a change, only crossing the stale mark is.
+fn bindings_key(
+    bindings: &Option<Result<Vec<crate::workers::tool::Binding>, crate::workers::tool::BindingsError>>,
+) -> String {
+    let key = bindings.as_ref().map(|result| {
+        result
+            .as_ref()
+            .map(|list| {
+                list.iter()
+                    .map(|b| {
+                        (
+                            &b.name,
+                            &b.branch,
+                            &b.model,
+                            format!("{:?}", b.state),
+                            b.status_age_secs.map(|age| age > 300),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .map_err(|error| *error as u8)
+    });
+    format!("{key:?}")
+}
+
 impl Source {
     fn new(env: &Env, uid: u32) -> Result<Self, OxaError> {
         let board = env.get("OXA_LEAD_BOARD_LOG").map(PathBuf::from);
@@ -584,7 +610,7 @@ impl Source {
                 .as_ref()
                 .map(|s| s.as_of_seq)
                 .hash(&mut hash);
-            format!("{:?}", observation.bindings).hash(&mut hash);
+            bindings_key(&observation.bindings).hash(&mut hash);
         }
         if let Some(asks) = self.durable_asks() {
             asks.iter()
@@ -1200,6 +1226,28 @@ mod tests {
 #[cfg(test)]
 mod live_tests {
     use super::*;
+
+    #[test]
+    fn a_growing_status_age_does_not_change_the_live_fingerprint() {
+        use crate::workers::registry::WorkerState;
+        use crate::workers::tool::Binding;
+        let at = |age: u64| {
+            Some(Ok(vec![Binding {
+                name: "w".into(),
+                branch: "b".into(),
+                model: "m".into(),
+                state: WorkerState::Working,
+                started_ms: 1,
+                status_age_secs: Some(age),
+            }]))
+        };
+        assert_eq!(bindings_key(&at(3)), bindings_key(&at(9)));
+        assert_ne!(
+            bindings_key(&at(3)),
+            bindings_key(&at(400)),
+            "going stale is a change"
+        );
+    }
 
     #[test]
     fn the_page_advertises_live_events_only_when_the_route_is_installed() {
