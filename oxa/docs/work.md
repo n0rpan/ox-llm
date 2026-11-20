@@ -99,11 +99,21 @@ leases survive UTC midnight; corrupt state, or state that vanished after a PR's
 first reservation, fails closed. Execution, fresh-head validation and CLI polling
 remain in the adapter; core claim storage never spawns workers or writes to GitHub.
 
-On a lab host, an owner can share the worker's Cargo check artifacts between
-worktrees. Set `CARGO_TARGET_DIR` in the environment that starts the worker
-and add that directory to the owner-level `oxa.sandbox.writePaths` setting.
-The variable does not grant a writable mount. Keep this cache dedicated to the
-workers. The acceptance supervisor still uses its own isolated check output.
+A worker works out its own build cache: one Cargo target directory per main
+repository, `<cache dir>/<hash>/cargo-target`, shared by every worktree of that
+repository. It is the only extra writable path of the worker sandbox and
+`CARGO_TARGET_DIR` points at it, so no manual `writePaths` step is needed. A
+`CARGO_TARGET_DIR` that the owner sets himself wins. The user-only settings
+`oxa.workers.sharedCache` (default on), `oxa.workers.cacheDir` and
+`oxa.workers.cacheWarnGb` (no default, warning only) control it; a project file
+cannot. The acceptance supervisor still uses its own isolated check output.
+
+A native board task is held for publication, which is not offline: its worker
+runs online with the runner's real `--offline` switch, so provider-backed models
+work. The hold is enforced by runner-owned GitHub isolation (no token, no GitHub
+adapters, no MCP, even for an owner in yolo) and by never pushing; the finished
+record says `local verified; publication held`. A checkpoint saved before this
+change with the offline restriction stays offline.
 
 A managed worker can load project resources whose content matches the saved
 approval for its source repository. The runner verifies that the checkout is
