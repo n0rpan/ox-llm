@@ -55,7 +55,7 @@ worker gets an `escalateTo` id), then the row of the kind, then `default`, then 
 session model. The lead records how a worker's work turned out with
 `worker result {name, result: ok|failed, reason}`; a worker that ended `done` but
 whose PR failed review or CI must be recorded `failed`, otherwise only dead or
-not-done workers count toward escalation. `worker list` shows each worker's model,
+not-done workers count toward escalation. `worker list` ends with the shared build cache path and its size (a warning only when you set `oxa.workers.cacheWarnGb`) and shows each worker's model,
 the why-line of the choice and the recorded result. A model id the live catalog does
 not know only warns. History is per lead session for now.
 

@@ -29,7 +29,9 @@ fn deps(
         sandbox: Arc::new(NoSandbox),
         settings: Settings::from_values(
             serde_json::json!({"oxa": {"envNote": false, "goal": goal}, "retry": {"enabled": false}}),
-            serde_json::json!({"oxa": {"goal": goal}}),
+            // A goal with no budget of its own pauses on idle by default (`oxa.onExceed.goalIdle`);
+            // these tests are about the goals that only warn.
+            serde_json::json!({"oxa": {"goal": goal, "onExceed": {"goalIdle": "warn"}}}),
         ),
         dirs: Dirs::under(env.root()),
         cwd: env.work(),

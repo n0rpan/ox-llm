@@ -123,7 +123,7 @@ fn broken_request_usage_is_recorded_as_unknown_and_does_not_stop_the_goal() {
     let env = TestEnv::new();
     env.write(
         "home/.oxa/agent/settings.json",
-        r#"{"retry":{"enabled":false},"oxa":{"bootPreload":false,"envNote":false,"goal":{"failureBackoffSeconds":0}},"cacheWarming":"off"}"#,
+        r#"{"retry":{"enabled":false},"oxa":{"bootPreload":false,"envNote":false,"goal":{"failureBackoffSeconds":0},"onExceed":{"goalUnknownUsage":"warn"}},"cacheWarming":"off"}"#,
     );
     env.write("work/goal.txt", "Finish synthetic work.");
     let mut cut = ScriptTurn::text(&"synthetic partial output ".repeat(100));
@@ -277,6 +277,11 @@ fn goal_first_request_preserves_piped_constraints() {
 #[test]
 fn ambiguous_ledger_error_keeps_unknown_usage_across_restart_and_the_goal_goes_on() {
     let env = bounded_goal_env();
+    // The owner chose `warn` for unknown usage; the default pauses the goal.
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"retry":{"enabled":false},"oxa":{"bootPreload":false,"envNote":false,"onExceed":{"goalUnknownUsage":"warn"}},"cacheWarming":"off"}"#,
+    );
     let first=FakeServer::start(vec![ScriptTurn::fault(Fault::Http {status:503,body:serde_json::json!({"error":{"type":"cloud_error","code":"cloud_ledger_unavailable","message":"Synthetic ambiguous settlement failure"}}).to_string()})],FakeOpts::default()).unwrap();
     let output = run(&env, &first, &["--goal", "goal.txt", "--max-tokens", "100000"]);
     let record = result(&output);

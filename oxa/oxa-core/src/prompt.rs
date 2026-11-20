@@ -754,7 +754,7 @@ pub fn goal_start(objective: &str) -> String {
 pub const GOAL_DONE_DESCRIPTION: &str =
     "End the active goal with a complete or blocked status and concrete evidence.";
 pub const GOAL_DONE_SCHEMA: &str = r#"{"type":"object","properties":{"status":{"type":"string","enum":["complete","blocked"]},"evidence":{"type":"string","minLength":1,"maxLength":8192}},"required":["status","evidence"],"additionalProperties":false}"#;
-pub const GOAL_WAIT_DESCRIPTION: &str = "Wait 1-86400 s; typed input ends it. until: ci{sha,workflow}, pr_merged/pr_view/pr_checks{pr}, job_done{job}, run_log_failed{run}, issue_view{issue}.";
+pub const GOAL_WAIT_DESCRIPTION: &str = "Wait 1-86400 s; typed input ends it. until: ci{sha,workflow}, pr_merged/pr_view/pr_checks{pr}, pr_activity{pr,head}, job_done{job}, run_log_failed{run}, issue_view{issue}.";
 pub const GOAL_WAIT_SCHEMA: &str = r#"{"type":"object","properties":{"seconds":{"type":"integer"},"reason":{"type":"string"},"until":{"type":"object"}},"required":["seconds","reason"]}"#;
 
 #[cfg(test)]

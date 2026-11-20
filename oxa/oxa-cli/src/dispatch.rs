@@ -778,9 +778,10 @@ impl Built {
         // Issue #127 (b): one background-job registry per session, sharing the session's
         // sandbox. The session kills its jobs on close/shutdown.
         // `oxa.bash.maxJobs` (16 unless the owner set it).
-        let jobs = Arc::new(oxa_tools::JobRegistry::with_max_jobs(
-            self.settings.bash_max_jobs(),
-        ));
+        let jobs = Arc::new(
+            oxa_tools::JobRegistry::with_max_jobs(self.settings.bash_max_jobs())
+                .enforcing(self.settings.on_exceed(oxa_config::Budget::BashJobs).enforces()),
+        );
         let bash_sandbox: Arc<dyn Sandbox> = Arc::new(self.bash_sandbox.with_inner(sandbox.clone()));
         jobs.set_sandbox(bash_sandbox.clone());
         // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
@@ -1330,7 +1331,7 @@ fn prepare(
             sb
         }
     };
-    let host_net = crate::netguard::with_net(sandbox, &settings);
+    let host_net = crate::netguard::session_net(sandbox, &settings, env, endpoint.api_key.as_deref());
     let sandbox: Arc<dyn Sandbox> = host_net.clone();
     let (sandbox, net_notice) = bash_sandbox(sandbox, interactive && !os_sandbox, oxa_proto::offline());
     if let Some(notice) = net_notice {
@@ -2016,12 +2017,13 @@ fn run_headless(
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
     };
-    let _limit = match crate::limits::LimitWatcher::start(
+    let _limit = match crate::limits::Run::start(
         session.handle(),
         max_time,
         max_tokens,
         built.supervised_child,
-        built.hook_sets.subagent.as_deref(),
+        built.hook_sets.subagent.clone(),
+        crate::limits::SigtermOwner::Signal,
     ) {
         Ok(limit) => limit,
         Err(error) => {
@@ -2140,12 +2142,13 @@ fn run_rpc(
     };
     notices.extend(startup_notices(&built, &session));
     write_notices(stderr, notices);
-    let _limit = match crate::limits::LimitWatcher::start(
+    let _limit = match crate::limits::Run::start(
         session.handle(),
         max_time,
         max_tokens,
         built.supervised_child,
-        built.hook_sets.subagent.as_deref(),
+        built.hook_sets.subagent.clone(),
+        crate::limits::SigtermOwner::Signal,
     ) {
         Ok(limit) => limit,
         Err(error) => {
@@ -2258,6 +2261,8 @@ fn run_tui(
     let store = built.store.clone();
     let base = built.clone();
     let pinned = owner.is_some();
+    let run_slot: Arc<std::sync::OnceLock<Arc<crate::limits::Run>>> = Arc::default();
+    let reopen_run = run_slot.clone();
     let reopen: ReopenFn = Box::new(move |request, carry| {
         if let Some(binding) = &owner {
             if !matches!(&request, Reopen::Resume(session) if session == binding.session_ref()) {
@@ -2299,18 +2304,29 @@ fn run_tui(
         }
         base.result_facts.attach(&mut session)?;
         session.set_output_schema(base.output_schema.clone());
+        if let Some(run) = reopen_run.get() {
+            run.attach(session.handle());
+        }
         Ok(session)
     });
-    // S11: the interactive startup session has the same soft wrap-up as a headless run.
+    // The limits belong to this invocation: the run follows every session swap.
     if a.max_time.is_some() || a.max_tokens.is_some() {
-        match crate::limits::StartupLimit::start(
+        let sigterm = if built.supervised_child {
+            crate::limits::SigtermOwner::Signal
+        } else {
+            crate::limits::SigtermOwner::Terminal(oxa_tui::cooperative_sigterm())
+        };
+        match crate::limits::Run::start(
             session.handle(),
             a.max_time,
             a.max_tokens,
             built.supervised_child,
             built.hook_sets.subagent.clone(),
+            sigterm,
         ) {
-            Ok(limit) => session.hold_startup_limit(limit),
+            Ok(run) => {
+                let _ = run_slot.set(Arc::new(run));
+            }
             Err(error) => return report(stderr, &error),
         }
     }
