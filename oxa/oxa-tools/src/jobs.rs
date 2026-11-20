@@ -33,6 +33,8 @@ pub const MAX_FINISHED: usize = 16;
 pub const BUFFER_CAP: usize = 64 * 1024;
 /// How much of a job's output a read returns, in bytes.
 pub const READ_CAP: usize = 8 * 1024;
+/// The largest allocation returned while a foreground caller follows a job.
+pub(crate) const FOLLOW_CHUNK_CAP: usize = 8 * 1024;
 /// How much of a job's output a listing looks at for its last line, in bytes.
 const LAST_LINE_SCAN: usize = 4 * 1024;
 /// The longest last line a listing shows, in characters.
@@ -444,16 +446,17 @@ impl JobRegistry {
         let job = state.jobs.get(id).ok_or_else(|| format!("Unknown job: {id}"))?;
         let status = *job.status.lock().unwrap();
         let mut out = job.output.lock().unwrap();
-        out.seen = out.total;
         let retained_from = out.total.saturating_sub(out.buf.len() as u64);
         let start = from.saturating_sub(retained_from).min(out.buf.len() as u64) as usize;
+        let end = start.saturating_add(FOLLOW_CHUNK_CAP).min(out.buf.len());
+        out.seen = retained_from + end as u64;
         let display_start = out.buf.len().saturating_sub(READ_CAP);
         let read = JobRead {
             status,
             output: String::from_utf8_lossy(&out.buf[display_start..]).into_owned(),
             total: out.total,
         };
-        Ok((read, out.buf[start..].to_vec()))
+        Ok((read, out.buf[start..end].to_vec()))
     }
 
     /// Take a finished job out of the registry: its status, all buffered output and whether it
@@ -894,6 +897,52 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "job did not finish");
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn foreground_reads_bound_each_chunk_and_preserve_the_spill() {
+        struct QuickOutput(Vec<u8>);
+        impl Sandbox for QuickOutput {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+            fn run(&self, _s: &ExecSpec, _c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+                live(&self.0);
+                ExecResult {
+                    output: Vec::new(),
+                    exit: Some(0),
+                    timed_out: false,
+                    unsandboxed: false,
+                }
+            }
+        }
+
+        let output = vec![b'x'; FOLLOW_CHUNK_CAP * 3 + 17];
+        let reg = JobRegistry::new();
+        let id = reg
+            .spawn_on(Arc::new(QuickOutput(output.clone())), spec(), true)
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while reg.read(&id).unwrap().status == JobStatus::Running {
+            assert!(std::time::Instant::now() < deadline, "job did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let mut received = Vec::new();
+        let mut offset = 0;
+        loop {
+            let (_, chunk) = reg.read_bytes_from(&id, offset).unwrap();
+            assert!(chunk.len() <= FOLLOW_CHUNK_CAP);
+            if chunk.is_empty() {
+                break;
+            }
+            offset += chunk.len() as u64;
+            received.extend_from_slice(&chunk);
+        }
+        assert_eq!(received, output);
     }
 
     #[test]
