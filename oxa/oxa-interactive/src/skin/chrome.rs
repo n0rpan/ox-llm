@@ -674,7 +674,7 @@ pub(super) fn activity_line_lead(
     let (word, token) = activity_style(&st.activity)?;
     let g = glyphs(skin);
     let mut tail: Vec<String> = Vec::new();
-    if let Some(detail) = activity_detail(&st.activity, st.working_message.as_deref(), g) {
+    if let Some(detail) = activity_detail(&st.activity, st.working_message.as_deref(), st.activity_ms, g) {
         tail.push(theme.fg("text", &detail));
     }
     if let Some(elapsed) = elapsed_text(st.activity_ms) {
@@ -716,8 +716,14 @@ pub(super) fn activity_style(activity: &Activity) -> Option<(&'static str, &'sta
 }
 
 /// The detail text of an activity; `working` (an extension's text) replaces it for the
-/// thinking, streaming and tool states.
-fn activity_detail(activity: &Activity, working: Option<&str>, g: &Glyphs) -> Option<String> {
+/// thinking, streaming and tool states. `elapsed_ms` is the time in this state, which turns a
+/// retry wait into a live countdown (#2050).
+fn activity_detail(
+    activity: &Activity,
+    working: Option<&str>,
+    elapsed_ms: u64,
+    g: &Glyphs,
+) -> Option<String> {
     let working = clean_opt(working);
     match activity {
         Activity::Idle | Activity::Compacting => None,
@@ -737,7 +743,7 @@ fn activity_detail(activity: &Activity, working: Option<&str>, g: &Glyphs) -> Op
             delay_ms,
         } => Some(format!(
             "{attempt}/{max_attempts} in {}s",
-            delay_ms.div_ceil(1000)
+            delay_ms.saturating_sub(elapsed_ms).div_ceil(1000)
         )),
         Activity::Blocked => Some("for your answer".to_string()),
         Activity::Queued { pos: Some(pos), .. } => Some(format!("#{pos}")),

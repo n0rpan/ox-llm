@@ -38,6 +38,12 @@ pub struct RetrySettings {
     pub max_retries: u32,
     pub base_delay_ms: u64,
     pub max_delay_ms: u64,
+    /// #2050: the whole retry wait of a failure on this machine's own engine. Waiting cannot
+    /// make a local engine that is down answer, so this budget is short (default 5 s).
+    pub local_max_total_ms: u64,
+    /// #2050: retries of the same 5xx body (status and message) before giving up. A cloud
+    /// provider that is briefly overloaded keeps `max_retries`.
+    pub identical_5xx_retries: u32,
 }
 
 /// H: the `retry.provider.*` group (pi's keys and defaults).
@@ -302,6 +308,8 @@ impl Settings {
             max_retries: self.u32("retry.maxRetries", DEFAULT_MAX_RETRIES),
             base_delay_ms: self.u64("retry.baseDelayMs", 2000),
             max_delay_ms: self.u64("retry.maxAgentDelayMs", 60000),
+            local_max_total_ms: self.u64("retry.localMaxTotalMs", 5000),
+            identical_5xx_retries: self.u32("retry.identical5xxRetries", 2),
         }
     }
     /// H: the `retry.provider.*` group (pi's keys and defaults). In oxa there is one HTTP
