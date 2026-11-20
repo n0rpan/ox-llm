@@ -107,7 +107,7 @@ fn notices(sink: &VecSink, prefix: &str) -> usize {
 #[test]
 fn edit_without_a_check_gets_one_nudge_then_ends_with_a_warning() {
     let r = run(
-        json!({"envNote": false}),
+        json!({"envNote": false, "done": {"proveIt": true}}),
         vec![
             write("c1", "a.txt"),
             ScriptTurn::text("done"),
@@ -137,7 +137,7 @@ fn edit_then_passing_check_needs_no_nudge() {
 #[test]
 fn read_only_run_is_never_asked() {
     let r = run(
-        json!({"envNote": false}),
+        json!({"envNote": false, "done": {"proveIt": true}}),
         vec![ScriptTurn::text("nothing to change")],
     );
     assert_eq!(r.engine.requests().len(), 1);
