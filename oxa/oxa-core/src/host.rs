@@ -1102,6 +1102,14 @@ fn gate_pinned_in(
             // #1512 S2: a dangerous command asks first; its answer covers only its rule keys.
             let danger = st.policy.danger_ask(a, cwd);
             if !danger.is_empty() {
+                // #1512 S5: an extension's exec takes the same unattended answer as the bash
+                // tool: refused, or filed at the approval desk for the owner, never paused for.
+                if !ui.interactive() {
+                    // Classified, and filed, in the directory the command actually runs in.
+                    if let Some(text) = st.policy.danger_unattended(a, cwd) {
+                        return Err(OxaError::new(codes::DENIED, text));
+                    }
+                }
                 let (keys, reasons): (Vec<String>, Vec<String>) = danger.into_iter().unzip();
                 return match ui.ask_dangerous(a, &reasons, &keys) {
                     DangerAnswer::Once => Ok(pin),
@@ -1654,6 +1662,140 @@ mod tests {
             net: false,
         };
         assert!(gate_pinned(&mut f.st, &plain, &mut headless).is_ok());
+    }
+
+    /// #1512 S5: an extension's dangerous exec in a run with no one to ask files an approval
+    /// request at the desk (request mode), like the bash tool, instead of the S2 dead-end refusal.
+    #[test]
+    fn extension_exec_gate_unattended_files_an_approval_request() {
+        let mut f = fixture();
+        let desk =
+            Arc::new(oxa_perm::ApprovalDesk::open(&f.env.root().join("agent")).expect("approval desk"));
+        f.st.policy = Box::new(
+            oxa_perm::ModePolicy::new()
+                .with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new())
+                .with_desk(
+                    desk.clone(),
+                    "s1".into(),
+                    oxa_perm::UnattendedMode::Request,
+                    false,
+                ),
+        );
+        let dangerous = Access::Exec {
+            command: "git push --force origin main".into(),
+            net: false,
+        };
+        let mut headless = HeadlessUi::default();
+        let err = gate_pinned(&mut f.st, &dangerous, &mut headless).expect_err("not run");
+        assert_eq!(err.code, codes::DENIED);
+        assert!(
+            err.message.starts_with("Needs owner approval (request "),
+            "{}",
+            err.message
+        );
+        assert_eq!(desk.pending().expect("pending").len(), 1);
+    }
+
+    /// #1512 S5: an extension may run in a directory other than the session's. The unattended
+    /// classification and the filed request use that directory, so the request describes what
+    /// will actually run.
+    #[test]
+    fn extension_exec_unattended_files_the_request_in_the_execution_directory() {
+        let mut f = fixture();
+        let desk =
+            Arc::new(oxa_perm::ApprovalDesk::open(&f.env.root().join("agent")).expect("approval desk"));
+        f.st.policy = Box::new(
+            oxa_perm::ModePolicy::new()
+                .with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new())
+                .with_desk(
+                    desk.clone(),
+                    "s1".into(),
+                    oxa_perm::UnattendedMode::Request,
+                    false,
+                ),
+        );
+        let exec_dir = f.env.work().join("deep");
+        std::fs::create_dir_all(&exec_dir).expect("exec dir");
+        let dangerous = Access::Exec {
+            command: "git push --force origin main".into(),
+            net: false,
+        };
+        let mut headless = HeadlessUi::default();
+        let err =
+            super::gate_pinned_in(&mut f.st, &dangerous, &exec_dir, &mut headless).expect_err("not run");
+        assert_eq!(err.code, codes::DENIED);
+        let filed = desk.pending().expect("pending");
+        assert_eq!(filed.len(), 1, "one request");
+        assert_eq!(filed[0].cwd, exec_dir.display().to_string());
+    }
+
+    /// #1512 S5: a dangerous exec in a run with no one to ask is not paused for. The tool error
+    /// names the approval request, and the same text goes out as a Warning notice in the event
+    /// stream (the JSON stream the lead and the runner read). The tool does not run.
+    #[test]
+    fn refusal_emits_warning_notice_in_json_stream() {
+        struct ExecTool(oxa_proto::ToolSpec);
+        impl oxa_proto::Tool for ExecTool {
+            fn spec(&self) -> &oxa_proto::ToolSpec {
+                &self.0
+            }
+            fn access(
+                &self,
+                args: &oxa_proto::Value,
+                _cx: &oxa_proto::ToolCtx<'_>,
+            ) -> Result<Vec<Access>, String> {
+                let command = args
+                    .get("command")
+                    .and_then(oxa_proto::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                Ok(vec![Access::Exec { command, net: false }])
+            }
+            fn run(
+                &self,
+                _args: &oxa_proto::Value,
+                _cx: &oxa_proto::ToolCtx<'_>,
+                _live: &mut dyn FnMut(&str),
+            ) -> oxa_proto::ToolOutput {
+                oxa_proto::ToolOutput::error("the tool ran")
+            }
+        }
+        let mut f = fixture();
+        let desk =
+            Arc::new(oxa_perm::ApprovalDesk::open(&f.env.root().join("agent")).expect("approval desk"));
+        f.st.policy = Box::new(
+            oxa_perm::ModePolicy::new()
+                .with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new())
+                .with_desk(desk, "s1".into(), oxa_perm::UnattendedMode::Request, false),
+        );
+        f.st.active = crate::Toolset {
+            direct: vec![Arc::new(ExecTool(oxa_proto::ToolSpec {
+                name: "shell".into(),
+                description: "test shell".into(),
+                schema_json: "{}".into(),
+                class: oxa_proto::ToolClass::Exec,
+                exposure: oxa_proto::Exposure::Direct,
+                source: oxa_proto::Source::Builtin,
+            }))],
+            indirect: Vec::new(),
+        };
+        let call = oxa_proto::ToolCall {
+            id: "c1".into(),
+            name: "shell".into(),
+            args_raw: r#"{"command":"git push --force origin main"}"#.into(),
+        };
+        let mut sink = oxa_proto::VecSink::default();
+        let mut ui = HeadlessUi::default();
+        let results = crate::exec::run_calls(&mut f.st, &[call], &mut sink, &mut ui);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_error);
+        let notice = sink.0.iter().find_map(|e| match e {
+            AgentEvent::Notice { level, text } => Some((*level, text.clone())),
+            _ => None,
+        });
+        let (level, text) = notice.expect("a notice in the event stream");
+        assert!(matches!(level, Level::Warning), "{text}");
+        assert!(text.starts_with("Needs owner approval (request "), "{text}");
     }
 
     /// An extension's own `cwd` never moves the workspace boundary: `rm -rf` of an absolute

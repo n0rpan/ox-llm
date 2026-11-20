@@ -365,6 +365,7 @@ fn memory_store_policy_is_documented_everywhere() {
         }
     }
 }
+
 /// The user guide must match the owner sandbox policy: watched CLI sessions rely on approvals and
 /// in-process guards, while unattended non-yolo runs retain Bubblewrap.
 #[test]

@@ -130,7 +130,7 @@ These paths are masked inside the sandbox, and the file tools refuse them in `st
 
 The list applies to your `$HOME` and also to the home of your account from the passwd database, so starting oxa with another `HOME` never exposes the real `~/.ssh` or the cloud keys.
 
-Exception for the GitHub CLI: in a sandbox with network access (not `--offline`), `~/.config/gh` is bound read-only so `gh` works (its host list and token file are readable there). With `--offline` there is no network and `gh` fails. A token in the system keyring is not reachable from inside the sandbox, so at start-up, when the network is on and `gh` is installed, oxa runs `gh auth token` once outside the sandbox (3 second limit; any failure is ignored). It passes the result to commands that have the network as `GH_TOKEN`, with `GH_HOST=github.com`. This happens in workspace and full modes with network only, never with `--offline` or `oxa.sandbox.net: off`. The token is not logged and is not in the session file, the transcript or the prompt. An exact copy of it in command output is replaced with `[redacted]` before the model sees it. Any command that has the network can use the token, for example to call the GitHub API, so log in with a token that has only the scopes you accept. It is handed to bwrap through a pipe, not on its command line, so other processes of your user cannot read it from the process list. Every other entry stays masked.
+Exception for the GitHub CLI: in a sandbox with network access (not `--offline`), `~/.config/gh` is bound read-only so `gh` works (its host list and token file are readable there). With `--offline` there is no network and `gh` fails. A token in the system keyring is not reachable from inside the sandbox, so at start-up, when the network is on and `gh` is installed, oxa runs `gh auth token` once outside the sandbox (3 second limit; any failure is ignored). It passes the result to commands that have the network as `GH_TOKEN`, with `GH_HOST=github.com`. This happens in workspace and full modes with network only, never with `--offline` or `oxa.sandbox.net: off`. The token is not logged and is not in the session file, the transcript or the prompt. An exact copy of it in command output is replaced with `[redacted]` before the model sees it. While a command runs, its live output always lags by one byte less than the token's length, whatever the bytes are, so a partial match is never visible in how much output has appeared. Any command that has the network can use the token, for example to call the GitHub API, so log in with a token that has only the scopes you accept. It is handed to bwrap through a pipe, not on its command line, so other processes of your user cannot read it from the process list. Every other entry stays masked.
 
 GitHub reads without a token in the sandbox: the `wait` tool accepts the host-side read probes `pr_view`, `pr_checks`, `run_log_failed` and `issue_view`. They run `gh` outside the sandbox with your login, read only, in fixed argument vectors with a number from the call and the repository from the `origin` remote (github.com only). `gh` must be found in a trusted PATH directory. A failed-step log is cut to its last 24 KB and scrubbed of credentials before the model sees it. They refuse with `--offline` and in a runner-owned worker session. The token never enters the sandbox.
 
@@ -237,7 +237,20 @@ Session files are `0600`. The Brave key is never written to a session, an export
 
 ### Publishing
 
-`oxa work --publish` and lane pushes scan the commits they would push and refuse a private key, a known token format, an opaque credential assignment or quoted literal (also names ending in `_key` or `credentials`, and a JSON value under an unchanged `"password":` line), a `Bearer` or `Basic` authorization header, a URL password, lines added to a secret-store file such as `.env`, or the value of a secret-named variable or setting. An empty secret-store file and `.env.example` are checked by content, not refused by name. A credential deleted in a later commit still blocks publication: rewrite the unpublished commits. The details are in [../work.md](../work.md#what-the-publication-scan-refuses).
+`oxa work --publish` and lane pushes scan the commits they would push. The scan refuses:
+
+- private keys and known token formats;
+- opaque credential assignments and quoted literals, including names ending in `_key` or
+  `credentials`;
+- a changed JSON value whose secret key (for example, `"password":`) is on an unchanged line;
+- `Bearer` or `Basic` authorization headers and URL passwords; and
+- content added to a secret-store file such as `.env`, or the value of a secret-named variable or
+  setting.
+
+Files are judged by their content, not their name: an empty secret-store file and `.env.example`
+can be published when they contain no secret. A credential deleted in a later commit still blocks
+publication, so rewrite the unpublished commits. The detailed rules and examples are in
+[../work.md](../work.md#what-the-publication-scan-refuses).
 
 ## Checklist
 
