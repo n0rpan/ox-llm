@@ -458,16 +458,7 @@ fn gh_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
                     || ["--field", "--raw-field", "--input"]
                         .iter()
                         .any(|l| a.as_str() == *l || a.starts_with(&format!("{l}=")))
-            }) || api_short_method_is_mutating(rest)
-                || rest
-                    .windows(2)
-                    .any(|w| matches!(w[0].as_str(), "-X" | "--method") && !w[1].eq_ignore_ascii_case("GET"))
-                || rest.iter().any(|a| {
-                    a.strip_prefix("--method=")
-                        .is_some_and(|m| !m.eq_ignore_ascii_case("GET"))
-                        || a.strip_prefix("-X")
-                            .is_some_and(|m| !m.is_empty() && !m.eq_ignore_ascii_case("GET"))
-                });
+            }) || api_method_is_mutating(rest);
             if mutating {
                 Kind::Unsafe
             } else {
@@ -486,9 +477,16 @@ fn gh_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
     }
 }
 
-/// `gh` accepts clusters such as `-iXDELETE`; locate the method option inside a short cluster.
-fn api_short_method_is_mutating(rest: &[String]) -> bool {
+/// `gh` accepts clusters such as `-iXDELETE`; locate the method option before deciding that the
+/// request is read-only. A missing method value is unsafe too.
+fn api_method_is_mutating(rest: &[String]) -> bool {
     rest.iter().enumerate().any(|(i, arg)| {
+        if arg == "--method" {
+            return rest.get(i + 1).is_none_or(|m| !m.eq_ignore_ascii_case("GET"));
+        }
+        if let Some(method) = arg.strip_prefix("--method=") {
+            return !method.eq_ignore_ascii_case("GET");
+        }
         let Some(short) = arg.strip_prefix('-').filter(|s| !s.starts_with('-')) else {
             return false;
         };
@@ -841,5 +839,5 @@ fn is_alias(globals: &[String], name: &str, cwd: &Path, dirs: &[String]) -> bool
             return true;
         }
     }
-    names.iter().any(|n| *n == name)
+    names.contains(&name)
 }

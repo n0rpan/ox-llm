@@ -312,21 +312,25 @@ fn unordered_pushes_and_ref_writing_plumbing_ask() {
 }
 
 #[test]
-fn clustered_api_methods_and_legacy_config_sections_ask() {
+fn clustered_api_methods_ask_for_mutations() {
     let cwd = repo("my-branch");
-    assert_eq!(
-        decide(
-            &cwd,
-            Autonomy::Auto,
-            "gh api -iXDELETE repos/o/r/git/refs/heads/feature"
-        ),
-        Decision::Ask
-    );
-    assert_eq!(
-        decide(&cwd, Autonomy::Auto, "gh api -iXGET repos/o/r"),
-        Decision::Allow
-    );
+    for command in [
+        "gh api -iXDELETE repos/o/r/git/refs/heads/feature",
+        "gh api -iX DELETE repos/o/r/git/refs/heads/feature",
+    ] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask, "{command}");
+    }
+    for command in ["gh api -iXGET repos/o/r", "gh api -iX get repos/o/r"] {
+        assert_eq!(
+            decide(&cwd, Autonomy::Auto, command),
+            Decision::Allow,
+            "{command}"
+        );
+    }
+}
 
+#[test]
+fn legacy_config_sections_ask() {
     let cwd = repo("my-branch");
     set_config(&cwd, "[remote.ORIGIN]\n\tpush = HEAD:refs/heads/main\n");
     assert_eq!(decide(&cwd, Autonomy::Auto, "git push origin"), Decision::Ask);
