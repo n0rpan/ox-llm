@@ -626,13 +626,13 @@ mod tests {
             "pr_view",
             &format!(r#"{{"state":"MERGED","mergedAt":"2026-11-18T10:00:00Z","headRefOid":"{SHA}"}}"#),
         );
-        let hooks = ProbeHooks {
-            repo: Mutex::new(None),
-            path: f.hooks.path.clone(),
-            cwd: f.hooks.cwd.clone(),
-            home: f.hooks.home.clone(),
-            runner_owns_github: false,
-        };
+        let hooks = ProbeHooks::for_test_paths(
+            &f.hooks.cwd,
+            &f.hooks.home,
+            Path::new(f.hooks.path.as_deref().unwrap()),
+            "unused/origin",
+        );
+        *hooks.repo.lock().unwrap() = None;
         let wait = Duration::from_secs(30);
         let pr = |repo: Value| json!({"kind": "pr_merged", "pr": 42, "repo": repo});
         let done = hooks.poll_event("pr_merged", &pr(json!("acme/widgets")), wait);
