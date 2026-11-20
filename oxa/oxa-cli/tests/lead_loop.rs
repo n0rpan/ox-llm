@@ -19,15 +19,17 @@ fn panels_record(observed_at: u64, merged_seconds_before: u64) -> serde_json::Va
     let head = "c".repeat(40);
     json!({
         "id":"example-repo",
-        "refUpdateRule":{"requiredStatusCheckContexts":["gate"]},
-        "rules":{"totalCount":0,"nodes":[]},
-        "target":{
-            "oid":head,
-            "statusCheckRollup":{"contexts":{"pageInfo":{"hasNextPage":false},
-                "nodes":[{"name":"gate","status":"COMPLETED","conclusion":"SUCCESS"}]}},
-            "associatedPullRequests":{"pageInfo":{"hasNextPage":false},
-                "nodes":[{"repository":{"id":"example-repo"},"baseRefName":"main",
-                    "mergeCommit":{"oid":head},"mergedAt":merged}]}
+        "main":{
+            "refUpdateRule":{"requiredStatusCheckContexts":["gate"]},
+            "rules":{"totalCount":0,"nodes":[]},
+            "target":{
+                "oid":head,
+                "statusCheckRollup":{"contexts":{"pageInfo":{"hasNextPage":false},
+                    "nodes":[{"name":"gate","status":"COMPLETED","conclusion":"SUCCESS"}]}},
+                "associatedPullRequests":{"pageInfo":{"hasNextPage":false},
+                    "nodes":[{"repository":{"id":"example-repo"},"baseRefName":"main",
+                        "mergeCommit":{"oid":head},"mergedAt":merged}]}
+            }
         },
         "mergeQueue":null
     })

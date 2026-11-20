@@ -588,18 +588,20 @@ fn stuck_record(
         "board":{"observed_at":now,"entries":entries},
         "panels":{
             "id":"example-repo",
-            "refUpdateRule":{"requiredStatusCheckContexts":["gate"]},
-            "rules":{"totalCount":0,"nodes":[]},
-            "target":{
-                "oid":head,
-                "statusCheckRollup":{"contexts":{"pageInfo":{"hasNextPage":false},"nodes":[
-                    {"name":"gate","status":"COMPLETED",
-                     "conclusion": if main_red { "FAILURE" } else { "SUCCESS" }}
-                ]}},
-                "associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[
-                    {"repository":{"id":"example-repo"},"baseRefName":"main",
-                     "mergeCommit":{"oid":head},"mergedAt":merged}
-                ]}
+            "main":{
+                "refUpdateRule":{"requiredStatusCheckContexts":["gate"]},
+                "rules":{"totalCount":0,"nodes":[]},
+                "target":{
+                    "oid":head,
+                    "statusCheckRollup":{"contexts":{"pageInfo":{"hasNextPage":false},"nodes":[
+                        {"name":"gate","status":"COMPLETED",
+                         "conclusion": if main_red { "FAILURE" } else { "SUCCESS" }}
+                    ]}},
+                    "associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[
+                        {"repository":{"id":"example-repo"},"baseRefName":"main",
+                         "mergeCommit":{"oid":head},"mergedAt":merged}
+                    ]}
+                }
             },
             "mergeQueue":merge_queue
         }

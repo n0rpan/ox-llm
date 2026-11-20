@@ -243,12 +243,15 @@ fn attention(html: &mut String, view: &View<'_>) {
         || stalled_runs.is_some_and(|runs| !runs.is_empty())
         || !overdue.is_empty();
     // An absent alarm source is never healthy: it renders its own explicit
-    // unavailable state instead of silence (#1391).
-    let unavailable = alarms.is_none()
-        || main_red.is_none()
-        || merge_stalled.is_none()
-        || stalled_runs.is_none()
-        || alarms.is_some_and(|a| a.queue.is_none() || a.overdue_queue.is_none());
+    // unavailable state instead of silence. A page with no alarm record at all
+    // says nothing here; the missing Board section carries that story (#1391).
+    let unavailable = alarms.is_some_and(|a| {
+        a.main_red.is_none()
+            || a.main_merge_stalled.is_none()
+            || a.stalled_runs.is_none()
+            || a.queue.is_none()
+            || a.overdue_queue.is_none()
+    });
     if alarm || asks > 0 || unavailable {
         let (role, icon, label) = if alarm {
             ("alert", "!", "Alarm")
@@ -561,7 +564,7 @@ fn asks(html: &mut String, view: &View<'_>, now: u64) {
     } else if view.durable_asks.is_some() {
         html.push_str("<p>Runner asks unavailable. No runner observation reached this page; the Lead Session asks below are a separate source.</p>");
     } else {
-        html.push_str("<p>Owner asks unavailable. No runner or Lead Session observation reached this page, so open decisions cannot be shown; the source did not say why.</p>");
+        html.push_str("<p>Owner asks unavailable. No runner observation reached this page and no Lead Session asks reached it, so open decisions cannot be shown; the source did not say why.</p>");
     }
     if let Some(durable) = view.durable_asks {
         html.push_str("<p class=muted>Lead Session asks · read live from the authorized durable Session</p>");
