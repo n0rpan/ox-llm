@@ -18,7 +18,7 @@
 //!   or its process is gone. On `session_start` (startup, resume) each dead, unfinished worker is
 //!   relaunched through the same launch path (`resume.rs`) unless `oxa.workers.resumeOnStart`
 //!   is false.
-use super::launch::{child_argv, child_env, valid_name, worktree_argv, WorkerMode, WorkerSpec};
+use super::launch::{check_value, child_argv, child_env, valid_name, worktree_argv, WorkerMode, WorkerSpec};
 use super::proc::Supervisor;
 use super::registry::{self, WorkerRecord, WorkerState};
 use super::resume;
@@ -574,23 +574,18 @@ impl WorkerCore {
         if parent.is_empty() {
             return ToolOutput::error("worker: the session id is not known yet");
         }
-        // A worker runs this session's model: the model argument cannot pick another one, so a
-        // tool call never selects a cloud or metered transport the owner did not choose.
-        if let Some(requested) = str_arg(args, "model").map(str::trim).filter(|m| !m.is_empty()) {
-            if session_model.is_empty() || requested != session_model {
-                return ToolOutput::error(format!(
-                    "worker: a worker runs this session's model ({}); start it without a model",
-                    if session_model.is_empty() {
-                        "not known yet"
-                    } else {
-                        session_model.as_str()
-                    }
-                ));
+        let model = match args.get("model") {
+            Some(value) => match value.as_str() {
+                Some(model) if !model.trim().is_empty() => model.to_owned(),
+                _ => return ToolOutput::error("worker: model must be a non-empty string"),
+            },
+            None if session_model.is_empty() => {
+                return ToolOutput::error("worker: the session model is not known yet");
             }
-        }
-        let model = session_model;
-        if model.is_empty() {
-            return ToolOutput::error("worker: the session model is not known yet");
+            None => session_model,
+        };
+        if let Err(error) = check_value("model", &model) {
+            return ToolOutput::error(format!("worker: {error}"));
         }
         let mut records = match registry::load(&self.agent_dir, &parent) {
             Ok(records) => records,
@@ -740,6 +735,10 @@ impl WorkerCore {
             .cloned()
             .unwrap_or_else(|| "workspace".to_string());
 
+        let mut text = format!(
+            "started worker {name}: model {model}, session {session_id}, branch {branch}, worktree {}",
+            worktree.display()
+        );
         records.push(WorkerRecord {
             name: name.to_string(),
             session_id: session_id.clone(),
@@ -765,10 +764,6 @@ impl WorkerCore {
             let _ = self.supervisor.stop(pgid);
             return ToolOutput::error(format!("worker: {e}"));
         }
-        let mut text = format!(
-            "started worker {name}: session {session_id}, branch {branch}, worktree {}",
-            worktree.display()
-        );
         if let Some(notice) = notice {
             text.push('\n');
             text.push_str(&notice);
@@ -1694,16 +1689,25 @@ mod tests {
     }
 
     #[test]
-    fn reopen_relaunches_unfinished_worker_with_continue() {
-        let (root, repo, agent, _fake) = fixture("resume");
+    fn worker_inherits_parent_model_and_retains_it_on_resume() {
+        worker_model_launch_and_resume("model-inherited", None, "model-x");
+    }
+
+    #[test]
+    fn worker_selects_explicit_model_and_retains_it_on_resume() {
+        worker_model_launch_and_resume("model-explicit", Some("other/model"), "other/model");
+    }
+
+    fn worker_model_launch_and_resume(tag: &str, requested: Option<&str>, expected: &str) {
+        let (root, repo, agent, _fake) = fixture(tag);
         // A fake oxa that records its argv next to itself, then sleeps. The worktree step
         // (`oxa work --supervise`) just succeeds.
         let fake = root.join("argv-oxa");
         fs::write(
             &fake,
             format!(
-                "#!/bin/sh\nif [ \"$1\" = work ]; then exit 0; fi\nprintf '%s\\n' \"$@\" > '{}'\nexec /bin/sleep 30\n",
-                root.join("argv.txt").display()
+                "#!/bin/sh\nif [ \"$1\" = work ]; then exit 0; fi\nprintf '%s\\n' \"$@\" > '{0}/argv.tmp'\nmv '{0}/argv.tmp' '{0}/argv.txt'\nexec /bin/sleep 30\n",
+                root.display()
             ),
         )
         .unwrap();
@@ -1712,68 +1716,84 @@ mod tests {
         let hooks = hooks_with(&fake, &agent, env, ParentScope::default());
         set_session(&hooks, "parent-1");
         set_table_mode(&hooks, Mode::Workspace);
-        start_alpha(&hooks, &repo);
+        let mut args = json!({"action": "start", "name": "alpha", "goal": "g"});
+        if let Some(model) = requested {
+            args["model"] = json!(model);
+        }
+        let out = hooks
+            .core
+            .start(&args, &repo, Mode::Workspace, Autonomy::Standard);
+        assert!(!out.is_error, "{}", out.text);
         let before = registry::load(&agent, "parent-1").unwrap().remove(0);
+        assert_eq!(before.model, expected);
+        let argv_file = root.join("argv.txt");
+        let start_argv = wait_for_worker_argv(&argv_file, "--goal");
+        assert_worker_model(&start_argv, expected);
         // The parent goes away: the worker is killed but not marked stopped.
         hooks.core.supervisor.stop(before.pgid).unwrap();
         assert!(!registry::load(&agent, "parent-1").unwrap()[0].stopped);
-        let argv_file = root.join("argv.txt");
-        let _ = fs::remove_file(&argv_file);
-        // The parent opens again.
-        let notices = hooks.core.resume();
+        fs::remove_file(&argv_file).unwrap();
+        // Reopen the same parent with a different model. Resume uses the worker's record.
+        let reopened = hooks_with(
+            &fake,
+            &agent,
+            vec![("PATH".into(), "/usr/bin:/bin".into())],
+            ParentScope::default(),
+        );
+        *lock(&reopened.core.session) = ("parent-1".into(), "changed-parent".into());
+        set_table_mode(&reopened, Mode::Workspace);
+        let notices = reopened.core.resume();
         assert_eq!(notices.len(), 1, "{notices:?}");
         assert!(
             notices[0].contains("alpha") && notices[0].contains("--continue="),
             "{notices:?}"
         );
-        let mut argv = String::new();
-        for _ in 0..100 {
-            argv = fs::read_to_string(&argv_file).unwrap_or_default();
-            if argv.contains("--continue=") {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        assert!(
-            argv.lines()
-                .any(|l| l == format!("--continue={}", before.session_id)),
-            "{argv}"
-        );
+        let argv = wait_for_worker_argv(&argv_file, &format!("--continue={}", before.session_id));
+        assert_worker_model(&argv, expected);
         assert!(!argv.lines().any(|l| l == "--goal"), "{argv}");
         let after = registry::load(&agent, "parent-1").unwrap().remove(0);
         assert_ne!(after.pid, before.pid);
         // A second open in the same process does not launch it again, and a stopped worker is
         // never relaunched.
-        assert!(hooks.core.resume().is_empty());
-        let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        assert!(reopened.core.resume().is_empty());
+        let _ = reopened.core.stop(&json!({"action": "stop", "name": "alpha"}));
         let _ = fs::remove_dir_all(&root);
     }
 
+    fn wait_for_worker_argv(path: &Path, marker: &str) -> String {
+        for _ in 0..100 {
+            if let Ok(argv) = fs::read_to_string(path) {
+                if argv.lines().any(|line| line == marker) {
+                    return argv;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("worker did not record {marker} in its argv");
+    }
+
+    fn assert_worker_model(argv: &str, expected: &str) {
+        let mut lines = argv.lines();
+        assert_eq!(lines.find(|line| *line == "--model"), Some("--model"), "{argv}");
+        assert_eq!(lines.next(), Some(expected), "{argv}");
+    }
+
     #[test]
-    fn worker_start_refuses_another_model() {
-        let (root, repo, agent, fake) = fixture("model");
+    fn worker_refuses_malformed_model_before_creating_worktree() {
+        let (root, repo, agent, fake) = fixture("invalid-model");
         let hooks = hooks(&fake, &agent);
         set_session(&hooks, "parent-1");
-        let out = hooks.core.start(
-            &json!({"action": "start", "name": "alpha", "goal": "one", "model": "cloud/expensive"}),
-            &repo,
-            Mode::Workspace,
-            Autonomy::Standard,
-        );
-        assert!(out.is_error, "{}", out.text);
-        assert!(out.text.contains("session's model"), "{}", out.text);
-        assert!(registry::load(&agent, "parent-1").unwrap().is_empty());
-        assert!(!worktree_path(&repo, "alpha").unwrap().exists());
-        // The session's own model is accepted and passed through.
-        let ok = hooks.core.start(
-            &json!({"action": "start", "name": "alpha", "goal": "one", "model": "model-x"}),
-            &repo,
-            Mode::Workspace,
-            Autonomy::Standard,
-        );
-        assert!(!ok.is_error, "{}", ok.text);
-        assert_eq!(registry::load(&agent, "parent-1").unwrap()[0].model, "model-x");
-        let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        for model in [json!("  "), json!("--yolo"), json!("m\nother"), json!(42)] {
+            let out = hooks.core.start(
+                &json!({"action": "start", "name": "alpha", "goal": "one", "model": model}),
+                &repo,
+                Mode::Workspace,
+                Autonomy::Standard,
+            );
+            assert!(out.is_error && out.text.contains("model"), "{}", out.text);
+            assert!(registry::load(&agent, "parent-1").unwrap().is_empty());
+            assert!(!worktree_path(&repo, "alpha").unwrap().exists());
+        }
         let _ = fs::remove_dir_all(&root);
     }
 
