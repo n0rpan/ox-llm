@@ -1,42 +1,42 @@
 ---
 name: ox-llm
-description: Operate the local ox-llm platform that runs this agent - the model catalog, status, memory and speed, logs, updates and troubleshooting through native oxa commands. Use when the user asks about the local models, the engine, memory, speed, or why something on the platform is slow or failing.
+description: Operate the ox-llm platform that runs this agent - which models are available, usage and spend, session status, the oxe engine, logs and troubleshooting with the oxa CLI. Use when the user asks about the models, the engine, memory, speed, cost, or why something on the platform is slow or failing.
 ---
 
 # ox-llm platform operations
 
-You run on ox-llm: the oxe engine serves the model on this machine and one
-OpenAI-compatible endpoint on loopback (`http://127.0.0.1:8092`) sits in front of
-it. Nothing leaves the machine unless a cloud model is selected. One model is
-loaded at a time.
+You run in oxa, the ox-llm coding agent: one Rust binary that talks to a cloud model provider
+or to a local oxe engine over an OpenAI-compatible API. There is no separate controller to
+operate. Never ask the user to install or run one.
 
-## Catalog and status (native, read-only)
+## Catalog and status (read-only)
 
-- `oxa models` lists every model this install can serve, local and cloud: where it
-  runs, the context window, the output limit, thinking, images and whether it is
-  the default. It runs no other program and prints no key.
-- `oxa models --json` adds the endpoint name, the queue length and the per-model
-  flags. Read status from there instead of asking.
-- `oxa models <search>` filters by place, provider or model name.
+- `oxa models` - every model this install can serve, local and cloud, in one table: where it
+  runs, the context window, the output limit, thinking, images and which one is the default.
+  It runs no other program and prints no key.
+- `oxa models --json` - the same catalog as one `oxa_models` object: the default model, one
+  row per model with its provider, billing, usage pool and state. Read facts from there
+  instead of asking.
+- `oxa models <search>` - filters the catalog by place, provider or model name.
+- `oxa usage --json` - today's cloud spend and request sums per usage pool.
+- `oxa status <session-id|session-file>` - a saved session's progress and stall signal.
+- `free -g` and `df -h` - memory pressure and disk space for local models.
 
-A `local` row runs on this machine. A `cloud · <provider>` row runs at that
-provider: it costs money and leaves the machine. A model that `oxa models` does
-not list cannot be selected.
+A `local` row runs on this machine; a `cloud · <provider>` row runs at that provider, costs
+money and leaves the machine. A model that `oxa models` does not list cannot be selected.
 
-## Switching models
+## Models
 
-Always tell the user before you switch; never switch on your own.
+Switch models inside oxa with `/model`: it checks that the conversation fits the target and
+offers to compact first. `oxa --model <name>` selects a model for one run. Switching a local
+model reloads the engine (tens of seconds) and the next request prefills the whole
+conversation again, so keep a long agentic session on the default model. Always tell the
+user before you switch; never switch on your own.
 
-- `/model` inside oxa opens the selector; `/model <pattern>` switches directly. It
-  checks that the conversation fits the target and offers to compact first.
-- `oxa --model <name>` selects a model for one run.
-- A switch reloads the engine (tens of seconds) and the next request prefills the
-  whole conversation again. Keep a long agentic session on the default model.
-- When the catalog lists the large streaming model (Flash), it is the "think hard"
-  choice: experts are streamed from the SSD, so it is slower per token and its
-  context is small. Suggest it for one hard, self-contained question.
-- `/compact` (or a new session) shrinks a conversation that no longer fits; do it
-  before switching to a model with a smaller window.
+When the catalog lists a large streaming model (Flash), it is the "think hard" choice: its
+experts are streamed from the SSD, so it is slower per token and its context is small.
+Suggest it for one hard, self-contained question. `/compact` (or a new session) shrinks a
+conversation that no longer fits; do it before switching to a model with a smaller window.
 
 ## Running oxa without prompts (YOLO)
 
@@ -45,30 +45,22 @@ a run does not stop to ask. The sandbox and the deny-list of keys and tokens sta
 to a project's `.oxa` still ask. Suggest the alias `alias yoxa='oxa --yolo'` when the user wants
 it quick to start. Never switch YOLO on yourself; it is the user's choice.
 
-## Health, memory and logs
+## Health and logs
 
-1. `oxa models --json`: which models are served, which is the default, and whether
-   anything is queued.
-2. `free -g`: memory. A load needs several GiB free, and a full-size model leaves
-   the machine tight.
-3. `systemctl --user status oxc-chat`: is the platform service running.
-4. `journalctl --user -u oxc-chat -n 100 --no-pager`: what it last reported.
-5. Slow: the queue in `oxa models --json` and memory pressure in `free -g`. A large
-   model running from a small expert cache is slow by design.
-
-## Updates
-
-oxa does not update itself: `oxa update --self` is not supported. The platform
-release on this machine is applied by its owner; point the user at the release
-notes and do not run an update yourself.
+- `oxa usage --json` shows whether requests are being counted and what they cost.
+- `oxa models --json` shows which models are served and which is the default.
+- The local engine, when one runs, is `oxe-server`: look at its output where the user started it
+  (a terminal or `journalctl --user -u <unit>`).
+- `oxa report-issue` drafts a scrubbed bug report (see the report-issue skill).
+- Slow: check `free -g` for memory pressure; a large local model running from a small expert
+  cache is slow by design.
 
 ## Troubleshooting
 
-1. `oxa models --json` fails or lists nothing: is the service running (item 3),
-   does the journal say why, and does `~/.oxa/agent/models.json` name the right
-   endpoint?
-2. Nothing leaves the machine except a `cloud · <provider>` request that was
-   selected. For local-only work choose a `local` row and keep offline mode.
+1. `oxa models --json` fails or lists nothing: check the engine endpoint (`OXA_ENGINE_URL`, or
+   `models.json` in `~/.oxa/agent/`) and the journal of the local engine above.
+2. Offline or refused connections: is the engine or the provider reachable from this machine?
+   Nothing leaves the machine except a `cloud · <provider>` model that was selected.
 3. A reproducible platform bug: offer the report-issue skill.
 
 ## Web search
@@ -88,8 +80,8 @@ to paste the key into the chat.
 
 ## Configuration
 
-- oxa: `~/.oxa/agent/settings.json`, `models.json` (the engine endpoint) and
-  `identity.md` (generated by `oxa identity --refresh` at install and update; do
-  not edit by hand).
-- Local and cloud model routes are configured in those settings; `oxa models`
-  shows what they resolve to. Never read a credential file to answer a question.
+- oxa: `~/.oxa/agent/settings.json`, `models.json` (endpoint), `identity.md` (generated by
+  `oxa identity --refresh` at install and update; do not edit by hand).
+- Local aliases and cloud routes are configured in the user settings (`oxa.local.models`,
+  `oxa.cloud.models`); `oxa models` shows what they resolve to. Never read a credential file
+  to answer a question.

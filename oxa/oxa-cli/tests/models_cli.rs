@@ -1,11 +1,13 @@
-//! #1542: `oxa models` lists the in-process catalog (native local aliases and configured
-//! cloud routes) with no controller CLI on PATH, and a stray word is a usage error rather
-//! than a prompt.
+//! #1542: `oxa models` lists the in-process catalog (native local aliases, configured cloud
+//! routes and the recommended models behind them) with no controller CLI on PATH, as the table
+//! with where/default columns or as the panel's `oxa_models` JSON object, and an unknown flag
+//! is a usage error rather than a prompt.
 //!
 //! Isolation: [`TestEnv`] for every file and directory, synthetic models and limits only.
 use oxa_cli::{parse_args, run, Stdio, Subcommand};
 use oxa_config::Env;
 use oxa_fake::TestEnv;
+use serde_json::Value;
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -116,54 +118,68 @@ fn lists_the_fixture_catalog_without_a_controller_cli_on_path() {
     assert!(cloud.ends_with("yes"), "the cloud route is the default: {cloud}");
 }
 
+/// The JSON is the panel's `oxa_models` object over the same catalog: the configured default,
+/// one row per model with the frozen row keys, and no warnings.
 #[test]
-fn json_reports_the_endpoint_default_and_queue() {
+fn json_is_the_oxa_models_object_over_the_catalog() {
     let env = TestEnv::new();
     let (code, out, err) = go(&env, &["models", "--json"]);
     assert_eq!(code, 0, "stderr: {err}");
-    let document: serde_json::Value = serde_json::from_str(out.trim()).expect("one JSON document");
+    let document: Value = serde_json::from_str(out.trim()).expect("one JSON document");
+    assert_eq!(document["type"], "oxa_models");
+    assert_eq!(document["version"], 1);
     assert_eq!(document["default"], "fixture-cloud");
-    assert_eq!(document["queue"], 0);
-    assert_eq!(document["count"], 2);
+    assert_eq!(document["lead_model"], Value::Null);
     let models = document["models"].as_array().expect("models array");
+    assert_eq!(document["warnings"], serde_json::json!([]), "{document}");
     let cloud = models
         .iter()
-        .find(|model| model["model"] == "fixture-cloud")
+        .find(|model| model["id"] == "fixture-cloud")
         .expect("cloud row");
-    assert_eq!(cloud["where"], "cloud · anthropic");
-    assert_eq!(cloud["remote"], true);
-    assert_eq!(cloud["context_window"], 200_000);
+    assert_eq!(cloud["kind"], "cloud");
+    assert_eq!(cloud["provider"], "anthropic");
+    assert_eq!(cloud["billing"], "metered");
+    assert_eq!(cloud["pool"], "metered");
+    assert_eq!(cloud["state"], "ready");
+    assert_eq!(cloud["context"], 200_000);
     assert_eq!(cloud["max_output"], 8_192);
-    assert_eq!(cloud["default"], true);
     let local = models
         .iter()
-        .find(|model| model["model"] == "fixture-local")
+        .find(|model| model["id"] == "fixture-local")
         .expect("local row");
-    assert_eq!(local["where"], "local");
-    assert_eq!(local["remote"], false);
-    assert_eq!(local["context_window"], 32_768);
+    assert_eq!(local["kind"], "local");
+    assert_eq!(local["billing"], "local");
+    assert_eq!(local["context"], 32_768);
+    assert_eq!(local["max_output"], 4_096);
     assert_eq!(local["thinking"], true);
     assert_eq!(local["images"], false);
-    assert_eq!(local["default"], false);
 }
 
 #[test]
-fn search_filters_by_model_and_place() {
+fn search_filters_by_place_provider_and_model() {
     let env = TestEnv::new();
     let (code, out, err) = go(&env, &["models", "ANTHROPIC"]);
     assert_eq!(code, 0, "stderr: {err}");
     assert_eq!(out.lines().count(), 2, "header and the cloud row: {out:?}");
     assert!(out.contains("fixture-cloud"), "{out:?}");
     assert!(!out.contains("fixture-local"), "{out:?}");
+    let (code, out, err) = go(&env, &["models", "--json", "anthropic"]);
+    assert_eq!(code, 0, "stderr: {err}");
+    let document: Value = serde_json::from_str(out.trim()).expect("one JSON document");
+    let models = document["models"].as_array().expect("models array");
+    assert!(
+        models.iter().all(|model| model["id"] == "fixture-cloud"),
+        "the JSON listing filters too: {document}"
+    );
     let (code, out, _) = go(&env, &["models", "no-such-model"]);
     assert_eq!(code, 0);
     assert_eq!(out.trim(), "No models matching \"no-such-model\"");
 }
 
-/// A known command must never fall back to being sent as a prompt, and a stray word must be a
-/// usage error (exit 2) rather than a message to the model.
+/// A known command must never fall back to being sent as a prompt, and an unknown flag must
+/// be a usage error (exit 2) rather than a message to the model.
 #[test]
-fn models_is_a_command_and_a_stray_word_is_a_usage_error() {
+fn models_is_a_command_and_an_unknown_flag_is_a_usage_error() {
     assert_eq!(
         parse_args(&["models".to_string()], &[]).unwrap().subcommand,
         Some(Subcommand::Models(Vec::new()))

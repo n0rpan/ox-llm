@@ -1,6 +1,19 @@
 //! B6: the OXA_* environment table.
 // ported from pi packages/coding-agent/docs/environment-variables.md
 
+/// Who sets an environment variable and who it is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvKind {
+    /// The owner sets it; documented in `oxa/docs/pages/cli.md`.
+    User,
+    /// oxa sets it for the processes it starts (bash tool, extension tools, check commands);
+    /// documented in `cli.md`.
+    Set,
+    /// Parent-to-child protocol between oxa processes, or a test hook. Not for users; listed
+    /// in `cli.md` under "Internal".
+    Internal,
+}
+
 /// One documented environment variable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EnvVar {
@@ -8,8 +21,9 @@ pub struct EnvVar {
     /// pi's name, when this is a renamed `PI_*` variable.
     pub pi_name: Option<&'static str>,
     pub description: &'static str,
-    /// `false` = accepted and ignored (verdict O), with a warning when set.
+    /// `false` = accepted and ignored (verdict O): nothing reads it.
     pub supported: bool,
+    pub kind: EnvKind,
 }
 
 /// Names oxa reads or sets. Consumers look names up here instead of spelling them.
@@ -29,6 +43,7 @@ pub const ENV_TABLE: &[EnvVar] = &[
         pi_name: None,
         description: "owner-selected absolute path to a private local board sample log; missing or refused input stays unavailable",
         supported: true,
+        kind: EnvKind::User,
     },
     // Process markers and the endpoint.
     EnvVar {
@@ -36,18 +51,21 @@ pub const ENV_TABLE: &[EnvVar] = &[
         pi_name: None,
         description: "process marker for child processes; set to \"oxa\"",
         supported: true,
+        kind: EnvKind::Set,
     },
     EnvVar {
         name: "OXA_CODING_AGENT",
         pi_name: Some("PI_CODING_AGENT"),
         description: "process marker, \"true\" for child processes",
         supported: true,
+        kind: EnvKind::Set,
     },
     EnvVar {
         name: "OXA_ENGINE_URL",
         pi_name: None,
-        description: "engine endpoint for the default models.json entry; default http://127.0.0.1:8092 (the oxc controller)",
+        description: "engine endpoint for the default models.json entry; default http://127.0.0.1:8080 (the oxe-server default; with no model configured oxa does not dial it)",
         supported: true,
+        kind: EnvKind::User,
     },
     // Shell tool session environment, set per run (never on the wire, W3).
     EnvVar {
@@ -55,30 +73,35 @@ pub const ENV_TABLE: &[EnvVar] = &[
         pi_name: Some("PI_SESSION_ID"),
         description: "current session id, for bash tool commands",
         supported: true,
+        kind: EnvKind::Set,
     },
     EnvVar {
         name: "OXA_SESSION_FILE",
         pi_name: Some("PI_SESSION_FILE"),
         description: "absolute path of the session file; unset when ephemeral",
         supported: true,
+        kind: EnvKind::Set,
     },
     EnvVar {
         name: "OXA_PROVIDER",
         pi_name: Some("PI_PROVIDER"),
         description: "selected provider; always \"oxe\"",
         supported: true,
+        kind: EnvKind::Set,
     },
     EnvVar {
         name: "OXA_MODEL",
         pi_name: Some("PI_MODEL"),
         description: "selected model id",
         supported: true,
+        kind: EnvKind::Set,
     },
     EnvVar {
         name: "OXA_REASONING_LEVEL",
         pi_name: Some("PI_REASONING_LEVEL"),
         description: "effective thinking level: off, minimal, low, medium, high, xhigh or max",
         supported: true,
+        kind: EnvKind::Set,
     },
     // Configuration and directories.
     EnvVar {
@@ -86,48 +109,56 @@ pub const ENV_TABLE: &[EnvVar] = &[
         pi_name: Some("PI_CODING_AGENT_DIR"),
         description: "agent directory; default ~/.oxa/agent; ~ is expanded",
         supported: true,
+        kind: EnvKind::User,
     },
     EnvVar {
         name: "OXA_SYSTEM_SKILLS_DIR",
         pi_name: None,
         description: "system skills directory read last; default /usr/share/omarchy/default/agents/skills; empty = none",
         supported: true,
+        kind: EnvKind::User,
     },
     EnvVar {
         name: "OXA_TEST_ISOLATION",
         pi_name: None,
         description: "test processes only (set by the test harness): enables the test hooks below; no host directory is read as a fallback (system skills)",
         supported: true,
+        kind: EnvKind::Internal,
     },
     EnvVar {
         name: "OXA_TEST_PANIC",
         pi_name: None,
         description: "test processes only, with OXA_TEST_ISOLATION=1: host_function = extensions get a host function that panics (panic isolation test)",
         supported: true,
+        kind: EnvKind::Internal,
     },
     EnvVar {
         name: "OXA_SESSION_DIR",
         pi_name: Some("PI_CODING_AGENT_SESSION_DIR"),
         description: "session storage; overridden by --session-dir",
         supported: true,
+        kind: EnvKind::User,
     },
     EnvVar {
         name: "OXA_PACKAGE_DIR",
         pi_name: Some("PI_PACKAGE_DIR"),
-        description: "package directory override, for Nix or Guix store paths",
-        supported: true,
+        description: "accepted and ignored: oxa has no package store to relocate",
+        supported: false,
+        kind: EnvKind::User,
     },
     EnvVar {
         name: "OXA_ALLOW_HOME_CWD",
         pi_name: None,
         description: "allow a session in the home directory or above it (1/true/yes/on), as oxa.allowHomeCwd; without it oxa refuses there (print, json, rpc) or asks (interactive)",
         supported: true,
+        kind: EnvKind::User,
     },
     EnvVar {
         name: "OXA_OFFLINE",
         pi_name: Some("PI_OFFLINE"),
         description: "hard offline switch, as --offline (1/true/yes/on): non-local connections refused, bash has no network, web_search off",
         supported: true,
+        kind: EnvKind::User,
     },
     // O-169: the web_search tool (oxa-web); oxa-only, pi has no built-in search.
     EnvVar {
@@ -135,54 +166,63 @@ pub const ENV_TABLE: &[EnvVar] = &[
         pi_name: None,
         description: "Brave Search API key for web_search (wins over <agent dir>/brave-search.key); never passed to child processes",
         supported: true,
+        kind: EnvKind::User,
     },
     EnvVar {
         name: "OXA_WEB_SEARCH",
         pi_name: None,
         description: "0/false/no/off switches the web_search tool off, 1/true/yes/on says on (as --no-web-search)",
         supported: true,
+        kind: EnvKind::User,
     },
     EnvVar {
         name: "OXA_SKIP_VERSION_CHECK",
         pi_name: Some("PI_SKIP_VERSION_CHECK"),
         description: "accepted and ignored: oxa has no version check",
         supported: false,
+        kind: EnvKind::User,
     },
     EnvVar {
         name: "OXA_SELF_UPDATE_COMMAND",
         pi_name: Some("PI_SELF_UPDATE_COMMAND"),
         description: "accepted and ignored: oxa has no self-update",
         supported: false,
+        kind: EnvKind::User,
     },
     EnvVar {
         name: "OXA_TELEMETRY",
         pi_name: Some("PI_TELEMETRY"),
         description: "accepted and ignored: oxa has no telemetry",
         supported: false,
+        kind: EnvKind::User,
     },
     EnvVar {
         name: "OXA_CODEMODE_MAX_WORKERS",
         pi_name: Some("PI_CODEMODE_MAX_WORKERS"),
         description: "codemode workers alive at once in the process; default 2",
         supported: true,
+        kind: EnvKind::User,
     },
     EnvVar {
         name: "OXA_CACHE_RETENTION",
         pi_name: Some("PI_CACHE_RETENTION"),
         description: "accepted and ignored: the engine owns its cache",
         supported: false,
+        kind: EnvKind::User,
     },
     EnvVar {
         name: "OXA_SHARE_VIEWER_URL",
         pi_name: Some("PI_SHARE_VIEWER_URL"),
         description: "accepted and ignored: oxa does no uploads",
         supported: false,
+        kind: EnvKind::User,
     },
     EnvVar {
         name: "OXA_RADIUS_GATEWAY",
         pi_name: Some("PI_RADIUS_GATEWAY"),
         description: "accepted and ignored: oxa does no uploads",
         supported: false,
+        kind: EnvKind::User,
     },
     // Terminal and TUI.
     EnvVar {
@@ -190,24 +230,28 @@ pub const ENV_TABLE: &[EnvVar] = &[
         pi_name: Some("PI_CLEAR_ON_SHRINK"),
         description: "1/true/yes/on clears empty rows when rendered content shrinks",
         supported: true,
+        kind: EnvKind::User,
     },
     EnvVar {
         name: "OXA_SKIN",
         pi_name: None,
         description: "pi, oxa or ascii (ASCII glyphs only): the look of the interactive UI for this run (over the ui.skin setting)",
         supported: true,
+        kind: EnvKind::User,
     },
     EnvVar {
         name: "OXA_REDUCED_MOTION",
         pi_name: None,
         description: "1/true/yes/on switches the animations of the oxa skin off, 0/false/no/off turns them back on for one run (as the ui.reducedMotion setting)",
         supported: true,
+        kind: EnvKind::User,
     },
     EnvVar {
         name: "OXA_CLIPBOARD_OSC52",
         pi_name: Some("PI_CLIPBOARD_OSC52"),
         description: "1/true/yes/on also copies through OSC 52",
         supported: true,
+        kind: EnvKind::User,
     },
     // Standard names, not renamed by pi.
     EnvVar {
@@ -215,24 +259,197 @@ pub const ENV_TABLE: &[EnvVar] = &[
         pi_name: None,
         description: "external editor fallback when externalEditor is unset",
         supported: true,
+        kind: EnvKind::User,
     },
     EnvVar {
         name: "EDITOR",
         pi_name: None,
         description: "external editor fallback when VISUAL is unset",
         supported: true,
+        kind: EnvKind::User,
     },
     EnvVar {
         name: "HTTP_PROXY",
         pi_name: None,
         description: "proxy for MCP HTTP requests only",
         supported: true,
+        kind: EnvKind::User,
     },
     EnvVar {
         name: "HTTPS_PROXY",
         pi_name: None,
         description: "proxy for MCP HTTPS requests only",
         supported: true,
+        kind: EnvKind::User,
+    },
+    // Names found by the source scan (`tests/env_names_documented.rs`).
+    EnvVar {
+        name: "OXA_ENV_NOTE",
+        pi_name: None,
+        description: "0/false/no/off or 1/true/yes/on forces the environment note off or on for this run; wins over the oxa.envNote setting",
+        supported: true,
+        kind: EnvKind::User,
+    },
+    EnvVar {
+        name: "NO_COLOR",
+        pi_name: None,
+        description: "any non-empty value: no colour and no animation with the oxa skin; also set to 1 on the gh probes oxa runs",
+        supported: true,
+        kind: EnvKind::User,
+    },
+    EnvVar {
+        name: "OXA_TRUST_PROJECT",
+        pi_name: None,
+        description: "1 or true is --approve for the project trust decision, for unattended runs; an explicit --no-approve still wins; removed from worker and work child environments",
+        supported: true,
+        kind: EnvKind::User,
+    },
+    EnvVar {
+        name: "OXA_RPC_OWNER_PRESENT",
+        pi_name: None,
+        description: "1 tells an RPC session that an owner can answer questions, so the ask tool is offered; other values leave it off",
+        supported: true,
+        kind: EnvKind::User,
+    },
+    EnvVar {
+        name: "OXA_LEAD_SITUATION",
+        pi_name: None,
+        description: "owner-selected absolute path to the runner's situation document for oxa lead; relative paths are refused, an unreadable or unprotected file stays unavailable",
+        supported: true,
+        kind: EnvKind::User,
+    },
+    EnvVar {
+        name: "OXA_WORK_OUTPUT_DIR",
+        pi_name: None,
+        description: "oxa work sets it for done-check commands: the private output directory (also TMPDIR and CARGO_TARGET_DIR/target) when the task has one",
+        supported: true,
+        kind: EnvKind::Set,
+    },
+    EnvVar {
+        name: "OXA_RUNNING_BIN",
+        pi_name: None,
+        description: "the sandbox sets it inside the bash sandbox to the absolute path of the running oxa binary, when that file is readable there",
+        supported: true,
+        kind: EnvKind::Set,
+    },
+    EnvVar {
+        name: "OXA_CONFIRM_MAX_REQUEST_BYTES",
+        pi_name: None,
+        description: "largest owner confirm request a tool child may send, in bytes (default 8 MiB); a value that is not a positive whole number is ignored",
+        supported: true,
+        kind: EnvKind::User,
+    },
+    EnvVar {
+        name: "OXA_CONFIRM_READ_TIMEOUT_SECS",
+        pi_name: None,
+        description: "seconds a tool child has to send its whole owner confirm request (default 60); a value that is not a positive whole number is ignored",
+        supported: true,
+        kind: EnvKind::User,
+    },
+    EnvVar {
+        name: "OXA_CONFIRM_MAX_CONNECTIONS",
+        pi_name: None,
+        description: "owner confirm requests served at once (default 64); more are answered none at once; a value that is not a positive whole number is ignored",
+        supported: true,
+        kind: EnvKind::User,
+    },
+    EnvVar {
+        name: "OXA_CONFIRM_SOCK",
+        pi_name: None,
+        description: "oxa sets it in tool children to the path of the session's private owner confirm socket, through which oxa commands ask the owner",
+        supported: true,
+        kind: EnvKind::Set,
+    },
+    EnvVar {
+        name: "OXA_TOOL_CALL_ID",
+        pi_name: None,
+        description: "oxa sets it in the environment of an extension tool call to the id of that call",
+        supported: true,
+        kind: EnvKind::Set,
+    },
+    EnvVar {
+        name: "OXA_SUBAGENT_DEPTH",
+        pi_name: None,
+        description: "a parent oxa sets 1 in a subagent child; a value above 0 or a non-number marks the process as a child, which cannot start subagents; counts as an agent marker like AI_AGENT",
+        supported: true,
+        kind: EnvKind::Internal,
+    },
+    EnvVar {
+        name: "OXA_SESSION_HINT",
+        pi_name: None,
+        description: "a parent oxa sets <parent session id>.s<n> in a subagent child; every chat request of the child names it; a malformed value is ignored with a notice",
+        supported: true,
+        kind: EnvKind::Internal,
+    },
+    EnvVar {
+        name: "OXA_CHILD_SOFT_TOKENS",
+        pi_name: None,
+        description: "a parent oxa may set the soft compaction limit of a subagent child; overrides oxa.compaction.softTokens; a bad value is ignored with a notice",
+        supported: true,
+        kind: EnvKind::Internal,
+    },
+    EnvVar {
+        name: "OXA_WORKER_DEPTH",
+        pi_name: None,
+        description: "oxa sets 1 in the environment of a lead worker session; dropped from the parent environment before it is set",
+        supported: true,
+        kind: EnvKind::Internal,
+    },
+    EnvVar {
+        name: "OXA_UNATTENDED",
+        pi_name: None,
+        description: "oxa sets 1 in the environment of a worker it launches: the run is unattended (no person at the keyboard), so it keeps the OS sandbox by default",
+        supported: true,
+        kind: EnvKind::Internal,
+    },
+    EnvVar {
+        name: "OXA_WORK_MODEL_DELEGATED",
+        pi_name: None,
+        description: "oxa work sets 1 in a worker; a restored or project-selected model then never counts as chosen by the owner, while an actual model argument is still admitted by a protected Go key",
+        supported: true,
+        kind: EnvKind::Internal,
+    },
+    EnvVar {
+        name: "OXA_WORKTREE_TRUST_SOURCE",
+        pi_name: None,
+        description: "oxa work sets the trusted source checkout for a managed worktree; honoured only in --mode json, and only when the checkout, the trust record and the approved resources verify",
+        supported: true,
+        kind: EnvKind::Internal,
+    },
+    EnvVar {
+        name: "OXA_RUNNER_OWNS_GITHUB",
+        pi_name: None,
+        description: "oxa work sets 1 in a worker: the runner owns GitHub access, so the worker runs no gh and no authenticated GitHub HTTP",
+        supported: true,
+        kind: EnvKind::Internal,
+    },
+    EnvVar {
+        name: "OXA_NATIVE_STEERING_FD",
+        pi_name: None,
+        description: "oxa work passes the inherited descriptor number of the steering lease to a native worker; the worker verifies the held lock before it accepts the assignment",
+        supported: true,
+        kind: EnvKind::Internal,
+    },
+    EnvVar {
+        name: "OXA_BRAVE_BASE_URL",
+        pi_name: None,
+        description: "test hook: base URL of the Brave Search provider, honoured only for a loopback URL (and under OXA_TEST_ISOLATION)",
+        supported: true,
+        kind: EnvKind::Internal,
+    },
+    EnvVar {
+        name: "OXE_API_KEY_FILE",
+        pi_name: None,
+        description: "oxa sets it for a local engine child it starts: the private file holding the child's bearer token",
+        supported: true,
+        kind: EnvKind::Internal,
+    },
+    EnvVar {
+        name: "OXE_API_KEY",
+        pi_name: None,
+        description: "not read by oxa: a local engine profile that sets this name or OXE_API_KEY_FILE itself is refused",
+        supported: true,
+        kind: EnvKind::Internal,
     },
 ];
 

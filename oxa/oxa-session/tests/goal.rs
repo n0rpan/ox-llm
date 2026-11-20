@@ -84,20 +84,29 @@ fn every_stop_and_resume_preserves_original_budget_and_accounting() {
             Some(0),
             0,
         ),
-        (
-            GoalBudget {
-                max_tokens: Some(10),
-                ..GoalBudget::default()
-            },
-            None,
-            0,
-        ),
     ] {
         let mut goal = Goal::new("Synthetic objective".into(), budget, 0).unwrap();
         goal.charge(tokens, time, true).unwrap();
         assert!(!goal.stopped(true));
         assert_eq!(goal.status, GoalStatus::Blocked);
     }
+    // An owner token cap counts known usage only: a request whose spend is unknown is recorded
+    // and shown, and pursuit goes on instead of blocking the goal.
+    let mut goal = Goal::new(
+        "Synthetic objective".into(),
+        GoalBudget {
+            max_tokens: Some(10),
+            ..GoalBudget::default()
+        },
+        0,
+    )
+    .unwrap();
+    goal.charge(None, 0, true).unwrap();
+    assert!(goal.stopped(true), "unknown spend never exhausts a token cap");
+    assert_eq!(
+        (goal.status, goal.tokens_used, goal.unknown_requests),
+        (GoalStatus::Pursuing, 0, 1)
+    );
 }
 
 #[test]
@@ -419,4 +428,20 @@ fn goal_plan_reopens_failed_checks_and_requires_verified_acceptance() {
     let mut inconsistent = reopened.value();
     inconsistent["plan"]["acceptance"][1]["result"] = serde_json::Value::Null;
     assert!(Goal::decode(&inconsistent).is_err());
+}
+
+#[test]
+fn idle_pause_reason_round_trips_and_clears_on_resume() {
+    let mut goal = objective();
+    assert!(goal.stopped(false));
+    assert!(!goal.stopped(false));
+    assert_eq!(goal.status, GoalStatus::Paused);
+    assert_eq!(
+        goal.pause_reason.as_deref(),
+        Some("two replies without an action")
+    );
+    assert_eq!(Goal::decode(&goal.value()).unwrap(), goal);
+    goal.resume().unwrap();
+    assert_eq!(goal.pause_reason, None);
+    assert_eq!(Goal::decode(&goal.value()).unwrap(), goal);
 }

@@ -510,6 +510,9 @@ mod tests {
                 terminate_binary: None,
                 offline: true,
                 runner_owns_github: false,
+                autonomy: Default::default(),
+                worker_github: Default::default(),
+                authority_now: None,
                 storage,
             };
             checked(private_git(

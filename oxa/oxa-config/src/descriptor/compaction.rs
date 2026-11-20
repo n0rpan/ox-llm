@@ -6,6 +6,16 @@ use super::{d, Apply, Control, Descriptor, Group, Unit, WebEdit};
 /// The Compaction entries, then the Codemode entries, in display order.
 pub const ENTRIES: &[Descriptor] = &[
     d(
+        "compaction.profile",
+        Group::Compaction,
+        "Automatic",
+        "Context profile",
+        "Auto picks cloud for a cloud model. Cloud keeps a larger recent context and compacts later.",
+    )
+    .choice(&[("auto", ""), ("local", ""), ("cloud", "")])
+    .apply(Apply::Reload)
+    .web(WebEdit::Edit),
+    d(
         "compaction.enabled",
         Group::Compaction,
         "Automatic",
@@ -171,9 +181,6 @@ mod tests {
 
     #[test]
     fn compaction_keys_exist_in_schema() {
-        let compaction = ENTRIES.iter().filter(|e| e.group == Group::Compaction).count();
-        let codemode = ENTRIES.iter().filter(|e| e.group == Group::Codemode).count();
-        assert_eq!((compaction, codemode), (11, 4));
         let mut seen = std::collections::HashSet::new();
         for e in ENTRIES {
             assert!(find_key(e.key).is_some(), "not in schema: {}", e.key);

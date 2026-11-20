@@ -43,6 +43,9 @@ struct Snapshot {
     tools: u32,
     settled: RunOutcome,
     outcome: Option<RunOutcome>,
+    /// The saved goal's status, `None` without a goal; `reason` is set while paused.
+    goal_status: Option<&'static str>,
+    goal_reason: Option<String>,
     written: Instant,
 }
 
@@ -62,7 +65,8 @@ impl Snapshot {
             // The grace covers progress coalesced since this write: a reader must not flag
             // a healthy session early just because a delta has not reached disk yet.
             "stall_deadline_ms":timeout.filter(|_| active).map(|t| self.progress.saturating_add(t).saturating_add(coalesce_ms)),
-            "outcome":self.outcome.map(|outcome| outcome.record())
+            "outcome":self.outcome.map(|outcome| outcome.record()),
+            "goal":self.goal_status.map(|status| json!({"status":status, "reason":self.goal_reason}))
         })
     }
 
@@ -259,6 +263,8 @@ impl ProgressObserver for StatusWriter {
                 tools: 0,
                 settled: RunOutcome::NothingToDo,
                 outcome: None,
+                goal_status: None,
+                goal_reason: None,
                 written: Instant::now(),
             });
         }
@@ -295,7 +301,7 @@ impl ProgressObserver for StatusWriter {
             Progress::RequestEnd { usage, remote } => {
                 snapshot.requests = snapshot.requests.saturating_sub(1);
                 snapshot.remote |= remote;
-                if let Some(usage) = usage {
+                if let Some(usage) = usage.filter(|usage| !usage.unreported) {
                     snapshot.prompt = snapshot.prompt.saturating_add(usage.prompt as u64);
                     snapshot.completion = snapshot.completion.saturating_add(usage.completion as u64);
                     snapshot.cached = snapshot.cached.saturating_add(usage.cached as u64);
@@ -317,8 +323,13 @@ impl ProgressObserver for StatusWriter {
                 snapshot.between();
                 true
             }
-            Progress::Advanced => false,
+            Progress::Advanced | Progress::Prefix { .. } => false,
             Progress::GoalControlCommitted { .. } => return,
+            Progress::GoalStatus { status, reason } => {
+                snapshot.goal_status = (status != "none").then_some(status);
+                snapshot.goal_reason = reason.map(|text| text.chars().take(256).collect());
+                true
+            }
             Progress::Closing => {
                 snapshot.running = true;
                 snapshot.phase = "closing";
@@ -356,6 +367,11 @@ fn write_error(e: &std::io::Error) -> OxaError {
 /// renamed over `path`. Shared by status snapshots and the worker registry, so both keep the same
 /// persistence guarantees.
 pub(crate) fn atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    atomic_file(path, bytes).map(drop)
+}
+
+/// Replace a file atomically and keep the writable handle to the newly installed inode.
+pub(crate) fn atomic_file(path: &Path, bytes: &[u8]) -> std::io::Result<fs::File> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let parent = path
         .parent()
@@ -383,7 +399,7 @@ pub(crate) fn atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         if result.is_err() {
             let _ = fs::remove_file(tmp);
         }
-        return result;
+        return result.map(|()| file);
     }
     Err(std::io::Error::other("cannot reserve a temporary file"))
 }
@@ -401,6 +417,11 @@ pub(crate) fn run(
             "usage: oxa status <session-id|session-file> [--session-dir <dir>]",
         )
     };
+    // `oxa status --json` is the suite's status object for the panel. The session form below is
+    // unchanged; `--json` is never a session id.
+    if matches!(words, [flag] if flag == "--json") {
+        return crate::suite_status::run(dirs, cwd, env, out);
+    }
     let Some(id) = words.first().filter(|id| !id.starts_with('-')) else {
         return Err(usage());
     };
@@ -454,7 +475,7 @@ fn strip_unproven_local(value: &mut Value) {
     }
 }
 
-fn proven_local_engine(value: &Value) -> bool {
+pub(crate) fn proven_local_engine(value: &Value) -> bool {
     let Some(child) = value["local_engine_pid"]
         .as_u64()
         .and_then(|pid| u32::try_from(pid).ok())
@@ -489,7 +510,7 @@ fn proven_local_engine(value: &Value) -> bool {
     owned && safe && scope
 }
 
-fn read_snapshot(path: &Path) -> Result<Value, OxaError> {
+pub(crate) fn read_snapshot(path: &Path) -> Result<Value, OxaError> {
     for _ in 0..8 {
         let before = fs::symlink_metadata(path).map_err(|e| OxaError::io("cannot read worker status", &e))?;
         if !before.is_file() {
@@ -552,6 +573,41 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_without_usage_keeps_the_snapshot_incomplete() {
+        let env = TestEnv::new();
+        let session = SessionRef {
+            id: "one".into(),
+            path: env.work().join("session.jsonl"),
+        };
+        let path = session.path.with_extension("status.json");
+        let writer = StatusWriter::new(None);
+        writer.notify(
+            &session,
+            Progress::Session {
+                file: Some(&session.path),
+            },
+        );
+        writer.notify(
+            &session,
+            Progress::RequestStart {
+                kind: TurnKind::Chat,
+                remote: true,
+            },
+        );
+        writer.notify(
+            &session,
+            Progress::RequestEnd {
+                usage: Some(Usage::unreported()),
+                remote: true,
+            },
+        );
+        writer.finish(Ok(RunOutcome::Done), &mut Vec::new()).unwrap();
+        let status = read_snapshot(&path).unwrap();
+        assert_eq!(status["tokens"]["complete"], false);
+        assert_eq!(status["tokens"]["unreported_requests"], 1);
+    }
+
+    #[test]
     fn stream_updates_coalesce_and_the_final_snapshot_includes_all_usage() {
         let env = TestEnv::new();
         let session = SessionRef {
@@ -589,6 +645,7 @@ mod tests {
                     completion: 8,
                     cached: 60,
                     cached_missing: false,
+                    unreported: false,
                 }),
                 remote: true,
             },
@@ -828,5 +885,61 @@ mod tests {
         writer.notify(&session, Progress::Advanced);
         assert_eq!(fs::read(&path).unwrap(), final_bytes);
         assert_eq!(read_snapshot(&path).unwrap()["tokens"]["complete"], false);
+    }
+}
+
+#[cfg(test)]
+mod goal_status_tests {
+    use super::*;
+    use oxa_fake::TestEnv;
+
+    #[test]
+    fn status_json_carries_goal_status_and_reason() {
+        let env = TestEnv::new();
+        let session = SessionRef {
+            id: "goal".into(),
+            path: env.work().join("session.jsonl"),
+        };
+        let writer = StatusWriter::new(None);
+        writer.notify(
+            &session,
+            Progress::Session {
+                file: Some(&session.path),
+            },
+        );
+        let record = read_snapshot(&session.path.with_extension("status.json")).unwrap();
+        assert!(record["goal"].is_null());
+
+        writer.notify(
+            &session,
+            Progress::GoalStatus {
+                status: "paused",
+                reason: Some("two replies without an action"),
+            },
+        );
+        let record = read_snapshot(&session.path.with_extension("status.json")).unwrap();
+        assert_eq!(record["goal"]["status"], "paused");
+        assert_eq!(record["goal"]["reason"], "two replies without an action");
+
+        writer.notify(
+            &session,
+            Progress::GoalStatus {
+                status: "pursuing",
+                reason: None,
+            },
+        );
+        let record = read_snapshot(&session.path.with_extension("status.json")).unwrap();
+        assert_eq!(record["goal"]["status"], "pursuing");
+        assert!(record["goal"]["reason"].is_null());
+
+        writer.notify(
+            &session,
+            Progress::GoalStatus {
+                status: "none",
+                reason: None,
+            },
+        );
+        let record = read_snapshot(&session.path.with_extension("status.json")).unwrap();
+        assert!(record["goal"].is_null());
     }
 }

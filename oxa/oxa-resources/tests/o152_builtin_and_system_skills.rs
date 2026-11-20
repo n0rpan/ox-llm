@@ -110,7 +110,10 @@ fn builtin_files_install_once_and_expand_without_install() {
     let text = expand_skill_command(find(&skills, "ox-llm"), "status?").expect("expand");
     assert!(
         text.starts_with("<skill name=\"ox-llm\"")
-            && text.contains("oxa models")
+            && text.contains("oxa models --json")
+            && text.contains("oxa usage --json")
+            && !text.contains("oxc")
+            && !text.contains("local-ai")
             && text.ends_with("status?")
     );
 
@@ -401,7 +404,7 @@ fn ox_llm_skill_uses_native_surfaces_and_no_legacy_invocations() {
     assert!(text.contains("oxa models"), "the native catalog is documented");
     assert!(
         text.contains("oxa models --json"),
-        "status and the queue come from the same native surface"
+        "the JSON status comes from the same native surface"
     );
     assert!(text.contains("/model"), "switching stays inside oxa");
     for legacy in ["`oxc ", "`local-ai", "oxa.profile"] {

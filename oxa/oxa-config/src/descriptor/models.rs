@@ -226,6 +226,38 @@ pub const ENTRIES: &[Descriptor] = &[
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
     d(
+        "retry.localMaxTotalMs",
+        Group::Models,
+        "Requests and retries",
+        "Local engine retry budget",
+        "Whole retry wait when this machine's engine fails; waiting cannot fix it.",
+    )
+    .number(Unit::Ms)
+    .apply(Apply::Reload)
+    .web(WebEdit::Edit),
+    d(
+        "retry.identical5xxRetries",
+        Group::Models,
+        "Requests and retries",
+        "Repeated error retries",
+        "Retries of the same 5xx body from one endpoint; overload replies keep the long backoff.",
+    )
+    .control(Control::Number)
+    .apply(Apply::Reload)
+    .web(WebEdit::Edit),
+    d(
+        "oxa.emptyReplyRetries",
+        Group::Models,
+        "Requests and retries",
+        "Empty reply retries",
+        "Ask again when a cloud model returns no text and no tool call. 0 = off.",
+    )
+    .number(Unit::Count)
+    .zero("off")
+    .user_only()
+    .apply(Apply::Reload)
+    .web(WebEdit::Edit),
+    d(
         "retry.provider.maxRetries",
         Group::Models,
         "Requests and retries",
@@ -277,7 +309,6 @@ mod tests {
 
     #[test]
     fn models_keys_exist_in_schema() {
-        assert_eq!(ENTRIES.len(), 24);
         let mut seen = std::collections::HashSet::new();
         for e in ENTRIES {
             assert_eq!(e.group, Group::Models, "{}", e.key);

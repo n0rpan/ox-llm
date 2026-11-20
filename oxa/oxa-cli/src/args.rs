@@ -52,12 +52,15 @@ pub enum Subcommand {
     Mcp(Vec<String>),
     /// M3: `oxa memory list|show <name>|rm <name>`: the words after `memory`.
     Memory(Vec<String>),
-    /// #1542: `oxa models [--json] [search]`: list the in-process model catalog.
-    Models(Vec<String>),
     /// `oxa install|remove|update|list ..`: the verb and the words after it.
     Pkg(String, Vec<String>),
     /// `oxa config ..`.
     Config(Vec<String>),
+    /// `oxa models [--json] [search]`: the words after `models`. Known words are never
+    /// prompts (#1542).
+    Models(Vec<String>),
+    /// `oxa local add <model.gguf> ..`: the words after `local`.
+    Local(Vec<String>),
     /// O-152: `oxa identity [--refresh] [--offline]`.
     Identity(Vec<String>),
     /// O-152: `oxa report-issue draft|submit ..`.
@@ -78,18 +81,26 @@ impl std::fmt::Debug for RegistryArgs {
 
 pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -> bool {
     use oxa_interactive::command_registry::CommandId;
+    // Admission belongs exclusively to the oxe binary.
     // Declared in the registry for discovery, help and surfaces, but parsed and handled by the
-    // legacy path below; the registry route must not take them over.
+    // legacy path below; the registry route must not take them over. #1512 S5: `send` keeps its
+    // legacy parser (follow-ups and approval answers).
     !matches!(
         id,
-        CommandId::Help
+        CommandId::Admission
+            | CommandId::Help
+            | CommandId::Status
             | CommandId::WorkStatus
             | CommandId::WorkBoard
+            | CommandId::Send
+            | CommandId::SendApprovals
             | CommandId::Memory
             | CommandId::MemoryList
             | CommandId::MemoryShow
             | CommandId::MemoryRm
             | CommandId::Models
+            | CommandId::Local
+            | CommandId::LocalAdd
     )
 }
 
@@ -130,12 +141,14 @@ pub struct Args {
     pub output_schema: Option<String>,
     /// Stored goal objective from a UTF-8 file (print/JSON).
     pub goal: Option<String>,
-    /// Soft runtime limit for print, JSON and RPC modes (`--max-time`, seconds).
+    /// Soft runtime limit for a run in any mode (`--max-time`, seconds).
     pub max_time: Option<std::time::Duration>,
     /// Flag a saved active session after this long without progress.
     pub stall_timeout: Option<std::time::Duration>,
     /// Soft run budget: uncached prompt plus output tokens (`--max-tokens`).
     pub max_tokens: Option<u64>,
+    /// `--usage-log FILE`: one JSONL record per model call (owner-only file, no message text).
+    pub usage_log: Option<PathBuf>,
     /// `--mode text|json|rpc`.
     pub mode: Option<ModeArg>,
     /// `--export <input> [output]`.
@@ -232,6 +245,8 @@ pub struct Args {
     pub version: bool,
     /// The hard offline switch (see the help text).
     pub offline: bool,
+    /// #1512 S3: the OS sandbox (bwrap) for this attended run, as `oxa.sandbox.interactive`.
+    pub sandbox: bool,
     /// Explicitly expose only these native local aliases for the current owner session.
     #[cfg(feature = "share")]
     pub share_models: Vec<String>,
@@ -268,6 +283,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "Read a saved session's current progress and stall signal",
     ),
     (
+        "oxa models [--json] [search]",
+        "List the local and cloud models this install can serve, as a table or as JSON",
+    ),
+    (
         "oxa install <source> [-l]",
         "Install a package source and add it to settings",
     ),
@@ -286,10 +305,19 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     ("oxa logout chatgpt", "Remove the owner ChatGPT token record"),
     (
-        "oxa send <session-id> \"text\"",
-        "Queue a session follow-up, waking its TUI or RPC owner",
+        "oxa send <session-id> <text|->",
+        "Queue a session follow-up; use - to read the text from stdin",
     ),
+    (
+        "oxa send <session-id> --approve <request-id> once|session|always|deny",
+        "Answer a dangerous-command approval request of an unattended run",
+    ),
+    ("oxa send --approvals", "List the approval requests that wait for an answer"),
     ("oxa config [-l]", "Print every setting with its value and source"),
+    (
+        "oxa local add <model.gguf> [--ctx N] [--enable] [-- <launch args>]",
+        "Wire a local GGUF into the native local engine settings from the engine's admission report",
+    ),
     (
         "oxa mcp <command>",
         "Manage MCP servers: add, remove, list, login, logout",
@@ -297,10 +325,6 @@ const COMMANDS: &[(&str, &str)] = &[
     (
         "oxa memory <list|show|rm>",
         "Show the memory index, or show or remove one memory entry",
-    ),
-    (
-        "oxa models [--json] [search]",
-        "List the local and cloud models this install can serve",
     ),
     (
         "oxa identity [--refresh]",
@@ -363,7 +387,7 @@ const OPTIONS: &[(&str, &str)] = &[
     ("--goal <file>", "Pursue and persist this goal until complete, blocked, stalled or interrupted"),
     (
         "--max-time <seconds>",
-        "Gracefully wrap up a headless run after this time (fractional seconds allowed)",
+        "Gracefully wrap up a run after this time (fractional seconds allowed)",
     ),
     (
         "--stall-timeout <seconds>",
@@ -371,7 +395,11 @@ const OPTIONS: &[(&str, &str)] = &[
     ),
     (
         "--max-tokens <N>",
-        "Gracefully wrap up a headless run after N new prompt + output tokens (cached tokens are free)",
+        "Gracefully wrap up a run after N new prompt + output tokens (cached tokens are free)",
+    ),
+    (
+        "--usage-log <file>",
+        "Write one JSONL record per model call (tokens, duration, model, turn) to FILE; owner-only, no message text",
     ),
     ("--resume, -r", "Pick a session to resume"),
     (
@@ -493,6 +521,10 @@ const OPTIONS: &[(&str, &str)] = &[
         "Hard offline switch: non-local connections refused, bash has no network, web_search off",
     ),
     (
+        "--sandbox",
+        "Run bash in the OS sandbox (bwrap) for this interactive run; hooks are always sandboxed; default: no OS sandbox, dangerous commands ask",
+    ),
+    (
         "--                ",
         "End option parsing; treat the remaining arguments as messages and files",
     ),
@@ -531,7 +563,6 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         "logout" => Subcommand::Login(true, LoginArgs(rest.to_vec())),
         "mcp" => Subcommand::Mcp(rest.to_vec()),
         "memory" => Subcommand::Memory(rest.to_vec()),
-        "models" => Subcommand::Models(rest.to_vec()),
         "install" | "remove" | "uninstall" | "update" | "list" => {
             Subcommand::Pkg(word.to_string(), rest.to_vec())
         }
@@ -540,11 +571,13 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         #[cfg(not(feature = "share"))]
         "share" => return Err(usage("this build does not include sharing")),
         "config" => Subcommand::Config(rest.to_vec()),
+        "local" => Subcommand::Local(rest.to_vec()),
         "identity" => Subcommand::Identity(rest.to_vec()),
         "report-issue" => Subcommand::ReportIssue(rest.to_vec()),
         "wipe" => Subcommand::Wipe(rest.to_vec()),
         "send" => Subcommand::Send(rest.to_vec()),
         "status" => Subcommand::Status(rest.to_vec()),
+        "models" => Subcommand::Models(rest.to_vec()),
         "work" => Subcommand::Work(rest.to_vec()),
         "auth" => return Err(OxaError::unsupported("the auth command")),
         _ => return Ok(None),
@@ -804,6 +837,9 @@ fn parse_flag(
                     .ok_or_else(|| usage("--max-tokens requires a positive integer"))?,
             );
         }
+        "--usage-log" => {
+            a.usage_log = Some(PathBuf::from(value(argv, i, inline, flag, "a file path")?));
+        }
         "--provider" => a.provider = Some(value(argv, i, inline, flag, "a provider name")?),
         "--model" => a.model = Some(value(argv, i, inline, flag, "a model pattern")?),
         "--api-key" => {
@@ -978,6 +1014,10 @@ fn parse_flag(
         "--offline" => {
             no_value(inline, flag)?;
             a.offline = true;
+        }
+        "--sandbox" => {
+            no_value(inline, flag)?;
+            a.sandbox = true;
         }
         "--yolo" => {
             no_value(inline, flag)?;

@@ -3,6 +3,10 @@
 //! First declarations: help and the work-board consumer seam. Legacy command tables remain until their handlers are
 //! migrated; this module does not claim that those commands already have surface parity.
 //! Resolving help never needs a repository, environment, trust store or runtime policy.
+//!
+//! Global process options such as `--sandbox` are an explicit exception: this registry models
+//! invocable commands and their frontend surfaces, while global flags are declared by the CLI
+//! usage table in `oxa-cli/src/args.rs` and have no slash/menu/web handler.
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Surface {
@@ -66,11 +70,18 @@ const LEAD_PENDING: Surfaces = Surfaces {
     menu: Availability::Exception("Lead menu integration is pending"),
     web: Availability::Exception("Lead web adapter integration is pending"),
 };
-/// A CLI-only surface (`oxa memory`, `oxa models`): no slash, menu or web handler exists.
-const CLI_ONLY: Surfaces = Surfaces {
+/// The `oxa memory` verbs are a CLI-only surface: no slash, menu or web handler exists.
+const MEMORY_CLI_ONLY: Surfaces = Surfaces {
     cli: Availability::Supported,
-    slash: Availability::Exception("The slash menu has no command for this"),
-    menu: Availability::Exception("The menu has no command for this"),
+    slash: Availability::Exception("The slash menu has no memory command"),
+    menu: Availability::Exception("The menu has no memory command"),
+    web: Availability::Exception("No web frontend is shipped"),
+};
+/// `oxa local add` is a CLI-only surface: it edits the user's settings file and prints a report.
+const LOCAL_CLI_ONLY: Surfaces = Surfaces {
+    cli: Availability::Supported,
+    slash: Availability::Exception("Local models are wired from the command line, not a running session"),
+    menu: Availability::Exception("The menu has no local command"),
     web: Availability::Exception("No web frontend is shipped"),
 };
 const NO_REQUIREMENTS: Requirements = Requirements {
@@ -115,6 +126,19 @@ commands! {
         },
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
     },
+    Usage {
+        path: &["usage"],
+        aliases: &[],
+        summary: "Print today's cloud spend and request sums per usage pool as JSON",
+        arguments: &[Argument { name: "json", kind: ArgumentKind::Flag, required: true }],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("The JSON usage report is a CLI command"),
+            menu: Availability::Exception("The JSON usage report is a CLI command"),
+            web: Availability::Exception("The panel reads this report from the CLI"),
+        },
+        requirements: NO_REQUIREMENTS,
+    },
     WorkStatus {
         path: &["work", "status"],
         aliases: &[],
@@ -140,6 +164,23 @@ commands! {
             web: Availability::Exception("No web frontend is shipped"),
         },
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
+    },
+    Status {
+        path: &["status"],
+        aliases: &[],
+        summary: "Show session status, or print suite status as JSON",
+        arguments: &[
+            Argument { name: "session-id|session-file", kind: ArgumentKind::Word, required: false },
+            Argument { name: "json", kind: ArgumentKind::Flag, required: false },
+            Argument { name: "session-dir", kind: ArgumentKind::Flag, required: false },
+        ],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("The slash menu has no status command"),
+            menu: Availability::Exception("The menu has no status command"),
+            web: Availability::Exception("No web frontend is shipped"),
+        },
+        requirements: NO_REQUIREMENTS,
     },
     Lead {
         path: &["lead"], aliases: &[], summary: "Chat with the dedicated Lead session",
@@ -189,33 +230,91 @@ commands! {
         surfaces: Surfaces { cli: Availability::Supported, ..LEAD_PENDING },
         requirements: Requirements { owner_only: true, ..NO_REQUIREMENTS },
     },
+    // #1512 S5: the owner's CLI verbs for sessions. The CLI parser keeps them (`oxa send` with
+    // `--approve` and `--approvals` goes to the approval desk); they are declared for help.
+    Send {
+        path: &["send"],
+        aliases: &[],
+        summary: "Send a session a follow-up, or answer its approval request (send <session-id> --approve <request-id> once|session|always|deny)",
+        arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("Session messages are a CLI verb"),
+            menu: Availability::Exception("Session messages are a CLI verb"),
+            web: Availability::Exception("No web frontend is shipped"),
+        },
+        requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
+    },
+    SendApprovals {
+        path: &["send", "--approvals"],
+        aliases: &[],
+        summary: "List the approval requests that wait for an answer",
+        arguments: &[],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("Session messages are a CLI verb"),
+            menu: Availability::Exception("Session messages are a CLI verb"),
+            web: Availability::Exception("No web frontend is shipped"),
+        },
+        requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
+    },
     Memory {
         path: &["memory"], aliases: &[], summary: "Show the memory index, or show or remove one memory entry",
         arguments: &[Argument { name: "verb", kind: ArgumentKind::Tail, required: false }],
-        surfaces: CLI_ONLY, requirements: NO_REQUIREMENTS,
+        surfaces: MEMORY_CLI_ONLY, requirements: NO_REQUIREMENTS,
     },
     MemoryList {
         path: &["memory", "list"], aliases: &[], summary: "Print the memory index",
         arguments: &[],
-        surfaces: CLI_ONLY, requirements: NO_REQUIREMENTS,
+        surfaces: MEMORY_CLI_ONLY, requirements: NO_REQUIREMENTS,
     },
     MemoryShow {
         path: &["memory", "show"], aliases: &[], summary: "Print one memory entry",
         arguments: &[Argument { name: "name", kind: ArgumentKind::Word, required: true }],
-        surfaces: CLI_ONLY, requirements: NO_REQUIREMENTS,
+        surfaces: MEMORY_CLI_ONLY, requirements: NO_REQUIREMENTS,
     },
     MemoryRm {
         path: &["memory", "rm"], aliases: &[], summary: "Delete one memory entry and its index line",
         arguments: &[Argument { name: "name", kind: ArgumentKind::Word, required: true }],
-        surfaces: CLI_ONLY, requirements: NO_REQUIREMENTS,
+        surfaces: MEMORY_CLI_ONLY, requirements: NO_REQUIREMENTS,
     },
     Models {
-        path: &["models"], aliases: &[], summary: "List the local and cloud models this install can serve",
+        path: &["models"], aliases: &[], summary: "List the local and cloud models this install can serve, as a table or as JSON",
         arguments: &[
             Argument { name: "json", kind: ArgumentKind::Flag, required: false },
             Argument { name: "search", kind: ArgumentKind::Word, required: false },
         ],
-        surfaces: CLI_ONLY, requirements: NO_REQUIREMENTS,
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("No models slash handler is shipped"),
+            menu: Availability::Exception("No models menu handler is shipped"),
+            web: Availability::Exception("No web frontend is shipped"),
+        },
+        requirements: NO_REQUIREMENTS,
+    },
+    Local {
+        path: &["local"], aliases: &[], summary: "Wire a local GGUF model into the native local engine settings",
+        arguments: &[Argument { name: "verb", kind: ArgumentKind::Tail, required: false }],
+        surfaces: LOCAL_CLI_ONLY, requirements: Requirements { owner_only: true, ..NO_REQUIREMENTS },
+    },
+    LocalAdd {
+        path: &["local", "add"], aliases: &[],
+        summary: "Add a local GGUF model from the engine's admission report",
+        arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: true }],
+        surfaces: LOCAL_CLI_ONLY, requirements: Requirements { owner_only: true, ..NO_REQUIREMENTS },
+    },
+    Admission {
+        path: &["admission"],
+        aliases: &[],
+        summary: "Engine-only: size a model's memory before serving it (`oxe admission`)",
+        arguments: &[Argument { name: "--model|--ctx|--margin-bytes|launch options|--json", kind: ArgumentKind::Tail, required: false }],
+        surfaces: Surfaces {
+            cli: Availability::Exception("Engine-only subcommand of the oxe binary; oxa never dispatches it"),
+            slash: Availability::Exception("Not a session command"),
+            menu: Availability::Exception("Not a session command"),
+            web: Availability::Exception("No web frontend is shipped"),
+        },
+        requirements: NO_REQUIREMENTS,
     },
     Goal {
         path: &["goal"],
@@ -355,6 +454,21 @@ mod tests {
     }
 
     #[test]
+    fn status_json_is_declared_for_the_cli_surface() {
+        let input = words("status --json");
+        let parsed = parse_cli(&input).expect("status resolves as a CLI command");
+        assert_eq!(parsed.command.id, CommandId::Status);
+        assert_eq!(parsed.args, &input[1..]);
+        assert!(parsed
+            .command
+            .arguments
+            .iter()
+            .any(|argument| argument.name == "json" && argument.kind == ArgumentKind::Flag));
+        assert!(dispatch_slash(&input).is_none());
+        assert!(entries(Surface::Cli).any(|entry| entry.id == CommandId::Status));
+    }
+
+    #[test]
     fn paths_are_unique_and_declarations_are_complete() {
         let mut paths = std::collections::BTreeSet::new();
         for entry in COMMANDS {
@@ -400,6 +514,20 @@ mod tests {
     }
 
     #[test]
+    fn local_add_is_declared_for_the_cli_surface_only() {
+        let input = words("local add m.gguf --enable");
+        let parsed = parse_cli(&input).expect("local add resolves on the CLI");
+        assert_eq!(parsed.command.id, CommandId::LocalAdd);
+        assert_eq!(parsed.args, &input[2..]);
+        assert!(parsed.command.requirements.owner_only);
+        assert_eq!(parse_cli(&words("local")).unwrap().command.id, CommandId::Local);
+        assert!(dispatch_slash(&words("local add m.gguf")).is_none());
+        for surface in [Surface::Slash, Surface::Menu, Surface::Web] {
+            assert!(!entries(surface).any(|e| e.id == CommandId::LocalAdd));
+        }
+    }
+
+    #[test]
     fn goal_is_declared_for_the_slash_surface_only() {
         let input = words("goal pause");
         let parsed = dispatch_slash(&input).expect("goal resolves as a slash command");
@@ -408,6 +536,19 @@ mod tests {
         assert!(parse_cli(&input).is_none());
         assert!(entries(Surface::Slash).any(|entry| entry.id == CommandId::Goal));
         assert!(!entries(Surface::Cli).any(|entry| entry.id == CommandId::Goal));
+    }
+
+    #[test]
+    fn models_declares_its_json_flag_search_word_and_cli_only_surface() {
+        let input = words("models --json");
+        let parsed = parse_cli(&input).expect("models resolves on the CLI");
+        assert_eq!(parsed.command.id, CommandId::Models);
+        assert_eq!(parsed.args, &input[1..]);
+        assert_eq!(parsed.command.arguments[0].name, "json");
+        assert_eq!(parsed.command.arguments[0].kind, ArgumentKind::Flag);
+        assert_eq!(parsed.command.arguments[1].name, "search");
+        assert_eq!(parsed.command.arguments[1].kind, ArgumentKind::Word);
+        assert!(dispatch_slash(&input).is_none());
     }
 
     #[test]

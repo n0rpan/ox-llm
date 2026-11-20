@@ -28,8 +28,23 @@ const BASE: &[Entry] = &[
     Entry {
         path: &["status"],
         summary: "Read a saved session's current progress and stall signal",
-        usage: &["oxa status <session-id|session-file> [--session-dir <dir>]"],
+        usage: &[
+            "oxa status <session-id|session-file> [--session-dir <dir>]",
+            "oxa status --json",
+        ],
         example: "oxa status 20260101-120000-abcd",
+    },
+    Entry {
+        path: &["models"],
+        summary: "List the local and cloud models this install can serve, where each runs and which one is the default",
+        usage: &["oxa models [--json] [search]"],
+        example: "oxa models --json",
+    },
+    Entry {
+        path: &["usage"],
+        summary: "Print today's cloud spend and request sums per usage pool as JSON",
+        usage: &["oxa usage --json"],
+        example: "oxa usage --json",
     },
     Entry {
         path: &["install"],
@@ -87,8 +102,12 @@ const BASE: &[Entry] = &[
     },
     Entry {
         path: &["send"],
-        summary: "Queue a session follow-up, waking its TUI or RPC owner",
-        usage: &["oxa send <session-id> \"text\""],
+        summary: "Queue a session follow-up for its TUI, RPC owner or headless goal run",
+        usage: &[
+            "oxa send <session-id> \"text\"",
+            "oxa send <session-id> --approve <request-id> once|session|always|deny",
+            "oxa send --approvals",
+        ],
         example: "oxa send 20260101-120000-abcd \"task finished\"",
     },
     Entry {
@@ -116,16 +135,22 @@ const BASE: &[Entry] = &[
         example: "oxa memory rm build-notes",
     },
     Entry {
-        path: &["models"],
-        summary: "List the local and cloud models this install can serve, and which one is the default",
-        usage: &["oxa models [--json] [search]"],
-        example: "oxa models --json",
-    },
-    Entry {
         path: &["config"],
         summary: "Print every setting with its value and source",
         usage: &["oxa config [-l]"],
         example: "oxa config",
+    },
+    Entry {
+        path: &["local"],
+        summary: "Wire a local GGUF model into the native local engine settings",
+        usage: &["oxa local add <model.gguf> [options]"],
+        example: "oxa local add ~/models/model.gguf --ctx 16384 --enable",
+    },
+    Entry {
+        path: &["local", "add"],
+        summary: "Write oxa.local for a model from the engine's admission report (user settings only, with a backup)",
+        usage: &["oxa local add <model.gguf> [--name <alias>] [--ctx <positions>] [--max-output <tokens>] [--margin-bytes <n>] [--enable] [--replace] [--engine-dir <dir>] [-- <oxe-server launch arguments>]"],
+        example: "oxa local add ~/models/model.gguf --ctx 16384 --enable -- --oxe-cpus 0-7",
     },
     Entry {
         path: &["mcp"],
@@ -191,12 +216,16 @@ const BASE: &[Entry] = &[
         example: "oxa report-issue submit ~/.oxa/agent/issue-drafts/20260101-120000.md",
     },
     Entry {
+        // Exception: `oxa work` and its `--queue` options are still served by this legacy table,
+        // as the entry note in #1062 records, so their help is declared here and they are not
+        // added to `command_registry.rs` a second time; the migration moves both together.
         path: &["work"],
         summary: "Run tasks in isolated worktrees with external acceptance checks",
         usage: &[
             "oxa work <taskfile> [--rerun]",
             "oxa work --issue N --model MODEL [--rerun]",
             "oxa work --pr N --model MODEL [--rerun]",
+            "oxa work --queue DIR [--max N] [--min-free-mib N] [--max-input-tasks N] [--once]",
             "oxa work status [--json | --usage TASK]",
             "oxa work board --shadow --repo OWNER/REPO --once",
         ],
@@ -210,6 +239,7 @@ const BASE: &[Entry] = &[
             "oxa work board --shadow --repo OWNER/REPO --once",
             "oxa work board --shadow --repo OWNER/REPO --token-stdin [--once] [--app-quota-shadow]",
             "oxa work board --shadow --repo OWNER/REPO --once --review-policy FILE",
+            "oxa work board --shadow --repo OWNER/REPO --token-stdin [--once] [--landing-shadow] [--lead-alarms]",
         ],
         example: "oxa work board --shadow --repo example/project --once",
     },

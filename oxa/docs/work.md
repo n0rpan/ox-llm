@@ -1,5 +1,25 @@
 # Unattended work
 
+## Worker mode
+
+`oxa work` workers start in their default mode inside the tool sandbox. When the owner's
+own settings (`permissions.defaultMode` in the user layer) say `yolo`, the runner starts
+every worker with `--yolo`: no prompts and no tool sandbox. Without yolo nothing changes.
+A project's settings are not read for this and cannot raise the worker mode.
+
+## Worker GitHub access
+
+For a task whose GitHub access the runner owns, `oxa.work.workerGithub` (owner settings only)
+says what the worker keeps. Unset follows the owner's mode:
+
+| Mode | Value | The worker gets |
+|---|---|---|
+| yolo | `worker` | its own GitHub environment and `gh`, MCP, web search and subagents; the packet guidance allows `git` and `gh` |
+| auto | `broker` | no token and no `gh`; the runner's packet guidance stays until the host-side GitHub tools land |
+| standard | `runner` | today's behaviour: no GitHub access, the runner's packet only |
+
+An explicit owner value wins in every mode. A project setting is ignored.
+
 `oxa work board --shadow --repo OWNER/REPO --once` captures a read-only GitHub sample.
 For continuous five-minute sampling use `--token-stdin`: the caller supplies a fresh
 newline-terminated App token on a private pipe before each sample. No token is
@@ -17,6 +37,16 @@ The sample records the observed main ref in `landing_main` independently of queu
 and verified merge-group rejection evidence in `queue_rejections`, including the
 removal event time.
 Use `--queue-evidence` to record only the rejection evidence alongside the board.
+
+Add `--lead-alarms` to also record the protected Lead view's stuck-work sources in the
+same sample: the raw `panels` repository record (main required checks with classic
+protection and ruleset requirements, the verified main merge and merge-queue
+membership) and complete `status=queued` Actions pages in `runs`. Each source is
+captured and degraded independently: a missing or oversized record stays absent,
+the sample is never dropped for it, and the Lead view renders that source as
+explicitly unavailable. A main alarm needs one failed required check at the exact
+observed head; failing optional jobs, pending required checks and unobserved
+requirements never page.
 
 To verify the provenance of test-report archives, pass `--queue-report-policy FILE` with an owner-only
 JSON file in a private directory. Set the trusted workflow path, the exact names
@@ -49,15 +79,21 @@ no GitHub reads while disabled. Findings take precedence over failed required CI
 conflicts, missing nonempty `Removes:` lines for source removal, then green draft
 promotion and reviewed readiness. Pending CI or unknown mergeability waits; other
 PRs wait for review. Release-pinned PRs sort first, then action priority and number.
-Active leases and a per-PR UTC daily attempt cap
-make entries ineligible without hiding them. Snapshot adapters must supply the
+Active leases make entries ineligible without hiding them. Snapshot adapters must supply the
 complete open set, current-head required checks, unresolved findings, source-removal
 facts and review-policy approval for the PR's own diff. Callers
 select private repository-scoped claim storage outside worker-writable binds.
 `Claims::open(root).snapshot()` supplies durable state for `Board::read`.
 Before dispatch, `claim(entry, policy, holder, now, ttl)` atomically reserves a
 lease and an attempt under a kernel file lock, then syncs state before returning.
-The default daily cap is three; a crash after reservation consumes an attempt.
+`budget_pools.limits.max_attempts_per_day` sets the daily attempt threshold as an
+advisory default of three per UTC day, and zero warns immediately: a claim past the
+threshold is still reserved, and `oxa work board --refill` prints one operator
+warning on stderr with the attempt ordinal, the threshold and its UTC window. The
+attempt count never fences admission: `enabled: false`, the pause marker, wait
+actions, stale-head and protected-configuration checks, active leases and Claims
+failures still do.
+A crash after reservation consumes an attempt.
 `release(number, lease)` fences stale workers and never refunds attempts. Active
 leases survive UTC midnight; corrupt state, or state that vanished after a PR's
 first reservation, fails closed. Execution, fresh-head validation and CLI polling
@@ -300,6 +336,28 @@ without replaying the agent. Offline mode refuses network publication.
 Before each push, the runner asks through the controlling terminal for approval
 of the accepted commit, branch and PR destination. Piped input cannot approve it.
 
+### What the publication scan refuses
+
+Before it asks for approval, `--publish` (and a lane push) scans every commit it would push
+that `origin` does not have: the commit objects, the names of added files and every added
+line. It refuses, and names only the file and line, when it finds a private key, a known
+access token format (GitHub, Anthropic, AWS, Slack, Google, GitLab; also when a letter or digit
+directly precedes the prefix), a `password`/`token`/`secret`-style assignment or quoted
+literal with an opaque value (spaces inside quotes do not hide it), an assignment to a name
+ending in `_key` or `credentials` with a long opaque value (`ENCRYPTION_KEY=...`; paths, URLs
+and `${VAR}` references pass), a `Bearer`/`Basic` header (also as a quoted `"Authorization"`
+key) or URL password, or the value of a secret-named environment variable or setting. A JSON
+value edited under an unchanged key line is scanned together with that key. Lines added to a
+secret store (`.env`, `credentials`, key and certificate files, registry logins such as
+`.docker/config.json`) are refused. An empty secret-store file and a template such as
+`.env.example` are not refused by name: they publish unless their content holds one of the
+secrets above. A path that itself contains secret text is refused and withheld.
+
+Deleting a credential in a later commit does not unblock publication, because the earlier
+commit is still pushed. Rewrite the unpublished commits (`git rebase` or a fresh branch), and
+rotate a credential that left the machine. The scan reads only git objects; it does not
+change them.
+
 `--report-problems` independently authorizes filing the task's own structured
 problem notes using the `report-issue` workflow. This flag must be launched by the
 user outside an agent tool. Each new report or comment shows its exact cleaned
@@ -318,12 +376,21 @@ summaries, without raw assistant output or acceptance logs.
 
 
 Queue mode watches a directory of regular, non-hidden `*.json` task files.
-Each file may contain up to 128 tasks and occupy up to 1 MiB. A queue accepts
+Each file may contain up to 256 tasks and occupy up to 1 MiB. The per-file task
+count is an advisory, configurable threshold: `--max-input-tasks N` sets it for
+this run (default 256, between 1 and 4096); a file with more tasks still
+contributes its first N tasks, and one notice names the limit and what was kept.
+The kept records then go through the normal validation and admission, so a
+duplicate id, a shared branch or a retired identity can still refuse an
+individual task. The count notice is informational: it never counts as a failed
+input or a failed task. The byte limit, the directory bounds and the identity
+retention below do not change with that option. A queue accepts
 up to 256 task files and 16 MiB of input per scan. The controller retains at
 most 4,096 task identities and 16 MiB of task text across scans. Archive
 completed inputs and restart the controller if it reaches the retention limit.
 After adding task files, run
-`oxa work --queue ./tasks --max 2 --min-free-mib 1024`.
+`oxa work --queue ./tasks --max 2 --min-free-mib 1024`; add
+`--max-input-tasks 64` to bound each file more tightly for that run.
 
 Files are admitted oldest modification time first (filename breaks ties), with
 array order preserved inside a file. At most `--max` tasks run; surviving workers
@@ -346,7 +413,9 @@ before returning an error.
 
 Queue mode supports `--publish`, `--report-problems` and `--rerun` with the same
 explicit policy as single-file mode. Its worker threads preserve the parent's
-offline policy. Standard output emits JSON lines tagged `state`, `task` or `error`.
+offline policy. Standard output emits JSON lines tagged `state`, `task`, `error`
+or `notice`; a `notice` is informational and never counts as a failed input or
+task.
 The latest state line is also replaced atomically at
 `<queue>/.oxa-queue-status.json` for a monitor. It contains a heartbeat timestamp,
 active task IDs, pending/finished/failed counts, free bytes and disk-pause details.

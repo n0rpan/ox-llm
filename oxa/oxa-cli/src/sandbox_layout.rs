@@ -4,7 +4,7 @@ use oxa_config::{Dirs, Env, Settings};
 use oxa_proto::Level;
 use oxa_sandbox::{
     expand_home, is_home_itself, is_home_or_above, Layout, LayoutInputs, SETTING_ALLOW_HOME_WRITE,
-    SETTING_READ_PATHS, SETTING_WRITE_PATHS,
+    SETTING_READ_PATHS, SETTING_SOCKETS, SETTING_WRITE_PATHS,
 };
 use std::path::Path;
 
@@ -205,7 +205,58 @@ pub(crate) fn layout(
         ));
     }
     built.mask_runtime_ipc = true;
+    built.sockets = listed_sockets(&paths(SETTING_SOCKETS), notices);
     built
+}
+
+/// RP6: the owner's listed sockets that exist and are Unix sockets, canonical and sorted. Each
+/// one is named in a start notice that states the risk; a path that is not a socket is
+/// reported and ignored. Runtime binds require network access and a validated descriptor.
+fn listed_sockets(
+    listed: &[std::path::PathBuf],
+    notices: &mut Vec<(Level, String)>,
+) -> Vec<std::path::PathBuf> {
+    use std::os::unix::fs::FileTypeExt;
+    let (ok, bad): (Vec<_>, Vec<_>) = listed.iter().partition(|p| {
+        p.is_absolute()
+            && p.canonicalize()
+                .and_then(std::fs::metadata)
+                .is_ok_and(|m| m.file_type().is_socket())
+    });
+    let mut socks: Vec<_> = ok.iter().filter_map(|p| p.canonicalize().ok()).collect();
+    socks.sort();
+    socks.dedup();
+    if !bad.is_empty() {
+        let list: Vec<_> = bad.iter().map(|p| p.display().to_string()).collect();
+        notices.push((
+            Level::Warning,
+            format!(
+                "{SETTING_SOCKETS} ignored (not an absolute path to an existing socket): {}",
+                list.join(", ")
+            ),
+        ));
+    }
+    if !socks.is_empty() {
+        notices.push((Level::Warning, socket_notice(&socks)));
+    }
+    socks
+}
+
+/// The start notice of exposed sockets: names each and says what the access means.
+pub(crate) fn socket_notice(socks: &[std::path::PathBuf]) -> String {
+    let list: Vec<_> = socks.iter().map(|p| p.display().to_string()).collect();
+    let runtime = list
+        .iter()
+        .any(|p| ["docker", "podman", "containerd"].iter().any(|n| p.contains(n)));
+    let risk = if runtime {
+        "a container runtime socket gives root on this machine"
+    } else {
+        "whatever the service behind a socket allows, bash can do"
+    };
+    format!(
+        "host sockets configured for network-enabled bash: {} ({SETTING_SOCKETS}); {risk}",
+        list.join(", ")
+    )
 }
 
 #[cfg(test)]
@@ -446,5 +497,75 @@ mod tests {
             notices.iter().any(|(_, t)| t.contains("contains the workspace")),
             "{notices:?}"
         );
+    }
+
+    fn socket_at(path: &std::path::Path) -> std::os::unix::net::UnixListener {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::os::unix::net::UnixListener::bind(path).expect("bind socket")
+    }
+
+    #[test]
+    fn listed_socket_is_in_the_layout_and_notice() {
+        let env = TestEnv::new();
+        let sock = env.root().join("rt/docker.sock");
+        let _l = socket_at(&sock);
+        env.write(
+            "home/.oxa/agent/settings.json",
+            &format!(r#"{{"oxa":{{"sandbox":{{"sockets":["{}"]}}}}}}"#, sock.display()),
+        );
+        let (e, dirs) = setup(&env);
+        let mut notices = Vec::new();
+        let l = layout(&e, &dirs, &env.work(), false, &mut notices);
+        assert_eq!(l.sockets, vec![sock.canonicalize().unwrap()]);
+        assert!(
+            notices
+                .iter()
+                .any(|(lv, t)| *lv == Level::Warning && t.contains("docker.sock")),
+            "{notices:?}"
+        );
+    }
+
+    #[test]
+    fn project_cannot_list_sockets() {
+        let env = TestEnv::new();
+        let sock = env.root().join("rt/docker.sock");
+        let _l = socket_at(&sock);
+        env.write(
+            "work/.oxa/settings.json",
+            &format!(r#"{{"oxa":{{"sandbox":{{"sockets":["{}"]}}}}}}"#, sock.display()),
+        );
+        let (e, dirs) = setup(&env);
+        let mut notices = Vec::new();
+        let l = layout(&e, &dirs, &env.work(), false, &mut notices);
+        assert!(l.sockets.is_empty());
+        assert!(!notices.iter().any(|(_, t)| t.contains("sockets")), "{notices:?}");
+    }
+
+    #[test]
+    fn a_listed_path_that_is_not_a_socket_is_ignored_with_a_warning() {
+        let env = TestEnv::new();
+        let file = env.write("rt/plain", "x");
+        env.write(
+            "home/.oxa/agent/settings.json",
+            &format!(r#"{{"oxa":{{"sandbox":{{"sockets":["{}"]}}}}}}"#, file.display()),
+        );
+        let (e, dirs) = setup(&env);
+        let mut notices = Vec::new();
+        let l = layout(&e, &dirs, &env.work(), false, &mut notices);
+        assert!(l.sockets.is_empty());
+        assert!(notices
+            .iter()
+            .any(|(lv, t)| *lv == Level::Warning && t.contains("ignored")));
+    }
+
+    #[test]
+    fn socket_notice_names_the_risk() {
+        let n = socket_notice(&[std::path::PathBuf::from("/run/docker.sock")]);
+        assert!(
+            n.contains("/run/docker.sock") && n.contains("root on this machine"),
+            "{n}"
+        );
+        let n = socket_notice(&[std::path::PathBuf::from("/run/app/x.sock")]);
+        assert!(n.contains("/run/app/x.sock") && n.contains("bash can do"), "{n}");
     }
 }

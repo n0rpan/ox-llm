@@ -398,12 +398,14 @@ pub mod subagent {
     /// pi's parameter schema without `agentScope` / `confirmProjectAgents` (the agents are the
     /// user's and, in a trusted project, the project's).
     pub const SCHEMA: &str = r#"{"type":"object","properties":{"agent":{"type":"string","description":"Name of the agent to invoke (for single mode)"},"task":{"type":"string","description":"Task to delegate (for single mode)"},"tasks":{"type":"array","description":"Array of {agent, task} for parallel execution","items":{"type":"object","properties":{"agent":{"type":"string","description":"Name of the agent to invoke"},"task":{"type":"string","description":"Task to delegate to the agent"},"cwd":{"type":"string","description":"Working directory for the agent process"}},"required":["agent","task"]}},"chain":{"type":"array","description":"Array of {agent, task} for sequential execution","items":{"type":"object","properties":{"agent":{"type":"string","description":"Name of the agent to invoke"},"task":{"type":"string","description":"Task with optional {previous} placeholder for prior output"},"cwd":{"type":"string","description":"Working directory for the agent process"}},"required":["agent","task"]}},"cwd":{"type":"string","description":"Working directory for the agent process (single mode)"}}}"#;
-    /// `{n}` = the number of tasks (pi's text).
-    pub const TOO_MANY: &str = "Too many parallel tasks ({n}). Max is 8.";
-    /// A chain is the same eight children, one after another (O-146).
-    pub const TOO_MANY_CHAIN: &str = "Too many chain steps ({n}). Max is 8.";
-    /// The cap is per parent session, over every call in flight.
-    pub const TOO_MANY_SESSION: &str = "Too many subagent tasks for this session ({pending} running or queued, {n} more requested). Max is 8. Wait for the running subagent call to finish, or ask for fewer tasks.";
+    /// `{n}` = the number of tasks. A warning appended to the result: the tasks run anyway.
+    pub const TOO_MANY: &str =
+        "Warning: {n} parallel tasks, above oxa.subagent.maxChildren ({max}). All of them ran.";
+    /// A chain is the same count, one step after another.
+    pub const TOO_MANY_CHAIN: &str =
+        "Warning: {n} chain steps, above oxa.subagent.maxChildren ({max}). The chain ran anyway.";
+    /// The count is per parent session, over every call in flight.
+    pub const TOO_MANY_SESSION: &str = "Warning: {pending} subagent tasks were already running or queued for this session and {n} more were added, above oxa.subagent.maxChildren ({max}). They were queued, not refused.";
     pub const NOT_ATTACHED: &str = "Subagent failed: the session host is not attached";
     pub const NOT_STARTED: &str = "Subagent was aborted before starting";
     pub const ABORTED: &str = "Subagent was aborted";
@@ -577,8 +579,8 @@ pub mod builtin_specs {
 
     pub const BASH_DEFAULT: ToolText = ToolText {
         name: BASH.name,
-        description: "Run a bash command in the working directory. Returns stdout and stderr. Output over 16KB is cut to its first and last part and the full output is saved to a file. With background: true the command runs detached and returns a job id; read it later with job: \"job-N\" (optionally wait_s: seconds to block for new output or exit, at most 60); stop it with job: \"job-N\", kill: true. A timeout given with background limits the job's lifetime.",
-        schema_json: r#"{"type":"object","properties":{"command":{"type":"string","description":"Command to run"},"timeout":{"type":"integer","description":"Timeout in seconds"},"background":{"type":"boolean","description":"Run the command detached and return a job id immediately"},"job":{"type":"string","description":"Read the status and output of a background job instead of running a command"},"wait_s":{"type":"integer","description":"With job: block up to this many seconds (max 60) until the job exits or prints new output, then read it. 0 or absent: no wait."},"kill":{"type":"boolean","description":"With job: stop the background job and free its slot"}}}"#,
+        description: "Run a bash command in the working directory. Returns stdout and stderr. Output over 16KB is cut to its first and last part and the full output is saved to a file. With background: true the command runs detached and returns a job id; read it later with job: \"job-N\" (optionally wait_s: seconds to block for new output or exit, at most 300); stop it with job: \"job-N\", kill: true. A timeout given with background limits the job's lifetime. A foreground command that is still running when its timeout passes is not stopped: it moves to a background job, and the result gives the job id and the wall time.",
+        schema_json: r#"{"type":"object","properties":{"command":{"type":"string","description":"Command to run"},"timeout":{"type":"integer","description":"Seconds to wait in the foreground; 0 means wait until it ends. A command still running then continues as a background job"},"background":{"type":"boolean","description":"Run the command detached and return a job id immediately"},"job":{"type":"string","description":"Read the status and output of a background job instead of running a command"},"wait_s":{"type":"integer","description":"With job: block up to this many seconds (max 300) until the job exits or prints new output, then read it. 0 or absent: no wait."},"kill":{"type":"boolean","description":"With job: stop the background job and free its slot"}}}"#,
         class: BASH.class,
         prompt_snippet: BASH.prompt_snippet,
         guidelines: BASH.guidelines,
