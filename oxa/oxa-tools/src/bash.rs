@@ -548,10 +548,8 @@ impl BashTool {
                     .jobs
                     .wait(id, remaining.min(Duration::from_secs(3600)), cx.cancel);
             }
-            if let Ok(read) = self.jobs.read(id) {
-                let fresh = usize::try_from(read.total.saturating_sub(shown)).unwrap_or(usize::MAX);
-                let bytes = read.output.as_bytes();
-                sink(&bytes[bytes.len().saturating_sub(fresh)..]);
+            if let Ok((read, fresh)) = self.jobs.read_bytes_from(id, shown) {
+                sink(&fresh);
                 shown = read.total;
                 last_read = Some(read);
             }
@@ -2303,6 +2301,43 @@ mod poll_tests {
         // The finished foreground job is forgotten: no slot, no readable leftover.
         assert_eq!(jobs.running(), 0);
         assert!(jobs.list().is_empty());
+    }
+
+    struct Burst(Vec<u8>);
+
+    impl Sandbox for Burst {
+        fn check(&self) -> Result<(), OxaError> {
+            Ok(())
+        }
+        fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+            Vec::new()
+        }
+        fn run(&self, _s: &ExecSpec, _c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+            live(&self.0);
+            ExecResult {
+                output: Vec::new(),
+                exit: Some(0),
+                timed_out: false,
+                unsandboxed: false,
+            }
+        }
+    }
+
+    #[test]
+    fn foreground_follower_streams_more_than_the_job_read_cap() {
+        // The bounded display tail would begin in the middle of the euro sign as well as
+        // omitting the leading byte, exercising both truncation and UTF-8 corruption.
+        let expected = format!("z€{}", "x".repeat(crate::jobs::READ_CAP - 2));
+        let jobs = Arc::new(JobRegistry::new());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs)
+            .with_sandbox(Arc::new(Burst(expected.as_bytes().to_vec())));
+        let (out, streamed) = job_call(&tool, json!({"command": "burst", "timeout": 30}));
+
+        // Do not include arbitrary command output in assertion diagnostics: it may contain
+        // sensitive data even though this fixture is synthetic.
+        assert!(!out.is_error);
+        assert_eq!(streamed, expected);
+        assert_eq!(out.text, expected);
     }
 
     /// #1782: an executor can fail before it has a process to stream from. The foreground job

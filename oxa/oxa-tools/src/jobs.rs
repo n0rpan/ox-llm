@@ -435,6 +435,27 @@ impl JobRegistry {
         })
     }
 
+    /// Snapshot the raw bytes retained after the absolute output offset `from`.
+    ///
+    /// Foreground jobs use `keep_all`, so their follower can stream every byte without the
+    /// display-oriented [`READ_CAP`] truncation or a lossy UTF-8 conversion.
+    pub(crate) fn read_bytes_from(&self, id: &str, from: u64) -> Result<(JobRead, Vec<u8>), String> {
+        let state = self.state.lock().unwrap();
+        let job = state.jobs.get(id).ok_or_else(|| format!("Unknown job: {id}"))?;
+        let status = *job.status.lock().unwrap();
+        let mut out = job.output.lock().unwrap();
+        out.seen = out.total;
+        let retained_from = out.total.saturating_sub(out.buf.len() as u64);
+        let start = from.saturating_sub(retained_from).min(out.buf.len() as u64) as usize;
+        let display_start = out.buf.len().saturating_sub(READ_CAP);
+        let read = JobRead {
+            status,
+            output: String::from_utf8_lossy(&out.buf[display_start..]).into_owned(),
+            total: out.total,
+        };
+        Ok((read, out.buf[start..].to_vec()))
+    }
+
     /// Take a finished job out of the registry: its status, all buffered output and whether it
     /// ran unsandboxed. `Ok(None)` while the job still runs (it stays); `Err` for an unknown id.
     pub fn take_finished(&self, id: &str) -> Result<Option<TakenJob>, String> {
