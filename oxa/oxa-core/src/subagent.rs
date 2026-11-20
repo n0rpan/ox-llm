@@ -1543,17 +1543,17 @@ impl Run<'_, '_> {
         drop(excluded);
         // A fork child's prefix is the parent's (the tool list is part of it), so the agent's
         // own prompt goes into its task instead, where it does not break the shared prefix.
-        let mut task_text = task.to_string();
+        let mut task_line = T::TASK.replace("{task}", task);
         let prompt = agent.system_prompt.trim();
         if !prompt.is_empty() {
             if forks {
-                task_text = T::FORK_PROMPT.replace("{prompt}", prompt).replace("{task}", task);
+                task_line = T::FORK_PROMPT.replace("{prompt}", prompt).replace("{task}", task);
             } else {
                 argv.push("--append-system-prompt".into());
                 argv.push(agent.system_prompt.clone());
             }
         }
-        argv.push(T::TASK.replace("{task}", &task_text));
+        argv.push(task_line);
         let env = child_env(&hint, soft, seed_file.path());
         let expected = &self.cwds[k];
         let current = child_cwd(self.cx.cwd, item.cwd.as_deref().unwrap_or("."));

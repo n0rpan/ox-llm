@@ -389,6 +389,13 @@ pub const ENV_TABLE: &[EnvVar] = &[
         kind: EnvKind::Internal,
     },
     EnvVar {
+        name: "OXA_CHILD_FORK",
+        pi_name: None,
+        description: "a parent oxa sets the path of a local subagent child's fork seed (the session's frozen prefix and its conversation, owner-only, deleted with the child); the child continues that conversation instead of starting its own",
+        supported: true,
+        kind: EnvKind::Internal,
+    },
+    EnvVar {
         name: "OXA_WORKER_DEPTH",
         pi_name: None,
         description: "oxa sets 1 in the environment of a lead worker session; dropped from the parent environment before it is set",

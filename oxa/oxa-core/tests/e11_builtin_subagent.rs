@@ -1740,12 +1740,13 @@ fn a_local_child_forks_from_the_parents_head() {
     );
     assert!(!Path::new(&seed_path).exists(), "the seed file is removed");
 
-    // Its agent prompt rides in the task, not in the prefix (the prefix is the parent's).
+    // Its agent prompt rides in the task, not in the prefix (the prefix is the parent's). The
+    // task is one multi-line argument: the dump format prefixes only its first line.
     let words = argv(&env, "sess.s1");
-    assert_eq!(
-        words.last().map(String::as_str),
-        Some("You are scout.\n\nTask: look"),
-        "{words:?}"
+    let dumped = dump(&env, "sess.s1");
+    assert!(
+        dumped.contains("arg=You are scout.\n\nTask: look\n"),
+        "the task carries the agent prompt and the task: {dumped}"
     );
     assert!(!words.iter().any(|w| w == "--append-system-prompt"));
     // It starts at the parent's context: the limit is the parent's compaction point.
