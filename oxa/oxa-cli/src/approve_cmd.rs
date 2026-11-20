@@ -141,7 +141,7 @@ fn is_invisible_format(c: char) -> bool {
 
 /// `oxa send <session> --approve <request> <answer>`. The request must belong to `session`.
 /// `always` also saves the rule keys to the user settings (never the project's).
-fn approve_with(
+pub(crate) fn approve_with(
     dirs: &Dirs,
     cwd: &Path,
     session: &str,
