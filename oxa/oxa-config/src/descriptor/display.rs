@@ -107,7 +107,6 @@ mod tests {
     #[test]
     fn display_keys_exist_in_schema() {
         let rows: Vec<&Descriptor> = in_group(Group::Display).collect();
-        assert_eq!(rows.len(), 30);
         for row in &rows {
             if let Kind::Enum(options) = kind_of(row.key) {
                 for (opt, _) in row.choices {

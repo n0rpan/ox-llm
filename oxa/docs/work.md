@@ -7,6 +7,19 @@ own settings (`permissions.defaultMode` in the user layer) say `yolo`, the runne
 every worker with `--yolo`: no prompts and no tool sandbox. Without yolo nothing changes.
 A project's settings are not read for this and cannot raise the worker mode.
 
+## Worker GitHub access
+
+For a task whose GitHub access the runner owns, `oxa.work.workerGithub` (owner settings only)
+says what the worker keeps. Unset follows the owner's mode:
+
+| Mode | Value | The worker gets |
+|---|---|---|
+| yolo | `worker` | its own GitHub environment and `gh`, MCP, web search and subagents; the packet guidance allows `git` and `gh` |
+| auto | `broker` | no token and no `gh`; the runner's packet guidance stays until the host-side GitHub tools land |
+| standard | `runner` | today's behaviour: no GitHub access, the runner's packet only |
+
+An explicit owner value wins in every mode. A project setting is ignored.
+
 `oxa work board --shadow --repo OWNER/REPO --once` captures a read-only GitHub sample.
 For continuous five-minute sampling use `--token-stdin`: the caller supplies a fresh
 newline-terminated App token on a private pipe before each sample. No token is

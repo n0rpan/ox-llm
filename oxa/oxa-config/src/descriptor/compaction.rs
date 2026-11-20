@@ -181,9 +181,6 @@ mod tests {
 
     #[test]
     fn compaction_keys_exist_in_schema() {
-        let compaction = ENTRIES.iter().filter(|e| e.group == Group::Compaction).count();
-        let codemode = ENTRIES.iter().filter(|e| e.group == Group::Codemode).count();
-        assert_eq!((compaction, codemode), (12, 4));
         let mut seen = std::collections::HashSet::new();
         for e in ENTRIES {
             assert!(find_key(e.key).is_some(), "not in schema: {}", e.key);

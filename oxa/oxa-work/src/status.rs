@@ -237,7 +237,8 @@ mod tests {
             content_scan: None,
             runner_owns_github: true,
             autonomy: Default::default(),
-            autonomy_now: None,
+            worker_github: Default::default(),
+            authority_now: None,
             storage: directory.path().into(),
         };
         let lease = Lease {

@@ -1113,8 +1113,9 @@ mod scan_tests {
             content_scan: None,
             offline: false,
             runner_owns_github: false,
-            autonomy: oxa_proto::Autonomy::default(),
-            autonomy_now: None,
+            autonomy: Default::default(),
+            worker_github: Default::default(),
+            authority_now: None,
             storage: dir.path().join("storage"),
         };
         git_ok(dir.path(), &["init", "-q", "-b", "main"]);

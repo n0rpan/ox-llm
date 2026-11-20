@@ -1007,7 +1007,8 @@ mod tests {
             content_scan: None,
             runner_owns_github: false,
             autonomy: Default::default(),
-            autonomy_now: None,
+            worker_github: Default::default(),
+            authority_now: None,
             storage: directory.path().join("runner"),
         };
         assert!(Command::new(&policy.git_binary)
