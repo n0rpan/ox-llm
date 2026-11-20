@@ -110,6 +110,7 @@ fn builtin_files_install_once_and_expand_without_install() {
     let text = expand_skill_command(find(&skills, "ox-llm"), "status?").expect("expand");
     assert!(
         text.starts_with("<skill name=\"ox-llm\"")
+            && text.contains("oxa models --json")
             && text.contains("oxa usage --json")
             && !text.contains("oxc")
             && !text.contains("local-ai")
@@ -389,4 +390,33 @@ fn report_issue_skill_searches_for_duplicates_before_filing() {
     assert!(text.contains("link the related"), "related issues are linked");
     assert!(text.contains("without prefixes"), "titles state the symptom");
     let _ = draft;
+}
+
+/// #1542: the ox-llm skill documents the native catalog and status surfaces. It must not send
+/// the model to the legacy controller CLIs (`oxc`, `local-ai`) or to a credential file.
+#[test]
+fn ox_llm_skill_uses_native_surfaces_and_no_legacy_invocations() {
+    let text = BUILTIN_SKILLS
+        .iter()
+        .find(|(n, _)| *n == "ox-llm")
+        .map(|(_, t)| *t)
+        .unwrap();
+    assert!(text.contains("oxa models"), "the native catalog is documented");
+    assert!(
+        text.contains("oxa models --json"),
+        "the JSON status comes from the same native surface"
+    );
+    assert!(text.contains("/model"), "switching stays inside oxa");
+    for legacy in ["`oxc ", "`local-ai", "oxa.profile"] {
+        assert!(
+            !text.contains(legacy),
+            "the ox-llm skill still invokes {legacy:?}"
+        );
+    }
+    for credential in ["cloud-secrets", "chatgpt-auth"] {
+        assert!(
+            !text.contains(credential),
+            "the ox-llm skill must not read {credential:?}"
+        );
+    }
 }

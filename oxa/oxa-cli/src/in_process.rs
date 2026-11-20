@@ -16,6 +16,7 @@ use std::{sync::Arc, time::Duration};
 mod catalog;
 mod routing;
 pub(crate) use catalog::cloud_enabled;
+pub(crate) use routing::is_go_model;
 
 pub(crate) const SETTING: &str = "oxa.engine.inProcessCloud";
 pub(crate) const GO_SETTING: &str = "oxa.cloud.opencode.enabled";

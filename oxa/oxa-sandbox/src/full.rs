@@ -212,10 +212,13 @@ impl FullAccess {
     ) -> ExecResult {
         if !self.no_net() {
             let spec = self.host_spec(s);
-            if let Some(net) = &self.host_net {
-                return net.redact_host_output(live, |live| run_unsandboxed_capture(&spec, c, live, capture));
-            }
-            return run_unsandboxed_capture(&spec, c, live, capture);
+            let mut result = if let Some(net) = &self.host_net {
+                net.redact_host_output(live, |live| run_unsandboxed_capture(&spec, c, live, capture))
+            } else {
+                run_unsandboxed_capture(&spec, c, live, capture)
+            };
+            result.unsandboxed = true;
+            return result;
         }
         self.run_without_network(s, None, c, live, capture)
     }

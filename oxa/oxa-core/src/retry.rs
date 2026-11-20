@@ -189,6 +189,29 @@ pub(crate) fn chat_with_retry_keyed(
             return Err(err);
         }
 
+        if let Some(wait) = quota_wait_seconds(&err) {
+            let error = OxaError::new(
+                "cloud_quota_exhausted",
+                format!(
+                    "Provider quota exhausted for {} (retry after {wait} s).",
+                    st.model
+                ),
+            )
+            .with_hint(
+                if st
+                    .goal
+                    .as_ref()
+                    .is_some_and(|goal| goal.engaged() && goal.pursuing())
+                {
+                    "Switch to another model or wait for the quota to reset, then use /goal resume."
+                } else {
+                    "Switch to another model or wait for the provider quota to reset."
+                },
+            );
+            finish_failed(sink, retries, &error);
+            return Err(error);
+        }
+
         // #2050: a local engine that is not answering and a 5xx body that repeats byte for
         // byte are not transient; the long backoff is for a cloud provider briefly overloaded.
         let local_down = own_engine && local_failure(&err);
@@ -557,6 +580,17 @@ fn retry_after_ms(msg: &str) -> Option<u64> {
         return None;
     }
     digits.parse::<u64>().ok().map(|s| s.saturating_mul(1000))
+}
+
+fn quota_wait_seconds(error: &OxaError) -> Option<u64> {
+    if error.code != "cloud_rate_limited"
+        && !(error.code == codes::ENGINE_HTTP && http_status(&error.message) == Some(429))
+    {
+        return None;
+    }
+    retry_after_ms(&error.message)
+        .filter(|ms| *ms > 900_000)
+        .map(|ms| ms / 1000)
 }
 
 fn agent_retry_delay(error: &OxaError, attempt: u32, policy: &RetryPolicy) -> Option<u64> {

@@ -600,7 +600,7 @@ const TYPED_CLOUD_REFUSALS: &[&str] = &[
     "cloud_ledger_unavailable",
 ];
 
-/// [`http_error`] with the response's `Retry-After` (seconds). A 503 (the controller's queue-full
+/// [`http_error`] with the response's `Retry-After` (seconds) on 429 and 503. A 503 (the controller's queue-full
 /// reply, `local_backend_busy`, or the engine's own `unavailable_error`) is `engine_busy`; its
 /// message names `HTTP 503` and, with a `Retry-After`, `retry after <n> s`, which the core's
 /// retry honours.
@@ -697,12 +697,12 @@ fn overflow() -> OxaError {
 }
 
 fn status_error(status: u16, detail: &str, retry_after: Option<u32>) -> OxaError {
-    let msg = format!("the engine answered HTTP {status}: {detail}");
+    let msg = match retry_after {
+        Some(n) if status == 429 => format!("the engine answered HTTP 429 (retry after {n} s): {detail}"),
+        Some(n) if status == 503 => format!("the engine answered HTTP 503: {detail} (retry after {n} s)"),
+        _ => format!("the engine answered HTTP {status}: {detail}"),
+    };
     if status == 503 {
-        let msg = match retry_after {
-            Some(n) => format!("{msg} (retry after {n} s)"),
-            None => msg,
-        };
         return OxaError::new(codes::ENGINE_BUSY, msg).with_hint(
             "the engine is busy (its queue is full or no model is loaded); the request is retried",
         );
