@@ -553,9 +553,9 @@ mod tests {
         assert!(descriptor("compaction.keepRecentTokens").is_some());
         assert_eq!(fields_of("oxa.lead.serve").count(), 9);
         assert_eq!(in_group(Group::Display).count(), 30);
-        // main's 147 descriptors plus `oxa.a2a.enabled`, `oxa.emptyReplyRetries`
-        // and this branch's `oxa.cloud.openrouter_provider`.
-        assert_eq!(descriptors().len(), 150);
+        // main's 147 descriptors plus `oxa.a2a.enabled`, `oxa.emptyReplyRetries`,
+        // this branch's `oxa.cloud.openrouter_provider` and the two retry keys of #2050.
+        assert_eq!(descriptors().len(), 152);
     }
 
     #[test]
