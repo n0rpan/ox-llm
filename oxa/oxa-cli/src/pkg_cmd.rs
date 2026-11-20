@@ -1,7 +1,6 @@
 //! E10: `oxa install|remove|update|list`.
 // ported from pi packages/coding-agent/src/package-manager-cli.ts (docs: packages.md)
 use oxa_config::{Dirs, Settings};
-use oxa_perm::TrustStore;
 use oxa_proto::{codes, OxaError};
 use oxa_resources::{declared_packages, parse_source, PackageManager, PackageSource, Scope, SystemRunner};
 use serde_json::Value;
@@ -65,7 +64,7 @@ pub fn run_pkg(
         )));
     }
     let scope = if local { Scope::Project } else { Scope::User };
-    let trusted = TrustStore::load(&dirs.trust_file()).trusted_as_approved(cwd);
+    let trusted = crate::approval::saved_project_resources(dirs, cwd, err)?;
     let mut settings = Settings::load(dirs, cwd, trusted);
     let mgr = PackageManager::new(dirs, cwd, Box::new(SystemRunner));
 

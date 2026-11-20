@@ -22,9 +22,10 @@ pub(super) fn configuration(
     root: &Path,
     env: &oxa_config::Env,
     dirs: &oxa_config::Dirs,
+    err: &mut dyn Write,
 ) -> Result<(Value, PathBuf, u32), String> {
-    if !crate::work_cmd::trusted(root, env, dirs)? {
-        return Err("source project is not trusted".into());
+    if !crate::work_cmd::trusted(root, env, dirs, err)? {
+        return Err(crate::work_cmd::needs_trust(root, "the work board"));
     }
     let config = config.canonicalize().map_err(|_| "board config unavailable")?;
     let authority = dirs
@@ -69,6 +70,7 @@ pub(super) fn run(
     env: &oxa_config::Env,
     dirs: &oxa_config::Dirs,
     policy: &oxa_work::RunPolicy,
+    err: &mut dyn Write,
 ) -> Result<i32, String> {
     // #1062 owns command declarations; WorkBoard's existing Tail seam retains handler validation.
     let [mode, repo_flag, repo, once, token_flag, config_flag, config] = args else {
@@ -98,7 +100,7 @@ pub(super) fn run(
     if policy.offline {
         return Err("GitHub board is unavailable in offline mode".into());
     }
-    let (value, authority, uid) = configuration(Path::new(config), root, env, dirs)?;
+    let (value, authority, uid) = configuration(Path::new(config), root, env, dirs, err)?;
     if value["enabled"] != true {
         return Ok(0);
     }

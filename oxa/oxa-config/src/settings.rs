@@ -124,6 +124,11 @@ impl SettingsFiles {
     pub fn project_changed_since(&self, previous: &Self) -> bool {
         self.project_stamp != previous.project_stamp
     }
+
+    /// Startup admitted the session's own project settings path.
+    pub fn allows_project(&self) -> bool {
+        self.project.is_some()
+    }
 }
 
 impl Settings {
@@ -492,6 +497,10 @@ impl Settings {
     /// The value `key` has in the user file, if any (not the merged value).
     pub fn user_value(&self, key: &str) -> Option<&Value> {
         lookup(&self.user, key)
+    }
+    /// Folder trust is the default. Only the owner can select per-content approval.
+    pub fn project_trust_requires_content(&self) -> bool {
+        self.user_value("projectTrustPolicy").and_then(Value::as_str) == Some("content")
     }
     /// Whether the local agent channel (control lane) is on: `oxa.a2a.enabled`, default true.
     /// Read from the user file only; a project file cannot change it.
@@ -979,7 +988,8 @@ fn queue_mode(value: Option<&str>) -> QueueMode {
 fn fail_safe_user_layer() -> Value {
     serde_json::json!({
         "oxa": {"offline": true, "sandbox": {"net": "off"}, "engine": {"allowRemote": false}},
-        "defaultProjectTrust": "never"
+        "defaultProjectTrust": "never",
+        "projectTrustPolicy": "content"
     })
 }
 

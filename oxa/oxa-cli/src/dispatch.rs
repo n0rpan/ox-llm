@@ -1043,16 +1043,17 @@ fn prepare(
     let inherited_source = env
         .get(oxa_work::WORKTREE_TRUST_SOURCE_ENV)
         .filter(|_| mode == RunMode::Json);
-    let trusted = if let Some(source) = inherited_source.filter(|_| a.approve.is_none()) {
-        let source = Path::new(source);
-        let store = TrustStore::load(&dirs.trust_file());
+    let managed_source = inherited_source.map(Path::new).filter(|source| {
         let path = std::ffi::OsStr::new(env.get("PATH").unwrap_or(""));
-        let trusted = store.lookup(source) == Some(true)
-            && crate::netguard::trusted_executable_for("git", Some(path), Some(cwd), Some(&dirs.home))
-                .is_some_and(|git| oxa_work::verify_managed_worktree(&git, path, source, cwd).is_ok())
-            && store.approved_worktree_resources(source, cwd);
+        crate::netguard::trusted_executable_for("git", Some(path), Some(cwd), Some(&dirs.home))
+            .is_some_and(|git| oxa_work::verify_managed_worktree(&git, path, source, cwd).is_ok())
+    });
+    let trusted = if inherited_source.is_some() && a.approve.is_none() {
+        let trusted = managed_source.is_some_and(|source| {
+            TrustStore::load(&dirs.trust_file()).approved_worktree_resources(source, cwd)
+        });
         if !trusted {
-            report_untrusted_project(dirs, cwd, &gated, &mut notices);
+            report_untrusted_project(&gated, &mut notices);
         }
         trusted
     } else {
@@ -1069,6 +1070,23 @@ fn prepare(
     // Inherited trust covers verified resources. Project settings, MCP and
     // agent definitions need direct approval.
     let direct_project_trust = trusted && inherited_source.is_none();
+    if !trusted && Settings::project_declares_done(dirs, cwd) {
+        if managed_source.is_some() {
+            notices.push((
+                Level::Info,
+                "Managed worktree: the work runner handles project done checks".into(),
+            ));
+        } else {
+            let fix = format!(
+                "{}, or pass --approve for this run",
+                crate::approval::approval_fix(cwd)
+            );
+            if mode != RunMode::Interactive || !stdin_is_tty || !stdout_is_tty {
+                return Err(OxaError::new(codes::DENIED, UNTRUSTED_DONE).with_hint(fix));
+            }
+            notices.push((Level::Warning, format!("{UNTRUSTED_DONE}\nFix: {fix}")));
+        }
+    }
     let mut settings = child.apply(if direct_project_trust {
         Settings::load(dirs, cwd, true)
     } else {
@@ -1598,7 +1616,7 @@ pub(crate) fn project_trusted(
             }
         }
     };
-    // B4: what runs outside the sandbox loads only as the user approved it (content hashes).
+    // Apply the owner's folder or content policy only after resolving trust.
     let trusted = if trusted && !gated.is_empty() {
         crate::approval::check(crate::approval::Check {
             env,
@@ -1608,6 +1626,7 @@ pub(crate) fn project_trusted(
             via_flag: approve == Some(true),
             via_default: extension.is_none() && saved.is_none() && default == DefaultTrust::Trust,
             asked_now,
+            content: user_settings.project_trust_requires_content(),
             interactive,
             notices,
         })?
@@ -1621,12 +1640,14 @@ pub(crate) fn project_trusted(
         trust_store.record_baseline(&dirs.trust_file(), cwd)?;
     }
     if !trusted {
-        report_untrusted_project(dirs, cwd, gated, notices);
+        report_untrusted_project(gated, notices);
     }
     Ok(trusted)
 }
 
-fn report_untrusted_project(dirs: &Dirs, cwd: &Path, gated: &[String], notices: &mut Vec<(Level, String)>) {
+const UNTRUSTED_DONE: &str = "done checks in .oxa/settings.json were not run: project is not trusted";
+
+fn report_untrusted_project(gated: &[String], notices: &mut Vec<(Level, String)>) {
     if !gated.is_empty() {
         notices.push((
             Level::Warning,
@@ -1634,14 +1655,6 @@ fn report_untrusted_project(dirs: &Dirs, cwd: &Path, gated: &[String], notices: 
                 "project resources were skipped (not trusted): {}",
                 gated.join(", ")
             ),
-        ));
-    }
-    // `done` is a project-only key in practice: an untrusted project's list is never merged,
-    // so say that its checks will not run.
-    if Settings::project_declares_done(dirs, cwd) {
-        notices.push((
-            Level::Warning,
-            "done checks in .oxa/settings.json were not run: project is not trusted".to_string(),
         ));
     }
 }
@@ -1693,15 +1706,30 @@ fn help_extension_flags(a: &Args, env: &Env, cwd: &Path, err: &mut dyn Write) ->
         Some("never") => DefaultTrust::Untrusted,
         _ => DefaultTrust::Ask,
     };
+    let store = TrustStore::load(&dirs.trust_file());
+    let saved = store.lookup(cwd);
     let gated = gated_resources(cwd);
     let trusted = resolve_trust(&TrustInputs {
         flag: a.approve,
         extension: None,
-        saved: TrustStore::load(&dirs.trust_file()).lookup(cwd),
+        saved,
         default,
         interactive: false,
         has_gated: !gated.is_empty(),
     }) == TrustOutcome::Trusted;
+    let trusted = if trusted && !gated.is_empty() {
+        if user.project_trust_requires_content() {
+            let blanket = a.approve == Some(true) || (saved.is_none() && default == DefaultTrust::Trust);
+            blanket || !matches!(store.approval(cwd), oxa_perm::Approval::Changed(_))
+        } else {
+            if let Some(text) = store.folder_changes_notice(cwd) {
+                write_diagnostics(err, [(Level::Warning, text)].into_iter());
+            }
+            true
+        }
+    } else {
+        trusted
+    };
     let settings = Settings::load(&dirs, cwd, trusted);
     let opts = match discover_opts(a, &dirs, cwd, trusted) {
         Ok(o) => o,

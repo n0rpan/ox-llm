@@ -778,12 +778,13 @@ pub(crate) fn run(
     env: &oxa_config::Env,
     dirs: &oxa_config::Dirs,
     policy: &oxa_work::RunPolicy,
+    err: &mut dyn std::io::Write,
 ) -> Result<i32, String> {
     if args.first().is_some_and(|arg| arg == "--claims-readback") {
-        return claims_readback::run(args, root, common, env, dirs);
+        return claims_readback::run(args, root, common, env, dirs, err);
     }
     if args.first().is_some_and(|arg| arg == "--refill") {
-        return refill::run(args, root, common, env, dirs, policy);
+        return refill::run(args, root, common, env, dirs, policy, err);
     }
     // Existing parser declaration; migrate command/flag metadata together in #1062.
     let (repo, options) = match args {
@@ -832,8 +833,8 @@ pub(crate) fn run(
     if policy.offline {
         return Err("GitHub board is unavailable in offline mode".into());
     }
-    if !crate::work_cmd::trusted(root, env, dirs)? {
-        return Err("source project is not trusted".into());
+    if !crate::work_cmd::trusted(root, env, dirs, err)? {
+        return Err(crate::work_cmd::needs_trust(root, "the work board"));
     }
     let review_settings = review_file
         .map(|path| review::Settings::read(Path::new(path)))

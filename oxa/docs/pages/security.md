@@ -162,12 +162,12 @@ A project can carry configuration that runs code or loads code: settings with ho
 - `defaultProjectTrust` sets the answer when no decision is recorded: `ask` (default), `always` or `never`. It is a user setting.
 - An untrusted project still contributes its context files (`AGENTS.md`, `CLAUDE.md`), which are text. Its other resources do not load.
 
-Trust covers the content, not just the directory. Once you trust a project, oxa records a hash of each file that runs or loads code: the project's `settings.json` keys that do this, `mcp.json`, `SYSTEM.md`, `APPEND_SYSTEM.md`, and everything under `.oxa/extensions`, `.oxa/skills`, `.oxa/prompts`, and `.agents/skills`. The model can write these files, so if one changes:
+`projectTrustPolicy` is a user-only setting:
 
-- in the interface, oxa asks again and lists each changed file;
-- in print, JSON and RPC modes, the changed resources are not loaded and a notice names the files.
+- `folder` (default): trust the folder once. New or changed gated files load without another question. The notice names changed paths, not their contents. The closest saved parent decision applies if the folder has no decision of its own; a saved child denial still blocks loading.
+- `content`: also require approval of changed executable project content. oxa checks hashes for the executable keys in project `settings.json`, `mcp.json`, `SYSTEM.md`, `APPEND_SYSTEM.md`, extensions, skills and prompt templates. At interactive startup it asks again and lists each changed file. In print, JSON and RPC modes it leaves the changed resources unloaded and names them. Loading a change under folder policy does not approve those bytes for content policy later.
 
-`--approve` trusts the project and records the current content for one run. `--no-approve` ignores the project's configuration and resources for one run. `oxa install -l` and `oxa mcp ... -l` check the same record.
+`--approve` trusts the project for one run and records the current content. `--no-approve` ignores the project's configuration and resources for one run. For a saved decision, start oxa interactively in that folder, approve it (use `/trust` to change an existing decision), and restart. `oxa install -l` and `oxa mcp ... -l` require a saved decision and use the selected policy. Trusted unattended checks still run; an untrusted unattended run with project `done` checks fails with the approval route instead of silently skipping them. This does not grant a managed worker direct trust in its worktree.
 
 In `standard` and `auto`, the model cannot write `.oxa/**` or `.agents/skills/**` without asking, and the file tools refuse writes to `.git/hooks` or `.git/config`. Plan mode denies these writes too. User-selected `yolo` outside plan mode deliberately lifts all of these guards.
 

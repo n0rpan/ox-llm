@@ -7,17 +7,27 @@ use std::path::{Path, PathBuf};
 mod native_queue;
 pub(crate) use native_queue::authenticate_native_claim;
 
-pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs) -> Result<bool, String> {
-    crate::dispatch::project_trusted(
+pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs, err: &mut dyn Write) -> Result<bool, String> {
+    let mut notices = Vec::new();
+    let trusted = crate::dispatch::project_trusted(
         &crate::Args::default(),
         env,
         dirs,
         cwd,
         &oxa_perm::gated_resources(cwd),
         false,
-        &mut vec![],
+        &mut notices,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    crate::dispatch::write_diagnostics(err, notices.into_iter());
+    Ok(trusted)
+}
+
+pub(crate) fn needs_trust(cwd: &Path, purpose: &str) -> String {
+    format!(
+        "source project is not trusted; {purpose} could not run. Fix: {}",
+        crate::approval::approval_fix(cwd)
+    )
 }
 
 /// Decode the registration from the already-verified owner config.
@@ -193,7 +203,7 @@ pub(crate) fn run(
         // the environment only; an interactive run asks below once it knows.
         configure_lane(&mut policy, &root, env, dirs, false);
         if args.first().is_some_and(|arg| arg == "board") {
-            return crate::work_board::run(&args[1..], &root, &common, env, dirs, &policy);
+            return crate::work_board::run(&args[1..], &root, &common, env, dirs, &policy, err);
         }
         if matches!(args.first().map(String::as_str), Some("status" | "--status")) {
             let json = match args {
@@ -231,10 +241,8 @@ pub(crate) fn run(
         }
         if let [command, id] = args {
             if command == "verify" {
-                if !trusted(&root, env, dirs)? {
-                    return Err(
-                        "source project is not trusted; approve it before running saved checks".into(),
-                    );
+                if !trusted(&root, env, dirs, err)? {
+                    return Err(needs_trust(&root, "saved checks"));
                 }
                 let verified = oxa_work::verify_saved_task(&root, &binary, &policy, id)?;
                 let record = verified.record();
@@ -266,7 +274,7 @@ pub(crate) fn run(
             return Err("publishing and problem reporting require the owner outside an agent tool".into());
         }
         let task_args = &args[..end];
-        let is_trusted = trusted(&root, env, dirs)?;
+        let is_trusted = trusted(&root, env, dirs, err)?;
         let mut context = Context {
             cwd: root.clone(),
             binary: binary.clone(),
@@ -282,7 +290,7 @@ pub(crate) fn run(
         };
         if task_args.first().is_some_and(|word| word == "--native-queue") {
             if !is_trusted {
-                return Err("source project is not trusted; approve it before unattended work".into());
+                return Err(needs_trust(&root, "unattended work and its checks"));
             }
             let [_, flag, config] = task_args else {
                 return Err("usage: oxa work --native-queue --config PATH".into());
@@ -294,7 +302,7 @@ pub(crate) fn run(
         }
         if task_args.first().is_some_and(|word| word == "--queue") {
             if !is_trusted {
-                return Err("source project is not trusted; approve it before unattended work".into());
+                return Err(needs_trust(&root, "unattended work and its checks"));
             }
             let (directory, options) = queue_options(task_args, cwd)?;
             let df = crate::netguard::trusted_executable_for(
@@ -334,7 +342,7 @@ pub(crate) fn run(
                     return Err("GitHub issue lookup is unavailable in offline mode".into());
                 }
                 if !is_trusted {
-                    return Err("source project is not trusted; approve it before issue lookup".into());
+                    return Err(needs_trust(&root, "issue lookup"));
                 }
                 let number = number.parse().map_err(|_| "invalid issue number")?;
                 let task = if let Some(task) = oxa_work::saved_issue_task(&policy, number, model)? {
@@ -359,7 +367,7 @@ pub(crate) fn run(
                     return Err("GitHub pull request lookup is unavailable in offline mode".into());
                 }
                 if !is_trusted {
-                    return Err("source project is not trusted; approve it before pull request lookup".into());
+                    return Err(needs_trust(&root, "pull request lookup"));
                 }
                 let gh = crate::netguard::trusted_executable_for(
                     "gh",
@@ -406,7 +414,7 @@ pub(crate) fn run(
         } else {
             tasks
                 .iter()
-                .map(|_| Err("source project is not trusted; approve it before unattended work".into()))
+                .map(|_| Err(needs_trust(&root, "unattended work and its checks")))
                 .collect()
         };
         let planned: Vec<_> = tasks

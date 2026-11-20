@@ -15,6 +15,7 @@ pub(super) const ROWS: &[PageRow] = &[
     row("oxa.approval.unattended", "enum", "`\"auto\"`", "what an unattended run (no one to ask: workers, subagents, headless goals) does with a dangerous command (#1512). `auto` refuses it under the OS sandbox and requests approval without it; `refuse` always refuses; `request` files a request for the owner (`oxa send <session> --approve <id> once|session|always|deny`, or the Lead web approvals page). A `session` answer lasts for the current run and expires when a persisted session is resumed. Shell input classified as `pipe-to-shell` requires direct owner review because the command text cannot identify the input bytes for a retry. Nothing waits for an answer. User settings only"),
     row("oxa.mode", "`plan` / `workspace` / `ask`", "`workspace`", "table mode at start"),
     row("defaultProjectTrust", "`ask` / `always` / `never`", "`ask`", "what happens in a project that is not trusted yet; user settings only"),
+    row("projectTrustPolicy", "`folder` / `content`", "`folder`", "trusted folders load new or changed resources with a notice; `content` requires fresh approval of changed executable project files. User settings only. See [security.md](security.md#project-trust)"),
     row("oxa.offline", "bool", "`false`", "same as `--offline`; user settings only"),
     row("oxa.engine.allowRemote", "bool", "`false`", "allow an engine on another host; user settings only"),
     row("oxa.engine.inProcessLocal", "bool", "`false`", "select the in-process owned local engine, including offline; user settings only"),
