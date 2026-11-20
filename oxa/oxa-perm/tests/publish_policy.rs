@@ -418,6 +418,7 @@ fn continued_config_values_and_git_aliases_ask() {
         "git ship",
         "git status && git ship",
         "git -c alias.ship='push origin HEAD:refs/heads/main' ship",
+        "git --config-env=alias.ship=SHIP_COMMAND ship",
     ] {
         assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{c}");
     }

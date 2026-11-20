@@ -267,6 +267,11 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
     let rest = &args[1..];
     let (k, dirs, opaque) = git_globals(rest);
     let sub = rest.get(k).map(String::as_str);
+    // An opaque global can define an alias or redirect Git before the apparent
+    // subcommand runs, so it is unsafe even when that subcommand is not `push`.
+    if opaque {
+        return Kind::Unsafe;
+    }
     if sub == Some("send-pack") {
         return Kind::Unsafe;
     }
@@ -280,7 +285,7 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
         return Kind::Other;
     }
     let push = &rest[k + 1..];
-    if opaque || moved || env_unsafe(all) || all.iter().any(|w| dynamic(w)) {
+    if moved || env_unsafe(all) || all.iter().any(|w| dynamic(w)) {
         return Kind::Unsafe;
     }
     let wd = if dirs.is_empty() {
