@@ -92,7 +92,8 @@ oxa lead --loopback HTTP--> browser page; oxa work/lead --> GitHub (board, revie
   tests and the secret scans.
 - `lane.yml` runs the affected-crate tests for a lane; `e2e.yml` runs the real-model prompt and tool
   loop; `oracle.yml` checks the gate and cache controls.
-- Also: `macos.yml`, `release-build.yml`, `release.yml`, `dev-build.yml`, `codeql.yml`,
+- `macos.yml` (native macOS arm64 oxa-cli build) is called by `checks.yml` as the required `macos` job and also runs on main.
+- Also: `release-build.yml`, `release.yml`, `dev-build.yml`, `codeql.yml`,
   `go-review.yml`.
 
 | Unit | Root | Lockfile |

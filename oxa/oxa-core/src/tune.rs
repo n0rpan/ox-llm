@@ -75,7 +75,7 @@ fn cap_set(settings: &Settings) -> bool {
 
 /// The per-epoch tool tuning for a context of `n_ctx` tokens (0 = unknown) and the budget soft
 /// point `soft` ([`budget_soft`], 0 = unknown).
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn tune_for(settings: &Settings, n_ctx: u32, soft: u32, images: bool) -> ToolTune {
     tune_for_model(settings, n_ctx, soft, images, false)
 }
@@ -126,7 +126,7 @@ pub(crate) fn refresh(st: &mut SessionState) {
 /// R5 and L4: the output cap for `n_ctx` tokens and the budget soft point `soft`. It is the
 /// setting, reduced to the small-context cap (R5) and, unless the user set
 /// `oxa.toolOutputCap`, to the budget of the working size ([`budget_cap`]).
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn output_cap_for(settings: &Settings, n_ctx: u32, soft: u32) -> usize {
     output_cap_for_model(settings, n_ctx, soft, false)
 }

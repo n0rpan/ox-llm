@@ -108,20 +108,18 @@ fn location_value(name: &str, value: &str) -> bool {
 }
 
 /// A relative file path such as `config/service-account.json`: path characters only, a `/`,
-/// no URL scheme and a file extension on the last segment. Base64 never holds a `.`, so an
-/// encoded credential is not mistaken for one.
+/// no URL scheme and a non-empty final segment. This is used only for keys that explicitly
+/// name a file location, so extensionless credential files are paths too.
 fn relative_file_path(value: &str) -> bool {
     let value = value.trim().trim_matches(['"', '\'']);
     let Some((_, name)) = value.rsplit_once('/') else {
         return false;
     };
-    let ext = name.rsplit_once('.').map_or("", |(_, ext)| ext);
     !value.contains("://")
+        && !name.is_empty()
         && value
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-'))
-        && (1..=5).contains(&ext.len())
-        && ext.chars().all(|ch| ch.is_ascii_alphanumeric())
 }
 
 /// Whether a quoted value of a secret-named key is a literal credential. A quoted string is
@@ -780,6 +778,7 @@ mod tests {
         );
         for text in [
             "GOOGLE_APPLICATION_CREDENTIALS=config/service-account.json",
+            "GOOGLE_APPLICATION_CREDENTIALS=config/service-account",
             "SIGNING_KEY_FILE=secrets/dev/signing-key.pem",
             "service.tls.keyPath: certs/prod/tls.key",
             "SECRETS_DIR=secrets/dev/store.d",
