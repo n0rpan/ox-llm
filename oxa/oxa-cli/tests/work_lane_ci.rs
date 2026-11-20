@@ -237,7 +237,7 @@ printf 'synthetic-lane-%s\n' "$n"
     );
     let git_shim = env.write(
         "tmp/git",
-        format!(r#"#!/bin/sh
+        &format!(r#"#!/bin/sh
 set -eu
 home={home:?}
 remote={remote:?}
@@ -275,7 +275,7 @@ exec /usr/bin/git "$@"
     );
     let gh = env.write(
         "tmp/gh",
-        format!(r##"#!/bin/sh
+        &format!(r##"#!/bin/sh
 set -eu
 remote={remote:?}
 read -r n < "$HOME/mint-count"
