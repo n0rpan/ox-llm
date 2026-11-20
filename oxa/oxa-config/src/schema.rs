@@ -79,6 +79,7 @@ const SCHEMA: &[KeyDef] = &[
         Kind::Enum(&["auto", "local", "cloud"]),
         "\"auto\"",
     ),
+    key("compaction.reactivateSkills", Kind::Bool, "false"),
     key("compaction.reserveTokens", Kind::Number, "16384"),
     key("defaultModel", Kind::String, "null"),
     key(

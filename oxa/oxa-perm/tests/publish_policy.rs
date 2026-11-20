@@ -193,7 +193,28 @@ fn earlier_branch_switch_asks() {
         "git branch -f x && git push",
         "git switch main && gh pr create --title t --body b",
     ] {
-        assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{c}");
+        for level in [Autonomy::Standard, Autonomy::Auto] {
+            assert_eq!(decide(&cwd, level, c), Decision::Ask, "{level:?}: {c}");
+        }
+    }
+
+    // A later switch cannot change the branch that the earlier push publishes.
+    assert_eq!(
+        decide(&cwd, Autonomy::Auto, "git push origin HEAD && git switch main"),
+        Decision::Allow
+    );
+}
+
+#[test]
+fn concurrent_branch_switch_asks() {
+    let cwd = repo("my-branch");
+    for c in [
+        "git push origin HEAD | git switch main",
+        "git switch main | git push origin HEAD",
+    ] {
+        for level in [Autonomy::Standard, Autonomy::Auto] {
+            assert_eq!(decide(&cwd, level, c), Decision::Ask, "{level:?}: {c}");
+        }
     }
 }
 
