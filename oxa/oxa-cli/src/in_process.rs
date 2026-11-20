@@ -739,7 +739,6 @@ fn open_gateway_with_go(
             Ok(Some(status)) => {
                 if status.state == State::Stale {
                     notices.push(format!("Using a stale {provider} model catalog."));
-                    refresh_cloud.push(source);
                 }
                 if status.missing_price + status.missing_limits > 0 {
                     notices.push(format!(
@@ -758,6 +757,9 @@ fn open_gateway_with_go(
                         "{provider} catalog uses owner-estimated prices for {} models.",
                         status.estimated_price,
                     ));
+                }
+                if status.state == State::Stale {
+                    refresh_cloud.push(source);
                 }
             }
             Ok(None) => {}
