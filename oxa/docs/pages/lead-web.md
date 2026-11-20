@@ -20,6 +20,24 @@ Optional user setting `oxa.lead.serve.fixed_prompts` defaults to false.
 It enables no-JS, same-origin/CSRF-protected fixed questions at zero model tokens.
 Private situation data needs browser proof separate from tool UIDs; absent inputs stay unavailable.
 
+## Attach to a running session
+
+With `owner_chat` on, the chat page can show and talk to a session that is running now (for
+example the lead you started in tmux) instead of a dedicated Lead session. Find the session id
+in the `id` field of the first line of its file under the sessions directory (the file name ends with it), then set the user-only
+`oxa.lead.attachSessionId` to it and restart the service. The service then needs no dedicated
+`oxa.lead.sessionId`; if both are set, attach wins.
+
+The `/chat` page shows the newest part of the session's transcript (user and assistant text, each
+tool call with a short masked argument preview, short result previews) and whether the session is
+running. It refreshes like the other pages, and the page says when older history is not shown.
+The message form sends exactly like `oxa send <id> <text>`: the text goes into the session's
+inbox and the session reads it at its next turn, also if it is not running yet. The service takes
+no session lock, opens no provider and spends no model tokens. A message is a follow-up for the
+model, never an approval: answer approvals on the approvals page. The same identity, origin and
+CSRF checks as before apply, the session file must stay private to your user, and a refused send
+is written to the service journal with stage `recheck`, reason `binding` or `inbox`.
+
 ## Waiting for your approval
 
 The verified owner can see "Waiting for your approval" on the board and home pages.

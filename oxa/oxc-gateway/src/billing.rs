@@ -36,22 +36,28 @@ impl SubscriptionLimits {
         }
     }
     /// The owner's limits warn at 80% and 100% of a projected day and never refuse.
-    pub(crate) fn advisory_warning(self, total: Counts, go: bool) -> Option<&'static str> {
+    pub(crate) fn advisory_warning(self, total: Counts, provider: &str) -> Option<&'static str> {
         let full = total.requests >= self.requests || total.tokens >= self.tokens;
         let near = u128::from(total.requests) * 5 >= u128::from(self.requests) * 4
             || u128::from(total.tokens) * 5 >= u128::from(self.tokens) * 4;
-        match (go, full, near) {
-            (true, true, _) => Some(
+        match (provider, full, near) {
+            ("opencode", true, _) => Some(
                 "OpenCode Go: projected usage reached 100% of oxa.cloud.subscription_limits; continuing.",
             ),
-            (true, false, true) => {
+            ("opencode", false, true) => {
                 Some("OpenCode Go: projected usage reached 80% of oxa.cloud.subscription_limits; continuing.")
             }
-            (false, true, _) => Some(
+            ("chatgpt", true, _) => Some(
                 "ChatGPT plan: projected usage reached 100% of oxa.cloud.subscription_limits; continuing.",
             ),
-            (false, false, true) => Some(
+            ("chatgpt", false, true) => Some(
                 "ChatGPT plan: projected usage reached 80% of oxa.cloud.subscription_limits; continuing.",
+            ),
+            (_, true, _) => Some(
+                "Subscription: projected usage reached 100% of oxa.cloud.subscription_limits; continuing.",
+            ),
+            (_, false, true) => Some(
+                "Subscription: projected usage reached 80% of oxa.cloud.subscription_limits; continuing.",
             ),
             _ => None,
         }
@@ -102,7 +108,9 @@ mod tests {
         };
         let total = used.add(held).unwrap();
         // 2 of 3 requests and 60 of 100 tokens is below the first warning.
-        let warn = |extra: Counts, go| limits.advisory_warning(total.add(extra).unwrap(), go);
+        let warn = |extra: Counts, go| {
+            limits.advisory_warning(total.add(extra).unwrap(), if go { "opencode" } else { "chatgpt" })
+        };
         assert_eq!(
             warn(
                 Counts {

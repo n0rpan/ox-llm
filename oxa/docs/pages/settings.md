@@ -27,7 +27,7 @@ Settings that older files may contain but oxa does not implement are not listed 
 
 Where the user file alone counts, the table says so:
 
-- user settings only: `defaultProjectTrust`, `httpProxy`, `oxa.allowHomeCwd`, `oxa.a2a.enabled`, `oxa.emptyReplyRetries`, `oxa.offline`, `oxa.engine.allowRemote`, `oxa.engine.inProcessCloud`, `oxa.cloud`, `oxa.engine.inProcessLocal`, `oxa.local`, `oxa.lead.shadow`, `oxa.lead.serve`, `oxa.lead.sessionId`, `oxa.lead.model`, and every `oxa.sandbox.*` key. A project file cannot set them, because a project file cannot widen what the model can reach.
+- user settings only: `defaultProjectTrust`, `httpProxy`, `oxa.allowHomeCwd`, `oxa.a2a.enabled`, `oxa.emptyReplyRetries`, `oxa.offline`, `oxa.engine.allowRemote`, `oxa.engine.inProcessCloud`, `oxa.cloud`, `oxa.engine.inProcessLocal`, `oxa.local`, `oxa.lead.shadow`, `oxa.lead.serve`, `oxa.lead.sessionId`, `oxa.lead.attachSessionId`, `oxa.lead.model`, and every `oxa.sandbox.*` key. A project file cannot set them, because a project file cannot widen what the model can reach.
 - project settings are trust-gated. In an untrusted project they are not read. Project files that run or load code (`hooks`, `shellPath`, `shellCommandPrefix`, `packages`, `extensions`, `skills`, `prompts`) also need the content approval described in [security.md](security.md#project-trust).
 
 Interactive selectors (`/settings`, `/thinking` and `/model` with Ctrl+S) write the user file.
@@ -212,6 +212,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.cloud` | object | `{}` | native cloud models, prices, USD budget and subscription caps; user settings only; see below |
 | `oxa.lead.serve` | object | `{}` | the lead web access scaffold: `enabled`, `identity` (`local` or `tailscale`), `bind` (a loopback address), `port`, `allowed_identities`. Off by default and no listener is installed yet; the default identity mode is `local` unless selected otherwise; user settings only. See [lead-web.md](lead-web.md) |
 | `oxa.lead.sessionId` | string | unset | exact ID of the dedicated Lead Session created by the native owner operation, from owner-private user settings. Free text is disabled when unset. |
+| `oxa.lead.attachSessionId` | string | unset | exact ID of a running owner session the lead web page attaches to (live transcript, messages through its inbox like `oxa send`), from owner-private user settings; with `oxa.lead.serve.owner_chat` it replaces the dedicated Lead chat; restart the service after changing it. |
 | `oxa.lead.model` | string | unset | exact model id the Lead conversation resolves through the normal `--model` selector and gateway; user settings only, read from the owner-private settings file. Unset keeps the ordinary startup model; a route that does not resolve is reported, never silently replaced. A metered model still needs its daily USD cap, so choose a subscription route while the cap is absent. |
 | `oxa.envNote` | bool | unset | append the environment note to each prompt you send: the first one in a session (and the first of a new day, or after a compaction) gets a short `<env>` block with the date, time, time zone, locale, kernel, model, context size, thinking level and permission mode; later ones get `[local time HH:MM ZONE]`. It is never put in the system prompt, so the prompt cache stays exact. Unset is on; `OXA_ENV_NOTE=0` or `=1` overrides it for one run |
 | `oxa.sandbox.net` | `on` / `off` | `on` | network for bash in workspace and ask modes; `off` holds without the OS sandbox too (bash then runs through bubblewrap without network, or is refused) |
@@ -350,7 +351,29 @@ provider prices. This example uses an illustrative model and prices:
 The key is read for each request from the existing private
 `~/.config/oxc/llm/cloud-secrets.json` (owner-only, mode `0600`, outside a checkout).
 Keep keys out of settings. The file uses the existing provider-key JSON format.
-Private settlement rows live in `<agent directory>/cloud-ledger/`. Listing models
+
+To add a named provider, set `oxa.cloud.providers.myplan` in **user settings**:
+
+```json
+{ "api": "openai-chat", "base_url": "https://example.invalid/compatible/v1",
+  "key": "myplan", "billing": "subscription" }
+```
+
+Use the provider's HTTPS API base and put the credential under `myplan` in
+the existing secrets file. `api` accepts `openai-chat` (Chat Completions) or
+`anthropic` (Messages). A keyed provider discovers models from `<base_url>/models`
+and caches the last successful list. `oxa --list-models myplan` filters that list;
+pass a qualified model name from the list to `oxa --model`. Explicit owner discovery and gateway
+opt-outs still win. Offline mode does not contact the provider.
+
+Use `subscription` for token accounting or `metered` for USD accounting. When a
+provider does not publish rates, an owner model entry can supply them; public
+catalog prices for other providers do not apply. A model entry can supply limits
+and an upstream model ID, but cannot change the named provider's URL or key.
+A named Chat Completions provider can finish a reply or tool call without reporting
+usage. The ledger retains a conservative reservation instead of recording zero usage.
+
+Private settlement rows live in `<agent directory>/cloud-ledger/`. Listing only explicitly configured routes
 reads neither the key nor the ledger and contacts no provider. `daily_budget_usd` is
 optional: without it there is no budget check, requests are admitted (including a
 model with no price) and their cost is still recorded in the ledger (a request whose
@@ -430,9 +453,13 @@ never permits an additional review.
 | `oxa.skills.includeSynced` | bool | `false` | also list the skills another product synced into `~/.agents/skills` (a `synced/` folder, or a folder whose `manifest.json` lists `skillId`s); they are written for that product's tools, so oxa skips them by default |
 | `oxa.workers.enabled` | bool | `true` | user settings only (a project file cannot change it). The `worker` tool (start, list, stop background workers, each in its own git worktree); `false` removes it. Never offered inside a worker |
 | `oxa.workers.max` | number | `4` | user settings only (a project file cannot change it). Most live workers one session may run; a `start` past this limit is refused |
+| `oxa.workers.models` | object | `{}` | user settings only (a project file cannot change it). Which model a `worker start` without `model` gets: `{"default": [ids], "kinds": {"<kind>": [ids]}, "escalateAfter": 2, "escalateTo": [ids]}`, every field optional. The `kind` the caller passes picks the row (else `default`); within a list the entry this session used least is taken, so two ids alternate. After `escalateAfter` failed workers on one job (same `job` key), the next one gets the first `escalateTo` id that has not failed yet. Kind names are lowercase letters, digits and dashes (at most 32). No ids are built in: unset means the session model. A model id the live catalog does not know only warns. Example: `{"kinds": {"review": ["provider/fast-a", "provider/fast-b"]}, "escalateTo": ["provider/strong"]}` |
+| `oxa.workers.repository` | string | unset | user settings only. Canonical absolute path of the explicitly trusted primary Git checkout used by `worker start` in a trusted live Lead session outside Git |
 | `oxa.workers.resumeOnStart` | bool | `true` | user settings only (a project file cannot change it, either way). When a session is opened again, relaunch each of its workers that did not finish and whose process is gone, with `--continue=<id>` and no goal; one notice per worker. `false` leaves them as they are |
 | `oxa.workers.stopGraceSeconds` | number (seconds) | `10` | user settings only (a project file cannot change it). How long a stopped worker gets after SIGINT before its whole process group gets SIGTERM; SIGKILL follows 2 seconds later if the group is still alive |
 <!-- /generated:other -->
+
+From a trusted live Lead directory outside Git, set `oxa.workers.repository` in your user settings (for example, `{"oxa":{"workers":{"repository":"/path/to/checkout"}}}`). Use the primary checkout's absolute path without symlinks, and [explicitly trust the checkout](security.md) first. Inside Git, `worker start` still uses the current repository. This setting is for new starts; it does not enable automatic resume from outside Git.
 
 Pass `model` to `worker start` to select the worker's model. Omit it to inherit the parent session's current model. Reopening the same parent session resumes unfinished workers with the model recorded at their launch, even if the parent has switched models. The child resolves the model using the normal CLI routing and the owner's transport and credential settings.
 

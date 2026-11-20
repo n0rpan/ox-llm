@@ -51,7 +51,7 @@ def finding(**changes):
 
 class GoReview(unittest.TestCase):
     def run_review(self, *, pr=None, files=None, comments=None, answer=None, stale=False, models=None,
-                   argon=None, current_base=None, daily_comments=None, max_per_day=None):
+                   argon=None, current_base=None, daily_comments=None, max_per_day=None, skip_reason=None):
         pr = copy.deepcopy(PR if pr is None else pr)
         files = FILES if files is None else files
         calls, posted, pulls = [], [], 0
@@ -116,8 +116,29 @@ class GoReview(unittest.TestCase):
                 env['GO_REVIEW_MAX_PER_DAY'] = max_per_day
             with patch.dict(os.environ, env, clear=True), patch.object(review, 'request', request), \
                     patch.object(review, 'access_token', return_value='synthetic-access') as auth:
-                review.main()
+                if skip_reason is None:
+                    review.main()
+                else:
+                    with self.assertRaisesRegex(review.Skipped, skip_reason):
+                        review.main()
                 return calls, posted, auth.call_count
+
+    def test_review_prompt_includes_owner_decisions(self):
+        root = SOURCE.parents[2]
+        security = (root / 'SECURITY.md').read_text()
+        owner_decisions = security.split('## Owner decisions (not findings)\n', 1)[1].split('\n## ', 1)[0]
+
+        prompt = review.review_prompt()
+
+        self.assertIn(owner_decisions, prompt)
+
+    def test_combined_input_overflow_skips_before_reserving_quota_or_authenticating(self):
+        # This diff fits its own cap, but not the request budget with the full trusted prompt.
+        files = [{**FILES[0], 'patch': FILES[0]['patch'] + 'é' * (review.MAX_DIFF // 2 - 100)}]
+        calls, posted, auth = self.run_review(files=files, skip_reason='input exceeds the request bound')
+        self.assertEqual(posted, [])
+        self.assertEqual(auth, 0)
+        self.assertNotIn(MODEL_URL, calls)
 
     def test_complete_review_posts_one_full_sha_and_diff_hash_receipt(self):
         calls, posted, auth = self.run_review(answer=response([finding(body='Do not emit synthetic-access')]))

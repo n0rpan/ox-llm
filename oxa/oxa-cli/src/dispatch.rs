@@ -1,6 +1,6 @@
 //! D13: mode choice and wiring.
 // ported from pi packages/coding-agent/src/main.ts
-mod lead_owner;
+pub(crate) mod lead_owner;
 mod mode;
 
 pub(crate) use lead_owner::lead_model;
@@ -126,7 +126,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         return 0;
     }
     if a.version {
-        let _ = writeln!(stdout, "oxa {}", env!("CARGO_PKG_VERSION"));
+        let _ = writeln!(stdout, "oxa {}", oxa_proto::BUILD_VERSION);
         return 0;
     }
     let headless = a.subcommand.is_none()

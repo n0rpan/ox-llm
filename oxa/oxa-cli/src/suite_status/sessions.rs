@@ -314,6 +314,7 @@ mod tests {
             log_file: "/work/tree/log.txt".into(),
             started_ms: NOW - 60_000,
             stopped: false,
+            ..WorkerRecord::default()
         }
     }
 
