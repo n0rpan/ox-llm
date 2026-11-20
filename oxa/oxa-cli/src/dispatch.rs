@@ -3279,6 +3279,7 @@ mod session_scratch_tests {
             mode: None,
             supervised_child: false,
             ask_owner_present: true,
+            report_dialog: None,
             hook_sets: HookSets::default(),
             bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
                 base,
@@ -3286,7 +3287,9 @@ mod session_scratch_tests {
                 "",
                 env.home(),
                 false,
+                false,
             )),
+            os_sandbox: false,
             yolo,
             danger: Arc::new(oxa_perm::DangerRules::builtin()),
         };
