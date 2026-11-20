@@ -287,8 +287,12 @@ without a PR, and `gh workflow run lane`, still run `lane`. CodeQL runs on pushe
 on dispatch only. The macOS arm64 `oxa-cli` build (`macos.yml`) is part of the required `gate`: the
 `checks` workflow calls it as its `macos` job on ready PRs and in the merge queue whenever the
 classifier selects `oxa` (oxa Rust code, `oxa/Cargo.lock`, `packaging/`, workflows), and the gate
-fails if it ran and failed. `macos.yml` itself also runs on main and on dispatch. It costs macOS
+fails if it ran and failed. `macos.yml` itself runs on manual dispatch only: the commit a main push
+carries is the one the queue built, so a main push does not build macOS again. It costs macOS
 runner minutes on every PR that touches Rust.
+A main push whose commit already has a green merge-queue `checks` run skips that workflow's jobs
+(`tools/ci/queue_covered.py`), except the classifier and the scans; a push that changed a
+dependency cache key still runs, because main is what seeds the `<prefix>main` caches.
 
 The lane workflow selects changed crates plus their local reverse dependencies and binary-fixture
 consumers against main. Shared workspace manifests/locks expand the affected workspace. Tests use
