@@ -17,15 +17,22 @@ $ oxa -p --continue SESSION_ID "continue with this instruction"
 
 Replace `SESSION_ID` with the printed id. `--continue=<id>` also works. A word after `--continue` is taken as the id only if a session with that id exists; otherwise it stays part of the prompt and the most recent session continues, as before. The id is never sent as a prompt. `--continue` without a value (or `-c`) selects the most recent session. `--no-session` keeps the run ephemeral and prints no session id. An explicit continuation id cannot be combined with `--no-session` or `--session`.
 
-## Send a session follow-up
+## Send a session a message
 
 ```console
-$ oxa send SESSION_ID "task finished, red"
-$ generate-large-follow-up | oxa send SESSION_ID -
+$ oxa send SESSION_ID "stop that, the owner chose plan B"
+$ oxa send --follow-up SESSION_ID "task finished, red"
+$ generate-large-message | oxa send SESSION_ID -
 ```
 
-Use the full session id. This queues one follow-up without starting an engine or requiring the session to be running. Its TUI or RPC owner consumes it when idle or at a follow-up boundary, just like queued follow-up input; it does not interrupt the active turn. A stopped session retains the message until it is opened again in TUI or RPC mode. Success means **queued**, not that the model has answered.
-Use `-` as the text argument to read the entire follow-up from standard input. This avoids the operating system's per-argument size limit for large messages.
+Use the full session id. This queues one message without starting an engine or requiring the session to be running. Success means **queued**, not that the model has answered.
+
+- **Steer (the default).** A busy session takes the message after its running tool calls, before its next model request, exactly like text typed into its TUI with Enter. It does not cancel the running tool. `--steer` names this default.
+- **Follow-up (`--follow-up`).** A busy session takes the message when its turn ends, like Alt+Enter. A session that pursues a goal may keep calling tools for a long time without ending its turn, so there a follow-up that has waited `oxa.goal.followUpMaxWaitSeconds` (default 300, user setting, `0` = wait for the end) is delivered at the next tool boundary.
+- An idle session starts a turn with either kind. A stopped session keeps the message until it is opened again in TUI or RPC mode, or by a headless goal run.
+
+The TUI shows a queued steer as a `Steering:` line and a follow-up as a `Follow-up:` line. The same rules hold for an RPC owner and for a headless goal run (`oxa.inbox.headless`). The lead web page and the `worker` tool's `send` action send steers. A session started by an older oxa does not read steers: restart it, or send with `--follow-up`.
+Use `-` as the text argument to read the entire message from standard input. This avoids the operating system's per-argument size limit for large messages.
 
 The inbox lives at `inbox/<session-id>/` under the agent directory, in private `0700` directories with `0600` message files. Publication is an atomic rename within the opened inbox directory. Reads and privacy wipes also stay within the opened directories. The owner scans at startup, then uses inotify on Linux or polls every 200 ms on macOS. The agent directory remains masked by the sandbox. A message over 256 KiB is not refused: its full text is kept in the session's private, tool-readable spill directory under the temporary-data directory, and the queued follow-up names that file. Only that session (and sessions inheriting its history) can read the spill through model tools; other private agent state remains masked. The owner admits at most 64 messages or 1 MiB of inbox text across destinations; excess files remain on disk and are retried when the owner releases capacity. Oversized externally written files remain on disk and are not delivered. Once admitted to the owner's in-memory follow-up queue, a message file is removed. This is not transactional with the session transcript: a process crash can lose an admitted message or replay a file not yet removed. Worker prompts are unchanged.
 
@@ -105,7 +112,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa status <session-id\|session-file> [--session-dir <dir>]` | read a saved session's progress and stall signal without contacting an engine |
 | `oxa models [--json] [search]` | list the local and cloud models this install can serve — where each runs, its limits and which one is the default; `--json` prints one `oxa_models` object, and a search word filters by place, provider or model name; reads no key and no ledger, runs no model |
-| `oxa send <session-id> <text\|->` | queue one follow-up for the session's TUI or RPC owner; `-` reads standard input |
+| `oxa send [--follow-up] <session-id> <text\|->` | send one message to the session's TUI, RPC owner or headless goal run: a steer for its next tool boundary, or with `--follow-up` a follow-up for the end of its turn; `-` reads standard input |
 | `oxa send <session-id> --approve <request-id> once\|session\|always\|deny` | answer a dangerous-command request filed by an unattended run (#1512). The answer requires confirmation from the session's owner-confirm broker, or directly from the controlling terminal. `always` also saves the rule key to the user settings. Answers go to the approval desk, never to the session's message queue |
 | `oxa send --approvals` | list the approval requests still waiting for an answer: id, session, command and reasons. Commands refused outright are not stored in the approval desk |
 | `oxa config [-l]` | print every setting with its value and where it comes from |

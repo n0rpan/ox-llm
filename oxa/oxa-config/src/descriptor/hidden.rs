@@ -69,6 +69,17 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     )
     .key(Kind::Number, "60")
     .hidden(),
+    // #2183: how long a follow-up waits behind a pursuing goal that keeps calling tools; `0` =
+    // until the run stops.
+    d(
+        "oxa.goal.followUpMaxWaitSeconds",
+        Group::Advanced,
+        "",
+        "oxa.goal.followUpMaxWaitSeconds",
+        "",
+    )
+    .key(Kind::Number, "300")
+    .hidden(),
     d(
         "oxa.goal.idlePause",
         Group::Advanced,

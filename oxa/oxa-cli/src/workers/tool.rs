@@ -1041,7 +1041,8 @@ impl WorkerCore {
         let Some(rec) = records.iter().find(|r| r.name == name) else {
             return ToolOutput::error(format!("worker: no worker named {name:?}"));
         };
-        if let Err(e) = oxa_session::send_inbox(&self.agent_dir, &rec.session_id, text) {
+        // #2183: the parent's message steers the worker at its next tool boundary.
+        if let Err(e) = oxa_session::send_inbox_steer(&self.agent_dir, &rec.session_id, text) {
             return ToolOutput::error(format!("worker: cannot deliver to {name}: {e}"));
         }
         ToolOutput::ok(format!(
@@ -2104,7 +2105,7 @@ mod tests {
         let texts: Vec<String> = fs::read_dir(&inbox)
             .unwrap()
             .flatten()
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".msg"))
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".steer"))
             .map(|e| fs::read_to_string(e.path()).unwrap())
             .collect();
         assert_eq!(texts, vec!["please add tests".to_string()]);

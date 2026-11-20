@@ -870,6 +870,35 @@ pub(crate) fn failure_backoff(
     goal.time_allows_wait(delay).then_some(delay)
 }
 
+/// `oxa.goal.followUpMaxWaitSeconds` default: how long a follow-up waits behind a pursuing goal
+/// that keeps calling tools before a tool boundary delivers it.
+const FOLLOW_UP_MAX_WAIT_SECS: u32 = 300;
+
+/// Whether the queued follow-ups of a pursuing goal are delivered at this tool boundary (#2183).
+/// A follow-up normally waits until the run stops or a `wait` is woken, but a goal run may do
+/// neither for hours. `seen` is the first tool boundary that found the follow-up queued; once
+/// `oxa.goal.followUpMaxWaitSeconds` (user setting, `0` = keep waiting for the stop) has passed
+/// since then, it is due. Outside a pursuing goal a follow-up keeps its end-of-turn delivery.
+pub(crate) fn follow_up_due(st: &crate::SessionState, seen: &mut Option<std::time::Instant>) -> bool {
+    let pursuing = st
+        .goal
+        .as_ref()
+        .is_some_and(|goal| goal.engaged() && goal.pursuing());
+    if !pursuing || !st.shared.has_follow_up() {
+        *seen = None;
+        return false;
+    }
+    let limit = st
+        .settings
+        .user_u32("oxa.goal.followUpMaxWaitSeconds", FOLLOW_UP_MAX_WAIT_SECS);
+    let since = *seen.get_or_insert_with(std::time::Instant::now);
+    if limit == 0 || since.elapsed() < Duration::from_secs(u64::from(limit)) {
+        return false;
+    }
+    *seen = None;
+    true
+}
+
 /// Wait `delay` without a model request. An abort ends the wait as `Aborted`; `abort_retry` ends
 /// it as `RetryStopped` and resets that token, as a retry wait does.
 pub(crate) fn wait_failure_backoff(st: &crate::SessionState, delay: Duration) -> BackoffEnd {

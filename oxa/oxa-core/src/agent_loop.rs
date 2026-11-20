@@ -155,6 +155,8 @@ fn run_inner(
     // Consecutive transient failures of one logical request. This state lives inside the run so
     // recovery preserves done checks, the turn limit and the request idempotency key.
     let mut goal_failures: u32 = 0;
+    // #2183: when a tool boundary of a pursuing goal first saw a follow-up that is still queued.
+    let mut follow_up_seen: Option<std::time::Instant> = None;
     // `oxa.maxTurns` (default unset: no limit): model replies of this run (#507).
     let max_turns = st.settings.u32(crate::repeat::MAX_TURNS, 0);
     'turns: loop {
@@ -387,7 +389,7 @@ fn run_inner(
                         let deadline = std::time::Instant::now() + delay;
                         loop {
                             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                            let has_input = !crate::queue::lock(&shared.queue).steering.is_empty();
+                            let has_input = shared.has_steering();
                             let ended = crate::goal::wait_failure_backoff(
                                 st,
                                 if has_input {
@@ -878,6 +880,14 @@ fn run_inner(
             }
             // Steering drains after the tool batch, each message as a user message.
             deliver_steering(st, sink, ui, run_msgs)?;
+            // #2183: a pursuing goal can call tools without ever stopping or waiting, so a
+            // follow-up is not left behind such a turn for ever: one that has waited
+            // `oxa.goal.followUpMaxWaitSeconds` is delivered at this tool boundary.
+            if crate::goal::follow_up_due(st, &mut follow_up_seen) {
+                for text in drain_follow_ups(st, sink) {
+                    push_user(st, text, sink, ui, run_msgs)?;
+                }
+            }
             // A wait that input woke hands that input to the model now: a follow-up is
             // otherwise only drained when the run stops, after the model has answered
             // the wait result without it.

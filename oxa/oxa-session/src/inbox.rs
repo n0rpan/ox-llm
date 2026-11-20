@@ -1,6 +1,7 @@
 //! File-based session inbox. Writers rename a private temporary file into place. A single
 //! owner watches with inotify, scans once on startup and after notifications, and removes
-//! a message only after its callback accepts it. Plain follow-ups use `.msg` files.
+//! a message only after its callback accepts it. Plain follow-ups use `.msg` files; a message
+//! to deliver at the receiver's next tool boundary (a steer, #2183) uses a `.steer` file.
 //! Off Linux (macOS) there is no inotify: the owner scans the same directory every 200 ms.
 //! Acceptance means admission to the owner's in-memory queue, not durable execution.
 //! A crash can lose an admitted message or replay one whose file wasn't removed yet.
@@ -26,6 +27,8 @@ const CONTROL_BYTES: usize = 32 * 1024;
 #[derive(Debug, PartialEq, Eq)]
 pub enum InboxItem {
     FollowUp(String),
+    /// A message for the next tool boundary of a busy session (`send_inbox_steer`).
+    Steer(String),
     Control(String),
 }
 
@@ -213,8 +216,18 @@ fn unlink_at(parent: &File, name: &CStr, flags: libc::c_int) -> io::Result<bool>
 
 /// Publish exactly one message without contacting an engine or requiring a running owner.
 pub fn send_inbox(agent_dir: &Path, id: &str, text: &str) -> io::Result<()> {
+    send_message(agent_dir, id, "msg", text)
+}
+
+/// [`send_inbox`] as a steer: a busy receiver takes the message at its next tool boundary
+/// instead of when its whole turn ends. An idle receiver starts a turn with either kind.
+pub fn send_inbox_steer(agent_dir: &Path, id: &str, text: &str) -> io::Result<()> {
+    send_message(agent_dir, id, "steer", text)
+}
+
+fn send_message(agent_dir: &Path, id: &str, extension: &str, text: &str) -> io::Result<()> {
     if text.len() <= INBOX_MESSAGE_BYTES {
-        return publish(agent_dir, id, "msg", text);
+        return publish(agent_dir, id, extension, text);
     }
     // `Dirs::tmp_dir` is `<agent_dir>/tmp`; the active session installs its own child as the
     // narrowly scoped readable spill exception without exposing the rest of the agent directory.
@@ -233,7 +246,7 @@ pub fn send_inbox(agent_dir: &Path, id: &str, text: &str) -> io::Result<()> {
         text.len(),
         path.display()
     );
-    publish_into(&agent.child("inbox")?.child(id)?, "msg", &pointer).map(|_| ())
+    publish_into(&agent.child("inbox")?.child(id)?, extension, &pointer).map(|_| ())
 }
 
 /// Publish a control packet for a trusted, already resolved session reference.
@@ -460,9 +473,20 @@ impl Inbox {
         mut deliver: impl FnMut(String) -> bool + Send + 'static,
     ) -> io::Result<Self> {
         Self::watch_inner(agent_dir, id, None, true, move |item| match item {
-            InboxItem::FollowUp(text) => deliver(text),
+            InboxItem::FollowUp(text) | InboxItem::Steer(text) => deliver(text),
             InboxItem::Control(_) => false,
         })
+    }
+
+    /// [`Inbox::watch`] with the delivery kind kept: the owner queues a
+    /// [`InboxItem::Steer`] for its next tool boundary and a [`InboxItem::FollowUp`] for the
+    /// end of its turn. No control packet is delivered.
+    pub fn watch_messages(
+        agent_dir: &Path,
+        id: &str,
+        deliver: impl FnMut(InboxItem) -> bool + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::watch_inner(agent_dir, id, None, true, deliver)
     }
 
     /// Watch the same inbox for follow-ups and control packets routed to this full
@@ -494,7 +518,7 @@ impl Inbox {
             false,
             move |item| match item {
                 InboxItem::Control(packet) => deliver(packet),
-                InboxItem::FollowUp(_) => false,
+                InboxItem::FollowUp(_) | InboxItem::Steer(_) => false,
             },
         )
     }
@@ -612,6 +636,8 @@ fn scan_batch(
         };
         let (limit, item): (usize, fn(String) -> InboxItem) = if follow_ups && extension == "msg" {
             (INBOX_MESSAGE_BYTES, InboxItem::FollowUp)
+        } else if follow_ups && extension == "steer" {
+            (INBOX_MESSAGE_BYTES, InboxItem::Steer)
         } else if Some(extension) == control_extension {
             (CONTROL_BYTES, InboxItem::Control)
         } else {

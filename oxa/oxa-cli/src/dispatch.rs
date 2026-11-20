@@ -336,8 +336,10 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 "Local model setup requires the owner outside an agent tool",
             )),
             Subcommand::Local(words) => run_local(&words, &dirs, &cwd, &mut *stdout),
-            Subcommand::Send(words) => match words.as_slice() {
-                [id, text] if oxa_session::valid_inbox_id(id) => {
+            // #2183: a message is a steer (the receiver's next tool boundary) unless
+            // `--follow-up` asks for the plain queue (the end of the receiver's turn).
+            Subcommand::Send(words) => match crate::approve_cmd::text_form(&words) {
+                Some((steer, id, text)) => {
                     let mut piped = String::new();
                     let read = if text == "-" {
                         stdin
@@ -349,14 +351,18 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     };
                     read.and_then(|()| {
                         let message = if text == "-" { &piped } else { text };
-                        oxa_session::send_inbox(&dirs.agent_dir, id, message)
-                            .map(|_| 0)
+                        let sent = if steer {
+                            oxa_session::send_inbox_steer(&dirs.agent_dir, id, message)
+                        } else {
+                            oxa_session::send_inbox(&dirs.agent_dir, id, message)
+                        };
+                        sent.map(|_| 0)
                             .map_err(|e| OxaError::io("cannot send session message", &e))
                     })
                 }
-                _ => Err(OxaError::new(
+                None => Err(OxaError::new(
                     codes::USAGE,
-                    "Usage: oxa send <session-id> <text|->",
+                    "Usage: oxa send [--follow-up] <session-id> <text|->",
                 )),
             },
             Subcommand::Identity(words) => crate::run_identity(&words, &dirs, env, &mut *stdout),

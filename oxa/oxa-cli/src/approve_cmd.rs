@@ -1,4 +1,5 @@
-//! #1512 S5: `oxa send`. Three forms: a plain follow-up to a session's inbox, the owner's answer
+//! #1512 S5: `oxa send`. Three forms: a message to a session's inbox (a steer, or a plain
+//! follow-up with `--follow-up`, #2183), the owner's answer
 //! to a dangerous-command approval request (`--approve <request-id> once|session|always|deny`),
 //! and the list of requests still waiting (`--approvals`). Answers go to the approval desk and
 //! never through the inbox text path, so a model cannot grant one by writing a message.
@@ -26,6 +27,20 @@ pub(crate) enum SendCmd {
     },
     /// The requests still waiting for an answer.
     List,
+}
+
+/// The message form of `oxa send`: whether it is a steer, the session id and the text. A message
+/// is a steer (delivered at the receiver's next tool boundary) unless `--follow-up` asks for the
+/// plain queue (the end of the receiver's turn); `--steer` names the default. `None` for
+/// anything else, an invalid session id included.
+pub(crate) fn text_form(words: &[String]) -> Option<(bool, &String, &String)> {
+    let (steer, id, text) = match words {
+        [id, text] => (true, id, text),
+        [flag, id, text] | [id, flag, text] if flag == "--follow-up" => (false, id, text),
+        [flag, id, text] | [id, flag, text] if flag == "--steer" => (true, id, text),
+        _ => return None,
+    };
+    oxa_session::valid_inbox_id(id).then_some((steer, id, text))
 }
 
 /// Parse the words after `oxa send`. Only the three forms above are accepted.

@@ -25,6 +25,8 @@ pub struct Queue {
 struct BoundFollowUp {
     text: String,
     job_wake: bool,
+    /// #2183: delivered at the next tool boundary (an inbox steer), not when the run stops.
+    steer: bool,
 }
 
 impl Queue {
@@ -43,27 +45,56 @@ impl Queue {
             && len <= (1024 * 1024usize).saturating_sub(bytes)
     }
 
+    fn bound(&self, steer: bool) -> impl Iterator<Item = &String> {
+        self.session_follow_up
+            .get(&self.session_id)
+            .into_iter()
+            .flatten()
+            .filter(move |message| message.steer == steer)
+            .map(|message| &message.text)
+    }
+
     fn follow_ups(&self) -> impl Iterator<Item = &String> {
-        self.follow_up.iter().chain(
-            self.session_follow_up
-                .get(&self.session_id)
-                .into_iter()
-                .flatten()
-                .map(|message| &message.text),
-        )
+        self.follow_up.iter().chain(self.bound(false))
+    }
+
+    /// Editor steering, then the active session's inbox steers.
+    fn steers(&self) -> impl Iterator<Item = &String> {
+        self.steering.iter().chain(self.bound(true))
+    }
+
+    /// Take the active session's bound messages of one kind: all of them, or the oldest.
+    fn take_bound(&mut self, steer: bool, mode: QueueMode) -> Vec<String> {
+        let Some(messages) = self.session_follow_up.get_mut(&self.session_id) else {
+            return Vec::new();
+        };
+        let mut taken = Vec::new();
+        let mut index = 0;
+        while index < messages.len() {
+            if messages[index].steer == steer {
+                taken.push(messages.remove(index).text);
+                if mode == QueueMode::OneAtATime {
+                    break;
+                }
+            } else {
+                index += 1;
+            }
+        }
+        taken
+    }
+
+    fn take_steering(&mut self, mode: QueueMode) -> Vec<String> {
+        let mut taken = take_by_mode(&mut self.steering, mode);
+        if mode == QueueMode::All || taken.is_empty() {
+            taken.extend(self.take_bound(true, mode));
+        }
+        taken
     }
 
     fn take_follow_up(&mut self, mode: QueueMode) -> Vec<String> {
         let mut taken = take_by_mode(&mut self.follow_up, mode);
         if mode == QueueMode::All || taken.is_empty() {
-            if let Some(messages) = self.session_follow_up.get_mut(&self.session_id) {
-                let bound = match mode {
-                    QueueMode::All => std::mem::take(messages),
-                    QueueMode::OneAtATime if messages.is_empty() => Vec::new(),
-                    QueueMode::OneAtATime => vec![messages.remove(0)],
-                };
-                taken.extend(bound.into_iter().map(|message| message.text));
-            }
+            taken.extend(self.take_bound(false, mode));
         }
         taken
     }
@@ -467,7 +498,12 @@ impl Shared {
     /// Steering or follow-up messages for the active session are queued.
     pub fn has_input(&self) -> bool {
         let q = lock(&self.queue);
-        !q.steering.is_empty() || q.follow_ups().next().is_some()
+        q.steers().next().is_some() || q.follow_ups().next().is_some()
+    }
+
+    /// Steering (typed, or an inbox steer for the active session) is queued.
+    pub(crate) fn has_steering(&self) -> bool {
+        lock(&self.queue).steers().next().is_some()
     }
 
     pub(crate) fn has_follow_up(&self) -> bool {
@@ -497,7 +533,7 @@ impl Shared {
     /// oldest one (`OneAtATime`).
     pub fn take_steering(&self) -> Vec<String> {
         let mode = lock(&self.modes).0;
-        let taken = take_by_mode(&mut lock(&self.queue).steering, mode);
+        let taken = lock(&self.queue).take_steering(mode);
         if !taken.is_empty() {
             self.dirty.store(true, Ordering::SeqCst);
         }
@@ -532,7 +568,7 @@ impl Shared {
     /// Both queues, cloned (steering, follow-up).
     pub(crate) fn snapshot(&self) -> (Vec<String>, Vec<String>) {
         let q = lock(&self.queue);
-        (q.steering.clone(), q.follow_ups().cloned().collect())
+        (q.steers().cloned().collect(), q.follow_ups().cloned().collect())
     }
 }
 
@@ -632,7 +668,7 @@ impl Handle {
         // and a finished job has nothing to retry from. The text is bounded by the wake tail.
         {
             let mut q = lock(&self.shared.queue);
-            self.admit(&mut q, &session_id, job.wake_text(), true);
+            self.admit(&mut q, &session_id, job.wake_text(), true, false);
         }
         let notify = lock(&self.shared.wake).as_ref().map(|w| w.0.clone());
         if let Some(notify) = notify {
@@ -719,17 +755,33 @@ impl Handle {
         if !q.has_inbox_capacity(text.len()) {
             return false;
         }
-        self.admit(&mut q, session_id, text, false);
+        self.admit(&mut q, session_id, text, false, false);
+        true
+    }
+
+    /// [`Handle::follow_up_for`] as a steer (#2183): the destination takes the message at its
+    /// next tool boundary, like typed steering, or as its next prompt when it is idle. Same
+    /// capacity rule and return value.
+    pub fn steer_for(&self, session_id: &str, text: String) -> bool {
+        let mut q = lock(&self.shared.queue);
+        if !q.has_inbox_capacity(text.len()) {
+            return false;
+        }
+        self.admit(&mut q, session_id, text, false, true);
         true
     }
 
     /// Append `text` to `session_id`'s destination-bound queue and wake a run of the active
     /// session. The caller decides on capacity.
-    fn admit(&self, q: &mut Queue, session_id: &str, text: String, job_wake: bool) {
+    fn admit(&self, q: &mut Queue, session_id: &str, text: String, job_wake: bool, steer: bool) {
         q.session_follow_up
             .entry(session_id.to_string())
             .or_default()
-            .push(BoundFollowUp { text, job_wake });
+            .push(BoundFollowUp {
+                text,
+                job_wake,
+                steer,
+            });
         if q.session_id == session_id {
             self.shared.dirty.store(true, Ordering::SeqCst);
             self.shared.gate.bg_cancel.cancel();
@@ -762,7 +814,7 @@ impl Handle {
     pub fn dequeue(&self) -> Vec<String> {
         let (mut steering, follow_up) = {
             let mut q = lock(&self.shared.queue);
-            (std::mem::take(&mut q.steering), q.take_follow_up(QueueMode::All))
+            (q.take_steering(QueueMode::All), q.take_follow_up(QueueMode::All))
         };
         let changed = !steering.is_empty() || !follow_up.is_empty();
         steering.extend(follow_up);

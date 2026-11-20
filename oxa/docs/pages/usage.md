@@ -54,7 +54,7 @@ The table lists the default bindings. Every binding can be changed in `~/.oxa/ag
 | Key | Action |
 |---|---|
 | Enter while a turn runs | steer: the text is delivered after the running tool calls |
-| Alt+Enter | queue a follow-up: delivered when the run finishes |
+| Alt+Enter | queue a follow-up: delivered when the run finishes (a goal run that keeps calling tools delivers it after `oxa.goal.followUpMaxWaitSeconds`) |
 | Alt+Up | move queued messages back into the editor |
 | Escape while a turn runs | abort the turn; queued messages return to the editor |
 | Escape twice on an empty editor, idle | open `/tree` (or `/fork`, see `doubleEscapeAction`) |
@@ -65,7 +65,7 @@ The table lists the default bindings. Every binding can be changed in `~/.oxa/ag
 | Alt+M | cycle the permission mode: standard, auto, yolo |
 | Ctrl+Alt+O | toggle yolo: full access, no prompts, bash without the sandbox |
 
-Queued steering and follow-up messages show above the editor as `Steering:` and `Follow-up:` lines. `steeringMode` and `followUpMode` (see [settings.md](settings.md)) decide whether the queue is sent one message at a time or all at once.
+Queued steering and follow-up messages show above the editor as `Steering:` and `Follow-up:` lines. `steeringMode` and `followUpMode` (see [settings.md](settings.md)) decide whether the queue is sent one message at a time or all at once. A message that is still queued when the turn ends is sent as the next prompt, also when the turn ended in a failed request (it is sent once; a request that fails again is not repeated). After you stop a turn, or when it is blocked by a budget, offline mode or an exhausted quota, the queue is kept: Alt+Up brings it back into the editor. Messages from `oxa send` appear in the same queues: a steer under `Steering:`, a `--follow-up` under `Follow-up:` (see [cli.md](cli.md#send-a-session-a-message)).
 
 ### Display and models
 
