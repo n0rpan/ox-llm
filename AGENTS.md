@@ -24,7 +24,9 @@ code, tests, CI and docs; the owner validates on hardware.
 - Agent control lane: a session accepts steer/pause/resume/cancel only from the same user, and the
   session owner checks each request against the lease and goal revision. `oxa.a2a.enabled: false`
   (user-only) turns it off. Do not add a path that skips the lease check or reads the setting from a
-  project file.
+  project file. An `oxa send` steer (#2183) is not that lane: it is a plain inbox message from the
+  same user that a busy session reads at its next tool boundary instead of at the end of its turn.
+  It controls nothing and, like every inbox message, is never an approval.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
 - The native cloud gateway's built-in recommendations are available by default for providers with
   configured API keys unless the owner opts out. They never override explicit model settings,
@@ -164,7 +166,9 @@ code, tests, CI and docs; the owner validates on hardware.
   file cannot set it or any of these caps (also `oxa.tools.wait`, `oxa.toolOutputCap`). Review line: a
   change that adds a cap must route its action through `oxa.onExceed`, never hard-code a refusal. A goal
   with no other budget pauses after two replies without a tool call, and a goal under a token cap
-  pauses when a request reports no usage, unless the owner chose `warn`. An explicit bash `timeout: 0` disables the
+  pauses when a request reports no usage, unless the owner chose `warn`. A goal that only warns on
+  idle (a budget of its own, or `warn`) gets one nudge and then waits between requests
+  (`oxa.goal.idleBackoffSeconds`, default 60, doubling, `0` off). An explicit bash `timeout: 0` disables the
   timeout for that call, including a background job, and overrides the foreground default.
   A foreground command that passes its timeout is not killed: it moves to a background job
   (counted in `oxa.bash.maxJobs`). `oxa.bash.waitCap` (user-only, default 300 s) caps `wait_s`.
