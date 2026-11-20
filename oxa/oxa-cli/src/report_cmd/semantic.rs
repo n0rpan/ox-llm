@@ -309,7 +309,7 @@ pub(super) fn plan(
         return Err("report was not verified against current main");
     }
     let issue = decision(&judgment, &candidates).ok_or("incomplete report model decision")?;
-    let version = env!("CARGO_PKG_VERSION");
+    let version = oxa_proto::BUILD_VERSION;
     let evidence = format!("Current main: `{sha}`, `{}:{}`", note.path, note.line);
     if let Some(issue) = issue {
         return Ok(Publication {
