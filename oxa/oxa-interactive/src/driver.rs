@@ -285,6 +285,8 @@ pub(crate) struct Loop<'a> {
     /// OXA's look: the activity shown last and when it began (the elapsed time and the spinner).
     act_kind: Option<std::mem::Discriminant<Activity>>,
     act_since: u64,
+    /// The retry attempt shown last: each attempt waits anew, so its countdown restarts (#2050).
+    act_attempt: u32,
     /// OXA's look: when the theme was (re)built and when its palette file was last looked at.
     palette_checked_ms: u64,
     /// The theme line of the splash (`oxa-omarchy (tokyo-night)`), set when a theme is installed.
@@ -450,6 +452,7 @@ impl<'a> Loop<'a> {
             last_frame: Vec::new(),
             act_kind: None,
             act_since: 0,
+            act_attempt: 0,
             palette_checked_ms: now_ms(),
             theme_label: String::new(),
             palette: None,
@@ -631,7 +634,13 @@ impl<'a> Loop<'a> {
     /// reads, the hot or cool theme, and (the first time yolo is switched on in the session)
     /// the banner and a notice that stays in the transcript.
     fn sync_yolo(&mut self) {
+        // #1512 S3: the run's sandbox is fixed at start; the guard label follows it.
+        if self.vm.status.os_sandbox != self.opts.os_sandbox {
+            self.vm.status.os_sandbox = self.opts.os_sandbox;
+            self.dirty = true;
+        }
         let Some(switch) = self.opts.yolo.clone() else {
+            self.sync_guard();
             return;
         };
         let level = switch.level();
@@ -644,6 +653,7 @@ impl<'a> Loop<'a> {
             self.vm.status.autonomy = level;
             self.dirty = true;
         }
+        self.sync_guard();
         let mode = self.permission_mode();
         if self.yolo_shown == Some(mode) {
             return;
@@ -684,6 +694,28 @@ impl<'a> Loop<'a> {
                 self.vm.status.ext_status.remove("yolo");
             }
         }
+    }
+
+    /// #1512 S3: the pi skin shows the guard as an extension status entry, like the yolo one.
+    /// The oxa skin draws it in the HUD instead.
+    fn sync_guard(&mut self) {
+        if self.view.skin.is_oxa() {
+            return;
+        }
+        let label = self.vm.status.guard_label().map(str::to_string);
+        let current = self.vm.status.ext_status.get("sandbox").cloned();
+        if label == current {
+            return;
+        }
+        match label {
+            Some(text) => {
+                self.vm.status.ext_status.insert("sandbox".to_string(), text);
+            }
+            None => {
+                self.vm.status.ext_status.remove("sandbox");
+            }
+        }
+        self.dirty = true;
     }
 
     /// O-182: `/yolo`, the `app.yolo.toggle` key. Off returns to the level before yolo.
@@ -1036,10 +1068,7 @@ impl<'a> Loop<'a> {
                 "yolo",
                 "Toggle yolo: full access, no prompts, bash without the sandbox",
             ),
-            (
-                "auto",
-                "Auto mode: no prompts; the sandbox and the deny-list stay on",
-            ),
+            ("auto", "Auto mode: no prompts; dangerous commands still ask"),
             ("debug", "Write a debug dump"),
             ("exit", "Quit oxa"),
         ] {
@@ -1271,8 +1300,13 @@ impl<'a> Loop<'a> {
     /// time and the spinner frame).
     fn timed_status(&mut self, mut status: StatusModel) -> StatusModel {
         let kind = std::mem::discriminant(&status.activity);
-        if self.act_kind != Some(kind) {
+        let attempt = match status.activity {
+            Activity::Retrying { attempt, .. } => attempt,
+            _ => 0,
+        };
+        if self.act_kind != Some(kind) || self.act_attempt != attempt {
             self.act_kind = Some(kind);
+            self.act_attempt = attempt;
             self.act_since = now_ms();
         }
         status.activity_ms = now_ms().saturating_sub(self.act_since);
@@ -1818,6 +1852,8 @@ impl<'a> Loop<'a> {
         if trimmed.is_empty() {
             return;
         }
+        // #1552: the line the owner typed is the one origin that can approve a publication.
+        oxa_proto::owner_reply::typed(&trimmed);
         if let Some(rest) = trimmed.strip_prefix('!') {
             let (excluded, cmd) = match rest.strip_prefix('!') {
                 Some(r) => (true, r),
@@ -2451,10 +2487,14 @@ impl<'a> Loop<'a> {
         {
             return AppAction::None;
         }
+        if !self.abort_requested && !self.handle.is_aborting() && self.handle.select_model_during_backoff(&id)
+        {
+            return AppAction::None;
+        }
         if self.running() {
             return AppAction::Notify {
                 level: Level::Warning,
-                text: "/model needs an idle session: wait for the current run to finish.".to_string(),
+                text: "/model needs an idle session or a goal waiting to retry.".to_string(),
             };
         }
         AppAction::Session(SessionCmd::SetModel(id))
@@ -3349,10 +3389,12 @@ fn settle_worker_done(vm: &mut ViewModel, failed: bool) {
     }
     // A failed `user_bash` command has no stored entry to replace its live block.
     if failed {
-        for block in &mut vm.blocks {
-            if let Block::Bash { running, .. } = block {
-                *running = false;
-            }
+        if let Some(Block::Bash { running, .. }) = vm
+            .blocks
+            .iter_mut()
+            .find(|block| matches!(block, Block::Bash { running: true, .. }))
+        {
+            *running = false;
         }
     }
 }
@@ -3465,6 +3507,21 @@ mod running_tests {
 
         vm.blocks[0] = bash(false);
         assert!(!foreground_running(&vm, false, false, false));
+    }
+
+    /// A worker error only belongs to the command the sequential worker just finished; a
+    /// queued command must retain its live block for its own streamed output and result.
+    #[test]
+    fn failed_user_bash_leaves_queued_block_running() {
+        let mut vm = ViewModel {
+            blocks: vec![bash(true), bash(true)],
+            ..Default::default()
+        };
+
+        settle_worker_done(&mut vm, true);
+
+        assert!(matches!(vm.blocks[0], Block::Bash { running: false, .. }));
+        assert!(matches!(vm.blocks[1], Block::Bash { running: true, .. }));
     }
 
     /// A worker error can precede the stored bash entry, but it still completes the command.

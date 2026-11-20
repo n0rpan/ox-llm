@@ -26,6 +26,11 @@ pub struct CompactionSettings {
     pub soft_tokens: Option<u32>,
 }
 
+/// Default agent-level retries (`retry.maxRetries`): cloud routes see more transient 429/5xx.
+pub const DEFAULT_MAX_RETRIES: u32 = 10;
+/// Default stream silence limit (`httpIdleTimeoutMs`): long silent thinking at max effort is normal.
+pub const DEFAULT_IDLE_MS: u64 = 900_000;
+
 /// The `retry.*` group (pi's keys and defaults).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetrySettings {
@@ -33,6 +38,12 @@ pub struct RetrySettings {
     pub max_retries: u32,
     pub base_delay_ms: u64,
     pub max_delay_ms: u64,
+    /// #2050: the whole retry wait of a failure on this machine's own engine. Waiting cannot
+    /// make a local engine that is down answer, so this budget is short (default 5 s).
+    pub local_max_total_ms: u64,
+    /// #2050: retries of the same 5xx body (status and message) before giving up. A cloud
+    /// provider that is briefly overloaded keeps `max_retries`.
+    pub identical_5xx_retries: u32,
 }
 
 /// H: the `retry.provider.*` group (pi's keys and defaults).
@@ -291,12 +302,20 @@ impl Settings {
                 .and_then(|n| u32::try_from(n).ok()),
         }
     }
+    /// Skill reactivation adds instructions to later prompts, so only an owner can enable it.
+    pub fn compaction_reactivate_skills(&self) -> bool {
+        self.user_value("compaction.reactivateSkills")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
     pub fn retry(&self) -> RetrySettings {
         RetrySettings {
             enabled: self.bool("retry.enabled", true),
-            max_retries: self.u32("retry.maxRetries", 3),
+            max_retries: self.u32("retry.maxRetries", DEFAULT_MAX_RETRIES),
             base_delay_ms: self.u64("retry.baseDelayMs", 2000),
             max_delay_ms: self.u64("retry.maxAgentDelayMs", 60000),
+            local_max_total_ms: self.u64("retry.localMaxTotalMs", 5000),
+            identical_5xx_retries: self.u32("retry.identical5xxRetries", 2),
         }
     }
     /// H: the `retry.provider.*` group (pi's keys and defaults). In oxa there is one HTTP
@@ -309,17 +328,23 @@ impl Settings {
         }
     }
     /// H: `httpIdleTimeoutMs`: the silence limit of the engine stream in milliseconds; `None`
-    /// when disabled (`0` or `"disabled"`). A value of another shape is the default (300000).
+    /// when disabled (`0` or `"disabled"`). A value of another shape is the default (900000).
     pub fn http_idle_timeout_ms(&self) -> Option<u64> {
         match self.get("httpIdleTimeoutMs") {
             Some(Value::String(s)) if s == "disabled" => None,
             Some(v) => match v.as_u64() {
                 Some(0) => None,
                 Some(n) => Some(n),
-                None => Some(300_000),
+                None => Some(DEFAULT_IDLE_MS),
             },
-            None => Some(300_000),
+            None => Some(DEFAULT_IDLE_MS),
         }
+    }
+    /// `oxa.emptyReplyRetries`: how many times a cloud reply with no text and no tool call is
+    /// asked again (default 1; 0 turns it off). User file only: the retries spend the owner's
+    /// cloud allowance with fresh idempotency keys, so a project file cannot raise them.
+    pub fn empty_reply_retries(&self) -> u32 {
+        self.user_u32("oxa.emptyReplyRetries", 1)
     }
     /// H: the startup thinking level of `model` (pi's sdk.ts order after the CLI choices):
     /// `modelThinkingLevels[model]` (keyed by the engine model id; pi's `provider/modelId`
@@ -521,6 +546,25 @@ impl Settings {
         set_nested(&mut root, key, value);
         self.persist(&path, root, project)
     }
+    /// Change one key of the USER file with its current on-disk value: under the file's write
+    /// lock, `change` receives the value the file holds right now (not this instance's possibly
+    /// stale copy) and returns the value to store, so two concurrent updates merge instead of
+    /// one replacing the other's work. An error from `change` writes nothing.
+    pub fn update_user(
+        &mut self,
+        dirs: &Dirs,
+        key: &str,
+        change: impl FnOnce(Option<&Value>) -> Result<Value, OxaError>,
+    ) -> Result<(), OxaError> {
+        check_key_shape(key)?;
+        let path = dirs.settings_file();
+        let _lock = lock_for_write(&path)?;
+        let mut root = read_object_for_write(&path)?;
+        let current = lookup_in(&root, key).cloned();
+        let value = change(current.as_ref())?;
+        set_nested(&mut root, key, value);
+        self.persist(&path, root, false)
+    }
     /// Remove `key` from the user file (`project = false`) or the project file, pruning parent
     /// objects it leaves empty; every other key stays as it is. Nothing is written when the
     /// file does not hold the key. A symbolic link at the settings path is refused, not followed.
@@ -643,6 +687,15 @@ fn lookup<'a>(layer: &'a Value, key: &str) -> Option<&'a Value> {
     Some(cur)
 }
 
+fn lookup_in<'a>(root: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
+    let mut parts = key.split('.');
+    let mut cur = root.get(parts.next()?)?;
+    for part in parts {
+        cur = cur.as_object()?.get(part)?;
+    }
+    Some(cur)
+}
+
 /// Remove `key` (dotted) from `root`, pruning the parent objects it leaves empty. False when the
 /// key is absent, in which case nothing changed.
 fn remove_nested(root: &mut Map<String, Value>, key: &str) -> bool {
@@ -671,6 +724,46 @@ fn remove_path(obj: &mut Map<String, Value>, parts: &[&str]) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_reader_rejects_symbolic_links() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!("oxa-settings-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("workspace.json");
+        let link = dir.join("settings.json");
+        std::fs::write(&target, r#"{"done":["echo injected"]}"#).unwrap();
+        symlink(&target, &link).unwrap();
+
+        let mut diagnostics = Vec::new();
+        assert_eq!(read_layer(&link, &mut diagnostics), Value::Null);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("symbolic link"));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn empty_reply_retries_are_user_only() {
+        let user_two = Settings::from_values(
+            json!({"oxa": {"emptyReplyRetries": 2}}),
+            json!({"oxa": {"emptyReplyRetries": 9}}),
+        );
+        assert_eq!(
+            user_two.empty_reply_retries(),
+            2,
+            "the user file decides how far an empty reply may be retried"
+        );
+        let project_only = Settings::from_values(json!({}), json!({"oxa": {"emptyReplyRetries": 9}}));
+        assert_eq!(
+            project_only.empty_reply_retries(),
+            1,
+            "a project file cannot raise the retries that spend the owner's allowance"
+        );
+    }
 
     #[test]
     fn a2a_enabled_defaults_true_and_ignores_the_project_layer() {
@@ -872,6 +965,14 @@ fn fail_safe_user_layer() -> Value {
 /// is a diagnostic and an empty object.
 fn read_layer(path: &Path, diagnostics: &mut Vec<Diagnostic>) -> Value {
     let source = path.display().to_string();
+    // Approval records the project settings path itself. Following a link here would let a
+    // writable target change without changing the approved link, including during live reload.
+    // Refuse links at the read boundary so startup, reload and the small inspection helpers all
+    // share the same rule.
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        diagnostics.push(warn(&source, "settings file must not be a symbolic link"));
+        return Value::Null;
+    }
     match std::fs::read_to_string(path) {
         Ok(text) => match serde_json::from_str::<Value>(&text) {
             Ok(v @ Value::Object(_)) => v,

@@ -15,6 +15,9 @@ use std::sync::mpsc::{channel, Sender};
 
 /// Rows a choice list shows before it scrolls.
 const MAX_VISIBLE: usize = 10;
+/// Publication previews are deliberately bounded independently of terminal height. Page keys
+/// expose every row, and approval remains disabled until the final page has been viewed.
+const PUBLICATION_ROWS: usize = 10;
 /// The permission prompt's choices, in display order. Deny is the default focus so that a
 /// stray Enter never grants access.
 const ACCESS_LABELS: [&str; 3] = ["Allow once", "Allow for this session", "Deny"];
@@ -76,6 +79,18 @@ impl Ui for UiProxy {
             title: title.to_string(),
             body: body.to_string(),
             timeout_ms,
+            reply,
+        };
+        if !self.post(req) {
+            return None;
+        }
+        rx.recv().ok().flatten()
+    }
+    fn approve_publication(&mut self, title: &str, body: &str) -> Option<bool> {
+        let (reply, rx) = channel();
+        let req = UiRequest::ApprovePublication {
+            title: title.to_string(),
+            body: body.to_string(),
             reply,
         };
         if !self.post(req) {
@@ -295,6 +310,15 @@ impl DialogHost {
                     timeout_ms,
                     Reply::Bool(reply),
                 );
+                self.push(dialog, now_ms);
+            }
+            UiRequest::ApprovePublication { title, body, reply } => {
+                let mut list = choice_list(&["Approve".to_string(), "Deny".to_string()]);
+                // Deny is focused by default: a stray Enter never publishes.
+                list.set_selected_index(1);
+                let lines: Vec<String> = body.lines().map(str::to_string).collect();
+                let dialog =
+                    Dialog::choice(title, lines, list, ChoiceKind::Approve, None, Reply::Bool(reply));
                 self.push(dialog, now_ms);
             }
             UiRequest::Input {
@@ -517,12 +541,41 @@ impl DialogHost {
         let mut body: Vec<String> = Vec::new();
         let mut cursor: Option<(usize, u16)> = None;
         match &mut dialog.body {
-            Body::Choice { lines, list, kind } => {
+            Body::Choice {
+                lines,
+                list,
+                kind,
+                scroll,
+                reviewed,
+            } => {
                 match kind {
                     // A select has no body text: its title is the question, wrapped.
                     ChoiceKind::Select => {
                         header = None;
                         body.extend(wrap(&title, inner as usize));
+                    }
+                    // Publication text is shown as it will be published: no word re-flow.
+                    ChoiceKind::Approve => {
+                        let mut preview = Vec::new();
+                        for line in lines.iter() {
+                            preview.extend(hard_wrap(line, inner as usize));
+                        }
+                        let max_scroll = preview.len().saturating_sub(PUBLICATION_ROWS);
+                        *scroll = (*scroll).min(max_scroll);
+                        let end = (*scroll + PUBLICATION_ROWS).min(preview.len());
+                        body.extend(preview[*scroll..end].iter().cloned());
+                        *reviewed |= end == preview.len();
+                        if preview.len() > PUBLICATION_ROWS {
+                            body.push(theme.fg(
+                                "muted",
+                                &format!(
+                                    "rows {}–{} of {}  pageup/pagedown review",
+                                    *scroll + 1,
+                                    end,
+                                    preview.len()
+                                ),
+                            ));
+                        }
                     }
                     _ => {
                         for line in lines.iter() {
@@ -742,7 +795,7 @@ pub fn cycle_mode(current: Mode) -> (Mode, String) {
     let next = current.next();
     let text = match next {
         Mode::Plan => "Mode: plan (read-only)",
-        Mode::Workspace => "Mode: workspace (writes inside cwd, sandboxed bash; the rest asks)",
+        Mode::Workspace => "Mode: workspace (writes inside cwd; the rest asks)",
         Mode::Ask => "Mode: ask (each write or command asks once per scope)",
     };
     (next, text.to_string())
@@ -763,6 +816,24 @@ fn choice_list(labels: &[impl AsRef<str>]) -> SelectList {
         })
         .collect();
     SelectList::new(items, MAX_VISIBLE)
+}
+
+/// Cut a line at `width` columns without touching its spaces, so the shown text is the exact
+/// text (an empty line stays one empty row).
+fn hard_wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    let mut line = String::new();
+    for ch in text.chars() {
+        let mut next = line.clone();
+        next.push(ch);
+        if !line.is_empty() && oxa_tui::visible_width(&next) > width {
+            out.push(std::mem::take(&mut line));
+        }
+        line.push(ch);
+    }
+    out.push(line);
+    out
 }
 
 /// Greedy word wrap by visible width. Words wider than `width` stay whole (the frame cuts them).
@@ -856,6 +927,8 @@ impl Reply {
 enum ChoiceKind {
     Select,
     Confirm,
+    /// Publication approval: Approve is index 0, the exact text is shown unwrapped-by-words.
+    Approve,
     Access,
     Danger,
 }
@@ -864,7 +937,7 @@ impl ChoiceKind {
     fn outcome(self, i: usize) -> Outcome {
         match self {
             ChoiceKind::Select => Outcome::Index(i),
-            ChoiceKind::Confirm => Outcome::Bool(i == 0),
+            ChoiceKind::Confirm | ChoiceKind::Approve => Outcome::Bool(i == 0),
             ChoiceKind::Access => Outcome::Access(ACCESS_ANSWERS.get(i).copied().unwrap_or(Answer::Deny)),
             ChoiceKind::Danger => {
                 Outcome::Danger(DANGER_ANSWERS.get(i).copied().unwrap_or(DangerAnswer::Deny))
@@ -879,6 +952,10 @@ enum Body {
         lines: Vec<String>,
         list: Box<SelectList>,
         kind: ChoiceKind,
+        /// Wrapped-row offset for publication review.
+        scroll: usize,
+        /// Approval is enabled only after the owner has displayed the final preview page.
+        reviewed: bool,
     },
     Text {
         input: Input,
@@ -924,6 +1001,8 @@ impl Dialog {
                 lines,
                 list: Box::new(list),
                 kind,
+                scroll: 0,
+                reviewed: false,
             },
             reply,
             timeout_ms,
@@ -952,16 +1031,43 @@ impl Dialog {
     fn key(&mut self, key: &Key, keymap: &Keymap) -> KeyFlow {
         let cancel = keymap.matches(&key.id, "tui.select.cancel");
         match &mut self.body {
-            Body::Choice { list, kind, .. } => match list.key(key, keymap) {
-                SelectAction::Selected(value) => {
-                    let out = value.parse::<usize>().ok().map(|i| kind.outcome(i));
-                    KeyFlow::Settle(out)
+            Body::Choice {
+                list,
+                kind,
+                scroll,
+                reviewed,
+                ..
+            } => {
+                if matches!(kind, ChoiceKind::Approve) && key.is("pagedown") {
+                    *scroll = scroll.saturating_add(PUBLICATION_ROWS);
+                    return KeyFlow::Pending;
                 }
-                SelectAction::Cancelled => KeyFlow::Settle(None),
-                SelectAction::Moved => KeyFlow::Pending,
-                SelectAction::Ignored if cancel => KeyFlow::Settle(None),
-                SelectAction::Ignored => KeyFlow::Pending,
-            },
+                if matches!(kind, ChoiceKind::Approve) && key.is("pageup") {
+                    *scroll = scroll.saturating_sub(PUBLICATION_ROWS);
+                    return KeyFlow::Pending;
+                }
+                match list.key(key, keymap) {
+                    SelectAction::Selected(value) => {
+                        let out = value.parse::<usize>().ok().and_then(|i| {
+                            // Denial is always available. Approval is not authority until the final
+                            // page has actually been rendered for review.
+                            if matches!(kind, ChoiceKind::Approve) && i == 0 && !*reviewed {
+                                None
+                            } else {
+                                Some(kind.outcome(i))
+                            }
+                        });
+                        if out.is_none() && matches!(kind, ChoiceKind::Approve) {
+                            return KeyFlow::Pending;
+                        }
+                        KeyFlow::Settle(out)
+                    }
+                    SelectAction::Cancelled => KeyFlow::Settle(None),
+                    SelectAction::Moved => KeyFlow::Pending,
+                    SelectAction::Ignored if cancel => KeyFlow::Settle(None),
+                    SelectAction::Ignored => KeyFlow::Pending,
+                }
+            }
             Body::Text { input } => match input.key(key, keymap) {
                 InputAction::Submit(v) => KeyFlow::Settle(Some(Outcome::Text(v))),
                 InputAction::Cancelled => KeyFlow::Settle(None),
@@ -1040,5 +1146,87 @@ mod notification_tests {
         assert!(host.take_permission_opened(), "next queued permission");
         host.close_all();
         assert!(!host.take_permission_opened());
+    }
+}
+
+#[cfg(test)]
+mod approval_tests {
+    use super::*;
+
+    fn open(host: &mut DialogHost) -> std::sync::mpsc::Receiver<Option<bool>> {
+        let (reply, rx) = channel();
+        host.handle(
+            UiRequest::ApprovePublication {
+                title: "Publish?".into(),
+                body: "Title: A  B\n    indented".into(),
+                reply,
+            },
+            &mut ViewModel::default(),
+            0,
+        );
+        rx
+    }
+
+    #[test]
+    fn deny_is_focused_and_the_text_is_shown_exactly() {
+        let mut host = DialogHost::new();
+        let rx = open(&mut host);
+        let shown = host.render(80, &Theme::plain()).join("\n");
+        assert!(
+            shown.contains("Title: A  B") && shown.contains("    indented"),
+            "{shown}"
+        );
+        host.key(&Key::press("enter"), &Keymap::defaults());
+        assert_eq!(rx.recv().unwrap(), Some(false), "a stray Enter denies");
+    }
+
+    #[test]
+    fn up_then_enter_approves_and_escape_dismisses() {
+        let mut host = DialogHost::new();
+        let rx = open(&mut host);
+        host.render(80, &Theme::plain());
+        host.key(&Key::press("up"), &Keymap::defaults());
+        host.key(&Key::press("enter"), &Keymap::defaults());
+        assert_eq!(rx.recv().unwrap(), Some(true));
+        let rx = open(&mut host);
+        host.key(&Key::press("escape"), &Keymap::defaults());
+        assert_eq!(rx.recv().unwrap(), None);
+    }
+
+    #[test]
+    fn long_lines_are_cut_not_reflowed() {
+        assert_eq!(hard_wrap("ab  cd", 4), vec!["ab  ".to_string(), "cd".to_string()]);
+        assert_eq!(hard_wrap("", 4), vec![String::new()]);
+    }
+
+    #[test]
+    fn publication_must_be_paged_to_the_end_before_approval() {
+        let mut host = DialogHost::new();
+        let (reply, rx) = channel();
+        let body = (1..=24)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        host.handle(
+            UiRequest::ApprovePublication {
+                title: "Publish?".into(),
+                body,
+                reply,
+            },
+            &mut ViewModel::default(),
+            0,
+        );
+        let first = host.render(80, &Theme::plain()).join("\n");
+        assert!(first.contains("line 1") && !first.contains("line 24"), "{first}");
+        host.key(&Key::press("up"), &Keymap::defaults());
+        host.key(&Key::press("enter"), &Keymap::defaults());
+        assert!(rx.try_recv().is_err(), "approval stayed disabled");
+
+        host.key(&Key::press("pagedown"), &Keymap::defaults());
+        host.key(&Key::press("pagedown"), &Keymap::defaults());
+        let last = host.render(80, &Theme::plain()).join("\n");
+        assert!(last.contains("line 24") && !last.contains("│ line 1 "), "{last}");
+        host.key(&Key::press("enter"), &Keymap::defaults());
+        assert_eq!(rx.recv().unwrap(), Some(true));
     }
 }

@@ -30,7 +30,7 @@ class Selection(unittest.TestCase):
         with self.assertRaises(ValueError):
             lane.member_matches('crates/server', '**')
 
-    def test_leaf_change_covers_local_consumers_across_workspaces_only(self):
+    def test_leaf_change_covers_local_consumers(self):
         matrix, deferred, _ = lane.select(self.packages, self.packages, ['oxa/leaf/src/lib.rs'])
         self.assertEqual(self.names(matrix), {
             ('oxa', 'ubuntu-24.04', ('app', 'leaf')),

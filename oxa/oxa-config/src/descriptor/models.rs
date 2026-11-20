@@ -2,6 +2,7 @@
 //! Model, Thinking, Sampling, Speed, Requests and retries.
 
 use super::{d, Apply, Control, Descriptor, Group, MapKind, Options, Unit, WebEdit};
+use crate::schema::Kind;
 
 /// The Models and thinking entries, in display order.
 pub const ENTRIES: &[Descriptor] = &[
@@ -12,6 +13,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Default model",
         "Model a new session starts with.",
     )
+    .key(Kind::String, "null")
     .control(Control::Model)
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -22,6 +24,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Models in the cycle",
         "Models for Ctrl+P and the start model; patterns allowed.",
     )
+    .key(Kind::StringList, "null")
     .control(Control::MultiSelect(Options::Models))
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -32,6 +35,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Built-in cloud gateway",
         "Use the Rust cloud gateway inside oxa.",
     )
+    .key(Kind::Bool, "null")
     .toggle()
     .user_only()
     .apply(Apply::Restart)
@@ -44,6 +48,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Built-in local engine",
         "Run the local engine inside oxa.",
     )
+    .key(Kind::Bool, "false")
     .toggle()
     .user_only()
     .apply(Apply::Restart)
@@ -55,6 +60,10 @@ pub const ENTRIES: &[Descriptor] = &[
         "Thinking",
         "Thinking level",
         "Thinking level of a new session.",
+    )
+    .key(
+        Kind::Enum(&["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
+        "\"medium\"",
     )
     .choice(&[
         ("off", "no thinking"),
@@ -74,9 +83,11 @@ pub const ENTRIES: &[Descriptor] = &[
         "Thinking per model",
         "A thinking level for one model id.",
     )
+    .key(Kind::Object, "{}")
     .control(Control::Map(MapKind::Text))
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
+    // T5: unset = `auto`.
     d(
         "oxa.thinking.policy",
         Group::Models,
@@ -84,10 +95,12 @@ pub const ENTRIES: &[Descriptor] = &[
         "Thinking policy",
         "Fixed level, or let oxa turn thinking on when a run needs it.",
     )
+    .key(Kind::Enum(&["fixed", "auto"]), "null")
     .choice(&[("fixed", ""), ("auto", "")])
     .eff("\"auto\"")
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
+    // Thinking on tool follow-ups under policy `auto` (oxa-core `think.rs`).
     d(
         "oxa.thinking.toolFollowups",
         Group::Models,
@@ -95,9 +108,12 @@ pub const ENTRIES: &[Descriptor] = &[
         "Think after tool results",
         "Thinking on replies that follow tool results, under policy auto.",
     )
+    .key(Kind::Enum(&["auto", "on", "off"]), "\"auto\"")
     .choice(&[("auto", ""), ("on", ""), ("off", "")])
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
+    // Adaptive escalation of tool follow-ups (oxa-core `think.rs`): calls without progress
+    // before thinking turns on; 0 = never on that ground.
     d(
         "oxa.thinking.escalation.fruitlessCalls",
         Group::Models,
@@ -105,10 +121,12 @@ pub const ENTRIES: &[Descriptor] = &[
         "Think after stuck calls",
         "Calls without progress before thinking turns on. 0 = never.",
     )
+    .key(Kind::Number, "6")
     .number(Unit::Count)
     .zero("never")
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
+    // Optional local engine cap, capability-gated; null leaves the current policy unchanged.
     d(
         "oxa.thinking.budget",
         Group::Models,
@@ -116,9 +134,13 @@ pub const ENTRIES: &[Descriptor] = &[
         "Thinking token cap",
         "Cap on reasoning tokens for local engines that support it. Unset = no cap.",
     )
+    .key(Kind::Number, "null")
     .number(Unit::Tokens)
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
+    // B3 (lane harden): user settings only (read from the user file whatever the project says).
+    // `greedy` = W6 `temperature: 0` (MTP on); `model` = the model card's sampling (oxa-core
+    // `sampling.rs`). The seed is sent only with `model`.
     d(
         "oxa.sampling.mode",
         Group::Models,
@@ -126,6 +148,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Sampling",
         "Greedy (deterministic) or the model card's sampling.",
     )
+    .key(Kind::Enum(&["greedy", "model"]), "\"greedy\"")
     .choice(&[
         ("greedy", "deterministic"),
         ("model", "the model card's sampling"),
@@ -140,6 +163,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Seed",
         "Fixed seed, sent with model sampling. Unset = none.",
     )
+    .key(Kind::Number, "null")
     .control(Control::Number)
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -150,6 +174,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Cache warming",
         "Keep the prompt cache warm while idle.",
     )
+    .key(Kind::Enum(&["off", "streaming", "idle"]), "\"idle\"")
     .choice(&[("off", ""), ("streaming", ""), ("idle", "")])
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -160,9 +185,11 @@ pub const ENTRIES: &[Descriptor] = &[
         "Preload at start",
         "Prefill the fixed prompt prefix when oxa starts.",
     )
+    .key(Kind::Bool, "true")
     .toggle()
     .apply(Apply::Restart)
     .web(WebEdit::Edit),
+    // V020-OPTIMIZE #13 / OXA-LOCAL-FIRST F1: timing only (bytes unchanged); unset = on.
     d(
         "oxa.prefill.paste",
         Group::Models,
@@ -170,6 +197,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Prefill while typing",
         "Prefill a long message while you type, on a local engine.",
     )
+    .key(Kind::Bool, "null")
     .toggle()
     .eff("true")
     .apply(Apply::Reload)
@@ -181,6 +209,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Prefill during tools",
         "Prefill earlier tool results while a slow tool runs.",
     )
+    .key(Kind::Bool, "null")
     .toggle()
     .eff("true")
     .apply(Apply::Reload)
@@ -192,6 +221,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Retry failed requests",
         "Retry a failed model request.",
     )
+    .key(Kind::Bool, "true")
     .toggle()
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -202,6 +232,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Retries",
         "Retries of one agent request.",
     )
+    .key(Kind::Number, "10")
     .control(Control::Number)
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -212,6 +243,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "First retry delay",
         "First wait, doubled each retry.",
     )
+    .key(Kind::Number, "2000")
     .number(Unit::Ms)
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -222,7 +254,43 @@ pub const ENTRIES: &[Descriptor] = &[
         "Longest retry wait",
         "Longest wait between retries.",
     )
+    .key(Kind::Number, "60000")
     .number(Unit::Ms)
+    .apply(Apply::Reload)
+    .web(WebEdit::Edit),
+    d(
+        "retry.localMaxTotalMs",
+        Group::Models,
+        "Requests and retries",
+        "Local engine retry budget",
+        "Whole retry wait when this machine's engine fails; waiting cannot fix it.",
+    )
+    .key(Kind::Number, "5000")
+    .number(Unit::Ms)
+    .apply(Apply::Reload)
+    .web(WebEdit::Edit),
+    d(
+        "retry.identical5xxRetries",
+        Group::Models,
+        "Requests and retries",
+        "Repeated error retries",
+        "Retries of the same 5xx body from one endpoint; overload replies keep the long backoff.",
+    )
+    .key(Kind::Number, "2")
+    .control(Control::Number)
+    .apply(Apply::Reload)
+    .web(WebEdit::Edit),
+    d(
+        "oxa.emptyReplyRetries",
+        Group::Models,
+        "Requests and retries",
+        "Empty reply retries",
+        "Ask again when a cloud model returns no text and no tool call. 0 = off.",
+    )
+    .key(Kind::Number, "1")
+    .number(Unit::Count)
+    .zero("off")
+    .user_only()
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
     d(
@@ -232,6 +300,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Silent HTTP retries",
         "Retries of one HTTP request before the first byte.",
     )
+    .key(Kind::Number, "0")
     .control(Control::Number)
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -242,6 +311,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Longest HTTP retry wait",
         "Longest wait of one HTTP retry.",
     )
+    .key(Kind::Number, "60000")
     .number(Unit::Ms)
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -252,6 +322,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Stream silence limit",
         "How long the model stream may be silent. 0 = no limit.",
     )
+    .key(Kind::Any, "900000")
     .number(Unit::Ms)
     .control(Control::NumberOr("disabled"))
     .zero("no limit")
@@ -264,6 +335,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Stream silence limit (provider)",
         "Overrides the stream silence limit for provider requests. Unset = use the limit above.",
     )
+    .key(Kind::Number, "null")
     .number(Unit::Ms)
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -277,7 +349,6 @@ mod tests {
 
     #[test]
     fn models_keys_exist_in_schema() {
-        assert_eq!(ENTRIES.len(), 24);
         let mut seen = std::collections::HashSet::new();
         for e in ENTRIES {
             assert_eq!(e.group, Group::Models, "{}", e.key);

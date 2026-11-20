@@ -1,13 +1,24 @@
 # Dev builds
 
-Every main push runs `dev-build.yml`, reusing the full two-architecture release recipe,
-including two-build reproducibility and exact-artifact no-Python tests. Only successful,
-native-only payloads are published to the rolling `dev` prerelease; it is never `latest`.
+Every main push runs `dev-build.yml`, reusing the release recipe: each architecture is built
+once, then tested on the exact artifact (no-Python proof, SBOM, checksums). The two-build
+reproducibility comparison runs on the nightly `dev-build` schedule and in the release lane,
+not on every push; a dev push's `REPRODUCIBILITY.txt` says it was built once. The model-free
+source tests are skipped only when the pushed commit already passed the merge queue and changed
+no dependency cache key (`tools/ci/queue_covered.py`); a release and a nightly run always take
+them. Only successful,
+native-only payloads are published to the rolling `dev` prerelease; it is never `latest`, and
+a nightly or dispatched run publishes nothing.
 The dev version is a pre-release of the next version: the latest stable `vX.Y.Z` tag bumped to
-`X.Y.(Z+1)`, plus `-dev.<sha7>` (so `v0.2.1-dev.<sha7>` after `v0.2.0`, `v0.2.2-dev.<sha7>` once
-`v0.2.1` is tagged). It is computed in one place, `tools/ci/dev_version.py`; without a stable tag
-the workspace version is used. `dev-update*.sh` accept the older `vX.Y.Z-dev.<sha7>` names and pick
-the highest semver for the `dev` release commit.
+`X.Y.(Z+1)`, plus `-dev.<N>+<sha7>` where N is the number of main commits since that stable tag
+(`git rev-list --count <tag>..HEAD`; from the root without a stable tag), e.g. `v0.2.2-dev.137+6955919`.
+SemVer compares the numeric pre-release N numerically (`dev.9 < dev.10 < dev.137 < 0.2.2`) and ignores
+the `+<sha7>` build metadata. The version string keeps the `+`; in file and release-asset names it is
+written `.` (`ox-llm-v0.2.2-dev.137.6955919-linux-x86_64.tar.gz`), because `+` is not safe in asset names.
+The version is computed in one place, `tools/ci/dev_version.py` (`--file-name` prints the file form);
+without a stable tag the workspace version is used. `dev-update*.sh` accept the older
+`vX.Y.Z-dev.<sha7>` names, pick the highest semver (then highest N) for the `dev` release commit, and
+record the `+` form in their receipts.
 Archives, SBOMs and proof receipts include the package version and seven-character source
 SHA. SHA256SUMS and downloadable provenance accompany them. The workflow moves only the
 `dev` tag; normal release tags and installs are untouched. Python controller payloads fail

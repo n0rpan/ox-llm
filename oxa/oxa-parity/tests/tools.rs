@@ -101,7 +101,7 @@ fn schema_of(ran: &Ran, name: &str) -> serde_json::Value {
         .clone()
 }
 
-const ALL_SEVEN: [&str; 7] = ["bash", "edit", "find", "grep", "ls", "read", "write"];
+const ALL_SEVEN: [&str; 8] = ["bash", "edit", "find", "grep", "ls", "read", "wait", "write"];
 
 /// Tool selection without a turn: the names the engine was offered.
 fn offered(env: &TestEnv, extra: &[&str]) -> Vec<String> {
@@ -655,7 +655,8 @@ fn tools_013() {
     let env = TestEnv::new();
     let outside = env.tmp().join("outside.txt");
     let cmd = format!(r#"{{"command":"echo x > '{}'; echo done"}}"#, outside.display());
-    let r = run_one(&env, "bash", &cmd, &[]);
+    // #1512 S3: an attended run has no OS sandbox unless asked for it.
+    let r = run_one(&env, "bash", &cmd, &["--sandbox"]);
     assert!(
         !outside.exists(),
         "the sandbox keeps writes out of the workspace; result: {r:?}"

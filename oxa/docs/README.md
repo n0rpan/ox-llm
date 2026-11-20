@@ -27,7 +27,7 @@ User files live in `~/.oxa/agent/`. Project files live in `.oxa/` and load only 
 
 | Page | Read it for |
 |---|---|
-| [install.md](pages/install.md) | the stable release, the dev build, building from source, updating and removing |
+| [install.md](pages/install.md) | the portable Linux x86_64 binary, the stable release, the dev build, building from source, updating and removing |
 | [quickstart.md](pages/quickstart.md) | cloud providers and keys, local models, the first prompt, where files live |
 | [modes.md](pages/modes.md) | standard, auto, yolo and plan: what each mode does, and macOS |
 | [usage.md](pages/usage.md) | the interface: editor, keys, slash commands, footer, selectors |
@@ -57,4 +57,5 @@ The security summary for the repository is in [SECURITY.md](../SECURITY.md). The
 - `~` is the home directory. `<project>` is the project root, the directory you start oxa in.
 - Paths in the `.oxa/` tree are relative to a project, and paths in `~/.oxa/agent/` are relative to the agent directory.
 - Setting names are written as they appear in JSON. Nested keys are shown with dots, for example `compaction.reserveTokens`.
+- The setting tables in [settings.md](pages/settings.md) are generated from `oxa/oxa-config/src/descriptor/sheet/`; the prose around them is hand-written. Change a row in the sheet and run `python3 tools/ci/settings_table.py --write`.
 - A prefix epoch is the part of a session that the engine caches: the system prompt and the tool list. A new prefix epoch starts with a new session, a resumed session, a model switch, or a `/reload` that changes one of them. Until the next epoch, the system prompt and the tool list stay byte-identical, so the engine can reuse its cache.

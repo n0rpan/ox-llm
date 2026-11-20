@@ -78,10 +78,10 @@ Each model keeps its publisher's licence; read it before use.
 **Flash expert sidecar.** The Flash engine reads experts from a repacked sidecar file, built once from the four shards (heavy IO, about the size of the expert weights):
 
 ```sh
-./target/release/flash-m0 sidecar     # see M0-FLASH.md in the engine repository for paths and options
+./target/release/flash-m0 sidecar     # options: see the archived M0-FLASH note (git history before 2026-11-19)
 ```
 
-Put it on the fastest partition you have; encryption costs read latency ([ARCHITECTURE.md §3](ARCHITECTURE.md#3-flash-ssd-streaming-for-a-model-27-larger-than-ram)). The test laptop keeps it on a plain, **unencrypted** ext4 partition at `/var/lib/local-ai-models/flash/` (public weights only; everything private stays encrypted). Setup, measurements, rule and fallback: [FLASH-STORAGE.md](FLASH-STORAGE.md).
+Put it on the fastest partition you have; encryption costs read latency ([ARCHITECTURE.md §3](ARCHITECTURE.md#3-flash-ssd-streaming-for-a-model-27-larger-than-ram)). The test laptop keeps it on a plain, **unencrypted** ext4 partition at `/var/lib/local-ai-models/flash/` (public weights only; everything private stays encrypted). Setup, measurements, rule and fallback: FLASH-STORAGE.md.
 
 ## 4. Run a server by hand
 

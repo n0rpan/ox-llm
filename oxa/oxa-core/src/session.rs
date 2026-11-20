@@ -332,6 +332,53 @@ impl Session {
         Ok(session)
     }
 
+    /// #1844 PR 2: install a fork seed as this session's head (`oxa.fork`). The session keeps
+    /// its own id, model and tool selection, but its frozen prefix and its wire become the
+    /// parent's, so the first prompt continues the parent's conversation: the engine's state is
+    /// not evicted and the parent's next turn reuses it. The parent's last assistant turn has a
+    /// tool call of its own still open, so the interrupted results are appended (as a resume
+    /// after a crash does), and the child's task follows as its first user message.
+    ///
+    /// Called by a subagent child before its first prompt (never mid-run, W1/W3).
+    pub fn adopt_fork(
+        &mut self,
+        seed: &crate::fork::ForkSeed,
+        sink: &mut dyn EventSink,
+    ) -> Result<(), OxaError> {
+        let branch = seed.branch()?;
+        let (prefix, wire) = crate::fork::replay(&branch);
+        let Some(prefix) = prefix else {
+            return Err(OxaError::new(
+                codes::INVALID,
+                "the fork seed holds no frozen prefix",
+            ));
+        };
+        let st = &mut self.st;
+        // The seed replaces the child's own prefix (one edit, not a run: W3).
+        st.prefix = prefix.clone();
+        st.transcript = oxa_session::Transcript::default();
+        crate::agent_loop::persist(st, EntryBody::Prefix(prefix), sink)?;
+        for msg in wire {
+            crate::agent_loop::append_entry(
+                st,
+                EntryBody::Msg {
+                    wire: msg,
+                    parts: Vec::new(),
+                    tool: None,
+                },
+            )?;
+        }
+        crate::resume::close_interrupted(st, sink)?;
+        crate::tune::refresh(st);
+        let enabled = st.compact.enabled;
+        st.compact = CompactPolicy {
+            enabled,
+            ..policy_for_model(&st.info, &st.settings, &st.model)
+        };
+        st.stats.context_tokens = st.transcript.context();
+        Ok(())
+    }
+
     /// Run one user prompt to settlement (blocks). A line naming an extension command runs it
     /// as [`Session::run_command`] does (pi). Order: `expand_input` (templates, skills;
     /// built-in slash commands are the caller's business) -> hook `Input` -> append pending `NextTurn`
@@ -713,6 +760,14 @@ impl Session {
     pub fn reload(&mut self, sink: &mut dyn EventSink, ui: &mut dyn Ui) -> Result<bool, OxaError> {
         self.ensure_idle()?;
         crate::reload(&mut self.st, sink, ui)
+    }
+
+    /// Bring the prefix in line with this Session's tool selection: a resumed session replays the
+    /// prefix it stored, so a tool the session did not declare then (or one it no longer offers)
+    /// only changes on a new epoch. Returns `true` when one was opened; nothing changed otherwise.
+    pub fn sync_tools(&mut self, sink: &mut dyn EventSink) -> Result<bool, OxaError> {
+        self.ensure_idle()?;
+        crate::open_epoch(&mut self.st, "tools", false, sink)
     }
 
     /// `!cmd` (`excluded = false`) / `!!cmd` (`true`).
@@ -1817,6 +1872,8 @@ pub(crate) fn attach_ids(st: &mut SessionState) {
     st.jobs.set_owner(&id);
     st.spill_dir = st.dirs.tmp_dir.join(&id);
     st.policy.set_spill_dir(&st.spill_dir);
+    // #1512 S5: the approval desk files requests for this session id.
+    st.policy.set_session_id(&id);
     // Fork/clone history still names its ancestors' spills, even after those sessions are
     // deleted. Follow trusted live/retained headers, never paths suggested by tool/model text.
     let inherited = oxa_session::inherited_spill_dirs(st.store.as_ref(), &st.dirs.tmp_dir, &st.sref);
@@ -1924,7 +1981,7 @@ fn draft_message(st: &mut SessionState, text: &str, parts: &[Part]) -> Option<Wi
 /// V020-OPTIMIZE #13, privacy: a draft the user never submitted is sent only to an engine on
 /// this machine: a loopback host (`localhost`, 127.0.0.0/8, `::1`, as `oxa.engine.allowRemote`
 /// judges it), or an in-process engine whose base URL has no network authority (test fakes).
-fn engine_on_this_machine(base_url: &str) -> bool {
+pub(crate) fn engine_on_this_machine(base_url: &str) -> bool {
     match oxa_proto::url_host(base_url) {
         Some(host) => oxa_proto::is_loopback_host(&host),
         None => !base_url.contains("://"),

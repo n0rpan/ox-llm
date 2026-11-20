@@ -7,6 +7,9 @@
 //! [`OwnerConfirm::serve`] (the session thread's own `Ui`) and
 //! [`OwnerConfirm::resolve_typed`] (called from the owner's typed-message entry only).
 //!
+//! A typed yes answers only a request whose dialog oxa has already shown (the broker records it
+//! when [`OwnerConfirm::serve`] opens the dialog); one that waits unshown is left alone.
+//!
 //! Protocol, one line each way: `{"question": .., "preview_sha256": ..}` in,
 //! `{"answer": "yes"|"no"|"none", "source": "yolo"|"dialog"|"typed"|"none"}` out. `none` means
 //! nobody could answer (no way to ask the owner); callers treat it as "not confirmed".
@@ -90,12 +93,17 @@ const AFFIRMATIVE: [&str; 5] = ["yes", "y", "ja", "ok", "post it"];
 /// `Some(true)` yes, `Some(false)` no, `None` when nobody could answer or the socket is unusable.
 /// There is no timeout: the owner may take as long as they need.
 pub fn ask(sock: &Path, question: &str) -> Option<bool> {
+    let stream = UnixStream::connect(sock).ok()?;
+    ask_on(stream, question)
+}
+
+/// [`ask`] on a connection the caller already made (and verified): one request, one answer.
+pub fn ask_on(mut stream: UnixStream, question: &str) -> Option<bool> {
     use sha2::{Digest, Sha256};
     let sha: String = Sha256::digest(question.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    let mut stream = UnixStream::connect(sock).ok()?;
     writeln!(stream, "{}", json!({"question": question, "preview_sha256": sha})).ok()?;
     let mut line = String::new();
     std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).ok()?;
@@ -270,7 +278,13 @@ impl OwnerConfirm {
         let Some((id, question)) = next else {
             return;
         };
-        let verdict = match ui.confirm("Confirm with the owner", &question, None) {
+        // The question is the requesting process's own text: shown as data, marked as such, so
+        // it cannot pass for an oxa message.
+        let body = format!(
+            "A process run by this session asks you to confirm. Its text follows as written; \
+             it is not an oxa message.\n\n{question}"
+        );
+        let verdict = match ui.confirm("Confirm with the owner", &body, None) {
             Some(true) => Verdict::Yes,
             Some(false) => Verdict::No,
             None => Verdict::None,
@@ -285,11 +299,35 @@ impl OwnerConfirm {
         let id = lock(&self.state)
             .pending
             .iter()
-            .find(|p| p.reply.is_none())
+            .find(|p| p.reply.is_none() && p.shown)
             .map(|p| p.id);
         let Some(id) = id else {
             return false;
         };
+        self.resolve_typed_for(id, text)
+    }
+
+    /// The id of the request whose dialog oxa has shown to the owner and that still waits.
+    pub fn shown_request(&self) -> Option<u64> {
+        lock(&self.state)
+            .pending
+            .iter()
+            .find(|p| p.reply.is_none() && p.shown)
+            .map(|p| p.id)
+    }
+
+    /// [`OwnerConfirm::resolve_typed`] for one request id. The typed reply counts only for a
+    /// request the broker has recorded as shown: a request whose dialog was not yet shown (or
+    /// another id) is left waiting, so a yes typed earlier can never answer a question the
+    /// owner has not seen.
+    pub fn resolve_typed_for(&self, id: u64, text: &str) -> bool {
+        let shown = lock(&self.state)
+            .pending
+            .iter()
+            .any(|p| p.id == id && p.reply.is_none() && p.shown);
+        if !shown {
+            return false;
+        }
         let verdict = if is_affirmative(text) {
             Verdict::Yes
         } else {
@@ -725,13 +763,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(d);
     }
 
+    /// Run the session thread's dialog for the waiting request on its own thread: the dialog
+    /// is shown (the broker records it) and stays open until a typed reply cancels it.
+    fn show_dialog(b: &Arc<OwnerConfirm>) -> std::thread::JoinHandle<()> {
+        while lock(&b.state).pending.is_empty() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let shown = b.clone();
+        std::thread::spawn(move || {
+            let (cancel, cancelled) = std::sync::mpsc::channel();
+            shown.serve(&mut BlockingDialog { cancelled, cancel });
+        })
+    }
+
     #[test]
-    fn owner_confirm_typed_yes_resolves_pending() {
+    fn owner_confirm_typed_yes_resolves_a_shown_request() {
         let d = dir("typed");
         let b = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Auto)).expect("start");
         b.set_servable(true);
         let b2 = b.clone();
         let t = std::thread::spawn(move || ask(&b2, "post issue?"));
+        let dialog = show_dialog(&b);
         let mut resolved = false;
         for _ in 0..100 {
             if b.resolve_typed("Yes!") {
@@ -741,11 +793,45 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(resolved);
+        dialog.join().expect("dialog");
         let r = t.join().expect("join");
         assert_eq!(r["answer"], "yes");
         assert_eq!(r["source"], "typed");
         assert!(!b.resolve_typed("yes"), "nothing waits any more");
         assert!(!is_affirmative("sure, why not"));
+        b.close();
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn owner_confirm_typed_yes_without_a_shown_dialog_is_ignored() {
+        let d = dir("typed-unshown");
+        let b = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Standard)).expect("start");
+        b.set_servable(true);
+        let asking = b.clone();
+        let request = std::thread::spawn(move || ask(&asking, "post issue?"));
+        while lock(&b.state).pending.is_empty() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // The request waits but oxa has not shown its dialog: a typed yes does not count.
+        assert!(b.shown_request().is_none());
+        assert!(!b.resolve_typed("yes"));
+        assert!(!b.resolve_typed_for(0, "yes"));
+        assert!(lock(&b.state).pending.iter().all(|p| p.reply.is_none()));
+        // Once shown, a yes for another request id still does not count; for its own id it does.
+        let dialog = show_dialog(&b);
+        let id = loop {
+            if let Some(id) = b.shown_request() {
+                break id;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(!b.resolve_typed_for(id + 1, "yes"));
+        assert!(b.resolve_typed_for(id, "yes"));
+        dialog.join().expect("dialog");
+        let r = request.join().expect("request");
+        assert_eq!(r["answer"], "yes");
+        assert_eq!(r["source"], "typed");
         b.close();
         let _ = std::fs::remove_dir_all(d);
     }
@@ -763,7 +849,9 @@ mod tests {
         let resolving = b.clone();
         let typed = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(20));
-            assert!(resolving.resolve_typed("yes"));
+            while !resolving.resolve_typed("yes") {
+                std::thread::sleep(Duration::from_millis(5));
+            }
         });
         let (cancel, cancelled) = std::sync::mpsc::channel();
         b.serve(&mut BlockingDialog { cancelled, cancel });

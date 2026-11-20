@@ -37,7 +37,7 @@ Each `fix` field names the one action that helps: `local_add`, `enable_local`, `
 
 ## `oxa models --json`
 
-Fixture: `models.json`. Plain `oxa models` prints the same rows as a table.
+Fixture: `models.json`. Plain `oxa models` prints the same models as a table: where each runs (`local` or `cloud · <provider>`), its limits and which one is the default.
 
 - `models[].kind` is `cloud` or `local`. `billing` is `metered`, `subscription` or `local`. `pool` names the usage pool the model draws from, so the panel can join it with `usage`.
 - `models[].state` is `ready`, `no_credentials`, `unpriced`, `not_wired`, `engine_missing` or `unavailable`.

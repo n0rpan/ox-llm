@@ -26,9 +26,10 @@ mod profile;
 mod schema;
 mod settings;
 
+pub use descriptor::sheet::{Page, PageRow};
 pub use descriptor::{
     descriptor, descriptors, fields_of, in_group, Apply, Control, Descriptor, Group, Item, MapKind, Options,
-    Range, Unit, WebEdit,
+    Range, SchemaInfo, Unit, WebEdit,
 };
 pub use descriptor_value::{check, current, display_value, parse_input, search, Shown};
 pub use dirs::dirs_from_env;
@@ -38,7 +39,7 @@ pub use models::{
     resolve_model, resolve_scoped, valid_cloud_name, CloudApi, CloudModel, CloudPrice, CloudProvider,
     Endpoint, ModelRef, ModelsConfig,
 };
-pub use profile::{ThinkingPolicy, BASH_TIMEOUT_DEFAULT, SUMMARY_TARGET_DEFAULT};
+pub use profile::{CloudCaps, ThinkingPolicy, BASH_TIMEOUT_DEFAULT, SUMMARY_TARGET_DEFAULT};
 pub use schema::{apply_list_patch, merge_settings, schema, validate, KeyDef, Kind};
 pub use settings::{
     CompactionSettings, ProviderRetrySettings, QueueMode, RetrySettings, Settings, SettingsFiles, Source,
