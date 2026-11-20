@@ -111,15 +111,16 @@ fn scrub_shell(command: &str, ctx: &ScrubCtx) -> String {
     out
 }
 
-/// One shell word, masked for display. A word with an executable expansion (`$`, a backtick)
-/// is shown as it is: the shell runs what it holds, so the owner must see it. Quoted or escaped
-/// expansion markers are literal credential text and remain eligible for masking. A secret-named assignment
-/// (`password=...`, `--api-key=...`, `TOKEN='...'`) shows its name and `<secret>` for the whole
-/// value, quotes included. Any other word goes through the report scrubber (known token formats).
+/// One shell word, masked for display. A real expansion (`$name`, `${...}`, `$(...)`, a
+/// backtick) is kept visible: the shell runs what it holds, so the owner must see it, and the
+/// literal credential text around it is still masked. A `$` that cannot start an expansion
+/// (a trailing one, or one before a quote or a space) is literal text. A secret-named
+/// assignment (`password=...`, `--api-key=...`, `TOKEN='...'`) shows its name and `<secret>`
+/// for its literal value, quotes included, and `<secret>` for each literal run of a value
+/// that also holds an expansion. Any other word goes through the report scrubber (known
+/// token formats).
 fn mask_word(word: &str, ctx: &ScrubCtx) -> String {
-    if has_executable_expansion(word) {
-        return word.to_string();
-    }
+    let executable = has_executable_expansion(word);
     if let Some(eq) = word.find('=') {
         let name = word[..eq].trim_start_matches('-').to_ascii_lowercase();
         let named = !name.is_empty()
@@ -140,33 +141,150 @@ fn mask_word(word: &str, ctx: &ScrubCtx) -> String {
         .iter()
         .any(|k| name.contains(k));
         if named && secret && eq + 1 < word.len() {
-            return format!("{}<secret>", &word[..=eq]);
+            if !executable {
+                return format!("{}<secret>", &word[..=eq]);
+            }
+            // The value also holds an expansion the shell runs: keep the expansion visible
+            // and mask the literal credential runs around it.
+            return format!("{}{}", &word[..=eq], mask_literal_runs(&word[eq + 1..]));
         }
     }
-    scrub(word, ctx)
+    if !executable {
+        return scrub(word, ctx);
+    }
+    // The shell runs this word, so the owner must see it as written.
+    word.to_string()
 }
 
 /// Whether the shell can act on an expansion marker in this word. Single quotes make both
 /// markers literal, and a backslash makes the following marker literal; double quotes still
-/// permit parameter and command substitution.
+/// permit parameter and command substitution. A `$` starts an expansion only before a name
+/// character, `{` or `(`; a trailing or otherwise bare `$` is literal text.
 fn has_executable_expansion(word: &str) -> bool {
     let (mut single, mut double, mut escaped) = (false, false, false);
-    for c in word.chars() {
+    let mut chars = word.chars().peekable();
+    while let Some(c) = chars.next() {
         if escaped {
             escaped = false;
-            continue;
-        }
-        if c == '\\' && !single {
+        } else if c == '\\' && !single {
             escaped = true;
         } else if c == '\'' && !double {
             single = !single;
         } else if c == '"' && !single {
             double = !double;
-        } else if !single && matches!(c, '$' | '`') {
+        } else if !single && c == '`' {
+            return true;
+        } else if !single && c == '$' && chars.peek().is_some_and(|next| expansion_start(*next)) {
             return true;
         }
     }
     false
+}
+
+/// The characters that can continue `$` into an expansion the shell runs.
+fn expansion_start(next: char) -> bool {
+    next.is_alphanumeric() || matches!(next, '_' | '{' | '(')
+}
+
+/// The literal runs of a value masked as `<secret>`, with the expansions the shell runs kept
+/// as written, including the command text inside `$(...)`: the owner must see what runs.
+/// A run that holds only quote or escape characters stays as it is, so a fully expanded
+/// value still reads exactly as written.
+fn mask_literal_runs(value: &str) -> String {
+    let mut out = String::new();
+    let mut literal = String::new();
+    let (mut single, mut double, mut escaped) = (false, false, false);
+    let mut chars = value.chars().peekable();
+    let flush = |out: &mut String, literal: &mut String| {
+        let maskable = literal.chars().any(|c| c != '"' && c != '\'' && c != '\\');
+        out.push_str(if maskable { "<secret>" } else { literal });
+        literal.clear();
+    };
+    while let Some(c) = chars.next() {
+        if escaped {
+            escaped = false;
+            literal.push(c);
+        } else if c == '\\' && !single {
+            escaped = true;
+            literal.push(c);
+        } else if c == '\'' && !double {
+            single = !single;
+            literal.push(c);
+        } else if c == '"' && !single {
+            double = !double;
+            literal.push(c);
+        } else if !single && c == '$' && !chars.peek().is_some_and(|next| expansion_start(*next)) {
+            literal.push(c);
+        } else if !single && c == '$' {
+            flush(&mut out, &mut literal);
+            out.push(c);
+            match chars.next() {
+                Some('{') => {
+                    out.push('{');
+                    let mut depth = 1;
+                    while depth > 0 {
+                        match chars.next() {
+                            Some('{') => {
+                                depth += 1;
+                                out.push('{');
+                            }
+                            Some('}') => {
+                                depth -= 1;
+                                out.push('}');
+                            }
+                            Some(other) => out.push(other),
+                            None => break,
+                        }
+                    }
+                }
+                Some('(') => {
+                    out.push('(');
+                    let mut depth = 1;
+                    while depth > 0 {
+                        match chars.next() {
+                            Some('(') => {
+                                depth += 1;
+                                out.push('(');
+                            }
+                            Some(')') => {
+                                depth -= 1;
+                                out.push(')');
+                            }
+                            Some(other) => out.push(other),
+                            None => break,
+                        }
+                    }
+                }
+                Some(name) => {
+                    out.push(name);
+                    while let Some(next) = chars.peek().copied() {
+                        if next.is_alphanumeric() || next == '_' {
+                            out.push(next);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                None => {}
+            }
+        } else if !single && c == '`' {
+            flush(&mut out, &mut literal);
+            out.push('`');
+            for next in chars.by_ref() {
+                out.push(next);
+                if next == '`' {
+                    break;
+                }
+            }
+        } else {
+            literal.push(c);
+        }
+    }
+    if !literal.is_empty() {
+        flush(&mut out, &mut literal);
+    }
+    out
 }
 
 /// Whole seconds, minutes or hours since the request was filed. A timestamp ahead of this clock reads as new.
@@ -319,6 +437,54 @@ mod tests {
             html.contains("password=&quot;$(rm -rf /srv/data)&quot; git push --force origin main</pre>"),
             "{html}"
         );
+    }
+
+    #[test]
+    fn approval_panel_masks_literal_runs_around_expansions() {
+        for (command, shown) in [
+            // A trailing `$` cannot start an expansion, so the whole value is literal.
+            (
+                r#"password="opaque-example$" git push --force origin main"#,
+                "password=&lt;secret&gt; git push",
+            ),
+            // A real expansion stays visible; the literal credential run around it is masked.
+            (
+                r#"password="opaque-example$USER" git push --force origin main"#,
+                "password=&quot;&lt;secret&gt;$USER&quot; git push",
+            ),
+            (
+                r#"password="opaque-example${USER}" git push --force origin main"#,
+                "password=&quot;&lt;secret&gt;${USER}&quot; git push",
+            ),
+            (
+                r#"TOKEN=opaque-example$USER git push --force origin main"#,
+                "TOKEN=&lt;secret&gt;$USER git push",
+            ),
+        ] {
+            let waiting = vec![ApprovalRecord {
+                id: "0123456789abcdef".into(),
+                session: "s1".into(),
+                cwd: "/work/proj".into(),
+                command: command.into(),
+                keys: vec!["git-push-force".into()],
+                reasons: vec![],
+                status: "pending".into(),
+                used: false,
+                created_ms: 0,
+                answered_ms: None,
+            }];
+            let owner = View {
+                approvals: Some(&waiting),
+                approval_csrf: Some("tok"),
+                ..Default::default()
+            };
+            let html = content_for(Page::Board, &owner, 120);
+            assert!(html.contains(shown), "missing {shown:?} in {html}");
+            assert!(
+                !html.contains("opaque-example"),
+                "literal credential text is displayed: {html}"
+            );
+        }
     }
 
     /// A shell metacharacter inside a quoted or escaped credential value is part of the value:

@@ -621,6 +621,8 @@ pub enum WorkerMsg {
     Event(oxa_proto::AgentEvent),
     /// A command finished; `Err` is shown as an error notice.
     Done(Result<(), OxaError>),
+    /// The watched session reached its terminal wrap-up boundary.
+    LimitExit(i32),
     /// A session switch overtook explicit recovery input; return it without sending it.
     UnsentPrompt {
         text: String,
@@ -688,6 +690,13 @@ pub enum UiRequest {
         title: String,
         body: String,
         timeout_ms: Option<u32>,
+        reply: Sender<Option<bool>>,
+    },
+    /// The publication approval dialog (`Ui::approve_publication`): exact text, Approve/Deny,
+    /// Deny focused, no timeout.
+    ApprovePublication {
+        title: String,
+        body: String,
         reply: Sender<Option<bool>>,
     },
     Input {

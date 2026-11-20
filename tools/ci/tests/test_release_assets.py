@@ -53,13 +53,12 @@ class ReleaseAssets(unittest.TestCase):
         self.assertEqual(dev.count('--prerelease --latest=false'), 2)
         self.assertIn('actions/attest-build-provenance@', dev)
 
-    def test_dev_version_extraction_handles_spaces_around_assignment(self):
+    def test_dev_version_comes_from_the_single_bump_helper(self):
         dev = (W / 'dev-build.yml').read_text()
-        self.assertIn('split($0,a,"=");gsub(/[" ]/,"",a[2]);print a[2]', dev)
-        command = r'''awk '/^\[workspace\.package\]/{p=1;next} /^\[/{p=0} p&&/^version[ ]*=/{split($0,a,"=");gsub(/[" ]/,"",a[2]);print a[2];exit}' oxa/Cargo.toml'''
-        result = subprocess.run(['/bin/sh', '-c', command], cwd=W.parents[1],
+        self.assertIn('tools/ci/dev_version.py', dev)
+        result = subprocess.run(['python3', '-I', 'tools/ci/dev_version.py', 'abc1234'], cwd=W.parents[1],
                                 text=True, capture_output=True, check=True)
-        self.assertRegex(result.stdout.strip(), r'^\d+\.\d+\.\d+[0-9A-Za-z.+-]*$')
+        self.assertRegex(result.stdout.strip(), r'^v\d+\.\d+\.\d+-dev\.\d+\+abc1234$')
 
     def test_release_environment_resolves_itself_when_sourced_by_a_workflow(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -81,9 +80,15 @@ class ReleaseAssets(unittest.TestCase):
     def test_arch_consumers_accept_the_versioned_archive(self):
         # release-build names the archive ox-llm-v<version>-linux-<arch>; the PKGBUILD wants the
         # unprefixed pkgver name, so arch-test.sh must map one to the other.
-        t = (W.parents[1] / 'packaging/release/arch-test.sh').read_text()
+        root = W.parents[1]
+        t = (root / 'packaging/release/arch-test.sh').read_text()
         self.assertIn('ox-llm-v*-linux-$(uname -m).tar.gz', t)
-        self.assertIn('ox-llm-0.2.0-linux-$(uname -m).tar.gz', t)
+        # The unprefixed copy must carry the version being released: read it from the workspace
+        # manifest, so a bump that forgets this script fails here instead of hardcoding a second
+        # copy of the number to update on every release.
+        version = re.search(r'(?m)^version = "([0-9]+\.[0-9]+\.[0-9]+)"',
+                            (root / 'oxa/Cargo.toml').read_text()).group(1)
+        self.assertIn(f'ox-llm-{version}-linux-$(uname -m).tar.gz', t)
 
     def test_release_build_needs_no_python(self):
         root = W.parents[1]

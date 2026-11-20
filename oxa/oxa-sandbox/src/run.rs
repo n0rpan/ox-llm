@@ -179,8 +179,9 @@ pub(crate) fn run_unsandboxed_stdin_env(
     r
 }
 
-/// [`run_unsandboxed`] with `stdin` written to the command's standard input and then closed
-/// Used by explicitly host-side callers that must provide standard input.
+/// [`run_unsandboxed`] with `stdin` written to the command's standard input and then closed.
+/// Used by explicitly host-side callers that must provide standard input. The child starts from
+/// an empty environment plus `s.env`, like every other unsandboxed model command.
 pub fn run_unsandboxed_stdin(
     s: &ExecSpec,
     stdin: &[u8],

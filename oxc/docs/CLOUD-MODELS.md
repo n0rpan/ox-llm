@@ -61,9 +61,10 @@ echoes the key is redacted before it reaches the client.
 
 ## Privacy and budget
 
-- Every OpenRouter request is forced to
-  `"provider": {"zdr": true, "data_collection": "deny"}`. Client routing preferences
-  are not forwarded.
+- OpenRouter provider routing is the owner's choice (owner decision O-384): by default
+  nothing is sent and the account settings apply. The owner can set
+  `cloud.openrouter_provider` (`zdr`, `data_collection`) in user settings; it is sent exactly
+  as configured and invalid values are refused. Client routing preferences are not forwarded.
 - `OXC_OFFLINE=1` (also accepted: `OXC_OFFLINE=1`) hard-refuses cloud models with `403`
   and code `offline`, before any DNS or socket call. Remote models are not listed while
   offline.

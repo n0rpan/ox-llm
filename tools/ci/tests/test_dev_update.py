@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import platform
+import shutil
+import socket
 import subprocess
 import sys
 import tarfile
@@ -38,6 +40,7 @@ class Fixture(unittest.TestCase):
                     'FIXTURE_CANARY': 'http://127.0.0.1:8743/chat',
                     'FIXTURE_UNIT': 'oxa-lead.service',
                     'FIXTURE_BOARD_UNIT': 'oxa-board-sample.service'}
+        self.env['REAL_CURL'] = shutil.which('curl', path=os.defpath)
         self.stub('getent', '''import os, sys
 uid = os.geteuid()
 assert sys.argv[1:] == ['passwd', str(uid)]
@@ -50,9 +53,12 @@ url = next(arg for arg in args if arg.startswith('http'))
 with pathlib.Path(os.environ['FIXTURES'], 'requests.log').open('a') as log:
     log.write(url + '\\n')
 if url.startswith('http://'):
-    # The promotion canary: a loopback denial probe, never a real request.
+    # The promotion canary: a loopback denial probe, never a remote request.
     assert url == os.environ['FIXTURE_CANARY']
     assert args[args.index('--noproxy') + 1] == '*'
+    if os.environ.get('FIXTURE_REAL_CANARY'):
+        pathlib.Path(os.environ['FIXTURES'], 'canary-started').touch()
+        os.execv(os.environ['REAL_CURL'], [os.environ['REAL_CURL'], *args])
     with pathlib.Path(os.environ['FIXTURES'], 'canary.log').open('a') as log:
         log.write(url + '\\n')
     sys.stdout.write(os.environ.get('FIXTURE_DENY', '403'))
@@ -135,8 +141,8 @@ with (root / 'service.pids').open('a') as spawned:
         path.write_text('#!' + sys.executable + '\n' + body)
         path.chmod(0o755)
 
-    def build(self, sha='a' * 40, payload=None):
-        version = 'v0.2.0-dev.' + sha[:7]
+    def build(self, sha='a' * 40, base='0.2.1', payload=None):
+        version = 'v' + base + '-dev.12.' + sha[:7]
         name = 'ox-llm-' + version + '-linux-' + platform.machine() + '.tar.gz'
         if payload is None:
             payload = b'\x7fELF synthetic; never executable in a test'
@@ -178,6 +184,17 @@ class DevUpdate(Fixture):
         self.assertEqual(self.run_update().returncode, 0)
         self.assertEqual(self.stable.read_bytes(), b'stable sentinel')
 
+    def test_old_name_installs_and_newest_semver_wins(self):
+        self.build(base='0.2.0')
+        self.assertEqual(self.run_update().returncode, 0)
+        self.build(base='0.2.1')
+        release = json.loads((self.remote / 'release.json').read_text())
+        old = [dict(a, name=a['name'].replace('v0.2.1', 'v0.2.0')) for a in release['assets']]
+        release['assets'] = old + release['assets']
+        (self.remote / 'release.json').write_text(json.dumps(release))
+        self.assertEqual(self.run_update().returncode, 0)
+        receipt = json.loads((self.prefix / 'current/receipt.json').read_text())
+        self.assertEqual(receipt['version'], 'v0.2.1-dev.12+' + 'a' * 7)
     def test_reusing_a_legacy_release_adds_its_executable_manifest(self):
         sha, _, payload = self.build()
         first = self.run_update()
@@ -199,7 +216,7 @@ class DevUpdate(Fixture):
             self.build('b' * 40)
             self.env['REJECT_VERIFY'] = '1' if refusal == 'provenance' else '0'
             if refusal == 'checksum':
-                sums = self.remote / ('SHA256SUMS-v0.2.0-dev.' + 'b' * 7)
+                sums = self.remote / ('SHA256SUMS-v0.2.1-dev.12.' + 'b' * 7)
                 sums.write_text('0' * 64 + sums.read_text()[64:])
             self.assertNotEqual(self.run_update().returncode, 0)
             self.assertEqual(os.readlink(self.prefix / 'current'), before)
@@ -427,6 +444,29 @@ class DevPromote(Fixture):
         path = self.remote / 'canary.log'
         return path.read_text().split() if path.exists() else []
 
+    def delayed_canary(self, delay=1.5):
+        """Start a real loopback listener only after curl's first attempt."""
+        listener = subprocess.Popen([
+            sys.executable, '-c', '''import http.server, pathlib, sys, time
+marker, log, port, delay = sys.argv[1:]
+while not pathlib.Path(marker).exists():
+    time.sleep(0.01)
+time.sleep(float(delay))
+class Denied(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        pathlib.Path(log).write_text(self.path + "\\n")
+        self.send_response(403)
+        self.end_headers()
+    def log_message(self, *_):
+        pass
+server = http.server.HTTPServer(('127.0.0.1', int(port)), Denied)
+server.handle_request()
+''', str(self.remote / 'canary-started'), str(self.remote / 'canary.log'),
+            str(self.canary_port), str(delay)
+        ], start_new_session=True)
+        self.addCleanup(lambda: listener.poll() is None and listener.terminate())
+        return listener
+
     def promote(self, **overrides):
         args = ['bash', str(SCRIPT)]
         if overrides.get('prefix'):
@@ -464,7 +504,7 @@ class DevPromote(Fixture):
         self.assertEqual(self.restarts(), ['lead'])
         self.assertEqual(self.canary(), ['http://127.0.0.1:8743/chat'])
         self.assertEqual(self.running_digest(), new_digest)
-        self.assertIn('Promoted dev v0.2.0-dev.' + new[:7], result.stdout)
+        self.assertIn('Promoted dev v0.2.1-dev.12+' + new[:7], result.stdout)
         receipt = json.loads(self.rollout.read_text())
         self.assertEqual((receipt['action'], receipt['verification']), ('promoted', 'verified'))
         self.assertEqual((receipt['source_sha'], receipt['binary_sha256']), (new, new_digest))
@@ -617,6 +657,20 @@ class DevPromote(Fixture):
         self.assertEqual(self.binary.read_bytes(), self.elf(old))
         self.assertEqual(self.running_digest(), old_digest)
         self.assertEqual(json.loads(self.rollout.read_text())['action'], 'failed')
+
+    def test_connection_refusal_is_retried_while_listener_becomes_ready(self):
+        self.prepare()
+        with socket.socket() as reservation:
+            reservation.bind(('127.0.0.1', 0))
+            self.canary_port = reservation.getsockname()[1]
+        self.env['FIXTURE_CANARY'] = f'http://127.0.0.1:{self.canary_port}/chat'
+        self.env['FIXTURE_REAL_CANARY'] = '1'
+        listener = self.delayed_canary()
+        result = self.promote(lead_url=self.env['FIXTURE_CANARY'])
+        listener.wait(timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.canary(), ['/chat'])
+        self.assertEqual(json.loads(self.rollout.read_text())['action'], 'promoted')
 
     def test_replaced_executable_is_not_taken_for_the_running_binary(self):
         self.install('a' * 40)

@@ -298,11 +298,12 @@ impl OwnerChat {
         })?;
         match submission {
             OwnerSubmission::Message(message) => {
-                let reply =
-                    crate::lead_chat::converse_bound(&message, &self.binding, env).map_err(|error| {
+                let reply = crate::lead_chat::converse_bound(&message, &self.binding, env, true).map_err(
+                    |error| {
                         self.journal.log(conversation_refusal(&error));
                         "503 Service Unavailable"
-                    })?;
+                    },
+                )?;
                 self.binding.recheck().map_err(|_| {
                     self.journal.log(RefusalFact {
                         status: 503,
@@ -406,8 +407,18 @@ impl OwnerApprovals {
             return refuse(404, "404 Not Found", "not_pending");
         };
         let session = found.session.clone();
-        if crate::approve_cmd::approve(&self.dirs, &self.cwd, &session, id, answer, &mut std::io::sink())
-            .is_err()
+        // The owner form is this answer's confirmation: it already showed the request, its
+        // command and reasons, and passed the form's CSRF and origin checks.
+        if crate::approve_cmd::approve_with(
+            &self.dirs,
+            &self.cwd,
+            &session,
+            id,
+            answer,
+            &mut std::io::sink(),
+            &mut |_| Some(true),
+        )
+        .is_err()
         {
             return refuse(409, "409 Conflict", "answer");
         }
@@ -561,6 +572,7 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
             desk,
             journal: journal.clone(),
         });
+        stop_workers_on_interrupt();
         Some(OwnerForm {
             csrf: chat.csrf.clone(),
             post: Arc::new(move |submission| match submission {
@@ -586,7 +598,7 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
     writeln!(out, "lead board: listening on configured loopback endpoint")
         .and_then(|()| out.flush())
         .map_err(|_| invalid("cannot report lead startup"))?;
-    crate::lead_http::serve_fixed(
+    let served = crate::lead_http::serve_fixed(
         listener,
         move |stream, request| authorized(&config, uid, stream, request, &identity_journal),
         move |page, fragment| source.render(page, fragment),
@@ -594,8 +606,32 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
         owner,
         Some(refusal_log),
     )
-    .map_err(|_| invalid("lead listener failed"))?;
+    .map_err(|_| invalid("lead listener failed"));
+    // The workers the owner Lead started outlive its chat turns and stop with the Lead.
+    crate::workers::tool::stop_owner_workers();
+    served?;
     Ok(0)
+}
+
+/// Ctrl-C or SIGTERM of the lead process stops the whole tree: the workers the owner Lead
+/// started, then the process. (`--resume` wakes them again from their records.)
+fn stop_workers_on_interrupt() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let hit = Arc::new(AtomicBool::new(false));
+    for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
+        if signal_hook::flag::register(signal, hit.clone()).is_err() {
+            return;
+        }
+    }
+    let _ = std::thread::Builder::new()
+        .name("oxa-lead-interrupt".into())
+        .spawn(move || {
+            while !hit.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            crate::workers::tool::stop_owner_workers();
+            std::process::exit(130);
+        });
 }
 
 #[cfg(test)]
@@ -1138,8 +1174,15 @@ mod approval_answer_tests {
             let cli_cwd = &cwd;
             scope.spawn(move || {
                 start_ref.wait();
-                let result =
-                    crate::approve_cmd::approve(cli_dirs, cli_cwd, "s1", request, "deny", &mut Vec::new());
+                let result = crate::approve_cmd::approve_with(
+                    cli_dirs,
+                    cli_cwd,
+                    "s1",
+                    request,
+                    "deny",
+                    &mut Vec::new(),
+                    &mut |_| Some(true),
+                );
                 tx.send(("deny", result.is_ok())).unwrap();
             });
             start.wait();

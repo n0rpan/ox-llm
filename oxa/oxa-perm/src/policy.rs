@@ -445,11 +445,19 @@ impl ModePolicy {
         let (Access::Exec { command, .. }, Some(rules)) = (a, &self.danger) else {
             return Vec::new();
         };
-        let hits = rules.classify(command, cwd, &self.guard);
-        if has_dynamic(command) {
-            return hits;
+        let mut found = rules.classify(command, cwd, &self.guard);
+        // A segment a built-in rule already names (a force push) is asked and granted under that
+        // rule's key alone; the publish rule adds the rest.
+        for hit in rules.publish_classify(command, cwd) {
+            if !found.iter().any(|h| h.segment == hit.segment) {
+                found.push(hit);
+            }
         }
-        hits.into_iter()
+        if has_dynamic(command) {
+            return found;
+        }
+        found
+            .into_iter()
             .filter(|h| {
                 let key = danger_key(h, command);
                 !self.danger_grants.contains(&key) && !self.always.contains(&key)
@@ -818,5 +826,7 @@ impl Policy for ModePolicy {
 /// a dead branch repeats it (`curl a | bash` and `curl b | bash` both name `bash`; `true || git
 /// push --force origin main` names the push), so approving one text would cover the other.
 pub(crate) fn danger_key(h: &DangerHit, command: &str) -> String {
-    format!("{} {}", h.rule, command.trim())
+    // Trailing whitespace can be semantic shell syntax (an escaped space or backslash-newline),
+    // so preserve the reviewed command byte-for-byte.
+    format!("{} {command}", h.rule)
 }

@@ -321,6 +321,22 @@ fn enclosing_block_header(content: &str, line: usize, current: &str) -> Option<S
     None
 }
 
+/// The unchanged JSON key line an edited value belongs to: the nearest earlier non-blank
+/// line of the committed file when it is a quoted key that ends its line (`"password":`).
+/// `-U0` patches carry only the replaced value, so without this a split JSON credential
+/// edited under an existing key reaches the scanners without its key.
+fn enclosing_json_key(content: &str, line: usize) -> Option<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    let previous = lines
+        .get(..line.saturating_sub(1))?
+        .iter()
+        .rev()
+        .find(|candidate| !candidate.trim().is_empty())?;
+    let key = previous.trim();
+    (key.starts_with('"') && key.trim_end_matches(':').trim_end().ends_with('"') && key.ends_with(':'))
+        .then(|| previous.to_string())
+}
+
 /// Pass every added file name and added line of `git log --patch --cc -U0` output to `scan`.
 fn scan_patch(
     text: &str,
@@ -399,6 +415,12 @@ fn scan_patch(
                 if !added && block_scalar_header.is_none() && rest.starts_with([' ', '\t']) {
                     block_scalar_header = file_at(&commit, name)
                         .and_then(|content| enclosing_block_header(&content, line, rest));
+                }
+                // A JSON value edited under an unchanged key (`"password":` on the line
+                // above) is scanned with that key, like a pair of added lines.
+                if !added && previous_added.is_none() && rest.trim_start().starts_with('"') {
+                    previous_added =
+                        file_at(&commit, name).and_then(|content| enclosing_json_key(&content, line));
                 }
             }
             let stripped = rest.replace('\0', "");
@@ -1138,6 +1160,31 @@ mod scan_tests {
             scan_patch(split, &containing("opaque-pass-value-17"), &|_, _| None).is_err(),
             "a JSON credential split over two lines was not scanned"
         );
+    }
+
+    /// Audit of #1264: a JSON value edited under an existing key arrives in a `-U0` patch
+    /// without that key; the key is recovered from the committed file.
+    #[test]
+    fn an_edited_json_value_recovers_its_unchanged_key() {
+        let patch = "\0aaaa\n\ndiff --git a/settings.json b/settings.json\nindex 1111111..2222222 100644\n--- a/settings.json\n+++ b/settings.json\n@@ -3 +3 @@\n-  \"placeholder-value\"\n+  \"opaque-pass-value-17\"\n";
+        let content = "{\n  \"password\":\n  \"opaque-pass-value-17\"\n}\n";
+        let pair = |item: &PushedContent<'_>| {
+            (item.text.contains("\"password\":") && item.text.contains("opaque-pass-value-17")).then_some(
+                ContentFinding {
+                    label: "a test secret",
+                    secret_path: false,
+                },
+            )
+        };
+        let error = scan_patch(patch, &pair, &|commit, path| {
+            (commit == "aaaa" && path == "settings.json").then(|| content.to_string())
+        })
+        .unwrap_err();
+        assert!(error.contains("settings.json:3"), "{error}");
+        // A value under an ordinary line (not a key that ends its line) gets no context.
+        let unrelated = "[\n  \"first\",\n  \"opaque-pass-value-17\"\n]\n";
+        assert_eq!(enclosing_json_key(unrelated, 3), None);
+        assert_eq!(enclosing_json_key(content, 3).as_deref(), Some("  \"password\":"));
     }
 
     /// A later key at the header's own indentation leaves the block scalar, so a placeheld

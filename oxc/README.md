@@ -71,14 +71,7 @@ The CPU lists assume the X1E80100 core layout. The server listens on loopback on
 
 **4. Controller setup.** The installed runtime provides the `oxc` model, code and status commands.
 The source package provides read-only diagnostics and installation tooling; it is not a complete
-live-user installer. Start with [the sandbox bootstrap](docs/BOOTSTRAP-INSTALL.md) for its supported
-source-install and rollback boundary, and [reproduction](docs/REPRODUCE.md) for engine setup.
-
-Model-free checks run anywhere with Python 3:
-
-```sh
-PYTHONPATH=src python3 -B -m oxc doctor
-```
+live-user installer. See [reproduction](docs/REPRODUCE.md) for engine setup.
 
 ## Supported models
 
@@ -119,7 +112,7 @@ Honest limits:
 
 The engine has its own correctness rules. The lab turns the engines into a service, and its receipts back every number in the engine and lab READMEs.
 
-Finished experiments, superseded setups and milestone history are indexed in [docs/lab-notes/INDEX.md](docs/lab-notes/INDEX.md).
+Finished experiments, superseded setups and milestone history were archived on 2026-11-19; see git history before that date.
 
 ## Help wanted
 

@@ -1,6 +1,6 @@
 //! #1512 S5: the approval desk. A run with no one to ask (`!Ui::interactive`) files a dangerous
 //! command here instead of pausing; the owner answers with `oxa send <session> --approve <id>`
-//! (or the lead web page). Answers come only from the desk, never from the inbox text path.
+//! (or the lead web approvals page). Answers come only from the desk, never from the inbox text path.
 //!
 //! Storage: `<agent_dir>/approvals/`, mode 0700; one `<id>.json` per request, mode 0600. Files
 //! are written under a private temporary name and renamed into place, so a symlink at a record
@@ -388,18 +388,19 @@ impl ApprovalDesk {
         }
     }
 
-    /// Remove every record of `session`: a wiped session keeps no copy of its commands, working
-    /// directories or ids. Returns how many records were removed.
+    /// Remove every record of `session`, including private temporary records left by an
+    /// interrupted write: a wiped session keeps no copy of its commands, working directories or
+    /// ids. Returns how many records were removed.
     pub fn forget_session(&self, session: &str) -> io::Result<usize> {
-        self.forget(|rec| rec.session == session)
+        self.forget(false, |rec| rec.session == session)
     }
 
-    /// Remove every record, for `oxa wipe --all`.
+    /// Remove every complete or private temporary record, for `oxa wipe --all`.
     pub fn forget_all(&self) -> io::Result<usize> {
-        self.forget(|_| true)
+        self.forget(true, |_| true)
     }
 
-    fn forget(&self, doomed: impl Fn(&Record) -> bool) -> io::Result<usize> {
+    fn forget(&self, all_sessions: bool, doomed: impl Fn(&Record) -> bool) -> io::Result<usize> {
         // The same lock as an answer or a consumption: an update already running cannot rename
         // its copy of a record back into place after this wipe removed it.
         let _lock = self.lock()?;
@@ -412,6 +413,29 @@ impl ApprovalDesk {
                 Ok(()) => removed += 1,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e),
+            }
+        }
+        // A process can exit after syncing its private temporary record but before the rename.
+        // That file contains the same command history, so privacy cleanup must include it.
+        for entry in fs::read_dir(&self.dir)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !name.starts_with('.') || !name.ends_with(".tmp") || !entry.file_type()?.is_file() {
+                continue;
+            }
+            let remove = all_sessions
+                || fs::read_to_string(entry.path())
+                    .ok()
+                    .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                    .and_then(|value| Record::from_value(&value))
+                    .is_some_and(|record| doomed(&record));
+            if remove {
+                match fs::remove_file(entry.path()) {
+                    Ok(()) => removed += 1,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e),
+                }
             }
         }
         Ok(removed)
@@ -719,5 +743,44 @@ mod tests {
             "a later run must not bypass revocation"
         );
         assert!(!later.granted("s1", &cwd, &keys));
+    }
+
+    #[test]
+    fn wipe_removes_only_the_selected_sessions_orphaned_private_temporary_records() {
+        let root = temp_dir("orphan-temp");
+        let desk = ApprovalDesk::open(&root).expect("desk");
+        let cwd = temp_dir("orphan-temp-cwd");
+        let first = desk
+            .record("s1", &cwd, "git push --force", &[hit()], "pending")
+            .expect("record");
+        let second = desk
+            .record("s2", &cwd, "rm -rf build", &[hit()], "pending")
+            .expect("record");
+        let first_record = desk.load(&first).expect("load").expect("record");
+        let second_record = desk.load(&second).expect("load").expect("record");
+        let first_orphan = desk.dir.join(".0123456789abcdef.deadbeef.tmp");
+        let second_orphan = desk.dir.join(".fedcba9876543210.deadbeef.tmp");
+        fs::write(&first_orphan, first_record.to_value().to_string()).expect("first orphan");
+        fs::write(&second_orphan, second_record.to_value().to_string()).expect("second orphan");
+
+        assert_eq!(desk.forget_session("s1").expect("session wipe"), 2);
+        assert!(
+            !first_orphan.exists(),
+            "session wipe retained its private temp data"
+        );
+        assert!(
+            second_orphan.exists(),
+            "session wipe removed another session's temp data"
+        );
+
+        assert_eq!(desk.forget_all().expect("wipe all"), 2);
+        assert!(!second_orphan.exists(), "full wipe retained private temp data");
+    }
+
+    #[test]
+    fn danger_keys_preserve_semantic_whitespace() {
+        let command = "rm -rf /tmp/reviewed\\ ";
+        let other = "rm -rf /tmp/reviewed\\\n";
+        assert_ne!(danger_key(&hit(), command), danger_key(&hit(), other));
     }
 }
