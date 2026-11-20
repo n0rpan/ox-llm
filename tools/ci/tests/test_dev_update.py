@@ -142,7 +142,7 @@ with (root / 'service.pids').open('a') as spawned:
         path.chmod(0o755)
 
     def build(self, sha='a' * 40, base='0.2.1', payload=None):
-        version = 'v' + base + '-dev.' + sha[:7]
+        version = 'v' + base + '-dev.12.' + sha[:7]
         name = 'ox-llm-' + version + '-linux-' + platform.machine() + '.tar.gz'
         if payload is None:
             payload = b'\x7fELF synthetic; never executable in a test'
@@ -194,7 +194,7 @@ class DevUpdate(Fixture):
         (self.remote / 'release.json').write_text(json.dumps(release))
         self.assertEqual(self.run_update().returncode, 0)
         receipt = json.loads((self.prefix / 'current/receipt.json').read_text())
-        self.assertEqual(receipt['version'], 'v0.2.1-dev.' + 'a' * 7)
+        self.assertEqual(receipt['version'], 'v0.2.1-dev.12+' + 'a' * 7)
     def test_reusing_a_legacy_release_adds_its_executable_manifest(self):
         sha, _, payload = self.build()
         first = self.run_update()
@@ -216,7 +216,7 @@ class DevUpdate(Fixture):
             self.build('b' * 40)
             self.env['REJECT_VERIFY'] = '1' if refusal == 'provenance' else '0'
             if refusal == 'checksum':
-                sums = self.remote / ('SHA256SUMS-v0.2.1-dev.' + 'b' * 7)
+                sums = self.remote / ('SHA256SUMS-v0.2.1-dev.12.' + 'b' * 7)
                 sums.write_text('0' * 64 + sums.read_text()[64:])
             self.assertNotEqual(self.run_update().returncode, 0)
             self.assertEqual(os.readlink(self.prefix / 'current'), before)
@@ -504,7 +504,7 @@ server.handle_request()
         self.assertEqual(self.restarts(), ['lead'])
         self.assertEqual(self.canary(), ['http://127.0.0.1:8743/chat'])
         self.assertEqual(self.running_digest(), new_digest)
-        self.assertIn('Promoted dev v0.2.1-dev.' + new[:7], result.stdout)
+        self.assertIn('Promoted dev v0.2.1-dev.12+' + new[:7], result.stdout)
         receipt = json.loads(self.rollout.read_text())
         self.assertEqual((receipt['action'], receipt['verification']), ('promoted', 'verified'))
         self.assertEqual((receipt['source_sha'], receipt['binary_sha256']), (new, new_digest))
