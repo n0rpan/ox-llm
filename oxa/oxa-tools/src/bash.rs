@@ -186,7 +186,7 @@ pub(crate) fn detached_part(command: &str) -> bool {
                 }
                 continue;
             }
-            '<' if chars.get(i + 1) == Some(&'<') && chars.get(i + 2) != Some(&'<') => {
+            '<' if chars.get(i + 1) == Some(&'<') && chars.get(i + 2) != Some(&'<') && prev != Some('<') => {
                 if ends_word(&mut word, &mut word_quoted) {
                     return true;
                 }
