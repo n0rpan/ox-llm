@@ -207,7 +207,7 @@ fn run_inner(
             }
         }
         let first = st.stats.requests == 0;
-        let expected = expected_cached(st);
+        let mut expected = expected_cached(st);
 
         let pending = pending_message();
         sink.emit(&AgentEvent::MessageStart {
@@ -240,7 +240,7 @@ fn run_inner(
             events: true,
             idem_key: String::new(),
         };
-        let thinking_on = !wrapping_up && crate::think::request_thinking(st, TurnKind::Chat);
+        let mut thinking_on = !wrapping_up && crate::think::request_thinking(st, TurnKind::Chat);
         let mut retried = false;
         let mut empty_retries: u32 = 0;
         let mut replays: u32 = 0;
@@ -358,38 +358,96 @@ fn run_inner(
                     } else {
                         partial
                     };
-                    let progress = persist(st, EntryBody::Shown { text, why }, sink)?;
                     let retry_stopped = st.shared.gate.retry_stopped.swap(false, Ordering::SeqCst);
-                    if !retry_stopped {
-                        if let Some(delay) = crate::goal::failure_backoff(st, &e, goal_failures) {
-                            goal_failures += 1;
-                            let text = format!(
+                    let delay = (!retry_stopped)
+                        .then(|| crate::goal::failure_backoff(st, &e, goal_failures))
+                        .flatten();
+                    let progress = persist_with(st, EntryBody::Shown { text, why }, delay.is_some(), sink)?;
+                    if let Some(delay) = delay {
+                        goal_failures += 1;
+                        let text = format!(
                                 "Goal waiting {} s after a transient request failure ({}); no request is sent meanwhile, then the goal continues.",
                                 delay.as_secs(), e.code
                             );
-                            persist(
+                        persist(
+                            st,
+                            EntryBody::Shown {
+                                text: text.clone(),
+                                why: shown_why::NOTICE,
+                            },
+                            sink,
+                        )?;
+                        let shared = st.shared.clone();
+                        shared.wait_wake.reset();
+                        *crate::queue::lock(&shared.backoff_model) = Some(None);
+                        sink.emit(&AgentEvent::Notice {
+                            level: Level::Info,
+                            text,
+                        });
+                        let deadline = std::time::Instant::now() + delay;
+                        loop {
+                            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                            let has_input = !crate::queue::lock(&shared.queue).steering.is_empty();
+                            let ended = crate::goal::wait_failure_backoff(
                                 st,
-                                EntryBody::Shown {
-                                    text: text.clone(),
-                                    why: shown_why::NOTICE,
+                                if has_input {
+                                    std::time::Duration::ZERO
+                                } else {
+                                    remaining
                                 },
-                                sink,
-                            )?;
-                            sink.emit(&AgentEvent::Notice {
-                                level: Level::Info,
-                                text,
-                            });
-                            match crate::goal::wait_failure_backoff(st, delay) {
-                                crate::goal::BackoffEnd::Elapsed => {
-                                    sink.emit(&AgentEvent::MessageStart {
-                                        message: pending_message(),
-                                    });
-                                    continue;
-                                }
+                            );
+                            let mut waiting = crate::queue::lock(&shared.backoff_model);
+                            let model = waiting.take().flatten();
+                            shared.wait_wake.reset();
+                            drop(waiting);
+                            match ended {
                                 crate::goal::BackoffEnd::Aborted => return Ok(RunEnd::Aborted),
                                 crate::goal::BackoffEnd::RetryStopped => return Ok(RunEnd::Failed(e)),
+                                crate::goal::BackoffEnd::Elapsed => {}
                             }
+                            let mut changed = false;
+                            if let Some(model) = model.filter(|m| *m != st.model) {
+                                match crate::session::switch_model(
+                                    st,
+                                    &model,
+                                    crate::OverCap::Refuse,
+                                    sink,
+                                    ui,
+                                ) {
+                                    Ok(()) => changed = true,
+                                    // A persistence error after the model changed must not replay the old key.
+                                    Err(error) if st.model == model => return Err(error),
+                                    Err(error) => sink.emit(&AgentEvent::Notice {
+                                        level: Level::Warning,
+                                        text: format!(
+                                            "{error}. Stop the retry to use the full model switch dialog."
+                                        ),
+                                    }),
+                                }
+                            }
+                            changed |= deliver_steering(st, sink, ui, run_msgs)?;
+                            if changed {
+                                opts.idem_key.clear();
+                                goal_failures = 0;
+                                replays = 0;
+                                retried = false;
+                                empty_retries = 0;
+                                expected = expected_cached(st);
+                                thinking_on =
+                                    !wrapping_up && crate::think::request_thinking(st, TurnKind::Chat);
+                            }
+                            if changed || std::time::Instant::now() >= deadline {
+                                sink.emit(&AgentEvent::MessageStart {
+                                    message: pending_message(),
+                                });
+                                break;
+                            }
+                            *crate::queue::lock(&shared.backoff_model) = Some(None);
                         }
+                        continue;
+                    }
+                    if e.code == "cloud_quota_exhausted" {
+                        return Ok(RunEnd::Failed(e));
                     }
                     let soft_stop = st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0;
                     if soft_stop {

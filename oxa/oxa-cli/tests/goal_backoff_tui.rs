@@ -8,7 +8,7 @@ import fcntl, os, pty, select, signal, struct, subprocess, sys, termios, time
 master, slave = pty.openpty()
 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 160, 0, 0))
 child = subprocess.Popen([sys.argv[1], '--yolo', '--model', 'fake-model',
-    '--no-mcp', '--no-extensions', '--no-skills', '--no-context-files'],
+    '--no-mcp', '--no-extensions', '--no-skills', '--no-context-files', '--tui-mode', 'regular'],
     stdin=slave, stdout=slave, stderr=slave, close_fds=True)
 os.close(slave)
 output = b''
@@ -58,23 +58,17 @@ fn exercise(case: &str) {
         })
         .to_string(),
     );
-    let body = if case == "quota" {
-        "synthetic limit (retry after 205089 s)"
-    } else {
-        "synthetic limit"
+    let fault = Fault::RateLimited {
+        retry_after: if case == "quota" { 205089 } else { 900 },
     };
+    let mut finish = ScriptTurn::tool(
+        "finish",
+        "goal_done",
+        r#"{"status":"complete","evidence":"Synthetic proof"}"#,
+    );
+    finish.text = Some("Synthetic proof".into());
     let server = FakeServer::start(
-        vec![
-            ScriptTurn::fault(Fault::Http {
-                status: 429,
-                body: body.into(),
-            }),
-            ScriptTurn::tool(
-                "finish",
-                "goal_done",
-                r#"{"status":"complete","evidence":"Synthetic proof"}"#,
-            ),
-        ],
+        vec![ScriptTurn::fault(fault), finish],
         FakeOpts {
             models: ["fake-model", "replacement-model"]
                 .into_iter()

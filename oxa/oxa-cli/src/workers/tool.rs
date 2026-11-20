@@ -1256,6 +1256,24 @@ impl Hooks for WorkerHooks {
                 ui.notify(&notice, Level::Info);
             }
         }
+        if p == HookPoint::AgentSettled && payload["outcome"]["error_class"] == "cloud_quota_exhausted" {
+            let (parent, _) = self.core.session();
+            let is_go = |model: &str| crate::in_process::is_go_model(model, "");
+            if !parent.is_empty() && payload["model"].as_str().is_some_and(is_go) {
+                let workers = registry::load(&self.core.agent_dir, &parent).unwrap_or_default();
+                let names: Vec<_> = workers
+                    .iter()
+                    .filter(|r| is_go(&r.model) && is_live(r, &self.core.sessions_dir))
+                    .map(|r| r.name.as_str())
+                    .collect();
+                if !names.is_empty() {
+                    ui.notify(
+                        &format!("Workers using the affected OpenCode Go quota pool: {}. No worker model was changed.", names.join(", ")),
+                        Level::Warning,
+                    );
+                }
+            }
+        }
         HookReply::Continue
     }
     fn poll_event(
@@ -1282,7 +1300,10 @@ impl Hooks for WorkerHooks {
         self.core.prompt_lines()
     }
     fn wants(&self, p: HookPoint) -> bool {
-        matches!(p, HookPoint::SessionStart | HookPoint::ModelSelect)
+        matches!(
+            p,
+            HookPoint::SessionStart | HookPoint::ModelSelect | HookPoint::AgentSettled
+        )
     }
     fn name(&self) -> &str {
         HOOK_NAME
@@ -1558,6 +1579,53 @@ mod tests {
 
     fn set_session(hooks: &WorkerHooks, id: &str) {
         *lock(&hooks.core.session) = (id.to_string(), "model-x".to_string());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn quota_stop_warns_about_live_workers_using_the_same_go_pool() {
+        let (root, repo, agent, fake) = fixture("quota-pool");
+        let hooks = hooks(&fake, &agent);
+        let parent = "parent-1";
+        set_session(&hooks, parent);
+        let worker = |name: &str, model: &str, stopped: bool| WorkerRecord {
+            name: name.into(),
+            session_id: name.into(),
+            pid: std::process::id(),
+            pgid: 0,
+            worktree: repo.clone(),
+            branch: format!("agent/{name}"),
+            model: model.into(),
+            mode: "yolo".into(),
+            goal_file: root.join("goal"),
+            status_file: root.join("not-started.json"),
+            log_file: root.join("worker.log"),
+            started_ms: 0,
+            stopped,
+        };
+        let records = [
+            worker("shared-pool", "opencode/synthetic-worker", false),
+            worker("other-provider", "openai/synthetic-worker", false),
+            worker("stopped-worker", "opencode/synthetic-worker", true),
+        ];
+        registry::save(&agent, parent, &records).unwrap();
+        let mut ui = oxa_proto::HeadlessUi::default();
+        hooks.fire(
+            HookPoint::AgentSettled,
+            &json!({
+                "outcome": {"error_class": "cloud_quota_exhausted"},
+                "model": "opencode/synthetic-parent"
+            }),
+            &mut ui,
+        );
+        assert_eq!(ui.notes.len(), 1);
+        let (level, note) = &ui.notes[0];
+        assert_eq!(*level, Level::Warning);
+        assert!(note.contains("shared-pool"));
+        assert!(!note.contains("other-provider") && !note.contains("stopped-worker"));
+        let after = registry::load(&agent, parent).unwrap();
+        assert_eq!(after, records);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
