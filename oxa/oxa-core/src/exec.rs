@@ -1114,7 +1114,9 @@ pub const TOOL_CALL_ID_ENV: &str = oxa_proto::names::ENV_TOOL_CALL_ID;
 /// no OS sandbox. It names the broker's askpass entry, so a password sudo asks for is typed into
 /// an oxa dialog and goes straight to sudo; the model never sees it. Not exported under bwrap
 /// (the helper is outside it) or for an unattended run (nobody can type a password).
-fn askpass_env(st: &SessionState, tool: &str, args: &Value, attended: bool) -> Option<(String, String)> {
+type Askpass = (String, String, crate::owner_confirm::AskpassWindow);
+
+fn askpass_env(st: &SessionState, tool: &str, args: &Value, attended: bool) -> Option<Askpass> {
     if tool != "bash" || !attended {
         return None;
     }
@@ -1137,6 +1139,7 @@ fn askpass_env(st: &SessionState, tool: &str, args: &Value, attended: bool) -> O
     Some((
         "SUDO_ASKPASS".to_string(),
         broker.askpass_path().to_string_lossy().into_owned(),
+        broker.open_askpass_window(),
     ))
 }
 
@@ -1151,6 +1154,8 @@ struct OwnedCtx {
     tune: oxa_proto::ToolTune,
     checked: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     hidden: Option<Arc<dyn oxa_proto::PathFilter>>,
+    /// Keeps the password-prompt window open for as long as the call runs.
+    _askpass: Option<crate::owner_confirm::AskpassWindow>,
 }
 
 impl OwnedCtx {
@@ -1158,13 +1163,17 @@ impl OwnedCtx {
         st: &SessionState,
         call_id: &str,
         checked: &[(std::path::PathBuf, std::path::PathBuf)],
-        askpass: Option<(String, String)>,
+        askpass: Option<Askpass>,
     ) -> OwnedCtx {
         let mut env = st.tool_env.clone();
         if !call_id.is_empty() {
             env.push((TOOL_CALL_ID_ENV.to_string(), call_id.to_string()));
         }
-        env.extend(askpass);
+        let mut window = None;
+        if let Some((key, value, guard)) = askpass {
+            env.push((key, value));
+            window = Some(guard);
+        }
         OwnedCtx {
             cwd: st.cwd.clone(),
             spill_dir: st.spill_dir.clone(),
@@ -1175,6 +1184,7 @@ impl OwnedCtx {
             tune: st.tune,
             checked: checked.to_vec(),
             hidden: st.policy.path_filter_for_mode(st.mode),
+            _askpass: window,
         }
     }
 

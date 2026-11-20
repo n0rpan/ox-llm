@@ -17,7 +17,9 @@
 //! A second request shape carries a password prompt (sudo's askpass helper): `{"secret_prompt": ..}`
 //! in, `{"secret": ..}` or `{"answer": "none"}` out. It is answered only by the session's own
 //! `Ui::secret` dialog: never by a typed message, never by yolo (there is no password to invent),
-//! and an unattended run answers `none`. The secret is held only until it is written to the
+//! and an unattended run answers `none`. It is served only while an attended, unsandboxed
+//! privileged bash call is in flight ([`OwnerConfirm::open_askpass_window`]) and only to a peer
+//! that is the askpass helper run by a setuid `sudo` ([`peer_is_sudo_askpass`]). The secret is held only until it is written to the
 //! asking process's socket; it is never put in a [`Record`] or in `Debug` output.
 use oxa_proto::{Ui, YoloSwitch};
 use serde_json::{json, Value};
@@ -215,6 +217,96 @@ pub struct OwnerConfirm {
     limits: Limits,
     /// Connections being served now (bounded by `limits.max_connections`).
     active: AtomicUsize,
+    /// Attended, unsandboxed privileged bash calls in flight (see [`OwnerConfirm::open_askpass_window`]).
+    /// A password prompt is served only while this is above zero.
+    askpass_window: AtomicUsize,
+    /// Replaces the peer check for a password prompt. `None` is the real check
+    /// ([`peer_is_sudo_askpass`]); the seam exists for in-process tests with a fake `sudo`.
+    peer_check: Mutex<Option<PeerCheck>>,
+}
+
+type PeerCheck = Box<dyn Fn(&UnixStream) -> bool + Send + Sync>;
+
+/// Held by a privileged bash call for as long as it runs; while any is held the broker may show
+/// a password dialog, and only to sudo's askpass child (see [`peer_is_sudo_askpass`]).
+pub struct AskpassWindow(Arc<OwnerConfirm>);
+
+impl Drop for AskpassWindow {
+    fn drop(&mut self) {
+        self.0.askpass_window.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// `true` when the peer of `stream` is this oxa executable (the askpass helper symlink) whose
+/// parent is a genuine setuid `sudo`: real uid is ours, effective uid is root. A model-run
+/// command, or a raw client of the socket, is neither. Linux only; elsewhere `false`.
+#[cfg(target_os = "linux")]
+fn peer_is_sudo_askpass(stream: &UnixStream) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: getsockopt on a socket this function borrows, into a ucred of the stated length.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::addr_of_mut!(cred).cast(),
+            &mut len,
+        )
+    };
+    // SAFETY: geteuid has no preconditions.
+    let me = unsafe { libc::geteuid() };
+    if rc != 0 || cred.pid <= 0 || cred.uid != me {
+        return false;
+    }
+    let exe_of = |pid: u32| {
+        std::fs::read_link(format!("/proc/{pid}/exe"))
+            .ok()
+            .map(|p| PathBuf::from(p.to_string_lossy().trim_end_matches(" (deleted)")))
+    };
+    let peer = cred.pid as u32;
+    let (Some(own), Some(theirs)) = (exe_of(std::process::id()), exe_of(peer)) else {
+        return false;
+    };
+    if own != theirs {
+        return false;
+    }
+    let Some(parent) = proc_stat_ppid(peer) else {
+        return false;
+    };
+    let Ok(comm) = std::fs::read_to_string(format!("/proc/{parent}/comm")) else {
+        return false;
+    };
+    if comm.trim() != "sudo" {
+        return false;
+    }
+    let Ok(status) = std::fs::read_to_string(format!("/proc/{parent}/status")) else {
+        return false;
+    };
+    let ids: Vec<u32> = status
+        .lines()
+        .find_map(|l| l.strip_prefix("Uid:"))
+        .map(|rest| rest.split_whitespace().filter_map(|v| v.parse().ok()).collect())
+        .unwrap_or_default();
+    // Real uid the owner's, effective uid root: a setuid binary, not a process the model made.
+    ids.len() >= 2 && ids[0] == me && ids[1] == 0
+}
+
+#[cfg(not(target_os = "linux"))]
+fn peer_is_sudo_askpass(_: &UnixStream) -> bool {
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn proc_stat_ppid(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(1)?.parse().ok()
 }
 
 /// Counts one served connection for as long as it lives.
@@ -276,6 +368,8 @@ impl OwnerConfirm {
             closed: AtomicBool::new(false),
             limits,
             active: AtomicUsize::new(0),
+            askpass_window: AtomicUsize::new(0),
+            peer_check: Mutex::new(None),
         });
         Ok((broker, listener))
     }
@@ -287,6 +381,25 @@ impl OwnerConfirm {
     /// The askpass helper a privileged command's `SUDO_ASKPASS` names (see [`ASKPASS_NAME`]).
     pub fn askpass_path(&self) -> PathBuf {
         self.sock.parent().unwrap_or(Path::new("")).join(ASKPASS_NAME)
+    }
+
+    /// Open the window in which a password prompt may be served: held by an attended,
+    /// unsandboxed privileged bash call until it ends. Outside it every prompt is answered `none`.
+    pub fn open_askpass_window(self: &Arc<Self>) -> AskpassWindow {
+        self.askpass_window.fetch_add(1, Ordering::SeqCst);
+        AskpassWindow(Arc::clone(self))
+    }
+
+    /// Replace the real peer check for password prompts. For tests that stand a fake `sudo` in.
+    pub fn set_askpass_peer_check(&self, check: impl Fn(&UnixStream) -> bool + Send + Sync + 'static) {
+        *lock(&self.peer_check) = Some(Box::new(check));
+    }
+
+    fn askpass_peer_ok(&self, stream: &UnixStream) -> bool {
+        match lock(&self.peer_check).as_ref() {
+            Some(check) => check(stream),
+            None => peer_is_sudo_askpass(stream),
+        }
     }
 
     /// Return the previous state so an inner host pump can restore its caller's state.
@@ -541,7 +654,14 @@ impl OwnerConfirm {
             None => Value::Null,
         };
         if let Some(prompt) = req.get("secret_prompt").and_then(Value::as_str) {
-            let (_, _, secret) = self.request_kind(prompt.to_string(), String::new(), true);
+            // The password dialog opens only for sudo's own askpass child, during a privileged
+            // call the owner is attending. Anything else on this socket gets `none`, no dialog.
+            let allowed = self.askpass_window.load(Ordering::SeqCst) > 0 && self.askpass_peer_ok(&stream);
+            let secret = if allowed {
+                self.request_kind(prompt.to_string(), String::new(), true).2
+            } else {
+                None
+            };
             let _ = stream.set_write_timeout(Some(self.limits.read_timeout));
             let reply = match secret {
                 Some(value) => json!({"secret": value}),
@@ -722,6 +842,8 @@ mod tests {
         let d = dir("secret");
         let b = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Yolo)).expect("start");
         b.set_servable(true);
+        b.set_askpass_peer_check(|_| true);
+        let _window = b.open_askpass_window();
         let sock = b.sock_path().to_path_buf();
         let t = std::thread::spawn(move || ask_secret(&sock, "Password:"));
         let mut dialog = SecretDialog {
@@ -742,6 +864,8 @@ mod tests {
         let d = dir("secret-typed");
         let b = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Standard)).expect("start");
         b.set_servable(true);
+        b.set_askpass_peer_check(|_| true);
+        let _window = b.open_askpass_window();
         let sock = b.sock_path().to_path_buf();
         let t = std::thread::spawn(move || ask_secret(&sock, "Password:"));
         while lock(&b.state).pending.is_empty() {
@@ -776,6 +900,45 @@ mod tests {
     }
 
     /// With no way to ask the owner (not servable), a password prompt is answered `none`.
+    #[test]
+    fn a_password_prompt_from_a_process_that_is_not_sudos_askpass_gets_none_and_no_dialog() {
+        let d = dir("secret-peer");
+        let b = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Standard)).expect("start");
+        b.set_servable(true);
+        // Window open, real peer check: this test process is not oxa under sudo.
+        let _window = b.open_askpass_window();
+        let sock = b.sock_path().to_path_buf();
+        let direct = std::thread::spawn(move || ask_secret(&sock, "Password:"));
+        assert_eq!(direct.join().expect("join"), None);
+        // A raw request on the socket (what any model-run command can send).
+        let mut raw = UnixStream::connect(b.sock_path()).expect("connect");
+        writeln!(raw, "{}", json!({"secret_prompt": "Password:"})).expect("write");
+        assert_eq!(answer_of(&raw)["answer"], "none");
+        assert!(lock(&b.state).pending.is_empty(), "no dialog was queued");
+        b.close();
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn a_password_prompt_outside_a_privileged_call_gets_none_even_from_a_trusted_peer() {
+        let d = dir("secret-window");
+        let b = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Standard)).expect("start");
+        b.set_servable(true);
+        b.set_askpass_peer_check(|_| true);
+        assert_eq!(ask_secret(b.sock_path(), "Password:"), None);
+        assert!(lock(&b.state).pending.is_empty(), "no dialog was queued");
+        {
+            let _window = b.open_askpass_window();
+        }
+        assert_eq!(
+            ask_secret(b.sock_path(), "Password:"),
+            None,
+            "the window closed with its call"
+        );
+        b.close();
+        let _ = std::fs::remove_dir_all(d);
+    }
+
     #[test]
     fn owner_confirm_secret_without_a_servable_ui_is_none() {
         let d = dir("secret-none");
