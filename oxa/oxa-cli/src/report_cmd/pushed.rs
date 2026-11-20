@@ -319,9 +319,9 @@ fn json_split_secret(text: &str) -> bool {
     static SPLIT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     SPLIT
         .get_or_init(|| {
-            regex::Regex::new(concat!(
-                r#"(?i)"[^"\n]*(?:password|passwd|passphrase|secret|token|api_?key|access_?key)[^"\n]*"\s*:\s*\n\s*"([^"]+)""#
-            ))
+            regex::Regex::new(
+                r#"(?i)"[^"\n]*(?:password|passwd|passphrase|secret|token|api_?key|access_?key)[^"\n]*"\s*:\s*\n\s*"([^"]+)""#,
+            )
             .expect("JSON split secret pattern")
         })
         .captures_iter(text)
@@ -447,9 +447,7 @@ impl PushScan {
         };
         // A file with no added line (an empty file) holds no secret, so its name alone is
         // not a finding; every file with content reaches the line checks below.
-        if item.line.is_none() {
-            return None;
-        }
+        item.line?;
         if let Some(label) = self.secret_text(item.text) {
             return Some(found(label));
         }

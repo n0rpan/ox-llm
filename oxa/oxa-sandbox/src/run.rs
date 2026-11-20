@@ -197,19 +197,6 @@ pub fn run_unsandboxed_stdin(
     execute(cmd, "bash", Some(stdin), s.timeout_s, cancel, live, true)
 }
 
-/// [`run_unsandboxed_stdin`] with the process environment plus `s.env`, like bash under yolo.
-pub(crate) fn run_unsandboxed_stdin_inherit(
-    s: &ExecSpec,
-    stdin: &[u8],
-    cancel: &CancelToken,
-    live: &mut dyn FnMut(&[u8]),
-) -> ExecResult {
-    let cmd = unsandboxed_command(s, None);
-    let mut r = execute(cmd, "bash", Some(stdin), s.timeout_s, cancel, live, true);
-    r.unsandboxed = !cfg!(target_os = "linux");
-    r
-}
-
 /// Bounded capture: the first and last `cap / 2` bytes, with a count of what was dropped.
 struct Capture {
     half: usize,
