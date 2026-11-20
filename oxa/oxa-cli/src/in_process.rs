@@ -16,6 +16,7 @@ use std::{sync::Arc, time::Duration};
 mod catalog;
 mod routing;
 pub(crate) use catalog::cloud_enabled;
+pub(crate) use routing::is_go_model;
 
 pub(crate) const SETTING: &str = "oxa.engine.inProcessCloud";
 pub(crate) const GO_SETTING: &str = "oxa.cloud.opencode.enabled";
@@ -647,6 +648,11 @@ fn open_gateway_with_go(
                 .with_unpriced_discovered_pricing(pricing)
                 .map_err(|e| OxaError::new(e.code, e.message))?;
         }
+    }
+    if let Some(rules) = cloud.get("model_rules") {
+        runtime = runtime
+            .with_model_rules(rules)
+            .map_err(|e| OxaError::new(e.code, e.message))?;
     }
     if let Some(provider) = cloud.get("openrouter_provider").filter(|v| !v.is_null()) {
         runtime = runtime

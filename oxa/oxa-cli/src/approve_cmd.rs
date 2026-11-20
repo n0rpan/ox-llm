@@ -2,7 +2,7 @@
 //! to a dangerous-command approval request (`--approve <request-id> once|session|always|deny`),
 //! and the list of requests still waiting (`--approvals`). Answers go to the approval desk and
 //! never through the inbox text path, so a model cannot grant one by writing a message.
-use oxa_config::{Dirs, Settings};
+use oxa_config::{Dirs, Env, Settings};
 use oxa_perm::ApprovalDesk;
 use oxa_proto::{codes, OxaError};
 use std::io::Write;
@@ -53,7 +53,13 @@ pub(crate) fn parse(words: &[String]) -> Result<SendCmd, OxaError> {
 }
 
 /// Run one `oxa send` form. Returns the process status.
-pub(crate) fn run(words: &[String], dirs: &Dirs, cwd: &Path, out: &mut dyn Write) -> Result<i32, OxaError> {
+pub(crate) fn run(
+    words: &[String],
+    dirs: &Dirs,
+    cwd: &Path,
+    env: &Env,
+    out: &mut dyn Write,
+) -> Result<i32, OxaError> {
     match parse(words)? {
         SendCmd::Text { session, text } => oxa_session::send_inbox(&dirs.agent_dir, &session, &text)
             .map(|_| 0)
@@ -63,7 +69,10 @@ pub(crate) fn run(words: &[String], dirs: &Dirs, cwd: &Path, out: &mut dyn Write
             session,
             request,
             answer,
-        } => approve(dirs, cwd, &session, &request, &answer, out),
+        } => {
+            let mut confirm = crate::report_cmd::tty_confirm(env);
+            approve_with(dirs, cwd, &session, &request, &answer, out, &mut confirm)
+        }
     }
 }
 
@@ -97,7 +106,7 @@ pub(crate) fn list(dirs: &Dirs, out: &mut dyn Write) -> Result<i32, OxaError> {
 /// The text as one printable line. A command and its reasons are model-controlled: written
 /// verbatim they could carry ESC/CSI/OSC or carriage returns that clear or overwrite the line the
 /// owner reads before approving it, so every control character is escaped.
-fn one_line(text: &str) -> String {
+pub(crate) fn one_line(text: &str) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -132,13 +141,14 @@ fn is_invisible_format(c: char) -> bool {
 
 /// `oxa send <session> --approve <request> <answer>`. The request must belong to `session`.
 /// `always` also saves the rule keys to the user settings (never the project's).
-pub(crate) fn approve(
+pub(crate) fn approve_with(
     dirs: &Dirs,
     cwd: &Path,
     session: &str,
     request: &str,
     answer: &str,
     out: &mut dyn Write,
+    confirm: &mut dyn FnMut(&str) -> Option<bool>,
 ) -> Result<i32, OxaError> {
     let desk = open_desk(dirs)?;
     let waiting = desk
@@ -154,6 +164,19 @@ pub(crate) fn approve(
         return Err(OxaError::new(
             codes::USAGE,
             format!("approval request {request} belongs to another session"),
+        ));
+    }
+    let question = format!(
+        "Authorize approval answer?\nSession: {}\nRequest: {}\nCommand: {}\nAnswer: {}\nType yes to continue: ",
+        one_line(session),
+        one_line(request),
+        one_line(&found.command),
+        one_line(answer)
+    );
+    if confirm(&question) != Some(true) {
+        return Err(OxaError::new(
+            codes::INVALID,
+            "approval answer requires owner confirmation",
         ));
     }
     let record = desk
@@ -274,7 +297,7 @@ mod tests {
             .record("s1", &cwd, "git push --force origin main", &[hit()], "pending")
             .expect("record");
         let mut out: Vec<u8> = Vec::new();
-        approve(&dirs, &cwd, "s1", &id, "always", &mut out).expect("approve");
+        approve_with(&dirs, &cwd, "s1", &id, "always", &mut out, &mut |_| Some(true)).expect("approve");
         let key = "git-push-force git push --force origin main";
         let user = Settings::load(&dirs, &cwd, false).list("oxa.approval.always");
         assert!(user.iter().any(|k| k == key), "{user:?}");
@@ -283,7 +306,7 @@ mod tests {
             "an always answer must not write the project settings"
         );
         // The answered request is no longer pending, so a second answer is refused.
-        assert!(approve(&dirs, &cwd, "s1", &id, "once", &mut out).is_err());
+        assert!(approve_with(&dirs, &cwd, "s1", &id, "once", &mut out, &mut |_| Some(true)).is_err());
     }
 
     #[test]
@@ -296,7 +319,31 @@ mod tests {
             .record("s1", &cwd, "git push --force origin main", &[hit()], "pending")
             .expect("record");
         let mut out: Vec<u8> = Vec::new();
-        assert!(approve(&dirs, &cwd, "s2", &id, "once", &mut out).is_err());
+        assert!(approve_with(&dirs, &cwd, "s2", &id, "once", &mut out, &mut |_| Some(true)).is_err());
         assert_eq!(desk.pending().expect("pending").len(), 1);
+    }
+
+    #[test]
+    fn approval_answer_requires_owner_confirmation_before_consuming_request() {
+        let env = oxa_fake::TestEnv::new();
+        let dirs = Dirs::under(env.root());
+        let cwd = env.work();
+        let desk = ApprovalDesk::open(&dirs.agent_dir).expect("desk");
+        let id = desk
+            .record("s1", &cwd, "git push --force origin main", &[hit()], "pending")
+            .expect("record");
+        let mut out = Vec::new();
+        let mut question = String::new();
+        let result = approve_with(&dirs, &cwd, "s1", &id, "once", &mut out, &mut |shown| {
+            question = shown.to_owned();
+            None
+        });
+
+        assert!(result.is_err());
+        assert!(question.contains(&id), "{question}");
+        assert!(question.contains("git push --force origin main"), "{question}");
+        assert!(question.contains("Answer: once"), "{question}");
+        assert_eq!(desk.pending().expect("pending").len(), 1);
+        assert!(out.is_empty());
     }
 }

@@ -481,7 +481,7 @@ fn scan_patch(
     Ok(())
 }
 
-fn isolate_github_environment(command: &mut Command) {
+pub(crate) fn isolate_github_environment(command: &mut Command) {
     // The destination comes from origin. Let the CLI choose its stored
     // login for that host, independently of host-agnostic shell overrides.
     for key in [
@@ -496,7 +496,7 @@ fn isolate_github_environment(command: &mut Command) {
     }
 }
 
-fn gh(
+pub(crate) fn gh(
     binary: &Path,
     policy: &RunPolicy,
     token: Option<&str>,
@@ -521,20 +521,20 @@ fn gh(
         Stdio::from(lock.try_clone().map_err(|e| e.to_string())?),
         super::COMMAND_DEADLINE,
     ) {
-        Some((0, text)) => Ok(text.trim().into()),
+        Some((0, text)) if !token.is_some_and(|secret| text.contains(secret)) => Ok(text.trim().into()),
         _ => Err("GitHub publication request failed".into()),
     }
 }
 fn json(text: &str) -> Result<serde_json::Value> {
     serde_json::from_str(text).map_err(|e| e.to_string())
 }
-struct Repository {
-    qualified: String,
-    host: String,
-    owner: String,
-    name: String,
+pub(crate) struct Repository {
+    pub(crate) qualified: String,
+    pub(crate) host: String,
+    pub(crate) owner: String,
+    pub(crate) name: String,
 }
-fn repository(value: &serde_json::Value) -> Result<Repository> {
+pub(crate) fn repository(value: &serde_json::Value) -> Result<Repository> {
     let identity = value["nameWithOwner"]
         .as_str()
         .ok_or("repository identity missing")?;
@@ -562,11 +562,241 @@ fn repository(value: &serde_json::Value) -> Result<Repository> {
         name: name.into(),
     })
 }
+/// Validated open pull requests whose head is this task branch.
+pub(crate) fn open_pull_requests(
+    repo: &Path,
+    gh_binary: &Path,
+    policy: &RunPolicy,
+    token: Option<&str>,
+    lock: &File,
+    repository: &Repository,
+    branch: &str,
+) -> Result<Vec<serde_json::Value>> {
+    let prs = json(&gh(
+        gh_binary,
+        policy,
+        token,
+        repo,
+        lock,
+        &[
+            "pr",
+            "list",
+            "--repo",
+            &repository.qualified,
+            "--state",
+            "open",
+            "--head",
+            branch,
+            "--json",
+            "number,url,isDraft,headRepositoryOwner,isCrossRepository",
+        ],
+    )?)?;
+    let prs = prs.as_array().ok_or("invalid PR list")?.to_vec();
+    if prs.len() > 1 {
+        return Err("multiple open PRs match the task branch".into());
+    }
+    if prs.first().is_some_and(|pr| {
+        pr["headRepositoryOwner"]["login"].as_str() != Some(repository.owner.as_str())
+            || pr["isCrossRepository"].as_bool() != Some(false)
+    }) {
+        return Err("PR head repository does not match origin".into());
+    }
+    Ok(prs)
+}
+
+/// The open PR's number when it is already admitted to the merge queue.
+pub(crate) fn queued_pull_request(
+    repo: &Path,
+    gh_binary: &Path,
+    policy: &RunPolicy,
+    token: Option<&str>,
+    lock: &File,
+    repository: &Repository,
+    branch: &str,
+) -> Result<Option<u64>> {
+    let prs = open_pull_requests(repo, gh_binary, policy, token, lock, repository, branch)?;
+    let Some(pr) = prs.first() else {
+        return Ok(None);
+    };
+    let number = pr["number"]
+        .as_u64()
+        .filter(|number| *number != 0)
+        .ok_or("PR number missing")?;
+    let query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){mergeQueueEntry{id}}}}";
+    let data = json(&gh(
+        gh_binary,
+        policy,
+        token,
+        repo,
+        lock,
+        &[
+            "api",
+            "graphql",
+            "--hostname",
+            &repository.host,
+            "-f",
+            &format!("query={query}"),
+            "-F",
+            &format!("owner={}", repository.owner),
+            "-F",
+            &format!("name={}", repository.name),
+            "-F",
+            &format!("number={number}"),
+        ],
+    )?)?;
+    let pull = &data["data"]["repository"]["pullRequest"];
+    if !pull.is_object() || pull.get("mergeQueueEntry").is_none() {
+        return Err("cannot determine whether PR is in the merge queue".into());
+    }
+    Ok((!pull["mergeQueueEntry"].is_null()).then_some(number))
+}
+
+/// Resolve the single origin destination through the same validated `gh` read.
+pub(crate) fn origin_repository(
+    repo: &Path,
+    gh_binary: &Path,
+    policy: &RunPolicy,
+    token: Option<&str>,
+    lock: &File,
+) -> Result<Repository> {
+    let remote = checked(super::git(
+        policy,
+        repo,
+        &["remote", "get-url", "--push", "--all", "origin"],
+    ))?;
+    if remote.lines().count() != 1 {
+        return Err("publishing requires one origin push URL".into());
+    }
+    repository(&json(&gh(
+        gh_binary,
+        policy,
+        token,
+        repo,
+        lock,
+        &["repo", "view", &remote, "--json", "nameWithOwner,url"],
+    )?)?)
+}
+
+/// The publication content scan for a push `head` would make to `origin`: every
+/// commit the push URL's own advertised tips lack, the same scan `--publish` runs.
+/// Nothing is sent; any failure, or a missing scan, refuses the push.
+pub(crate) fn scan_push(policy: &RunPolicy, repo: &Path, head: &str) -> Result<()> {
+    let scan = policy
+        .content_scan
+        .as_deref()
+        .ok_or("publishing refused: the publication content scan is unavailable")?;
+    let remote = checked(super::git(
+        policy,
+        repo,
+        &["remote", "get-url", "--push", "--all", "origin"],
+    ))?;
+    let known = destination_tips(policy, repo, &remote)?;
+    scan_pushed(policy, repo, &pushed_revisions(head, &known), scan)
+}
+
+/// Paths under `paths` that any commit the push would add changes (reachable from `head`
+/// and from no tip the destination advertises), empty when none does. A merge is listed
+/// against each parent, so a control file that only a branch side changed still shows.
+pub(crate) fn pushed_path_changes(
+    policy: &RunPolicy,
+    repo: &Path,
+    head: &str,
+    paths: &[&str],
+) -> Result<String> {
+    let remote = checked(super::git(
+        policy,
+        repo,
+        &["remote", "get-url", "--push", "--all", "origin"],
+    ))?;
+    let known = destination_tips(policy, repo, &remote)?;
+    let mut args = vec!["log", "--format=", "--name-only", "--no-renames", "-m"];
+    args.extend(pushed_revisions(head, &known));
+    args.push("--");
+    args.extend_from_slice(paths);
+    checked(super::git(policy, repo, &args))
+}
+
+/// Push one exact accepted commit. Metadata probes deny every transport;
+/// only this explicit, confirmed publication may use normal GitHub/file transports.
+pub(crate) fn push_head(
+    policy: &RunPolicy,
+    token: Option<&str>,
+    repo: &Path,
+    head: &str,
+    branch: &str,
+    lock: &File,
+) -> Result<()> {
+    let mut push = super::git(
+        policy,
+        repo,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "protocol.https.allow=always",
+            "-c",
+            "protocol.ssh.allow=always",
+            "-c",
+            "protocol.file.allow=always",
+            // Only the scanned commit is sent: no implicit tags or submodule pushes.
+            "-c",
+            "push.followTags=false",
+            "-c",
+            "push.recurseSubmodules=no",
+            "push",
+            "--no-follow-tags",
+            "--recurse-submodules=no",
+            "origin",
+            &format!("{head}:refs/heads/{branch}"),
+        ],
+    );
+    isolate_github_environment(&mut push);
+    if let Some(token) = token {
+        push.env("GH_TOKEN", token);
+    }
+    push.env("GIT_TERMINAL_PROMPT", "0")
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GIT_ALLOW_PROTOCOL", "https:ssh:file");
+    if !matches!(
+        super::command_runner_with_stdin(
+            push,
+            Some(MAX_PUBLICATION_RESPONSE_BYTES),
+            Stdio::from(lock.try_clone().map_err(|e| e.to_string())?),
+            super::COMMAND_DEADLINE,
+        ),
+        Some((0, _))
+    ) {
+        return Err("accepted commit push failed".into());
+    }
+    Ok(())
+}
+
 const BODY_BEGIN: &str = "<!-- oxa-work-acceptance -->";
 const BODY_END: &str = "<!-- /oxa-work-acceptance -->";
-fn body(task: &Task, head: &str, existing: Option<&str>) -> Result<String> {
-    let section = format!("{BODY_BEGIN}\nAccepted commit: `{head}`\nLocal acceptance: passed\nCI: not yet qualified for this commit\n{BODY_END}");
-    let default = format!("T2 — task `{}` executed by `oxa work`.\n\nWhat/why: explicitly requested task; review its changes against the base.\n\nChanges: accepted worktree retained.\n\nRemoves: inspect the diff before promotion; no deletion clearance is inferred.\n\nValidation: frozen local acceptance passed; CI qualification is separate.\n", task.id);
+fn body(
+    task: &Task,
+    head: &str,
+    lane: Option<&crate::lane::LaneVerdict>,
+    existing: Option<&str>,
+) -> Result<String> {
+    let ci = match lane {
+        Some(verdict) if verdict.head == head && verdict.passed() => {
+            format!("CI: lane run {} passed at this commit", verdict.run_id)
+        }
+        Some(verdict) => format!(
+            "CI: lane run {} concluded {} at {}",
+            verdict.run_id, verdict.conclusion, verdict.head
+        ),
+        None => "CI: not qualified for this commit".into(),
+    };
+    let section =
+        format!("{BODY_BEGIN}\nAccepted commit: `{head}`\nLocal acceptance: passed\n{ci}\n{BODY_END}");
+    let validation = if lane.is_some() {
+        "Validation: local acceptance and the lane run passed at the accepted commit."
+    } else {
+        "Validation: frozen local acceptance passed; CI qualification is separate."
+    };
+    let default = format!("T2 — task `{}` executed by `oxa work`.\n\nWhat/why: explicitly requested task; review its changes against the base.\n\nChanges: accepted worktree retained.\n\nRemoves: inspect the diff before promotion; no deletion clearance is inferred.\n\n{validation}\n", task.id);
     let original = existing.unwrap_or(&default);
     match (
         original.matches(BODY_BEGIN).count(),
@@ -633,11 +863,13 @@ fn publish_locked(
         if policy.offline {
             return Err("publishing is unavailable in offline mode".into());
         }
-        // The owner's token source, read once for this publication.
-        let token = super::policy_token(policy, repo)?;
-        let gh = |repo: &Path, lock: &File, args: &[&str]| {
-            gh(gh_binary, policy, token.as_deref(), repo, lock, args)
-        };
+        if task.lane_ci
+            && !value.record.lane.as_ref().is_some_and(|verdict| {
+                Some(verdict.head.as_str()) == value.record.head_sha.as_deref() && verdict.passed()
+            })
+        {
+            return Err("publication requires a passing lane CI run at the saved head".into());
+        }
         let tree = &value.record.worktree;
         tree::validate(policy, repo, tree, task)?;
         if super::dirty_worktree(binary, tree, repo, policy, lock)? {
@@ -662,43 +894,12 @@ fn publish_locked(
         // The destination's own tips are checked again after confirmation.
         scan_pushed(policy, tree, &[head.as_str(), "--not", "--remotes=origin"], scan)?;
         let remote = checked(git(repo, &["remote", "get-url", "--push", "--all", "origin"]))?;
-        if remote.lines().count() != 1 {
-            return Err("publishing requires one origin push URL".into());
-        }
-        let repository = repository(&json(&gh(
-            tree,
-            lock,
-            &["repo", "view", &remote, "--json", "nameWithOwner,url"],
-        )?)?)?;
+        let token = super::policy_token(policy, repo)?;
+        let token = token.as_deref();
+        let gh = |repo: &Path, lock: &File, args: &[&str]| gh(gh_binary, policy, token, repo, lock, args);
+        let repository = origin_repository(tree, gh_binary, policy, token, lock)?;
         let name = repository.qualified.as_str();
-        let owner = repository.owner.as_str();
-        let repo_name = repository.name.as_str();
-        let prs = json(&gh(
-            tree,
-            lock,
-            &[
-                "pr",
-                "list",
-                "--repo",
-                name,
-                "--state",
-                "open",
-                "--head",
-                &task.branch,
-                "--json",
-                "number,url,isDraft,headRepositoryOwner,isCrossRepository",
-            ],
-        )?)?;
-        let prs = prs.as_array().ok_or("invalid PR list")?;
-        if prs.len() > 1 {
-            return Err("multiple open PRs match the task branch".into());
-        }
-        if prs.first().is_some_and(|pr| {
-            pr["headRepositoryOwner"]["login"].as_str() != Some(owner)
-                || pr["isCrossRepository"].as_bool() != Some(false)
-        }) {
-            return Err("PR head repository does not match origin".into());
-        }
+        let prs = open_pull_requests(tree, gh_binary, policy, token, lock, &repository, &task.branch)?;
         if accepted == Outcome::NothingToDo
             && prs.is_empty()
             && value.record.head_sha == value.record.base_sha
@@ -716,7 +917,7 @@ fn publish_locked(
         } else {
             None
         };
-        let text = body(task, &head, existing_body.as_deref())?;
+        let text = body(task, &head, value.record.lane.as_ref(), existing_body.as_deref())?;
         if confirm(&format!(
             "Push accepted commit {head} as {} to origin and create/update its PR in {name} (base {base})? Type yes to publish: ",
             task.branch
@@ -735,78 +936,14 @@ fn publish_locked(
         scan_pushed(policy, tree, &pushed_revisions(&head, &known), scan)?;
         // Confirmation may remain open indefinitely: queue admission is checked
         // only after it returns, immediately before the push.
-        if let Some(pr) = prs.first() {
-            let number = pr["number"].as_u64().ok_or("PR number missing")?.to_string();
-            let query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){mergeQueueEntry{id}}}}";
-            let data = json(&gh(
-                tree,
-                lock,
-                &[
-                    "api",
-                    "graphql",
-                    "--hostname",
-                    &repository.host,
-                    "-f",
-                    &format!("query={query}"),
-                    "-F",
-                    &format!("owner={owner}"),
-                    "-F",
-                    &format!("name={repo_name}"),
-                    "-F",
-                    &format!("number={number}"),
-                ],
-            )?)?;
-            let pull = &data["data"]["repository"]["pullRequest"];
-            if !pull.is_object() || pull.get("mergeQueueEntry").is_none() {
-                return Err("cannot determine whether PR is in the merge queue".into());
-            }
-            if !pull["mergeQueueEntry"].is_null() {
-                return Err("PR is in the merge queue; use a new task branch for follow-up work".into());
-            }
+        if let Some(number) =
+            queued_pull_request(tree, gh_binary, policy, token, lock, &repository, &task.branch)?
+        {
+            return Err(format!(
+                "PR #{number} is in the merge queue; use a new task branch for follow-up work"
+            ));
         }
-        let mut push = git(
-            repo,
-            &[
-                "-c",
-                "core.hooksPath=/dev/null",
-                "-c",
-                "protocol.https.allow=always",
-                "-c",
-                "protocol.ssh.allow=always",
-                "-c",
-                "protocol.file.allow=always",
-                // Only the scanned commit is sent: no implicit tags or submodule pushes.
-                "-c",
-                "push.followTags=false",
-                "-c",
-                "push.recurseSubmodules=no",
-                "push",
-                "--no-follow-tags",
-                "--recurse-submodules=no",
-                "origin",
-                &format!("{head}:refs/heads/{}", task.branch),
-            ],
-        );
-        isolate_github_environment(&mut push);
-        if let Some(token) = &token {
-            push.env("GH_TOKEN", token);
-        }
-        push.env("GIT_TERMINAL_PROMPT", "0")
-            .env("GH_PROMPT_DISABLED", "1")
-            // Metadata probes deny every transport. Only this explicit,
-            // confirmed publication may use the normal GitHub/file transports.
-            .env("GIT_ALLOW_PROTOCOL", "https:ssh:file");
-        if !matches!(
-            super::command_runner_with_stdin(
-                push,
-                Some(MAX_PUBLICATION_RESPONSE_BYTES),
-                Stdio::from(lock.try_clone().map_err(|e| e.to_string())?),
-                super::COMMAND_DEADLINE,
-            ),
-            Some((0, _))
-        ) {
-            return Err("accepted commit push failed".into());
-        }
+        push_head(policy, token, repo, &head, &task.branch, lock)?;
         let draft = false;
         let body = policy.storage.join(format!("{}.pr-body.md", task.id));
         crate::checkpoint::write_atomic(&body, text.as_bytes(), body.exists())?;
@@ -996,11 +1133,15 @@ mod tests {
             git_binary: "/usr/bin/git".into(),
             host_path: "/usr/bin:/bin".into(),
             terminate_binary: None,
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
             offline: false,
             runner_owns_github: false,
             github_token_command: command,
+            worker_github: Default::default(),
             autonomy: Default::default(),
-            autonomy_now: None,
+            authority_now: None,
             storage: dir.join("runner"),
         }
     }
@@ -1010,7 +1151,12 @@ mod tests {
         let dir = crate::test_dir::PrivateDir::new("publish-token-source");
         let repo = dir.path().join("project");
         std::fs::create_dir(&repo).unwrap();
-        let fake_gh = script(dir.path(), "gh", "printf '%s' \"$GH_TOKEN\"");
+        let fake_gh = script(
+            dir.path(),
+            "gh",
+            "case \"$GH_TOKEN\" in '') ;; ghs_RUNNER_TOKEN) echo authenticated ;; *) exit 1 ;; esac",
+        );
+        let echoing_gh = script(dir.path(), "gh-echo", "printf '%s' \"$GH_TOKEN\"");
         let source = script(dir.path(), "token", "echo ghs_RUNNER_TOKEN");
         let lock = File::create(dir.path().join("lock")).unwrap();
         // Without the setting the runner keeps the stored login: no token is passed on.
@@ -1023,7 +1169,11 @@ mod tests {
         let token = super::super::policy_token(&owned, &repo).unwrap();
         assert_eq!(token.as_deref(), Some("ghs_RUNNER_TOKEN"));
         let seen = gh(&fake_gh, &owned, token.as_deref(), dir.path(), &lock, &[]);
-        assert_eq!(seen, Ok("ghs_RUNNER_TOKEN".into()));
+        assert_eq!(seen, Ok("authenticated".into()));
+        assert_eq!(
+            gh(&echoing_gh, &owned, token.as_deref(), dir.path(), &lock, &[]),
+            Err("GitHub publication request failed".into())
+        );
         // A command that fails stops the publication instead of falling back.
         let failing = script(dir.path(), "bad", "exit 1");
         let broken = policy(dir.path(), vec![failing.display().to_string()]);
@@ -1062,11 +1212,15 @@ mod scan_tests {
             git_binary: "/usr/bin/git".into(),
             host_path: std::env::var_os("PATH").unwrap(),
             terminate_binary: None,
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
             offline: false,
             runner_owns_github: false,
             github_token_command: Vec::new(),
             autonomy: Default::default(),
-            autonomy_now: None,
+            worker_github: Default::default(),
+            authority_now: None,
             storage: dir.path().join("storage"),
         };
         git_ok(dir.path(), &["init", "-q", "-b", "main"]);

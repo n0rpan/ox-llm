@@ -88,11 +88,18 @@ oxa lead --loopback HTTP--> browser page; oxa work/lead --> GitHub (board, revie
 ## CI (`.github/workflows`)
 
 - `checks.yml` runs on PRs, pushes, the merge queue and nightly. It calls `build.yml` (engine MoE,
-  Flash, the oxa test archive and its shards) and runs the documentation links job, the path-filter
-  tests and the secret scans.
+  Flash, the oxa test archive, four oxa test shards and a doctest job) and runs the documentation
+  links job, the path-filter tests and the secret scans. A main push whose commit already has a
+  green merge-queue run skips the jobs that run would repeat, unless the push changed a
+  dependency cache key (main is what seeds those caches); the classifier and the scans always run.
 - `lane.yml` runs the affected-crate tests for a lane; `e2e.yml` runs the real-model prompt and tool
   loop; `oracle.yml` checks the gate and cache controls.
-- `macos.yml` (native macOS arm64 oxa-cli build) is called by `checks.yml` as the required `macos` job and also runs on main.
+- `dev-build.yml` builds each architecture once per main push for the rolling `dev` prerelease. The
+  two-build reproducibility comparison runs in its nightly schedule and in the release lane, its Arch
+  source package rebuild runs beside the build, and the model-free source tests are skipped only for a
+  commit the merge queue already covered.
+- `macos.yml` (native macOS arm64 oxa-cli build) is called by `checks.yml` as the required `macos`
+  job; standalone it runs on manual dispatch only.
 - Also: `release-build.yml`, `release.yml`, `dev-build.yml`, `codeql.yml`,
   `go-review.yml`.
 

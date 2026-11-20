@@ -193,7 +193,28 @@ fn earlier_branch_switch_asks() {
         "git branch -f x && git push",
         "git switch main && gh pr create --title t --body b",
     ] {
-        assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{c}");
+        for level in [Autonomy::Standard, Autonomy::Auto] {
+            assert_eq!(decide(&cwd, level, c), Decision::Ask, "{level:?}: {c}");
+        }
+    }
+
+    // A later switch cannot change the branch that the earlier push publishes.
+    assert_eq!(
+        decide(&cwd, Autonomy::Auto, "git push origin HEAD && git switch main"),
+        Decision::Allow
+    );
+}
+
+#[test]
+fn concurrent_branch_switch_asks() {
+    let cwd = repo("my-branch");
+    for c in [
+        "git push origin HEAD | git switch main",
+        "git switch main | git push origin HEAD",
+    ] {
+        for level in [Autonomy::Standard, Autonomy::Auto] {
+            assert_eq!(decide(&cwd, level, c), Decision::Ask, "{level:?}: {c}");
+        }
     }
 }
 
@@ -302,7 +323,6 @@ fn command_wrappers_and_cumulative_git_directories_ask() {
         "env git -c alias.ship=push ship origin HEAD:main",
         "env -i git -C . push origin HEAD:main",
         "command git push origin HEAD:main",
-        "sh drop-second git ignored push origin HEAD:main",
         "git -C vendor/other -C . push origin HEAD",
     ] {
         assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{c}");
@@ -323,6 +343,17 @@ fn command_wrappers_and_cumulative_git_directories_ask() {
         decide(&cwd, Autonomy::Auto, "git -C vendor -C other push origin HEAD"),
         Decision::Ask
     );
+}
+
+#[test]
+fn argv_rewriting_wrapper_keeps_publish_floor() {
+    let cwd = repo("my-branch");
+    let command = "sh drop-second git ignored push origin HEAD:main";
+
+    let hits = DangerRules::builtin().publish_classify(command, &cwd);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].rule, "publish-unsafe");
+    assert_eq!(hits[0].segment, command);
 }
 
 #[test]
@@ -418,13 +449,41 @@ fn local_writers_and_path_qualified_publish_tools_ask() {
 }
 
 #[test]
-fn continued_config_values_and_git_aliases_ask() {
+fn git_names_that_can_resolve_outside_builtin_dispatch_ask() {
+    let cwd = repo("my-branch");
+    for command in ["git citool", "git p4", "git send-email", "git svn", "git hook"] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask, "{command}");
+    }
+}
+
+#[test]
+fn continued_config_values_and_unresolved_git_subcommands_ask() {
     let cwd = repo("my-branch");
     set_config(
         &cwd,
         "[remote \"origin\"]\n\tharmless = x\\\n[ignored]\n\tpush = HEAD:refs/heads/main\n",
     );
     assert_eq!(decide(&cwd, Autonomy::Auto, "git push origin"), Decision::Ask);
+
+    let cwd = repo("my-branch");
+    assert_eq!(decide(&cwd, Autonomy::Auto, "git ship"), Decision::Ask);
+
+    // A documented builtin keeps its classification: local state commands such as
+    // `git merge --abort` or `git update-ref` are not publish commands and must not
+    // ask (the aborting-merge and replace-ref work guards depend on them running).
+    let cwd = repo("my-branch");
+    for c in [
+        "git diff-files",
+        "git diff-index --quiet HEAD --",
+        "git diff-tree HEAD",
+        "git version",
+        "git merge --abort",
+        "git update-ref refs/replace/deadbeef deadbeef",
+        "git rebase origin/main",
+        "git config user.name someone",
+    ] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Allow, "{c}");
+    }
 
     let cwd = repo("my-branch");
     set_config(&cwd, "[alias]\n\tship = push origin HEAD:main\n");
@@ -461,4 +520,58 @@ fn gh_mutation_is_bound_to_the_recorded_repository() {
         decide(&cwd, Autonomy::Auto, "GH_REPO=o/other gh pr comment --body hi"),
         Decision::Ask
     );
+}
+
+#[test]
+fn gh_mutation_fingerprint_includes_remotes_after_risky_settings() {
+    let cwd = repo("my-branch");
+    set_config(
+        &cwd,
+        "[push]\n\tdefault = simple\n[remote \"origin\"]\n\turl = https://github.com/o/r.git\n",
+    );
+    let command = "gh pr comment --body hi";
+    assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Allow);
+
+    set_config(
+        &cwd,
+        "[push]\n\tdefault = simple\n[remote \"origin\"]\n\turl = https://github.com/o/other.git\n",
+    );
+    assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask);
+}
+
+#[test]
+fn gh_mutation_fingerprint_preserves_origin_url_order() {
+    let cwd = repo("my-branch");
+    set_config(
+        &cwd,
+        "[remote \"origin\"]\n\turl = https://github.com/o/r.git\n[push]\n\tdefault = simple\n[remote \"origin\"]\n\turl = https://github.com/o/other.git\n",
+    );
+    let command = "gh pr comment --body hi";
+    assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Allow);
+
+    set_config(
+        &cwd,
+        "[remote \"origin\"]\n\turl = https://github.com/o/other.git\n[push]\n\tdefault = simple\n[remote \"origin\"]\n\turl = https://github.com/o/r.git\n",
+    );
+    assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask);
+}
+
+#[test]
+fn gh_mutation_fails_closed_when_config_includes_another_file() {
+    for include in [
+        "[include]\n\tpath = project.inc\n",
+        "[includeIf \"gitdir:~/project/\"]\n\tpath = project.inc\n",
+    ] {
+        let cwd = repo("my-branch");
+        set_config(
+            &cwd,
+            &format!("{include}[remote \"origin\"]\n\turl = https://github.com/o/r.git\n"),
+        );
+
+        assert_eq!(
+            decide(&cwd, Autonomy::Auto, "gh pr comment --body hi"),
+            Decision::Ask,
+            "{include} must invalidate the repository fingerprint"
+        );
+    }
 }

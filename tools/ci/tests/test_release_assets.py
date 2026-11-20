@@ -25,6 +25,24 @@ class ReleaseAssets(unittest.TestCase):
         self.assertIn('workflow_call:', rb)
         self.assertIsNone(re.search(r'ox-llm-0\.2\.0-linux', rb))
 
+    def test_release_build_version_defaults_to_the_workspace(self):
+        root = W.parents[1]
+        resolver = root / 'packaging/release/version.sh'
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest = Path(temporary) / 'Cargo.toml'
+            manifest.write_text('[workspace.package]\nversion = "9.8.7"\n\n[profile.release]\n')
+
+            derived = subprocess.run([resolver, '', manifest], text=True, capture_output=True, check=True)
+            explicit = subprocess.run([resolver, 'v1.2.3', manifest], text=True,
+                                      capture_output=True, check=True)
+            self.assertEqual(derived.stdout, 'v9.8.7\n')
+            self.assertEqual(explicit.stdout, 'v1.2.3\n')
+
+            manifest.write_text('[workspace]\nmembers = []\n')
+            missing = subprocess.run([resolver, '', manifest], text=True, capture_output=True)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn('no workspace version', missing.stderr)
+
     def test_release_build_does_not_cancel_called_runs(self):
         rb = (W / 'release-build.yml').read_text()
         self.assertIsNone(re.search(r'cancel-in-progress:\s*true', rb))
@@ -35,8 +53,9 @@ class ReleaseAssets(unittest.TestCase):
         dev = (W / 'dev-build.yml').read_text()
         self.assertRegex(dev, r'on:\s*\n  push:\s*\n    branches: \[main\]')
         self.assertNotIn('pull_request', dev)
-        # A running dev build finishes; only the newest pending push is kept.
-        self.assertIn('group: dev-build\n  cancel-in-progress: false', dev)
+        # A running push build finishes; only the newest pending push is kept, and the nightly
+        # qualification has its own group so it never delays a push.
+        self.assertIn('group: dev-build-${{ github.event_name }}\n  cancel-in-progress: false', dev)
         # Publication moves only forward, checked before any create or upload.
         publish = dev.split('  publish:', 1)[1]
         self.assertLess(publish.index('compare/$GITHUB_SHA...main'), publish.index('gh release create dev'))
@@ -44,7 +63,8 @@ class ReleaseAssets(unittest.TestCase):
         self.assertIn('uses: ./.github/workflows/release-build.yml', dev)
         self.assertIn('needs: [version, build]', dev)
         self.assertNotIn('contents: write', dev.split('  publish:', 1)[0])
-        self.assertIn("github.ref == 'refs/heads/main'", dev.split('  publish:', 1)[1])
+        # A nightly or dispatched run qualifies without republishing the same commit.
+        self.assertIn("github.event_name == 'push'", dev.split('  publish:', 1)[1])
         self.assertIn('for arch in aarch64 x86_64', dev)
         release_commands = [line.strip() for line in dev.splitlines()
                             if 'gh release create ' in line or 'gh release edit ' in line]
@@ -58,7 +78,7 @@ class ReleaseAssets(unittest.TestCase):
         self.assertIn('tools/ci/dev_version.py', dev)
         result = subprocess.run(['python3', '-I', 'tools/ci/dev_version.py', 'abc1234'], cwd=W.parents[1],
                                 text=True, capture_output=True, check=True)
-        self.assertRegex(result.stdout.strip(), r'^v\d+\.\d+\.\d+-dev\.abc1234$')
+        self.assertRegex(result.stdout.strip(), r'^v\d+\.\d+\.\d+-dev\.\d+\+abc1234$')
 
     def test_release_environment_resolves_itself_when_sourced_by_a_workflow(self):
         with tempfile.TemporaryDirectory() as temporary:

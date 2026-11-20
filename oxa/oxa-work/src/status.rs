@@ -232,10 +232,14 @@ mod tests {
             host_path: "/usr/bin".into(),
             terminate_binary: None,
             offline: true,
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
             runner_owns_github: true,
             github_token_command: Vec::new(),
             autonomy: Default::default(),
-            autonomy_now: None,
+            worker_github: Default::default(),
+            authority_now: None,
             storage: directory.path().into(),
         };
         let lease = Lease {

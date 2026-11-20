@@ -64,6 +64,7 @@ fn finish_str(f: Finish) -> &'static str {
 fn fault_to_json(f: &Fault) -> Value {
     match f {
         Fault::Http { status, body } => json!({"kind": "http", "status": status, "body": body}),
+        Fault::RateLimited { retry_after } => json!({"kind": "rate_limited", "retry_after": retry_after}),
         Fault::Overflow => json!({"kind": "overflow"}),
         Fault::DropAt { bytes } => json!({"kind": "drop_at", "bytes": bytes}),
         Fault::Refuse => json!({"kind": "refuse"}),
@@ -254,6 +255,13 @@ fn parse_fault(v: &Value, n: usize) -> Result<Fault, OxaError> {
             Ok(Fault::Http {
                 status,
                 body: req_str(obj, "body", n)?,
+            })
+        }
+        "rate_limited" => {
+            check_keys(obj, &["kind", "retry_after"], n)?;
+            Ok(Fault::RateLimited {
+                retry_after: opt_u32(obj, "retry_after", n)?
+                    .ok_or_else(|| bad(n, "missing `retry_after`"))?,
             })
         }
         "overflow" => {

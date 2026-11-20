@@ -1361,6 +1361,14 @@ fn plan_chat(sh: &Shared, req: &Request, meta: &mut (Option<usize>, Option<u32>)
                 retry_after: None,
             };
         }
+        Some(Fault::RateLimited { retry_after }) => {
+            seen.push(rec);
+            return Plan::Json {
+                status: 429,
+                body: b"Synthetic provider limit".to_vec(),
+                retry_after: Some(*retry_after),
+            };
+        }
         Some(Fault::Refuse) => {
             seen.push(rec);
             return Plan::Refuse;

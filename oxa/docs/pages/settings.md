@@ -27,7 +27,7 @@ Settings that older files may contain but oxa does not implement are not listed 
 
 Where the user file alone counts, the table says so:
 
-- user settings only: `defaultProjectTrust`, `httpProxy`, `oxa.allowHomeCwd`, `oxa.a2a.enabled`, `oxa.emptyReplyRetries`, `oxa.approval.*`, `oxa.offline`, `oxa.github.tokenCommand`, `oxa.github.tokenTtlSeconds`, `oxa.engine.allowRemote`, `oxa.engine.inProcessCloud`, `oxa.cloud`, `oxa.engine.inProcessLocal`, `oxa.local`, `oxa.lead.shadow`, `oxa.lead.serve`, `oxa.lead.sessionId`, `oxa.lead.model`, and every `oxa.sandbox.*` key. A project file cannot set them, because a project file cannot widen what the model can reach.
+- user settings only: `defaultProjectTrust`, `httpProxy`, `oxa.allowHomeCwd`, `oxa.a2a.enabled`, `oxa.emptyReplyRetries`, `oxa.offline`, `oxa.github.tokenCommand`, `oxa.github.tokenTtlSeconds`, `oxa.engine.allowRemote`, `oxa.engine.inProcessCloud`, `oxa.cloud`, `oxa.engine.inProcessLocal`, `oxa.local`, `oxa.lead.shadow`, `oxa.lead.serve`, `oxa.lead.sessionId`, `oxa.lead.model`, and every `oxa.sandbox.*` key. A project file cannot set them, because a project file cannot widen what the model can reach.
 - project settings are trust-gated. In an untrusted project they are not read. Project files that run or load code (`hooks`, `shellPath`, `shellCommandPrefix`, `packages`, `extensions`, `skills`, `prompts`) also need the content approval described in [security.md](security.md#project-trust).
 
 Interactive selectors (`/settings`, `/thinking` and `/model` with Ctrl+S) write the user file.
@@ -36,11 +36,13 @@ Interactive selectors (`/settings`, `/thinking` and `/model` with Ctrl+S) write 
 
 Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `object`, and enumerations written as `a / b / c`. `any` means the value is not checked.
 
+The tables below are generated from the page sheet in `oxa/oxa-config/src/descriptor/sheet/`: change a row there and run `python3 tools/ci/settings_table.py --write`. The prose around them is hand-written.
+
+<!-- generated:interface -->
 ### Interface
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `oxa.lead.serve` | object | `{}` | User-only, default-off [lead web access](lead-web.md); local mode unless selected otherwise. |
 | `$schema` | string | `null` | editor schema hint; ignored |
 | `theme` | string | `"system"` | `system`, `dark`, `light` or a name from a theme file; also `oxa` (OXA's own dark palette) and `oxa-omarchy` (follows the current Omarchy desktop theme, read-only; `system` when there is none). With the `oxa` skin the default is `oxa-omarchy` |
 | `ui.animation` | `arcade` / `minimal` / `off` | `arcade` | what moves on the activity line of the `oxa` skin while a run is in progress: `arcade` is a one-row animated scene with a short `CLEAR` when the run is done; `minimal` is the small six-cell sprite; `off` is the static text badge. Never any sound. `ui.reducedMotion`, `NO_COLOR` and `TERM=dumb` give `off`. `--animation <mode>` overrides this key for one run |
@@ -72,7 +74,9 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `enableSkillCommands` | bool | `true` | list skills in the slash-command autocomplete |
 | `followUpMode` | `all` / `one-at-a-time` | `one-at-a-time` | how queued follow-up messages are sent |
 | `steeringMode` | `all` / `one-at-a-time` | `one-at-a-time` | how queued steering messages are sent |
+<!-- /generated:interface -->
 
+<!-- generated:models -->
 ### Models and thinking
 
 | Key | Type | Default | Meaning |
@@ -91,7 +95,9 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `oxa.prefill.tools` | bool | unset | while a tool call that runs alone takes more than 2 seconds, the engine prefills the results of the calls before it, once they total at least 2048 bytes; needs an engine that supports prefill-only requests. Unset is on |
 | `oxa.sampling.mode` | `greedy` \| `model` | `greedy` | `greedy` sends `temperature: 0` (deterministic; the engine's speculative decoding needs it). `model` sends the sampling the model card recommends (Qwen3.6 and Ornith: temperature 0.6, top_p 0.95, top_k 20 with thinking on; 0.7, 0.8, 20 and presence_penalty 1.5 with thinking off) for chat and subagent replies; other models stay greedy |
 | `oxa.sampling.seed` | number | unset | a fixed seed sent with `oxa.sampling.mode: model` |
+<!-- /generated:models -->
 
+<!-- generated:tools -->
 ### Tools
 
 | Key | Type | Default | Meaning |
@@ -109,14 +115,16 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `oxa.maxTurns` | number | unset | end a run after this many model replies with a `turn_limit` error (a cap against loops the repeat guard cannot see, such as alternating calls). Unset or `0` is no limit |
 | `oxa.toolOutputCap` | number (bytes) | `16384` | cap on one tool output sent to the model; on a cloud model with a known window and no value set it is 3/16 of the window in bytes (at least 16384), and a higher value you set applies to `read`, `grep`, `find` and `ls` too. When `oxa.compaction.softTokens` is set or the engine publishes a compaction point, one tool result is at most a quarter of it (never below 2048 bytes), unless this is set; `grep`, `find`, `ls` and a `read` with `offset` or `limit` are cut at that cap, the first page of `read` at 8 KiB within it; see [tools-context.md](tools-context.md) |
 | `oxa.toolRepair` | bool | `true` | repair a malformed tool call with one extra turn ([tools.md](tools.md#repair-turn)) |
+| `oxa.work.workerGithub` | `runner` / `broker` / `worker` | unset | owner-only (user layer; a project value is ignored): GitHub access of an `oxa work` worker whose task the runner owns. Unset follows the mode: yolo `worker` (own GitHub environment, `gh`, MCP, web search and subagents), auto `broker` (no token, host-side GitHub tools), standard `runner` (packet only) |
 | `oxa.work.localChecks` | list of strings | `["cargo check"]` | owner-only local compile commands for `oxa work`. The runner adds `-p <crate>` for a touched crate. The hosted lane supplies the test verdict. |
 | `oxa.toolRepeatGuard` | bool | `true` | answer a tool call that returned the same result three times in a row with a short note, and warn once (shown and kept in the session) if it goes on; the run continues ([tools.md](tools.md#repeated-calls)) |
 | `oxa.goal.idlePause` | boolean | `false` | `true` pauses a goal after two replies without a tool call (with a notice and `/goal resume`); by default the second such reply only shows a warning and the goal keeps pursuing. User settings only |
-| `oxa.goal.failureBackoffSeconds` | number (seconds) | `60` | a pursuing goal whose request fails transiently (stream cut, engine down or busy, timeout, 429 or 5xx) notes it, waits this long without a model request, and sends the same request again; each further consecutive failure doubles the wait, capped at 900 s unless this is set higher. There is no attempt cap. `0` opts out: the run ends as before. Auth errors, refusals, a repetition stop, an abort and an owner-set budget still stop the goal with the reason shown |
+| `oxa.goal.failureBackoffSeconds` | number (seconds) | `60` | a pursuing goal whose request fails transiently (stream cut, engine down or busy, timeout, 429 or 5xx) notes it, waits this long without a model request, and sends the same request again; each further consecutive failure doubles the wait, capped at 900 s unless this is set higher. There is no attempt cap. `0` opts out: the run ends as before. Auth errors, refusals, a repetition stop, an abort and an owner-set budget still stop the goal with the reason shown. During the wait, a steering message or an explicit model selection retries immediately with the changed request. Stop the retry first for a switch that requires compaction or a fork. A provider 429 with a retry-after over 15 minutes stops instead: switch models or wait for the quota to reset, then use `/goal resume`. Lead warns about live workers it recognizes as sharing the affected OpenCode Go pool without changing their models |
 | `oxa.tools.wait` | bool | `true` | declare the `wait` tool in every session (interactive, print, RPC, lead and workers), not only while a goal is pursued. It is declared from the session start and its entry is the same in a goal, so the cached prefix does not change. `false` opts out (read at session start). Outside a goal a wait ends when the owner types a message, on cancel or on `--max-time`; with offline mode the GitHub probes stay refused |
 | `oxa.wait.maxSeconds` | number (seconds) | `86400` | cap on one `wait` call's `seconds`. The default is the tool's own maximum (one day), so nothing is cut unless you set a lower value; a longer request is cut to it |
 | `oxa.wait.pollSeconds` | number (seconds) | `30` | how often a `wait` with an `until` condition asks the hook sets for its state; no model request is made meanwhile |
 | `oxa.subagent.enabled` | bool | unset | the `subagent` tool; unset is on unless the model is Flash or its window is below 32K |
+| `oxa.subagent.isolated` | bool | `false` | run every local child in its own session and prefix instead of forking the parent's: the engine parks the parent's state and the child prefills its own context, and the call says so once |
 | `oxa.subagent.smallContext` | bool | `false` | declare `subagent` on a model with a window below 32K |
 | `oxa.subagent.softTokens` | number | `24000` | compaction point of a child agent; on a cloud model with a known window and no value set it is half the window (at least 24000) |
 | `oxa.subagent.maxChildren` | number | `8` | children one parent session runs or queues over every call in flight, and the most `tasks` or `chain` steps one call takes. A warning threshold: above it the children still run (queued) and the result ends with a warning. User settings only. At least 1 |
@@ -140,7 +148,9 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `prompts` | list | `[]` | prompt template files and directories to load |
 | `packages` | list | `[]` | installed package sources; `oxa install` edits this |
 | `permissions.defaultMode` | `standard` / `auto` / `yolo` / `plan` | `auto` | permission mode at start ([security.md](security.md#standard-auto-and-yolo)); command-line flags win for one run; a project may lower it, never raise it |
+<!-- /generated:tools -->
 
+<!-- generated:sessions -->
 ### Sessions and compaction
 
 | Key | Type | Default | Meaning |
@@ -151,6 +161,7 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `compaction.keepRecentTokens` | number | `4000` | recent context kept verbatim after a compaction |
 | `compaction.modelOverrides` | object | `null` | per-model `reserveTokens` and `keepRecentTokens` |
 | `compaction.profile` | `auto`, `local` or `cloud` | `auto` | `auto` takes `cloud` for a cloud model and `local` otherwise. `cloud` compacts at 90 % of the window, keeps 20000 tokens verbatim and writes a summary of about 2000 tokens. A `compaction.keepRecentTokens`, `oxa.compaction.summaryTarget` or `oxa.compaction.softTokens` set in any layer wins over the profile. `local` keeps the values above |
+| `compaction.reactivateSkills` | bool | `false` | retain invoked skills across compaction and ask the model to re-read them. User settings only |
 | `oxa.compaction.idleSummary` | bool | unset | after a run that leaves the context between 80 % and 100 % of the soft limit, the summary of the next compaction is written in idle time, and that compaction reuses it with no model request if nothing it covers has changed. Unset is on |
 | `oxa.compaction.midRun` | bool | unset | compact between tool steps of a run when the context passes the compaction point; unset is on |
 | `oxa.compaction.summaryTarget` | number (tokens) | unset | soft length target of a compaction summary: the model is asked for about three quarters of it in words; `0` is no target. Unset is 700 |
@@ -158,9 +169,11 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `oxa.compaction.turnStart` | bool | unset | compact before a prompt is sent when the context is already above the compaction point (for example after an aborted turn); unset is on |
 | `branchSummary.reserveTokens` | number | `16384` | output budget of a branch summary |
 | `branchSummary.skipPrompt` | bool | `false` | leave out the "summarise the branch?" question |
+<!-- /generated:sessions -->
 
 The compaction rules are in [compaction.md](compaction.md).
 
+<!-- generated:retries -->
 ### Retries
 
 | Key | Type | Default | Meaning |
@@ -169,19 +182,22 @@ The compaction rules are in [compaction.md](compaction.md).
 | `retry.maxRetries` | number | `10` | retries of an agent request |
 | `retry.baseDelayMs` | number | `2000` | first delay, doubled each retry |
 | `retry.maxAgentDelayMs` | number | `60000` | longest delay the agent loop waits |
+| `retry.localMaxTotalMs` | number | `5000` | whole retry wait when this machine's own engine fails: an engine that is down or keeps answering the same error does not recover by waiting, so oxa gives up after this budget and names the endpoint and how to restart it (`0` gives up at once). A cloud model through the local gateway is not local and keeps the long backoff |
+| `retry.identical5xxRetries` | number | `2` | retries of the same plain 5xx body (status and message) from one endpoint: an identical answer will not change, so the request stops after it. `503`, `529`, a reply that names a wait (`retry after <n> s`) and overload markers keep the long backoff; `0` retries no identical body |
 | `retry.provider.maxRetries` | number | `0` | silent retries of one HTTP request, before the first byte of the reply; `retry.enabled` false disables them |
 | `retry.provider.maxRetryDelayMs` | number | `60000` | longest wait of one HTTP retry |
 | `retry.provider.timeoutMs` | number | `null` | silence limit of the engine stream; unset uses `httpIdleTimeoutMs` |
+<!-- /generated:retries -->
 
+<!-- generated:permissions -->
 ### Permissions, trust and offline mode
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `oxa.allowHomeCwd` | bool | `false` | allow oxa to start in the home directory, `/` or a parent of home. Without it print, JSON and RPC modes refuse and interactive mode asks. An explicit `--yolo` or `--auto` on the command line also allows it, with a warning and no question; the environment variable `OXA_ALLOW_HOME_CWD` also allows it. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
-| `oxa.allowHomeCwd` | bool | `false` | allow oxa to start in the home directory, `/` or a parent of home. Without it print, JSON and RPC modes refuse and interactive mode asks; the environment variable `OXA_ALLOW_HOME_CWD` also allows it. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
 | `oxa.approval.always` | list | `[]` | exact `<rule> <command>` keys written by "Always allow" in the dangerous-command prompt (#1512). Each key matches one literal command of one rule. Shell parameter or command substitution markers anywhere in the command make saved grants inapplicable. Remove a line to revoke it. User settings only |
-| `oxa.approval.dangerous` | list | `[]` | rules for dangerous commands, matched on the parsed command (#1512). `[]` (the default) is all built-in rules. `+id` adds a rule, `-id` removes one, `+cmd:<words>` adds a rule for a command (`+cmd:terraform destroy`), and a list without `+`/`-` entries replaces the built-in set (a plain `cmd:<words>` there turns the built-in rules off). Built-in ids: `rm-recursive-outside`, `git-push-force`, `credential-write`, `pipe-to-shell`, `disk-destroy`, `chmod-recursive-open`, `sudo`, `sql-drop`, `kill-foreign`, `oxa-self-approve`, `eval-dynamic`, `unparsed`. Unknown entries are ignored with a warning. Separately from these rules, a built-in publish check always runs: pushing the session's own non-default branch to `origin` with an explicit source refspec and `gh pr create|edit|comment` or read-only `gh` need no question, but a push with no refspec, a push to the default branch, a force push, a merge, a push elsewhere, or any command chained with a publish command asks (yolo never asks). User settings only |
-| `oxa.approval.unattended` | enum | `"auto"` | what an unattended run (no one to ask: workers, subagents, headless goals) does with a dangerous command (#1512). `auto` refuses it under the OS sandbox and requests approval without it; `refuse` always refuses; `request` files a request for the owner (`oxa send <session> --approve <id> once\|session\|always\|deny`). Shell input classified as `pipe-to-shell` requires direct owner review because the command text cannot identify the input bytes for a retry. Nothing waits for an answer. User settings only |
+| `oxa.approval.dangerous` | list | `[]` | rules for dangerous commands, matched on the parsed command (#1512). `[]` (the default) is all built-in rules. `+id` adds a rule, `-id` removes one, `+cmd:<words>` adds a rule for a command (`+cmd:terraform destroy`), and a list without `+`/`-` entries replaces the built-in set (a plain `cmd:<words>` there turns the built-in rules off). Built-in ids: `rm-recursive-outside`, `git-push-force`, `credential-write`, `pipe-to-shell`, `disk-destroy`, `chmod-recursive-open`, `sudo`, `sql-drop`, `kill-foreign`, `oxa-self-approve`, `eval-dynamic`, `unparsed`. Unknown entries are ignored with a warning. Separately from these rules, a built-in publish check always runs: pushing the session's own non-default branch to `origin` with an explicit source refspec and `gh pr create\|edit\|comment` or read-only `gh` need no question, but a push with no refspec, a push to the default branch, a force push, a merge, a push elsewhere, an unresolved Git subcommand (a name that is not a builtin recognized by the classifier, so it can be a configured alias or an external `git-*` executable), or any command chained with a publish command asks (yolo never asks). A later sequential repository mutation is safe (`git push && git switch main`), while a mutation in the same concurrent pipeline asks (`git push \| git switch main`). User settings only |
+| `oxa.approval.unattended` | enum | `"auto"` | what an unattended run (no one to ask: workers, subagents, headless goals) does with a dangerous command (#1512). `auto` refuses it under the OS sandbox and requests approval without it; `refuse` always refuses; `request` files a request for the owner (`oxa send <session> --approve <id> once\|session\|always\|deny`, or the Lead web approvals page). A `session` answer lasts for the current run and expires when a persisted session is resumed. Shell input classified as `pipe-to-shell` requires direct owner review because the command text cannot identify the input bytes for a retry. Nothing waits for an answer. User settings only |
 | `oxa.mode` | `plan` / `workspace` / `ask` | `workspace` | table mode at start |
 | `defaultProjectTrust` | `ask` / `always` / `never` | `ask` | what happens in a project that is not trusted yet; user settings only |
 | `oxa.offline` | bool | `false` | same as `--offline`; user settings only |
@@ -194,7 +210,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.engine.inProcessCloud` | bool | unset | select the in-process Rust cloud gateway for sessions and model discovery. Unset is on when the owner's key file has an `openrouter`, `openai` or `anthropic` key or `oxa login chatgpt` was done; `false` opts out. User settings only |
 | `oxa.cloud.opencode.enabled` | bool | on when a key exists | OpenCode Go is on when the `opencode` key exists in the protected cloud key file and the run has an actual `--model` argument naming a Go model (including a delegated worker or nested child), or an owner model scope that is not a local alias; `false` opts out everywhere; project settings and restored sessions cannot enable it; offline mode refuses; user settings only |
 | `oxa.cloud` | object | `{}` | native cloud models, prices, USD budget and subscription caps; user settings only; see below |
-| `oxa.lead.serve` | object | `{}` | the lead web access scaffold: `enabled`, `identity` (`local` or `tailscale`), `bind` (a loopback address), `port`, `allowed_identities`. Off by default and no listener is installed yet; user settings only. See [lead-web.md](lead-web.md) |
+| `oxa.lead.serve` | object | `{}` | the lead web access scaffold: `enabled`, `identity` (`local` or `tailscale`), `bind` (a loopback address), `port`, `allowed_identities`. Off by default and no listener is installed yet; the default identity mode is `local` unless selected otherwise; user settings only. See [lead-web.md](lead-web.md) |
 | `oxa.lead.sessionId` | string | unset | exact ID of the dedicated Lead Session created by the native owner operation, from owner-private user settings. Free text is disabled when unset. |
 | `oxa.lead.model` | string | unset | exact model id the Lead conversation resolves through the normal `--model` selector and gateway; user settings only, read from the owner-private settings file. Unset keeps the ordinary startup model; a route that does not resolve is reported, never silently replaced. A metered model still needs its daily USD cap, so choose a subscription route while the cap is absent. |
 | `oxa.envNote` | bool | unset | append the environment note to each prompt you send: the first one in a session (and the first of a new day, or after a compaction) gets a short `<env>` block with the date, time, time zone, locale, kernel, model, context size, thinking level and permission mode; later ones get `[local time HH:MM ZONE]`. It is never put in the system prompt, so the prompt cache stays exact. Unset is on; `OXA_ENV_NOTE=0` or `=1` overrides it for one run |
@@ -207,6 +223,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.sandbox.unattended` | bool | `true` | the OS sandbox (bubblewrap) for bash in an unattended run, including a subagent, a lead worker, `oxa work`, an ownerless RPC host, or a headless run that starts or resumes a pursuing goal. Stays on by default; set `false` only if you accept bash without it there. User settings only |
 | `oxa.sandbox.writePaths` | list | `[]` | extra writable paths for bash; `~/` is expanded; user settings only |
 | `oxa.sandbox.sockets` | list | `[]` | host runtime sockets (for example `/run/docker.sock`, `/run/podman/podman.sock`) that stay reachable in network-enabled sandboxed bash with Bubblewrap FD binds; absolute paths of existing sockets; user settings only, a project file cannot list them. The start notice names each one. The start notice warns about the Docker socket’s root access. An online command fails closed if a configured socket cannot be pinned or Bubblewrap cannot mount the descriptor. Offline, a listed socket is masked at its path instead, and a socket below a writable mount (the workspace, a write bind, `$HOME` or `/tmp`) is refused: its mask could be moved away by renaming the parent, so relocate the socket or drop the setting. Yolo bash has no sandbox and needs no entry |
+<!-- /generated:permissions -->
 
 ### Native cloud gateway
 
@@ -278,6 +295,19 @@ Known provider or configured prices take precedence over this setting.
 When the same provider has several configured base URLs, select the discovery
 endpoint with `oxa.cloud.discovery.<provider>.base_url`.
 
+Model rules. A built-in table keyed by model id (not by provider URL) says how an
+OpenAI-compatible or OpenCode Go route writes each model's thinking switch, whether its
+`reasoning_content` is replayed, which field carries the output cap and what window it has. Rows
+exist for GLM-5.3 (`thinking` with `clear_thinking:false`), Kimi K3 and DeepSeek V4 (reasoning
+carried on every tool-call turn; DeepSeek also the `thinking` switch) and for local aliases (the
+engine's own template switch; the local request body is not rewritten). `oxa.cloud.model_rules`
+in user settings overrides or adds rows: an object of id patterns (`*` wildcard, case-insensitive)
+to fields `thinking` (`effort`, `object`, `object-keep`, `template`), `replay` (`as-is`, `always`,
+`strip`), `token_field` (`max_tokens`, `max_completion_tokens`), `context_window`, `max_output`
+(positive numbers) and `route` (`cloud`, `local`). Fields left out keep the built-in value; later
+matches win; an unknown key or value is refused at start. A model with no row gets the plain
+request.
+
 OpenRouter privacy routing is the owner's choice and is never forced. By
 default oxa sends no `provider` preferences, so your OpenRouter account and
 workspace settings apply. To choose, set `oxa.cloud.openrouter_provider` in user
@@ -286,7 +316,7 @@ retention, and `data_collection` (`allow` or `deny`) controls providers that may
 train on or keep prompts. Values are sent exactly as set; any other key or value
 is refused at load. A client request cannot override them.
 
-The merged catalog is available through the model picker and `--list-models`.
+The merged catalog is available through the model picker, `oxa models` and `--list-models`.
 The LAN guest catalog lists only guest-allowlisted models.
 
 Configure `anthropic`, `openai` (Responses API) or `chatgpt` (subscription) routes
@@ -388,6 +418,7 @@ comments) for the configured daily quota and prior same-diff receipts. If GitHub
 that bound, review is deferred before a quota reservation or provider access; incomplete history
 never permits an additional review.
 
+<!-- generated:other -->
 ### Other
 
 | Key | Type | Default | Meaning |
@@ -403,6 +434,9 @@ never permits an additional review.
 | `oxa.workers.max` | number | `4` | user settings only (a project file cannot change it). Most live workers one session may run; a `start` past this limit is refused |
 | `oxa.workers.resumeOnStart` | bool | `true` | user settings only (a project file cannot change it, either way). When a session is opened again, relaunch each of its workers that did not finish and whose process is gone, with `--continue=<id>` and no goal; one notice per worker. `false` leaves them as they are |
 | `oxa.workers.stopGraceSeconds` | number (seconds) | `10` | user settings only (a project file cannot change it). How long a stopped worker gets after SIGINT before its whole process group gets SIGTERM; SIGKILL follows 2 seconds later if the group is still alive |
+<!-- /generated:other -->
+
+Pass `model` to `worker start` to select the worker's model. Omit it to inherit the parent session's current model. Reopening the same parent session resumes unfinished workers with the model recorded at their launch, even if the parent has switched models. The child resolves the model using the normal CLI routing and the owner's transport and credential settings.
 
 A worker is never wider than its parent session. It runs with the parent's permission ceiling, `--exclude-tools` and `--no-<tool>` exclusions, `--tools`, `--no-tools`, `--no-builtin-tools`, `--no-mcp`, `--no-web-search`, `--no-extensions`, `--no-skills`, `--no-prompt-templates`, `--no-context-files`, `--no-approve`, `--offline` and session directory. `git` and `env` for the launch come from a trusted `PATH` directory outside the project, never from a project shim. The worktree is created without a checkout and its files are written inside the sandbox (`oxa work --supervise`), so a repository's smudge filters never run on the host; a launch is refused when the `oxa` executable changed after the session started. Token budgets warn and record; they never block: with `--max-tokens N` each worker gets the parent's whole allowance `N` (the start notice says so), so a session with `max` live workers can use up to (1 + `max`) times `N` in total.
 

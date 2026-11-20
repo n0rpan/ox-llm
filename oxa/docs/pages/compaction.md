@@ -96,6 +96,7 @@ When the summary of a compaction fails, or is cancelled twice in a row, oxa does
 | `compaction.reserveTokens` | `16384` | room kept free for the summary and the next reply |
 | `compaction.keepRecentTokens` | `4000` | size of the kept tail |
 | `compaction.modelOverrides` | `null` | per model: `{"<model-id>": {"reserveTokens": n, "keepRecentTokens": n}}` |
+| `compaction.reactivateSkills` | `false` | retain invoked skills and ask the model to re-read them after compaction. User settings only |
 | `oxa.compaction.softTokens` | unset | context size that starts the idle compaction |
 | `oxa.compaction.idleSummary` | unset (on) | writes the next summary in idle time |
 | `oxa.compaction.summaryTarget` | unset (700) | soft length target of the summary, in tokens |
@@ -105,7 +106,7 @@ When the summary of a compaction fails, or is cancelled twice in a row, oxa does
 
 A `compaction.modelOverrides` entry that names another model for the summary is ignored with a warning. The summary always runs on the session's model, because only one model is loaded at a time.
 
-Subagents compact on their own context. Their soft limit is the smaller of `oxa.subagent.softTokens` (24000; half the window on a cloud model unless set), the parent's compaction point, and the child's window minus one ([tools.md](tools.md#subagent)).
+Subagents compact on their own context. A fork child starts at the session's context, so its soft limit is the session's own compaction point (or the child's window minus one); an isolated child's is the smaller of `oxa.subagent.softTokens` (24000; half the window on a cloud model unless set), the parent's compaction point, and the child's window minus one ([tools.md](tools.md#subagent)).
 
 ## Example
 

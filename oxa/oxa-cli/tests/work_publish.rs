@@ -116,10 +116,14 @@ fn exercise_save_recovery(test_name: &str, case: SaveRecovery) {
             git_binary: "/usr/bin/git".into(),
             host_path: std::env::var_os("PATH").unwrap(),
             terminate_binary: Some("/usr/bin/kill".into()),
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
             runner_owns_github: false,
             github_token_command: Vec::new(),
             autonomy: Default::default(),
-            autonomy_now: None,
+            worker_github: Default::default(),
+            authority_now: None,
             offline: false,
             storage: root.join("home/.oxa/agent/work/save-recovery"),
         };
@@ -600,7 +604,7 @@ fn branch_drift_after_acceptance_cannot_publish_unchecked_commits() {
 #[test]
 fn own_problem_notes_are_captured_and_failed_search_keeps_a_local_draft() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     let text = "done <oxa-work-reports>[{\"title\":\"oxa work symptom\",\"notes\":\"Synthetic reproduction token=example\",\"keywords\":[\"oxa work\",\"synthetic symptom\"]}]</oxa-work-reports>";
     let record = run_args(
@@ -629,7 +633,7 @@ fn own_problem_notes_are_captured_and_failed_search_keeps_a_local_draft() {
 #[test]
 fn a_model_tool_cannot_opt_itself_into_reporting_or_publishing() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
         .args(["work", "../tasks.json", "--report-problems"])
@@ -678,7 +682,7 @@ fn green_rerun_can_publish_after_red_remained_local() {
 #[test]
 fn semantic_work_report_without_evidence_stays_local() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     env.write(
         "home/.oxa/agent/settings.json",
@@ -715,7 +719,7 @@ fn semantic_work_report_without_evidence_stays_local() {
 #[test]
 fn semantic_work_reports_file_once_and_comment_on_four_paraphrases() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     env.write(
         "home/.oxa/agent/settings.json",
@@ -810,7 +814,7 @@ fn semantic_work_reports_file_once_and_comment_on_four_paraphrases() {
 #[test]
 fn a_local_report_retries_without_replaying_the_completed_task() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["true"]"#);
     let path = configure(&env);
     let text = "<oxa-work-reports>[{\"title\":\"oxa work symptom\",\"notes\":\"Synthetic reproduction\",\"keywords\":[\"oxa work\",\"synthetic symptom\"]}]</oxa-work-reports>";
     let first = run_args(

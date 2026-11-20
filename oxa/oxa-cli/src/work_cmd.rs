@@ -164,24 +164,36 @@ pub(crate) fn run(
             Some(&dirs.home),
         );
         let user_settings = oxa_config::Settings::load(dirs, &root, false);
-        let policy = oxa_work::RunPolicy {
+        let mut policy = oxa_work::RunPolicy {
             git_binary,
             host_path,
             terminate_binary,
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
             offline: oxa_proto::offline(),
             runner_owns_github: false,
             github_token_command: crate::netguard::github_token_command(&user_settings),
             autonomy: runner_autonomy(&user_settings),
-            // Re-read for every launch: lowering `permissions.defaultMode` revokes yolo for the
+            worker_github: runner_worker_github(&user_settings),
+            // Re-read for every launch, like the autonomy level: lowering
+            // `permissions.defaultMode` (or pinning `runner`) revokes worker GitHub for the
             // tasks a running queue has not started yet.
-            autonomy_now: Some({
+            authority_now: Some({
                 let (dirs, root) = (dirs.clone(), root.clone());
-                std::sync::Arc::new(move || runner_autonomy(&oxa_config::Settings::load(&dirs, &root, false)))
-                    as std::sync::Arc<dyn Fn() -> oxa_proto::Autonomy + Send + Sync>
+                std::sync::Arc::new(move || {
+                    let settings = oxa_config::Settings::load(&dirs, &root, false);
+                    (runner_autonomy(&settings), runner_worker_github(&settings))
+                })
+                    as std::sync::Arc<dyn Fn() -> (oxa_proto::Autonomy, oxa_work::WorkerGithub) + Send + Sync>
             }),
             storage: dirs.agent_dir.join("work").join(key),
         };
         protected_storage(&policy.storage, &root, &common)?;
+        // Lane acceptance needs the trusted gh executable and the owner's push
+        // approval. The queue may hold lane tasks, so its approval is taken from
+        // the environment only; an interactive run asks below once it knows.
+        configure_lane(&mut policy, &root, env, dirs, false);
         if args.first().is_some_and(|arg| arg == "board") {
             return crate::work_board::run(&args[1..], &root, &common, env, dirs, &policy);
         }
@@ -252,19 +264,12 @@ pub(crate) fn run(
             }
             end -= 1;
         }
-        if (publish || reports)
-            && env.pairs().iter().any(|(name, _)| {
-                matches!(
-                    name.as_str(),
-                    "OXA_CODING_AGENT" | "AI_AGENT" | "OXA_SUBAGENT_DEPTH"
-                )
-            })
-        {
+        if (publish || reports) && agent_launched(env) {
             return Err("publishing and problem reporting require the owner outside an agent tool".into());
         }
         let task_args = &args[..end];
         let is_trusted = trusted(&root, env, dirs)?;
-        let context = Context {
+        let mut context = Context {
             cwd: root.clone(),
             binary: binary.clone(),
             policy: policy.clone(),
@@ -376,6 +381,10 @@ pub(crate) fn run(
                     .into(),
             ),
         };
+        if tasks.iter().any(|task| task.lane_ci) {
+            configure_lane(&mut policy, &root, env, dirs, true);
+            context.policy = policy.clone();
+        }
         let owner_selected_model = explicit_model
             && !env.pairs().iter().any(|(name, _)| {
                 matches!(
@@ -442,6 +451,61 @@ pub(crate) fn run(
         Err(e) => {
             let _ = writeln!(err, "oxa work: {e}");
             2
+        }
+    }
+}
+
+/// Whether the process runs under a coding agent or subagent, whose actions are never
+/// the owner's own confirmation.
+fn agent_launched(env: &Env) -> bool {
+    env.pairs().iter().any(|(name, _)| {
+        matches!(
+            name.as_str(),
+            "OXA_CODING_AGENT" | "AI_AGENT" | "OXA_SUBAGENT_DEPTH"
+        )
+    })
+}
+
+/// Resolve `gh` and the owner's lane push approval. Missing gh only blocks the
+/// lane task that needs it; other tasks run unchanged.
+fn configure_lane(policy: &mut oxa_work::RunPolicy, root: &Path, env: &Env, dirs: &Dirs, ask: bool) {
+    if policy.gh_binary.is_none() {
+        policy.gh_binary = crate::netguard::trusted_executable_for(
+            "gh",
+            Some(policy.host_path.as_os_str()),
+            Some(root),
+            Some(&dirs.home),
+        );
+    }
+    if policy.content_scan.is_none() {
+        // Lane pushes go through exactly the scan `--publish` runs.
+        // The scan reads project settings, so it is built on first use, which only a
+        // trusted project's lane acceptance reaches, never while an unapproved
+        // checkout is being opened.
+        let (scan_env, scan_dirs, scan_root) = (env.clone(), dirs.clone(), root.to_path_buf());
+        let scan = std::sync::OnceLock::<crate::report_cmd::PushScan>::new();
+        policy.content_scan = Some(std::sync::Arc::new(move |item| {
+            scan.get_or_init(|| {
+                crate::report_cmd::PushScan::new(
+                    &scan_env,
+                    &oxa_config::Settings::load(&scan_dirs, &scan_root, true),
+                )
+            })
+            .check(item)
+        }));
+    }
+    // Compatibility for an owner-controlled launcher. Agent children authenticate the owner's
+    // answer through the broker instead. Resolved on both paths: a queue launch has no single
+    // question to ask, so its lane tasks would stay unapprovable without this.
+    if env.get("OXA_WORK_OWNER_CONFIRMED") == Some("1") && !agent_launched(env) {
+        policy.push_approved = true;
+    }
+    if ask && !policy.push_approved {
+        let question = "Lane acceptance will push each accepted commit to origin and wait for lane CI. Type yes to allow pushes for this run: ";
+        if let Some(socket) = env.get(oxa_core::owner_confirm::SOCK_ENV) {
+            policy.push_approved = oxa_core::owner_confirm::ask(Path::new(socket), question) == Some(true);
+        } else if !agent_launched(env) {
+            policy.push_approved = crate::report_cmd::tty_confirm(env)(question) == Some(true);
         }
     }
 }
@@ -630,6 +694,17 @@ fn runner_autonomy(settings: &oxa_config::Settings) -> oxa_proto::Autonomy {
     }
 }
 
+/// GitHub access of the runner's workers. The setting is read from the user layer only; unset
+/// follows the owner's mode (yolo `worker`, auto `broker`, standard `runner`).
+fn runner_worker_github(settings: &oxa_config::Settings) -> oxa_work::WorkerGithub {
+    oxa_work::WorkerGithub::resolve(
+        settings
+            .user_value("oxa.work.workerGithub")
+            .and_then(|v| v.as_str()),
+        settings.default_permission_mode(),
+    )
+}
+
 #[cfg(test)]
 mod queue_option_tests {
     use super::queue_options;
@@ -669,8 +744,30 @@ mod queue_option_tests {
 
 #[cfg(test)]
 mod registration_tests {
-    use super::{registered_native_worker, runner_autonomy};
+    use super::{registered_native_worker, runner_autonomy, runner_worker_github};
+    use oxa_work::WorkerGithub::{Broker, Runner, Worker};
     use serde_json::json;
+
+    #[test]
+    fn worker_github_is_user_only() {
+        let project =
+            json!({"oxa": {"work": {"workerGithub": "worker"}}, "permissions": {"defaultMode": "yolo"}});
+        let settings =
+            oxa_config::Settings::from_values(json!({"permissions": {"defaultMode": "standard"}}), project);
+        assert_eq!(runner_worker_github(&settings), Runner);
+        let user = |mode: &str, github: Option<&str>| {
+            let mut value = json!({"permissions": {"defaultMode": mode}});
+            if let Some(github) = github {
+                value["oxa"] = json!({"work": {"workerGithub": github}});
+            }
+            runner_worker_github(&oxa_config::Settings::from_values(value, json!({})))
+        };
+        assert_eq!(user("yolo", None), Worker);
+        assert_eq!(user("auto", None), Broker);
+        assert_eq!(user("standard", None), Runner);
+        assert_eq!(user("yolo", Some("runner")), Runner);
+        assert_eq!(user("standard", Some("broker")), Broker);
+    }
 
     #[test]
     fn project_cannot_raise_worker_mode() {

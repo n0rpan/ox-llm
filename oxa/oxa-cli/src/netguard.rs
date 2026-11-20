@@ -234,7 +234,9 @@ fn gh_token(command: &[String]) -> Option<String> {
                 .to_owned()
         };
         let exe = oxa_work::trusted_token_program(&candidate, None, project)?;
-        return oxa_work::token_from_command(&exe, args, oxa_work::COMMAND_DEADLINE);
+        let mut command = std::process::Command::new(exe);
+        command.args(args);
+        return oxa_work::token_from_command(command, oxa_work::COMMAND_DEADLINE);
     }
     let exe = trusted_gh_for(path.as_deref(), cwd.as_deref(), home.as_deref())?;
     gh_token_from(&exe, GH_DEADLINE)
@@ -300,11 +302,12 @@ const GH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
 /// Run `exe auth token --hostname github.com` under one `deadline` that covers the process and
 /// the reading of its output.
 fn gh_token_from(exe: &Path, deadline: std::time::Duration) -> Option<String> {
-    oxa_work::token_from_command(
-        exe,
-        &["auth", "token", "--hostname", "github.com"].map(String::from),
-        deadline,
-    )
+    let mut command = std::process::Command::new(exe);
+    command
+        .args(["auth", "token", "--hostname", "github.com"])
+        .env_remove("GH_TOKEN")
+        .env_remove("GITHUB_TOKEN");
+    oxa_work::token_from_command(command, deadline)
 }
 
 /// The host tool to run: the first executable with the requested name in an absolute `PATH` entry that is

@@ -21,8 +21,8 @@ pub fn sandbox_net_setting(value: Option<&str>) -> bool {
 pub struct NetSandbox {
     inner: Arc<dyn Sandbox>,
     net: bool,
-    /// Shared by the per-session copies ([`Sandbox::for_session`]): the token is looked up
-    /// once per process, and redaction knows it in every later session.
+    /// Shared by the per-session copies ([`Sandbox::for_session`]) so they use the same
+    /// cached token and redaction history.
     gh_token: Arc<std::sync::Mutex<TokenState>>,
     gh_source: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
     /// How long a token read from `gh_source` stays in use; `None` = for the whole process.
@@ -46,12 +46,16 @@ struct TokenState {
 /// The replacement for a redacted token in tool output.
 const REDACTED: &str = "[redacted]";
 
-/// Exact-match replace of `token` in `bytes`.
-fn redact(bytes: &[u8], tokens: &[String]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bytes.len());
+/// Mask tokens in left-to-right order. Tokens are nonempty and sorted longest first.
+fn redact_prefix<T: AsRef<[u8]>>(bytes: &[u8], emit: usize, tokens: &[T]) -> (Vec<u8>, usize) {
+    let mut out = Vec::with_capacity(emit);
     let mut i = 0;
-    while i < bytes.len() {
-        if let Some(t) = tokens.iter().find(|t| bytes[i..].starts_with(t.as_bytes())) {
+    while i < emit {
+        if let Some(t) = tokens
+            .iter()
+            .map(AsRef::as_ref)
+            .find(|t| bytes[i..].starts_with(t))
+        {
             out.extend_from_slice(REDACTED.as_bytes());
             i += t.len();
         } else {
@@ -59,7 +63,11 @@ fn redact(bytes: &[u8], tokens: &[String]) -> Vec<u8> {
             i += 1;
         }
     }
-    out
+    (out, i)
+}
+
+fn redact<T: AsRef<[u8]>>(bytes: &[u8], tokens: &[T]) -> Vec<u8> {
+    redact_prefix(bytes, bytes.len(), tokens).0
 }
 
 /// A streaming redactor: always holds back the last `longest_token - 1` bytes between chunks,
@@ -73,6 +81,7 @@ struct StreamRedactor {
 }
 
 impl StreamRedactor {
+    #[cfg(test)]
     fn new(token: &str) -> Self {
         Self::many(&[token])
     }
@@ -122,36 +131,14 @@ impl StreamRedactor {
         // Any secret that starts before `emit` ends inside `pending` (start + len <=
         // emit - 1 + hold + 1 = pending.len()), so every position decided here is decided on
         // full data.
-        let buf = &self.pending;
-        let mut out = Vec::with_capacity(emit);
-        let mut i = 0;
-        while i < emit {
-            if let Some(t) = self.tokens.iter().find(|t| buf[i..].starts_with(t)) {
-                out.extend_from_slice(REDACTED.as_bytes());
-                i += t.len();
-            } else {
-                out.push(buf[i]);
-                i += 1;
-            }
-        }
-        self.pending.drain(..i);
+        let (out, consumed) = redact_prefix(&self.pending, emit, &self.tokens);
+        self.pending.drain(..consumed);
         out
     }
 
-    /// EOF: the held-back tail is shorter than the longest token, so it cannot hold that one, but
-    /// it can hold a shorter token whole. Mask every token in it, longest first as in
-    /// [`StreamRedactor::many`], and flush.
+    /// At EOF, mask all matches in the pending tail before flushing it.
     fn finish(&mut self) -> Vec<u8> {
-        let mut out = std::mem::take(&mut self.pending);
-        for t in &self.tokens {
-            if !t.is_empty() && out.windows(t.len()).any(|window| window == *t) {
-                out = redact(
-                    &out,
-                    std::slice::from_ref(&String::from_utf8_lossy(t).into_owned()),
-                );
-            }
-        }
-        out
+        redact(&std::mem::take(&mut self.pending), &self.tokens)
     }
 }
 
@@ -298,9 +285,13 @@ impl NetSandbox {
     fn clamp_run(&self, s: &ExecSpec) -> (ExecSpec, bool) {
         let mut s = self.clamp(s);
         let wants = s.net && mentions_gh(&s.command);
-        if let (true, Some(t)) = (s.net, self.token_for(&s)) {
-            s.env.retain(|(k, _)| k != "GH_TOKEN" && k != "GH_HOST");
-            s.env.push(("GH_TOKEN".into(), t));
+        let token = self.token_for(&s);
+        if self.gh_ttl.is_some() || token.is_some() {
+            s.env.retain(|(k, _)| k != "GH_TOKEN" && k != "GITHUB_TOKEN");
+        }
+        if let Some(token) = token {
+            s.env.retain(|(k, _)| k != "GH_HOST");
+            s.env.push(("GH_TOKEN".into(), token));
             s.env.push(("GH_HOST".into(), "github.com".into()));
         }
         (s, wants)
@@ -353,10 +344,10 @@ impl NetSandbox {
         r
     }
 
-    /// The secrets to scrub on a host-rights path: the session token (when the network is on)
-    /// and every GitHub CLI credential, found once. Never empty-handed for a missing `gh`.
+    /// The secrets to scrub on a host-rights path: all session tokens and every GitHub CLI
+    /// credential, with the latter found once. This does not refresh the token source.
     fn host_redaction_secrets(&self) -> Vec<String> {
-        let mut all: Vec<String> = self.token().into_iter().collect();
+        let mut all = self.redaction_tokens();
         let found = self.host_secrets.get_or_init(|| match &self.host_source {
             Some(source) => source(),
             None => Vec::new(),
@@ -367,6 +358,7 @@ impl NetSandbox {
                 all.push(t.to_string());
             }
         }
+        all.sort_by_key(|t| std::cmp::Reverse(t.len()));
         all
     }
 
@@ -379,25 +371,26 @@ impl NetSandbox {
         live: &mut dyn FnMut(&[u8]),
         run: impl FnOnce(&mut dyn FnMut(&[u8])) -> ExecResult,
     ) -> ExecResult {
+        self.token();
         let secrets = self.host_redaction_secrets();
-        if secrets.is_empty() {
+        if self.gh_source.is_none() && secrets.is_empty() {
             return run(live);
         }
-        let refs: Vec<&str> = secrets.iter().map(String::as_str).collect();
-        let mut sr = StreamRedactor::many(&refs);
+        let mut sr = StreamRedactor::many(&secrets);
         let mut r = run(&mut |b: &[u8]| {
+            sr.refresh(&self.host_redaction_secrets());
             let o = sr.push(b);
             if !o.is_empty() {
                 live(&o);
             }
         });
+        let secrets = self.host_redaction_secrets();
+        sr.refresh(&secrets);
         let tail = sr.finish();
         if !tail.is_empty() {
             live(&tail);
         }
-        for t in &secrets {
-            r.output = redact(&r.output, std::slice::from_ref(t));
-        }
+        r.output = redact(&r.output, &secrets);
         r
     }
 
@@ -1004,6 +997,21 @@ mod tests {
     }
 
     #[test]
+    fn failed_refresh_does_not_pass_through_an_inherited_token() {
+        let inner = Arc::new(Say(Mutex::new(Vec::new()), "ok"));
+        let sandbox = NetSandbox::new(inner.clone(), true, false)
+            .with_gh_token_refreshing(|| None, std::time::Duration::from_secs(300));
+        let mut spec = spec(true);
+        spec.env.push(("GH_TOKEN".into(), "ghs_STALE".into()));
+        spec.env.push(("GITHUB_TOKEN".into(), "ghs_OTHER".into()));
+        sandbox.run(&spec, &CancelToken::new(), &mut |_| {});
+        let envs = inner.0.lock().unwrap();
+        assert!(!envs[0]
+            .iter()
+            .any(|(key, _)| matches!(key.as_str(), "GH_TOKEN" | "GITHUB_TOKEN")));
+    }
+
+    #[test]
     fn token_command_output_is_redacted() {
         // Both the token in use and one it replaced are scrubbed from output and live text.
         let (src, _) = rotating();
@@ -1046,6 +1054,29 @@ mod tests {
         );
         assert_eq!(live, REDACTED.as_bytes());
         assert_eq!(result.output, REDACTED.as_bytes());
+    }
+
+    #[test]
+    fn active_host_output_redacts_old_and_new_session_tokens() {
+        let (src, _) = rotating();
+        let inner = Arc::new(Say(Mutex::new(Vec::new()), "ok"));
+        let sandbox =
+            NetSandbox::new(inner, true, false).with_gh_token_refreshing(src, std::time::Duration::ZERO);
+        assert_eq!(sandbox.token().as_deref(), Some("ghs_TOKEN_0"));
+        let mut live = Vec::new();
+        let result = sandbox.redact_host_output(&mut |chunk| live.extend_from_slice(chunk), |output| {
+            assert_eq!(sandbox.token().as_deref(), Some("ghs_TOKEN_2"));
+            output(b"ghs_TOKEN_0 ghs_TO");
+            output(b"KEN_2");
+            ExecResult {
+                output: b"ghs_TOKEN_0 ghs_TOKEN_2".to_vec(),
+                exit: Some(0),
+                timed_out: false,
+                unsandboxed: true,
+            }
+        });
+        assert_eq!(live, b"[redacted] [redacted]");
+        assert_eq!(result.output, live);
     }
 
     #[test]

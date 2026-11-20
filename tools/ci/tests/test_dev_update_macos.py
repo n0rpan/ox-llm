@@ -98,7 +98,7 @@ sys.exit(1)
         path.chmod(0o755)
 
     def build(self, sha='a' * 40, entries=None, base='0.2.1'):
-        version = 'v' + base + '-dev.' + sha[:7]
+        version = 'v' + base + '-dev.12.' + sha[:7]
         name = 'ox-llm-' + version + '-macos-arm64.tar.gz'
         payload = b'\xcf\xfa\xed\xfe synthetic; never executable in a test'
         with tarfile.open(self.remote / name, 'w:gz') as archive:
@@ -161,7 +161,7 @@ sys.exit(1)
         (self.remote / 'release.json').write_text(json.dumps(release))
         self.assertEqual(self.run_update().returncode, 0)
         receipt = json.loads((self.prefix / 'current/receipt.json').read_text())
-        self.assertEqual(receipt['version'], 'v0.2.1-dev.' + 'a' * 7)
+        self.assertEqual(receipt['version'], 'v0.2.1-dev.12+' + 'a' * 7)
 
     def test_checksum_or_provenance_refusal_preserves_previous_activation(self):
         self.build()
@@ -171,7 +171,7 @@ sys.exit(1)
             self.build('b' * 40)
             self.env['REJECT_VERIFY'] = '1' if refusal == 'provenance' else '0'
             if refusal == 'checksum':
-                sums = self.remote / ('SHA256SUMS-v0.2.1-dev.' + 'b' * 7)
+                sums = self.remote / ('SHA256SUMS-v0.2.1-dev.12.' + 'b' * 7)
                 sums.write_text('0' * 64 + sums.read_text()[64:])
             self.assertNotEqual(self.run_update().returncode, 0)
             self.assertEqual(os.readlink(self.prefix / 'current'), before)

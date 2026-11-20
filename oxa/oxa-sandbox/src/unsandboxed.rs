@@ -47,10 +47,14 @@ impl Sandbox for Unsandboxed {
         Vec::new()
     }
     fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
-        run_unsandboxed_env(s, Some(&self.env(s)), c, live, true)
+        let mut result = run_unsandboxed_env(s, Some(&self.env(s)), c, live, true);
+        result.unsandboxed = true;
+        result
     }
     fn run_streaming(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
-        run_unsandboxed_env(s, Some(&self.env(s)), c, live, false)
+        let mut result = run_unsandboxed_env(s, Some(&self.env(s)), c, live, false);
+        result.unsandboxed = true;
+        result
     }
     fn run_with_stdin(
         &self,
