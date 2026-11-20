@@ -418,6 +418,12 @@ impl StoppedJobWakes {
     fn recover(&mut self, session_id: &str) {
         self.0.remove(session_id);
     }
+
+    fn recover_for_prompt(&mut self, session_id: &str, targets_current_session: bool) {
+        if targets_current_session {
+            self.recover(session_id);
+        }
+    }
 }
 
 /// Install the worker's idle wake on `handle`: the session calls it when something the worker
@@ -826,12 +832,12 @@ fn worker_loop_inner(
             }
             other => {
                 let Some(s) = session.as_mut() else { break };
-                if matches!(
-                    other,
-                    SessionCmd::Prompt { .. } | SessionCmd::RecoveryPrompt { .. }
-                ) {
-                    stopped_job_wakes.recover(&s.inner().sref.id);
-                }
+                let recovers_job_wakes = match &other {
+                    SessionCmd::Prompt { .. } => true,
+                    SessionCmd::RecoveryPrompt { handle, .. } => handle.same_instance(&s.handle()),
+                    _ => false,
+                };
+                stopped_job_wakes.recover_for_prompt(&s.inner().sref.id, recovers_job_wakes);
                 let reload = matches!(other, SessionCmd::Reload);
                 let status = match &other {
                     SessionCmd::Navigate { .. } => Some("Navigated to selected point"),
@@ -1281,11 +1287,10 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
         AgentEvent::ThinkingLevelChanged { level } => vm.status.thinking = Some(*level),
         AgentEvent::SessionInfoChanged { name } => vm.status.session_name = name.clone(),
         AgentEvent::BashExecutionUpdate { delta, .. } => {
-            if let Some(Block::Bash {
-                output,
-                running: true,
-                ..
-            }) = vm.blocks.last_mut()
+            if let Some(Block::Bash { output, .. }) = vm
+                .blocks
+                .iter_mut()
+                .find(|block| matches!(block, Block::Bash { running: true, .. }))
             {
                 append_live_bash(output, delta);
             }
@@ -1378,9 +1383,10 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
                     running: false,
                     expanded: false,
                 };
-                let live = vm.blocks.iter().rposition(
-                    |b| matches!(b, Block::Bash { running: true, command: c, .. } if c == command),
-                );
+                let live = vm
+                    .blocks
+                    .iter()
+                    .position(|b| matches!(b, Block::Bash { running: true, command: c, .. } if c == command));
                 match live {
                     Some(i) => vm.blocks[i] = done,
                     None => vm.blocks.push(done),
@@ -1700,6 +1706,7 @@ pub fn status_from(state: &State, stats: &Stats, prev: &StatusModel) -> StatusMo
         yolo: prev.yolo,
         yolo_approved: prev.yolo_approved,
         autonomy: prev.autonomy,
+        os_sandbox: prev.os_sandbox,
         // #873: the budget projection is not part of the session state; a front end that has
         // one keeps it across settles.
         budget: prev.budget,
@@ -2812,7 +2819,19 @@ mod job_wake_gate_tests {
             "a replacement outcome alone would incorrectly permit the wake"
         );
 
-        stopped.recover("session");
+        stopped.recover_for_prompt("session", true);
         assert!(stopped.permits("session"));
+    }
+
+    /// A recovery prompt still bound to the replaced session is not owner input for the
+    /// current session, so it must not release that session's stopped-job boundary.
+    #[test]
+    fn a_stale_recovery_prompt_does_not_release_the_boundary() {
+        let mut stopped = StoppedJobWakes::default();
+        stopped.0.insert("session".into());
+
+        stopped.recover_for_prompt("session", false);
+
+        assert!(!stopped.permits("session"));
     }
 }

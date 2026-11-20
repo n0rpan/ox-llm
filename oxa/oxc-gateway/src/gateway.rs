@@ -262,7 +262,7 @@ impl Gateway {
     pub fn discover_cloud(&mut self, source: &Source, timeout: Duration) -> Result<Option<Status>, Error> {
         let Some(key) = self
             .runtime
-            .catalog_key(source.provider())
+            .catalog_key_named(source.provider(), source.key_name())
             .map_err(Error::Refused)?
         else {
             return Ok(None);
@@ -271,12 +271,13 @@ impl Gateway {
         use crate::catalog_cache::State;
         let (state, offers) = match source.load(directory, &key) {
             // OpenRouter discovery can supply the rates used to reserve spend.
-            Some((State::Stale, _)) if source.provider() == Provider::OpenRouter => {
+            Some((State::Stale, _)) if source.provider() == Provider::OpenRouter && !source.is_named() => {
                 (State::Fresh, self.fetch_catalog(source, &key, timeout)?)
             }
             Some(cached) => cached,
             None => (State::Fresh, self.fetch_catalog(source, &key, timeout)?),
         };
+        let public_metadata = offers.iter().filter(|offer| offer.public).count();
         let (missing_price, missing_limits, estimated_price) = self
             .runtime
             .apply_provider_catalog(source, offers)
@@ -286,18 +287,27 @@ impl Gateway {
             missing_price,
             missing_limits,
             estimated_price,
+            public_metadata,
         }))
     }
     /// Replace only the private cache on a stale refresh.
     pub fn refresh_cloud(&self, source: &Source, timeout: Duration) -> Result<(), Error> {
         if let Some(key) = self
             .runtime
-            .catalog_key(source.provider())
+            .catalog_key_named(source.provider(), source.key_name())
             .map_err(Error::Refused)?
         {
             self.fetch_catalog(source, &key, timeout)?;
         }
         Ok(())
+    }
+    #[cfg(feature = "upstream-openai")]
+    fn catalog_plan(&self) -> Option<crate::catalog_discovery::Plan<'_>> {
+        self.runtime.plan()
+    }
+    #[cfg(not(feature = "upstream-openai"))]
+    fn catalog_plan(&self) -> Option<crate::catalog_discovery::Plan<'_>> {
+        None
     }
     fn fetch_catalog(
         &self,
@@ -312,11 +322,30 @@ impl Gateway {
             .enable_all()
             .build()
             .map_err(|_| Error::Upstream(anthropic_client::Error::Setup))?;
-        let result =
-            driver.block_on(source.fetch(&self.client, key, timeout, self.runtime.catalog_cache_dir()));
+        let result = driver.block_on(source.fetch(
+            &self.client,
+            key,
+            timeout,
+            self.runtime.catalog_cache_dir(),
+            self.catalog_plan(),
+        ));
         driver.shutdown_timeout(Duration::from_secs(1));
         result.map_err(Error::Upstream)
     }
+    /// Add bundled meter-priced alternatives after configured routes and discovery.
+    pub fn add_recommended_models(
+        &mut self,
+        models: impl IntoIterator<Item = (crate::catalog::Model, crate::pricing::Price)>,
+    ) -> Result<(), Error> {
+        self.runtime
+            .add_recommended_models(models)
+            .map_err(Error::Refused)
+    }
+
+    pub fn recommended_models(&self) -> &std::collections::BTreeSet<String> {
+        self.runtime.recommended_models()
+    }
+
     pub fn discovery(&self) -> impl Iterator<Item = crate::catalog::ModelInfo<'_>> {
         self.runtime.discovery()
     }
@@ -498,6 +527,11 @@ impl Gateway {
             created: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |t| t.as_secs()),
+            provider: model
+                .configured_route()
+                .is_none()
+                .then(|| self.runtime.openrouter_provider())
+                .flatten(),
         };
         let mut forwarding_error = None;
         let mut deliver = |event| match event {
@@ -520,17 +554,17 @@ impl Gateway {
             self.client
                 .stream_openrouter(
                     request,
+                    model.configured_route().map(|_| self.runtime.model_rules()),
                     &key,
                     cancel,
                     &mut deliver,
-                    &mut terminal_usage,
-                    &mut terminal_reported_cost,
+                    (&mut terminal_usage, &mut terminal_reported_cost),
                 )
                 .await
         } else {
             self.client
                 .stream_with_blocks(
-                    request,
+                    (request, model.configured_route().is_some()),
                     &key,
                     cancel,
                     &mut deliver,
@@ -553,7 +587,7 @@ impl Gateway {
         // public usage opt-out; both must settle the actual cache categories.
         if let Some(usage) = terminal_usage {
             call.metered(usage);
-            if model.info().provider == Provider::OpenRouter {
+            if model.info().provider == Provider::OpenRouter && model.configured_route().is_none() {
                 call.metered_cost(terminal_reported_cost);
             }
         }
@@ -669,6 +703,7 @@ impl Gateway {
                 payload: &payload,
                 key: &key,
                 hint: &hint,
+                rules: self.runtime.model_rules(),
             },
             cancel,
             &mut |event| match event {

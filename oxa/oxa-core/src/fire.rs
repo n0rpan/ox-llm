@@ -588,6 +588,10 @@ impl Ui for PromptTap<'_> {
     fn confirm(&mut self, title: &str, body: &str, timeout_ms: Option<u32>) -> Option<bool> {
         self.span("confirm", Some(title), |u| u.confirm(title, body, timeout_ms))
     }
+    fn approve_publication(&mut self, title: &str, body: &str) -> Option<bool> {
+        self.span("confirm", Some(title), |u| u.approve_publication(title, body))
+    }
+
     fn dialog_canceller(&self) -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
         self.inner.dialog_canceller()
     }
@@ -987,7 +991,7 @@ pub(crate) fn agent_settled(st: &mut SessionState, aborted: bool, sink: &mut dyn
         HookPoint::AgentSettled,
         sink,
         ui,
-        |_| json!({ "aborted": aborted }),
+        |st| json!({ "aborted": aborted, "outcome": st.stats.outcome.record(), "model": st.model }),
     );
     crate::progress::notify(st, crate::Progress::Settled(st.stats.outcome));
 }

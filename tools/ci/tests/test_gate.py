@@ -5,6 +5,7 @@ Parsed line by line (no YAML library) so it runs with a bare `python3 -I`.
 import importlib.util
 from pathlib import Path
 import re
+import subprocess
 import tomllib
 import unittest
 
@@ -24,6 +25,12 @@ def jobs(text):
 def job_block(text, name):
     body = text.split('\njobs:\n', 1)[1]
     return re.search(rf'^  {re.escape(name)}:\s*\n((?:(?:    .*|\s*)\n)*)', body + '\n', re.M).group(1)
+
+
+def job_blocks(text):
+    """Every job of a workflow, by name, as its block of lines."""
+    parts = re.split(r'(?m)^  ([A-Za-z0-9_-]+):\s*$', text.split('\njobs:\n', 1)[1])
+    return {parts[index]: parts[index + 1] for index in range(1, len(parts) - 1, 2)}
 
 
 def lane_cache_problems(text):
@@ -68,6 +75,12 @@ class Gate(unittest.TestCase):
         self.assertIn('if: always()', block)
         self.assertEqual(needs, set(jobs(self.checks)) - set(UNGATED))
 
+    def test_openai_contract_runner_is_valid_shell_without_merge_markers(self):
+        runner = WORKFLOWS.parents[1] / 'tools' / 'openai-contract' / 'run.sh'
+        text = runner.read_text()
+        self.assertNotRegex(text, r'(?m)^(<<<<<<<|=======|>>>>>>>)')
+        subprocess.run(['bash', '-n', str(runner)], check=True)
+
     def test_merge_group_always_selects_complete_oxa_workspace(self):
         build = job_block(self.checks, 'build')
         self.assertIn("oxa: ${{ github.event_name == 'merge_group' || needs.changes.outputs.oxa == 'true' }}", build)
@@ -77,8 +90,28 @@ class Gate(unittest.TestCase):
         self.assertIn('if: inputs.heavy && inputs.oxa', archive)
         self.assertIn('if: inputs.heavy && inputs.oxa', shards)
         self.assertIn('cargo nextest archive --profile ci --cargo-profile ci --locked --workspace', archive)
-        self.assertIn('--partition hash:${{ matrix.shard }}/2', shards)
+        self.assertIn('--partition hash:${{ matrix.shard }}/4', shards)
         self.assertNotIn('changed_paths', archive + shards)
+
+    def test_oxa_tests_are_sharded_and_doctests_are_their_own_job(self):
+        # #2049 change 1: four shards keep a shard off the critical path, and nextest cannot
+        # partition doctests, so they no longer delay the archive every shard waits for.
+        reusable = (WORKFLOWS / 'build.yml').read_text()
+        archive = job_block(reusable, 'oxa-test-build')
+        shards = job_block(reusable, 'oxa-test-shards')
+        doctests = job_block(reusable, 'oxa-doctests')
+        self.assertIn('shard: [1, 2, 3, 4]', shards)
+        self.assertIn('--partition hash:${{ matrix.shard }}/4', shards)
+        self.assertNotIn('cargo test', archive)
+        self.assertNotIn('--doc', archive)
+        self.assertIn('cargo test --profile ci --locked --workspace --doc --no-fail-fast', doctests)
+        # A shard's start must not wait for the doctest job.
+        self.assertNotIn('oxa-doctests', shards)
+        aggregate = job_block(reusable, 'oxa-tests')
+        for needed in ('oxa-test-build', 'oxa-test-shards', 'oxa-doctests'):
+            self.assertIn(needed, re.search(r'needs: \[(.*)\]', aggregate).group(1))
+            self.assertIn(f"needs.{needed}.result", aggregate)
+        self.assertIn('junit-*.xml', aggregate)
 
     def test_gate_checks_every_classifier_output(self):
         outputs = set(re.findall(r'^      ([a-z]+): \$\{\{ steps\.paths\.outputs\.\1 \}\}',
@@ -114,18 +147,28 @@ class Gate(unittest.TestCase):
         self.assertNotIn('workspace', package)
         self.assertFalse((root / 'oxa/oxc-gateway/Cargo.lock').exists())
 
-    def test_caches_restore_only_and_save_only_on_main(self):
+    def test_every_restored_cache_is_saved_by_a_main_only_job(self):
         for path in sorted(WORKFLOWS.glob('*.y*ml')):
             text = path.read_text()
             self.assertNotRegex(text, r'actions/cache@', path.name)
-            for match in re.finditer(r'actions/cache/save@.*\n(?:\s+#.*\n)?\s+if: (.*)', text):
-                if path.name == 'lane.yml':
-                    self.assertFalse(lane_cache_problems(text), lane_cache_problems(text))
-                else:
-                    self.assertIn("github.ref == 'refs/heads/main'", match.group(1), path.name)
-                    self.assertIn("github.event_name != 'merge_group'", match.group(1), path.name)
-            self.assertEqual(len(re.findall(r'actions/cache/save@', text)),
-                             len(re.findall(r'actions/cache/restore@', text)), path.name)
+            restored, saved = set(), set()
+            for name, block in job_blocks(text).items():
+                variant = re.search(r'rust_cache_key\.py --variant (\S+)', block)
+                key = (path.name, variant.group(1) if variant else None)
+                for match in re.finditer(r'actions/cache/save@.*\n(?:\s+#.*\n)?\s+if: (.*)', block):
+                    if path.name == 'lane.yml':
+                        self.assertFalse(lane_cache_problems(text), lane_cache_problems(text))
+                    else:
+                        self.assertIn("github.ref == 'refs/heads/main'", match.group(1), path.name)
+                        self.assertIn("github.event_name != 'merge_group'", match.group(1), path.name)
+                if 'actions/cache/save@' in block:
+                    saved.add(key)
+                if 'actions/cache/restore@' in block:
+                    restored.add(key)
+            # A job may read a cache that another job of the same workflow saves (one saver per
+            # key, so two parallel jobs cannot race), but a restored variant must be saved by some
+            # main-only job: that save is what keeps later runs fast.
+            self.assertLessEqual(restored, saved, path.name)
 
 
     def test_lane_cache_cannot_bypass_required_main_cache_policy(self):
@@ -143,6 +186,38 @@ class Gate(unittest.TestCase):
         ):
             self.assertTrue(lane_cache_problems(changed))
 
+
+
+class MainPushDedupe(unittest.TestCase):
+    """#2049 change 2: a main push the queue already covered skips its jobs, never the floor."""
+
+    # These always run: the classifier is what answers the dedupe question, and the security
+    # scans are never path- or event-gated.
+    FLOOR = {'changes', 'scans', 'gate'}
+    # Nightly and manual opt-in only: no main push reaches it.
+    NEVER_ON_PUSH = {'oxa-nightly-arm'}
+    GUARD = "needs.changes.outputs.covered != 'true'"
+
+    def setUp(self):
+        self.checks = (WORKFLOWS / 'checks.yml').read_text()
+
+    def test_every_job_a_main_push_may_skip_asks_the_dedupe_answer(self):
+        rest = set(jobs(self.checks)) - self.FLOOR - self.NEVER_ON_PUSH
+        self.assertIn('build', rest)
+        self.assertIn('macos', rest)
+        for name in sorted(rest):
+            self.assertIn(self.GUARD, job_block(self.checks, name), name)
+
+    def test_the_answer_comes_from_a_push_only_probe(self):
+        changes = job_block(self.checks, 'changes')
+        self.assertIn("covered: ${{ steps.covered.outputs.covered }}", changes)
+        self.assertIn('python3 -I tools/ci/queue_covered.py', changes)
+        # A PR or a queue run is classified exactly as before: the probe never runs for them.
+        self.assertIn("if: github.event_name == 'push'", changes)
+        # Reading the queue's runs needs actions: read and nothing more.
+        self.assertIn('actions: read', changes)
+        # The scans stay unconditional, deduped or not.
+        self.assertNotIn(self.GUARD, job_block(self.checks, 'scans'))
 
 
 class RetiredControllerJobs(unittest.TestCase):

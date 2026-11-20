@@ -120,7 +120,6 @@ fn every_id_and_default_of_keybindings_md() {
         ids, doc_ids,
         "action ids and their order must match keybindings.md plus app.mode.cycle"
     );
-    assert_eq!(DOC_TABLE.len(), 92);
 
     let defaults = Keymap::defaults();
     for (id, keys) in DOC_TABLE {

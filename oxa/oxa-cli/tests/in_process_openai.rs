@@ -98,7 +98,7 @@ fn live_openai_ids_filter_the_configured_overlay_and_reuse_the_cache() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains(MODEL));
         assert!(!stdout.contains("synthetic-not-offered"));
-        assert!(!stdout.contains("synthetic-unknown-metadata"));
+        assert!(stdout.contains("synthetic-unknown-metadata"));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             stderr.contains("1 offers with unknown pricing and 1 with unknown limits"),
@@ -147,7 +147,7 @@ fn live_openrouter_discovery_uses_the_key_scoped_priced_text_offers() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stdout.contains("openrouter/vendor/synthetic-priced"), "{stdout}");
-        assert!(!stdout.contains("synthetic-unpriced"));
+        assert!(stdout.contains("synthetic-unpriced"));
         assert!(stderr.contains("1 offers with unknown pricing"), "{stderr}");
         assert!(!stdout.contains(KEY) && !stderr.contains(KEY));
     }
@@ -259,7 +259,7 @@ fn unpriced_discovery_uses_owner_rates_for_admission_and_estimated_ledger_spend(
     );
     fs::write(&path, user.to_string()).unwrap();
     let unpriced = run(&env, &["--list-models"], None);
-    assert!(!String::from_utf8_lossy(&unpriced.stdout).contains(MODEL));
+    assert!(String::from_utf8_lossy(&unpriced.stdout).contains(MODEL));
     assert_eq!(peer.requests().len(), 1);
 
     user["oxa"]["cloud"]["unpriced_discovered_pricing"] = pricing;
@@ -475,30 +475,30 @@ fn production_both_modes_execute_done_only_tools_resume_and_settle_without_pytho
                 .sum::<f64>();
             assert!((total - 0.000091).abs() < 1e-12);
         }
-        let refused = run(
-            &env,
-            &["-p", "--no-session", "--no-tools", "No allowance remains"],
-            None,
-        );
-        assert_eq!(refused.status.code(), Some(oxa_proto::EXIT_BUDGET));
-        assert_eq!(peer.requests().len(), 3);
-        let row = rows(&env).pop().unwrap();
-        assert_eq!(row["status"], 429);
-        assert_eq!(
-            row["error"],
-            if subscription {
-                "subscription_limit_exceeded"
-            } else {
-                "budget_exceeded"
-            }
-        );
-        assert_eq!(row["cost_usd"], 0.0);
+        // A metered budget refuses; a subscription's configured limits are advisory and never do.
+        let refused = (!subscription).then(|| {
+            let refused = run(
+                &env,
+                &["-p", "--no-session", "--no-tools", "No allowance remains"],
+                None,
+            );
+            assert_eq!(refused.status.code(), Some(oxa_proto::EXIT_BUDGET));
+            assert_eq!(peer.requests().len(), 3);
+            let row = rows(&env).pop().unwrap();
+            assert_eq!(row["status"], 429);
+            assert_eq!(row["error"], "budget_exceeded");
+            assert_eq!(row["cost_usd"], 0.0);
+            refused
+        });
         for path in [trace, resumed_trace] {
             let trace = fs::read_to_string(path).unwrap();
             assert!(trace.contains("execve(") && trace.contains("oxa"));
             assert!(!trace.to_ascii_lowercase().contains("python"), "{trace}");
         }
-        for output in [&first, &second, &refused] {
+        for output in [Some(&first), Some(&second), refused.as_ref()]
+            .into_iter()
+            .flatten()
+        {
             let visible = format!(
                 "{}{}",
                 String::from_utf8_lossy(&output.stdout),

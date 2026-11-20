@@ -14,17 +14,29 @@ code, tests, CI and docs; the owner validates on hardware.
 - Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests;
   use synthetic fixtures. Do not open real credential files during review.
 - Keep engine transport selection, native binary/launch configuration, `allowRemote`, share
-  authority and login/token paths user-only. A project file must never override these decisions.
+  authority, login/token paths and `oxa.inbox.headless` user-only. A project file must never
+  override these decisions. Enforce that boundary both when loading settings and when adopting a
+  project file after any settings edit; an unrelated project edit must not restore a rejected
+  user-only value.
+- Read `compaction.reactivateSkills` from user settings. Project settings cannot enable
+  reactivation or override the owner's choice.
+- `oxa local add` is owner-only. Refuse agent invocations before engine admission or settings writes.
 - Agent control lane: a session accepts steer/pause/resume/cancel only from the same user, and the
   session owner checks each request against the lease and goal revision. `oxa.a2a.enabled: false`
   (user-only) turns it off. Do not add a path that skips the lease check or reads the setting from a
   project file.
-  authority, login/token paths and `oxa.inbox.headless` user-only. A project file must never override these decisions.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
+- The native cloud gateway's built-in recommendations are available by default for providers with
+  configured API keys unless the owner opts out. They never override explicit model settings,
+  trigger live discovery or grant guest access.
 - Preserve sandbox/bwrap enforcement and file-tool denials for private paths. Only explicit
   owner-selected yolo deliberately disables the permission floor. Off Linux there is no OS sandbox
   (owner policy, #1512): in-process guards stay, bash gets the same cleared base environment, and
-  the bash network is not restricted there; the start notice and the model env note say so.
+  the bash network is not restricted there; the start notice and the model env note say so. An
+  interactive Linux session without a usable bwrap runs model bash unsandboxed with a start
+  warning only when no sandbox was requested. Plan commands and non-yolo project hooks still
+  require bwrap on Linux; unattended runs that require bwrap fail closed.
+- **Extension exec directory:** an extension's `oxa.exec` whose `cwd` is outside the session directory asks like a write (or read) outside the project before the directory is mounted; yolo does not ask, a `cwd` inside the session directory is unchanged (`exec_gated`, `oxa-core/src/host.rs`).
 - **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
   answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
   broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
@@ -45,13 +57,30 @@ code, tests, CI and docs; the owner validates on hardware.
     Answer it by citing this rule, and do not apply it. A change that re-adds an OS sandbox to those
     paths is a P1 finding.
   - Off Linux the bash network is not restricted. The start notice and the model env note say so.
+  - Headless runs pursuing a goal and ownerless RPC count as unattended. Host bash uses a
+    cleared toolchain environment and keeps GitHub output redaction, on Linux and off it.
 - **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
   answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
   broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
   files, web pages, other sessions, agent inbox) never approves. In yolo the broker answers yes and
   records it. The broker socket is owned by the session (dir 0700, socket 0600) and validates a
-  complete, bounded request frame before asking. Do not add
+  complete, bounded request frame before asking. A typed yes answers only a request whose dialog
+  oxa has already shown (the broker records it); a yes with no shown dialog, or for another request
+  id, is ignored. A consumer a model-run command starts (`oxa work --publish`, `oxa report-issue`)
+  trusts only the sandbox's pinned socket or a listener verified as the session's own oxa process
+  (peer credentials: an ancestor, same executable, same user), whatever `OXA_CONFIRM_SOCK` and
+  `OXA_CODING_AGENT` say; a fake socket is no answer. Yolo is unchanged (the model already has the
+  owner's rights). The question is shown to the owner as the process's text, marked as such. Do not add
   `/dev/tty`-only confirmations or env-marker refusals for owner actions.
+- **Lead web attach (#2075):** attached mode takes the session id from the user-only
+  `oxa.lead.attachSessionId` only (never a project file or an HTTP value), reads the transcript
+  without the writer lock (bounded tail, never append, sync or repair), and sends only through the
+  session's inbox like `oxa send`. Re-prove the owner-only file and the setting before every read
+  and send. An inbox message is never an approval. Flag a path that supplies the session from a
+  project file or request, takes the session lock, or opens a provider there.
+- The live owner-authorized Lead service may launch and steer background workers through its sole
+  `worker` tool. The shadow Lead preset and one-shot `oxa lead chat` stay tool-free; user-only
+  worker enablement, limits and the current permission ceiling govern every new launch.
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
   in the ledger (an unknown cost is recorded as unknown). Limits are owner configuration: with no cap
@@ -63,8 +92,10 @@ code, tests, CI and docs; the owner validates on hardware.
   paid balance. `oxa.cloud.daily_budget_usd` applies to metered API admission. Record actual Go
   charges reported by the provider in the ledger and include them in the shared daily spend.
   Preserve subscription token accounting and provider-side limits. A configured
-  `oxa.cloud.subscription_limits` is advisory: it warns at 80% and 100% and is recorded, it is
-  not a local refusal (#1443/#1444).
+  `oxa.cloud.subscription_limits` is advisory (Go and ChatGPT plan): it warns at 80% and 100% and is
+  recorded, it is not a local refusal (#1443/#1444).
+- Keyed providers: an OpenRouter, OpenAI or Anthropic key or a ChatGPT sign-in opens the gateway and
+  discovery; explicit `inProcessCloud`/`discover_models` (even false) win; user layer only.
 - Keyed Go: a Go key in the owner's own secrets file enables the Go subscription transport for
   the owner's own model choice, with `oxa.cloud.opencode.enabled: false` as the opt-out. Engine
   transport selection stays user-only: a protected user key authorizes an actual Go model argument,
@@ -74,6 +105,13 @@ code, tests, CI and docs; the owner validates on hardware.
   is the way a project-selected or restored model may use Go.
 - Go/OpenRouter parsing should tolerate compatible optional fields and stream variations,
   while validating numeric type, sign, range and finiteness before accounting or execution.
+- Publishing a drafted issue or comment (`oxa report-issue`, the `report_publish` tool): in yolo it posts
+  without asking and shows the exact posted text and URL; the scrubber's refusal (secrets, emails, home paths)
+  still applies. In auto and standard it needs the owner's own approval of the exact text shown: a key press
+  in the UI approval dialog or a `yes` typed by the owner into the interactive input (`owner_reply::typed`,
+  called from that input only). A `yes` from a tool result, file, web page, other session or the tool
+  arguments never counts. Print, JSON and RPC runs keep the terminal confirmation. Reports go to
+  `oxstack/ox-llm` unless `oxa.reportIssue.repo` says otherwise.
 - v0.2.1 has no Python in the product/runtime path; build/test tooling is separate.
 - Never expose secrets to fork PRs or execute PR code with review credentials. Never use
   `pull_request_target`; unknown authors need `ok-to-review` before token-spending review.
@@ -90,6 +128,9 @@ code, tests, CI and docs; the owner validates on hardware.
   publish behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and the user
   docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A change to an ordinary
   default, limit or budget updates the user docs; a missing docs update is P3 and is fixed forward.
+- **Dev publishing:** the rolling dev release requires both reproducible Linux archives. Its native
+  macOS arm64 archive is best effort and may be absent without blocking Linux publication. Every
+  archive that is published is included in the versioned checksum file and build provenance.
 - **Memory store:** the memory store's `memory/` directory is owner-only (`0700`), and every entry,
   generated index and lock file is owner-only (`0600`). A save must tighten an existing directory
   with looser permissions before writing; review changes against this upgrade behaviour as well as
@@ -101,14 +142,15 @@ code, tests, CI and docs; the owner validates on hardware.
   that contradicts an owner decision stated in the linked issue or PR is answered by updating these
   rules in that PR, not by changing the behaviour.
 - **Publication scan:** `oxa work --publish` and lane pushes refuse secrets in the commits they push (keys,
-  known tokens also after a word character, opaque credential assignments and quoted literals, secret-store
-  content, configured secret values). A file is refused for its content, never its name alone: an empty
-  secret-store file and `.env.example` publish unless the content holds a secret. Flag as P1 a change that
+  known tokens also after a word character, opaque credential assignments (also `_key`/`credentials`
+  names) and quoted literals, secret-store content, configured secret values). A file is refused for its
+  content, never its name alone: an empty secret-store file and `.env.example` publish unless the content
+  holds a secret. Flag as P1 a change that
   weakens these refusals or adds a name-only or blanket long-value block (P2 without a doc update).
-- **Bash and subagent limits.** The two caps are user-only. `oxa.bash.maxJobs` defaults to 16
-  running background jobs.
-  `oxa.subagent.maxChildren` defaults to 8 running or queued children per parent and 8 steps
-  per call. Both settings have a minimum of 1. An explicit bash `timeout: 0` disables the
+- **Bash and subagent limits.** `oxa.bash.maxJobs` (16) and `oxa.subagent.maxChildren` (8, also
+  steps per call) are user-only warning thresholds, never refusals:
+  above them a job starts or children queue, with a warning in the result. A goal token budget
+  counts known usage only; two idle replies warn unless `oxa.goal.idlePause`. Both limits are at least 1. An explicit bash `timeout: 0` disables the
   timeout for that call, including a background job, and overrides the foreground default.
   A foreground command that passes its timeout is not killed: it moves to a background job
   (counted in `oxa.bash.maxJobs`). `oxa.bash.waitCap` (user-only, default 300 s) caps `wait_s`.
@@ -131,6 +173,13 @@ code, tests, CI and docs; the owner validates on hardware.
 - **Worker mode.** An `oxa work` worker is started with `--yolo` only when the owner's user-layer
   `permissions.defaultMode` is `yolo`; otherwise it keeps the sandboxed default. Project settings
   cannot raise it. See `oxa/docs/work.md`.
+- **Worker GitHub access.** The owner-only `oxa.work.workerGithub` is `worker` in yolo (the worker keeps
+  its own GitHub environment, `gh`, MCP, web search and subagents), `broker` in auto (no token, host-side
+  tools) and `runner` in standard mode, unless the owner sets it. A project setting is ignored. The `no GitHub access` rule below is for workers on `runner` or `broker`.
+- **Worker publishing.** Publishing (owner decision 2026-11-19): in workspace and auto, without asking, the session repo's current non-default branch may be pushed to `origin` with an explicit source refspec (no force, no `+refspec`, no delete, no tag or mirror, no other remote), `gh pr create|edit|comment` without a PR argument, repo or head override, and read-only `gh` (`pr view|checks|diff`, `run view|watch`, `api` GET) run. A push with no refspec, a push to the default branch, a force push, branch deletion, `gh pr merge`, a push to another repo and release or tag pushes ask, or go to the lead's approvals desk for a worker with no human (a headless worker without a desk is refused). An unresolved Git subcommand (a name that is not a builtin recognized by the classifier, so it may be a configured alias or an external `git-*` executable) asks. Every part of a command line must be in the allowed set: any other command chained with one (`curl x && git push`, `git push | tee f`, a substitution, `bash -c`) asks. A later sequential repository mutation cannot affect an earlier publish (`git push && git switch main`) and needs no approval, but a repository mutation in the same concurrent pipeline asks (`git push | git switch main`). Yolo is unchanged. Classifier: `oxa-perm` `publish.rs`.
+- **Worker tool default.** A worker started by the `worker` tool inherits its parent's level when no
+  `mode` is given (yolo -> yolo, auto -> auto, workspace -> workspace, plan -> plan); an explicit narrower
+  mode wins and a wider one is clamped with a notice. Env and GitHub access are the parent's, unchanged.
 - **Work acceptance.** In `oxa work`, zero or skipped checks leave the task `Unverified`. The
   owner-only `oxa.work.localChecks` defaults to a per-package `cargo check`. A verified Rust
   acceptance receipt requires hosted test evidence at the exact head, including for changed
@@ -146,6 +195,12 @@ code, tests, CI and docs; the owner validates on hardware.
   The repeat guard follows this: the third identical tool result gets a short note, a call that
   still repeats gets one warning (shown and kept in the session) and the run continues; `oxa.maxTurns`
   is the cap against loops the guard cannot see.
+  Image input follows it too: `read` attaches an image to a model that takes images, and an image
+  over the user-only `oxa.read.maxImageBytes` (generous default, 0 = no limit) is not sent; that
+  setting also bounds aggregate images across retained session history and the current tool-call
+  batch. A project may enable `images.blockImages` but cannot disable the owner's choice. The result names the limit and the
+  setting instead. `images.blockImages` prevents transmission. Private-path and pinned-open rules
+  apply to images as to any file.
   The finish wake follows it too: a background bash job that finishes on its own queues one
   follow-up message and, when the session is idle after a normal outcome, starts a turn;
   `oxa.jobs.wakeOnFinish` (`true` by default, `false` opts out, user settings only) is the control,
@@ -157,6 +212,16 @@ code, tests, CI and docs; the owner validates on hardware.
   `oxa.goal.failureBackoffSeconds` (default 60, doubling, capped at 900 unless set higher, `0` opts
   out) is the owner setting. Auth errors, refusals, the repetition stop, aborts and an owner budget
   still stop the goal with the reason shown.
+  Dangerous commands are a floor prompt interactively and never wait in an unattended run:
+  `oxa.approval.unattended` (`auto` by default, `refuse`, `request`; user settings only) refuses or
+  files an owner request, answered only through `oxa send --approve` after the session's owner-confirm broker (or the direct controlling terminal) authenticates the answer, or on the lead web approvals page. A refusal is returned to the
+  run without writing an approval record; only requests that the owner can answer are persisted. Grants are
+  owner-scoped (`once` is consumed by the retrying run; `session` expires when that run ends;
+  `always` persists through user settings) and a project file
+  or model output cannot grant one. Shell parameter or command substitution markers anywhere in
+  the command prevent reuse of a saved grant. A finding that asks for a default-off switch or for
+  an unattended run to wait is answered here.
+
   The board degrades per item, not per snapshot: a PR whose GitHub evidence exceeds a read page
   is one row marked evidence incomplete that is never eligible for any action; every other item is
   kept and published, and the limit is logged. A merge-queue connection beyond its
@@ -221,6 +286,14 @@ head commit, the selected crates, the action needed and which fact is missing. T
 pull request body and its CI result, and it owns pushes and workflow dispatch; do not work around a refusal. Below,
 every `gh` command is for a session that owns GitHub access.
 
+Every runner-owned publication, including lane acceptance, scans the exact commits added to
+the destination before pushing. Lane work also refuses changes to workflows or its CI runner;
+land CI-control changes separately under normal review, checked on every commit the destination
+lacks, not only the saved base. A lane push needs the owner's own confirmation through the
+session broker (including from an agent child), or the compatibility
+terminal/`OXA_WORK_OWNER_CONFIRMED=1` path outside an agent tool. A green lane run is evidence
+only for what the lane tests (never `engine/` or `fuzz/` changes).
+
 A yolo worker is not sandboxed (see the sandbox standard below): it uses the GitHub access that the owner's settings
 give it.
 
@@ -238,8 +311,15 @@ Once a PR against main is open for the branch, a push no longer starts `lane` (i
 `lane pr check`, finds the PR and skips the rest): the PR's `checks` run covers the same commit, so
 wait on that run (`gh run list --branch <branch> --workflow checks`, then `gh run watch`). A branch
 without a PR, and `gh workflow run lane`, still run `lane`. CodeQL runs on pushes to main, weekly and
-on dispatch only; the macOS `oxa-cli` build runs on main, on dispatch and on PRs touching
-`oxa/oxa-session`, `oxa/oxa-sandbox`, `oxa/oxa-cli`, `oxa/oxc-gateway`, `packaging/macos` or `oxa/Cargo.lock`.
+on dispatch only. The macOS arm64 `oxa-cli` build (`macos.yml`) is part of the required `gate`: the
+`checks` workflow calls it as its `macos` job on ready PRs and in the merge queue whenever the
+classifier selects `oxa` (oxa Rust code, `oxa/Cargo.lock`, `packaging/`, workflows), and the gate
+fails if it ran and failed. `macos.yml` itself runs on manual dispatch only: the commit a main push
+carries is the one the queue built, so a main push does not build macOS again. It costs macOS
+runner minutes on every PR that touches Rust.
+A main push whose commit already has a green merge-queue `checks` run skips that workflow's jobs
+(`tools/ci/queue_covered.py`), except the classifier and the scans; a push that changed a
+dependency cache key still runs, because main is what seeds the `<prefix>main` caches.
 
 The lane workflow selects changed crates plus their local reverse dependencies and binary-fixture
 consumers against main. Shared workspace manifests/locks expand the affected workspace. Tests use
@@ -329,6 +409,11 @@ read its result; they never launch builds or tests.
 - Prefer deleting and merging code over adding it. Measure before and after when a change is about speed or size.
 - Write names as they are on `main`. Use short, plain sentences in docs, comments, PR text and user messages.
 - No person names, session links or internal decision ids in code, docs, commits, PR text or issues.
+- **Online data is fetched, never hard-coded (owner rule).** Model lists, context windows, max output, prices,
+  plan and rate limits, latest versions and release assets come from the live source (the provider's API or a
+  public catalog), cached from the last successful fetch and refreshed in the background. No built-in copies: an
+  online service needs the network anyway; an unknown value warns, never refuses. Protocol constants (API paths,
+  header names) and security pins (checksums, action SHAs) stay in code. Never fill such values from memory.
 - An issue filed by an agent states how the problem was observed (command, run or log line). Verify an agent-filed
   issue against current main before building on it; close it with the evidence if it does not reproduce.
 
@@ -353,6 +438,11 @@ read its result; they never launch builds or tests.
   behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and the user docs (`oxa/docs/pages/`)
   that describe it. Flag a missing update as P2. A change to an ordinary default, limit or budget updates the user
   docs; a missing docs update is P3 and is fixed forward.
+- **ChatGPT plan model list:** the one authenticated catalog request (`GET <chatgpt base>/models` with the plan's
+  bearer token) must stay pinned to the account the cache key names, refresh through the locked path (one retry on
+  `token_expired`), go only to the route's own base, never log or keep the token, refuse a reply that echoes a
+  credential, and never delete an owner's `oxa.cloud.models` route. See `SECURITY.md`. A change that loosens any of
+  these is P1.
 - **Reuse before you write:** search for an existing helper (settings and env parsing, trusted executable lookup,
   private/atomic file writes, subprocess limits, GitHub calls, retry, redaction, test fixtures) and call it. A second
   implementation of the same responsibility is a P2 review finding; a weaker one (looser permissions, symlinks,
@@ -361,6 +451,8 @@ read its result; they never launch builds or tests.
   its surfaces and help (P1 if added outside it or without an exception reason).
 
 **Security invariants**
+- Inbox child creation, publication, scanning and privacy wipes must stay relative to opened
+  no-follow directory descriptors on Linux and macOS. Do not re-resolve a saved pathname.
 
 - Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests; use synthetic fixtures.
   Do not open real credential files during review.
@@ -386,6 +478,9 @@ read its result; they never launch builds or tests.
 - **Worker mode.** An `oxa work` worker is started with `--yolo` only when the owner's user-layer
   `permissions.defaultMode` is `yolo`; otherwise it keeps the sandboxed default. Project settings cannot raise it. See
   `oxa/docs/work.md`.
+- **Worker publishing.** Publishing (owner decision 2026-11-19): in workspace and auto, without asking, the session repo's current non-default branch may be pushed to `origin` with an explicit source refspec (no force, no `+refspec`, no delete, no tag or mirror, no other remote), `gh pr create|edit|comment` without a PR argument, repo or head override, and read-only `gh` (`pr view|checks|diff`, `run view|watch`, `api` GET) run. A push with no refspec, a push to the default branch, a force push, branch deletion, `gh pr merge`, a push to another repo and release or tag pushes ask, or go to the lead's approvals desk for a worker with no human (a headless worker without a desk is refused). An unresolved Git subcommand (a name that is not a builtin recognized by the classifier, so it may be a configured alias or an external `git-*` executable) asks. Every part of a command line must be in the allowed set: any other command chained with one (`curl x && git push`, `git push | tee f`, a substitution, `bash -c`) asks. A later sequential repository mutation cannot affect an earlier publish (`git push && git switch main`) and needs no approval, but a repository mutation in the same concurrent pipeline asks (`git push | git switch main`). Yolo is unchanged. Classifier: `oxa-perm` `publish.rs`.- **Worker tool default.** A worker started by the `worker` tool inherits its parent's level when no
+  `mode` is given (yolo -> yolo, auto -> auto, workspace -> workspace, plan -> plan); an explicit narrower
+  mode wins and a wider one is clamped with a notice. Env and GitHub access are the parent's, unchanged.
 - Never expose secrets to fork PRs or execute PR code with review credentials. Never use `pull_request_target`;
   unknown authors need `ok-to-review` before token-spending review.
 - Nothing shipped or installed runs Python. Small Python dev and CI tools outside the release are fine.
@@ -409,3 +504,5 @@ read its result; they never launch builds or tests.
   advisory), keyed Go, the bash and subagent limits, cargo cache mounts, `oxa work` acceptance, the repeat guard (it
   warns and continues), board evidence (it degrades per item), report dedupe (one consent), the headless inbox, and
   the Go review bound (20,000 comments, then the review defers).
+
+- **Named cloud providers:** `oxa.cloud.providers` is user-only. A distinct non-built-in secret-store key selector is pinned to the provider's HTTPS API base for discovery and chat, without redirects. Discovery and per-model settings cannot override that binding or the provider's billing class. Public metadata never supplies another provider's prices for a named route.

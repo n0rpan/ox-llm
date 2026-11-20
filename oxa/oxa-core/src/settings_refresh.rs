@@ -27,8 +27,10 @@ pub(crate) fn resync(st: &SessionState) {
     }
 }
 
-#[derive(Debug, PartialEq)]
+// `Refresh` is consumed immediately at the run boundary. Boxing `Settings` would add an
+// allocation to every successful refresh solely to reduce this short-lived enum's stack size.
 #[allow(clippy::large_enum_variant)]
+#[derive(Debug, PartialEq)]
 pub(crate) enum Refresh {
     /// Same stamps: nothing was read.
     Unchanged,
@@ -36,7 +38,7 @@ pub(crate) enum Refresh {
     Kept(Vec<String>),
     /// The new settings (diagnostics are those of the load).
     Applied {
-        settings: Settings,
+        settings: Box<Settings>,
         changed: Vec<String>,
         prompt: bool,
     },
@@ -77,15 +79,16 @@ pub(crate) fn check(
     }
     let prompt = prompt_inputs(current) != prompt_inputs(&fresh);
     Refresh::Applied {
-        settings: fresh,
+        settings: Box::new(fresh),
         changed,
         prompt,
     }
 }
 
 /// Everything that feeds the prefix from the settings (see `epoch::gather`, `prefix_opts`).
-#[allow(clippy::type_complexity)]
-fn prompt_inputs(s: &Settings) -> (bool, Option<Vec<String>>, Option<Vec<String>>, Option<String>) {
+type PromptInputs = (bool, Option<Vec<String>>, Option<Vec<String>>, Option<String>);
+
+fn prompt_inputs(s: &Settings) -> PromptInputs {
     (
         s.diet_output(),
         s.default_tools(),
@@ -175,7 +178,7 @@ pub(crate) fn refresh_at_run_start(st: &mut SessionState, sink: &mut dyn EventSi
             prompt,
         } => {
             if changed.is_empty() {
-                st.settings = settings;
+                st.settings = *settings;
                 crate::session::sync_job_wake(st);
                 return;
             }
@@ -199,7 +202,7 @@ pub(crate) fn refresh_at_run_start(st: &mut SessionState, sink: &mut dyn EventSi
                 level = Level::Warning;
                 let _ = write!(message, "\n{}: {}", diagnostic.source, diagnostic.message);
             }
-            st.settings = settings;
+            st.settings = *settings;
             crate::session::sync_job_wake(st);
             st.shared.publish_live_settings(&st.settings);
             notice(sink, level, message);

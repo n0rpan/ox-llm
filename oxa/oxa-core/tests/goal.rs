@@ -53,6 +53,16 @@ fn deps_engine(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<dyn oxa_
     }
 }
 
+/// [`deps`] with the owner's `oxa.goal.idlePause`: two replies without an action pause the goal.
+fn idle_pause_deps(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<ScriptedEngine>) -> Deps {
+    let mut d = deps(env, store, engine);
+    d.settings = Settings::from_values(
+        serde_json::json!({"oxa": {"envNote": false, "goal": {"idlePause": true}}}),
+        serde_json::json!({}),
+    );
+    d
+}
+
 fn objective(budget: GoalBudget) -> Goal {
     Goal::new("Review synthetic work and wait for more.".into(), budget, 1000).unwrap()
 }
@@ -371,14 +381,15 @@ fn a_control_bound_to_a_different_file_rejects_an_equal_id_and_revision() {
 }
 
 #[test]
-fn ordinary_prefix_unchanged_and_two_idle_turns_stall_with_one_fixed_continuation() {
+fn ordinary_prefix_unchanged_and_two_idle_turns_stall_with_one_fixed_continuation_when_the_owner_set_idle_pause(
+) {
     let env = TestEnv::new();
     let engine = Arc::new(ScriptedEngine::new(vec![
         ScriptTurn::text("Idle"),
         ScriptTurn::text("Still idle"),
     ]));
     let store = Arc::new(MemStore::new());
-    let mut session = Session::open(deps(&env, store.clone(), engine.clone()), Open::New).unwrap();
+    let mut session = Session::open(idle_pause_deps(&env, store.clone(), engine.clone()), Open::New).unwrap();
     let ordinary = session.inner().prefix.clone();
     let mut sink = VecSink::default();
     session
@@ -412,11 +423,13 @@ fn ordinary_prefix_unchanged_and_two_idle_turns_stall_with_one_fixed_continuatio
     let sref = session.inner().sref.clone();
     session.shutdown(&mut HeadlessUi::default());
     drop(session);
-    let mut resumed = Session::open(deps(&env, store, engine), Open::Resume(sref)).unwrap();
+    let mut resumed = Session::open(idle_pause_deps(&env, store, engine), Open::Resume(sref)).unwrap();
     assert_eq!(resumed.goal(), Some(goal));
     resumed.set_goal(None, &mut sink).unwrap();
     assert_eq!(resumed.inner().prefix, ordinary);
-    assert!(resumed.inner().active.get("wait").is_none());
+    // `wait` is declared in every session, goal or not (wait_everywhere.rs).
+    assert!(resumed.inner().active.get("wait").is_some());
+    assert!(resumed.inner().active.get("goal_done").is_none());
 }
 #[test]
 fn done_closes_all_calls_without_running_later_calls_or_requesting_another_reply() {
@@ -1516,7 +1529,7 @@ fn a_reply_without_usage_charges_the_goal_as_uncertain() {
             &mut VecSink::default(),
         )
         .unwrap();
-    // The run ends at the token cap: an error outcome is the expected shape.
+    // The unknown spend is recorded; it does not end the run.
     let _ = session.prompt(
         "Start".into(),
         vec![],
@@ -1524,16 +1537,78 @@ fn a_reply_without_usage_charges_the_goal_as_uncertain() {
         &mut HeadlessUi::default(),
     );
     let goal = session.goal().unwrap();
-    assert_eq!(
-        goal.unknown_requests, 1,
+    assert!(
+        goal.unknown_requests >= 1,
         "an unreported usage is unknown spend, not zero"
     );
-    assert_eq!(goal.status, GoalStatus::Blocked, "the token cap still applies");
-    assert_eq!(
-        scripted.requests().len(),
-        1,
-        "an unknown spend stops the next generation"
+    assert!(
+        !goal.exhausted(),
+        "unknown spend is not an exhausted token budget"
     );
+    assert_ne!(
+        goal.status,
+        GoalStatus::Blocked,
+        "unknown spend does not block the goal"
+    );
+    assert!(
+        scripted.requests().len() >= 2,
+        "the goal went on after the unreported reply"
+    );
+}
+
+#[test]
+fn two_idle_replies_warn_and_the_goal_keeps_pursuing_by_default() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("Idle"),
+        ScriptTurn::text("Still idle"),
+        ScriptTurn::tool(
+            "finish",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Finished after two idle replies."}"#,
+        ),
+    ]));
+    let mut session =
+        Session::open(deps(&env, Arc::new(MemStore::new()), engine.clone()), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    session
+        .prompt(
+            "Start the stored goal".into(),
+            vec![],
+            &mut sink,
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        engine.requests().len(),
+        3,
+        "the goal was pursued past the second idle reply"
+    );
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Done);
+    let notices: Vec<String> = sink
+        .0
+        .iter()
+        .filter_map(|event| match event {
+            oxa_proto::AgentEvent::Notice { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        notices
+            .iter()
+            .filter(|t| t.contains("two replies without an action; still pursuing"))
+            .count(),
+        1,
+        "{notices:?}"
+    );
+    assert!(
+        !notices.iter().any(|t| t.starts_with("Goal paused")),
+        "{notices:?}"
+    );
+    session.shutdown(&mut HeadlessUi::default());
 }
 
 #[test]
@@ -1546,7 +1621,7 @@ fn idle_pause_records_reason() {
         ScriptTurn::text("Still idle"),
     ]));
     let store = Arc::new(MemStore::new());
-    let mut session = Session::open(deps(&env, store, engine), Open::New).unwrap();
+    let mut session = Session::open(idle_pause_deps(&env, store, engine), Open::New).unwrap();
     let mut sink = VecSink::default();
     let statuses = Arc::new(GoalStatusTrace::default());
     session.set_progress_observer(statuses.clone());
@@ -1597,4 +1672,98 @@ fn idle_pause_records_reason() {
     assert_eq!(prompt, Some(oxa_core::prompt::GOAL_CONTINUE.to_string()));
     assert_eq!(session.goal().unwrap().pause_reason, None);
     session.shutdown(&mut HeadlessUi::default());
+}
+
+fn unknown_tool_answer(name: &str) -> String {
+    oxa_proto::tool_errors::UNKNOWN_TOOL.replace("{name}", name)
+}
+
+/// A resumed session pursuing a goal, driven only through the queue (what `oxa send`, queued
+/// input and job wakes do in the TUI), still has `wait` and `goal_done`.
+fn resumed_goal_parks_and_finishes_through_a_queued_run(model: Option<&str>) {
+    let env = TestEnv::new();
+    let store = Arc::new(MemStore::new());
+    let mut first = Session::open(
+        deps(&env, store.clone(), Arc::new(ScriptedEngine::new(vec![]))),
+        Open::New,
+    )
+    .unwrap();
+    first
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let sref = first.inner().sref.clone();
+    let prefix = first.inner().prefix.clone();
+    first.shutdown(&mut HeadlessUi::default());
+    drop(first);
+
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("w", "wait", r#"{"seconds":1,"reason":"synthetic"}"#),
+        ScriptTurn::tool(
+            "d",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Synthetic proof."}"#,
+        ),
+    ]));
+    let mut d = deps(&env, store, engine.clone());
+    d.model = model.map(str::to_owned);
+    let mut session = Session::open(d, Open::Resume(sref)).unwrap();
+    assert!(session.inner().active.get("goal_done").is_some());
+    assert!(session.inner().active.get("wait").is_some());
+    assert_eq!(session.inner().prefix, prefix, "a resume opens no epoch");
+
+    session.handle().follow_up("Synthetic inbox message".into());
+    let mut sink = VecSink::default();
+    session.run_queued(&mut sink, &mut HeadlessUi::default()).unwrap();
+    assert_eq!(session.stats().outcome, RunOutcome::Done);
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Done);
+    let unknown = ["wait", "goal_done"].map(unknown_tool_answer);
+    for request in engine.requests() {
+        for message in &request.messages {
+            if message.tool_call_id.is_some() {
+                let content = message.content.clone().unwrap_or_default();
+                assert!(!unknown.contains(&content), "{content}");
+            }
+        }
+    }
+}
+
+#[test]
+fn resumed_pursuing_goal_parks_and_finishes_through_a_queued_run() {
+    resumed_goal_parks_and_finishes_through_a_queued_run(None);
+}
+
+#[test]
+fn resumed_pursuing_goal_with_a_model_choice_parks_and_finishes_through_a_queued_run() {
+    resumed_goal_parks_and_finishes_through_a_queued_run(Some("fake-model"));
+}
+
+#[test]
+fn a_goal_whose_controls_were_deselected_pauses_with_a_reason_instead_of_looping() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("Nothing to do.")]));
+    let mut d = deps(&env, Arc::new(MemStore::new()), engine.clone());
+    d.selection = ToolSelection {
+        tools: Some(vec!["read".into()]),
+        ..ToolSelection::default()
+    };
+    let mut session = Session::open(d, Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    session
+        .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+        .unwrap();
+    let goal = session.goal().unwrap();
+    assert_eq!(goal.status, GoalStatus::Paused);
+    assert!(goal.pause_reason.is_some());
+    let continues = session
+        .inner()
+        .transcript
+        .wire()
+        .iter()
+        .filter(|m| m.content.as_deref() == Some(oxa_core::prompt::GOAL_CONTINUE))
+        .count();
+    assert_eq!(continues, 0);
+    assert_eq!(engine.requests().len(), 1);
 }

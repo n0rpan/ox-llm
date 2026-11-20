@@ -68,5 +68,5 @@ Other OpenAI-compatible clients (Aider, Continue, Cline, Zed, Open WebUI, LibreC
 
 Earlier releases wrote OpenCode config for you; v0.2.0 does not, and it never changes your own
 OpenCode config. See the migration note in the [README](../../README.md#migrating-from-opencode).
-Measurements of how OpenCode, pi and dsh use the cache are kept as history in
-[HARNESSES.md](HARNESSES.md).
+Measurements of how OpenCode, pi and dsh use the cache were archived on 2026-11-19
+(git history before that date).

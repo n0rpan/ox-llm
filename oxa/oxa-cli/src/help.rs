@@ -35,6 +35,12 @@ const BASE: &[Entry] = &[
         example: "oxa status 20260101-120000-abcd",
     },
     Entry {
+        path: &["models"],
+        summary: "List the local and cloud models this install can serve, where each runs and which one is the default",
+        usage: &["oxa models [--json] [search]"],
+        example: "oxa models --json",
+    },
+    Entry {
         path: &["usage"],
         summary: "Print today's cloud spend and request sums per usage pool as JSON",
         usage: &["oxa usage --json"],
@@ -97,7 +103,11 @@ const BASE: &[Entry] = &[
     Entry {
         path: &["send"],
         summary: "Queue a session follow-up for its TUI, RPC owner or headless goal run",
-        usage: &["oxa send <session-id> \"text\""],
+        usage: &[
+            "oxa send <session-id> \"text\"",
+            "oxa send <session-id> --approve <request-id> once|session|always|deny",
+            "oxa send --approvals",
+        ],
         example: "oxa send 20260101-120000-abcd \"task finished\"",
     },
     Entry {
@@ -129,6 +139,18 @@ const BASE: &[Entry] = &[
         summary: "Print every setting with its value and source",
         usage: &["oxa config [-l]"],
         example: "oxa config",
+    },
+    Entry {
+        path: &["local"],
+        summary: "Wire a local GGUF model into the native local engine settings",
+        usage: &["oxa local add <model.gguf> [options]"],
+        example: "oxa local add ~/models/model.gguf --ctx 16384 --enable",
+    },
+    Entry {
+        path: &["local", "add"],
+        summary: "Write oxa.local for a model from the engine's admission report (user settings only, with a backup)",
+        usage: &["oxa local add <model.gguf> [--name <alias>] [--ctx <positions>] [--max-output <tokens>] [--margin-bytes <n>] [--enable] [--replace] [--engine-dir <dir>] [-- <oxe-server launch arguments>]"],
+        example: "oxa local add ~/models/model.gguf --ctx 16384 --enable -- --oxe-cpus 0-7",
     },
     Entry {
         path: &["mcp"],
@@ -217,6 +239,7 @@ const BASE: &[Entry] = &[
             "oxa work board --shadow --repo OWNER/REPO --once",
             "oxa work board --shadow --repo OWNER/REPO --token-stdin [--once] [--app-quota-shadow]",
             "oxa work board --shadow --repo OWNER/REPO --once --review-policy FILE",
+            "oxa work board --shadow --repo OWNER/REPO --token-stdin [--once] [--landing-shadow] [--lead-alarms]",
         ],
         example: "oxa work board --shadow --repo example/project --once",
     },

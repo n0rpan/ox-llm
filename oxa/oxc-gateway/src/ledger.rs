@@ -315,7 +315,7 @@ impl Entry {
         error: Option<&'static str>,
         key: Option<&Key>,
     ) -> io::Result<Value> {
-        self.append_redacting(fields, status, error, &|row| {
+        self.append_redacting(fields, status, error, None, &|row| {
             if let Some(key) = key {
                 redaction::value(row, key);
             }
@@ -326,19 +326,20 @@ impl Entry {
         fields: &Value,
         status: u16,
         error: Option<&'static str>,
+        configured_provider: Option<&str>,
         redact: &dyn Fn(&mut Value),
     ) -> io::Result<Value> {
-        let cost = crate::spend::budget_cost(fields);
+        // Only the runtime can attest a configured route. Never copy that
+        // classification from caller-supplied accounting fields.
+        let configured = configured_provider.is_some();
+        let provider = &fields["remote_provider"];
+        let valid_provider = match configured_provider {
+            Some(name) => provider.as_str() == Some(name),
+            None => crate::spend::builtin_provider(provider),
+        };
+        let cost = crate::spend::budget_cost(fields, configured);
         if fields["remote"] != true
-            || ![
-                "anthropic",
-                "openai",
-                "openai-chat",
-                "openrouter",
-                "chatgpt",
-                "opencode",
-            ]
-            .contains(&fields["remote_provider"].as_str().unwrap_or(""))
+            || !valid_provider
             || (cost.is_none() && !crate::spend::unknown_go_cost(fields))
         {
             return Err(io::ErrorKind::InvalidData.into());
@@ -424,7 +425,7 @@ impl Entry {
                 if value == "subscription"
                     || value == "metered" && fields["remote_provider"] == "opencode" =>
             {
-                if !matches!(fields["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
+                if !(configured || crate::spend::subscription_provider(provider))
                     || (value == "subscription" && cost.is_some_and(|n| n != 0.0))
                     || (value == "metered" && cost.is_none_or(|n| n <= 0.0))
                 {
@@ -477,6 +478,9 @@ impl Entry {
         }
         self.write_row(status, error, |row| {
             redact(row);
+            if configured {
+                row["configured_provider"] = json!(true);
+            }
             #[cfg(feature = "anthropic-client")]
             if let Some(plan) = row["opencode"].get("billing_source") {
                 let plan = crate::opencode::PlanName::from_value(plan);

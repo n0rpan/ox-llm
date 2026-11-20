@@ -411,7 +411,7 @@ fn help_and_version() {
 
     let version = go(&env, &url, &["-v"]);
     assert_eq!(version.code, 0);
-    assert_eq!(version.out, format!("oxa {}\n", env!("CARGO_PKG_VERSION")));
+    assert_eq!(version.out, format!("oxa {}\n", oxa_proto::BUILD_VERSION));
 }
 
 /// `oxa -p` against oxa-fake
@@ -571,7 +571,8 @@ fn no_sandbox_notice() {
     let owned = pairs;
     let borrowed: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let envv = Env::from_pairs(&borrowed);
-    let result = go_with(&envv, &env.work(), &["-p", "hi"], "", false, false);
+    // #1512 S3: an attended run has no OS sandbox by default and warns only when it asked for one.
+    let result = go_with(&envv, &env.work(), &["--sandbox", "-p", "hi"], "", false, false);
     assert_eq!(
         result.code, 0,
         "a missing sandbox does not stop the run: {}",

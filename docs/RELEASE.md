@@ -46,6 +46,12 @@ kernel flags `armv8.6-a+dotprod+i8mm+fp16+bf16+nosve+nosme`. x86_64 uses the bas
 No model weights, NPU device features, Flash external libraries or vendor SDK
 are included. These builds make no inference speed or hardware qualification claim.
 
+The same workflow also builds a portable Linux x86_64 `oxa` in `debian:bullseye-slim`
+(glibc 2.31 floor, checked by symbol version) as the `oxa-portable-linux-x86_64`
+artifact, and the job `portable_binary_starts_in_three_images` starts it in
+`debian:bullseye-slim`, `ubuntu:22.04` and `python:3.12-slim` against the fake engine.
+It is separate from the Fedora tarball and is not part of the Arch packages.
+
 Build-time staging collects native executables, Rust dependency license texts,
 the vendored ggml license and product notices. Both Arch recipes omit Python
 from runtime dependencies. The source recipe uses Python to stage files during
@@ -69,15 +75,20 @@ source/toolchain/home prefixes in installed commands. No builder identity is
 inserted in package files. Repeatability is demonstrated within one workflow run;
 Fedora/Arch package mirrors and `archlinux:latest` move over time, so the saved
 toolchain versions are essential and reproducibility across dates is not promised.
+A dev push builds each architecture once; the comparison runs in the release lane
+and on the nightly `dev-build` schedule, and a single-build artifact's
+`REPRODUCIBILITY.txt` records that.
 
-The fresh x86_64 `archlinux:latest` job builds both the binary package and the
-source package, runs the source package's model-free test subset, invokes namcap,
-installs each package, checks that its payload and runtime dependencies exclude
-Python, runs the native version and help commands, validates
-`oxe --check-args`, and sends a real loopback completion through `oxe-server`'s
-stub engine. It checks package integrity, uninstalls and verifies every package
-file and package-specific directory is gone. The two Arch packages, their
-checksums and namcap logs are retained as a separate seven-day workflow artifact.
+The fresh x86_64 `archlinux:latest` source job builds the source package from the
+committed source archive in parallel with the release build, runs the source
+package's model-free test subset, invokes namcap, installs it, checks that its
+payload and runtime dependencies exclude Python, runs the native version and help
+commands, validates `oxe --check-args`, and sends a real loopback completion
+through `oxe-server`'s stub engine. It checks package integrity, uninstalls and
+verifies every package file and package-specific directory is gone. A second job
+does the same for the binary package from the built tarball, after the build. The
+Arch packages, their checksums and namcap logs are retained as seven-day workflow
+artifacts.
 Bubblewrap is invoked dynamically, so
 namcap may also report its declared runtime dependency as unused. Errors fail CI. Tests use a fresh HOME and an
 allowlisted environment with no cloud credentials. The official Arch Linux Docker

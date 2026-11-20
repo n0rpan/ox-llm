@@ -283,6 +283,7 @@ impl Runner<'_> {
                         .map(|command| (CheckOrigin::Settings, command.clone()))
                         .collect();
                     let mut could_not_run = Vec::new();
+                    let mut saved_derived_commands = Vec::new();
                     let plan = supervise(
                         self.binary,
                         &tree,
@@ -309,6 +310,7 @@ impl Runner<'_> {
                     match plan {
                         Ok(derived) => {
                             requires_hosted |= derived.requires_hosted;
+                            saved_derived_commands = derived.commands.clone();
                             commands.extend(
                                 derived
                                     .commands
@@ -358,6 +360,11 @@ impl Runner<'_> {
                             .map(|error| format!("merge verification: {error}")),
                     );
                     errors.dedup();
+                    state
+                        .execution
+                        .as_mut()
+                        .ok_or("missing task execution checkpoint")?
+                        .derived_commands = saved_derived_commands;
                     let round = match checks {
                         Ok(round) => round,
                         Err(error) => {
@@ -410,19 +417,35 @@ impl Runner<'_> {
                         };
                         self.advance(state, Step::Saving)?;
                     } else if state.record.step == Step::Acceptance {
-                        state
-                            .execution
-                            .as_mut()
-                            .ok_or("missing task execution checkpoint")?
-                            .failures = failures;
-                        self.advance(state, Step::Repair)?;
+                        // A lane task has one repair round in total. A local
+                        // acceptance failure spends it, so a later lane failure
+                        // cannot start a second worker.
+                        if state.task.lane_ci && state.record.lane_repairs > 0 {
+                            state.record.outcome = Outcome::Red;
+                            state.record.detail = failures;
+                            self.advance(state, Step::Saving)?;
+                        } else {
+                            if state.task.lane_ci {
+                                state.record.lane_repairs = 1;
+                            }
+                            state
+                                .execution
+                                .as_mut()
+                                .ok_or("missing task execution checkpoint")?
+                                .failures = failures;
+                            self.advance(state, Step::Repair)?;
+                        }
                     } else {
                         state.record.outcome = Outcome::Red;
                         state.record.detail = failures;
                         self.advance(state, Step::Saving)?;
                     }
                 }
-                Step::Saving | Step::Finished | Step::Publishing | Step::Reporting => return Ok(()),
+                // Lane acceptance runs after the saved commit exists; its own
+                // checkpoint step is observed by the caller.
+                Step::Saving | Step::Lane | Step::Finished | Step::Publishing | Step::Reporting => {
+                    return Ok(())
+                }
             }
         }
     }

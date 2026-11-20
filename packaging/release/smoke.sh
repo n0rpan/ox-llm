@@ -3,7 +3,7 @@
 # Needs only bash, coreutils and curl. SMOKE_VERSION overrides the expected version.
 set -euo pipefail
 export LC_ALL=C
-expected=${SMOKE_VERSION:-0.2.0}
+expected=${SMOKE_VERSION:-0.2.1}
 sandbox=$(mktemp -d)
 fixtures=$(mktemp -d)
 server=
@@ -67,7 +67,7 @@ names=$(ls -A /usr/share/ox-llm/memlat | sort | tr '\n' ' ')
 for path in /usr/share/ox-llm/memlat/*; do
   [ -f "$path" ] && [ ! -L "$path" ] && [ "$(stat -c %a "$path")" = 644 ] || fail "bad template: $path"
 done
-for binary in oxa oxe; do
+for binary in oxa oxe oxe-server; do
   out=$(run "$binary" --version)
   case $out in *"$expected"*) ;; *) fail "$binary --version: $out";; esac
   echo "$out"

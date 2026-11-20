@@ -69,3 +69,20 @@ loopback only) replaces the issuer. The token file `chatgpt-auth.json` is owner-
 the cloud keys, is refreshed by one refresher at a time, is never logged and is hidden from the
 agent sandbox. Requests have cost class `subscription`, and LAN guests are never served. Tests use
 a fake auth server and a fake backend only.
+
+## Model list (oxa)
+
+`oxa` lists the plan's models live instead of carrying a table (owner rule: online data is fetched
+live, never hard-coded; issue #1911). The request is the one the official Codex CLI makes, from
+`openai/codex` @ `30c69e60a36897a74dd5a5ca1c7747eb613ed0ad`: `codex-rs/codex-api/src/endpoint/models.rs`
+(`GET <base>/models?client_version=<version>`, base `CHATGPT_CODEX_BASE_URL` =
+`https://chatgpt.com/backend-api/codex` in `codex-rs/model-provider-info/src/lib.rs`), with the
+`Authorization: Bearer` token and the `ChatGPT-Account-ID` header added by
+`codex-rs/model-provider/src/auth.rs`, plus an `originator` header (`oxa`'s is `oxc`). The reply is
+`{"models":[ModelInfo...]}` (`codex-rs/protocol/src/openai_models.rs`); oxa reads `slug`,
+`visibility` (only `list` models are offered) and `context_window`. The endpoint states no maximum
+output; that comes from OpenRouter's public catalog, as for the other providers. The routes are
+`chatgpt/<slug>`, unpriced subscription routes with advisory limits. The result uses the shared
+catalog cache (fresh 15 minutes, usable stale up to a day with one background refresh) in
+`chatgpt-catalog-cache.json`, which is bound to the account and holds no token. The token is
+refreshed through the normal locked path and never logged.
