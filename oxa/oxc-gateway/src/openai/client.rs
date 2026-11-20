@@ -268,7 +268,11 @@ impl Client {
                     .credentials(
                         token_path,
                         expected_account,
-                        refresh,
+                        Refresh {
+                            endpoint: refresh.endpoint,
+                            client_id: refresh.client_id,
+                            timeout: refresh.timeout,
+                        },
                         &Cancellation::new(),
                         rejected.as_deref(),
                     )
