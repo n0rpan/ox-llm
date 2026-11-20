@@ -326,7 +326,7 @@ Options added by extensions are listed after the options when you run `oxa --hel
 | Option | Meaning |
 |---|---|
 | `--help`, `-h` | show the help |
-| `--version`, `-v` | show the version |
+| `--version`, `-v` | show the version; a dev build prints its full release version (for example `oxa 0.2.2-dev.29+1d3c121`), a stable build `oxa 0.2.1` |
 | `--` | end option parsing; the rest are messages and files |
 
 ## Environment variables
