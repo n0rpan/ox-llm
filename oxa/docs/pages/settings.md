@@ -452,9 +452,12 @@ never permits an additional review.
 | `oxa.skills.includeSynced` | bool | `false` | also list the skills another product synced into `~/.agents/skills` (a `synced/` folder, or a folder whose `manifest.json` lists `skillId`s); they are written for that product's tools, so oxa skips them by default |
 | `oxa.workers.enabled` | bool | `true` | user settings only (a project file cannot change it). The `worker` tool (start, list, stop background workers, each in its own git worktree); `false` removes it. Never offered inside a worker |
 | `oxa.workers.max` | number | `4` | user settings only (a project file cannot change it). Most live workers one session may run; a `start` past this limit is refused |
+| `oxa.workers.repository` | string | unset | user settings only. Canonical absolute path of the explicitly trusted primary Git checkout used by `worker start` in a trusted live Lead session outside Git |
 | `oxa.workers.resumeOnStart` | bool | `true` | user settings only (a project file cannot change it, either way). When a session is opened again, relaunch each of its workers that did not finish and whose process is gone, with `--continue=<id>` and no goal; one notice per worker. `false` leaves them as they are |
 | `oxa.workers.stopGraceSeconds` | number (seconds) | `10` | user settings only (a project file cannot change it). How long a stopped worker gets after SIGINT before its whole process group gets SIGTERM; SIGKILL follows 2 seconds later if the group is still alive |
 <!-- /generated:other -->
+
+From a trusted live Lead directory outside Git, set `oxa.workers.repository` in your user settings (for example, `{"oxa":{"workers":{"repository":"/path/to/checkout"}}}`). Use the primary checkout's absolute path without symlinks, and [explicitly trust the checkout](security.md) first. Inside Git, `worker start` still uses the current repository. This setting is for new starts; it does not enable automatic resume from outside Git.
 
 Pass `model` to `worker start` to select the worker's model. Omit it to inherit the parent session's current model. Reopening the same parent session resumes unfinished workers with the model recorded at their launch, even if the parent has switched models. The child resolves the model using the normal CLI routing and the owner's transport and credential settings.
 

@@ -134,10 +134,7 @@ fn build_worker_hooks(
                     .canonicalize()
                     .ok()
                     .and_then(|cwd| {
-                        cwd.ancestors()
-                            .filter(|path| path.join(".git").exists())
-                            .last()
-                            .map(Path::to_path_buf)
+                        crate::work_cmd::git_boundaries(&cwd).map(|(_, outer)| outer.to_path_buf())
                     })
                     .unwrap_or_else(|| i.cwd.to_path_buf());
                 match crate::workers::proc::start(i.settings, &host_path, &project, &i.dirs.home) {
@@ -182,6 +179,11 @@ fn build_worker_hooks(
                         let workers = Arc::new(WorkerHooks::new(WorkerConfig {
                             oxa_bin: bin,
                             cwd: i.cwd.to_path_buf(),
+                            lead_dirs: (matches!(tool_scope, WorkerToolScope::LeadExposure) && i.trusted)
+                                .then(|| oxa_config::Dirs {
+                                    agent_dir: agent_dir.clone(),
+                                    ..i.dirs.clone()
+                                }),
                             agent_dir,
                             max: worker_tool::max_workers(i.settings),
                             supervisor,
