@@ -399,6 +399,19 @@ fn continued_config_values_and_unresolved_git_subcommands_ask() {
     let cwd = repo("my-branch");
     assert_eq!(decide(&cwd, Autonomy::Auto, "git ship"), Decision::Ask);
 
+    // A documented builtin keeps its classification: local state commands such as
+    // `git merge --abort` or `git update-ref` are not publish commands and must not
+    // ask (the aborting-merge and replace-ref work guards depend on them running).
+    let cwd = repo("my-branch");
+    for c in [
+        "git merge --abort",
+        "git update-ref refs/replace/deadbeef deadbeef",
+        "git rebase origin/main",
+        "git config user.name someone",
+    ] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Allow, "{c}");
+    }
+
     let cwd = repo("my-branch");
     set_config(&cwd, "[alias]\n\tship = push origin HEAD:main\n");
     for c in [
