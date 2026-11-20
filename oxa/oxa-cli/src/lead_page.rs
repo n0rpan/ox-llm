@@ -33,6 +33,16 @@ pub struct Alarms {
     pub overdue_queue: Option<Vec<PullRequest>>,
 }
 
+impl Alarms {
+    /// The single rule for a queue-age alarm: the alarm intersected with queue
+    /// membership at the exact (number, head). `None` when either source is
+    /// unobserved, so neither the page nor the loop can act on half a record.
+    pub fn overdue_in_queue(&self) -> Option<Vec<&PullRequest>> {
+        let (queue, overdue) = (self.queue.as_deref()?, self.overdue_queue.as_deref()?);
+        Some(queue.iter().filter(|pr| overdue.contains(pr)).collect())
+    }
+}
+
 /// Borrowed presentation inputs, not a second runner state store. None means unavailable.
 #[derive(Default)]
 pub struct View<'a> {
@@ -250,14 +260,7 @@ fn attention(html: &mut String, view: &View<'_>) {
     let alarms = view.alarms;
     // The queue-age alarm binds each PR to its exact observed head: membership
     // and landing age must come from the same protected record.
-    let overdue: Vec<&PullRequest> = alarms
-        .and_then(|a| match (a.queue.as_deref(), a.overdue_queue.as_deref()) {
-            (Some(queue), Some(overdue)) => {
-                Some(queue.iter().filter(|pr| overdue.contains(pr)).collect::<Vec<_>>())
-            }
-            _ => None,
-        })
-        .unwrap_or_default();
+    let overdue: Vec<&PullRequest> = alarms.and_then(Alarms::overdue_in_queue).unwrap_or_default();
     let main_red = alarms.and_then(|a| a.main_red);
     let merge_stalled = alarms.and_then(|a| a.main_merge_stalled);
     let stalled_runs = alarms.and_then(|a| a.stalled_runs.as_deref());

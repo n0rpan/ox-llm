@@ -42,6 +42,29 @@ fn unsandboxed_run_sets_the_flag_and_runs_the_command() {
 }
 
 #[test]
+fn portable_hook_stdin_masks_known_values_in_capture_and_live_output() {
+    use oxa_proto::Sandbox;
+    use oxa_sandbox::{NetSandbox, Unsandboxed};
+    use std::sync::Arc;
+
+    let env = oxa_fake::TestEnv::new();
+    let sb = NetSandbox::new(Arc::new(Unsandboxed::default()), false, false)
+        .with_host_secrets_lazy(|| vec!["known-worker-value".into()]);
+    let mut s = spec(&env, "cat".into());
+    s.env.push(("API_KEY".into(), "hook-fixture-value".into()));
+    let mut live = Vec::new();
+    let r = sb.run_with_stdin(
+        &s,
+        b"before known-worker-value hook-fixture-value after",
+        &CancelToken::new(),
+        &mut |bytes| live.extend_from_slice(bytes),
+    );
+    assert_eq!(r.exit, Some(0));
+    assert_eq!(live, b"before [redacted] [redacted] after");
+    assert_eq!(r.output, live);
+}
+
+#[test]
 #[cfg(not(target_os = "linux"))]
 fn unsandboxed_notice_never_claims_a_sandbox() {
     use oxa_proto::Sandbox;

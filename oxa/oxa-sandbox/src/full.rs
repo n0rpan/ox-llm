@@ -208,14 +208,14 @@ impl FullAccess {
                     Some(input) => run_unsandboxed_stdin(&spec, input, c, live),
                     None => run_unsandboxed_capture(&spec, c, live, capture),
                 };
-                let mut result = self.host_sink(live, run);
+                let mut result = self.host_sink(&spec.env, live, run);
                 result.unsandboxed = true;
                 result
             }
             ExecDecision::HostNoNet(bwrap) => {
                 let argv = crate::offline::model_offline_argv(bwrap, &self.home, &s.cwd, &s.command);
                 let capture = capture || stdin.is_some();
-                self.host_sink(live, |live: &mut dyn FnMut(&[u8])| {
+                self.host_sink(&spec.env, live, |live: &mut dyn FnMut(&[u8])| {
                     crate::run::run_argv_cleared(&argv, &spec.env, stdin, s.timeout_s, c, live, capture)
                 })
             }
@@ -239,12 +239,13 @@ impl FullAccess {
 
     fn host_sink(
         &self,
+        env: &[(String, String)],
         live: &mut dyn FnMut(&[u8]),
         run: impl FnOnce(&mut dyn FnMut(&[u8])) -> ExecResult,
     ) -> ExecResult {
         match &self.host_net {
-            Some(net) => net.sink(true, true, live, run),
-            None => run(live),
+            Some(net) => net.sink(true, true, env, live, run),
+            None => NetSandbox::redact_host_output(None, env, live, run),
         }
     }
 }

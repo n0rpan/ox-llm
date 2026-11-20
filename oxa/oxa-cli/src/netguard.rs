@@ -9,7 +9,7 @@ use std::sync::Arc;
 /// O-167(b): the process sandbox with the bash network decision (`oxa.sandbox.net`, default
 /// on; always off while offline). Read once at startup.
 pub(crate) fn with_net(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<NetSandbox> {
-    with_policy(sandbox, settings, true, None)
+    with_policy(sandbox, settings, true, GhLaunch::Direct, Vec::new())
 }
 
 /// [`with_net`] for the run's [`ExecPolicy`](oxa_sandbox::ExecPolicy): credential discovery
@@ -19,8 +19,45 @@ pub(crate) fn with_net_policy(
     sandbox: Arc<dyn Sandbox>,
     settings: &Settings,
     policy: &oxa_sandbox::ExecPolicy,
+    env: &Env,
+    engine_key: Option<&str>,
 ) -> Arc<NetSandbox> {
-    with_policy(sandbox, settings, true, policy.pinned_bwrap.clone())
+    with_policy(
+        sandbox,
+        settings,
+        true,
+        policy
+            .pinned_bwrap
+            .clone()
+            .map_or(GhLaunch::Direct, GhLaunch::NoNet),
+        host_secrets(env, engine_key),
+    )
+}
+
+/// Values a host-rights program can echo even though oxa does not inherit them into bash. In
+/// particular, a worker's `GH_TOKEN` need not be in a `gh` login store.
+fn host_secrets(env: &Env, engine_key: Option<&str>) -> Vec<String> {
+    env.pairs()
+        .iter()
+        .filter(|(name, value)| oxa_sandbox::is_host_secret_name(name) && !value.is_empty())
+        .map(|(_, value)| value.clone())
+        .chain(engine_key.filter(|key| !key.is_empty()).map(str::to_owned))
+        .collect()
+}
+
+pub(crate) fn session_net(
+    sandbox: Arc<dyn Sandbox>,
+    settings: &Settings,
+    env: &Env,
+    engine_key: Option<&str>,
+) -> Arc<NetSandbox> {
+    with_policy(
+        sandbox,
+        settings,
+        true,
+        GhLaunch::Direct,
+        host_secrets(env, engine_key),
+    )
 }
 
 /// S11: yolo gives bash the network whatever `oxa.sandbox.net` says; the setting still applies to
@@ -33,7 +70,7 @@ pub(crate) fn yolo_net_notice(level: PermissionMode, net: Option<&str>, offline:
 
 /// Acceptance commands keep the user's network policy without GitHub authentication.
 pub(crate) fn without_github(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<dyn Sandbox> {
-    with_policy(sandbox, settings, false, None)
+    with_policy(sandbox, settings, false, GhLaunch::Direct, Vec::new())
 }
 
 /// How credential discovery may start the owner's `gh` (#1952): the program is a PATH lookup
@@ -52,7 +89,8 @@ fn with_policy(
     sandbox: Arc<dyn Sandbox>,
     settings: &Settings,
     github_auth: bool,
-    pinned_bwrap: Option<std::path::PathBuf>,
+    requested_launch: GhLaunch,
+    known: Vec<String>,
 ) -> Arc<NetSandbox> {
     let runner_owns_github = std::env::var_os(oxa_work::RUNNER_GITHUB_ENV).is_some_and(|value| value == "1");
     let on = !runner_owns_github && sandbox_net_setting(settings.string(SETTING_SANDBOX_NET).as_deref());
@@ -76,7 +114,10 @@ fn with_policy(
     let launch = if runner_owns_github || offline {
         GhLaunch::Never
     } else if !on {
-        pinned_bwrap.map_or(GhLaunch::Never, GhLaunch::NoNet)
+        match requested_launch {
+            GhLaunch::NoNet(bwrap) => GhLaunch::NoNet(bwrap),
+            _ => GhLaunch::Never,
+        }
     } else {
         GhLaunch::Direct
     };
@@ -90,8 +131,14 @@ fn with_policy(
     if lookup {
         ns = ns.with_gh_token_lazy(gh_token);
     }
-    if scrub_host {
-        ns = ns.with_host_secrets_lazy(move || gh_host_secrets(&launch));
+    if scrub_host || !known.is_empty() {
+        ns = ns.with_host_secrets_lazy(move || {
+            let mut secrets = known.clone();
+            if scrub_host {
+                secrets.extend(gh_host_secrets(&launch));
+            }
+            secrets
+        });
     }
     Arc::new(ns)
 }

@@ -40,7 +40,8 @@ In a headless run (`-p`, `--mode json`) with the output diet on, the prompt adds
 | `--no-mcp` | no MCP servers connect and no MCP tools are offered |
 | `defaultTools` setting | the list of tools on by default. Names may include `subagent`, `web_search`, `codemode` and `tool_search`, and a list can be patched with `+name` and `-name` |
 
-With the output diet on (the default) the rules also tell the model to run the project's own checks before it calls a task done (when `bash` is on), and to use `wait` instead of polling (whenever `wait` is declared, which is every session unless `oxa.tools.wait` is `false`). `wait` takes seconds, and optionally `until` `ci`, `pr_merged`, `job_done` (a background bash job id) or a GitHub read probe; a message the owner types ends it early.
+With the output diet on (the default) the rules also tell the model to run the project's own checks before it calls a task done (when `bash` is on), and to use `wait` instead of polling (whenever `wait` is declared, which is every session unless `oxa.tools.wait` is `false`). `wait` takes seconds, and optionally `until` `ci`, `pr_merged`, `job_done` (a background bash job id) or a GitHub read probe; `ci`, `pr_merged` and the read probes take an optional `"repo":"OWNER/NAME"` (otherwise the origin of the working directory; github.com only); a message the owner types ends it early.
+`wait` with `until` `pr_activity` waits for a review or conversation comment on a pull request you pinned at a head: `{"seconds":1800,"reason":"Review of #7","until":{"kind":"pr_activity","pr":7,"head":"<sha>"}}`. It wakes with the new reviews and comments (author, state, link, body cut to 1500 characters, at most 10 listed), and also when the head is no longer the pinned one or the PR is merged or closed. The first poll for a PR and head is the baseline: what is already there does not wake it, unless you pass `"since":"<UTC time like 2026-11-20T10:00:00Z>"`, which counts anything newer on that first poll (use it after a restart). The baseline lasts for the session, and evidence that was returned is not returned again.
 A resumed session (`--continue`, `--resume`, `/resume`) keeps `wait` and, for a goal that is pursuing, `goal_done`, without opening a new prefix epoch. If a goal is pursuing but the tool selection (`--tools`, `defaultTools`) removed `goal_done`, the goal pauses with that reason instead of repeating a continue instruction the model cannot follow; add `goal_done` to the selection, then `/goal resume`.
 
 Examples:
@@ -55,6 +56,17 @@ $ oxa --exclude-tools bash
 ```
 
 A read-only session: `oxa --tools read,grep,find,ls`. In plan mode the write tools are refused, and bash only runs read-only commands with no network.
+
+## Background parts and jobs
+
+A command with a part that runs detached (an `&` outside quotes, anywhere in the command, or `nohup`, `setsid`, `disown`) gets a note in its result: that part's output and exit status are not in the result, a `cd` before the `&` applies only to the backgrounded part, and what happens to the process. In the OS sandbox every process of the call ends with the call; without it (yolo, or no sandbox) it keeps running and oxa does not track it. The call is marked `detached` and never counts as a passing check. To run something you can read, wait for or stop, use `bash` with `background: true` and then `bash` with `job` (and `wait_s`, or `kill`), or `wait` with `until` `job_done`.
+
+## Before a run ends
+
+One decision runs before a run or goal ends. Each open fact gets at most one extra turn per run, then the run ends with a warning and a record; nothing blocks.
+
+- A run that changed files (a file tool, or a `bash` call that changed the work folder) and ran no passing check afterwards is asked to run the project's check, or to say in one line why none exists (`oxa.done.proveIt`, off by default). A read-only run is never asked. The `oxa_result` record carries `proved` (`true`, `false`, or `null` for a read-only run). The work-folder fingerprint that sees `bash` edits is now also taken when only this setting is on.
+- A goal that completes, or a headless run that ends, while background jobs still run is asked to wait for them or stop them (`oxa.done.waitForJobs`); a headless run's jobs stop when it ends. An interactive chat is never asked, so a dev server costs no turn. The record carries `jobs_running`.
 
 ## Repair turn
 
@@ -75,6 +87,12 @@ A model can get stuck making the same tool call again and again. When a call (an
 `oxa.toolRepeatGuard: false` turns this off.
 
 Loops that vary too much for this guard (calls that alternate, output with a timestamp), or one that keeps repeating after the warning, are not ended by it. To bound any of them, set `oxa.maxTurns` to a number of model replies: a run that reaches it ends with a `turn_limit` error. It is off by default.
+
+## CI polling
+
+A `bash` command that waits for CI by polling is not blocked. It runs and reports its own exit status (also a non-zero one: `gh pr checks` exits 8 or 1 while checks fail or are pending), and its result carries a note with the native call to use instead: `wait {"seconds":3600,"reason":"Wait for CI","until":{"kind":"ci","sha":"<head>","workflow":"<workflow>"}}`. The note fills in the 40-hex head commit and the workflow name when the command or its output names them, and leaves the placeholders otherwise. When the `wait` tool is not declared (`oxa.tools.wait` is `false`) the note says to run one blocking check instead of a loop.
+
+A polling command is a `for` / `while` / `until` loop or `watch` around `gh run`, `gh workflow` or `gh pr checks`, `gh run watch` itself, `gh pr checks --watch`, or an earlier `sleep` before the check. Quoted text is ignored, and a single `gh run view`, `gh run list`, `gh pr view` or `gh pr checks` is not polling. `oxa.bash.ciPollHint: false` turns the note off. The call is marked `ciPoll`, and the `oxa_result` record carries `ci_polls`, the number of such calls, so a session that polls from bash can be seen. The `wait` tool's description names `ci` and `pr_merged` first with one example call; the tool list changes once with it.
 
 ## Thinking on tool follow-ups
 
