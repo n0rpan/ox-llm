@@ -135,7 +135,7 @@ Type a slash command at the start of the editor and press Enter. Commands with a
 | `/compact [instructions]` | compact the context now, with optional guidance for the summary |
 | `/new` | start a new session |
 | `/resume` | open the sessions picker |
-| `/goal [text\|clear\|pause\|resume]` | show the session goal; with text, set it and start a run that pursues it until complete or blocked; `clear`, `pause` or `resume` control it; a goal that gets two replies without a tool call shows a warning and keeps pursuing (with `oxa.goal.idlePause` it stops as paused, with a notice giving the reason and `/goal resume`) |
+| `/goal [text\|clear\|pause\|resume]` | show the session goal; with text, set it and start a run that pursues it until complete or blocked; `clear`, `pause` or `resume` control it; a goal with no budget of its own that gets two replies without a tool call stops as paused by default, with a notice giving the reason and `/goal resume` (`oxa.onExceed.goalIdle` in the user settings chooses `warn`, `pause` or `stop`); a goal that only warns gets one nudge and then oxa waits itself before each next request (`oxa.goal.idleBackoffSeconds`, doubling, recorded; `0` turns the wait off), and a reply that matches the output schema is recorded as an answer and followed by `wait` or `goal_done`; `resume` works from any state except done or canceled, in the same session (a run that failed keeps the goal pursuing and records a warning with the error code; `--continue` in headless mode continues it) |
 | `/tree` | navigate the session tree; choose a branch or summarise the one you leave |
 | `/fork` | start a new session from an earlier user message |
 | `/clone` | duplicate the current session at the current point |

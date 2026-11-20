@@ -198,7 +198,9 @@ fn build_worker_hooks(
                             parent_scope,
                             yolo: i.yolo.clone(),
                             resume_on_start: crate::workers::resume::enabled(i.settings),
+                            send_ack_seconds: worker_tool::send_ack_seconds(i.settings),
                             models,
+                            cache: crate::worker_cache::view(i.settings, &i.dirs.home, i.env, i.cwd),
                         }));
                         return Some(workers);
                     }

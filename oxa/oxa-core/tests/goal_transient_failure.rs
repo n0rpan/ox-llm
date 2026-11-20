@@ -115,9 +115,10 @@ fn remote_busy_failure_is_unknown_spend_that_warns_and_the_goal_retries() {
     let engine = Arc::new(ScriptedEngine::new(vec![busy(), finish()]).with_remote());
     let store = Arc::new(MemStore::new());
     let mut dependencies = deps(&env, store, engine.clone(), Some(1));
+    // The owner chose to keep going on unknown spend (`warn`); the default pauses the goal.
     dependencies.settings = Settings::from_values(
         serde_json::json!({
-            "oxa": {"envNote": false, "goal": {"failureBackoffSeconds": 1}},
+            "oxa": {"envNote": false, "goal": {"failureBackoffSeconds": 1}, "onExceed": {"goalUnknownUsage": "warn"}},
             "retry": {"enabled": false}
         }),
         serde_json::json!({}),
