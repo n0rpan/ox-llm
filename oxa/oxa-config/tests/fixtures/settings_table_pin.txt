@@ -109,13 +109,13 @@ oxa.toolOutputCap|Number|16384|true
 oxa.toolRepair|Bool|true|true
 oxa.toolRepeatGuard|Bool|true|true
 oxa.tools.wait|Bool|true|true
-oxa.work.workerGithub|Enum(["runner", "broker", "worker"])|null|true
 oxa.wait.maxSeconds|Number|86400|true
 oxa.wait.pollSeconds|Number|30|true
 oxa.webSearch.enabled|Bool|true|true
 oxa.webSearch.maxTokens|Number|2048|true
 oxa.webSearch.provider|Enum(["brave", "none"])|"brave"|true
 oxa.work.localChecks|StringList|["cargo check"]|true
+oxa.work.workerGithub|Enum(["runner", "broker", "worker"])|null|true
 oxa.workers.enabled|Bool|true|true
 oxa.workers.max|Number|4|true
 oxa.workers.resumeOnStart|Bool|true|true
