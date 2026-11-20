@@ -303,7 +303,7 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
     let Some(current) = current_branch(&wd) else {
         return Kind::Unsafe;
     };
-    if !valid_branch(&current) || !known_non_default(&wd, &current) {
+    if !valid_branch(&current) || !pinned_non_default(cwd, &wd, &current) {
         return Kind::Unsafe;
     }
     let mut pos: Vec<&str> = Vec::new();
@@ -314,7 +314,7 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
             s => pos.push(s),
         }
     }
-    if config_risky(&wd, &current, pos.len() < 2) || !urls_unchanged(cwd, &wd) {
+    if config_risky(&wd, &current, pos.len() < 2) {
         return Kind::Unsafe;
     }
     let ok = match pos.as_slice() {
@@ -544,11 +544,11 @@ fn default_branch(dir: &Path) -> Option<String> {
         .filter(|d| !d.is_empty())
 }
 
-fn known_non_default(dir: &Path, branch: &str) -> bool {
+fn known_non_default(default: Option<&str>, branch: &str) -> bool {
     if DEFAULT_BRANCHES.contains(&branch) {
         return false;
     }
-    default_branch(dir).is_some_and(|d| d != branch)
+    default.is_some_and(|d| d != branch)
 }
 
 /// Whether the repository config can send a push somewhere the command line does not say:
@@ -609,6 +609,26 @@ fn urls_unchanged(session: &Path, target: &Path) -> bool {
     let Ok(m) = map.lock() else { return false };
     match (m.get(&key), url_fingerprint(target)) {
         (Some(base), Some(now)) => base.urls == now && base.default_branch == default_branch(target),
+        _ => false,
+    }
+}
+
+/// The branch is non-default according to the identity pinned before commands ran, and the
+/// repository still has the metadata that was pinned. Never decide this from the writable live
+/// `origin/HEAD`: otherwise a concurrent rewrite can make the two separate reads disagree.
+fn pinned_non_default(session: &Path, target: &Path, branch: &str) -> bool {
+    record_baseline(session);
+    let Some(key) = baseline_key(session) else {
+        return false;
+    };
+    let Some(map) = BASELINE.get() else { return false };
+    let Ok(m) = map.lock() else { return false };
+    match (m.get(&key), url_fingerprint(target)) {
+        (Some(base), Some(now)) => {
+            known_non_default(base.default_branch.as_deref(), branch)
+                && base.urls == now
+                && base.default_branch == default_branch(target)
+        }
         _ => false,
     }
 }

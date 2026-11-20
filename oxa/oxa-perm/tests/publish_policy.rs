@@ -346,14 +346,17 @@ fn clustered_api_methods_and_legacy_config_sections_ask() {
 }
 
 #[test]
-fn changed_default_branch_metadata_asks() {
+fn rewritten_default_branch_cannot_authorize_its_push() {
     let cwd = repo("develop");
     std::fs::write(
         cwd.join(".git/refs/remotes/origin/HEAD"),
         "ref: refs/remotes/origin/develop\n",
     )
     .unwrap();
+    // A harmless first command pins the remote's real default for this session.
     assert_eq!(decide(&cwd, Autonomy::Auto, "git status"), Decision::Allow);
+    // This is the metadata change made by
+    // `git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main`.
     std::fs::write(
         cwd.join(".git/refs/remotes/origin/HEAD"),
         "ref: refs/remotes/origin/main\n",
