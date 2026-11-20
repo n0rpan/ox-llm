@@ -331,8 +331,9 @@ fn merge_alias(
 ) -> Result<(), OxaError> {
     let root = object(local, "oxa.local")?;
     let server_path = server.to_string_lossy().into_owned();
-    // The supervisor clears its environment. Pin the resolved owner home so the server's
-    // `default` disk caches remain absolute and cannot fall back to the launch directory.
+    // The supervisor clears its environment. Pin the resolved owner home for a fresh
+    // configuration so the server's `default` disk caches remain absolute, but preserve an
+    // explicit HOME shared by aliases already configured by the owner.
     let environment = root.entry("environment").or_insert_with(|| json!({}));
     object(environment, "oxa.local.environment")?
         .entry("HOME")
@@ -652,6 +653,26 @@ mod tests {
         });
         assert!(dup.is_err());
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn adding_an_alias_preserves_an_explicit_engine_home() {
+        let configured_home = "/owner/chosen-engine-home";
+        let mut local = json!({"environment": {"HOME": configured_home}});
+
+        merge_alias(
+            &mut local,
+            "new-alias",
+            Path::new("/engine/oxe-server"),
+            Path::new("/resolved/owner-home"),
+            json!({"model": "/models/new.gguf"}),
+            &json!({"context_window": 4096}),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(local["environment"]["HOME"], configured_home);
+        assert_eq!(local["models"]["new-alias"]["model"], "/models/new.gguf");
     }
 
     #[test]

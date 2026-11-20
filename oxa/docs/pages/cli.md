@@ -105,7 +105,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa status <session-id\|session-file> [--session-dir <dir>]` | read a saved session's progress and stall signal without contacting an engine |
 | `oxa send <session-id> <text\|->` | queue one follow-up for the session's TUI or RPC owner; `-` reads standard input |
-| `oxa send <session-id> --approve <request-id> once\|session\|always\|deny` | answer a dangerous-command request filed by an unattended run (#1512). `always` also saves the rule key to the user settings. Answers go to the approval desk, never to the session's message queue |
+| `oxa send <session-id> --approve <request-id> once\|session\|always\|deny` | answer a dangerous-command request filed by an unattended run (#1512). The answer requires confirmation from the session's owner-confirm broker, or directly from the controlling terminal. `always` also saves the rule key to the user settings. Answers go to the approval desk, never to the session's message queue |
 | `oxa send --approvals` | list the approval requests still waiting for an answer: id, session, command and reasons |
 | `oxa config [-l]` | print every setting with its value and where it comes from |
 | `oxa local add <model.gguf> [--name ALIAS] [--ctx N] [--max-output N] [--margin-bytes N] [--enable] [--replace] [--engine-dir DIR] [-- LAUNCH ARGS]` | write the native local engine settings for one GGUF from the engine's own admission report, see [Local models](#local-models) |
@@ -357,7 +357,7 @@ Every boolean variable takes the same eight words, in any case: `1`, `true`, `ye
 | `OXA_ENV_NOTE` | `0`, `false`, `no` or `off` turns the environment note off for one run, `1`, `true`, `yes` or `on` turns it on. Wins over the `oxa.envNote` setting; unset leaves the setting in place |
 | `OXA_TRUST_PROJECT` | `1` or `true` acts as `--approve` for the project trust decision, for unattended runs; an explicit `--no-approve` wins. `oxa work` and lead workers do not pass it on to their children |
 | `OXA_RPC_OWNER_PRESENT` | `1` tells an RPC session that an owner can answer, so the `ask` tool is offered ([tools.md](tools.md#ask)) |
-| `OXA_LEAD_SITUATION` | owner-selected absolute path to the runner's situation document for `oxa lead`; a relative path is refused and an unreadable or unprotected file stays unavailable |
+| `OXA_LEAD_SITUATION` | owner-selected absolute path to the runner's situation document for `oxa lead`, including the Lead loop's worker signals; a relative path is refused and an unreadable or unprotected file stays unavailable |
 | `OXA_SKIP_VERSION_CHECK`, `OXA_SELF_UPDATE_COMMAND`, `OXA_TELEMETRY` | accepted and ignored: oxa has no version check, self-update or telemetry |
 | `OXA_CACHE_RETENTION` | accepted and ignored: the engine owns its cache |
 | `OXA_SHARE_VIEWER_URL`, `OXA_RADIUS_GATEWAY` | accepted and ignored: oxa does no uploads |

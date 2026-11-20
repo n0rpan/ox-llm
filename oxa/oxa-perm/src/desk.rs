@@ -64,6 +64,9 @@ impl UnattendedMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
     pub id: String,
+    /// Identifies the unattended process that filed the request. A resumed process has a new
+    /// nonce even when it reuses the persisted session id.
+    pub run_nonce: String,
     pub session: String,
     pub cwd: String,
     pub command: String,
@@ -80,6 +83,7 @@ impl Record {
     fn to_value(&self) -> Value {
         json!({
             "id": self.id,
+            "run_nonce": self.run_nonce,
             "session": self.session,
             "cwd": self.cwd,
             "command": self.command,
@@ -103,6 +107,8 @@ impl Record {
         };
         Some(Record {
             id: text("id")?,
+            // Records written before run binding are history, not reusable grants.
+            run_nonce: text("run_nonce").unwrap_or_default(),
             session: text("session")?,
             cwd: text("cwd")?,
             command: text("command")?,
@@ -120,10 +126,9 @@ impl Record {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalDesk {
     dir: PathBuf,
-    /// When this process opened the desk. An `always` record answered before it is history:
-    /// the user settings' `oxa.approval.always` (where the answer was saved) decides from then
-    /// on, so removing the line there revokes it.
-    opened_ms: u64,
+    /// Fresh for every run that opens the desk. The owner may answer through another desk
+    /// handle, but the record keeps the nonce of the run that filed it.
+    run_nonce: String,
 }
 
 /// The held desk lock; dropping it releases the lock and closes the descriptor.
@@ -184,7 +189,7 @@ impl ApprovalDesk {
         }
         Ok(ApprovalDesk {
             dir,
-            opened_ms: now_ms(),
+            run_nonce: random_hex(16),
         })
     }
 
@@ -231,6 +236,7 @@ impl ApprovalDesk {
         }
         let rec = Record {
             id: random_hex(8),
+            run_nonce: self.run_nonce.clone(),
             session: session.to_string(),
             cwd: dir,
             command: command.to_string(),
@@ -317,6 +323,7 @@ impl ApprovalDesk {
         let dir = dir_key(cwd);
         records.iter().any(|rec| {
             rec.session == session
+                && rec.run_nonce == self.run_nonce
                 && rec.cwd == dir
                 && keys.iter().all(|k| rec.keys.contains(k))
                 && match rec.status.as_str() {
@@ -339,7 +346,11 @@ impl ApprovalDesk {
         };
         let dir = dir_key(cwd);
         for mut rec in records {
-            if rec.session != session || rec.cwd != dir || !keys.iter().all(|k| rec.keys.contains(k)) {
+            if rec.session != session
+                || rec.run_nonce != self.run_nonce
+                || rec.cwd != dir
+                || !keys.iter().all(|k| rec.keys.contains(k))
+            {
                 continue;
             }
             match rec.status.as_str() {
@@ -354,12 +365,11 @@ impl ApprovalDesk {
         false
     }
 
-    /// A `session` grant holds for its session. An `always` grant holds only in the run it was
-    /// answered in; later runs read it from the user settings, so it can be revoked there.
+    /// A desk grant holds only in the run that filed it. Later runs read `always` grants from
+    /// the user settings, so removing a key there revokes it; a `session` grant simply expires.
     fn reusable(&self, rec: &Record) -> bool {
         match rec.status.as_str() {
-            "session" => true,
-            "always" => rec.answered_ms.is_some_and(|t| t >= self.opened_ms),
+            "session" | "always" => rec.run_nonce == self.run_nonce,
             _ => false,
         }
     }
@@ -388,13 +398,14 @@ impl ApprovalDesk {
         }
     }
 
-    /// Remove every record of `session`: a wiped session keeps no copy of its commands, working
-    /// directories or ids. Returns how many records were removed.
+    /// Remove every record of `session`, including private temporary records left by an
+    /// interrupted write: a wiped session keeps no copy of its commands, working directories or
+    /// ids. Returns how many records were removed.
     pub fn forget_session(&self, session: &str) -> io::Result<usize> {
         self.forget(false, |rec| rec.session == session)
     }
 
-    /// Remove every record, for `oxa wipe --all`.
+    /// Remove every complete or private temporary record, for `oxa wipe --all`.
     pub fn forget_all(&self) -> io::Result<usize> {
         self.forget(true, |_| true)
     }
@@ -651,7 +662,8 @@ mod tests {
         let id = desk
             .record("s1", &link, command, &[hit()], "pending")
             .expect("record");
-        desk.answer(&id, "session").expect("answer");
+        let owner = ApprovalDesk::open(&root).expect("owner desk");
+        owner.answer(&id, "session").expect("answer");
         assert!(desk.covers("s1", &link, &keys));
         fs::remove_file(&link).expect("unlink");
         std::os::unix::fs::symlink(&b, &link).expect("relink");
@@ -745,18 +757,56 @@ mod tests {
     }
 
     #[test]
-    fn wipe_removes_orphaned_private_temporary_records() {
+    fn a_session_record_from_an_earlier_run_is_not_reused() {
+        let root = temp_dir("session-run");
+        let desk = ApprovalDesk::open(&root).expect("desk");
+        let cwd = temp_dir("session-run-cwd");
+        let command = "git push --force origin main";
+        let id = desk
+            .record("s1", &cwd, command, &[hit()], "pending")
+            .expect("record");
+        let owner = ApprovalDesk::open(&root).expect("owner desk");
+        owner.answer(&id, "session").expect("answer");
+        let keys = vec![danger_key(&hit(), command)];
+        assert!(desk.granted("s1", &cwd, &keys), "the answering run uses it");
+
+        let later = ApprovalDesk::open(&root).expect("later run");
+        assert!(
+            !later.granted("s1", &cwd, &keys),
+            "a resumed session must not inherit an earlier run's grant"
+        );
+    }
+
+    #[test]
+    fn wipe_removes_only_the_selected_sessions_orphaned_private_temporary_records() {
         let root = temp_dir("orphan-temp");
         let desk = ApprovalDesk::open(&root).expect("desk");
         let cwd = temp_dir("orphan-temp-cwd");
-        let id = desk
+        let first = desk
             .record("s1", &cwd, "git push --force", &[hit()], "pending")
             .expect("record");
-        let record = desk.load(&id).expect("load").expect("record");
-        let orphan = desk.dir.join(".0123456789abcdef.deadbeef.tmp");
-        fs::write(&orphan, record.to_value().to_string()).expect("orphan");
-        assert_eq!(desk.forget_session("s1").expect("wipe"), 2);
-        assert!(!orphan.exists(), "session wipe retained private temp data");
+        let second = desk
+            .record("s2", &cwd, "rm -rf build", &[hit()], "pending")
+            .expect("record");
+        let first_record = desk.load(&first).expect("load").expect("record");
+        let second_record = desk.load(&second).expect("load").expect("record");
+        let first_orphan = desk.dir.join(".0123456789abcdef.deadbeef.tmp");
+        let second_orphan = desk.dir.join(".fedcba9876543210.deadbeef.tmp");
+        fs::write(&first_orphan, first_record.to_value().to_string()).expect("first orphan");
+        fs::write(&second_orphan, second_record.to_value().to_string()).expect("second orphan");
+
+        assert_eq!(desk.forget_session("s1").expect("session wipe"), 2);
+        assert!(
+            !first_orphan.exists(),
+            "session wipe retained its private temp data"
+        );
+        assert!(
+            second_orphan.exists(),
+            "session wipe removed another session's temp data"
+        );
+
+        assert_eq!(desk.forget_all().expect("wipe all"), 2);
+        assert!(!second_orphan.exists(), "full wipe retained private temp data");
     }
 
     #[test]

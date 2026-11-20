@@ -113,6 +113,18 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .advanced()
     .user_only(),
     d(
+        "oxa.cloud.model_rules",
+        Group::Budgets,
+        "",
+        "Model rules",
+        "Per-model thinking format, reasoning replay, token field and limits.",
+    )
+    .control(Control::Raw)
+    .apply(Apply::Restart)
+    .web(WebEdit::ReadOnly)
+    .advanced()
+    .user_only(),
+    d(
         "oxa.cloud.subscription",
         Group::Budgets,
         "",

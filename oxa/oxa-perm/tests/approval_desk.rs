@@ -460,6 +460,43 @@ fn unattended_approval_cannot_replay_file_fed_input() {
     );
 }
 
+/// The shell parser joins a continued executable name before mutable-input policy is applied.
+#[test]
+fn unattended_approval_refuses_continued_xargs() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let command = "cat targets | xa\\\nrgs rm -rf";
+    let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
+    let cmd = exec(command);
+
+    assert!(!p.danger_ask(&cmd, &cwd).is_empty());
+    let refusal = p.danger_unattended(&cmd, &cwd).expect("refusal");
+    assert!(refusal.contains("cannot be verified for unattended replay"));
+    assert!(desk.pending().expect("pending").is_empty());
+}
+
+/// A redirection inside an inline script is still a file the command acts on, and a command the
+/// shell parser cannot read is refused rather than taken as fixed: neither reviewed text pins
+/// what `targets` holds, so a replay must not carry an approval.
+#[test]
+fn unattended_approval_refuses_inline_scripts_and_unparsed_input() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    for command in ["sh -c 'xargs rm -rf < targets'", "xargs rm -rf < targets \\"] {
+        let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
+        let cmd = exec(command);
+        assert!(!p.danger_ask(&cmd, &cwd).is_empty(), "{command}");
+        let refusal = p.danger_unattended(&cmd, &cwd).expect("refusal");
+        assert!(
+            refusal.contains("cannot be verified for unattended replay"),
+            "{command}: {refusal}"
+        );
+        assert!(desk.pending().expect("pending").is_empty(), "{command}");
+    }
+}
+
 #[test]
 fn a_once_approval_requires_a_successful_claim() {
     let env = TestEnv::new();

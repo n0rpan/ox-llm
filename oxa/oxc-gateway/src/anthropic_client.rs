@@ -357,6 +357,20 @@ mod tests {
             .collect();
         assert_eq!(events, vec![serde_json::json!({"type":"ping","text":"λ"})]);
     }
+
+    #[test]
+    fn shared_sse_comment_frames_are_not_provider_events() {
+        let mut decoder = Framer::default();
+        let events: Vec<Value> = b"data: {\"type\":\n: keepalive\ndata: \"ping\"}\n\n"
+            .iter()
+            .filter_map(|byte| match decoder.push(*byte) {
+                Some(Frame::Data(data)) => Some(serde_json::from_slice(&data).unwrap()),
+                Some(Frame::Comment(_)) | None => None,
+            })
+            .collect();
+
+        assert_eq!(events, vec![serde_json::json!({"type":"ping"})]);
+    }
     #[tokio::test]
     async fn cancellation_is_sticky_and_wakes_subscribers() {
         let cancel = Cancellation::default();
