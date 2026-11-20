@@ -103,12 +103,12 @@ class Paths(unittest.TestCase):
                     self.assertEqual(values['docs'], 'true')
                     self.assertEqual(values['md'], 'true')
                     for key in KEYS:
-                        self.assertEqual(values[key], str(everything or (event == 'merge_group' and key == 'oxa')).lower(), key)
+                        self.assertEqual(values[key], str(everything).lower(), key)
 
-    def test_merge_group_docs_reader_runs_for_oxa_documentation(self):
-        # This is documentation to the classifier, but f11_docs reads it at runtime.
-        document = 'oxa/docs/design/sandbox-config-cache-inventory.md'
-        self.assertFalse(paths.classify([document])['oxa'])
+    def test_merge_group_documentation_does_not_start_rust_tests(self):
+        documents = ['oxa/docs/pages/security.md',
+                     'oxa/docs/design/sandbox-config-cache-inventory.md']
+        self.assertFalse(paths.classify(documents)['oxa'])
         with tempfile.TemporaryDirectory() as directory:
             source, output = Path(directory) / 'event.json', Path(directory) / 'output'
             source.write_text(json.dumps({'merge_group': {
@@ -116,12 +116,13 @@ class Paths(unittest.TestCase):
             with patch.dict(os.environ, {'GITHUB_EVENT_PATH': str(source),
                     'GITHUB_EVENT_NAME': 'merge_group', 'GITHUB_REF': 'refs/heads/queue',
                     'GITHUB_OUTPUT': str(output)}, clear=True), \
-                    patch.object(paths, 'changed_paths', return_value=[document]):
+                    patch.object(paths, 'changed_paths', return_value=documents):
                 paths.main()
             values = dict(line.split('=', 1) for line in output.read_text().splitlines())
-            for key in ('full', 'docs', 'md', 'oxa'):
+            for key in ('full', 'docs', 'md'):
                 self.assertEqual(values[key], 'true', key)
-            self.assertEqual(values['engine'], 'false')
+            for key in KEYS:
+                self.assertEqual(values[key], 'false', key)
 
 
 class GitPaths(unittest.TestCase):

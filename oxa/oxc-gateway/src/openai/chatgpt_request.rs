@@ -60,6 +60,11 @@ pub fn headers(account_id: &str) -> [(&'static str, &str); 4] {
     ]
 }
 
+/// Headers of the plan's model list: the account and the client name, as the Codex CLI sends.
+pub fn catalog_headers(account_id: &str) -> [(&'static str, &str); 2] {
+    [("chatgpt-account-id", account_id), ("originator", "oxc")]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -17,7 +17,7 @@ The status bar always shows the mode. In print, JSON and RPC mode it is written 
 
 ## standard
 
-Work inside the project runs without a routine question: reading, editing, and bash. In an interactive CLI session, bash runs with your user rights and dangerous commands require approval. In an unattended standard run, bash uses the OS sandbox. oxa also asks before it reads or writes outside the project and before an extension command that wants the network. It offers "Allow once", "Allow for this session", "Always allow" and "Deny". A session grant is kept in memory and is gone when the session ends.
+Work inside the project runs without a routine question: reading, editing, and bash. In an interactive CLI session, bash runs with your user rights and dangerous commands require approval. In an unattended standard run, bash uses the OS sandbox. oxa also asks before it reads or writes outside the project and before an extension command that wants the network. An extension command that runs in a directory outside the project asks too, like a write there (yolo does not ask). It offers "Allow once", "Allow for this session", "Always allow" and "Deny". A session grant is kept in memory and is gone when the session ends.
 
 Choose it when you want to see each step that leaves the project.
 

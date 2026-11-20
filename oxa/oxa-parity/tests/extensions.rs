@@ -512,7 +512,7 @@ fn ext_014() {
 #[test]
 fn ext_015() {
     let r = go(
-        &[("home/.oxa/agent/settings.json".to_string(), r#"{"compaction": {"keepRecentTokens": 1}}"#.to_string()),
+        &[("home/.oxa/agent/settings.json".to_string(), r#"{"compaction": {"keepRecentTokens": 1}, "retry": {"baseDelayMs": 1, "maxAgentDelayMs": 5}}"#.to_string()),
             agent_ext(
             "e",
             "oxa.on('agent_end', (e, ctx) => { ctx.compact(); });\noxa.on('session_before_compact', (e, ctx) => { note(ctx, 'before'); return {summary: {summary: 'PARITY-CUSTOM-SUMMARY'}}; });",
@@ -549,7 +549,7 @@ fn session_text(env: &TestEnv) -> String {
 #[test]
 fn ext_016() {
     let r = go(
-        &[("home/.oxa/agent/settings.json".to_string(), r#"{"compaction": {"keepRecentTokens": 1}}"#.to_string()),
+        &[("home/.oxa/agent/settings.json".to_string(), r#"{"compaction": {"keepRecentTokens": 1}, "retry": {"baseDelayMs": 1, "maxAgentDelayMs": 5}}"#.to_string()),
             agent_ext(
             "e",
             "oxa.on('agent_end', (e, ctx) => { ctx.compact(); });\noxa.on('session_compact', (e, ctx) => note(ctx, 'compacted'));",
@@ -566,7 +566,7 @@ fn ext_016() {
 #[test]
 fn ext_017() {
     let r = go(
-        &[("home/.oxa/agent/settings.json".to_string(), r#"{"compaction": {"keepRecentTokens": 1}}"#.to_string()),
+        &[("home/.oxa/agent/settings.json".to_string(), r#"{"compaction": {"keepRecentTokens": 1}, "retry": {"baseDelayMs": 1, "maxAgentDelayMs": 5}}"#.to_string()),
             agent_ext(
             "e",
             "oxa.on('agent_end', (e, ctx) => { ctx.compact(); });\noxa.on('session_compact_failed', (e, ctx) => note(ctx, 'failed'));\noxa.on('session_compact', (e, ctx) => note(ctx, 'compacted mechanical=' + e.mechanical + ' error=' + (e.summaryError ? 'set' : 'none')));",
@@ -1128,7 +1128,7 @@ fn ext_058() {
 #[test]
 fn ext_059() {
     let r = go(
-        &[("home/.oxa/agent/settings.json".to_string(), r#"{"compaction": {"keepRecentTokens": 1}}"#.to_string()),
+        &[("home/.oxa/agent/settings.json".to_string(), r#"{"compaction": {"keepRecentTokens": 1}, "retry": {"baseDelayMs": 1, "maxAgentDelayMs": 5}}"#.to_string()),
             agent_ext(
             "e",
             "oxa.on('agent_end', (e, ctx) => { ctx.compact(); });\noxa.on('session_compact', (e, ctx) => note(ctx, 'compacted'));",

@@ -101,7 +101,7 @@ fn schema_of(ran: &Ran, name: &str) -> serde_json::Value {
         .clone()
 }
 
-const ALL_SEVEN: [&str; 7] = ["bash", "edit", "find", "grep", "ls", "read", "write"];
+const ALL_SEVEN: [&str; 8] = ["bash", "edit", "find", "grep", "ls", "read", "wait", "write"];
 
 /// Tool selection without a turn: the names the engine was offered.
 fn offered(env: &TestEnv, extra: &[&str]) -> Vec<String> {
@@ -655,7 +655,8 @@ fn tools_013() {
     let env = TestEnv::new();
     let outside = env.tmp().join("outside.txt");
     let cmd = format!(r#"{{"command":"echo x > '{}'; echo done"}}"#, outside.display());
-    let r = run_one(&env, "bash", &cmd, &[]);
+    // #1512 S3: an attended run has no OS sandbox unless asked for it.
+    let r = run_one(&env, "bash", &cmd, &["--sandbox"]);
     assert!(
         !outside.exists(),
         "the sandbox keeps writes out of the workspace; result: {r:?}"
@@ -846,8 +847,14 @@ fn tools_019() {
     let env = TestEnv::new();
     let mut lead: Vec<String> = ALL_SEVEN.iter().map(|s| s.to_string()).collect();
     lead.push("ask".to_string());
+    // K5a: the worker tool is on by default (`oxa.workers.enabled` true) in a parent session.
+    lead.push("worker".to_string());
     lead.sort();
-    assert_eq!(offered(&env, &[]), lead, "no agents: only lead built-ins");
+    assert_eq!(
+        offered(&env, &[]),
+        lead,
+        "no agents: the lead built-ins and worker"
+    );
     env.write(
         "home/.oxa/agent/agents/worker.md",
         "---\nname: worker\ndescription: Test worker\n---\nDo the assigned task.\n",
@@ -858,7 +865,7 @@ fn tools_019() {
     assert_eq!(
         offered(&env, &[]),
         all,
-        "oxa default (large, non-Flash model): eight lead built-ins and subagent"
+        "oxa default (large, non-Flash model): the lead built-ins, worker and subagent"
     );
     let flash = FakeOpts {
         model: "flash".to_string(),
