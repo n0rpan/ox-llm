@@ -311,7 +311,9 @@ land CI-control changes separately under normal review, checked on every commit 
 lacks, not only the saved base. A lane push needs the owner's own confirmation through the
 session broker (including from an agent child), or the compatibility
 terminal/`OXA_WORK_OWNER_CONFIRMED=1` path outside an agent tool. A green lane run is evidence
-only for what the lane tests (never `engine/` or `fuzz/` changes).
+only for what the lane tests. Lane coverage has one source, `tools/ci/lane_coverage.json`, read by
+`tools/ci/lane_select.py` and, from the trusted base commit, by the Rust guard; do not add path
+lists to the guard, change the data.
 
 A yolo worker is not sandboxed (see the sandbox standard below): it uses the GitHub access that the owner's settings
 give it.
