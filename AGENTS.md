@@ -165,7 +165,8 @@ code, tests, CI and docs; the owner validates on hardware.
   registry with its surfaces and help (P1 if added outside it or without an exception reason).
 - An explicit owner CLI `--auto` or `--yolo` permits starting at home, root, or a parent of home
   with a warning. Settings and environment opt-ins retain their own rules. Interactive `--max-time`
-  and `--max-tokens` stop the watched startup session at its wrap-up boundary, before later prompts.
+  and `--max-tokens` belong to the invocation: they stop whichever session is current (including after
+  `/new`, `/resume`, `/fork`) at its wrap-up boundary, before later prompts.
   An idle expiry starts no model request.
   `oxe admission` is an engine CLI exception. It reports allocation bounds directly from a GGUF
   header and accepts `oxe-server` launch arguments without opening an oxa session. Its command and
