@@ -1572,6 +1572,88 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn non_git_lead_starts_a_worker_in_the_configured_repository() {
+        use oxa_proto::{CancelToken, Decision, Policy};
+
+        let (root, repo, agent, fake) = fixture("lead-repo");
+        let cwd = root.join("lead");
+        fs::create_dir(&cwd).unwrap();
+        let repo = repo.canonicalize().unwrap();
+        oxa_perm::TrustStore::default()
+            .save(&agent.join("trust.json"), &repo, true)
+            .unwrap();
+        fs::write(
+            agent.join("settings.json"),
+            json!({"oxa": {"workers": {"repository": repo}}}).to_string(),
+        )
+        .unwrap();
+        let hooks = hooks_with_autonomy(
+            &fake,
+            &agent,
+            vec![("PATH".into(), "/usr/bin:/bin".into())],
+            ParentScope::default(),
+            Autonomy::Auto,
+        );
+        set_session(&hooks, "lead-parent");
+        let tool = &hooks.tool;
+        let args = json!({"action": "start", "name": "alpha", "goal": "one", "mode": "yolo"});
+        let mut cx = ToolCtx {
+            cwd: &cwd,
+            spill_dir: &root,
+            sandbox: &oxa_sandbox::NoSandbox,
+            mode: Mode::Workspace,
+            cancel: &CancelToken::default(),
+            env: &[],
+            tune: Default::default(),
+            checked: &[],
+            hidden: None,
+        };
+        let policy = oxa_perm::ModePolicy::new().with_yolo(YoloSwitch::new(Autonomy::Auto));
+        let checked: Vec<_> = tool
+            .access(&args, &cx)
+            .unwrap()
+            .into_iter()
+            .filter_map(|access| {
+                let (decision, pin) = policy.decide_pinned(cx.mode, &access, cx.cwd);
+                assert_eq!(decision, Decision::Allow);
+                match access {
+                    Access::Write(path) => Some((path, pin.unwrap())),
+                    _ => None,
+                }
+            })
+            .collect();
+        cx.checked = &checked;
+        let out = tool.run(&args, &cx, &mut |_| {});
+        assert!(!out.is_error, "{}", out.text);
+        let record = registry::load(&agent, "lead-parent").unwrap().remove(0);
+        assert_eq!(record.mode, "auto", "the repository must not widen worker mode");
+        assert_eq!(record.worktree, worktree_path(&repo, "alpha").unwrap());
+        assert!(record.worktree.join(".git").is_file());
+        let branch = Command::new("git")
+            .current_dir(&repo)
+            .args(["rev-parse", "--verify", "refs/heads/agent/alpha"])
+            .output()
+            .unwrap();
+        assert!(
+            branch.status.success(),
+            "the branch must be in the selected repository"
+        );
+        let _ = hooks.core.stop(&json!({"name": "alpha"}));
+
+        fs::remove_file(agent.join("settings.json")).unwrap();
+        // Even a project setting in the orchestration directory cannot choose a repository.
+        fs::create_dir(cwd.join(".oxa")).unwrap();
+        fs::write(
+            cwd.join(".oxa/settings.json"),
+            json!({"oxa": {"workers": {"repository": repo}}}).to_string(),
+        )
+        .unwrap();
+        let error = tool.access(&args, &cx).unwrap_err();
+        assert!(error.contains("oxa.workers.repository"), "{error}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
     fn set_session(hooks: &WorkerHooks, id: &str) {
         *lock(&hooks.core.session) = (id.to_string(), "model-x".to_string());
     }
