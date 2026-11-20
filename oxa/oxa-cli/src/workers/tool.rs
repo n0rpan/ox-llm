@@ -1196,7 +1196,9 @@ pub fn kept_owner_workers(key: &Path, made: Arc<WorkerHooks>) -> Arc<WorkerHooks
 
 /// Lead shutdown: stop every worker the owner Lead session started.
 pub fn stop_owner_workers() {
-    let all: Vec<Arc<WorkerHooks>> = lock(&OWNER_WORKERS).iter().map(|(_, h)| h.clone()).collect();
+    // Draining ends this owner service's lifetime. A later service in the same process must build
+    // a new supervisor rather than reuse the stopped hook set.
+    let all: Vec<Arc<WorkerHooks>> = lock(&OWNER_WORKERS).drain(..).map(|(_, h)| h).collect();
     for hooks in all {
         hooks.stop_all();
     }
@@ -1775,6 +1777,12 @@ mod tests {
         // Lead shutdown stops the tree.
         stop_owner_workers_for(&agent);
         assert!(!PathBuf::from(format!("/proc/{}", rec.pid)).exists());
+        let restarted = Arc::new(hooks(&fake, &agent));
+        assert!(Arc::ptr_eq(
+            &kept_owner_workers(&agent, restarted.clone()),
+            &restarted
+        ));
+        stop_owner_workers();
         let _ = fs::remove_dir_all(&root);
     }
 
