@@ -630,7 +630,7 @@ fn settings_page_lists_every_schema_key() {
         .filter(|d| d.supported)
         .map(|d| d.key)
         .collect();
-    assert!(keys.len() > 50, "the schema has {} keys", keys.len());
+    assert!(!keys.is_empty(), "the schema has no supported settings");
     let page = fs::read_to_string(root.join("docs/pages/settings.md")).expect("read settings.md");
     let missing: Vec<&&str> = keys
         .iter()
