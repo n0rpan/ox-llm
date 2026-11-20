@@ -1191,6 +1191,7 @@ static OWNER_WORKERS: Mutex<Vec<(PathBuf, Arc<WorkerHooks>)>> = Mutex::new(Vec::
 pub fn retained_owner_workers(key: &Path, max: usize, yolo: &YoloSwitch) -> Option<Arc<WorkerHooks>> {
     let all = lock(&OWNER_WORKERS);
     let hooks = all.iter().find(|(k, _)| k == key)?.1.clone();
+    drop(all);
     hooks.refresh_authority(max, yolo);
     Some(hooks)
 }
