@@ -409,7 +409,7 @@ fn unattended_approval_cannot_replay_opaque_shell_input() {
     let (desk, _) = open_desk(&env);
     let cwd = env.work();
     let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
-    let command = "cat example.txt | sh";
+    let command = "cat reviewed.sh | sh";
     let cmd = exec(command);
     let refusal = p.danger_unattended(&cmd, &cwd).expect("refusal");
     assert!(refusal.contains("cannot be verified for unattended replay"));
@@ -427,8 +427,12 @@ fn unattended_approval_cannot_replay_opaque_shell_input() {
             "pending",
         )
         .expect("existing request");
-    assert!(desk.answer(&old_request, "once").is_err());
-    assert!(desk.answer(&old_request, "always").is_err());
+    for answer in ["once", "session", "always"] {
+        assert!(
+            desk.answer(&old_request, answer).is_err(),
+            "{answer} must not authorize mutable shell input"
+        );
+    }
     assert!(desk.answer(&old_request, "deny").is_ok());
     assert_eq!(p.decide(Mode::Workspace, &cmd, &cwd), Decision::Ask);
 }
@@ -473,7 +477,10 @@ fn unattended_approval_cannot_replay_file_fed_input() {
         let old = desk
             .record("s1", &cwd, command, &saved, "pending")
             .expect("old request");
-        desk.answer(&old, "session").expect("owner answer");
+        assert!(
+            desk.answer(&old, "session").is_err(),
+            "{command}: a historical request cannot authorize mutable input"
+        );
         assert_eq!(p.decide(Mode::Workspace, &cmd, &cwd), Decision::Ask, "{command}");
         desk.forget_session("s1").ok();
     }

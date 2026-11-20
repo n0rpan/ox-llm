@@ -6,7 +6,7 @@
 //! are written under a private temporary name and renamed into place, so a symlink at a record
 //! name is replaced, never followed. The desk refuses a symlinked agent directory or desk
 //! directory, and one owned by another user.
-use crate::danger::DangerHit;
+use crate::danger::{has_mutable_input, DangerHit};
 use crate::policy::danger_key;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -288,13 +288,14 @@ impl ApprovalDesk {
             )));
         }
         if status != "deny"
-            && rec.keys.iter().any(|key| {
-                key.split_once(' ')
-                    .is_some_and(|(rule, _)| rule == OPAQUE_SHELL_INPUT)
-            })
+            && (has_mutable_input(&rec.command)
+                || rec.keys.iter().any(|key| {
+                    key.split_once(' ')
+                        .is_some_and(|(rule, _)| rule == OPAQUE_SHELL_INPUT)
+                }))
         {
             return Err(invalid_input(
-                "shell input cannot be approved for unattended replay",
+                "mutable input cannot be approved for unattended replay",
             ));
         }
         rec.status = status.to_string();
