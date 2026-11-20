@@ -17,6 +17,8 @@ mod catalog_cache;
 pub mod catalog_discovery;
 #[cfg(feature = "ledger")]
 pub mod ledger;
+#[cfg(all(feature = "anthropic-client", feature = "ledger"))]
+pub mod model_rules;
 #[cfg(feature = "ledger")]
 pub mod monthly_credit;
 #[cfg(feature = "upstream-openai")]
