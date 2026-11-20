@@ -501,7 +501,12 @@ fn configure_lane(policy: &mut oxa_work::RunPolicy, root: &Path, env: &Env, dirs
     if ask && !policy.push_approved {
         let question = "Lane acceptance will push each accepted commit to origin and wait for lane CI. Type yes to allow pushes for this run: ";
         if let Some(socket) = env.get(oxa_core::owner_confirm::SOCK_ENV) {
-            policy.push_approved = oxa_core::owner_confirm::ask(Path::new(socket), question) == Some(true);
+            policy.push_approved = oxa_core::owner_confirm::ask(
+                Path::new(socket),
+                &oxa_core::owner_confirm::Request::ask("Allow lane pushes", question),
+            )
+            .answer()
+                == Some(true);
         } else if !agent_launched(env) {
             policy.push_approved = crate::report_cmd::tty_confirm(env)(question) == Some(true);
         }
