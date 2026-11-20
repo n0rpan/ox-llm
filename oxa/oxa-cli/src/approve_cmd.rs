@@ -5,7 +5,7 @@
 use oxa_config::{Dirs, Env, Settings};
 use oxa_perm::ApprovalDesk;
 use oxa_proto::{codes, OxaError};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::Path;
 
 /// The answers the owner can give.

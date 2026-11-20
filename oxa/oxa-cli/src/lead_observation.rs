@@ -50,24 +50,27 @@ impl Observation {
     pub(crate) fn read(board_path: &Path, situation_path: Option<&Path>, uid: u32, now_ms: u64) -> Self {
         // The default board keeps held asks and the stale policy; only a fixed
         // allowlisted cause and its hint reach operator status.
-        let (board, alarms, threads, rejected, deferred, cause) = match lead_input::sample(board_path, uid) {
-            Ok(s) => (
-                s.board,
-                s.alarms,
-                s.threads,
-                s.review_rejected,
-                s.quota_deferred,
-                None,
-            ),
-            Err(error) => (
-                Board::default(),
-                Alarms::default(),
-                None,
-                Vec::new(),
-                Vec::new(),
-                Some(lead_input::board_cause(error)),
-            ),
-        };
+        let (board, alarms, quota, threads, rejected, deferred, cause) =
+            match lead_input::sample(board_path, uid) {
+                Ok(s) => (
+                    s.board,
+                    s.alarms,
+                    s.app_quota,
+                    s.threads,
+                    s.review_rejected,
+                    s.quota_deferred,
+                    None,
+                ),
+                Err(error) => (
+                    Board::default(),
+                    Alarms::default(),
+                    None,
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                    Some(lead_input::board_cause(error)),
+                ),
+            };
         let situation = situation_path
             .and_then(|path| lead_input::situation(path, uid).ok())
             .filter(|s| {
