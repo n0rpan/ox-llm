@@ -212,7 +212,10 @@ See [quickstart.md](quickstart.md#cloud-models) for the keys file and a first se
 `oxa.engine.inProcessCloud` selects the Rust gateway for sessions and
 `--list-models`. Unset, it is on as soon as the owner's key file holds an
 `openrouter`, `openai` or `anthropic` key, or after `oxa login chatgpt`; with it
-on, `oxa.cloud.discover_models` also defaults to `true`. An explicit value
+on, `oxa.cloud.discover_models` also defaults to `true` — except for an owner
+who set `oxa.engine.inProcessCloud` explicitly together with their own
+`oxa.cloud.models`, whose catalog is then used as written unless they ask for
+discovery too. An explicit value
 always wins, so `false` opts out (a local HTTP engine with a key in the file
 sets it to `false`). There is no built-in model table: model data is always
 fetched. The model list comes from each provider's models endpoint with your
@@ -322,9 +325,12 @@ An invalid saved binding refuses the request before provider I/O.
 
 A `chatgpt` route defaults to `https://chatgpt.com/backend-api/codex` and uses the
 existing owner-only `chatgpt-auth.json` beside the key file. It does not discover
-other applications' credentials or start a sign-in. After `oxa login chatgpt` the plan models
-(`chatgpt/gpt-6.2-astra`, `chatgpt/gpt-6.2-sol` and the other models Codex offers with ChatGPT sign-in) exist without a route in your settings;
-the optional user-only `oxa.cloud.subscription_limits` object (positive integer
+other applications' credentials or start a sign-in. After `oxa login chatgpt` the gateway opens,
+but the plan's models are not listed automatically: the subscription offers no models endpoint and
+no model row is built into the binary, so write one `chatgpt` route per model you want under
+`oxa.cloud.models` (an `upstream_model`, a `context_window` and a `max_output`, with no price);
+a route written that way is listed and usable exactly like a keyed provider's. The optional
+user-only `oxa.cloud.subscription_limits` object (positive integer
 `daily_requests` and `daily_tokens`) only adds warnings. The separate optional `oxa.cloud.subscription` refresh object
 accepts a public `client_id` override (`[A-Za-z0-9_.-]{1,128}`); its default is the
 experimental public identity approved in #252. The refresh endpoint is fixed at
