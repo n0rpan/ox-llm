@@ -15,8 +15,6 @@ struct Call {
     turn: u64,
     started: Instant,
     prefix: Option<(String, usize)>,
-    /// What ended the run early: `time`, `tokens` or `signal`.
-    limit: Option<&'static str>,
 }
 
 #[derive(Debug)]
@@ -39,6 +37,8 @@ struct State {
     lookups: u64,
     /// (sha256 hex, bytes) of the frozen prefix announced for the next request.
     prefix: Option<(String, usize)>,
+    /// What ended the run early: `time`, `tokens` or `signal`.
+    limit: Option<&'static str>,
 }
 impl Default for State {
     fn default() -> Self {
