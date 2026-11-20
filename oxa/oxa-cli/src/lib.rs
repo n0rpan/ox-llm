@@ -52,6 +52,7 @@ mod memory_cmd;
 mod models_cmd;
 mod netguard;
 mod pkg_cmd;
+mod pr_activity;
 mod report_cmd;
 mod result_facts;
 mod run_kind;

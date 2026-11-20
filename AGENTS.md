@@ -80,7 +80,10 @@ code, tests, CI and docs; the owner validates on hardware.
   project file or request, takes the session lock, or opens a provider there.
 - The live owner-authorized Lead service may launch and steer background workers through its sole
   `worker` tool. The shadow Lead preset and one-shot `oxa lead chat` stay tool-free; user-only
-  worker enablement, limits and the current permission ceiling govern every new launch.
+  worker enablement, limits and the current permission ceiling govern every new launch. Outside
+  Git, the trusted live Lead may start in the explicitly trusted primary checkout named by the
+  user-only `oxa.workers.repository`. Both source and worktree require matching write permission
+  pins; no project setting or model path selects the repository.
 - Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
   across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
   in the ledger (an unknown cost is recorded as unknown). Limits are owner configuration: with no cap
