@@ -2299,6 +2299,8 @@ mod poll_tests {
         let (out, _) = job_call(&tool, json!({"command": "yes", "timeout": 1}));
         assert_eq!(out.ui["movedToBackground"], json!(true));
         assert_eq!(jobs.buffered_len("job-1"), Some(crate::jobs::BUFFER_CAP));
+        jobs.kill_all();
+        assert_eq!(jobs.running(), 0);
     }
 
     fn command_past_its_timeout_keeps_bounded_output() {
