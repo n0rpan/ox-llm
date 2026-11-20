@@ -2917,7 +2917,7 @@ mod tests {
         assert!(control.is_error);
         assert!(hooks.core.list().text.contains("result ok: fixed"));
         // Recording a result is no launch and needs no external access.
-        let access = worker_access(&json!({"action": "result", "name": "alpha"}), &repo).unwrap();
+        let access = worker_access(&json!({"action": "result", "name": "alpha"}), &repo, false).unwrap();
         assert!(access.is_empty());
         stop_all(&hooks, &["alpha"]);
         let _ = fs::remove_dir_all(&root);
