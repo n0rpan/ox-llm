@@ -1144,8 +1144,8 @@ impl WorkerHooks {
     }
 
     /// Take the workers back up, after the owner binding was rechecked. Notices for the caller.
-    pub fn resume_after_owner_check(&self) -> Vec<String> {
-        if self.core.resume_allowed.load(Ordering::SeqCst) {
+    pub fn resume_after_owner_check(&self, workers_enabled: bool) -> Vec<String> {
+        if workers_enabled && self.core.resume_allowed.load(Ordering::SeqCst) {
             self.core.resume()
         } else {
             Vec::new()
@@ -1847,7 +1847,7 @@ mod tests {
         let held = registry::load(&agent, "parent-1").unwrap().remove(0);
         assert_eq!(held.pid, rec.pid, "a worker was relaunched before the recheck");
         // After the recheck the caller resumes explicitly.
-        let notices = hooks.resume_after_owner_check();
+        let notices = hooks.resume_after_owner_check(true);
         assert_eq!(notices.len(), 1, "{notices:?}");
         assert!(notices[0].contains("relaunched"), "{notices:?}");
         let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
@@ -1865,9 +1865,25 @@ mod tests {
         hooks.core.supervisor.stop(rec.pgid).unwrap();
         hooks.suppress_resume();
 
-        assert!(hooks.resume_after_owner_check().is_empty());
+        assert!(hooks.resume_after_owner_check(true).is_empty());
         let held = registry::load(&agent, "parent-1").unwrap().remove(0);
         assert_eq!(held.pid, rec.pid, "one-shot owner relaunched a saved worker");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn explicit_resume_honors_worker_opt_out() {
+        let (root, repo, agent, fake) = fixture("disabled-explicit-resume");
+        let hooks = hooks(&fake, &agent);
+        set_session(&hooks, "parent-1");
+        set_table_mode(&hooks, Mode::Workspace);
+        start_alpha(&hooks, &repo);
+        let rec = registry::load(&agent, "parent-1").unwrap().remove(0);
+        hooks.core.supervisor.stop(rec.pgid).unwrap();
+
+        assert!(hooks.resume_after_owner_check(false).is_empty());
+        let held = registry::load(&agent, "parent-1").unwrap().remove(0);
+        assert_eq!(held.pid, rec.pid, "worker opt-out relaunched a saved worker");
         let _ = fs::remove_dir_all(&root);
     }
 

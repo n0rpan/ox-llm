@@ -215,7 +215,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 let mut args = Args::default();
                 let mut prep = binding.prepare(&mut args, env, mode, home.workspace)?;
                 prep.notices.extend(home.warning.map(|w| (Level::Warning, w)));
-                let session = binding.open(&prep)?;
+                let session = binding.open(&prep, true)?;
                 Ok((args, prep, session, binding))
             })();
             return match result {
@@ -2187,7 +2187,7 @@ fn run_tui(
                 ));
             }
             if let Some(workers) = &base.hook_sets.workers {
-                let _ = workers.resume_after_owner_check();
+                let _ = workers.resume_after_owner_check(true);
             }
         }
         base.result_facts.attach(&mut session)?;
