@@ -365,6 +365,34 @@ fn memory_store_policy_is_documented_everywhere() {
         }
     }
 }
+
+/// Publication policy changes must remain visible on the user-facing security page. In
+/// particular, keep the generic secret-name cases and the unchanged-JSON-key recovery that are
+/// easy to lose when the shorter summary is edited independently of the detailed work guide.
+#[test]
+fn security_page_documents_publication_scan_coverage() {
+    let root = repo_root();
+    let page = fs::read_to_string(root.join("docs/pages/security.md")).expect("read security.md");
+    let publishing = page
+        .split_once("### Publishing")
+        .map(|(_, section)| section)
+        .expect("security.md publishing section");
+
+    for required in [
+        "names ending in `_key`",
+        "`credentials`",
+        "JSON value whose secret key",
+        "is on an unchanged line",
+        "`Bearer` or `Basic` authorization headers",
+        "judged by their content, not their name",
+    ] {
+        assert!(
+            publishing.contains(required),
+            "docs/pages/security.md must document publication-scan coverage: missing {required:?}"
+        );
+    }
+}
+
 /// The user guide must match the owner sandbox policy: watched CLI sessions rely on approvals and
 /// in-process guards, while unattended non-yolo runs retain Bubblewrap.
 #[test]
