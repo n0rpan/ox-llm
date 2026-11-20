@@ -164,6 +164,11 @@ fn conversation_refusal(error: &OxaError) -> RefusalFact {
             "rate_limited",
             "wait for the provider rate limit to reset",
         ),
+        "cloud_quota_exhausted" => fact(
+            Stage::Provider,
+            "quota_exhausted",
+            "switch models or wait for the provider quota to reset",
+        ),
         // Gateway admission refusals that are safe to name: fixed text only.
         "cloud_provider_forbidden" => fact(
             Stage::Provider,

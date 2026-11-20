@@ -251,6 +251,7 @@ fn cli_conversation_error(error: OxaError) -> OxaError {
         | codes::ENGINE_BUSY
         | codes::STREAM_BROKEN
         | "cloud_rate_limited" => "The Lead provider request failed.",
+        "cloud_quota_exhausted" => "Provider quota exhausted. Switch models or wait for the quota to reset.",
         _ => return OxaError::new(codes::INVALID, "Lead reply did not complete."),
     };
     OxaError::new(error.code, message)

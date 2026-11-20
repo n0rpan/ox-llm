@@ -2487,10 +2487,14 @@ impl<'a> Loop<'a> {
         {
             return AppAction::None;
         }
+        if !self.abort_requested && !self.handle.is_aborting() && self.handle.select_model_during_backoff(&id)
+        {
+            return AppAction::None;
+        }
         if self.running() {
             return AppAction::Notify {
                 level: Level::Warning,
-                text: "/model needs an idle session: wait for the current run to finish.".to_string(),
+                text: "/model needs an idle session or a goal waiting to retry.".to_string(),
             };
         }
         AppAction::Session(SessionCmd::SetModel(id))

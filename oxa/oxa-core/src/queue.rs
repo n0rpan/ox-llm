@@ -149,6 +149,8 @@ impl WrapUpReason {
 ///   the session and has not armed `bg_cancel` yet would otherwise miss the cancel).
 #[derive(Debug, Default)]
 pub struct Gate {
+    /// `Some` only while a pursuing goal is waiting between failed requests.
+    pub(crate) backoff_model: Mutex<Option<Option<String>>>,
     /// Set when an in-request retry wait consumed `cancel_retry`, so an outer goal recovery
     /// does not restart the request the owner just stopped.
     pub(crate) retry_stopped: std::sync::atomic::AtomicBool,
@@ -571,6 +573,17 @@ impl Handle {
         }
         queue.goal_steering = Some(request);
         Ok(())
+    }
+
+    /// Offer an explicit model choice to the currently waiting goal, never a later run.
+    pub fn select_model_during_backoff(&self, model: &str) -> bool {
+        let mut waiting = lock(&self.shared.gate.backoff_model);
+        let Some(choice) = waiting.as_mut() else {
+            return false;
+        };
+        *choice = Some(model.to_owned());
+        self.shared.wait_wake.cancel();
+        true
     }
 
     /// Queue a steering message (delivered after the current tool batch; when idle the caller

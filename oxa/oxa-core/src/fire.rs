@@ -991,7 +991,7 @@ pub(crate) fn agent_settled(st: &mut SessionState, aborted: bool, sink: &mut dyn
         HookPoint::AgentSettled,
         sink,
         ui,
-        |_| json!({ "aborted": aborted }),
+        |st| json!({ "aborted": aborted, "outcome": st.stats.outcome.record(), "model": st.model }),
     );
     crate::progress::notify(st, crate::Progress::Settled(st.stats.outcome));
 }
