@@ -230,7 +230,7 @@ pub const ENTRIES: &[Descriptor] = &[
         Group::Models,
         "Requests and retries",
         "Local engine retry budget",
-        "Whole retry wait when this machine's engine is down or failing. Short: waiting cannot make it answer.",
+        "Whole retry wait when this machine's engine fails; waiting cannot fix it.",
     )
     .number(Unit::Ms)
     .apply(Apply::Reload)
