@@ -389,13 +389,14 @@ impl ApprovalDesk {
         }
     }
 
-    /// Remove every record of `session`: a wiped session keeps no copy of its commands, working
-    /// directories or ids. Returns how many records were removed.
+    /// Remove every record of `session`, including private temporary records left by an
+    /// interrupted write: a wiped session keeps no copy of its commands, working directories or
+    /// ids. Returns how many records were removed.
     pub fn forget_session(&self, session: &str) -> io::Result<usize> {
         self.forget(false, |rec| rec.session == session)
     }
 
-    /// Remove every record, for `oxa wipe --all`.
+    /// Remove every complete or private temporary record, for `oxa wipe --all`.
     pub fn forget_all(&self) -> io::Result<usize> {
         self.forget(true, |_| true)
     }
@@ -746,18 +747,35 @@ mod tests {
     }
 
     #[test]
-    fn wipe_removes_orphaned_private_temporary_records() {
+    fn wipe_removes_only_the_selected_sessions_orphaned_private_temporary_records() {
         let root = temp_dir("orphan-temp");
         let desk = ApprovalDesk::open(&root).expect("desk");
         let cwd = temp_dir("orphan-temp-cwd");
-        let id = desk
+        let first = desk
             .record("s1", &cwd, "git push --force", &[hit()], "pending")
             .expect("record");
-        let record = desk.load(&id).expect("load").expect("record");
-        let orphan = desk.dir.join(".0123456789abcdef.deadbeef.tmp");
-        fs::write(&orphan, record.to_value().to_string()).expect("orphan");
-        assert_eq!(desk.forget_session("s1").expect("wipe"), 2);
-        assert!(!orphan.exists(), "session wipe retained private temp data");
+        let second = desk
+            .record("s2", &cwd, "rm -rf build", &[hit()], "pending")
+            .expect("record");
+        let first_record = desk.load(&first).expect("load").expect("record");
+        let second_record = desk.load(&second).expect("load").expect("record");
+        let first_orphan = desk.dir.join(".0123456789abcdef.deadbeef.tmp");
+        let second_orphan = desk.dir.join(".fedcba9876543210.deadbeef.tmp");
+        fs::write(&first_orphan, first_record.to_value().to_string()).expect("first orphan");
+        fs::write(&second_orphan, second_record.to_value().to_string()).expect("second orphan");
+
+        assert_eq!(desk.forget_session("s1").expect("session wipe"), 2);
+        assert!(
+            !first_orphan.exists(),
+            "session wipe retained its private temp data"
+        );
+        assert!(
+            second_orphan.exists(),
+            "session wipe removed another session's temp data"
+        );
+
+        assert_eq!(desk.forget_all().expect("wipe all"), 2);
+        assert!(!second_orphan.exists(), "full wipe retained private temp data");
     }
 
     #[test]
