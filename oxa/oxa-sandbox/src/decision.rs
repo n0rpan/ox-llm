@@ -87,7 +87,7 @@ impl ExecPolicy {
             }
             ExecRole::ReadOnly if self.os_sandbox_platform => ExecDecision::Sandbox,
             ExecRole::Hook if self.os_sandbox_platform && !yolo_now => ExecDecision::Sandbox,
-            ExecRole::ReadOnly => ExecDecision::Host,
+            ExecRole::ReadOnly => self.host(),
             ExecRole::Hook => self.host(),
         }
     }
@@ -239,5 +239,24 @@ mod tests {
         };
         assert_eq!(p.decide(Hook, false, false), Host);
         assert_eq!(p.decide(ReadOnly, false, false), Host);
+    }
+
+    #[test]
+    fn offline_holds_for_read_only_without_an_os_sandbox() {
+        let p = ExecPolicy {
+            os_sandbox_platform: false,
+            offline: true,
+            ..policy()
+        };
+        assert!(matches!(p.decide(ReadOnly, false, false), Refuse(_)));
+        let unattended_net_off = ExecPolicy {
+            os_sandbox_platform: false,
+            net_off: true,
+            ..policy()
+        };
+        assert!(matches!(
+            unattended_net_off.decide(ReadOnly, false, false),
+            Refuse(_)
+        ));
     }
 }
