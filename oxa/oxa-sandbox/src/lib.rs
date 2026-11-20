@@ -220,8 +220,8 @@ impl Bwrap {
         let guard = markers
             .zip(self.layout.git_config_allow.as_deref())
             .filter(|_| !guarded.is_empty());
-        if let Some((m, _)) = guard {
-            m.guard_begin(&guarded);
+        if let Some((m, allow)) = guard {
+            m.guard_begin(&guarded, allow);
         }
         let mut res = self.launch(s, stdin, c, live, capture);
         if let Some((m, allow)) = guard {

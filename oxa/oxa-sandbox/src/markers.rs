@@ -15,7 +15,7 @@
 use crate::gitdirs::parse_entries;
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -43,6 +43,8 @@ struct GuardState {
     /// Each guarded file's bytes and mode before the commands now running.
     baseline: HashMap<PathBuf, (Vec<u8>, u32)>,
     running: usize,
+    /// The locked guard file holding each baseline on disk.
+    saved: HashMap<PathBuf, File>,
 }
 
 /// The session's marker ledger and git config guard state.
@@ -169,6 +171,7 @@ impl Markers {
     pub fn new(scratch_root: &Path) -> Option<Markers> {
         let dir = scratch_root.join("markers");
         std::fs::create_dir_all(&dir).ok()?;
+        sweep_guard(&dir.join("guard"));
         sweep(&dir);
         Some(Markers {
             dir,
@@ -238,18 +241,22 @@ impl Markers {
     }
 
     /// A command starts: with no other command running, the files' current bytes are the
-    /// baseline (an edit by the owner between commands is accepted).
-    pub(crate) fn guard_begin(&self, files: &[PathBuf]) {
+    /// baseline (an edit by the owner between commands is accepted). Each baseline is also
+    /// kept in the guard directory under a lock held for the session, so a killed oxa is
+    /// repaired by the next sweep like the markers are.
+    pub(crate) fn guard_begin(&self, files: &[PathBuf], allow: &[String]) {
         let mut g = lock(&self.guard);
         let fresh = g.running == 0;
         for f in files {
             if fresh || !g.baseline.contains_key(f) {
                 match read_plain(f) {
                     Some(state) => {
+                        self.persist(&mut g, f, &state, allow);
                         g.baseline.insert(f.clone(), state);
                     }
                     None => {
                         g.baseline.remove(f);
+                        g.saved.remove(f);
                     }
                 }
             }
@@ -257,43 +264,65 @@ impl Markers {
         g.running += 1;
     }
 
-    /// A command ended. When it was the last one running, check each guarded file: changes to
-    /// allowed keys become the new baseline; anything else is restored and reported.
+    fn guard_dir(&self) -> PathBuf {
+        self.dir.join("guard")
+    }
+
+    /// Write the baseline of `f` to this session's guard file for it (locked while we live).
+    fn persist(&self, g: &mut GuardState, f: &Path, state: &(Vec<u8>, u32), allow: &[String]) {
+        let dir = self.guard_dir();
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        if !g.saved.contains_key(f) {
+            let name = format!("{}-{}", ledger_name(f), std::process::id());
+            let Ok(file) = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(dir.join(name))
+            else {
+                return;
+            };
+            if !flock(&file, libc::LOCK_SH) {
+                return;
+            }
+            g.saved.insert(f.to_path_buf(), file);
+        }
+        if let Some(file) = g.saved.get(f) {
+            let body = encode_guard(f, state, allow);
+            let _ = file.set_len(0);
+            let _ = (&*file).seek(std::io::SeekFrom::Start(0));
+            let _ = (&*file).write_all(&body);
+        }
+    }
+
+    /// A command ended: check each guarded file now, whatever else still runs (git replaces
+    /// config atomically by rename, so reading it is safe). Changes to allowed keys become the
+    /// new baseline; anything else is restored at once and reported to the command that ended.
     pub(crate) fn guard_end(&self, files: &[PathBuf], allow: &[String]) -> Option<String> {
         let mut g = lock(&self.guard);
         g.running = g.running.saturating_sub(1);
-        if g.running > 0 {
-            return None;
-        }
         let mut notes = Vec::new();
         for f in files {
             let Some((base, mode)) = g.baseline.get(f).cloned() else {
                 continue;
             };
-            let now = read_plain(f);
-            if now.as_ref().is_some_and(|(bytes, _)| *bytes == base) {
-                continue;
-            }
-            let refused = match &now {
-                Some((bytes, _)) => refused_keys(&base, bytes, allow),
-                None => Err("the file was replaced or removed".to_string()),
-            };
-            match refused {
-                Ok(keys) if keys.is_empty() => {
-                    if let Some(state) = now {
-                        g.baseline.insert(f.clone(), state);
-                    }
+            match check_guarded(f, &base, mode, allow) {
+                Guarded::Same => {}
+                Guarded::Accepted(state) => {
+                    self.persist(&mut g, f, &state, allow);
+                    g.baseline.insert(f.clone(), state);
                 }
-                other => {
-                    restore(f, &base, mode);
-                    let what = match other {
-                        Ok(keys) => keys.join(", "),
-                        Err(why) => why,
-                    };
-                    notes.push(format!(
-                        "Sandbox: restored {}: the command changed git config {what}, which can run or redirect programs outside the sandbox. Allow with oxa.sandbox.gitConfigAllow in user settings.",
-                        f.display()
-                    ));
+                Guarded::Restored(what) => notes.push(restored_note(f, &what)),
+            }
+            if g.running == 0 {
+                // Nothing runs: the file is clean, so its guard file is not needed.
+                if let Some(file) = g.saved.remove(f) {
+                    drop(file);
+                    let name = format!("{}-{}", ledger_name(f), std::process::id());
+                    let _ = std::fs::remove_file(self.guard_dir().join(name));
                 }
             }
         }
@@ -301,10 +330,95 @@ impl Markers {
     }
 }
 
+enum Guarded {
+    Same,
+    Accepted((Vec<u8>, u32)),
+    Restored(String),
+}
+
+fn restored_note(f: &Path, what: &str) -> String {
+    format!(
+        "Sandbox: restored {}: the command changed git config {what}, which can run or redirect programs outside the sandbox. Allow with oxa.sandbox.gitConfigAllow in user settings.",
+        f.display()
+    )
+}
+
+/// Compare `f` with its baseline; restore it when something not allowed changed.
+fn check_guarded(f: &Path, base: &[u8], mode: u32, allow: &[String]) -> Guarded {
+    let now = read_plain(f);
+    if now.as_ref().is_some_and(|(bytes, _)| bytes == base) {
+        return Guarded::Same;
+    }
+    let refused = match &now {
+        Some((bytes, _)) => refused_keys(base, bytes, allow),
+        None => Err("the file was replaced or removed".to_string()),
+    };
+    match (refused, now) {
+        (Ok(keys), Some(state)) if keys.is_empty() => Guarded::Accepted(state),
+        (other, _) => {
+            restore(f, base, mode);
+            Guarded::Restored(match other {
+                Ok(keys) => keys.join(", "),
+                Err(why) => why,
+            })
+        }
+    }
+}
+
+/// Guard file body: mode, target path, allow patterns, then the baseline bytes. Header lines
+/// are separated by newlines; a path or pattern with a newline is not persisted.
+fn encode_guard(f: &Path, state: &(Vec<u8>, u32), allow: &[String]) -> Vec<u8> {
+    let mut out = format!("{:o}\n", state.1).into_bytes();
+    out.extend_from_slice(f.as_os_str().as_bytes());
+    out.push(b'\n');
+    out.extend_from_slice(allow.join("\u{1f}").as_bytes());
+    out.push(b'\n');
+    out.extend_from_slice(&state.0);
+    out
+}
+
+fn decode_guard(bytes: &[u8]) -> Option<(PathBuf, Vec<u8>, u32, Vec<String>)> {
+    let mut parts = bytes.splitn(4, |b| *b == b'\n');
+    let mode = u32::from_str_radix(std::str::from_utf8(parts.next()?).ok()?, 8).ok()?;
+    let path = PathBuf::from(std::ffi::OsStr::from_bytes(parts.next()?));
+    let allow = std::str::from_utf8(parts.next()?).ok()?;
+    let allow = allow
+        .split('\u{1f}')
+        .filter(|p| !p.is_empty())
+        .map(String::from)
+        .collect();
+    Some((path, parts.next()?.to_vec(), mode, allow))
+}
+
+/// Repair every guarded file whose session is gone (its guard file is not locked).
+fn sweep_guard(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        let Ok(file) = File::open(&p) else {
+            continue;
+        };
+        if !flock(&file, libc::LOCK_EX | libc::LOCK_NB) {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        if (&file).read_to_end(&mut bytes).is_ok() {
+            if let Some((f, base, mode, allow)) = decode_guard(&bytes) {
+                let _ = check_guarded(&f, &base, mode, &allow);
+            }
+        }
+        let _ = std::fs::remove_file(&p);
+    }
+}
+
 impl Drop for Markers {
     fn drop(&mut self) {
         // Release our locks first, then remove what nobody else holds.
         lock(&self.held).clear();
+        lock(&self.guard).saved.clear();
+        sweep_guard(&self.guard_dir());
         sweep(&self.dir);
     }
 }
@@ -431,5 +545,54 @@ mod tests {
         );
         assert!(refused_keys(base, b"[core\n", &allow()).is_err());
         assert_eq!(refused_keys(base, base, &[]), Ok(Vec::new()));
+    }
+
+    const CLEAN: &str = "[core]\n\tbare = false\n";
+    const EVIL: &str = "[core]\n\tbare = false\n\thooksPath = /tmp/x\n";
+
+    fn scratch(tag: &str) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("oxa-guard-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("repo")).unwrap();
+        let cfg = root.join("repo").join("config");
+        std::fs::write(&cfg, CLEAN).unwrap();
+        (root, cfg)
+    }
+
+    #[test]
+    fn a_forbidden_key_is_restored_when_a_background_job_still_runs() {
+        let (root, cfg) = scratch("bg");
+        let m = Markers::new(&root.join("s")).unwrap();
+        let files = vec![cfg.clone()];
+        let allow = allow();
+        m.guard_begin(&files, &allow); // the background job
+        m.guard_begin(&files, &allow); // the foreground command
+        std::fs::write(&cfg, EVIL).unwrap();
+        let note = m.guard_end(&files, &allow);
+        assert!(note.is_some_and(|n| n.contains("core.hookspath")));
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), CLEAN);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_killed_session_leaves_no_forbidden_key_behind() {
+        let (root, cfg) = scratch("kill");
+        let scratch_root = root.join("s");
+        let m = Markers::new(&scratch_root).unwrap();
+        let files = vec![cfg.clone()];
+        m.guard_begin(&files, &allow());
+        std::fs::write(&cfg, EVIL).unwrap();
+        // The session ends with the command still running (no guard_end).
+        drop(m);
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), CLEAN);
+        // A killed oxa: the guard file stays, its lock is gone, and the next start repairs it.
+        let m = Markers::new(&scratch_root).unwrap();
+        m.guard_begin(&files, &allow());
+        std::fs::write(&cfg, EVIL).unwrap();
+        lock(&m.guard).saved.clear();
+        std::mem::forget(m);
+        let _next = Markers::new(&scratch_root).unwrap();
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), CLEAN);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
