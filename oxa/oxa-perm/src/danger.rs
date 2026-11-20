@@ -92,7 +92,7 @@ const MAX_POSSIBLE_DIRS: usize = 8;
 const RESERVED: &[&str] = &[
     "{", "}", "!", "if", "then", "else", "elif", "do", "while", "until",
 ];
-const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish"];
+pub(crate) const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish"];
 const INTERPRETERS: &[&str] = &["python", "python3", "perl", "ruby", "node"];
 const WRITE_OPS: &[&str] = &[">", ">>", ">|", ">&", "&>", "&>>", "<>"];
 const SUDO_WITH_ARG: &[&str] = &[

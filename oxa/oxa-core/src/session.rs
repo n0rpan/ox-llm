@@ -128,7 +128,6 @@ pub struct Session {
     pub(crate) st: SessionState,
     /// O-152: the boot preload ran (or was skipped) for the session entered last.
     preloaded: bool,
-    startup_limit: Option<Box<dyn Send>>,
 }
 
 /// The CLI-level choices of [`Session::open`]. `None` in [`enter`] means a switch inside a
@@ -314,11 +313,7 @@ impl Session {
         let mut sink = VecSink::default();
         let mut ui = HeadlessUi::default();
         enter(&mut st, how, Some(&cli), &mut sink, &mut ui)?;
-        let session = Session {
-            st,
-            preloaded: false,
-            startup_limit: None,
-        };
+        let session = Session { st, preloaded: false };
         session.bind_jobs_owner();
         sync_job_wake(&session.st);
         // The hook is always installed: `wake_job` asks the live setting, which a reload updates.
@@ -394,6 +389,8 @@ impl Session {
         sink: &mut dyn EventSink,
         ui: &mut dyn Ui,
     ) -> Result<(), OxaError> {
+        // Answers the broker gave without any pump (yolo) are recorded at the start of every turn.
+        crate::host::drain_owner_confirm_records(&mut self.st, sink);
         // pi (agent-session.ts `prompt`): a line naming an extension command runs that command
         // instead of a prompt; no run starts unless the command triggers one.
         if let Expanded::Hook { name, args } = crate::expand_input(&self.st, &text) {
@@ -626,7 +623,6 @@ impl Session {
         let mut ui = HeadlessUi::default();
         let r = crate::fork_at(&mut self.st, entry, &mut ui);
         if r.is_ok() {
-            drop(self.startup_limit.take());
             self.st.jobs.reset();
             self.bind_jobs_owner();
         }
@@ -639,7 +635,6 @@ impl Session {
         let mut ui = HeadlessUi::default();
         let r = crate::clone_current(&mut self.st, &mut ui);
         if r.is_ok() {
-            drop(self.startup_limit.take());
             self.st.jobs.reset();
             self.bind_jobs_owner();
         }
@@ -656,7 +651,6 @@ impl Session {
         crate::fire::session_shutdown(&mut self.st, reason, target.as_deref(), sink, ui);
         self.st.jobs.reset();
         enter(&mut self.st, how, None, sink, ui)?;
-        drop(self.startup_limit.take());
         self.bind_jobs_owner();
         self.preloaded = false;
         Ok(())
@@ -972,16 +966,10 @@ impl Session {
         &self.st
     }
 
-    /// Keep the startup limit armed until this session closes or switches files.
-    pub fn hold_startup_limit(&mut self, limit: impl Send + 'static) {
-        self.startup_limit = Some(Box::new(limit));
-    }
-
     /// Leave this session without stopping the hook sets: fire `SessionShutdown` and drop the
     /// host. For a front end that replaces the session object by another one built from the
     /// same hook sets (`/new`, `/resume`, fork): the new session attaches its own host.
     pub fn close(&mut self, ui: &mut dyn Ui) {
-        drop(self.startup_limit.take());
         crate::progress::notify(&self.st, crate::Progress::Closing);
         let mut sink = VecSink::default();
         observe_hooks(
@@ -991,6 +979,7 @@ impl Session {
             &mut sink,
             ui,
         );
+        crate::host::drain_owner_confirm_records(&mut self.st, &mut sink);
         if let Some(broker) = self.st.shared.owner_confirm() {
             broker.close();
         }

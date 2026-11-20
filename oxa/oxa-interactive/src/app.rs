@@ -685,7 +685,12 @@ fn worker_loop_inner(
                                 break;
                             }
                             if let Some(s) = session.as_mut() {
-                                idle_tick(s, &out, &mut ui_proxy, &mut last, &stop, &cmds, &mut backlog);
+                                if let Some(code) =
+                                    idle_tick(s, &out, &mut ui_proxy, &mut last, &stop, &cmds, &mut backlog)
+                                {
+                                    let _ = out.send(WorkerMsg::LimitExit(code));
+                                    break;
+                                }
                             }
                             continue;
                         }
@@ -875,18 +880,10 @@ fn worker_loop_inner(
                 if swapped || reload {
                     let _ = out.send(WorkerMsg::Session(session_info(s)));
                 }
-                let limit_exit = s.handle().wrap_up_requested().then(|| {
-                    let outcome = result
-                        .as_ref()
-                        .err()
-                        .map_or(*s.outcome(), oxa_core::RunOutcome::from_error);
-                    match outcome {
-                        oxa_core::RunOutcome::Done | oxa_core::RunOutcome::NothingToDo => {
-                            oxa_core::RunOutcome::Interrupted.exit_code()
-                        }
-                        other => other.exit_code(),
-                    }
-                });
+                let limit_exit = s
+                    .handle()
+                    .wrap_up_requested()
+                    .then(|| limit_exit_code(result.as_ref().err(), *s.outcome()));
                 let _ = out.send(WorkerMsg::Done(result));
                 let fresh = fresh_status(s, &mut last);
                 let _ = out.send(WorkerMsg::Status(fresh));
@@ -904,8 +901,21 @@ fn worker_loop_inner(
     ended
 }
 
-// A limit on the current Session does not follow a session swap. When no command is
-// active, acknowledge it without starting a prompt or another background request.
+/// The exit code of a run that ended under a requested wrap-up: the turn's own failure or
+/// outcome, and the interrupted code only when the turn finished cleanly.
+fn limit_exit_code(failure: Option<&OxaError>, outcome: oxa_core::RunOutcome) -> i32 {
+    let outcome = failure.map_or(outcome, oxa_core::RunOutcome::from_error);
+    match outcome {
+        oxa_core::RunOutcome::Done | oxa_core::RunOutcome::NothingToDo => {
+            oxa_core::RunOutcome::Interrupted.exit_code()
+        }
+        other => other.exit_code(),
+    }
+}
+
+// The run's limits follow every session swap, so a requested wrap-up is honoured by whichever
+// session is current. When no command is active (and nothing ran), acknowledge it without
+// starting a prompt or another background request.
 fn limit_exit_if_requested(session: Option<&Session>, out: &Sender<WorkerMsg>) -> bool {
     let requested = session.is_some_and(|s| s.handle().wrap_up_requested());
     if requested {
@@ -955,27 +965,35 @@ fn idle_tick(
     stop: &WorkerStop,
     cmds: &Receiver<SessionCmd>,
     backlog: &mut VecDeque<SessionCmd>,
-) {
+) -> Option<i32> {
     // O-386: the preload is due before the worker's first wait (see `worker_loop_with`); this
     // call is the retry for a session whose hook set had requests pending then.
     run_boot_preload(s, out, ui, stop, cmds, backlog);
     if !backlog.is_empty() || stop.is_stopped() || s.handle().wrap_up_requested() {
-        return;
+        return None;
     }
     let mut sink = CountingSink {
         inner: ChanSink(out.clone()),
         count: 0,
     };
     let result = s.serve_host(&mut sink, ui);
+    let mut exit = None;
     if let Err(e) = result {
         if e.code != codes::BUSY {
+            // A wrap-up requested during this turn ends the run with the turn's own outcome.
+            if s.handle().wrap_up_requested() {
+                exit = Some(limit_exit_code(Some(&e), *s.outcome()));
+            }
             let _ = out.send(WorkerMsg::Done(Err(e)));
         }
+    } else if sink.count > 0 && s.handle().wrap_up_requested() {
+        exit = Some(limit_exit_code(None, *s.outcome()));
     }
     if sink.count > 0 {
         let fresh = fresh_status(s, last);
         let _ = out.send(WorkerMsg::Status(fresh));
     }
+    exit
 }
 
 /// The sink of the boot preload: drops the progress of the background request (`Prefill`,
@@ -2833,5 +2851,28 @@ mod job_wake_gate_tests {
         stopped.recover_for_prompt("session", false);
 
         assert!(!stopped.permits("session"));
+    }
+}
+
+#[cfg(test)]
+mod limit_exit_tests {
+    use super::*;
+
+    #[test]
+    fn a_clean_wrap_up_exits_interrupted_and_a_failed_turn_keeps_its_own_code() {
+        let interrupted = oxa_core::RunOutcome::Interrupted.exit_code();
+        assert_eq!(limit_exit_code(None, oxa_core::RunOutcome::Done), interrupted);
+        assert_eq!(
+            limit_exit_code(None, oxa_core::RunOutcome::NothingToDo),
+            interrupted
+        );
+        let error = OxaError::new(codes::INTERNAL, "synthetic failure");
+        let failed = oxa_core::RunOutcome::from_error(&error).exit_code();
+        assert_ne!(failed, interrupted);
+        assert_eq!(limit_exit_code(Some(&error), oxa_core::RunOutcome::Done), failed);
+        assert_eq!(
+            limit_exit_code(None, oxa_core::RunOutcome::from_error(&error)),
+            failed
+        );
     }
 }
