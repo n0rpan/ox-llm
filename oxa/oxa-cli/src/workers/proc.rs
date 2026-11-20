@@ -64,6 +64,7 @@ enum Msg {
 /// Handle to the supervisor thread. Dropping it stops every live worker.
 pub struct Supervisor {
     tx: Sender<Msg>,
+    kill: PathBuf,
 }
 
 impl Supervisor {
@@ -79,10 +80,17 @@ impl Supervisor {
         }
         require_procfs(cfg!(target_os = "linux"))?;
         let (tx, rx) = mpsc::channel();
+        let helper = kill.clone();
         thread::Builder::new()
             .name("oxa-workers".into())
-            .spawn(move || run(rx, grace, kill))?;
-        Ok(Supervisor { tx })
+            .spawn(move || run(rx, grace, helper))?;
+        Ok(Supervisor { tx, kill })
+    }
+
+    pub(super) fn kill_is_trusted_in(&self, project: &Path, home: &Path) -> bool {
+        self.kill.parent().is_some_and(|dir| {
+            kill_helper(dir.as_os_str(), project, home).as_deref() == Some(self.kill.as_path())
+        })
     }
 
     /// Start `argv[0]` with `argv[1..]` in a new process group, stdin null, stdout and stderr
