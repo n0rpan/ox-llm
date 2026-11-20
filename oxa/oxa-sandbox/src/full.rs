@@ -281,6 +281,9 @@ impl Sandbox for FullAccess {
         }
         self.inner.persistence_notice()
     }
+    fn bash_view(&self, cwd: &Path, path: &Path, writable: bool) -> oxa_proto::BashView {
+        self.inner.bash_view(cwd, path, writable)
+    }
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String> {
         if self.bypass(s) {
             return Vec::new();
@@ -360,6 +363,13 @@ impl Sandbox for FileView {
     }
     fn preserves_host_path(&self, path: &std::path::Path) -> bool {
         self.inner.preserves_host_path(path)
+    }
+    /// Unsandboxed file tools and bash are the same machine.
+    fn bash_view(&self, cwd: &Path, path: &Path, writable: bool) -> oxa_proto::BashView {
+        if self.switch.full() || !self.os_sandbox.load(Ordering::Relaxed) {
+            return oxa_proto::BashView::Same;
+        }
+        self.inner.bash_view(cwd, path, writable)
     }
     fn for_session(&self) -> Option<Arc<dyn Sandbox>> {
         self.inner.for_session().map(|inner| {

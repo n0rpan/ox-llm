@@ -13,9 +13,82 @@
 //! Each session gets its own (`Bwrap::session`, when a session starts, at `/new`, `/resume`,
 //! fork and clone); it is deleted when that session ends: when it is replaced by another one
 //! or oxa exits. A directory left by an oxa that was killed is removed when a later oxa
-//! creates its next one.
+//! creates its next one. A directory records its owner (`.oxa-owner`: the pid and the process
+//! start time), so the directory of a dead oxa whose pid was reused is removed too (#486).
+//!
+//! The size of a session directory is reported, never limited: [`Scratch::warning`] says so
+//! once the owner-set `oxa.sandbox.scratchWarnSize` is exceeded.
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+/// The default of `oxa.sandbox.scratchWarnSize`.
+pub const DEFAULT_SCRATCH_WARN: u64 = 20 << 30;
+
+/// How long a measured size is reused before the directory is walked again.
+const USAGE_TTL: Duration = Duration::from_secs(60);
+
+/// `oxa.sandbox.scratchWarnSize`: `off` = no warning, else a size such as `20GiB` or `512 MiB`
+/// (a bare number is bytes; K, M, G, T with an optional `iB` or `B`, powers of 1024).
+pub fn parse_scratch_warn(raw: &str) -> Result<Option<u64>, String> {
+    let t = raw.trim();
+    if t.eq_ignore_ascii_case("off") {
+        return Ok(None);
+    }
+    let split = t
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(t.len());
+    let (num, unit) = t.split_at(split);
+    let n: f64 = num.parse().map_err(|_| format!("{raw:?} is not a size"))?;
+    let unit = unit.trim().to_ascii_lowercase();
+    let unit = unit
+        .strip_suffix("ib")
+        .or_else(|| unit.strip_suffix('b'))
+        .unwrap_or(&unit);
+    let mult: f64 = match unit {
+        "" => 1.0,
+        "k" => 1024.0,
+        "m" => 1024.0 * 1024.0,
+        "g" => 1024.0 * 1024.0 * 1024.0,
+        "t" => 1024.0_f64.powi(4),
+        _ => return Err(format!("{raw:?} is not a size")),
+    };
+    Ok(Some((n * mult) as u64))
+}
+
+/// `1.5 GiB`.
+fn human_size(n: u64) -> String {
+    let mut v = n as f64;
+    let mut unit = "B";
+    for u in ["KiB", "MiB", "GiB", "TiB"] {
+        if v < 1024.0 {
+            break;
+        }
+        v /= 1024.0;
+        unit = u;
+    }
+    if unit == "B" {
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {unit}")
+    }
+}
+
+/// Field 22 of `/proc/<pid>/stat`: when the process started (clock ticks after boot).
+fn start_time(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command name (field 2) may hold spaces and parentheses: count after the last `)`.
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// The pid and start time a directory records, when it has the file.
+fn recorded_owner(dir: &Path) -> Option<(u32, u64)> {
+    let text = std::fs::read_to_string(dir.join(".oxa-owner")).ok()?;
+    let mut it = text.split_whitespace();
+    Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+}
 
 /// The parent of every session directory of `home`.
 pub fn scratch_root(home: &Path) -> PathBuf {
@@ -36,6 +109,10 @@ pub fn user_cache_home(home: &Path, env: &[(String, String)]) -> PathBuf {
 #[derive(Debug)]
 pub struct Scratch {
     path: PathBuf,
+    /// The last measured size and when (see [`Scratch::usage`]).
+    measured: Mutex<Option<(Instant, u64)>>,
+    /// The size at the last warning (0 = none yet).
+    warned: AtomicU64,
 }
 
 impl Scratch {
@@ -54,7 +131,44 @@ impl Scratch {
         std::fs::DirBuilder::new().mode(0o700).create(&path)?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
         std::fs::create_dir(path.join(".cache"))?;
-        Ok(Scratch { path })
+        if let Some(start) = start_time(pid) {
+            let _ = std::fs::write(path.join(".oxa-owner"), format!("{pid} {start}\n"));
+        }
+        Ok(Scratch {
+            path,
+            measured: Mutex::new(None),
+            warned: AtomicU64::new(0),
+        })
+    }
+
+    /// The bytes this directory holds on disk, without following symlinks (the linked shared
+    /// caches are not counted). Walked at most once a minute; in between the last value.
+    pub fn usage(&self) -> u64 {
+        let mut guard = self.measured.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, n)) = *guard {
+            if at.elapsed() < USAGE_TTL {
+                return n;
+            }
+        }
+        let n = dir_usage(&self.path);
+        *guard = Some((Instant::now(), n));
+        n
+    }
+
+    /// The one-line warning when the directory holds more than `limit` bytes; again only after
+    /// the size has doubled since the last warning. Never fails or blocks anything.
+    pub fn warning(&self, limit: u64) -> Option<String> {
+        let n = self.usage();
+        let last = self.warned.load(Ordering::Relaxed);
+        if n <= limit || (last != 0 && n < last.saturating_mul(2)) {
+            return None;
+        }
+        self.warned.store(n.max(1), Ordering::Relaxed);
+        Some(format!(
+            "\nSandbox: this session's /tmp scratch holds {} (warning level {}, oxa.sandbox.scratchWarnSize); remove what you no longer need.\n",
+            human_size(n),
+            human_size(limit)
+        ))
     }
 
     /// The host path (mounted at `/tmp` inside).
@@ -95,7 +209,31 @@ impl PartialEq for Scratch {
 }
 impl Eq for Scratch {}
 
-/// Remove the session directories of processes that no longer run.
+/// The disk usage of the files below `dir`; symlinks are neither followed nor counted.
+fn dir_usage(dir: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    let mut total = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let Ok(ft) = e.file_type() else {
+                continue;
+            };
+            if ft.is_dir() {
+                stack.push(e.path());
+            } else if ft.is_file() {
+                total += e.metadata().map(|m| m.blocks() * 512).unwrap_or(0);
+            }
+        }
+    }
+    total
+}
+
+/// Remove the session directories of processes that no longer run, or whose pid now belongs
+/// to another process (the recorded start time differs).
 fn prune(root: &Path) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
@@ -109,8 +247,61 @@ fn prune(root: &Path) {
         else {
             continue;
         };
-        if !Path::new("/proc").join(pid.to_string()).exists() {
+        let gone = !Path::new("/proc").join(pid.to_string()).exists();
+        let reused = recorded_owner(&e.path())
+            .is_some_and(|(p, start)| p == pid && start_time(pid).is_some_and(|now| now != start));
+        if gone || reused {
             let _ = std::fs::remove_dir_all(e.path());
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reused_pid_is_pruned_and_the_live_session_is_kept() {
+        let env = oxa_fake::TestEnv::new();
+        let root = env.root().join("scratch");
+        let live = Scratch::create(&root).unwrap();
+        // A directory of this (live) pid, left by an earlier process that had the same pid.
+        let stale = root.join(format!("{}-999", std::process::id()));
+        std::fs::create_dir_all(&stale).unwrap();
+        let start = start_time(std::process::id()).unwrap();
+        std::fs::write(
+            stale.join(".oxa-owner"),
+            format!("{} {}\n", std::process::id(), start + 1),
+        )
+        .unwrap();
+        // A directory without the file falls back to the pid rule: its pid runs, so it stays.
+        let plain = root.join(format!("{}-998", std::process::id()));
+        std::fs::create_dir_all(&plain).unwrap();
+        prune(&root);
+        assert!(!stale.exists(), "reused pid must be pruned");
+        assert!(live.path().exists(), "the live session keeps its directory");
+        assert!(plain.exists());
+    }
+
+    #[test]
+    fn size_warning_counts_files_not_links_and_repeats_only_after_doubling() {
+        let env = oxa_fake::TestEnv::new();
+        let sc = Scratch::create(&env.root().join("scratch")).unwrap();
+        std::fs::write(sc.path().join("big"), vec![1u8; 64 * 1024]).unwrap();
+        std::os::unix::fs::symlink("/usr", sc.path().join("link")).unwrap();
+        assert!(sc.usage() >= 64 * 1024 && sc.usage() < 1 << 20);
+        assert!(sc
+            .warning(1024)
+            .is_some_and(|w| w.contains("oxa.sandbox.scratchWarnSize")));
+        assert!(sc.warning(1024).is_none(), "once until the size doubles");
+        assert!(sc.warning(1 << 30).is_none());
+    }
+
+    #[test]
+    fn sizes_parse() {
+        assert_eq!(parse_scratch_warn("20GiB"), Ok(Some(20 << 30)));
+        assert_eq!(parse_scratch_warn("512 MiB"), Ok(Some(512 << 20)));
+        assert_eq!(parse_scratch_warn("off"), Ok(None));
+        assert!(parse_scratch_warn("lots").is_err());
     }
 }

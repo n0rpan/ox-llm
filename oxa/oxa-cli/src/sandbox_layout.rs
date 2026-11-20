@@ -3,8 +3,8 @@
 use oxa_config::{Dirs, Env, Settings};
 use oxa_proto::Level;
 use oxa_sandbox::{
-    expand_home, is_home_itself, is_home_or_above, Layout, LayoutInputs, SETTING_ALLOW_HOME_WRITE,
-    SETTING_READ_PATHS, SETTING_SOCKETS, SETTING_WRITE_PATHS,
+    expand_home, is_home_itself, is_home_or_above, parse_scratch_warn, Layout, LayoutInputs,
+    DEFAULT_SCRATCH_WARN, SETTING_ALLOW_HOME_WRITE, SETTING_READ_PATHS, SETTING_SOCKETS, SETTING_WRITE_PATHS,
 };
 use std::path::Path;
 
@@ -206,8 +206,22 @@ pub(crate) fn layout(
     }
     built.mask_runtime_ipc = true;
     built.sockets = listed_sockets(&paths(SETTING_SOCKETS), notices);
+    built.scratch_warn = match user
+        .string(SETTING_SCRATCH_WARN)
+        .map(|raw| parse_scratch_warn(&raw))
+    {
+        None => Some(DEFAULT_SCRATCH_WARN),
+        Some(Ok(limit)) => limit,
+        Some(Err(why)) => {
+            notices.push((Level::Warning, format!("{SETTING_SCRATCH_WARN} ignored: {why}")));
+            Some(DEFAULT_SCRATCH_WARN)
+        }
+    };
     built
 }
+
+/// #486: the soft size limit of the session's `/tmp` scratch (a warning, never a block).
+const SETTING_SCRATCH_WARN: &str = "oxa.sandbox.scratchWarnSize";
 
 /// RP6: the owner's listed sockets that exist and are Unix sockets, canonical and sorted. Each
 /// one is named in a start notice that states the risk; a path that is not a socket is

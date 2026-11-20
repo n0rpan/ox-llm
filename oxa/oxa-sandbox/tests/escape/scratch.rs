@@ -419,3 +419,31 @@ fn session_dir_does_not_show_credentials() {
     assert_refused(exit, &out, "read through /tmp");
     assert!(!out.contains(SECRET), "leaked: {out}");
 }
+
+/// #486: a command that leaves a session directory larger than `scratchWarnSize` gets one
+/// warning line; its exit code is unchanged; `off` (no limit) adds nothing.
+#[test]
+fn scratch_size_warning_is_one_line_and_never_changes_the_result() {
+    let env = TestEnv::new();
+    let Some(p) = process(&env, Vec::new(), Vec::new()) else {
+        return;
+    };
+    let mut warned = p.session();
+    warned.layout.scratch_warn = Some(1024);
+    let big = "head -c 200000 /dev/zero > /tmp/big; exit 3";
+    let (exit, out) = run(&warned, &env.work(), big, true, false);
+    assert_eq!(exit, Some(3), "{out}");
+    assert_eq!(out.matches("oxa.sandbox.scratchWarnSize").count(), 1, "{out}");
+    let (exit, out) = run(&warned, &env.work(), "echo more", true, false);
+    assert_eq!(exit, Some(0));
+    assert!(
+        !out.contains("scratchWarnSize"),
+        "warned again at the same size: {out}"
+    );
+
+    let mut quiet = p.session();
+    quiet.layout.scratch_warn = None;
+    let (exit, out) = run(&quiet, &env.work(), big, true, false);
+    assert_eq!(exit, Some(3), "{out}");
+    assert!(!out.contains("scratchWarnSize"), "{out}");
+}

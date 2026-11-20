@@ -203,6 +203,9 @@ pub struct Layout {
     /// #457: the user's cache home ([`crate::user_cache_home`]), whose read-write bound caches
     /// are linked from `/tmp/.cache`. Empty = none.
     pub cache_home: PathBuf,
+    /// #486: warn (never block) once the session directory holds more than this many bytes
+    /// (`oxa.sandbox.scratchWarnSize`). `None` = no warning.
+    pub scratch_warn: Option<u64>,
 }
 
 /// The inputs of [`Layout::build`].
