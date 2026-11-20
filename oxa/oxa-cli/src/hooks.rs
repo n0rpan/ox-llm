@@ -112,6 +112,16 @@ fn build_worker_hooks(
         .find(|(k, _)| k == worker_tool::ENV_WORKER_DEPTH)
         .map(|(_, v)| v.as_str());
     if !i.args.no_session && worker_tool::built(worker_depth, worker_tool::enabled(i.settings)) {
+        let agent_dir = if i.dirs.agent_dir.is_absolute() {
+            i.dirs.agent_dir.clone()
+        } else {
+            i.cwd.join(&i.dirs.agent_dir)
+        };
+        let lead_dirs =
+            (matches!(tool_scope, WorkerToolScope::LeadExposure) && i.trusted).then(|| oxa_config::Dirs {
+                agent_dir: agent_dir.clone(),
+                ..i.dirs.clone()
+            });
         // The owner's model policy (user settings only); malformed parts are dropped with a notice.
         let (models, model_notices) = crate::workers::model_policy::from_settings(i.settings);
         // The HTTP owner opens one Session per message. Reuse its process-owned
@@ -122,6 +132,7 @@ fn build_worker_hooks(
                 &i.dirs.agent_dir,
                 worker_tool::max_workers(i.settings),
                 &i.yolo,
+                lead_dirs.clone(),
                 models.clone(),
             ) {
                 return Some(workers);
@@ -138,10 +149,7 @@ fn build_worker_hooks(
                     .canonicalize()
                     .ok()
                     .and_then(|cwd| {
-                        cwd.ancestors()
-                            .filter(|path| path.join(".git").exists())
-                            .last()
-                            .map(Path::to_path_buf)
+                        crate::work_cmd::git_boundaries(&cwd).map(|(_, outer)| outer.to_path_buf())
                     })
                     .unwrap_or_else(|| i.cwd.to_path_buf());
                 match crate::workers::proc::start(i.settings, &host_path, &project, &i.dirs.home) {
@@ -178,14 +186,10 @@ fn build_worker_hooks(
                                 no_prompt_templates: i.args.no_prompt_templates,
                             },
                         };
-                        let agent_dir = if i.dirs.agent_dir.is_absolute() {
-                            i.dirs.agent_dir.clone()
-                        } else {
-                            i.cwd.join(&i.dirs.agent_dir)
-                        };
                         let workers = Arc::new(WorkerHooks::new(WorkerConfig {
                             oxa_bin: bin,
                             cwd: i.cwd.to_path_buf(),
+                            lead_dirs,
                             agent_dir,
                             max: worker_tool::max_workers(i.settings),
                             supervisor,
