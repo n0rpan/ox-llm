@@ -1489,7 +1489,12 @@ pub(crate) fn peel(words: &[String], unknown_in: bool) -> Peeled {
                 out.unknown = true;
                 i = skip_flags(words, i + 1, &[]);
             }
-            "time" => i = skip_flags(words, i + 1, &["-f", "-o"]),
+            "time" => {
+                let from = i + 1;
+                i = skip_flags(words, from, &["-f", "-o", "--format", "--output"]);
+                // GNU time options can write a file independently of the wrapped command.
+                out.unknown |= i != from;
+            }
             "exec" => {
                 let from = i + 1;
                 i = skip_flags(words, from, &["-a"]);
