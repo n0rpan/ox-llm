@@ -360,7 +360,8 @@ fn select_for(
             let no_other_cloud = user
                 .get("oxa.cloud.models")
                 .is_none_or(|models| models.is_null() || models.as_object().is_some_and(|m| m.is_empty()))
-                && !user.bool("oxa.cloud.discover_models", false);
+                && !user.bool("oxa.cloud.discover_models", false)
+                && user.get("oxa.cloud.recommended_models") == Some(&Value::Bool(false));
             if no_other_cloud && user.get("oxa.cloud.opencode").is_some() {
                 return Err(error.clone());
             }
