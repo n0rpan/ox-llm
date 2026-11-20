@@ -62,6 +62,7 @@ mod suite_status;
 mod themes;
 mod usage_cmd;
 mod usage_log;
+mod pr_activity;
 mod wait_probe;
 mod wipe_cmd;
 mod work_board;

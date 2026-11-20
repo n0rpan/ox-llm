@@ -1,0 +1,1 @@
+- `wait` accepts `until` `pr_activity{pr,head}`: it wakes on a new review or PR comment at a pinned head, on a head change, or when the PR is merged or closed (#2134).
