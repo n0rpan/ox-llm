@@ -288,7 +288,7 @@ fn draw(
     let members: Vec<(usize, u32)> = scenes
         .iter()
         .enumerate()
-        .filter(|(_, s)| s.tier == Tier::Run && s.on.iter().any(|o| *o == chosen))
+        .filter(|(_, s)| s.tier == Tier::Run && s.on.contains(&chosen))
         .map(|(i, s)| (i, s.weight))
         .collect();
     let bag = bags

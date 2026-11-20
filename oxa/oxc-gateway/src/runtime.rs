@@ -1043,6 +1043,7 @@ mod discovery_budget_tests {
         assert_discovered_price_floor(1, 1, 1);
     }
 
+    #[cfg(feature = "upstream-openai")]
     #[test]
     fn a_configured_plan_route_survives_refresh_when_a_discovered_route_does_not() {
         let base = "https://example.invalid/chatgpt";

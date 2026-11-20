@@ -17,6 +17,7 @@
 //! * No network unless asked: no update check, no telemetry.
 
 mod approval;
+mod approve_cmd;
 mod args;
 mod child;
 mod config_cmd;

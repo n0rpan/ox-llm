@@ -51,23 +51,30 @@ fn decide(cwd: &Path, level: Autonomy, command: &str) -> Decision {
 fn own_branch_publish_is_allowed() {
     let cwd = repo("my-branch");
     for c in [
-        "git push",
         "git push origin HEAD",
         "git push -u origin my-branch",
         "git push origin HEAD:my-branch",
-        "GIT_TERMINAL_PROMPT=0 git push",
+        "GIT_TERMINAL_PROMPT=0 git push origin HEAD",
         "git -C . push origin HEAD",
-        "git status && git push",
-        "git push && gh pr create --title t --body b",
+        "git status && git push origin HEAD",
+        "git push origin HEAD && gh pr create --title t --body b",
         "gh pr checks",
         "gh pr view --json state",
         "gh run watch 12 --exit-status",
         "gh api repos/o/r/pulls/1/comments",
-        "git push 2>&1 | tail -n 5",
+        "git push origin HEAD 2>&1 | tail -n 5",
     ] {
         for level in [Autonomy::Standard, Autonomy::Auto] {
             assert_eq!(decide(&cwd, level, c), Decision::Allow, "{c}");
         }
+    }
+}
+
+#[test]
+fn push_without_an_explicit_refspec_asks() {
+    let cwd = repo("my-branch");
+    for c in ["git push", "git push origin"] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{c}");
     }
 }
 
@@ -155,7 +162,7 @@ fn configured_push_destinations_ask() {
         &cwd,
         "[branch \"my-branch\"]\n\tremote = origin\n\tmerge = refs/heads/my-branch\n",
     );
-    assert_eq!(decide(&cwd, Autonomy::Auto, "git push"), Decision::Allow);
+    assert_eq!(decide(&cwd, Autonomy::Auto, "git push"), Decision::Ask);
 }
 
 #[test]
@@ -205,6 +212,7 @@ fn gh_spellings_cannot_hide_a_mutation() {
         "bash -c 'git -C . push origin HEAD:main'",
         "bash -c 'git pu\"\"sh origin HEAD:main'",
         "git --config-env=remote.origin.url=TARGET_URL push origin HEAD",
+        "TARGET_URL=https://example.invalid/other git --config-env=remote.origin.url=TARGET_URL push origin HEAD",
         "git --exec-path=/tmp/x push origin HEAD",
     ] {
         assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{c}");
@@ -261,7 +269,7 @@ fn origin_url_change_after_baseline_asks() {
         let cwd = repo("my-branch");
         set_config(&cwd, "[remote \"origin\"]\n\turl = https://github.com/o/r\n");
         // The first command of the session records the baseline.
-        assert_eq!(decide(&cwd, Autonomy::Auto, "git push"), Decision::Allow);
+        assert_eq!(decide(&cwd, Autonomy::Auto, "git status"), Decision::Allow);
         assert_eq!(
             decide(&cwd, Autonomy::Auto, "git push origin HEAD"),
             Decision::Allow
@@ -291,12 +299,30 @@ fn command_wrappers_and_cumulative_git_directories_ask() {
     .unwrap();
     for c in [
         "env git push origin HEAD:main",
+        "env git -c alias.ship=push ship origin HEAD:main",
         "env -i git -C . push origin HEAD:main",
         "command git push origin HEAD:main",
+        "sh drop-second git ignored push origin HEAD:main",
         "git -C vendor/other -C . push origin HEAD",
     ] {
         assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{c}");
     }
+
+    // A second relative `-C` is resolved from the first directory. Walking back to the session
+    // repository is safe, while staying in the nested repository must continue to ask.
+    std::fs::create_dir_all(cwd.join("vendor/plain")).unwrap();
+    assert_eq!(
+        decide(
+            &cwd,
+            Autonomy::Auto,
+            "git -C vendor/plain -C ../.. push origin HEAD"
+        ),
+        Decision::Allow
+    );
+    assert_eq!(
+        decide(&cwd, Autonomy::Auto, "git -C vendor -C other push origin HEAD"),
+        Decision::Ask
+    );
 }
 
 #[test]
@@ -312,21 +338,25 @@ fn unordered_pushes_and_ref_writing_plumbing_ask() {
 }
 
 #[test]
-fn clustered_api_methods_and_legacy_config_sections_ask() {
+fn clustered_api_methods_ask_for_mutations() {
     let cwd = repo("my-branch");
-    assert_eq!(
-        decide(
-            &cwd,
-            Autonomy::Auto,
-            "gh api -iXDELETE repos/o/r/git/refs/heads/feature"
-        ),
-        Decision::Ask
-    );
-    assert_eq!(
-        decide(&cwd, Autonomy::Auto, "gh api -iXGET repos/o/r"),
-        Decision::Allow
-    );
+    for command in [
+        "gh api -iXDELETE repos/o/r/git/refs/heads/feature",
+        "gh api -iX DELETE repos/o/r/git/refs/heads/feature",
+    ] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask, "{command}");
+    }
+    for command in ["gh api -iXGET repos/o/r", "gh api -iX get repos/o/r"] {
+        assert_eq!(
+            decide(&cwd, Autonomy::Auto, command),
+            Decision::Allow,
+            "{command}"
+        );
+    }
+}
 
+#[test]
+fn legacy_config_sections_ask() {
     let cwd = repo("my-branch");
     set_config(&cwd, "[remote.ORIGIN]\n\tpush = HEAD:refs/heads/main\n");
     assert_eq!(decide(&cwd, Autonomy::Auto, "git push origin"), Decision::Ask);

@@ -80,7 +80,8 @@ pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -
     use oxa_interactive::command_registry::CommandId;
     // Admission belongs exclusively to the oxe binary.
     // Declared in the registry for discovery, help and surfaces, but parsed and handled by the
-    // legacy path below; the registry route must not take them over.
+    // legacy path below; the registry route must not take them over. #1512 S5: `send` keeps its
+    // legacy parser (follow-ups and approval answers).
     !matches!(
         id,
         CommandId::Admission
@@ -88,6 +89,8 @@ pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -
             | CommandId::Status
             | CommandId::WorkStatus
             | CommandId::WorkBoard
+            | CommandId::Send
+            | CommandId::SendApprovals
             | CommandId::Memory
             | CommandId::MemoryList
             | CommandId::MemoryShow
@@ -297,6 +300,11 @@ const COMMANDS: &[(&str, &str)] = &[
         "oxa send <session-id> <text|->",
         "Queue a session follow-up; use - to read the text from stdin",
     ),
+    (
+        "oxa send <session-id> --approve <request-id> once|session|always|deny",
+        "Answer a dangerous-command approval request of an unattended run",
+    ),
+    ("oxa send --approvals", "List the approval requests that wait for an answer"),
     ("oxa config [-l]", "Print every setting with its value and source"),
     (
         "oxa local add <model.gguf> [--ctx N] [--enable] [-- <launch args>]",

@@ -104,24 +104,37 @@ fn file_location_key(name: &str) -> bool {
 /// A path-shaped value that is allowed under this key: a relative file path under a key that
 /// names a file location.
 fn location_value(name: &str, value: &str) -> bool {
-    file_location_key(name) && relative_file_path(value)
+    file_location_key(name) && relative_file_path(value) && !encoded_credential(value)
+}
+
+/// Whether a slash-containing value has the shape of an opaque, unpadded base64 credential
+/// rather than a file path. Requiring all three ASCII character classes keeps ordinary
+/// extensionless paths (for example `config/service-account`) eligible as locations.
+fn encoded_credential(value: &str) -> bool {
+    let value = value.trim().trim_matches(['"', '\'']);
+    value.chars().count() >= MIN_KEY_VALUE_CHARS
+        && value.contains('/')
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '='))
+        && value.chars().any(|ch| ch.is_ascii_lowercase())
+        && value.chars().any(|ch| ch.is_ascii_uppercase())
+        && value.chars().any(|ch| ch.is_ascii_digit())
 }
 
 /// A relative file path such as `config/service-account.json`: path characters only, a `/`,
-/// no URL scheme and a file extension on the last segment. Base64 never holds a `.`, so an
-/// encoded credential is not mistaken for one.
+/// no URL scheme and a non-empty final segment. This is used only for keys that explicitly
+/// name a file location, so extensionless credential files are paths too.
 fn relative_file_path(value: &str) -> bool {
     let value = value.trim().trim_matches(['"', '\'']);
     let Some((_, name)) = value.rsplit_once('/') else {
         return false;
     };
-    let ext = name.rsplit_once('.').map_or("", |(_, ext)| ext);
     !value.contains("://")
+        && !name.is_empty()
         && value
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-'))
-        && (1..=5).contains(&ext.len())
-        && ext.chars().all(|ch| ch.is_ascii_alphanumeric())
 }
 
 /// Whether a quoted value of a secret-named key is a literal credential. A quoted string is
@@ -319,9 +332,9 @@ fn json_split_secret(text: &str) -> bool {
     static SPLIT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     SPLIT
         .get_or_init(|| {
-            regex::Regex::new(concat!(
-                r#"(?i)"[^"\n]*(?:password|passwd|passphrase|secret|token|api_?key|access_?key)[^"\n]*"\s*:\s*\n\s*"([^"]+)""#
-            ))
+            regex::Regex::new(
+                r#"(?i)"[^"\n]*(?:password|passwd|passphrase|secret|token|api_?key|access_?key)[^"\n]*"\s*:\s*\n\s*"([^"]+)""#,
+            )
             .expect("JSON split secret pattern")
         })
         .captures_iter(text)
@@ -447,9 +460,7 @@ impl PushScan {
         };
         // A file with no added line (an empty file) holds no secret, so its name alone is
         // not a finding; every file with content reaches the line checks below.
-        if item.line.is_none() {
-            return None;
-        }
+        item.line?;
         if let Some(label) = self.secret_text(item.text) {
             return Some(found(label));
         }
@@ -782,6 +793,7 @@ mod tests {
         );
         for text in [
             "GOOGLE_APPLICATION_CREDENTIALS=config/service-account.json",
+            "GOOGLE_APPLICATION_CREDENTIALS=config/service-account",
             "SIGNING_KEY_FILE=secrets/dev/signing-key.pem",
             "service.tls.keyPath: certs/prod/tls.key",
             "SECRETS_DIR=secrets/dev/store.d",
@@ -797,6 +809,7 @@ mod tests {
         for text in [
             "ENCRYPTION_KEY=Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MA/b64==",
             "GOOGLE_APPLICATION_CREDENTIALS=abcdEFGH1234ijklMNOP5678",
+            "GOOGLE_APPLICATION_CREDENTIALS=abcdEFGH1234/ijklMNOP5678",
         ] {
             assert!(scan.check(&added(".env.example", text)).is_some(), "{text}");
         }

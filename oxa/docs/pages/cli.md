@@ -105,6 +105,8 @@ Commands take the place of the message. They do not start a session.
 | `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa status <session-id\|session-file> [--session-dir <dir>]` | read a saved session's progress and stall signal without contacting an engine |
 | `oxa send <session-id> <text\|->` | queue one follow-up for the session's TUI or RPC owner; `-` reads standard input |
+| `oxa send <session-id> --approve <request-id> once\|session\|always\|deny` | answer a dangerous-command request filed by an unattended run (#1512). `always` also saves the rule key to the user settings. Answers go to the approval desk, never to the session's message queue |
+| `oxa send --approvals` | list the approval requests still waiting for an answer: id, session, command and reasons |
 | `oxa config [-l]` | print every setting with its value and where it comes from |
 | `oxa local add <model.gguf> [--name ALIAS] [--ctx N] [--max-output N] [--margin-bytes N] [--enable] [--replace] [--engine-dir DIR] [-- LAUNCH ARGS]` | write the native local engine settings for one GGUF from the engine's own admission report, see [Local models](#local-models) |
 | `oxa mcp <command>` | manage MCP servers, see below |
