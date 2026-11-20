@@ -755,8 +755,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "oxa-a2a"
+version = "0.2.1"
+dependencies = [
+ "oxa-http",
+ "oxa-proto",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "oxa-compact"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-proto",
  "oxa-session",
@@ -765,7 +775,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-config"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "globset",
  "oxa-proto",
@@ -775,7 +785,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-compact",
  "oxa-config",
@@ -792,7 +802,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-engine"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-http",
  "oxa-proto",
@@ -801,7 +811,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-export"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-proto",
  "oxa-session",
@@ -825,7 +835,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-http"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "futures-util",
  "oxa-proto",
@@ -835,7 +845,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-mcp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "libc",
@@ -849,8 +859,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxa-orchestrator"
+version = "0.2.1"
+dependencies = [
+ "libc",
+ "oxa-proto",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "oxa-perm"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-proto",
  "serde_json",
@@ -859,7 +880,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-proto"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "nix",
  "serde_json",
@@ -867,7 +888,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-resources"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-config",
  "oxa-proto",
@@ -877,11 +898,13 @@ dependencies = [
 
 [[package]]
 name = "oxa-rpc"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
+ "oxa-a2a",
  "oxa-config",
  "oxa-core",
  "oxa-export",
+ "oxa-orchestrator",
  "oxa-proto",
  "oxa-session",
  "serde_json",
@@ -889,7 +912,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-sandbox"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "oxa-proto",
@@ -897,7 +920,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-session"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "oxa-proto",
@@ -908,8 +931,9 @@ dependencies = [
 
 [[package]]
 name = "oxa-tools"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
+ "base64 0.22.1",
  "globset",
  "ignore",
  "libc",
@@ -922,7 +946,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-tui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "crossterm",

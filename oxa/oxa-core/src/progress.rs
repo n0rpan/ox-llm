@@ -11,6 +11,13 @@ pub enum Progress<'a> {
         file: Option<&'a Path>,
     },
     RunStart,
+    /// The frozen prefix (system text + tool list) the next request sends: its SHA-256
+    /// (`FrozenPrefix::sha256`) and its byte count. Sent right before `RequestStart`. Digest
+    /// and length only, never content: `--usage-log` records them to show the prefix is stable.
+    Prefix {
+        sha256: [u8; 32],
+        bytes: usize,
+    },
     RequestStart {
         kind: TurnKind,
         remote: bool,
@@ -74,4 +81,12 @@ pub(crate) fn session(st: &SessionState) {
 pub(crate) fn session_file(st: &SessionState) -> Option<&Path> {
     let path = &st.sref.path;
     (!path.as_os_str().is_empty() && !path.to_string_lossy().starts_with("mem:")).then_some(path)
+}
+
+/// The `Prefix` progress of a request: digest and size of the frozen prefix it sends.
+pub(crate) fn prefix_progress(prefix: &oxa_proto::FrozenPrefix) -> Progress<'static> {
+    Progress::Prefix {
+        sha256: prefix.sha256,
+        bytes: prefix.hash_input().len(),
+    }
 }

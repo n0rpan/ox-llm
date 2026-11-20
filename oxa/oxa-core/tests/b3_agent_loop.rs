@@ -1,6 +1,4 @@
 //! B3 acceptance tests: Agent loop.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_compact::CompactPolicy;
@@ -122,6 +120,7 @@ fn build(
         modes: Mutex::new((QueueMode::All, QueueMode::OneAtATime)),
         dirty: std::sync::atomic::AtomicBool::new(false),
         gate: Default::default(),
+        wake: Default::default(),
     });
     SessionState {
         goal: None,
@@ -712,6 +711,78 @@ fn remote_length_recovery_drops_the_cut_reply() {
         .any(|m| m.content.as_deref() == Some("UNFINISHED_PARTIAL")));
     assert!(!st.stats.output_truncated);
     assert!(st.tree.entries().iter().any(|e| matches!(&e.body, EntryBody::Shown { text, why } if text == "UNFINISHED_PARTIAL" && *why == shown_why::CUT)));
+}
+
+/// An empty cloud reply is asked again once with a fresh key; the empty reply is not kept.
+#[test]
+fn remote_empty_reply_is_retried_once() {
+    let env = TestEnv::new();
+    let eng = Arc::new(
+        ScriptedEngine::new(vec![ScriptTurn::text(""), ScriptTurn::text("real answer")]).with_remote(),
+    );
+    let mut st = build(
+        &env,
+        eng.clone(),
+        Arc::new(MemStore::new()),
+        vec![],
+        Mode::Workspace,
+        vec![],
+    );
+    say(&mut st, "do the task");
+    let (end, _) = run(&mut st);
+    assert_eq!(end, RunEnd::Stopped);
+    let requests = eng.requests();
+    assert_eq!(requests.len(), 2);
+    assert_ne!(requests[0].idem_key, requests[1].idem_key);
+    assert_eq!(
+        st.transcript.wire().last().unwrap().content.as_deref(),
+        Some("real answer")
+    );
+}
+
+/// Only one empty retry by default: a second empty reply ends the run as before.
+#[test]
+fn remote_empty_reply_retry_is_bounded_and_cloud_only() {
+    let env = TestEnv::new();
+    let eng = Arc::new(
+        ScriptedEngine::new(vec![
+            ScriptTurn::text(""),
+            ScriptTurn::text(""),
+            ScriptTurn::text("late"),
+        ])
+        .with_remote(),
+    );
+    let mut st = build(
+        &env,
+        eng.clone(),
+        Arc::new(MemStore::new()),
+        vec![],
+        Mode::Workspace,
+        vec![],
+    );
+    say(&mut st, "do the task");
+    let _ = run(&mut st);
+    assert_eq!(
+        eng.requests().len(),
+        2,
+        "one retry, then the second empty reply is final"
+    );
+    let env = TestEnv::new();
+    let local = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text(""),
+        ScriptTurn::text("late"),
+    ]));
+    let mut st = build(
+        &env,
+        local.clone(),
+        Arc::new(MemStore::new()),
+        vec![],
+        Mode::Workspace,
+        vec![],
+    );
+    say(&mut st, "do the task");
+    let _ = run(&mut st);
+    assert_eq!(local.requests().len(), 1, "a local model is not asked again");
 }
 
 /// The existing byte-N replay and new length recovery complete one run together.

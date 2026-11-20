@@ -624,13 +624,14 @@ fn sigterm_during_wrap_up_restores_default_termination() {
 }
 
 #[test]
-fn max_tokens_counts_output_but_not_cached_prompt_tokens() {
+fn explicit_max_tokens_stops_at_known_usage_but_ignores_cached_prompt_tokens() {
     let env = fixture();
     let script = || {
         vec![
             ScriptTurn::tool("read", "read", r#"{"path":".git/info/exclude"}"#),
             ScriptTurn::text("finished"),
             ScriptTurn::text("unexpected wrap-up"),
+            ScriptTurn::text("unexpected continuation after enforced allowance"),
         ]
     };
     let baseline = FakeServer::start(script(), FakeOpts::default()).unwrap();
@@ -676,6 +677,10 @@ fn max_tokens_counts_output_but_not_cached_prompt_tokens() {
         String::from_utf8_lossy(&output.stderr)
     );
     let requests = server.requests();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        requests.len(),
+        3,
+        "the explicit allowance permits wrap-up, not another continuation"
+    );
     assert!(requests[2].max_tokens <= 1024);
 }

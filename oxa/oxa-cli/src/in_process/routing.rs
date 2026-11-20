@@ -52,6 +52,7 @@ pub(super) struct Routed {
     pub cloud: Backend,
     pub local_models: BTreeSet<String>,
     pub cloud_models: BTreeSet<String>,
+    pub recommended_models: BTreeSet<String>,
     pub go_error: Option<OxaError>,
     pub endpoint: String,
     pub default: Option<String>,
@@ -135,7 +136,18 @@ impl Routed {
     fn models(&self) -> Vec<String> {
         self.local_models
             .iter()
-            .chain(self.cloud_models.iter().filter(|model| self.admitted(model)))
+            .chain(
+                self.cloud_models
+                    .iter()
+                    .filter(|model| self.admitted(model) && !self.recommended_models.contains(*model)),
+            )
+            // The bundled recommendations come last: the owner's own aliases keep their
+            // place, and the picker offers what it already had first.
+            .chain(
+                self.cloud_models
+                    .iter()
+                    .filter(|model| self.recommended_models.contains(*model) && self.admitted(model)),
+            )
             .cloned()
             .collect()
     }

@@ -625,7 +625,13 @@ fn rpc_006() {
     let mut r = Rpc::start(
         TestEnv::new(),
         held_opts(1500),
-        vec![ScriptTurn::text("first"), ScriptTurn::text("second")],
+        // One turn per request (hi, steer, follow-up, image): an exhausted script is a retried 500.
+        vec![
+            ScriptTurn::text("first"),
+            ScriptTurn::text("second"),
+            ScriptTurn::text("third"),
+            ScriptTurn::text("fourth"),
+        ],
         &["--no-session"],
     );
     let started = r.cmd(json!({"id": "p", "type": "prompt", "message": "hi"}));

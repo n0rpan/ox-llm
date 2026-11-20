@@ -1,8 +1,8 @@
-# Opt-in orchestrator foundations
+# Orchestrator foundations
 
 ## A2A carry: bounded follow history (#629)
 
-The default-off `a2a` feature exposes `follow::History`, extracted from
+`follow::History` is, extracted from
 #129 `f89ba2e`'s `control.rs` publisher/history and exclusive-after event pages.
 It retains at most 128 events / 512 KiB and returns at most 16 events per page.
 The reconnect cursor is the last returned event, separately from the latest
@@ -13,12 +13,11 @@ Oversized individual events are rejected before changing history or sequence.
 This is an in-memory primitive for an existing owner, with no socket, CLI,
 thread, task/goal ledger or delivery receipt. Callers must supply approved
 summaries; it neither captures nor redacts raw transcripts. Live follow/control
-wiring remains a separate carry slice. Normal builds leave `a2a` off; the test
-self-dependency enables it so ordinary hosted crate tests exercise the port.
+wiring remains a separate carry slice. The crate is linked into `oxa` on Linux; there are no cargo features.
 
 ## Existing core foundations
 
-The `a2a`-gated `follow::publisher::Publisher` ports #129 `f89ba2e`'s
+The `follow::publisher::Publisher` ports #129 `f89ba2e`'s
 session-bound publisher onto the retained history. Owner-supplied status updates
 coalesce without advancing event cursors; reply events carry explicit bounded
 UTF-8 previews and the identity observed when published. Latest observations and
@@ -27,7 +26,7 @@ nor latest observation. Clones share one owner's history. Callers still approve
 summaries and enforce disclosure authority. No transport, task/goal state owner,
 CLI integration or automatic transcript capture is introduced.
 
-The `a2a`-gated `control` module ports #129 `f89ba2e`'s bounded request
+The `control` module ports #129 `f89ba2e`'s bounded request
 validation and nonblocking admission receipts for steer/pause/resume/cancel.
 The trusted frontend supplies the bounded queue and caller authentication;
 the existing session owner retains authority, revision checks and execution.
@@ -39,10 +38,9 @@ owner disconnect, opaque rejections and unchanged request/revision delivery.
 
 Independently testable foundations from rollup #88 for [issue #282](https://github.com/oxstack/ox-llm/issues/282).
 Private audit storage, approved text snapshots and private review copies are
-present here. No worker, listener, CLI command,
-recovery/replay operation, installed service or inference route is enabled.
+present here. No worker, listener, recovery/replay operation, installed service or inference route is added by this crate.
 
-The `core` feature exports `AuditJournal`. Its caller explicitly supplies a new
+The crate exports `AuditJournal`. Its caller explicitly supplies a new
 journal path under an existing mode-0700 operator-owned directory and a byte
 limit in 1..=16 MiB. Ancestors must be operator/root controlled; symlinked
 ancestors and parent traversal are refused. Same-UID processes and root remain
@@ -67,21 +65,18 @@ the open-file description; CLOEXEC prevents inheritance across exec. Fatal death
 still follows the kernel's last-description-close rule. The writer is not cloneable.
 
 ```sh
-cargo check -p oxa-orchestrator --no-default-features --lib
+cargo check -p oxa-orchestrator --lib
 cargo test -p oxa-orchestrator
-cargo test -p oxa-orchestrator --features core
 cargo clippy -p oxa-orchestrator --all-targets -- -D warnings
 ```
 
-Normal builds leave `core` off. The test-only self dependency enables it for the
-ordinary workspace test command too, so CI's default test inventory includes the
-seventeen actual filesystem/fork/workspace regressions. Existing binaries do not depend on this
-crate. No workflow or scanner change is needed. See [slice plan](SLICES.md) for
+The `oxa` binary links this crate on Linux; the ordinary workspace test inventory includes the
+filesystem/fork/workspace regressions. See [slice plan](SLICES.md) for
 the remaining dependency order and preserved rollup sources.
 
 ## Explicit source snapshots
 
-With `core`, `workspace::Snapshot::approve(root, paths)` captures only selected
+`workspace::Snapshot::approve(root, paths)` captures only selected
 UTF-8 files. The caller must first approve those contents for delegation;
 filename filtering cannot establish that arbitrary source text is secret-free.
 This operation grants no worker access and performs no writes or execution.
