@@ -50,7 +50,7 @@ pub const SETTING_MAX: &str = "oxa.workers.max";
 /// nested; only an unset variable lets the hook set be built.
 pub const ENV_WORKER_DEPTH: &str = "OXA_WORKER_DEPTH";
 
-const DESCRIPTION: &str = "Background workers: each is a separate oxa process that runs one goal in its own git worktree on branch agent/<name>. Actions: start {name, goal, model?, mode?} starts one (name: lowercase letters, digits and dashes, at most 40 characters); list shows this session's workers and their state; stop {name} stops one; send {name, text} delivers a follow-up message to a worker's session inbox and reports its phase. When wait is available, use until {kind:\"worker_done\", name} instead of a plain wait to await a worker. mode is plan, ask, workspace, auto or yolo, never wider than this session; without mode the worker inherits this session's level (a yolo session starts yolo workers, so they can push, open PRs and read CI).";
+const DESCRIPTION: &str = "Background workers: each is a separate oxa process that runs one goal in its own git worktree on branch agent/<name>. Actions: start {name, goal, model?, mode?} starts one (name: lowercase letters, digits and dashes, at most 40 characters); list shows this session's workers and their state; stop {name} stops one; send {name, text} delivers a follow-up message to a worker's session inbox and reports its phase. mode is plan, ask, workspace, auto or yolo, never wider than this session; without mode the worker inherits this session's level (a yolo session starts yolo workers, so they can push, open PRs and read CI).";
 
 const SCHEMA: &str = r#"{"type":"object","properties":{"action":{"type":"string","enum":["start","list","stop","send"]},"name":{"type":"string"},"goal":{"type":"string"},"text":{"type":"string"},"model":{"type":"string"},"mode":{"type":"string","enum":["plan","ask","workspace","auto","yolo"]}},"required":["action"]}"#;
 
@@ -92,6 +92,8 @@ pub struct WorkerConfig {
     pub yolo: YoloSwitch,
     /// `oxa.workers.resumeOnStart`: relaunch dead, unfinished workers when the session opens.
     pub resume_on_start: bool,
+    /// Whether the surface permits a separate `wait` tool.
+    pub advertise_wait: bool,
 }
 
 /// What the parent session allows a worker to have.
@@ -1111,11 +1113,15 @@ pub struct WorkerHooks {
 impl WorkerHooks {
     /// The hook set.
     pub fn new(cfg: WorkerConfig) -> WorkerHooks {
+        let mut description = DESCRIPTION.to_string();
+        if cfg.advertise_wait {
+            description.push_str(" When wait is available, use until {kind:\"worker_done\", name} instead of a plain wait to await a worker.");
+        }
         let core = Arc::new(WorkerCore::new(cfg));
         let tool: Arc<dyn Tool> = Arc::new(WorkerTool {
             spec: ToolSpec {
                 name: TOOL_NAME.to_string(),
-                description: DESCRIPTION.to_string(),
+                description,
                 schema_json: SCHEMA.to_string(),
                 class: ToolClass::Exec,
                 exposure: Exposure::Direct,
@@ -1405,6 +1411,7 @@ mod tests {
             parent_scope,
             yolo: YoloSwitch::new(autonomy),
             resume_on_start: true,
+            advertise_wait: true,
         })
     }
 
@@ -1739,7 +1746,11 @@ mod tests {
                 "wait",
                 r#"{"seconds":5,"reason":"Review","until":{"kind":"worker_done","name":"alpha"}}"#,
             ),
-            ScriptTurn::text("Review finished."),
+            ScriptTurn::tool(
+                "done",
+                "goal_done",
+                r#"{"status":"complete","evidence":"Review finished."}"#,
+            ),
         ]));
         let mut session = oxa_core::Session::open(
             oxa_core::Deps {
@@ -1763,6 +1774,8 @@ mod tests {
             oxa_core::Open::New,
         )
         .unwrap();
+        let goal = oxa_session::Goal::new("Review synthetic work.".into(), Default::default(), 1000).unwrap();
+        session.set_goal(Some(goal), &mut oxa_proto::NullSink).unwrap();
         start_alpha(&hooks, &repo);
         let (parent, _) = hooks.core.session();
         let rec = registry::load(&agent, &parent).unwrap().remove(0);
@@ -1774,12 +1787,15 @@ mod tests {
                 &mut HeadlessUi::default(),
             )
             .unwrap();
+        let outcome = session.stats().outcome.clone();
         drop(session);
         hooks.stop_all();
         fs::remove_dir_all(root).unwrap();
 
+        assert_eq!(outcome, oxa_core::RunOutcome::Done);
         let requests = engine.requests();
         assert_eq!(requests.len(), 2);
+        assert!(requests[0].tools_json.contains("worker_done"));
         assert!(requests[1]
             .messages
             .iter()
