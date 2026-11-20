@@ -302,7 +302,6 @@ fn command_wrappers_and_cumulative_git_directories_ask() {
         "env git -c alias.ship=push ship origin HEAD:main",
         "env -i git -C . push origin HEAD:main",
         "command git push origin HEAD:main",
-        "sh drop-second git ignored push origin HEAD:main",
         "git -C vendor/other -C . push origin HEAD",
     ] {
         assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{c}");
@@ -336,6 +335,17 @@ fn command_launcher_classifies_the_wrapped_push() {
         decide(&cwd, Autonomy::Auto, "command git push origin HEAD:main"),
         Decision::Ask
     );
+}
+
+#[test]
+fn argv_rewriting_wrapper_keeps_publish_floor() {
+    let cwd = repo("my-branch");
+    let command = "sh drop-second git ignored push origin HEAD:main";
+
+    let hits = DangerRules::builtin().publish_classify(command, &cwd);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].rule, "publish-unsafe");
+    assert_eq!(hits[0].segment, command);
 }
 
 #[test]
