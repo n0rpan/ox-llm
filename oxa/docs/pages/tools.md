@@ -57,6 +57,17 @@ $ oxa --exclude-tools bash
 
 A read-only session: `oxa --tools read,grep,find,ls`. In plan mode the write tools are refused, and bash only runs read-only commands with no network.
 
+## Background parts and jobs
+
+A command with a part that runs detached (an `&` outside quotes, anywhere in the command, or `nohup`, `setsid`, `disown`) gets a note in its result: that part's output and exit status are not in the result, a `cd` before the `&` applies only to the backgrounded part, and what happens to the process. In the OS sandbox every process of the call ends with the call; without it (yolo, or no sandbox) it keeps running and oxa does not track it. The call is marked `detached` and never counts as a passing check. To run something you can read, wait for or stop, use `bash` with `background: true` and then `bash` with `job` (and `wait_s`, or `kill`), or `wait` with `until` `job_done`.
+
+## Before a run ends
+
+One decision runs before a run or goal ends. Each open fact gets at most one extra turn per run, then the run ends with a warning and a record; nothing blocks.
+
+- A run that changed files (a file tool, or a `bash` call that changed the work folder) and ran no passing check afterwards is asked to run the project's check, or to say in one line why none exists (`oxa.done.proveIt`, off by default). A read-only run is never asked. The `oxa_result` record carries `proved` (`true`, `false`, or `null` for a read-only run). The work-folder fingerprint that sees `bash` edits is now also taken when only this setting is on.
+- A goal that completes, or a headless run that ends, while background jobs still run is asked to wait for them or stop them (`oxa.done.waitForJobs`); a headless run's jobs stop when it ends. An interactive chat is never asked, so a dev server costs no turn. The record carries `jobs_running`.
+
 ## Repair turn
 
 Some models write a tool call as text instead of a structured call, or write a malformed one. When a reply has no tool call but its text contains a tool-call opener (`<tool_call>` or `<function=`) outside a code block, oxa:

@@ -21,6 +21,9 @@ struct Call {
 struct State {
     opened: bool,
     goal: Option<Value>,
+    /// The finish decision's facts: whether the last edit was proved (`None`: no edit) and how
+    /// many background jobs were still running at the end.
+    finish: Option<(Option<bool>, u32)>,
     finished: bool,
     session_id: Option<String>,
     requests: Option<u64>,
@@ -47,6 +50,7 @@ impl Default for State {
         Self {
             opened: false,
             goal: None,
+            finish: None,
             finished: false,
             session_id: None,
             requests: Some(0),
@@ -107,6 +111,9 @@ impl ResultFacts {
             "unknown_requests":g.unknown_requests,
             })
         });
+    }
+    pub(crate) fn finish(&self, stats: oxa_core::Stats) {
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).finish = Some((stats.proved, stats.jobs_left));
     }
     pub(crate) fn ci_polls(&self, polls: u32) {
         self.state.lock().unwrap_or_else(|p| p.into_inner()).ci_polls = Some(polls);
@@ -209,6 +216,10 @@ impl ResultFacts {
         }
         if let Some(limit) = state.as_ref().and_then(|state| state.limit) {
             record["limit"] = json!(limit);
+        }
+        if let Some((proved, jobs)) = state.as_ref().and_then(|state| state.finish) {
+            record["proved"] = json!(proved);
+            record["jobs_running"] = json!(jobs);
         }
         record["usage_scope"] = json!("process");
         // Web searches this invocation made (FH-N5 integrity report); null when unobserved.
