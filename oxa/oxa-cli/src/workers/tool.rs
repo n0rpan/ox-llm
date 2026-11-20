@@ -2916,7 +2916,9 @@ mod tests {
 
     /// The `--model` values of the launches so far, once there are `count` of them.
     fn launched_models(root: &Path, count: usize) -> Vec<String> {
-        // Poll for up to 30 s: slow runners (the Arch package check) launch the fake oxa later.
+        // Wait for up to 30 s: a slow runner may take a moment to reach the fake oxa's first line.
+        // It cannot recover a line that was never written: a worker stopped before the child writes
+        // its argv is not recorded at all, so stop a worker only after this returns its launch.
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while std::time::Instant::now() < deadline {
             let text = fs::read_to_string(root.join("argv.log")).unwrap_or_default();
@@ -2996,13 +2998,16 @@ mod tests {
             policy(json!({"kinds": {"review": ["a", "b"]}, "escalateTo": ["s"]})),
         );
         set_session(&hooks, "parent-1");
-        for name in ["t1", "t2"] {
+        // Stop each worker only after its launch is recorded: a stop before the child writes its
+        // argv loses that line for good. Both stopped launches still take a policy slot (a, then b).
+        for (name, launches) in [("t1", 1), ("t2", 2)] {
             let out = start_with(
                 &hooks,
                 &repo,
                 json!({"name": name, "kind": "review", "job": "pr-9"}),
             );
             assert!(!out.is_error, "{}", out.text);
+            launched_models(&root, launches);
             let stop = hooks.core.stop(&json!({"action": "stop", "name": name}));
             assert!(!stop.is_error, "{}", stop.text);
         }
