@@ -199,6 +199,19 @@ fn earlier_branch_switch_asks() {
 }
 
 #[test]
+fn concurrent_branch_switch_asks() {
+    let cwd = repo("my-branch");
+    for c in [
+        "git push origin HEAD | git switch main",
+        "git switch main | git push origin HEAD",
+    ] {
+        for level in [Autonomy::Standard, Autonomy::Auto] {
+            assert_eq!(decide(&cwd, level, c), Decision::Ask, "{level:?}: {c}");
+        }
+    }
+}
+
+#[test]
 fn gh_spellings_cannot_hide_a_mutation() {
     let cwd = repo("my-branch");
     for c in [

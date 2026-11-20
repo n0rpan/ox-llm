@@ -977,7 +977,7 @@ pub(crate) struct Stage {
     pub(crate) words: Vec<String>,
     /// (operator, target), e.g. (">>", "~/.ssh/authorized_keys"); `<<` and `<<<` included.
     pub(crate) redirects: Vec<(String, String)>,
-    pipe_in: bool,
+    pub(crate) pipe_in: bool,
     /// The previous stage is joined by `&&` or `||`, so this one may not run at all.
     conditional: bool,
     /// This command is followed by `&` and therefore cannot change the parent shell directory.
