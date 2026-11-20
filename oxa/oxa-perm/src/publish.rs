@@ -216,6 +216,13 @@ fn kind_of(words: &[String], cwd: &Path, moved: bool) -> Kind {
                     || w.ends_with("/gh")
                     || (plain.contains("git") && plain.contains("push"))
                     || (plain.contains("git") && w.contains(['$', '`']))
+            }) || args.iter().enumerate().any(|(i, w)| {
+                // A wrapper may rewrite argv before it invokes git. Keep this
+                // conservative scan when the argv-shaped parse above is inconclusive.
+                base(w) == "git"
+                    && args[i + 1..]
+                        .iter()
+                        .any(|a| matches!(a.as_str(), "push" | "send-pack"))
             }) || args.iter().skip(1).any(|w| base(w) == "gh");
             if hides {
                 Kind::Unsafe

@@ -294,6 +294,7 @@ fn command_wrappers_and_cumulative_git_directories_ask() {
         "env git -c alias.ship=push ship origin HEAD:main",
         "env -i git -C . push origin HEAD:main",
         "command git push origin HEAD:main",
+        "sh drop-second git ignored push origin HEAD:main",
         "git -C vendor/other -C . push origin HEAD",
     ] {
         assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{c}");
