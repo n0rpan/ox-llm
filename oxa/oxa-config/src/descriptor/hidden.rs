@@ -55,6 +55,15 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     d("oxa.bash.maxJobs", Group::Advanced, "", "oxa.bash.maxJobs", "")
         .key(Kind::Number, "16")
         .hidden(),
+    d(
+        "oxa.bash.ciPollHint",
+        Group::Advanced,
+        "",
+        "oxa.bash.ciPollHint",
+        "",
+    )
+    .key(Kind::Bool, "true")
+    .hidden(),
     // Longest a bash job read blocks, in seconds (default 300; at least 1).
     d("oxa.bash.waitCap", Group::Advanced, "", "oxa.bash.waitCap", "")
         .key(Kind::Number, "300")

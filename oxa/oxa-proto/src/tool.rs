@@ -216,6 +216,11 @@ pub struct ToolTune {
     /// B2b: the largest image `read` sends, in bytes (`oxa.read.maxImageBytes`). 0 = no limit.
     /// A larger image is not sent; the result names the limit and the setting.
     pub max_image_bytes: u32,
+    /// `oxa.bash.ciPollHint`: a `bash` command that polls for CI gets a note that names the
+    /// native `wait` call. `false` = no note.
+    pub ci_poll_hint: bool,
+    /// The `wait` tool is declared in this session (`oxa.tools.wait`): the CI note may name it.
+    pub wait_tool: bool,
 }
 
 /// A tool the model can call. Built-ins, extension tools, MCP tools and codemode all implement
