@@ -3331,6 +3331,8 @@ mod session_scratch_tests {
             os_sandbox: false,
             yolo,
             danger: Arc::new(oxa_perm::DangerRules::builtin()),
+            approval_desk: None,
+            unattended: UnattendedMode::default(),
         };
 
         let first = open_interactive_session(&built, built.deps(None), Open::New).unwrap();
