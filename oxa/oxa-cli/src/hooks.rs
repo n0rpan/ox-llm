@@ -112,6 +112,16 @@ fn build_worker_hooks(
         .find(|(k, _)| k == worker_tool::ENV_WORKER_DEPTH)
         .map(|(_, v)| v.as_str());
     if !i.args.no_session && worker_tool::built(worker_depth, worker_tool::enabled(i.settings)) {
+        let agent_dir = if i.dirs.agent_dir.is_absolute() {
+            i.dirs.agent_dir.clone()
+        } else {
+            i.cwd.join(&i.dirs.agent_dir)
+        };
+        let lead_dirs =
+            (matches!(tool_scope, WorkerToolScope::LeadExposure) && i.trusted).then(|| oxa_config::Dirs {
+                agent_dir: agent_dir.clone(),
+                ..i.dirs.clone()
+            });
         // The HTTP owner opens one Session per message. Reuse its process-owned
         // supervisor before constructing WorkerCore, which pins a launcher copy
         // of the current executable as part of construction.
@@ -120,6 +130,7 @@ fn build_worker_hooks(
                 &i.dirs.agent_dir,
                 worker_tool::max_workers(i.settings),
                 &i.yolo,
+                lead_dirs.clone(),
             ) {
                 return Some(workers);
             }
@@ -171,19 +182,10 @@ fn build_worker_hooks(
                                 no_prompt_templates: i.args.no_prompt_templates,
                             },
                         };
-                        let agent_dir = if i.dirs.agent_dir.is_absolute() {
-                            i.dirs.agent_dir.clone()
-                        } else {
-                            i.cwd.join(&i.dirs.agent_dir)
-                        };
                         let workers = Arc::new(WorkerHooks::new(WorkerConfig {
                             oxa_bin: bin,
                             cwd: i.cwd.to_path_buf(),
-                            lead_dirs: (matches!(tool_scope, WorkerToolScope::LeadExposure) && i.trusted)
-                                .then(|| oxa_config::Dirs {
-                                    agent_dir: agent_dir.clone(),
-                                    ..i.dirs.clone()
-                                }),
+                            lead_dirs,
                             agent_dir,
                             max: worker_tool::max_workers(i.settings),
                             supervisor,

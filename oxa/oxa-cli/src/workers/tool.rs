@@ -111,7 +111,7 @@ pub struct ParentScope {
 /// State shared by the tool and the hook set.
 pub struct WorkerCore {
     cwd: PathBuf,
-    lead_dirs: Option<oxa_config::Dirs>,
+    lead_dirs: Mutex<Option<oxa_config::Dirs>>,
     /// Private copy opened from the session executable before model-controlled work starts.
     oxa_bin: PathBuf,
     pin_error: Option<String>,
@@ -456,7 +456,7 @@ impl WorkerCore {
             oxa_bin,
             pin_error,
             cwd: cfg.cwd,
-            lead_dirs: cfg.lead_dirs,
+            lead_dirs: Mutex::new(cfg.lead_dirs),
             agent_dir: cfg.agent_dir,
             max: AtomicUsize::new(cfg.max),
             sessions_dir: cfg.sessions_dir,
@@ -1128,7 +1128,7 @@ impl WorkerTool {
     // No model input participates in repository selection. Read the user file again so the
     // retained Lead supervisor cannot keep starting workers after the owner removes the setting.
     fn external_repository(&self, cwd: &Path) -> Result<Option<PathBuf>, String> {
-        let Some(dirs) = &self.core.lead_dirs else {
+        let Some(dirs) = lock(&self.core.lead_dirs).clone() else {
             return Ok(None);
         };
         let canonical = cwd
@@ -1137,7 +1137,7 @@ impl WorkerTool {
         if crate::work_cmd::git_boundaries(&canonical).is_some() {
             return Ok(None);
         }
-        let settings = oxa_config::Settings::load(dirs, &canonical, false);
+        let settings = oxa_config::Settings::load(&dirs, &canonical, false);
         let repo = settings
             .user_value(SETTING_REPOSITORY)
             .and_then(Value::as_str)
@@ -1214,7 +1214,7 @@ impl Tool for WorkerTool {
                         Some(&lead),
                     );
                 }
-                if self.core.lead_dirs.is_some() && cx.checked_real(&path).is_none() {
+                if lock(&self.core.lead_dirs).is_some() && cx.checked_real(&path).is_none() {
                     return ToolOutput::error("worker: worktree destination needs permission approval");
                 }
                 if let Some(approved) = cx.checked_real(&path) {
@@ -1295,12 +1295,14 @@ impl WorkerHooks {
     fn refresh_authority_from(&self, current: &WorkerHooks) {
         let max = current.core.max.load(Ordering::SeqCst);
         let yolo = lock(&current.core.yolo).clone();
-        self.refresh_authority(max, &yolo);
+        let lead_dirs = lock(&current.core.lead_dirs).clone();
+        self.refresh_authority(max, &yolo, lead_dirs);
     }
 
-    fn refresh_authority(&self, max: usize, yolo: &YoloSwitch) {
+    fn refresh_authority(&self, max: usize, yolo: &YoloSwitch, lead_dirs: Option<oxa_config::Dirs>) {
         self.core.max.store(max, Ordering::SeqCst);
         *lock(&self.core.yolo) = yolo.clone();
+        *lock(&self.core.lead_dirs) = lead_dirs;
     }
 
     /// Stop every live worker now, whether or not the hook set is kept across turns.
@@ -1320,11 +1322,16 @@ static OWNER_WORKERS: Mutex<Vec<(PathBuf, Arc<WorkerHooks>)>> = Mutex::new(Vec::
 /// Return an owner hook set already retained by this process, updating the authority used for
 /// future launches. Looking it up before building hooks avoids pinning a throwaway executable on
 /// every HTTP owner message.
-pub fn retained_owner_workers(key: &Path, max: usize, yolo: &YoloSwitch) -> Option<Arc<WorkerHooks>> {
+pub fn retained_owner_workers(
+    key: &Path,
+    max: usize,
+    yolo: &YoloSwitch,
+    lead_dirs: Option<oxa_config::Dirs>,
+) -> Option<Arc<WorkerHooks>> {
     let all = lock(&OWNER_WORKERS);
     let hooks = all.iter().find(|(k, _)| k == key)?.1.clone();
     drop(all);
-    hooks.refresh_authority(max, yolo);
+    hooks.refresh_authority(max, yolo, lead_dirs);
     Some(hooks)
 }
 
@@ -2127,7 +2134,7 @@ mod tests {
         let rec = registry::load(&agent, "parent-1").unwrap().remove(0);
         first.shutdown();
         // Turn 2: the kept hook set is found before another one (and its pinned launcher) is built.
-        let second = retained_owner_workers(&agent, 4, &YoloSwitch::new(Autonomy::Standard))
+        let second = retained_owner_workers(&agent, 4, &YoloSwitch::new(Autonomy::Standard), None)
             .expect("the owner hooks should be retained");
         assert!(Arc::ptr_eq(&second, &made));
         assert!(
@@ -2155,7 +2162,7 @@ mod tests {
         set_session(&kept, "parent-authority");
         start_alpha(&kept, &repo);
 
-        let current = retained_owner_workers(&agent, 1, &YoloSwitch::new(Autonomy::Standard))
+        let current = retained_owner_workers(&agent, 1, &YoloSwitch::new(Autonomy::Standard), None)
             .expect("the owner hooks should be retained");
         assert!(Arc::ptr_eq(&current, &first));
 
