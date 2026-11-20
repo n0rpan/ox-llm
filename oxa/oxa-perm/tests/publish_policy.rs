@@ -277,3 +277,85 @@ fn origin_url_change_after_baseline_asks() {
         assert_eq!(decide(&cwd, Autonomy::Yolo, "git push"), Decision::Allow);
     }
 }
+
+#[test]
+fn command_wrappers_and_cumulative_git_directories_ask() {
+    let cwd = repo("my-branch");
+    let nested = cwd.join("vendor/other");
+    std::fs::create_dir_all(nested.join(".git/refs/remotes/origin")).unwrap();
+    std::fs::write(nested.join(".git/HEAD"), "ref: refs/heads/feature\n").unwrap();
+    std::fs::write(
+        nested.join(".git/refs/remotes/origin/HEAD"),
+        "ref: refs/remotes/origin/main\n",
+    )
+    .unwrap();
+    for c in [
+        "env git push origin HEAD:main",
+        "env -i git -C . push origin HEAD:main",
+        "command git push origin HEAD:main",
+        "git -C vendor/other -C . push origin HEAD",
+    ] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{c}");
+    }
+}
+
+#[test]
+fn unordered_pushes_and_ref_writing_plumbing_ask() {
+    let cwd = repo("my-branch");
+    for c in [
+        "(sleep 1; git push origin HEAD) & git switch main",
+        "git push origin HEAD &",
+        "git send-pack https://example.invalid/other.git HEAD:refs/heads/main",
+    ] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{c}");
+    }
+}
+
+#[test]
+fn clustered_api_methods_and_legacy_config_sections_ask() {
+    let cwd = repo("my-branch");
+    assert_eq!(
+        decide(
+            &cwd,
+            Autonomy::Auto,
+            "gh api -iXDELETE repos/o/r/git/refs/heads/feature"
+        ),
+        Decision::Ask
+    );
+    assert_eq!(
+        decide(&cwd, Autonomy::Auto, "gh api -iXGET repos/o/r"),
+        Decision::Allow
+    );
+
+    let cwd = repo("my-branch");
+    set_config(&cwd, "[remote.ORIGIN]\n\tpush = HEAD:refs/heads/main\n");
+    assert_eq!(decide(&cwd, Autonomy::Auto, "git push origin"), Decision::Ask);
+}
+
+#[test]
+fn changed_default_branch_metadata_asks() {
+    let cwd = repo("develop");
+    std::fs::write(
+        cwd.join(".git/refs/remotes/origin/HEAD"),
+        "ref: refs/remotes/origin/develop\n",
+    )
+    .unwrap();
+    assert_eq!(decide(&cwd, Autonomy::Auto, "git status"), Decision::Allow);
+    std::fs::write(
+        cwd.join(".git/refs/remotes/origin/HEAD"),
+        "ref: refs/remotes/origin/main\n",
+    )
+    .unwrap();
+    assert_eq!(
+        decide(&cwd, Autonomy::Auto, "git push origin HEAD"),
+        Decision::Ask
+    );
+}
+
+#[test]
+fn unparsed_commands_keep_the_publish_floor() {
+    let cwd = repo("my-branch");
+    let nested = "$(echo ".repeat(9) + "x" + &")".repeat(9);
+    let command = format!("git push origin HEAD:main; echo {nested}");
+    assert_eq!(decide(&cwd, Autonomy::Auto, &command), Decision::Ask);
+}

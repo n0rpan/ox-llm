@@ -51,6 +51,8 @@ enum Kind {
 
 /// The segments of `stages` that need an approval, re-joined by the caller's `segment`.
 pub(crate) fn publish_hits(stages: &[Stage], cwd: &Path) -> Vec<String> {
+    let unordered = stages.iter().any(|st| st.background || st.mark.is_some());
+    let mutation = stages.iter().any(|st| mutates_repo_state(&st.words));
     let kinds: Vec<(usize, Kind)> = {
         let mut moved = false;
         let mut out = Vec::new();
@@ -63,7 +65,9 @@ pub(crate) fn publish_hits(stages: &[Stage], cwd: &Path) -> Vec<String> {
             {
                 moved = true;
             }
-            if kind == Kind::Allowed && st.redirects.iter().any(|(op, t)| !harmless_redirect(op, t)) {
+            if kind == Kind::Allowed
+                && (unordered || mutation || st.redirects.iter().any(|(op, t)| !harmless_redirect(op, t)))
+            {
                 kind = Kind::Unsafe;
             }
             out.push((i, kind));
@@ -188,7 +192,12 @@ fn kind_of(words: &[String], cwd: &Path, moved: bool) -> Kind {
                     || w.ends_with("/gh")
                     || (plain.contains("git") && plain.contains("push"))
                     || (plain.contains("git") && w.contains(['$', '`']))
-            });
+            }) || args.iter().enumerate().any(|(i, w)| {
+                base(w) == "git"
+                    && args[i + 1..]
+                        .iter()
+                        .any(|a| matches!(a.as_str(), "push" | "send-pack"))
+            }) || args.iter().skip(1).any(|w| base(w) == "gh");
             if hides {
                 Kind::Unsafe
             } else {
@@ -204,14 +213,18 @@ const GIT_PLAIN_GLOBALS: &[&str] = &["--no-pager", "-P", "--no-optional-locks", 
 /// Parse git's global options: (index of the subcommand, `-C` directory, whether an option
 /// that can redirect git (`-c`, `--config-env`, `--git-dir`, `--exec-path`, anything unknown)
 /// was seen).
-fn git_globals(rest: &[String]) -> (usize, Option<String>, bool) {
+fn git_globals(rest: &[String]) -> (usize, Vec<String>, bool) {
     let mut k = 0;
-    let mut dir = None;
+    let mut dirs = Vec::new();
     let mut opaque = false;
     while k < rest.len() {
         let a = rest[k].as_str();
         if a == "-C" {
-            dir = rest.get(k + 1).cloned();
+            if let Some(dir) = rest.get(k + 1) {
+                dirs.push(dir.clone());
+            } else {
+                opaque = true;
+            }
             k += 2;
         } else if matches!(
             a,
@@ -228,7 +241,7 @@ fn git_globals(rest: &[String]) -> (usize, Option<String>, bool) {
             break;
         }
     }
-    (k, dir, opaque)
+    (k, dirs, opaque)
 }
 
 /// The subcommand of a git argv (after the program), skipping global options.
@@ -239,28 +252,34 @@ fn git_sub(rest: &[String]) -> Option<String> {
 
 fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
     let rest = &args[1..];
-    let (k, dir, opaque) = git_globals(rest);
-    if rest.get(k).map(String::as_str) != Some("push") {
+    let (k, dirs, opaque) = git_globals(rest);
+    let sub = rest.get(k).map(String::as_str);
+    if sub == Some("send-pack") {
+        return Kind::Unsafe;
+    }
+    if sub != Some("push") {
         return Kind::Other;
     }
     let push = &rest[k + 1..];
     if opaque || moved || env_unsafe(all) || all.iter().any(|w| dynamic(w)) {
         return Kind::Unsafe;
     }
-    let wd = match &dir {
-        Some(d) => {
-            let p = crate::paths::normalize(Path::new(d), cwd);
-            if !crate::paths::is_inside(&p, cwd) {
-                return Kind::Unsafe;
-            }
-            // A nested repository (submodule, clone) is not the session repository.
-            match (git_dirs(&p), git_dirs(cwd)) {
-                (Some((_, a)), Some((_, b))) if same_dir(&a, &b) => {}
-                _ => return Kind::Unsafe,
-            }
-            p
+    let wd = if dirs.is_empty() {
+        cwd.to_path_buf()
+    } else {
+        let mut p = cwd.to_path_buf();
+        for d in &dirs {
+            p = crate::paths::normalize(Path::new(d), &p);
         }
-        None => cwd.to_path_buf(),
+        if !crate::paths::is_inside(&p, cwd) {
+            return Kind::Unsafe;
+        }
+        // A nested repository (submodule, clone) is not the session repository.
+        match (git_dirs(&p), git_dirs(cwd)) {
+            (Some((_, a)), Some((_, b))) if same_dir(&a, &b) => {}
+            _ => return Kind::Unsafe,
+        }
+        p
     };
     let Some(current) = current_branch(&wd) else {
         return Kind::Unsafe;
@@ -419,9 +438,10 @@ fn gh_kind(all: &[String], args: &[String], moved: bool) -> Kind {
                     || ["--field", "--raw-field", "--input"]
                         .iter()
                         .any(|l| a.as_str() == *l || a.starts_with(&format!("{l}=")))
-            }) || rest
-                .windows(2)
-                .any(|w| matches!(w[0].as_str(), "-X" | "--method") && !w[1].eq_ignore_ascii_case("GET"))
+            }) || api_short_method_is_mutating(rest)
+                || rest
+                    .windows(2)
+                    .any(|w| matches!(w[0].as_str(), "-X" | "--method") && !w[1].eq_ignore_ascii_case("GET"))
                 || rest.iter().any(|a| {
                     a.strip_prefix("--method=")
                         .is_some_and(|m| !m.eq_ignore_ascii_case("GET"))
@@ -444,6 +464,24 @@ fn gh_kind(all: &[String], args: &[String], moved: bool) -> Kind {
         // Any other gh command (update-branch, issue edit...) may write: ask.
         _ => Kind::Unsafe,
     }
+}
+
+/// `gh` accepts clusters such as `-iXDELETE`; locate the method option inside a short cluster.
+fn api_short_method_is_mutating(rest: &[String]) -> bool {
+    rest.iter().enumerate().any(|(i, arg)| {
+        let Some(short) = arg.strip_prefix('-').filter(|s| !s.starts_with('-')) else {
+            return false;
+        };
+        let Some(x) = short.find('X') else {
+            return false;
+        };
+        let method = &short[x + 1..];
+        if method.is_empty() {
+            rest.get(i + 1).is_none_or(|m| !m.eq_ignore_ascii_case("GET"))
+        } else {
+            !method.eq_ignore_ascii_case("GET")
+        }
+    })
 }
 
 /// Largest git metadata file read for the classifier (config can be big, the rest is tiny).
@@ -474,10 +512,7 @@ fn current_branch(dir: &Path) -> Option<String> {
 
 /// True only when the remote's default branch is positively known and is another branch. A
 /// missing or unreadable `origin/HEAD` is unknown, which asks.
-fn known_non_default(dir: &Path, branch: &str) -> bool {
-    if DEFAULT_BRANCHES.contains(&branch) {
-        return false;
-    }
+fn default_branch(dir: &Path) -> Option<String> {
     git_dirs(dir)
         .and_then(|(_, common)| read_small(&common.join("refs/remotes/origin/HEAD")))
         .and_then(|s| {
@@ -485,7 +520,14 @@ fn known_non_default(dir: &Path, branch: &str) -> bool {
                 .strip_prefix("ref: refs/remotes/origin/")
                 .map(str::to_string)
         })
-        .is_some_and(|d| d != branch && !d.is_empty())
+        .filter(|d| !d.is_empty())
+}
+
+fn known_non_default(dir: &Path, branch: &str) -> bool {
+    if DEFAULT_BRANCHES.contains(&branch) {
+        return false;
+    }
+    default_branch(dir).is_some_and(|d| d != branch)
 }
 
 /// Whether the repository config can send a push somewhere the command line does not say:
@@ -510,7 +552,13 @@ fn url_fingerprint(dir: &Path) -> Option<Vec<String>> {
 
 /// Trusted baseline of origin's URLs per session repository (common dir), taken from the
 /// first command classified for it and kept in memory for the process.
-static BASELINE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, Vec<String>>>> =
+#[derive(Clone)]
+struct RepoBaseline {
+    urls: Vec<String>,
+    default_branch: Option<String>,
+}
+
+static BASELINE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, RepoBaseline>>> =
     std::sync::OnceLock::new();
 
 fn baseline_key(cwd: &Path) -> Option<PathBuf> {
@@ -524,8 +572,10 @@ pub(crate) fn record_baseline(cwd: &Path) {
     let Some(key) = baseline_key(cwd) else { return };
     let map = BASELINE.get_or_init(Default::default);
     let Ok(mut m) = map.lock() else { return };
-    m.entry(key)
-        .or_insert_with(|| url_fingerprint(cwd).unwrap_or_else(|| vec!["unreadable".into()]));
+    m.entry(key).or_insert_with(|| RepoBaseline {
+        urls: url_fingerprint(cwd).unwrap_or_else(|| vec!["unreadable".into()]),
+        default_branch: default_branch(cwd),
+    });
 }
 
 /// Origin's current URLs equal the recorded baseline (an unknown baseline never matches).
@@ -537,7 +587,7 @@ fn urls_unchanged(session: &Path, target: &Path) -> bool {
     let Some(map) = BASELINE.get() else { return false };
     let Ok(m) = map.lock() else { return false };
     match (m.get(&key), url_fingerprint(target)) {
-        (Some(base), Some(now)) => *base == now,
+        (Some(base), Some(now)) => base.urls == now && base.default_branch == default_branch(target),
         _ => false,
     }
 }
@@ -570,7 +620,8 @@ fn scan_config(dir: &Path, branch: &str, implicit: bool) -> (bool, Vec<String>) 
             let (name, s) = match head.split_once('"') {
                 Some((n, rest)) => (n.trim(), Some(rest.trim_end_matches('"').to_string())),
                 None => match head.split_once('.') {
-                    Some((n, r)) => (n, Some(r.to_string())),
+                    // Git's legacy `[section.subsection]` form lower-cases the subsection.
+                    Some((n, r)) => (n, Some(r.to_ascii_lowercase())),
                     None => (head.trim(), None),
                 },
             };

@@ -172,7 +172,11 @@ impl DangerRules {
     pub fn publish_classify(&self, command: &str, cwd: &Path) -> Vec<DangerHit> {
         crate::publish::record_baseline(cwd);
         let Some(stages) = parse_line(command) else {
-            return Vec::new();
+            return vec![DangerHit {
+                rule: "publish-unsafe".to_string(),
+                reason: "the publish approval floor could not safely parse this command".to_string(),
+                segment: command.trim().to_string(),
+            }];
         };
         crate::publish::publish_hits(&stages, cwd)
             .into_iter()
@@ -977,7 +981,7 @@ pub(crate) struct Stage {
     /// The previous stage is joined by `&&` or `||`, so this one may not run at all.
     conditional: bool,
     /// This command is followed by `&` and therefore cannot change the parent shell directory.
-    background: bool,
+    pub(crate) background: bool,
     /// A subshell or command-substitution boundary rather than a command.
     pub(crate) mark: Option<Mark>,
 }
