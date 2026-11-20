@@ -229,7 +229,7 @@ today), no `/v1/responses`, and
 Cloud models are off by default. When `cloud.enabled` is true in `runtime.json`, remote
 catalog entries appear in `/v1/models` and are called through the same endpoint by model id.
 The key lives in an owner-only controller secrets file and is never listed or logged; every
-OpenRouter request is forced to zero data retention (`provider.zdr`) and no data collection;
+OpenRouter routing preferences (`provider.zdr`, `data_collection`) are sent only if the owner sets them;
 `OXC_OFFLINE=1` refuses remote models; a per-day USD cap stops requests once reached. See
 [CLOUD-MODELS.md](CLOUD-MODELS.md).
 

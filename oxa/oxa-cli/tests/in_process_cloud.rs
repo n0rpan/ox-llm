@@ -531,10 +531,7 @@ fn native_openrouter_refuses_decoded_held_key_before_executable_write() {
                 request.header("authorization"),
                 Some(format!("Bearer {HELD}").as_str())
             );
-            assert_eq!(
-                request.body["provider"],
-                json!({"zdr":true,"data_collection":"deny"})
-            );
+            assert!(request.body.get("provider").is_none());
         }
         assert!(!json!(rows(&env)).to_string().contains(HELD));
         mock.finish();
@@ -613,10 +610,7 @@ fn native_openrouter_discovery_tool_loop_and_settlement() {
         );
         assert_eq!(request.body["model"], UPSTREAM);
         assert_eq!(request.body["max_tokens"], 16);
-        assert_eq!(
-            request.body["provider"],
-            json!({"zdr":true,"data_collection":"deny"})
-        );
+        assert!(request.body.get("provider").is_none());
         assert_eq!(request.body["stream_options"]["include_usage"], true);
         assert_eq!(request.body["reasoning"], json!({"enabled":false}));
         assert!(request.body.get("reasoning_effort").is_none());

@@ -514,6 +514,7 @@ impl Gateway {
             created: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |t| t.as_secs()),
+            provider: self.runtime.openrouter_provider(),
         };
         let mut forwarding_error = None;
         let mut deliver = |event| match event {

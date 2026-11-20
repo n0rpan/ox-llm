@@ -89,6 +89,18 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .user_only()
     .widens("Changes the prices used to count spending on discovered models."),
     d(
+        "oxa.cloud.openrouter_provider",
+        Group::Budgets,
+        "",
+        "OpenRouter routing preferences",
+        "Optional zdr (true/false) and data_collection (allow/deny) sent to OpenRouter; unset sends nothing.",
+    )
+    .control(Control::Raw)
+    .apply(Apply::Reload)
+    .web(WebEdit::Confirm)
+    .user_only()
+    .widens("Changes which OpenRouter providers may serve your requests and how they may retain data."),
+    d(
         "oxa.cloud.discovery",
         Group::Budgets,
         "",
