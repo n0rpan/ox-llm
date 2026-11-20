@@ -357,7 +357,7 @@ Every boolean variable takes the same eight words, in any case: `1`, `true`, `ye
 | `OXA_ENV_NOTE` | `0`, `false`, `no` or `off` turns the environment note off for one run, `1`, `true`, `yes` or `on` turns it on. Wins over the `oxa.envNote` setting; unset leaves the setting in place |
 | `OXA_TRUST_PROJECT` | `1` or `true` acts as `--approve` for the project trust decision, for unattended runs; an explicit `--no-approve` wins. `oxa work` and lead workers do not pass it on to their children |
 | `OXA_RPC_OWNER_PRESENT` | `1` tells an RPC session that an owner can answer, so the `ask` tool is offered ([tools.md](tools.md#ask)) |
-| `OXA_LEAD_SITUATION` | owner-selected absolute path to the runner's situation document for `oxa lead`; a relative path is refused and an unreadable or unprotected file stays unavailable |
+| `OXA_LEAD_SITUATION` | owner-selected absolute path to the runner's situation document for `oxa lead`, including the Lead loop's worker signals; a relative path is refused and an unreadable or unprotected file stays unavailable |
 | `OXA_SKIP_VERSION_CHECK`, `OXA_SELF_UPDATE_COMMAND`, `OXA_TELEMETRY` | accepted and ignored: oxa has no version check, self-update or telemetry |
 | `OXA_CACHE_RETENTION` | accepted and ignored: the engine owns its cache |
 | `OXA_SHARE_VIEWER_URL`, `OXA_RADIUS_GATEWAY` | accepted and ignored: oxa does no uploads |

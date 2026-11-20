@@ -25,6 +25,24 @@ class ReleaseAssets(unittest.TestCase):
         self.assertIn('workflow_call:', rb)
         self.assertIsNone(re.search(r'ox-llm-0\.2\.0-linux', rb))
 
+    def test_release_build_version_defaults_to_the_workspace(self):
+        root = W.parents[1]
+        resolver = root / 'packaging/release/version.sh'
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest = Path(temporary) / 'Cargo.toml'
+            manifest.write_text('[workspace.package]\nversion = "9.8.7"\n\n[profile.release]\n')
+
+            derived = subprocess.run([resolver, '', manifest], text=True, capture_output=True, check=True)
+            explicit = subprocess.run([resolver, 'v1.2.3', manifest], text=True,
+                                      capture_output=True, check=True)
+            self.assertEqual(derived.stdout, 'v9.8.7\n')
+            self.assertEqual(explicit.stdout, 'v1.2.3\n')
+
+            manifest.write_text('[workspace]\nmembers = []\n')
+            missing = subprocess.run([resolver, '', manifest], text=True, capture_output=True)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn('no workspace version', missing.stderr)
+
     def test_release_build_does_not_cancel_called_runs(self):
         rb = (W / 'release-build.yml').read_text()
         self.assertIsNone(re.search(r'cancel-in-progress:\s*true', rb))
@@ -58,7 +76,7 @@ class ReleaseAssets(unittest.TestCase):
         self.assertIn('tools/ci/dev_version.py', dev)
         result = subprocess.run(['python3', '-I', 'tools/ci/dev_version.py', 'abc1234'], cwd=W.parents[1],
                                 text=True, capture_output=True, check=True)
-        self.assertRegex(result.stdout.strip(), r'^v\d+\.\d+\.\d+-dev\.abc1234$')
+        self.assertRegex(result.stdout.strip(), r'^v\d+\.\d+\.\d+-dev\.\d+\+abc1234$')
 
     def test_release_environment_resolves_itself_when_sourced_by_a_workflow(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -143,6 +143,21 @@ unsupported observation keeps the saved asks, falls back to an empty board and
 reports a fixed `cause` with a recovery `hint`; raw paths and file contents
 never appear in output.
 
+## Stuck-work signals in the loop
+
+Each pass also derives the record's stuck-work signals: main required-check
+failures, no verified main merge for 45 minutes, over-age merge-queue
+membership, workflow runs queued over 15 minutes, and — through the runner
+situation named by `OXA_LEAD_SITUATION` — a locally accepted commit with no
+publication. A signal never becomes a silent wait. In the same pass the loop
+states the reason per blocking PR, assigns a red item to its own lease holder
+or an idle known worker, and escalates a durable ask to the owner only when no
+worker can take it. Unobserved and stale sources produce no signal: the loop
+never invents a stall. The pass's state line reports `stuck_escalated` when it
+wrote a new ask and `stuck_assigned` when assignments covered every signal,
+alongside the `stuck` object carrying the signal names, the per-PR report and
+the ask ids written this pass.
+
 ## Event integration after L1
 
 Consume the runner's sequenced events and bounded situation file after L1 is on
