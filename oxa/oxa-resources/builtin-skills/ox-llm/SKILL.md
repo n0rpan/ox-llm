@@ -22,8 +22,8 @@ operate. Never ask the user to install or run one.
 - `oxa status <session-id|session-file>` - a saved session's progress and stall signal.
 - `free -g` and `df -h` - memory pressure and disk space for local models.
 
-A `local` row runs on this machine; a `cloud · <provider>` row runs at that provider, costs
-money and leaves the machine. A model that `oxa models` does not list cannot be selected.
+A `local` row uses the local-engine route; a `cloud · <provider>` row sends model requests
+to that provider and may incur charges. Check `oxa models --json` for billing and state.
 
 ## Models
 
@@ -60,7 +60,6 @@ it quick to start. Never switch YOLO on yourself; it is the user's choice.
 1. `oxa models --json` fails or lists nothing: check the engine endpoint (`OXA_ENGINE_URL`, or
    `models.json` in `~/.oxa/agent/`) and the journal of the local engine above.
 2. Offline or refused connections: is the engine or the provider reachable from this machine?
-   Nothing leaves the machine except a `cloud · <provider>` model that was selected.
 3. A reproducible platform bug: offer the report-issue skill.
 
 ## Web search
