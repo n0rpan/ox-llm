@@ -15,6 +15,8 @@ struct Call {
     turn: u64,
     started: Instant,
     prefix: Option<(String, usize)>,
+    /// What ended the run early: `time`, `tokens` or `signal`.
+    limit: Option<&'static str>,
 }
 
 #[derive(Debug)]
@@ -58,6 +60,7 @@ impl Default for State {
             log_failed: false,
             lookups: 0,
             prefix: None,
+            limit: None,
         }
     }
 }
@@ -198,6 +201,9 @@ impl ResultFacts {
         if let Some(goal) = state.as_ref().and_then(|state| state.goal.as_ref()) {
             record["goal"] = goal.clone();
         }
+        if let Some(limit) = state.as_ref().and_then(|state| state.limit) {
+            record["limit"] = json!(limit);
+        }
         record["usage_scope"] = json!("process");
         // Web searches this invocation made (FH-N5 integrity report); null when unobserved.
         record["web_lookups"] = state.as_ref().map_or(Value::Null, |state| json!(state.lookups));
@@ -235,6 +241,12 @@ impl ProgressObserver for ResultFacts {
             Progress::Prefix { sha256, bytes } => {
                 let hex = sha256.iter().map(|b| format!("{b:02x}")).collect::<String>();
                 self.state.lock().unwrap_or_else(|p| p.into_inner()).prefix = Some((hex, bytes));
+            }
+            Progress::WrapUp { limit } => {
+                let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                if !state.finished && state.limit.is_none() {
+                    state.limit = Some(limit);
+                }
             }
             Progress::RequestStart { kind, .. } => self.request_start(kind),
             Progress::RequestEnd { usage, .. } => self.request_end(usage),
@@ -290,6 +302,25 @@ mod tests {
         );
         assert!(record["files_changed"].is_null());
         assert_eq!(record["files_changed_evidence"], "unavailable");
+    }
+
+    #[test]
+    fn the_result_names_the_limit_that_ended_the_run() {
+        let session = oxa_session::SessionRef {
+            path: std::path::PathBuf::from("mem:s"),
+            id: "s".to_string(),
+        };
+        let plain = Arc::new(ResultFacts::default());
+        plain.session(Some("s"));
+        assert!(ResultFacts::record(RunOutcome::Done, Some(&plain))
+            .get("limit")
+            .is_none());
+        let facts = Arc::new(ResultFacts::default());
+        facts.session(Some("s"));
+        facts.notify(&session, Progress::WrapUp { limit: "time" });
+        facts.notify(&session, Progress::WrapUp { limit: "signal" });
+        let record = ResultFacts::record(RunOutcome::Interrupted, Some(&facts));
+        assert_eq!(record["limit"], "time", "the first limit stays");
     }
 
     #[test]

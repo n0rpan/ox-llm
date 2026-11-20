@@ -39,6 +39,10 @@ pub enum Progress<'a> {
         status: &'static str,
         reason: Option<&'a str>,
     },
+    /// A limit or SIGTERM turned this run into its wrap-up: `time`, `tokens` or `signal`.
+    WrapUp {
+        limit: &'static str,
+    },
     /// An operation returned, including an empty queue or a command without an agent turn.
     /// This observation does not imply an AgentSettled event or hook was emitted.
     Settled(RunOutcome),

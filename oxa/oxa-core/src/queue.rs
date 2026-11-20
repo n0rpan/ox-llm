@@ -117,6 +117,24 @@ pub enum WrapUpReason {
 }
 
 impl WrapUpReason {
+    /// What `oxa_result.limit` names: the limit or signal that ended the run.
+    pub fn limit(self) -> &'static str {
+        match self {
+            Self::TimeLimit => "time",
+            Self::Signal => "signal",
+            Self::TokenLimit => "tokens",
+        }
+    }
+
+    /// What `oxa_result.limit` names: the limit or signal that ended the run.
+    pub fn limit(self) -> &'static str {
+        match self {
+            Self::TimeLimit => "time",
+            Self::Signal => "signal",
+            Self::TokenLimit => "tokens",
+        }
+    }
+
     pub(crate) fn notice(self) -> &'static str {
         match self {
             Self::TimeLimit => "time limit reached; one final turn to commit or summarize",
@@ -192,6 +210,13 @@ pub struct Gate {
     pub run_tokens_used: Mutex<u64>,
     /// A request under an explicit token budget finished without usage: the tally is a lower bound.
     pub usage_unreported: std::sync::atomic::AtomicBool,
+    /// The one warning that the session stores more image bytes than `oxa.read.maxImageBytes`
+    /// has been shown.
+    pub image_budget_warned: std::sync::atomic::AtomicBool,
+    /// The run's `--max-time` window and which time notes were already shown.
+    pub(crate) time_limit: Mutex<Option<TimeLimit>>,
+    /// The run's `--max-time` window and which time notes were already shown.
+    pub(crate) time_limit: Mutex<Option<TimeLimit>>,
     pub bg_cancel: CancelToken,
     pub reread_info: std::sync::atomic::AtomicBool,
     pub info_rechecked: std::sync::atomic::AtomicBool,
@@ -207,6 +232,38 @@ pub struct Gate {
     /// The wake a front end registered for state it cannot poll (see
     /// [`Handle::set_attention_waker`]).
     pub attention: Attention,
+}
+
+/// The run's time window (`--max-time`) and the notes already pushed into the conversation
+/// (bit 0: 70%, bit 1: 90%).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TimeLimit {
+    start: std::time::Instant,
+    deadline: std::time::Instant,
+    noted: u8,
+}
+
+/// A time note due at the top of a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TimeNote {
+    pub percent: u8,
+    pub minutes_left: u64,
+}
+
+/// The run's time window (`--max-time`) and the notes already pushed into the conversation
+/// (bit 0: 70%, bit 1: 90%).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TimeLimit {
+    start: std::time::Instant,
+    deadline: std::time::Instant,
+    noted: u8,
+}
+
+/// A time note due at the top of a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TimeNote {
+    pub percent: u8,
+    pub minutes_left: u64,
 }
 
 /// The wake a front end registered for state it cannot see through its own channels: a host
@@ -812,6 +869,88 @@ impl Handle {
         }
     }
 
+    /// Record the run's time window (`None` = no `--max-time`), for the time notes.
+    pub fn set_time_limit(&self, window: Option<(std::time::Instant, std::time::Instant)>) {
+        *lock(&self.shared.gate.time_limit) = window.map(|(start, deadline)| TimeLimit {
+            start,
+            deadline,
+            noted: 0,
+        });
+    }
+
+    /// The next time note that is due (70% then 90% of the window), marked as shown. A late
+    /// first look, already past 90%, gives the later note only.
+    pub(crate) fn take_time_note(&self) -> Option<TimeNote> {
+        self.time_note_at(std::time::Instant::now())
+    }
+
+    fn time_note_at(&self, now: std::time::Instant) -> Option<TimeNote> {
+        let mut guard = lock(&self.shared.gate.time_limit);
+        let limit = guard.as_mut()?;
+        let total = limit.deadline.saturating_duration_since(limit.start);
+        if total.is_zero() {
+            return None;
+        }
+        let used = now.saturating_duration_since(limit.start).as_secs_f64() / total.as_secs_f64();
+        let (percent, bits) = if used >= 0.9 && limit.noted & 2 == 0 {
+            (90, 3)
+        } else if used >= 0.7 && limit.noted & 1 == 0 {
+            (70, 1)
+        } else {
+            return None;
+        };
+        limit.noted |= bits;
+        Some(TimeNote {
+            percent,
+            minutes_left: limit
+                .deadline
+                .saturating_duration_since(now)
+                .as_secs()
+                .div_ceil(60),
+        })
+    }
+
+    /// Record the run's time window (`None` = no `--max-time`), for the time notes.
+    pub fn set_time_limit(&self, window: Option<(std::time::Instant, std::time::Instant)>) {
+        *lock(&self.shared.gate.time_limit) = window.map(|(start, deadline)| TimeLimit {
+            start,
+            deadline,
+            noted: 0,
+        });
+    }
+
+    /// The next time note that is due (70% then 90% of the window), marked as shown. A late
+    /// first look, already past 90%, gives the later note only.
+    pub(crate) fn take_time_note(&self) -> Option<TimeNote> {
+        self.time_note_at(std::time::Instant::now())
+    }
+
+    fn time_note_at(&self, now: std::time::Instant) -> Option<TimeNote> {
+        let mut guard = lock(&self.shared.gate.time_limit);
+        let limit = guard.as_mut()?;
+        let total = limit.deadline.saturating_duration_since(limit.start);
+        if total.is_zero() {
+            return None;
+        }
+        let used = now.saturating_duration_since(limit.start).as_secs_f64() / total.as_secs_f64();
+        let (percent, bits) = if used >= 0.9 && limit.noted & 2 == 0 {
+            (90, 3)
+        } else if used >= 0.7 && limit.noted & 1 == 0 {
+            (70, 1)
+        } else {
+            return None;
+        };
+        limit.noted |= bits;
+        Some(TimeNote {
+            percent,
+            minutes_left: limit
+                .deadline
+                .saturating_duration_since(now)
+                .as_secs()
+                .div_ceil(60),
+        })
+    }
+
     pub(crate) fn remaining_tokens(&self) -> Option<u64> {
         *lock(&self.shared.gate.token_budget)
     }
@@ -1001,6 +1140,26 @@ impl Handle {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn time_notes_come_at_70_and_90_percent_once_each() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        let start = std::time::Instant::now();
+        let at = |secs: u64| start + std::time::Duration::from_secs(secs);
+        assert_eq!(h.time_note_at(at(500)), None, "no window yet");
+        h.set_time_limit(Some((start, at(1000))));
+        assert_eq!(h.time_note_at(at(500)), None);
+        let first = h.time_note_at(at(700)).unwrap();
+        assert_eq!((first.percent, first.minutes_left), (70, 5));
+        assert_eq!(h.time_note_at(at(750)), None, "the 70% note is shown once");
+        let second = h.time_note_at(at(950)).unwrap();
+        assert_eq!(second.percent, 90);
+        assert_eq!(h.time_note_at(at(990)), None);
+        // A late first look covers both notes with the later one.
+        h.set_time_limit(Some((start, at(1000))));
+        assert_eq!(h.time_note_at(at(960)).unwrap().percent, 90);
+        assert_eq!(h.time_note_at(at(970)), None);
+    }
+
     use super::*;
     use std::sync::atomic::AtomicUsize;
 

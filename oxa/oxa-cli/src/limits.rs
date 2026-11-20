@@ -65,9 +65,10 @@ impl LimitWatcher {
         handle.set_token_budget(max_tokens);
         // The parent's abort and kernel parent-death signal both use SIGTERM. A child
         // must exit on that signal, while the root owns cooperative run termination.
+        let started = Instant::now();
         let deadline = max_time
             .map(|duration| {
-                Instant::now()
+                started
                     .checked_add(duration)
                     .ok_or_else(|| OxaError::new(codes::USAGE, "--max-time is too large"))
             })
@@ -75,6 +76,8 @@ impl LimitWatcher {
         if let Some(subagent) = subagent {
             subagent.set_deadline(deadline);
         }
+        // The time notes (70% and 90%) need the window, not only the deadline.
+        handle.set_time_limit(deadline.map(|at| (started, at)));
         let terminated = Arc::new(AtomicBool::new(false));
         // Register escalation first: the first SIGTERM sets the flag below; any
         // subsequent signal takes its default action even if the watcher is blocked.
