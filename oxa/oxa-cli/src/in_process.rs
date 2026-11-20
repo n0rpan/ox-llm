@@ -477,8 +477,62 @@ fn select_for(
     Ok((engine, notices))
 }
 
-fn configured_route(alias: &str, value: &Value) -> Result<(Model, Option<Billing>), OxaError> {
-    let (provider, default_endpoint) = match text(value, "provider")? {
+fn named_sources(value: Option<&Value>) -> Result<Vec<Source>, OxaError> {
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return Ok(Vec::new());
+    };
+    let mut keys = std::collections::BTreeSet::new();
+    let mut names = std::collections::BTreeSet::new();
+    value
+        .as_object()
+        .ok_or_else(invalid)?
+        .iter()
+        .map(|(name, entry)| {
+            let provider = match text(entry, "api")? {
+                "openai-chat" => Provider::OpenRouter,
+                "anthropic" => Provider::Anthropic,
+                _ => return Err(invalid()),
+            };
+            let subscription = match text(entry, "billing")? {
+                "subscription" => true,
+                "metered" => false,
+                _ => return Err(invalid()),
+            };
+            let key = text(entry, "key")?;
+            if !keys.insert(key) || !names.insert(name.to_ascii_lowercase()) {
+                return Err(invalid());
+            }
+            Source::named(name, provider, text(entry, "base_url")?, key, subscription).map_err(|_| invalid())
+        })
+        .collect()
+}
+
+fn configured_route(
+    alias: &str,
+    value: &Value,
+    named: &[Source],
+) -> Result<(Model, Option<Billing>), OxaError> {
+    let name = text(value, "provider")?;
+    if let Some(source) = named.iter().find(|source| source.name() == name) {
+        if value.get("base_url").is_some() {
+            return Err(invalid());
+        }
+        let model = source
+            .model(
+                alias,
+                text(value, "upstream_model")?,
+                limit(value, "context_window")?,
+                limit(value, "max_output")?,
+            )
+            .map_err(|_| invalid())?;
+        let billing = if source.is_subscription() {
+            Billing::Subscription
+        } else {
+            Billing::Metered(Price::from_model(value).unwrap_or_else(Price::unpriced))
+        };
+        return Ok((model, Some(billing)));
+    }
+    let (provider, default_endpoint) = match name {
         "anthropic" => (Provider::Anthropic, "https://api.anthropic.com"),
         "openrouter" => (Provider::OpenRouter, "https://openrouter.ai/api/v1"),
         "openai" => (Provider::OpenAi, oxc_gateway::openai::client::API_BASE),
@@ -527,7 +581,7 @@ fn recommended_routes(
         if let Some(object) = value.as_object_mut() {
             object.remove("base_url");
         }
-        let (model, billing) = configured_route(&alias, &value)?;
+        let (model, billing) = configured_route(&alias, &value, &[])?;
         let Some(Billing::Metered(price)) = billing else {
             return Err(invalid());
         };
@@ -578,13 +632,14 @@ fn open_gateway_with_go(
     if models.is_empty() && !go_configured && !discover && !recommended {
         return Err(invalid());
     }
+    let named = named_sources(cloud.get("providers"))?;
     let routes = models
         .iter()
-        .map(|(alias, value)| configured_route(alias, value))
+        .map(|(alias, value)| configured_route(alias, value, &named))
         .collect::<Result<Vec<_>, _>>()?;
     let needs_subscription = routes
         .iter()
-        .any(|(_, billing)| matches!(billing, Some(Billing::Subscription)));
+        .any(|(model, _)| model.info().provider == Provider::ChatGpt);
     // The ChatGPT plan's model list needs the sign-in refresh settings too.
     let signed_in = catalog::signed_in_chatgpt(dirs);
     let (subscription, subscription_limits) =
@@ -602,7 +657,8 @@ fn open_gateway_with_go(
             (Provider::Anthropic, "https://api.anthropic.com"),
         ] {
             let mut configured = routes.iter().filter_map(|(model, _)| {
-                (model.info().provider == provider).then_some(model.endpoint().as_str())
+                (model.info().provider == provider && model.info().provider_name == provider.as_str())
+                    .then_some(model.endpoint().as_str())
             });
             let base = match cloud.pointer(&format!("/discovery/{}/base_url", provider.as_str())) {
                 Some(base) => base.as_str().ok_or_else(invalid)?,
@@ -624,6 +680,9 @@ fn open_gateway_with_go(
                 }
             }));
         }
+    }
+    if discover {
+        sources.extend(named);
     }
     // These existing private locations are denied to both file tools and bash.
     // Configured-route discovery reads no key or ledger. Explicit Go discovery
@@ -676,12 +735,11 @@ fn open_gateway_with_go(
     let mut notices = Vec::new();
     let discovery_timeout = Duration::from_secs(15);
     for source in sources {
-        let provider = source.provider().as_str();
+        let provider = source.name();
         match gateway.discover_cloud(&source, discovery_timeout) {
             Ok(Some(status)) => {
                 if status.state == State::Stale {
                     notices.push(format!("Using a stale {provider} model catalog."));
-                    refresh_cloud.push(source);
                 }
                 if status.missing_price + status.missing_limits > 0 {
                     notices.push(format!(
@@ -691,7 +749,7 @@ fn open_gateway_with_go(
                 }
                 if status.public_metadata > 0 {
                     notices.push(format!(
-                        "{provider} limits and prices for {} models come from OpenRouter's public catalog.",
+                        "{provider} metadata for {} models comes from OpenRouter's public catalog.",
                         status.public_metadata,
                     ));
                 }
@@ -700,6 +758,9 @@ fn open_gateway_with_go(
                         "{provider} catalog uses owner-estimated prices for {} models.",
                         status.estimated_price,
                     ));
+                }
+                if status.state == State::Stale {
+                    refresh_cloud.push(source);
                 }
             }
             Ok(None) => {}

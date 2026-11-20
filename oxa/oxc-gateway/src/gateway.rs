@@ -262,7 +262,7 @@ impl Gateway {
     pub fn discover_cloud(&mut self, source: &Source, timeout: Duration) -> Result<Option<Status>, Error> {
         let Some(key) = self
             .runtime
-            .catalog_key(source.provider())
+            .catalog_key_named(source.provider(), source.key_name())
             .map_err(Error::Refused)?
         else {
             return Ok(None);
@@ -271,7 +271,7 @@ impl Gateway {
         use crate::catalog_cache::State;
         let (state, offers) = match source.load(directory, &key) {
             // OpenRouter discovery can supply the rates used to reserve spend.
-            Some((State::Stale, _)) if source.provider() == Provider::OpenRouter => {
+            Some((State::Stale, _)) if source.provider() == Provider::OpenRouter && !source.is_named() => {
                 (State::Fresh, self.fetch_catalog(source, &key, timeout)?)
             }
             Some(cached) => cached,
@@ -294,7 +294,7 @@ impl Gateway {
     pub fn refresh_cloud(&self, source: &Source, timeout: Duration) -> Result<(), Error> {
         if let Some(key) = self
             .runtime
-            .catalog_key(source.provider())
+            .catalog_key_named(source.provider(), source.key_name())
             .map_err(Error::Refused)?
         {
             self.fetch_catalog(source, &key, timeout)?;
@@ -527,7 +527,11 @@ impl Gateway {
             created: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |t| t.as_secs()),
-            provider: self.runtime.openrouter_provider(),
+            provider: model
+                .configured_route()
+                .is_none()
+                .then(|| self.runtime.openrouter_provider())
+                .flatten(),
         };
         let mut forwarding_error = None;
         let mut deliver = |event| match event {
@@ -550,17 +554,17 @@ impl Gateway {
             self.client
                 .stream_openrouter(
                     request,
+                    model.configured_route().map(|_| self.runtime.model_rules()),
                     &key,
                     cancel,
                     &mut deliver,
-                    &mut terminal_usage,
-                    &mut terminal_reported_cost,
+                    (&mut terminal_usage, &mut terminal_reported_cost),
                 )
                 .await
         } else {
             self.client
                 .stream_with_blocks(
-                    request,
+                    (request, model.configured_route().is_some()),
                     &key,
                     cancel,
                     &mut deliver,
@@ -583,7 +587,7 @@ impl Gateway {
         // public usage opt-out; both must settle the actual cache categories.
         if let Some(usage) = terminal_usage {
             call.metered(usage);
-            if model.info().provider == Provider::OpenRouter {
+            if model.info().provider == Provider::OpenRouter && model.configured_route().is_none() {
                 call.metered_cost(terminal_reported_cost);
             }
         }
