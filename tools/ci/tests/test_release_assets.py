@@ -67,7 +67,8 @@ class ReleaseAssets(unittest.TestCase):
         self.assertNotIn('contents: write', dev.split('  publish:', 1)[0])
         # A nightly or dispatched run qualifies without republishing the same commit.
         self.assertIn("github.event_name == 'push'", dev.split('  publish:', 1)[1])
-        self.assertIn('for arch in aarch64 x86_64', dev)
+        self.assertIn('for arch in aarch64 x86_64',
+                      (W.parents[1] / 'packaging/release/dev-dist.sh').read_text())
         release_commands = [line.strip() for line in dev.splitlines()
                             if 'gh release create ' in line or 'gh release edit ' in line]
         self.assertEqual(len(release_commands), 2)
