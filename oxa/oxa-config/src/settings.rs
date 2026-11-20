@@ -532,6 +532,25 @@ impl Settings {
         set_nested(&mut root, key, value);
         self.persist(&path, root, project)
     }
+    /// Change one key of the USER file with its current on-disk value: under the file's write
+    /// lock, `change` receives the value the file holds right now (not this instance's possibly
+    /// stale copy) and returns the value to store, so two concurrent updates merge instead of
+    /// one replacing the other's work. An error from `change` writes nothing.
+    pub fn update_user(
+        &mut self,
+        dirs: &Dirs,
+        key: &str,
+        change: impl FnOnce(Option<&Value>) -> Result<Value, OxaError>,
+    ) -> Result<(), OxaError> {
+        check_key_shape(key)?;
+        let path = dirs.settings_file();
+        let _lock = lock_for_write(&path)?;
+        let mut root = read_object_for_write(&path)?;
+        let current = lookup_in(&root, key).cloned();
+        let value = change(current.as_ref())?;
+        set_nested(&mut root, key, value);
+        self.persist(&path, root, false)
+    }
     /// Remove `key` from the user file (`project = false`) or the project file, pruning parent
     /// objects it leaves empty; every other key stays as it is. Nothing is written when the
     /// file does not hold the key. A symbolic link at the settings path is refused, not followed.
@@ -649,6 +668,15 @@ fn lock_for_write(path: &Path) -> Result<std::fs::File, OxaError> {
 fn lookup<'a>(layer: &'a Value, key: &str) -> Option<&'a Value> {
     let mut cur = layer;
     for part in key.split('.') {
+        cur = cur.as_object()?.get(part)?;
+    }
+    Some(cur)
+}
+
+fn lookup_in<'a>(root: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
+    let mut parts = key.split('.');
+    let mut cur = root.get(parts.next()?)?;
+    for part in parts {
         cur = cur.as_object()?.get(part)?;
     }
     Some(cur)
