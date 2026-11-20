@@ -183,9 +183,10 @@ situation) and every rule is a derivation over it:
 - `review_held` reports each PR with unresolved review threads (queued PRs first,
   then oldest thread first, within the report bound): exact head, thread counts,
   oldest thread age, authors, `incomplete` when the thread page was cut off, and
-  the assignee. `queued_findings:<pr>` and the ask `lead:stuck:queued-findings:<pr>`
-  mark such a PR in the queue at its exact head; the signal ending on a later
-  pass is the recorded dequeue.
+  the assignee. Only a current thread holds landing or escalates: an
+  outdated-only hold is reported and never asks. `queued_findings:<pr>` and the
+  ask `lead:stuck:queued-findings:<pr>` mark such a PR in the queue at its exact
+  head; the signal ending on a later pass is the recorded dequeue.
 - A stall with no report row that has an assignee and no escalation does not end
   the pass: it still proposes the next Board action, with `stuck.signals` attached.
 
