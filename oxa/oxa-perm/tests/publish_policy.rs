@@ -386,3 +386,49 @@ fn local_writers_and_path_qualified_publish_tools_ask() {
         assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask, "{command}");
     }
 }
+
+#[test]
+fn continued_config_values_and_git_aliases_ask() {
+    let cwd = repo("my-branch");
+    set_config(
+        &cwd,
+        "[remote \"origin\"]\n\tharmless = x\\\n[ignored]\n\tpush = HEAD:refs/heads/main\n",
+    );
+    assert_eq!(decide(&cwd, Autonomy::Auto, "git push origin"), Decision::Ask);
+
+    let cwd = repo("my-branch");
+    set_config(&cwd, "[alias]\n\tship = push origin HEAD:main\n");
+    for c in [
+        "git ship",
+        "git status && git ship",
+        "git -c alias.ship='push origin HEAD:refs/heads/main' ship",
+    ] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{c}");
+    }
+    let cwd = repo("my-branch");
+    assert_eq!(
+        decide(
+            &cwd,
+            Autonomy::Auto,
+            "git -c alias.ship='push origin HEAD:refs/heads/main' ship"
+        ),
+        Decision::Ask
+    );
+}
+
+#[test]
+fn gh_mutation_is_bound_to_the_recorded_repository() {
+    let cwd = repo("my-branch");
+    set_config(&cwd, "[remote \"origin\"]\n\turl = https://github.com/o/r.git\n");
+    let c = "gh pr comment --body hi";
+    assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Allow);
+    set_config(
+        &cwd,
+        "[remote \"origin\"]\n\turl = https://github.com/o/other.git\n",
+    );
+    assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask);
+    assert_eq!(
+        decide(&cwd, Autonomy::Auto, "GH_REPO=o/other gh pr comment --body hi"),
+        Decision::Ask
+    );
+}
