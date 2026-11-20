@@ -449,9 +449,9 @@ fn local_writers_and_path_qualified_publish_tools_ask() {
 }
 
 #[test]
-fn external_git_helpers_keep_the_publish_approval_floor() {
+fn git_names_that_can_resolve_outside_builtin_dispatch_ask() {
     let cwd = repo("my-branch");
-    for command in ["git citool", "git p4", "git send-email", "git svn"] {
+    for command in ["git citool", "git p4", "git send-email", "git svn", "git hook"] {
         assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask, "{command}");
     }
 }
@@ -473,6 +473,10 @@ fn continued_config_values_and_unresolved_git_subcommands_ask() {
     // ask (the aborting-merge and replace-ref work guards depend on them running).
     let cwd = repo("my-branch");
     for c in [
+        "git diff-files",
+        "git diff-index --quiet HEAD --",
+        "git diff-tree HEAD",
+        "git version",
         "git merge --abort",
         "git update-ref refs/replace/deadbeef deadbeef",
         "git rebase origin/main",

@@ -38,7 +38,8 @@ const GIT_LOCAL: &[&str] = &[
 ];
 const DEFAULT_BRANCHES: &[&str] = &["main", "master", "trunk"];
 
-/// Git builtin names, not the list of commands in Git's help (which includes external helpers).
+/// Git builtins available on the supported Git baseline, not external helpers.
+/// Keep `hook` outside the list: older Git versions can resolve it as an alias.
 /// Anything outside this allowlist may resolve to a configuration alias or an external `git-*`
 /// executable, so it keeps the publish floor. `send-pack` is
 /// deliberately not consulted here: it is classified as unsafe before this list is reached.
@@ -75,6 +76,9 @@ const GIT_BUILTINS: &[&str] = &[
     "credential-store",
     "describe",
     "diff",
+    "diff-files",
+    "diff-index",
+    "diff-tree",
     "difftool",
     "fast-export",
     "fast-import",
@@ -89,7 +93,6 @@ const GIT_BUILTINS: &[&str] = &[
     "grep",
     "hash-object",
     "help",
-    "hook",
     "index-pack",
     "init",
     "init-db",
@@ -159,6 +162,7 @@ const GIT_BUILTINS: &[&str] = &[
     "verify-commit",
     "verify-pack",
     "verify-tag",
+    "version",
     "whatchanged",
     "worktree",
     "write-tree",
