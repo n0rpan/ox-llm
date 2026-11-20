@@ -28,7 +28,7 @@ $ generate-large-message | oxa send SESSION_ID -
 Use the full session id. This queues one message without starting an engine or requiring the session to be running. Success means **queued**, not that the model has answered.
 
 - **Steer (the default).** A busy session takes the message after its running tool calls, before its next model request, exactly like text typed into its TUI with Enter. It does not cancel the running tool. `--steer` names this default.
-- **Follow-up (`--follow-up`).** A busy session takes the message when its turn ends, like Alt+Enter. A session that pursues a goal may keep calling tools for a long time without ending its turn, so there a follow-up that has waited `oxa.goal.followUpMaxWaitSeconds` (default 300, user setting, `0` = wait for the end) is delivered at the next tool boundary.
+- **Follow-up (`--follow-up`, before the session id).** A busy session takes the message when its turn ends, like Alt+Enter. A session that pursues a goal may keep calling tools for a long time without ending its turn, so there a follow-up that has waited `oxa.goal.followUpMaxWaitSeconds` (default 300, user setting, `0` = wait for the end) is delivered at the next tool boundary.
 - An idle session starts a turn with either kind. A stopped session keeps the message until it is opened again in TUI or RPC mode, or by a headless goal run.
 
 The TUI shows a queued steer as a `Steering:` line and a follow-up as a `Follow-up:` line. The same rules hold for an RPC owner and for a headless goal run (`oxa.inbox.headless`). The lead web page and the `worker` tool's `send` action send steers. A session started by an older oxa does not read steers: restart it, or send with `--follow-up`.
@@ -112,7 +112,9 @@ Commands take the place of the message. They do not start a session.
 | `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa status <session-id\|session-file> [--session-dir <dir>]` | read a saved session's progress and stall signal without contacting an engine |
 | `oxa models [--json] [search]` | list the local and cloud models this install can serve — where each runs, its limits and which one is the default; `--json` prints one `oxa_models` object, and a search word filters by place, provider or model name; reads no key and no ledger, runs no model |
-| `oxa send [--follow-up] <session-id> <text\|->` | send one message to the session's TUI, RPC owner or headless goal run: a steer for its next tool boundary, or with `--follow-up` a follow-up for the end of its turn; `-` reads standard input |
+| `oxa send [--follow-up] <session-id> <text\|-> [--wait SECONDS]` | send one message to the session's TUI, RPC owner or headless goal run: a steer for its next tool boundary, or with `--follow-up` a follow-up for the end of its turn; `-` reads standard input. Prints one JSON line `{"id":<message-id>,"outcome":"queued"\|"delivered"\|"not_delivered"}`. With `--wait` the command waits up to that many seconds for the owner to take the file: `delivered` exits 0, `not_delivered` exits 3 |
+| `oxa send <session-id> --retry <message-id> [--wait SECONDS]` | check the same message again without publishing it a second time (same receipt line and exit codes) |
+| `oxa send <session-id> --withdraw <message-id>` | remove a message the owner has not taken yet (`withdrawn`, or `delivered` if it was already taken) |
 | `oxa send <session-id> --approve <request-id> once\|session\|always\|deny` | answer a dangerous-command request filed by an unattended run (#1512). The answer requires confirmation from the session's owner-confirm broker, or directly from the controlling terminal. `always` also saves the rule key to the user settings. Answers go to the approval desk, never to the session's message queue |
 | `oxa send --approvals` | list the approval requests still waiting for an answer: id, session, command and reasons. Commands refused outright are not stored in the approval desk |
 | `oxa config [-l]` | print every setting with its value and where it comes from |
@@ -259,7 +261,10 @@ the session model, all from the user-only `oxa.workers.models` setting (no ids a
 a list the id this session used least is taken). The choice and its reason are recorded and shown by
 `worker list`. `worker result {name, result: ok|failed, reason}` records how a worker's work turned
 out, which is what escalation counts. A model id missing from the live catalog warns and still
-starts. The `oxa lead --shadow` preset is read-only,
+starts. `worker send {name, text}` answers `receipt <id>: delivered` once the worker took the message,
+`not_delivered` after `oxa.workers.sendAckSeconds` (default 10, 0 = do not wait), and
+`send {name, retry: <id>}` or `{name, withdraw: <id>}` waits again or removes it. `start` and `stop`
+results end with the same `receipt` line. The `oxa lead --shadow` preset is read-only,
 and standalone one-shot `oxa lead chat <message>` exposes no tools because its process cannot keep
 a background worker alive for a later turn.
 
@@ -360,7 +365,7 @@ Every boolean variable takes the same eight words, in any case: `1`, `true`, `ye
 | `OXA_SYSTEM_SKILLS_DIR` | system skills directory, read last. Default `/usr/share/omarchy/default/agents/skills`; empty disables it |
 | `OXA_OFFLINE` | `1`, `true`, `yes` or `on` turns offline mode on, as `--offline` does |
 | `OXA_ALLOW_HOME_CWD` | `1`, `true`, `yes` or `on` allows a start in the home directory, `/` or a parent of home, as the user setting `oxa.allowHomeCwd` does. See [security.md](security.md#starting-in-your-home-directory) |
-| `OXA_CONFIRM_MAX_REQUEST_BYTES` | largest owner confirm request a tool child may send, in bytes. Default 8 MiB |
+| `OXA_CONFIRM_MAX_REQUEST_BYTES` | largest owner confirm request a tool child may send (title and body as JSON, in bytes). A larger request is refused unread and the command says so. Default 8 MiB |
 | `OXA_CONFIRM_READ_TIMEOUT_SECS` | seconds a tool child has to send its whole owner confirm request. Default 60 |
 | `OXA_CONFIRM_MAX_CONNECTIONS` | owner confirm requests served at once; more are answered "none" at once. Default 64 |
 | `OXA_WEB_SEARCH` | `0`, `false`, `no` or `off` disables `web_search`; `1`, `true`, `yes` or `on` says on |

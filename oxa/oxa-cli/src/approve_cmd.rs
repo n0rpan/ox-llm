@@ -13,12 +13,26 @@ use std::path::Path;
 const ANSWERS: &[&str] = &["once", "session", "always", "deny"];
 
 /// The usage line of every form (`oxa send` with bad words).
-pub(crate) const USAGE: &str = "Usage: oxa send <session-id> \"text\" | oxa send <session-id> --approve <request-id> once|session|always|deny | oxa send --approvals";
+pub(crate) const USAGE: &str = "Usage: oxa send [--follow-up] <session-id> \"text\" [--wait SECONDS] | oxa send <session-id> --retry <message-id> [--wait SECONDS] | oxa send <session-id> --withdraw <message-id> | oxa send <session-id> --approve <request-id> once|session|always|deny | oxa send --approvals";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SendCmd {
-    /// A follow-up message for the session's inbox.
-    Text { session: String, text: String },
+    /// A message for the session's inbox: a steer (the receiver's next tool boundary), or with
+    /// `--follow-up` a plain follow-up (the end of the receiver's turn).
+    Text {
+        session: String,
+        text: String,
+        wait: Option<u64>,
+        steer: bool,
+    },
+    /// Check an earlier message again, without publishing it a second time.
+    Retry {
+        session: String,
+        message: String,
+        wait: Option<u64>,
+    },
+    /// Remove an undelivered message.
+    Withdraw { session: String, message: String },
     /// The owner's answer to one request of `session`.
     Approve {
         session: String,
@@ -29,22 +43,22 @@ pub(crate) enum SendCmd {
     List,
 }
 
-/// The message form of `oxa send`: whether it is a steer, the session id and the text. A message
-/// is a steer (delivered at the receiver's next tool boundary) unless `--follow-up` asks for the
-/// plain queue (the end of the receiver's turn); `--steer` names the default. `None` for
-/// anything else, an invalid session id included.
-pub(crate) fn text_form(words: &[String]) -> Option<(bool, &String, &String)> {
-    let (steer, id, text) = match words {
-        [id, text] => (true, id, text),
-        [flag, id, text] | [id, flag, text] if flag == "--follow-up" => (false, id, text),
-        [flag, id, text] | [id, flag, text] if flag == "--steer" => (true, id, text),
-        _ => return None,
-    };
-    oxa_session::valid_inbox_id(id).then_some((steer, id, text))
+/// A bare flag of this command is never message text.
+fn is_send_flag(word: &str) -> bool {
+    matches!(
+        word,
+        "--retry" | "--withdraw" | "--wait" | "--follow-up" | "--steer"
+    )
 }
 
 /// Parse the words after `oxa send`. Only the three forms above are accepted.
 pub(crate) fn parse(words: &[String]) -> Result<SendCmd, OxaError> {
+    // #2183: a leading `--follow-up` asks for the plain queue; `--steer` names the default.
+    let (steer, words) = match words {
+        [flag, rest @ ..] if flag == "--follow-up" => (false, rest),
+        [flag, rest @ ..] if flag == "--steer" => (true, rest),
+        _ => (true, words),
+    };
     match words {
         [flag] if flag == "--approvals" => Ok(SendCmd::List),
         [id, flag, request, answer]
@@ -59,10 +73,46 @@ pub(crate) fn parse(words: &[String]) -> Result<SendCmd, OxaError> {
             })
         }
         // A bare flag is not a message: `oxa send <id> --approve` is an incomplete answer.
-        [id, text] if oxa_session::valid_inbox_id(id) && text != "--approve" => Ok(SendCmd::Text {
+        [id, flag, message] if flag == "--retry" && oxa_session::valid_inbox_id(id) => Ok(SendCmd::Retry {
             session: id.clone(),
-            text: text.clone(),
+            message: message.clone(),
+            wait: None,
         }),
+        [id, flag, message, wait_flag, seconds]
+            if flag == "--retry" && wait_flag == "--wait" && oxa_session::valid_inbox_id(id) =>
+        {
+            Ok(SendCmd::Retry {
+                session: id.clone(),
+                message: message.clone(),
+                wait: Some(seconds.parse().map_err(|_| OxaError::new(codes::USAGE, USAGE))?),
+            })
+        }
+        [id, flag, message] if flag == "--withdraw" && oxa_session::valid_inbox_id(id) => {
+            Ok(SendCmd::Withdraw {
+                session: id.clone(),
+                message: message.clone(),
+            })
+        }
+        [id, text]
+            if oxa_session::valid_inbox_id(id) && !text.starts_with("--approve") && !is_send_flag(text) =>
+        {
+            Ok(SendCmd::Text {
+                session: id.clone(),
+                text: text.clone(),
+                wait: None,
+                steer,
+            })
+        }
+        [id, text, flag, seconds]
+            if flag == "--wait" && oxa_session::valid_inbox_id(id) && !is_send_flag(text) =>
+        {
+            Ok(SendCmd::Text {
+                session: id.clone(),
+                text: text.clone(),
+                wait: Some(seconds.parse().map_err(|_| OxaError::new(codes::USAGE, USAGE))?),
+                steer,
+            })
+        }
         _ => Err(OxaError::new(codes::USAGE, USAGE)),
     }
 }
@@ -74,11 +124,41 @@ pub(crate) fn run(
     cwd: &Path,
     env: &Env,
     out: &mut dyn Write,
+    stdin: &mut dyn std::io::Read,
 ) -> Result<i32, OxaError> {
     match parse(words)? {
-        SendCmd::Text { session, text } => oxa_session::send_inbox(&dirs.agent_dir, &session, &text)
-            .map(|_| 0)
-            .map_err(|e| OxaError::io("cannot send session message", &e)),
+        SendCmd::Text {
+            session,
+            mut text,
+            wait,
+            steer,
+        } => {
+            if text == "-" {
+                text.clear();
+                stdin
+                    .read_to_string(&mut text)
+                    .map_err(|e| OxaError::io("cannot read session message from stdin", &e))?;
+            }
+            let sent = if steer {
+                oxa_session::send_inbox_steer_receipt(&dirs.agent_dir, &session, &text)
+            } else {
+                oxa_session::send_inbox_receipt(&dirs.agent_dir, &session, &text)
+            };
+            let message = sent.map_err(|e| OxaError::io("cannot send session message", &e))?;
+            receipt(out, dirs, &session, &message, wait)
+        }
+        SendCmd::Retry {
+            session,
+            message,
+            wait,
+        } => receipt(out, dirs, &session, &message, Some(wait.unwrap_or(0))),
+        SendCmd::Withdraw { session, message } => {
+            let removed = oxa_session::withdraw_inbox(&dirs.agent_dir, &session, &message)
+                .map_err(|e| OxaError::io("cannot withdraw session message", &e))?;
+            let outcome = if removed { "withdrawn" } else { "delivered" };
+            write_receipt(out, &message, outcome)?;
+            Ok(0)
+        }
         SendCmd::List => list(dirs, out),
         SendCmd::Approve {
             session,
@@ -89,6 +169,40 @@ pub(crate) fn run(
             approve_with(dirs, cwd, &session, &request, &answer, out, &mut confirm)
         }
     }
+}
+
+fn write_receipt(out: &mut dyn Write, message: &str, outcome: &str) -> Result<(), OxaError> {
+    writeln!(out, "{}", serde_json::json!({"id": message, "outcome": outcome}))
+        .map_err(|e| OxaError::io("cannot write", &e))
+}
+
+/// One bounded receipt line: `delivered` once the owner took the file, `not_delivered`
+/// when the wait ended first (exit 3, so a script can retry), `queued` when no wait was asked.
+fn receipt(
+    out: &mut dyn Write,
+    dirs: &Dirs,
+    session: &str,
+    message: &str,
+    wait: Option<u64>,
+) -> Result<i32, OxaError> {
+    let outcome = match wait {
+        None => "queued",
+        Some(seconds) => {
+            match oxa_session::await_delivery(
+                &dirs.agent_dir,
+                session,
+                message,
+                std::time::Duration::from_secs(seconds),
+            )
+            .map_err(|e| OxaError::io("cannot check session message", &e))?
+            {
+                oxa_session::DeliveryOutcome::Delivered => "delivered",
+                oxa_session::DeliveryOutcome::NotDelivered => "not_delivered",
+            }
+        }
+    };
+    write_receipt(out, message, outcome)?;
+    Ok(if outcome == "not_delivered" { 3 } else { 0 })
 }
 
 fn open_desk(dirs: &Dirs) -> Result<ApprovalDesk, OxaError> {
@@ -252,6 +366,17 @@ mod tests {
             Some(SendCmd::Text {
                 session: "s1".into(),
                 text: "hello".into(),
+                wait: None,
+                steer: true,
+            })
+        );
+        assert_eq!(
+            parse(&words("--follow-up s1 hello")).ok(),
+            Some(SendCmd::Text {
+                session: "s1".into(),
+                text: "hello".into(),
+                wait: None,
+                steer: false,
             })
         );
         // An answer outside the four is refused, and so is a session id that is not a path word.

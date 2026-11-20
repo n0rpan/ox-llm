@@ -472,6 +472,20 @@ fn dialog_timeout_returns_none() {
     assert!(!h.router.deliver(&late));
 }
 
+/// #1813: a cancel that came before the dialog registered is not lost, and it dismisses only
+/// its own dialog: another waiting dialog still receives its answer.
+#[test]
+fn a_cancel_that_came_first_dismisses_only_its_own_dialog() {
+    let mut h = harness();
+    let (other_id, _other_rx) = h.router.register();
+    let cancel = oxa_proto::DialogCancel::new();
+    cancel.cancel();
+    assert_eq!(h.ui.confirm_cancellable("Confirm", "body", &cancel), None);
+    let line = json!({"type": "extension_ui_response", "id": other_id, "confirmed": true});
+    let cmd = parse_command(&line.to_string()).expect("a command line");
+    assert!(h.router.deliver(&cmd), "the other dialog is still registered");
+}
+
 /// spawn, prompt, events, close
 #[test]
 fn client_drives_rpc_client_example_flow() {

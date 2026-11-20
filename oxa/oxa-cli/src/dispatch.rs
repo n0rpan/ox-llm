@@ -326,45 +326,16 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Subcommand::Memory(words) => crate::run_memory(&words, &dirs, &mut *stdout, &mut *stderr),
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
-            // #1512 S5: an owner answer to an approval request or the request list; a plain
-            // follow-up takes the inbox path below.
-            Subcommand::Send(words) if words.iter().any(|w| w == "--approve" || w == "--approvals") => {
-                crate::approve_cmd::run(&words, &dirs, &cwd, env, &mut *stdout)
-            }
             Subcommand::Local(_) if is_agent(env) => Err(OxaError::new(
                 codes::INVALID,
                 "Local model setup requires the owner outside an agent tool",
             )),
             Subcommand::Local(words) => run_local(&words, &dirs, &cwd, &mut *stdout),
-            // #2183: a message is a steer (the receiver's next tool boundary) unless
-            // `--follow-up` asks for the plain queue (the end of the receiver's turn).
-            Subcommand::Send(words) => match crate::approve_cmd::text_form(&words) {
-                Some((steer, id, text)) => {
-                    let mut piped = String::new();
-                    let read = if text == "-" {
-                        stdin
-                            .read_to_string(&mut piped)
-                            .map(|_| ())
-                            .map_err(|e| OxaError::io("cannot read session message from stdin", &e))
-                    } else {
-                        Ok(())
-                    };
-                    read.and_then(|()| {
-                        let message = if text == "-" { &piped } else { text };
-                        let sent = if steer {
-                            oxa_session::send_inbox_steer(&dirs.agent_dir, id, message)
-                        } else {
-                            oxa_session::send_inbox(&dirs.agent_dir, id, message)
-                        };
-                        sent.map(|_| 0)
-                            .map_err(|e| OxaError::io("cannot send session message", &e))
-                    })
-                }
-                None => Err(OxaError::new(
-                    codes::USAGE,
-                    "Usage: oxa send [--follow-up] <session-id> <text|->",
-                )),
-            },
+            // #1512 S5: a follow-up (with its delivery receipt), an owner answer to an approval
+            // request, or the request list; `approve_cmd` parses every form.
+            Subcommand::Send(words) => {
+                crate::approve_cmd::run(&words, &dirs, &cwd, env, &mut *stdout, &mut *stdin)
+            }
             Subcommand::Identity(words) => crate::run_identity(&words, &dirs, env, &mut *stdout),
             Subcommand::ReportIssue(words) => crate::run_report_issue(&words, &dirs, &cwd, env, &mut *stdout),
             Subcommand::Wipe(words) => crate::run_wipe(

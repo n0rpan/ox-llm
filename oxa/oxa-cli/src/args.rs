@@ -305,8 +305,12 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     ("oxa logout chatgpt", "Remove the owner ChatGPT token record"),
     (
-        "oxa send [--follow-up] <session-id> <text|->",
-        "Steer a session at its next tool call; --follow-up queues it instead; - reads stdin",
+        "oxa send [--follow-up] <session-id> <text|-> [--wait SECONDS]",
+        "Steer a session at its next tool call (--follow-up queues it instead) and print a delivery receipt; - reads stdin; --wait exits 3 if not taken in time",
+    ),
+    (
+        "oxa send <session-id> --retry <message-id> | --withdraw <message-id>",
+        "Check a sent message again without sending it twice, or remove an undelivered one",
     ),
     (
         "oxa send <session-id> --approve <request-id> once|session|always|deny",

@@ -2,7 +2,7 @@
 //! These functions return facts, never raw file content or input-bearing diagnostics.
 use oxa_proto::work::{PullRequest, Snapshot, MAX_SNAPSHOT_BYTES};
 use oxa_work::board::{Action, Board, MAX_OPEN_PULL_REQUESTS};
-use oxa_work::shadow::{AppQuota, MAX_LEAD_SAMPLE_BYTES};
+use oxa_work::shadow::{AppQuota, ThreadHold, MAX_LEAD_SAMPLE_BYTES};
 use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
@@ -54,6 +54,14 @@ pub struct Sample {
     pub board: Board,
     pub app_quota: Option<AppQuota>,
     pub alarms: crate::lead_page::Alarms,
+    /// Unresolved review threads per PR from the landing record; `None` when the
+    /// sample carries no landing record.
+    pub threads: Option<std::collections::BTreeMap<u64, ThreadHold>>,
+    /// PRs whose review decision is `requester_rejected`: the reviewer refused the
+    /// configured requester account.
+    pub review_rejected: Vec<u64>,
+    /// Optional GitHub work the owner's App reserve kept back from this sample.
+    pub quota_deferred: Vec<oxa_work::shadow::Deferral>,
 }
 
 /// Read the most recent complete Reader sample within the existing tail bound.
@@ -82,11 +90,21 @@ pub fn sample(path: &Path, uid: u32) -> Result<Sample> {
         let line = &tail[previous.map_or(0, |p| p + 1)..end];
         let decoded = decode_board_sample(line)?;
         if !decoded.publication {
-            let alarms = decode_alarms(line, &decoded.board, decoded.board.observed_at);
+            let record: serde_json::Value = serde_json::from_slice(line).unwrap_or(serde_json::Value::Null);
+            let (alarms, threads) = decode_alarms(&record, &decoded.board, decoded.board.observed_at);
             return Ok(Sample {
                 board: decoded.board,
                 app_quota: decoded.app_quota,
                 alarms,
+                threads,
+                review_rejected: record["reviews"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .filter(|(_, plan)| plan["decision"].get("requester_rejected").is_some())
+                    .filter_map(|(number, _)| number.parse().ok())
+                    .collect(),
+                quota_deferred: serde_json::from_value(record["quota_deferred"].clone()).unwrap_or_default(),
             });
         }
         // Publication rows carry a Board for journal replay, not a Reader observation.
@@ -178,14 +196,22 @@ struct DecodedSample {
 struct LandingRow {
     queue_alarm: bool,
     queue: Option<oxa_work::shadow::QueueObservation>,
+    #[serde(default)]
+    threads: Option<ThreadHold>,
 }
 
 /// Decode every alarm source one record carries. Each source is independent: a
 /// missing or invalid record leaves that source unobserved (`None`) instead of
 /// failing the board, and the shared parsers keep their own policy results
 /// without this module recomputing any age.
-fn decode_alarms(line: &[u8], board: &Board, observed_at: u64) -> crate::lead_page::Alarms {
-    let record: serde_json::Value = serde_json::from_slice(line).unwrap_or_else(|_| serde_json::Value::Null);
+fn decode_alarms(
+    record: &serde_json::Value,
+    board: &Board,
+    observed_at: u64,
+) -> (
+    crate::lead_page::Alarms,
+    Option<std::collections::BTreeMap<u64, ThreadHold>>,
+) {
     let panels = record
         .get("panels")
         .filter(|value| !value.is_null())
@@ -202,38 +228,41 @@ fn decode_alarms(line: &[u8], board: &Board, observed_at: u64) -> crate::lead_pa
     };
     // Bind each queue-age alarm to the exact PR head of the same record's Board
     // entry, and require the landing record's own queue observation.
-    let overdue_queue = record
+    let rows: Option<std::collections::BTreeMap<u64, LandingRow>> = record
         .get("landing")
         .filter(|value| !value.is_null())
-        .and_then(|value| {
-            let rows: std::collections::BTreeMap<u64, LandingRow> =
-                serde_json::from_value(value.clone()).ok()?;
-            Some(
-                board
-                    .entries
-                    .iter()
-                    .filter(|entry| {
-                        rows.get(&entry.number)
-                            .is_some_and(|row| row.queue_alarm && row.queue.is_some())
-                    })
-                    .map(|entry| PullRequest {
-                        number: entry.number,
-                        head: entry.head.clone(),
-                    })
-                    .collect(),
-            )
-        });
+        .and_then(|value| serde_json::from_value(value.clone()).ok());
+    let overdue_queue = rows.as_ref().map(|rows| {
+        board
+            .entries
+            .iter()
+            .filter(|entry| {
+                rows.get(&entry.number)
+                    .is_some_and(|row| row.queue_alarm && row.queue.is_some())
+            })
+            .map(|entry| PullRequest {
+                number: entry.number,
+                head: entry.head.clone(),
+            })
+            .collect()
+    });
+    let threads = rows.map(|rows| {
+        rows.into_iter()
+            .filter_map(|(number, row)| Some((number, row.threads?)))
+            .collect()
+    });
     let stalled_runs = record
         .get("runs")
         .and_then(serde_json::Value::as_array)
         .and_then(|pages| crate::lead_runs::stalled(pages, observed_at).ok());
-    crate::lead_page::Alarms {
+    let alarms = crate::lead_page::Alarms {
         main_red,
         main_merge_stalled,
         stalled_runs,
         queue,
         overdue_queue,
-    }
+    };
+    (alarms, threads)
 }
 
 fn decode_board_sample(line: &[u8]) -> Result<DecodedSample> {
