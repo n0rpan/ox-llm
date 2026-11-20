@@ -104,6 +104,18 @@ fn build_worker_hooks(
         .find(|(k, _)| k == worker_tool::ENV_WORKER_DEPTH)
         .map(|(_, v)| v.as_str());
     if !i.args.no_session && worker_tool::built(worker_depth, worker_tool::enabled(i.settings)) {
+        // The HTTP owner opens one Session per message. Reuse its process-owned
+        // supervisor before constructing WorkerCore, which pins a launcher copy
+        // of the current executable as part of construction.
+        if !inherit_tool_scope {
+            if let Some(workers) = worker_tool::retained_owner_workers(
+                &i.dirs.agent_dir,
+                worker_tool::max_workers(i.settings),
+                &i.yolo,
+            ) {
+                return Some(workers);
+            }
+        }
         match std::env::current_exe() {
             Ok(bin) => {
                 // The supervisor needs a trusted `kill` from the host PATH (never a project shim),
