@@ -4,7 +4,7 @@ use oxa_session::{FsStore, SessionStore};
 use std::process::Command;
 
 const PTY: &str = r#"
-import fcntl, os, pty, select, signal, struct, subprocess, sys, termios, time
+import fcntl, os, pty, re, select, signal, struct, subprocess, sys, termios, time
 master, slave = pty.openpty()
 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 160, 0, 0))
 child = subprocess.Popen([sys.argv[1], '--yolo', '--model', 'fake-model',
@@ -12,14 +12,18 @@ child = subprocess.Popen([sys.argv[1], '--yolo', '--model', 'fake-model',
     stdin=slave, stdout=slave, stderr=slave, close_fds=True)
 os.close(slave)
 output = b''
+cursor = 0
 def wait_for(marker):
-    global output
+    global output, cursor
     deadline = time.monotonic() + 10
-    while marker not in output:
-        assert child.poll() is None and time.monotonic() < deadline, (marker, output[-4000:])
+    while output.find(marker, cursor) < 0:
+        if child.poll() is not None or time.monotonic() >= deadline:
+            text = re.sub(rb'\x1b\[[0-?]*[ -/]*[@-~]', b'', output).decode(errors='replace')
+            lines = dict.fromkeys(line.strip() for line in text.splitlines() if line.strip())
+            raise AssertionError(f'missing {marker!r}:\n' + '\n'.join(lines)[-12000:])
         if select.select([master], [], [], .1)[0]:
             output += os.read(master, 65536)
-    output = output[output.index(marker) + len(marker):]
+    cursor = output.index(marker, cursor) + len(marker)
 try:
     wait_for(b'READY')
     os.write(master, b'/goal Finish the synthetic task\r')
@@ -34,6 +38,7 @@ try:
             wait_for(b'Select model')
             os.write(master, b'replacement')
             wait_for(b'search: replacement')
+            wait_for(b'replacement-model')
             os.write(master, b'\r')
         else:
             os.write(master, b'Use the synthetic instruction\r')
@@ -91,16 +96,17 @@ fn exercise(case: &str) {
         .env("TERM", "xterm-256color")
         .output()
         .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
     let requests: Vec<_> = server
         .requests()
         .into_iter()
         .filter(|r| r.max_tokens != 0)
         .collect();
+    assert!(
+        output.status.success(),
+        "requested models: {:?}\n{}",
+        requests.iter().map(|r| &r.model).collect::<Vec<_>>(),
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(requests[0].model, "fake-model");
     if case == "quota" {
         assert_eq!(requests.len(), 1, "quota stop must not send another request");
