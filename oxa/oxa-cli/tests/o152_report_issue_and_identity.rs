@@ -193,7 +193,7 @@ fn a_draft_without_a_description_is_refused() {
 // Submit: never without confirmation
 
 #[test]
-fn submit_is_off_until_a_repository_is_configured() {
+fn submit_is_off_when_the_repository_setting_is_not_a_repository() {
     let env = TestEnv::new();
     let draft = write_draft(&env, "A title", "A body.");
     let mut asked = false;
@@ -201,7 +201,7 @@ fn submit_is_off_until_a_repository_is_configured() {
     let mut out = Vec::new();
     let code = submit(
         &draft,
-        &repo_settings(None),
+        &repo_settings(Some("off")),
         &ctx(),
         &mut |_: &str| {
             asked = true;
@@ -219,7 +219,8 @@ fn submit_is_off_until_a_repository_is_configured() {
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains(REPORT_DISABLED) && text.contains(&draft.display().to_string()));
     assert!(draft.exists(), "the draft stays");
-    // An invalid repository value is the same as none.
+    // Unset means oxa's own repository; an invalid value turns reporting off.
+    assert_eq!(oxa_cli::DEFAULT_REPORT_REPO, "oxstack/ox-llm");
     assert_eq!(report_repo(&repo_settings(Some("not a repo"))), None);
     assert_eq!(
         report_repo(&repo_settings(Some("owner/ox-llm"))).as_deref(),

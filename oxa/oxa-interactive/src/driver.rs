@@ -631,7 +631,13 @@ impl<'a> Loop<'a> {
     /// reads, the hot or cool theme, and (the first time yolo is switched on in the session)
     /// the banner and a notice that stays in the transcript.
     fn sync_yolo(&mut self) {
+        // #1512 S3: the run's sandbox is fixed at start; the guard label follows it.
+        if self.vm.status.os_sandbox != self.opts.os_sandbox {
+            self.vm.status.os_sandbox = self.opts.os_sandbox;
+            self.dirty = true;
+        }
         let Some(switch) = self.opts.yolo.clone() else {
+            self.sync_guard();
             return;
         };
         let level = switch.level();
@@ -644,6 +650,7 @@ impl<'a> Loop<'a> {
             self.vm.status.autonomy = level;
             self.dirty = true;
         }
+        self.sync_guard();
         let mode = self.permission_mode();
         if self.yolo_shown == Some(mode) {
             return;
@@ -684,6 +691,28 @@ impl<'a> Loop<'a> {
                 self.vm.status.ext_status.remove("yolo");
             }
         }
+    }
+
+    /// #1512 S3: the pi skin shows the guard as an extension status entry, like the yolo one.
+    /// The oxa skin draws it in the HUD instead.
+    fn sync_guard(&mut self) {
+        if self.view.skin.is_oxa() {
+            return;
+        }
+        let label = self.vm.status.guard_label().map(str::to_string);
+        let current = self.vm.status.ext_status.get("sandbox").cloned();
+        if label == current {
+            return;
+        }
+        match label {
+            Some(text) => {
+                self.vm.status.ext_status.insert("sandbox".to_string(), text);
+            }
+            None => {
+                self.vm.status.ext_status.remove("sandbox");
+            }
+        }
+        self.dirty = true;
     }
 
     /// O-182: `/yolo`, the `app.yolo.toggle` key. Off returns to the level before yolo.
@@ -1036,10 +1065,7 @@ impl<'a> Loop<'a> {
                 "yolo",
                 "Toggle yolo: full access, no prompts, bash without the sandbox",
             ),
-            (
-                "auto",
-                "Auto mode: no prompts; the sandbox and the deny-list stay on",
-            ),
+            ("auto", "Auto mode: no prompts; dangerous commands still ask"),
             ("debug", "Write a debug dump"),
             ("exit", "Quit oxa"),
         ] {
@@ -1818,6 +1844,8 @@ impl<'a> Loop<'a> {
         if trimmed.is_empty() {
             return;
         }
+        // #1552: the line the owner typed is the one origin that can approve a publication.
+        oxa_proto::owner_reply::typed(&trimmed);
         if let Some(rest) = trimmed.strip_prefix('!') {
             let (excluded, cmd) = match rest.strip_prefix('!') {
                 Some(r) => (true, r),

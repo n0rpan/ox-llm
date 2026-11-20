@@ -269,6 +269,28 @@ fn security_documents_headless_inbox_policy() {
     }
 }
 
+/// The security review policy must not reject delegated Go transport that the protected owner key
+/// authorizes, while still requiring the explicit owner setting for project-selected and restored
+/// models.
+#[test]
+fn security_documents_keyed_go_delegation_policy() {
+    let repository = repo_root();
+    let repository = repository.parent().expect("repository root");
+    let security = fs::read_to_string(repository.join("SECURITY.md")).expect("read SECURITY.md");
+    let security = security.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    for required in [
+        "protected user key authorizes an actual Go model argument",
+        "delegated `oxa work` worker or nested child",
+        "No project-selected or restored model enables it without an explicit `oxa.cloud.opencode.enabled: true`",
+    ] {
+        assert!(
+            security.contains(required),
+            "SECURITY.md must document the keyed Go delegation policy: missing {required:?}"
+        );
+    }
+}
+
 /// Memory persistence is a security policy, so the review rules, security policy and user guide
 /// must all retain the owner-only modes and the upgrade behaviour for an existing loose directory.
 #[test]
@@ -367,6 +389,47 @@ fn every_doc_command_line_runs_against_fake() {
         "{} doc command(s) failed:\n{}",
         failures.len(),
         failures.join("\n")
+    );
+}
+
+/// The key setup documented before the first oxa run must work when the agent directory does not
+/// exist yet.
+#[test]
+fn brave_key_command_works_for_a_fresh_install() {
+    let root = repo_root();
+    let page = fs::read_to_string(root.join("docs/pages/quickstart.md")).expect("quickstart.md");
+    let command = fenced_blocks(&page)
+        .into_iter()
+        .filter(|block| block.info == "console")
+        .flat_map(|block| block.lines)
+        .map(|(_, line)| line)
+        .find(|line| line.contains("~/.oxa/agent/brave-search.key"))
+        .and_then(|line| line.strip_prefix("$ ").map(str::to_owned))
+        .expect("Brave key setup command");
+
+    let env = TestEnv::new();
+    fs::remove_dir_all(env.agent_dir()).expect("remove pre-created agent directory");
+    let mut child = Command::new("bash")
+        .args(["-c", &command])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", env.home())
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("run documented key command");
+    use std::io::Write;
+    child
+        .stdin
+        .take()
+        .expect("command stdin")
+        .write_all(b"synthetic-brave-key\n")
+        .expect("write synthetic key");
+    let status = child.wait().expect("wait for documented key command");
+
+    assert!(status.success(), "documented key command failed: {status}");
+    assert_eq!(
+        fs::read_to_string(env.agent_dir().join("brave-search.key")).expect("saved key"),
+        "synthetic-brave-key\n"
     );
 }
 
