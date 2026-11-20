@@ -1083,7 +1083,7 @@ mod tests {
         let d = dir("large-body");
         let b = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Standard)).expect("start");
         b.set_servable(true);
-        let body = "\u{2603} snow\n".repeat(20_000);
+        let body = "\u{2603} snow\n".repeat(30_000);
         assert!(body.len() > 200 * 1024);
         let b2 = b.clone();
         let sent = body.clone();
