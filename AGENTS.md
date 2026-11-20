@@ -33,8 +33,9 @@ code, tests, CI and docs; the owner validates on hardware.
   owner-selected yolo deliberately disables the permission floor. Off Linux there is no OS sandbox
   (owner policy, #1512): in-process guards stay, bash gets the same cleared base environment, and
   the bash network is not restricted there; the start notice and the model env note say so. An
-  interactive Linux session without a usable bwrap runs bash unsandboxed with a start warning;
-  unattended runs (print, JSON, RPC) keep "bash is disabled".
+  interactive Linux session without a usable bwrap runs model bash unsandboxed with a start
+  warning only when no sandbox was requested. Plan commands and non-yolo project hooks still
+  require bwrap on Linux; unattended runs that require bwrap fail closed.
 - **Extension exec directory:** an extension's `oxa.exec` whose `cwd` is outside the session directory asks like a write (or read) outside the project before the directory is mounted; yolo does not ask, a `cwd` inside the session directory is unchanged (`exec_gated`, `oxa-core/src/host.rs`).
 - **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
   answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
