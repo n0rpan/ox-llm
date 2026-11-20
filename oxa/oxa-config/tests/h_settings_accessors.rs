@@ -55,7 +55,7 @@ fn provider_retry_and_idle_timeout() {
             timeout_ms: Some(900)
         }
     );
-    assert_eq!(s(json!({})).http_idle_timeout_ms(), Some(300_000));
+    assert_eq!(s(json!({})).http_idle_timeout_ms(), Some(900_000));
     assert_eq!(
         s(json!({ "httpIdleTimeoutMs": 1234 })).http_idle_timeout_ms(),
         Some(1234)

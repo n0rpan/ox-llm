@@ -193,7 +193,7 @@ fn a_draft_without_a_description_is_refused() {
 // Submit: never without confirmation
 
 #[test]
-fn submit_is_off_until_a_repository_is_configured() {
+fn submit_is_off_when_the_repository_setting_is_not_a_repository() {
     let env = TestEnv::new();
     let draft = write_draft(&env, "A title", "A body.");
     let mut asked = false;
@@ -201,7 +201,7 @@ fn submit_is_off_until_a_repository_is_configured() {
     let mut out = Vec::new();
     let code = submit(
         &draft,
-        &repo_settings(None),
+        &repo_settings(Some("off")),
         &ctx(),
         &mut |_: &str| {
             asked = true;
@@ -219,7 +219,8 @@ fn submit_is_off_until_a_repository_is_configured() {
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains(REPORT_DISABLED) && text.contains(&draft.display().to_string()));
     assert!(draft.exists(), "the draft stays");
-    // An invalid repository value is the same as none.
+    // Unset means oxa's own repository; an invalid value turns reporting off.
+    assert_eq!(oxa_cli::DEFAULT_REPORT_REPO, "oxstack/ox-llm");
     assert_eq!(report_repo(&repo_settings(Some("not a repo"))), None);
     assert_eq!(
         report_repo(&repo_settings(Some("owner/ox-llm"))).as_deref(),
@@ -299,18 +300,27 @@ fn submit_posts_the_exact_text_after_yes() {
     let body = "## What happened\n\nIt stalls.\n\n## System\n\n- oxa version: 0.2.0";
     let draft = write_draft(&env, "Engine stalls", body);
     let mut calls: Vec<(String, Vec<String>, String)> = Vec::new();
+    let mut confirmation = String::new();
     let mut out = Vec::new();
     let code = submit(
         &draft,
         &repo_settings(Some("owner/ox-llm")),
         &ctx(),
-        &mut |_: &str| Some(true),
+        &mut |question: &str| {
+            confirmation = question.to_string();
+            Some(true)
+        },
         &mut |p: &str, args: &[String]| {
             let file = args
                 .iter()
                 .position(|a| a == "--body-file")
                 .map(|i| args[i + 1].clone())
                 .unwrap();
+            // Replacing the model-writable draft after approval cannot change the bytes passed
+            // to `gh`: the approved body is a staged descriptor, not a file in the draft directory.
+            assert!(file.starts_with("/dev/fd/"), "{file}");
+            std::fs::write(&draft, "Title: Replaced\n\nunapproved body\n").unwrap();
+            let _ = std::fs::write(draft.with_extension("body.md"), "unapproved body");
             calls.push((
                 p.to_string(),
                 args.to_vec(),
@@ -338,8 +348,15 @@ fn submit_posts_the_exact_text_after_yes() {
     );
     assert_eq!(posted, body, "the body posted is the body shown");
     assert!(
-        !draft.with_extension("body.md").exists(),
-        "the temporary body file is removed"
+        !args.iter().any(|arg| arg == "--body"),
+        "never the body as an argument"
+    );
+    assert_eq!(
+        confirmation,
+        format!(
+            "Post this issue publicly to owner/ox-llm?\n\nTitle: Engine stalls\n\n{body}\n\nType yes to post: "
+        ),
+        "the broker must display and record the exact publication"
     );
     assert!(String::from_utf8(out)
         .unwrap()

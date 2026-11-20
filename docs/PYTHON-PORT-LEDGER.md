@@ -667,3 +667,9 @@ The evidence tables account for all 96 Python paths under `oxc/src/oxc` at the i
 - `oxc/tools/tune_from_ledger.py`
 - `oxc/tools/verify-flash-source.py`
 - `oxc/tools/verify_image_source.py`
+
+## Closed: the Python controller is deleted
+
+| Python surface | Status | Rust replacement (crate/module) | Evidence |
+|---|---|---|---|
+| `oxc/src/`, `oxc/tests/`, `oxc/tools/` (except the receipt scanners `export_receipt.py`, `scrub_receipts.py`, their allow-list and the pre-commit hook), `oxc/benchmarks/**/*.py`, `oxc/pyproject.toml`, `oxc/examples/runtime/units`, `oxc/packaging/{flash-qos,systemd,zswap}`, `oxc-rs/`, `conformance/`, `tools/oxa-contract/`, `tools/gates/` — the whole Python controller and its lab suite | DELETED | In-process providers and the native gateway in `oxa/oxc-gateway` and `oxa/oxa-cli`; memlat in `oxa/oxc-memlat` | Owner decision on #951: deleted before the v0.2.1 tag. The last tree with the controller is tagged `archive/python-oxc-final`. Features without a Rust replacement are listed as follow-up issues in the PR that deletes them. |

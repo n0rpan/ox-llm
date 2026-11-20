@@ -16,7 +16,7 @@ The selected runtime source is exported, but a fresh Snapdragon owner cannot yet
 
 [Source recipes](../bootstrap/source-recipes.json) pin classic/image/Flash repositories, patches, submodules, CPU/backend options, KleidiAI and the separately verified browser UI archive. [Model artifacts](../dependencies/model-artifacts.json), [dependency/license inventory](DEPENDENCIES.md), [source provenance](SOURCE-PROVENANCE.md), [Flash rebuild](FLASH-REBUILD.md) and [manual setup](lab-notes/RUNTIME-SETUP.md) supply the corresponding inputs. Models, compiled engines and proprietary vendor assets are not redistributed by the MIT wrapper. NPU assets are not needed for these selected CPU profiles.
 
-The remaining installation boundary is explicit in [BOOTSTRAP-INSTALL](BOOTSTRAP-INSTALL.md): native binary/model placement, hash-bound activation, structural OpenCode wiring, panel registration, normal services and crash/SIGKILL rollback acceptance are unfinished. The installer supports a sandbox source payload, not current-user activation. Preserve the canonical lease inode and existing unrelated files; do not set `ready`/`validated` merely because source staging succeeds.
+The remaining installation boundary is explicit in BOOTSTRAP-INSTALL: native binary/model placement, hash-bound activation, structural OpenCode wiring, panel registration, normal services and crash/SIGKILL rollback acceptance are unfinished. The installer supports a sandbox source payload, not current-user activation. Preserve the canonical lease inode and existing unrelated files; do not set `ready`/`validated` merely because source staging succeeds.
 
 The legacy wheel omitted repository-root examples, bootstrap and dependency manifests, patches and upstream notices. The [archived source-export procedure](https://github.com/oxstack/ox-llm/blob/e64b985a2ff6abf51d406471382ed95a18fd161c/oxc/docs/SOURCE-ARCHIVE.md) required a standalone checkout with `src/oxc` at the root. The preservation tag contains a monorepo with that source under `oxc/src/oxc`, so the tagged commit cannot serve as input to the exporter.
 
@@ -30,4 +30,4 @@ PYTHONPATH=src python3 -B -m oxc.bootstrap plan --target-home /tmp/oxc-example-o
 PYTHONPATH=src python3 -B -m oxc install-plugin --dry-run
 ```
 
-The last command only preflights an existing supported Omarchy installation; missing prerequisites are a refusal, not fresh-install success. Use [BOOTSTRAP-PARITY](BOOTSTRAP-PARITY.md) for the remaining acceptance sequence. No full-stack fresh-install success is claimed here.
+The last command only preflights an existing supported Omarchy installation; missing prerequisites are a refusal, not fresh-install success. Use BOOTSTRAP-PARITY for the remaining acceptance sequence. No full-stack fresh-install success is claimed here.

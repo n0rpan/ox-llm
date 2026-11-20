@@ -79,6 +79,7 @@ const OXA_KEYS: &[&str] = &[
     "$schema",
     "oxa.compaction.softTokens",
     "oxa.toolOutputCap",
+    "oxa.emptyReplyRetries",
     "oxa.lead.serve",
     "oxa.mode",
     "hooks",
@@ -352,6 +353,72 @@ fn untrusted_project_file_not_read() {
     assert_eq!(trusted.string("theme").as_deref(), Some("project"));
 }
 
+/// #1449: a present but unusable user settings file keeps the most restrictive security
+/// settings, says so, and leaves other settings at their defaults. Absence and `{}` do not.
+#[test]
+fn unusable_user_settings_fail_safe_for_security_keys() {
+    let restricted = |s: &Settings| {
+        s.bool("oxa.offline", false)
+            && s.string("oxa.sandbox.net").as_deref() == Some("off")
+            && !s.bool("oxa.engine.allowRemote", false)
+            && s.string("defaultProjectTrust").as_deref() == Some("never")
+    };
+    // Genuine first launch (no file) and a valid empty object: normal defaults, no warning.
+    for content in [None, Some("{}")] {
+        let env = TestEnv::new();
+        let dirs = Dirs::under(env.root());
+        if let Some(text) = content {
+            std::fs::create_dir_all(dirs.settings_file().parent().unwrap()).unwrap();
+            std::fs::write(dirs.settings_file(), text).unwrap();
+        }
+        let s = Settings::load(&dirs, &env.work(), false);
+        assert!(!restricted(&s), "{content:?}");
+        assert!(!s.bool("oxa.offline", false));
+        assert!(s.diagnostics().is_empty(), "{:?}", s.diagnostics());
+    }
+    // Invalid JSON, empty bytes, a non-object root and an unreadable path all fail safe.
+    for (name, content) in [
+        ("invalid json", Some("{ \"oxa\": { \"offline\": true ")),
+        ("empty bytes", Some("")),
+        ("array root", Some("[1]")),
+        ("null root", Some("null")),
+        ("unreadable", None),
+    ] {
+        let env = TestEnv::new();
+        let dirs = Dirs::under(env.root());
+        let path = dirs.settings_file();
+        match content {
+            Some(text) => {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, text).unwrap();
+            }
+            // A directory where the file should be: a read error that is not "not found".
+            None => std::fs::create_dir_all(&path).unwrap(),
+        }
+        let s = Settings::load(&dirs, &env.work(), false);
+        assert!(restricted(&s), "{name}: network and trust must stay restricted");
+        assert!(s.layer_failed(), "{name}");
+        // Unrelated settings keep their defaults.
+        assert_eq!(s.tool_output_cap(), 16384, "{name}");
+        let text: Vec<String> = s.diagnostics().iter().map(|d| d.message.clone()).collect();
+        assert!(
+            text.iter()
+                .any(|m| m.contains("most restrictive") && m.contains("Fix or restore")),
+            "{name}: owner must be told: {text:?}"
+        );
+    }
+    // Recovery: a valid file takes effect, including an intentional removal of restrictions.
+    let env = TestEnv::new();
+    let dirs = Dirs::under(env.root());
+    std::fs::create_dir_all(dirs.settings_file().parent().unwrap()).unwrap();
+    std::fs::write(dirs.settings_file(), "{ broken").unwrap();
+    assert!(restricted(&Settings::load(&dirs, &env.work(), false)));
+    write_json(&dirs.settings_file(), &json!({"oxa": {"offline": false}}));
+    let ok = Settings::load(&dirs, &env.work(), false);
+    assert!(!ok.bool("oxa.offline", false));
+    assert!(ok.diagnostics().is_empty());
+}
+
 /// keepRecentTokens 4000, toolOutputCap 16384, all tools
 #[test]
 fn oxa_defaults() {
@@ -374,7 +441,10 @@ fn oxa_defaults() {
     assert_eq!(s.follow_up_mode(), QueueMode::OneAtATime);
     let r = s.retry();
     assert!(r.enabled);
-    assert_eq!((r.max_retries, r.base_delay_ms, r.max_delay_ms), (3, 2000, 60000));
+    assert_eq!(
+        (r.max_retries, r.base_delay_ms, r.max_delay_ms),
+        (10, 2000, 60000)
+    );
 
     // The schema documents the same defaults.
     let def = schema()
@@ -440,6 +510,35 @@ fn set_persists_and_keeps_other_keys() {
     let reloaded = Settings::load(&dirs, &cwd, true);
     assert_eq!(reloaded.string("theme").as_deref(), Some("light"));
     assert_eq!(reloaded.compaction().reserve_tokens, 9000);
+}
+
+#[test]
+fn project_edit_does_not_readopt_user_only_setting() {
+    let env = TestEnv::new();
+    let dirs = Dirs::under(env.root());
+    let cwd = env.work();
+    write_json(
+        &dirs.settings_file(),
+        &json!({"oxa": {"sandbox": {"net": "off"}}}),
+    );
+    write_json(
+        &dirs.project_settings_file(&cwd),
+        &json!({"oxa": {"sandbox": {"net": "on"}}}),
+    );
+    let mut settings = Settings::load(&dirs, &cwd, true);
+    assert_eq!(settings.string("oxa.sandbox.net").as_deref(), Some("off"));
+
+    settings
+        .set(&dirs, &cwd, "theme", json!("dark"), true)
+        .expect("set unrelated project setting");
+
+    assert_eq!(settings.string("oxa.sandbox.net").as_deref(), Some("off"));
+    assert_eq!(settings.string("theme").as_deref(), Some("dark"));
+
+    settings
+        .unset(&dirs, &cwd, "theme", true)
+        .expect("unset unrelated project setting");
+    assert_eq!(settings.string("oxa.sandbox.net").as_deref(), Some("off"));
 }
 
 /// Extra: a set with a value of the wrong type for a known key is refused and writes nothing.
