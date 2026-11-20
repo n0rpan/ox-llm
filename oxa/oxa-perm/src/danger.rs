@@ -1477,7 +1477,7 @@ pub(crate) fn peel(words: &[String], unknown_in: bool) -> Peeled {
                     .extend(script_after(words, i + 1, &["-c", "--command"]));
                 i = words.len();
             }
-            "env" => i = skip_env(words, i + 1, &mut out.inline, &mut out.dir),
+            "env" => i = skip_env(words, i + 1, &mut out.inline, &mut out.dir, &mut out.unknown),
             "xargs" => {
                 out.unknown = true;
                 i = skip_flags(words, i + 1, XARGS_WITH_ARG);
@@ -1603,7 +1603,13 @@ fn skip_positional(words: &[String], from: usize, with_arg: &[&str]) -> usize {
 }
 
 /// Skips `env`'s options and `NAME=value` words. `env -S 'cmd ...'` runs that string.
-fn skip_env(words: &[String], from: usize, inline: &mut Vec<String>, dir: &mut Option<String>) -> usize {
+fn skip_env(
+    words: &[String],
+    from: usize,
+    inline: &mut Vec<String>,
+    dir: &mut Option<String>,
+    unknown: &mut bool,
+) -> usize {
     let mut i = from;
     while i < words.len() {
         let w = words[i].as_str();
@@ -1640,7 +1646,11 @@ fn skip_env(words: &[String], from: usize, inline: &mut Vec<String>, dir: &mut O
         }
         if matches!(w, "-u" | "--unset") {
             i += 2;
-        } else if w.starts_with('-') || is_assignment(w) {
+        } else if w.starts_with('-') {
+            // An unparsed option (including a short cluster) can change execution context.
+            *unknown |= !matches!(w, "-" | "-i" | "--ignore-environment" | "-v" | "--debug");
+            i += 1;
+        } else if is_assignment(w) {
             i += 1;
         } else {
             break;

@@ -374,6 +374,8 @@ fn wrapper_semantics_keep_the_publish_floor() {
         "env -Cvendor/other git push origin HEAD",
         "env --split-string='git push origin HEAD'",
         "env -S'git push origin HEAD'",
+        "env -vCvendor/other git push origin HEAD",
+        "env -vS'git push origin HEAD'",
         "exec -a git-push git https://example.invalid/other.git HEAD:refs/heads/main",
         "env -S 'gh pr merge 5 --squash'",
         "env -S 'git push origin HEAD:main'",
