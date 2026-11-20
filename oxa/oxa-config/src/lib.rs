@@ -26,6 +26,7 @@ mod profile;
 mod schema;
 mod settings;
 
+pub use descriptor::sheet::{Page, PageRow};
 pub use descriptor::{
     descriptor, descriptors, fields_of, in_group, Apply, Control, Descriptor, Group, Item, MapKind, Options,
     Range, Unit, WebEdit,
