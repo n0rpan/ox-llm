@@ -1,6 +1,6 @@
 //! D13: mode choice and wiring.
 // ported from pi packages/coding-agent/src/main.ts
-mod lead_owner;
+pub(crate) mod lead_owner;
 mod mode;
 
 pub(crate) use lead_owner::lead_model;

@@ -10,6 +10,7 @@ mod goal;
 mod pages;
 mod proposals;
 mod quotas;
+mod session;
 pub use filters::{Filter, Query};
 pub use pages::{Page, Prompt};
 
@@ -64,6 +65,21 @@ pub struct View<'a> {
     pub approvals: Option<&'a [oxa_perm::ApprovalRecord]>,
     /// The owner form credential for answering approvals; present only with owner chat.
     pub approval_csrf: Option<&'a str>,
+    /// The running owner session this chat page is attached to (#2075); replaces the Lead chat.
+    pub attached: Option<AttachedView<'a>>,
+}
+
+/// The attached session as the page shows it: the newest part of its transcript, whether it is
+/// running, and the owner form credential for sending through its inbox.
+pub struct AttachedView<'a> {
+    pub csrf: &'a str,
+    pub entries: &'a [oxa_proto::Entry],
+    /// Older history exists in the session file but is not shown.
+    pub truncated: bool,
+    pub live: bool,
+    pub short_id: String,
+    /// A message was accepted since the last render.
+    pub sent: bool,
 }
 
 pub struct OwnerChatView<'a> {
