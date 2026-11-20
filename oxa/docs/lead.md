@@ -44,6 +44,21 @@ codemode; merely setting a default tool list is insufficient. Keep the lead
 instructions in the system prefix on continuation and reopen. The skill text is
 guidance, not the enforcement mechanism.
 
+## Model per job
+
+The lead passes the job `kind` (for example `review`, `docs`, `tests`) and a stable
+`job` key (for example `pr-2127`) with each `worker start`, plus a one-line `reason`
+when it overrides the owner's choice with an explicit `model`. Without `model`, the
+owner's `oxa.workers.models` policy picks the id: an explicit model first, then the
+escalation floor (after `escalateAfter` failed workers on the same job, the next
+worker gets an `escalateTo` id), then the row of the kind, then `default`, then the
+session model. The lead records how a worker's work turned out with
+`worker result {name, result: ok|failed, reason}`; a worker that ended `done` but
+whose PR failed review or CI must be recorded `failed`, otherwise only dead or
+not-done workers count toward escalation. `worker list` shows each worker's model,
+the why-line of the choice and the recorded result. A model id the live catalog does
+not know only warns. History is per lead session for now.
+
 ## Runner boundary
 
 The runner owns task state and action validation. The lead adapter calls its
