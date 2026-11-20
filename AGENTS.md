@@ -276,8 +276,11 @@ Once a PR against main is open for the branch, a push no longer starts `lane` (i
 `lane pr check`, finds the PR and skips the rest): the PR's `checks` run covers the same commit, so
 wait on that run (`gh run list --branch <branch> --workflow checks`, then `gh run watch`). A branch
 without a PR, and `gh workflow run lane`, still run `lane`. CodeQL runs on pushes to main, weekly and
-on dispatch only; the macOS `oxa-cli` build runs on main, on dispatch and on PRs touching
-`oxa/oxa-session`, `oxa/oxa-sandbox`, `oxa/oxa-cli`, `oxa/oxc-gateway`, `packaging/macos` or `oxa/Cargo.lock`.
+on dispatch only. The macOS arm64 `oxa-cli` build (`macos.yml`) is part of the required `gate`: the
+`checks` workflow calls it as its `macos` job on ready PRs and in the merge queue whenever the
+classifier selects `oxa` (oxa Rust code, `oxa/Cargo.lock`, `packaging/`, workflows), and the gate
+fails if it ran and failed. `macos.yml` itself also runs on main and on dispatch. It costs macOS
+runner minutes on every PR that touches Rust.
 
 The lane workflow selects changed crates plus their local reverse dependencies and binary-fixture
 consumers against main. Shared workspace manifests/locks expand the affected workspace. Tests use
