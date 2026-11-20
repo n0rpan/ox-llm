@@ -47,6 +47,7 @@ const COMMAND: &str = "oxa worker";
 pub const SETTING_ENABLED: &str = "oxa.workers.enabled";
 /// Setting: the most live workers one session runs.
 pub const SETTING_MAX: &str = "oxa.workers.max";
+pub const SETTING_REPOSITORY: &str = "oxa.workers.repository";
 pub const SETTING_SEND_ACK: &str = "oxa.workers.sendAckSeconds";
 
 /// `oxa.workers.sendAckSeconds` from the user settings only (default 10, 0 = do not wait).
@@ -57,7 +58,7 @@ pub fn send_ack_seconds(settings: &oxa_config::Settings) -> u64 {
 /// nested; only an unset variable lets the hook set be built.
 pub const ENV_WORKER_DEPTH: &str = "OXA_WORKER_DEPTH";
 
-const DESCRIPTION: &str = "Background workers: each is a separate oxa process that runs one goal in its own git worktree on branch agent/<name>. Actions: start {name, goal, model?, kind?, job?, reason?, mode?} starts one (name: lowercase letters, digits and dashes, at most 40 characters). Without model the owner's policy (oxa.workers.models) picks one by kind (a job kind such as review, docs or tests); after repeated failures on the same job (job: a stable key such as pr-2127, default the name) it escalates; with no policy the worker uses this session's model. reason is one line on why you chose that model or kind. list shows this session's workers, their model, choice and state; result {name, result: ok or failed, reason} records how a worker's work turned out (call it with failed when review or CI rejects it, so the policy can escalate); stop {name} stops one; send {name, text} delivers a follow-up message to a worker's session inbox and reports its phase. mode is plan, ask, workspace, auto or yolo, never wider than this session; without mode the worker inherits this session's level (a yolo session starts yolo workers, so they can push, open PRs and read CI).";
+const DESCRIPTION: &str = "Background workers: each is a separate oxa process that runs one goal in its own git worktree on branch agent/<name>. Actions: start {name, goal, model?, kind?, job?, reason?, mode?} starts one (name: lowercase letters, digits and dashes, at most 40 characters). Outside Git, a trusted Lead needs the owner to set oxa.workers.repository; no repository tool argument is accepted. Without model the owner's policy (oxa.workers.models) picks one by kind (a job kind such as review, docs or tests); after repeated failures on the same job (job: a stable key such as pr-2127, default the name) it escalates; with no policy the worker uses this session's model. reason is one line on why you chose that model or kind. list shows this session's workers, their model, choice and state; result {name, result: ok or failed, reason} records how a worker's work turned out (call it with failed when review or CI rejects it, so the policy can escalate); stop {name} stops one; send {name, text} delivers a follow-up message to a worker's session inbox and reports its phase. mode is plan, ask, workspace, auto or yolo, never wider than this session; without mode the worker inherits this session's level (a yolo session starts yolo workers, so they can push, open PRs and read CI).";
 
 const SCHEMA: &str = r#"{"type":"object","properties":{"action":{"type":"string","enum":["start","list","stop","send","result"]},"name":{"type":"string"},"goal":{"type":"string"},"text":{"type":"string"},"retry":{"type":"string"},"withdraw":{"type":"string"},"model":{"type":"string"},"kind":{"type":"string"},"job":{"type":"string"},"reason":{"type":"string"},"result":{"type":"string","enum":["ok","failed"]},"mode":{"type":"string","enum":["plan","ask","workspace","auto","yolo"]}},"required":["action"]}"#;
 
@@ -84,6 +85,8 @@ pub struct WorkerConfig {
     pub cwd: PathBuf,
     /// The binary a worker runs: this executable in production.
     pub oxa_bin: PathBuf,
+    /// Only the trusted live Lead may use the user-configured repository fallback.
+    pub lead_dirs: Option<oxa_config::Dirs>,
     pub agent_dir: PathBuf,
     pub max: usize,
     /// The process supervisor (`proc::start`: the trusted `kill` helper and
@@ -119,6 +122,7 @@ pub struct ParentScope {
 /// State shared by the tool and the hook set.
 pub struct WorkerCore {
     cwd: PathBuf,
+    lead_dirs: Mutex<Option<oxa_config::Dirs>>,
     /// Private copy opened from the session executable before model-controlled work starts.
     oxa_bin: PathBuf,
     pin_error: Option<String>,
@@ -192,6 +196,7 @@ pub(super) fn parse_mode(text: &str) -> Option<WorkerMode> {
 struct HostTools {
     path: std::ffi::OsString,
     project: PathBuf,
+    host_project: PathBuf,
     home: PathBuf,
 }
 
@@ -210,17 +215,8 @@ impl HostTools {
         let cwd_c = cwd
             .canonicalize()
             .map_err(|e| format!("cannot resolve {}: {e}", cwd.display()))?;
-        let project = cwd_c
-            .ancestors()
-            .find(|p| p.join(".git").exists())
-            .ok_or("this directory is not in a git repository")?
-            .to_path_buf();
-        let host_project = project
-            .ancestors()
-            .filter(|p| p.join(".git").exists())
-            .last()
-            .unwrap_or(&project)
-            .to_path_buf();
+        let (project, host_project) =
+            crate::work_cmd::git_boundaries(&cwd_c).ok_or("this directory is not in a git repository")?;
         let home = value("HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
@@ -229,9 +225,14 @@ impl HostTools {
             .map(std::ffi::OsString::from)
             .or_else(|| std::env::var_os("PATH"))
             .unwrap_or_default();
-        let path = crate::netguard::trusted_work_path(&path, &host_project, &home)
+        let path = crate::netguard::trusted_work_path(&path, host_project, &home)
             .ok_or("cannot resolve a trusted PATH")?;
-        Ok(HostTools { path, project, home })
+        Ok(HostTools {
+            path,
+            project: project.to_path_buf(),
+            host_project: host_project.to_path_buf(),
+            home,
+        })
     }
 
     fn program(&self, name: &str) -> Option<PathBuf> {
@@ -250,6 +251,29 @@ fn host_git(tools: &HostTools, git: &Path, dir: &Path, args: &[&str]) -> Command
     let mut command = oxa_work::metadata_git(git, &tools.path, dir, args);
     command.stdin(Stdio::null());
     command
+}
+
+/// Confirm that Git will use the checkout and metadata covered by the permission check.
+fn is_primary_checkout(tools: &HostTools, git: &Path, repo: &Path) -> bool {
+    let metadata = repo.join(".git");
+    if !fs::symlink_metadata(&metadata).is_ok_and(|m| m.is_dir()) {
+        return false;
+    }
+    let matches = |arg, expected: &Path| {
+        host_git(tools, git, repo, &["rev-parse", "--path-format=absolute", arg])
+            .output()
+            .is_ok_and(|out| {
+                out.status.success()
+                    && std::str::from_utf8(&out.stdout).is_ok_and(|path| {
+                        Path::new(path.trim_end_matches('\n'))
+                            .canonicalize()
+                            .ok()
+                            .as_deref()
+                            == Some(expected)
+                    })
+            })
+    };
+    matches("--show-toplevel", repo) && matches("--git-common-dir", &metadata)
 }
 
 /// The identity of the executable a worker runs. Any rename over it or write to it changes the
@@ -525,6 +549,7 @@ impl WorkerCore {
             oxa_bin,
             pin_error,
             cwd: cfg.cwd,
+            lead_dirs: Mutex::new(cfg.lead_dirs),
             agent_dir: cfg.agent_dir,
             max: AtomicUsize::new(cfg.max),
             models: Mutex::new(cfg.models),
@@ -647,6 +672,17 @@ impl WorkerCore {
 
     /// `start`: see the module docs for the order of the checks.
     pub fn start(&self, args: &Value, cwd: &Path, mode: Mode, autonomy: Autonomy) -> ToolOutput {
+        self.start_at(args, cwd, mode, autonomy, None)
+    }
+
+    fn start_at(
+        &self,
+        args: &Value,
+        cwd: &Path,
+        mode: Mode,
+        autonomy: Autonomy,
+        lead: Option<&Path>,
+    ) -> ToolOutput {
         let _gate = lock(&self.gate);
         let name = str_arg(args, "name").unwrap_or("");
         if !valid_name(name) {
@@ -747,12 +783,40 @@ impl WorkerCore {
                 max
             ));
         }
-        let tools = match HostTools::resolve(&self.parent_env, cwd) {
+        let mut tools = match HostTools::resolve(&self.parent_env, cwd) {
             Ok(tools) => tools,
             Err(e) => return ToolOutput::error(format!("worker: {e}")),
         };
+        if let Some(lead) = lead {
+            let Some(path) = crate::netguard::trusted_work_path(&tools.path, lead, &tools.home) else {
+                return ToolOutput::error("worker: cannot resolve a trusted Lead PATH");
+            };
+            tools.path = path;
+            if !self
+                .supervisor
+                .kill_is_trusted_in(&tools.host_project, &tools.home)
+                || !self.supervisor.kill_is_trusted_in(lead, &tools.home)
+            {
+                return ToolOutput::error("worker: the process supervisor's kill helper is inside the repository or is no longer trusted");
+            }
+        }
         let Some(git) = tools.program("git") else {
             return ToolOutput::error("worker: git was not found in a trusted PATH directory");
+        };
+        if lead.is_some() && !is_primary_checkout(&tools, &git, cwd) {
+            return ToolOutput::error(
+                "worker: oxa.workers.repository must name a primary Git checkout with local Git metadata",
+            );
+        }
+        // `env` runs outside the sandbox: resolved from the session's project like every other
+        // host tool, never from a project-controlled PATH entry.
+        let Some(env_bin) = tools.program("env").filter(|bin| {
+            lead.is_none_or(|lead| {
+                bin.canonicalize()
+                    .is_ok_and(|real| !real.starts_with(lead) && !real.starts_with(&tools.host_project))
+            })
+        }) else {
+            return ToolOutput::error("worker: env was not found in a trusted PATH directory");
         };
         let branch = format!("agent/{name}");
         let refname = format!("refs/heads/{branch}");
@@ -854,11 +918,6 @@ impl WorkerCore {
             Err(e) => return ToolOutput::error(format!("worker: {e}")),
         };
         let env = worker_env(&self.parent_env, oxa_proto::offline(), &tools.path);
-        // `env` runs outside the sandbox: resolved from the session's project like every other
-        // host tool, never from a project-controlled PATH entry.
-        let Some(env_bin) = tools.program("env") else {
-            return ToolOutput::error("worker: env was not found in a trusted PATH directory");
-        };
         if let Err(e) = self.check_bin() {
             return ToolOutput::error(format!("worker: {e}"));
         }
@@ -1266,7 +1325,7 @@ struct WorkerTool {
     core: Arc<WorkerCore>,
 }
 
-fn worker_access(args: &Value, cwd: &Path) -> Result<Vec<Access>, String> {
+fn worker_access(args: &Value, cwd: &Path, external: bool) -> Result<Vec<Access>, String> {
     match str_arg(args, "action") {
         // Listing only reads the worker registry and status through this trusted built-in. It
         // neither launches a command nor asks the network permission gate, including in plan mode.
@@ -1277,13 +1336,17 @@ fn worker_access(args: &Value, cwd: &Path) -> Result<Vec<Access>, String> {
             let Some(path) = worktree_path(cwd, name) else {
                 return Err(format!("worker: invalid name {name:?}"));
             };
-            Ok(vec![
+            let mut access = vec![
                 Access::Exec {
                     command: COMMAND.to_string(),
                     net: true,
                 },
                 Access::Write(path),
-            ])
+            ];
+            if external {
+                access.push(Access::Write(cwd.to_path_buf()));
+            }
+            Ok(access)
         }
         // Stopping owns a host process operation, but needs no network access.
         _ => Ok(vec![Access::Exec {
@@ -1297,6 +1360,42 @@ fn approved_worktree_is_unchanged(path: &Path, approved: &Path) -> bool {
     oxa_perm::resolve_real(path).as_deref() == Some(approved)
 }
 
+impl WorkerTool {
+    // No model input participates in repository selection. Read the user file again so the
+    // retained Lead supervisor cannot keep starting workers after the owner removes the setting.
+    fn external_repository(&self, cwd: &Path) -> Result<Option<PathBuf>, String> {
+        let Some(dirs) = lock(&self.core.lead_dirs).clone() else {
+            return Ok(None);
+        };
+        let canonical = cwd
+            .canonicalize()
+            .map_err(|e| format!("worker: cannot resolve Lead directory: {e}"))?;
+        if crate::work_cmd::git_boundaries(&canonical).is_some() {
+            return Ok(None);
+        }
+        let settings = oxa_config::Settings::load(&dirs, &canonical, false);
+        let repo = settings
+            .user_value(SETTING_REPOSITORY)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(Path::new)
+            .ok_or("worker: outside a Git checkout, set oxa.workers.repository in user settings")?;
+        if !repo.is_absolute() || repo.canonicalize().ok().as_deref() != Some(repo) || !repo.is_dir() {
+            return Err(
+                "worker: oxa.workers.repository must be a canonical absolute checkout directory".into(),
+            );
+        }
+        let trust = oxa_perm::TrustStore::load(&dirs.trust_file());
+        if trust.lookup(&canonical) == Some(false) {
+            return Err("worker: the Lead directory is not trusted".into());
+        }
+        if !trust.trusted_as_approved(repo) {
+            return Err("worker: oxa.workers.repository must be explicitly trusted".into());
+        }
+        Ok(Some(repo.to_path_buf()))
+    }
+}
+
 impl Tool for WorkerTool {
     fn spec(&self) -> &ToolSpec {
         &self.spec
@@ -1306,16 +1405,54 @@ impl Tool for WorkerTool {
     /// network on and for the worktree it writes. `stop` names a network-free command; `list` is
     /// an internal read-only query and requires no external access.
     fn access(&self, args: &Value, cx: &ToolCtx) -> Result<Vec<Access>, String> {
-        worker_access(args, cx.cwd)
+        let repo = if str_arg(args, "action") == Some("start") {
+            self.external_repository(cx.cwd)?
+        } else {
+            None
+        };
+        worker_access(args, repo.as_deref().unwrap_or(cx.cwd), repo.is_some())
     }
 
     fn run(&self, args: &Value, cx: &ToolCtx, _live: &mut dyn FnMut(&str)) -> ToolOutput {
         match str_arg(args, "action") {
             Some("start") => {
                 let name = str_arg(args, "name").unwrap_or("");
-                let Some(path) = worktree_path(cx.cwd, name) else {
+                let external = match self.external_repository(cx.cwd) {
+                    Ok(repo) => repo,
+                    Err(e) => return ToolOutput::error(e),
+                };
+                let repo = external.as_deref().unwrap_or(cx.cwd);
+                let Some(path) = worktree_path(repo, name) else {
                     return ToolOutput::error(format!("worker: invalid name {name:?}"));
                 };
+                if external.is_some() {
+                    // Both write locations must be the ones covered by the policy. Reject symlink
+                    // redirects even if a broad permission happened to approve the redirect.
+                    if [repo, path.as_path()]
+                        .into_iter()
+                        .any(|p| cx.checked_real(p) != Some(p) || !approved_worktree_is_unchanged(p, p))
+                    {
+                        return ToolOutput::error(
+                            "worker: repository and worktree destination need unchanged permission approvals",
+                        );
+                    }
+                    let lead = match cx.cwd.canonicalize() {
+                        Ok(lead) => lead,
+                        Err(e) => {
+                            return ToolOutput::error(format!("worker: cannot resolve Lead directory: {e}"))
+                        }
+                    };
+                    return self.core.start_at(
+                        args,
+                        repo,
+                        cx.mode,
+                        lock(&self.core.yolo).level(),
+                        Some(&lead),
+                    );
+                }
+                if lock(&self.core.lead_dirs).is_some() && cx.checked_real(&path).is_none() {
+                    return ToolOutput::error("worker: worktree destination needs permission approval");
+                }
                 if let Some(approved) = cx.checked_real(&path) {
                     if !approved_worktree_is_unchanged(&path, approved) {
                         return ToolOutput::error(
@@ -1395,14 +1532,22 @@ impl WorkerHooks {
     fn refresh_authority_from(&self, current: &WorkerHooks) {
         let max = current.core.max.load(Ordering::SeqCst);
         let yolo = lock(&current.core.yolo).clone();
+        let lead_dirs = lock(&current.core.lead_dirs).clone();
         let models = lock(&current.core.models).clone();
-        self.refresh_authority(max, &yolo, models);
+        self.refresh_authority(max, &yolo, lead_dirs, models);
     }
 
-    fn refresh_authority(&self, max: usize, yolo: &YoloSwitch, models: ModelPolicy) {
+    fn refresh_authority(
+        &self,
+        max: usize,
+        yolo: &YoloSwitch,
+        lead_dirs: Option<oxa_config::Dirs>,
+        models: ModelPolicy,
+    ) {
         self.core.max.store(max, Ordering::SeqCst);
         *lock(&self.core.models) = models;
         *lock(&self.core.yolo) = yolo.clone();
+        *lock(&self.core.lead_dirs) = lead_dirs;
     }
 
     /// Stop every live worker now, whether or not the hook set is kept across turns.
@@ -1426,12 +1571,13 @@ pub fn retained_owner_workers(
     key: &Path,
     max: usize,
     yolo: &YoloSwitch,
+    lead_dirs: Option<oxa_config::Dirs>,
     models: ModelPolicy,
 ) -> Option<Arc<WorkerHooks>> {
     let all = lock(&OWNER_WORKERS);
     let hooks = all.iter().find(|(k, _)| k == key)?.1.clone();
     drop(all);
-    hooks.refresh_authority(max, yolo, models);
+    hooks.refresh_authority(max, yolo, lead_dirs, models);
     Some(hooks)
 }
 
@@ -1633,6 +1779,17 @@ mod tests {
         parent_scope: ParentScope,
         autonomy: Autonomy,
     ) -> WorkerHooks {
+        hooks_with_lead(fake, agent, parent_env, parent_scope, autonomy, None)
+    }
+
+    fn hooks_with_lead(
+        fake: &Path,
+        agent: &Path,
+        parent_env: Vec<(String, String)>,
+        parent_scope: ParentScope,
+        autonomy: Autonomy,
+        lead_dirs: Option<oxa_config::Dirs>,
+    ) -> WorkerHooks {
         let kill = ["/bin/kill", "/usr/bin/kill"]
             .into_iter()
             .map(PathBuf::from)
@@ -1641,6 +1798,7 @@ mod tests {
         WorkerHooks::new(WorkerConfig {
             oxa_bin: fake.to_path_buf(),
             cwd: agent.parent().unwrap().join("repo"),
+            lead_dirs,
             agent_dir: agent.to_path_buf(),
             max: 4,
             supervisor: Supervisor::new(Duration::from_secs(1), kill).expect("supervisor"),
@@ -1815,6 +1973,107 @@ mod tests {
         assert!(!out.is_error, "{}", out.text);
         assert!(out.text.contains("4242 tokens"), "{}", out.text);
         let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn non_git_lead_starts_a_worker_in_the_configured_repository() {
+        use oxa_proto::{CancelToken, Decision, Policy};
+
+        let (root, repo, agent, fake) = fixture("lead-repo");
+        let cwd = root.join("lead");
+        fs::create_dir(&cwd).unwrap();
+        let repo = repo.canonicalize().unwrap();
+        fs::write(
+            agent.join("settings.json"),
+            json!({"oxa": {"workers": {"repository": repo}}}).to_string(),
+        )
+        .unwrap();
+        let mut dirs = oxa_config::Dirs::under(&root);
+        dirs.agent_dir = agent.clone();
+        let hooks = hooks_with_lead(
+            &fake,
+            &agent,
+            vec![("PATH".into(), "/usr/bin:/bin".into())],
+            ParentScope::default(),
+            Autonomy::Auto,
+            Some(dirs),
+        );
+        set_session(&hooks, "lead-parent");
+        let tool = &hooks.tool;
+        let args = json!({"action": "start", "name": "alpha", "goal": "one", "mode": "yolo"});
+        let mut cx = ToolCtx {
+            cwd: &cwd,
+            spill_dir: &root,
+            sandbox: &oxa_sandbox::NoSandbox,
+            mode: Mode::Workspace,
+            cancel: &CancelToken::default(),
+            env: &[],
+            tune: Default::default(),
+            checked: &[],
+            hidden: None,
+        };
+        let error = tool.access(&args, &cx).unwrap_err();
+        assert!(error.contains("must be explicitly trusted"), "{error}");
+        oxa_perm::TrustStore::default()
+            .save(&agent.join("trust.json"), &repo, true)
+            .unwrap();
+        let policy = oxa_perm::ModePolicy::new().with_yolo(YoloSwitch::new(Autonomy::Auto));
+        let checked: Vec<_> = tool
+            .access(&args, &cx)
+            .unwrap()
+            .into_iter()
+            .filter_map(|access| {
+                let (decision, pin) = policy.decide_pinned(cx.mode, &access, cx.cwd);
+                assert_eq!(decision, Decision::Allow);
+                match access {
+                    Access::Write(path) => Some((path, pin.unwrap())),
+                    _ => None,
+                }
+            })
+            .collect();
+        let denied = tool.run(&args, &cx, &mut |_| {});
+        assert!(denied.is_error && denied.text.contains("permission approvals"));
+        assert!(!worktree_path(&repo, "alpha").unwrap().exists());
+        cx.checked = &checked;
+        let out = tool.run(&args, &cx, &mut |_| {});
+        assert!(!out.is_error, "{}", out.text);
+        let record = registry::load(&agent, "lead-parent").unwrap().remove(0);
+        assert_eq!(record.mode, "auto", "the repository must not widen worker mode");
+        assert_eq!(record.worktree, worktree_path(&repo, "alpha").unwrap());
+        assert!(record.worktree.join(".git").is_file());
+        let branch = Command::new("git")
+            .current_dir(&repo)
+            .args(["rev-parse", "--verify", "refs/heads/agent/alpha"])
+            .output()
+            .unwrap();
+        assert!(
+            branch.status.success(),
+            "the branch must be in the selected repository"
+        );
+        let _ = hooks.core.stop(&json!({"name": "alpha"}));
+
+        fs::remove_file(agent.join("settings.json")).unwrap();
+        // Even a project setting in the orchestration directory cannot choose a repository.
+        fs::create_dir(cwd.join(".oxa")).unwrap();
+        fs::write(
+            cwd.join(".oxa/settings.json"),
+            json!({"oxa": {"workers": {"repository": repo}}}).to_string(),
+        )
+        .unwrap();
+        let mut model_input = args.clone();
+        model_input["repository"] = json!(repo);
+        let error = tool.access(&model_input, &cx).unwrap_err();
+        assert!(
+            error.contains("set oxa.workers.repository in user settings"),
+            "{error}"
+        );
+
+        let in_repo = ToolCtx { cwd: &repo, ..cx };
+        assert!(tool
+            .access(&args, &in_repo)
+            .unwrap()
+            .contains(&Access::Write(record.worktree)));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -2172,6 +2431,7 @@ mod tests {
             &agent,
             4,
             &YoloSwitch::new(Autonomy::Standard),
+            None,
             ModelPolicy::default(),
         )
         .expect("the owner hooks should be retained");
@@ -2205,6 +2465,7 @@ mod tests {
             &agent,
             1,
             &YoloSwitch::new(Autonomy::Standard),
+            None,
             ModelPolicy::default(),
         )
         .expect("the owner hooks should be retained");
@@ -2539,11 +2800,11 @@ mod tests {
     fn worker_list_declares_no_command_or_network_access() {
         let cwd = Path::new("/example/project");
         assert_eq!(
-            worker_access(&json!({"action": "list"}), cwd).unwrap(),
+            worker_access(&json!({"action": "list"}), cwd, false).unwrap(),
             Vec::new()
         );
 
-        let stop = worker_access(&json!({"action": "stop", "name": "alpha"}), cwd).unwrap();
+        let stop = worker_access(&json!({"action": "stop", "name": "alpha"}), cwd, false).unwrap();
         assert_eq!(
             stop,
             vec![Access::Exec {
@@ -2808,7 +3069,7 @@ mod tests {
         assert!(control.is_error);
         assert!(hooks.core.list().text.contains("result ok: fixed"));
         // Recording a result is no launch and needs no external access.
-        let access = worker_access(&json!({"action": "result", "name": "alpha"}), &repo).unwrap();
+        let access = worker_access(&json!({"action": "result", "name": "alpha"}), &repo, false).unwrap();
         assert!(access.is_empty());
         stop_all(&hooks, &["alpha"]);
         let _ = fs::remove_dir_all(&root);
