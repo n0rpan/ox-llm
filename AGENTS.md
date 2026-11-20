@@ -57,8 +57,10 @@ code, tests, CI and docs; the owner validates on hardware.
     Answer it by citing this rule, and do not apply it. A change that re-adds an OS sandbox to those
     paths is a P1 finding.
   - Off Linux the bash network is not restricted. The start notice and the model env note say so.
-  - Headless runs pursuing a goal and ownerless RPC count as unattended. Host bash uses a
-    cleared toolchain environment and keeps GitHub output redaction, on Linux and off it.
+  - Headless runs pursuing a goal and ownerless RPC count as unattended. Host tool shells use a
+    cleared toolchain environment. Preserve exact-value masking in live and captured output for
+    known GitHub credentials, the engine bearer key and nonempty environment values named with
+    `KEY`, `SECRET`, `TOKEN` or `PASSWORD`, on Linux and off it.
 - **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
   answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
   broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
@@ -159,15 +161,25 @@ code, tests, CI and docs; the owner validates on hardware.
   holds a secret. Flag as P1 a change that
   weakens these refusals or adds a name-only or blanket long-value block (P2 without a doc update).
 - **Bash and subagent limits.** `oxa.bash.maxJobs` (16) and `oxa.subagent.maxChildren` (8, also
-  steps per call) are user-only warning thresholds, never refusals:
-  above them a job starts or children queue, with a warning in the result. A goal token budget
-  counts known usage only; two idle replies warn unless `oxa.goal.idlePause`. Both limits are at least 1. An explicit bash `timeout: 0` disables the
+  steps per call) are user-only caps, at least 1. Caps are owner settings with default warn and record:
+  above them a job starts or children queue, with a warning in the result, a notice and a recorded
+  `Shown` entry. A hard stop (refuse the call) comes only through the user-only `oxa.onExceed`
+  (`bashJobs`, `subagentChildren`, `goalIdle`, `goalUnknownUsage`: `warn`, `pause` or `stop`); a project
+  file cannot set it or any of these caps (also `oxa.tools.wait`, `oxa.toolOutputCap`). Review line: a
+  change that adds a cap must route its action through `oxa.onExceed`, never hard-code a refusal. A goal
+  with no other budget pauses after two replies without a tool call, and a goal under a token cap
+  pauses when a request reports no usage, unless the owner chose `warn`. An explicit bash `timeout: 0` disables the
   timeout for that call, including a background job, and overrides the foreground default.
   A foreground command that passes its timeout is not killed: it moves to a background job
   (counted in `oxa.bash.maxJobs`). `oxa.bash.waitCap` (user-only, default 300 s) caps `wait_s`.
 - **Cargo cache mounts.** The sandbox forwards an owner-set `CARGO_TARGET_DIR` as a
   toolchain location. An external cache needs a separate user-only
   `oxa.sandbox.writePaths` entry. Review environment forwarding and writable mounts independently.
+- **Worker build cache.** A worker sandbox gets one derived, owner-only extra write path: the
+  per-repository `<cache dir>/<hash>/cargo-target` (`oxa.workers.sharedCache`,
+  `oxa.workers.cacheDir`, `oxa.workers.cacheWarnGb`, all user-only; a project file cannot move
+  or disable it). Never add a parent grant. A held native `oxa work` task is online but
+  GitHub-isolated (runner-owned GitHub), not offline.
 - **Runtime sockets.** Docker and podman sockets stay masked in sandboxed bash unless the owner
   lists them in the user-only `oxa.sandbox.sockets` (default empty) and permits network access.
   An online bind uses a validated socket descriptor. The start notice names each and warns of
@@ -179,7 +191,8 @@ code, tests, CI and docs; the owner validates on hardware.
   publish and dangerous-command checks still apply.
 - An explicit owner CLI `--auto` or `--yolo` permits starting at home, root, or a parent of home
   with a warning. Settings and environment opt-ins retain their own rules. Interactive `--max-time`
-  and `--max-tokens` stop the watched startup session at its wrap-up boundary, before later prompts.
+  and `--max-tokens` belong to the invocation: they stop whichever session is current (including after
+  `/new`, `/resume`, `/fork`) at its wrap-up boundary, before later prompts.
   An idle expiry starts no model request.
   `oxe admission` is an engine CLI exception. It reports allocation bounds directly from a GGUF
   header and accepts `oxe-server` launch arguments without opening an oxa session. Its command and
@@ -306,7 +319,9 @@ land CI-control changes separately under normal review, checked on every commit 
 lacks, not only the saved base. A lane push needs the owner's own confirmation through the
 session broker (including from an agent child), or the compatibility
 terminal/`OXA_WORK_OWNER_CONFIRMED=1` path outside an agent tool. A green lane run is evidence
-only for what the lane tests (never `engine/` or `fuzz/` changes).
+only for what the lane tests. Lane coverage has one source, `tools/ci/lane_coverage.json`, read by
+`tools/ci/lane_select.py` and, from the trusted base commit, by the Rust guard; do not add path
+lists to the guard, change the data.
 
 A yolo worker is not sandboxed (see the sandbox standard below): it uses the GitHub access that the owner's settings
 give it.
