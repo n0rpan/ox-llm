@@ -137,3 +137,33 @@ fn unsandboxed_does_not_enforce_the_network() {
     );
     assert!(!ns.network() && !ns.network_enforced());
 }
+
+/// #2130: a command with the user's rights (no OS sandbox) gets the host credentials scrubbed
+/// from its output at the one sink, in every run path, for a read-only spec too.
+#[test]
+fn host_credentials_are_scrubbed_on_every_unsandboxed_path() {
+    use oxa_proto::Sandbox;
+    let env = oxa_fake::TestEnv::new();
+    let secret = "SYNTHETIC-HOST-CREDENTIAL-2130";
+    let ns = oxa_sandbox::NetSandbox::new(
+        std::sync::Arc::new(oxa_sandbox::Unsandboxed::default()),
+        true,
+        false,
+    )
+    .with_host_secrets_lazy(|| vec!["SYNTHETIC-HOST-CREDENTIAL-2130".to_string()]);
+    let mut read_only = spec(&env, format!("printf '%s' {secret}"));
+    read_only.writable = false;
+    let cancel = CancelToken::new();
+    let mut live = Vec::new();
+    let r = ns.run(&read_only, &cancel, &mut |b| live.extend_from_slice(b));
+    assert_eq!(String::from_utf8_lossy(&r.output), "[redacted]", "{r:?}");
+    assert_eq!(String::from_utf8_lossy(&live), "[redacted]");
+    live.clear();
+    let r = ns.run_streaming(&read_only, &cancel, &mut |b| live.extend_from_slice(b));
+    assert!(r.output.is_empty());
+    assert_eq!(String::from_utf8_lossy(&live), "[redacted]");
+    let mut cat = spec(&env, "cat".into());
+    cat.writable = false;
+    let r = ns.run_with_stdin(&cat, secret.as_bytes(), &cancel, &mut |_| {});
+    assert_eq!(String::from_utf8_lossy(&r.output), "[redacted]");
+}

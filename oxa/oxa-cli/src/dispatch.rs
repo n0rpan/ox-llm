@@ -1302,7 +1302,6 @@ fn prepare(
     let interactive = mode == RunMode::Interactive
         && kind == crate::run_kind::RunKind::Attended
         && level != oxa_proto::PermissionMode::Plan;
-    let mut bwrap_missing = false;
     let sandbox: Arc<dyn Sandbox> = match Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home) {
         Ok(mut b) => {
             b.layout = layout.clone();
@@ -1322,7 +1321,6 @@ fn prepare(
         // No usable bubblewrap: interactive sessions run unsandboxed and say so, never claim
         // isolation; unattended runs on Linux disable bash.
         Err(e) => {
-            bwrap_missing = true;
             let (sb, notice) = no_bwrap_sandbox(interactive, os_sandbox, &e.message, env, dirs);
             if let Some(notice) = notice {
                 notices.push(notice);
@@ -1330,7 +1328,20 @@ fn prepare(
             sb
         }
     };
-    let host_net = crate::netguard::with_net(sandbox, &settings);
+    // Where model bash, plan commands and hooks run is decided once (`ExecPolicy`): the pinned
+    // bwrap for network-less host commands is found here, before any model command, and shared
+    // with the credential discovery of the network guard.
+    let net_off = env.get(oxa_work::RUNNER_GITHUB_ENV) == Some("1")
+        || crate::run_kind::sandbox_net_off(&settings, &user_settings);
+    let mut policy = oxa_sandbox::ExecPolicy::new(
+        env.get("PATH").unwrap_or(""),
+        &dirs.home,
+        oxa_proto::offline(),
+        net_off,
+    );
+    policy.os_sandbox = os_sandbox;
+    policy.attended_tui = interactive;
+    let host_net = crate::netguard::with_net_policy(sandbox, &settings, &policy);
     let sandbox: Arc<dyn Sandbox> = host_net.clone();
     let (sandbox, net_notice) = bash_sandbox(sandbox, interactive && !os_sandbox, oxa_proto::offline());
     if let Some(notice) = net_notice {
@@ -1390,31 +1401,18 @@ fn prepare(
             format!("permission mode {}: {}", level.as_str(), level.describe()),
         ));
     }
-    // Network restrictions normally hold for host bash too.
-    let net_off = env.get(oxa_work::RUNNER_GITHUB_ENV) == Some("1")
-        || crate::run_kind::sandbox_net_off(&settings, &user_settings);
     // Only the attended TUI may keep network access when the configured network restriction
-    // cannot be enforced. Never ignore offline, plan mode or a requested OS sandbox.
-    let warn_only = interactive && !os_sandbox && bwrap_missing && !oxa_proto::offline();
-    if net_off
-        && warn_only
-        && !notices
-            .iter()
-            .any(|(_, text)| text == oxa_proto::NET_NOT_RESTRICTED_NOTICE)
-    {
-        notices.push((Level::Warning, oxa_proto::NET_NOT_RESTRICTED_NOTICE.to_string()));
+    // cannot be enforced; the policy says so and the owner is told. Never offline, plan mode or
+    // a requested OS sandbox.
+    for text in policy.start_notices() {
+        if !notices.iter().any(|(_, t)| *t == text) {
+            notices.push((Level::Warning, text));
+        }
     }
     let bash_sandbox = Arc::new(
-        oxa_sandbox::FullAccess::new(
-            sandbox.clone(),
-            yolo.clone(),
-            env.get("PATH").unwrap_or(""),
-            dirs.home.clone(),
-            oxa_proto::offline(),
-            net_off && !warn_only,
-        )
-        .with_os_sandbox(os_sandbox)
-        .with_host_controls(layout, host_net),
+        oxa_sandbox::FullAccess::with_policy(sandbox.clone(), yolo.clone(), dirs.home.clone(), policy)
+            .with_os_sandbox(os_sandbox)
+            .with_host_controls(layout, host_net),
     );
     // Exec hooks keep their dedicated sandbox independently of interactive bash.
     let hook_sandbox = oxa_sandbox::FullAccess::hook_sandbox(&bash_sandbox);

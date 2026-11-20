@@ -26,8 +26,8 @@ Recommendations do not initiate network discovery or confer guest access.
 Attended bash can run with host rights under the owner’s interactive sandbox policy. It uses
 a cleared toolchain environment, and output still redacts every GitHub CLI credential
 (all accounts and hosts, with the bash network on or off).
-Unattended runs include ownerless RPC and headless runs pursuing a goal. Exec hooks
-keep their dedicated sandbox. Network-disabled model shells mask host runtime IPC.
+Unattended runs include ownerless RPC and headless runs pursuing a goal. Network-disabled model shells mask host runtime IPC.
+Where a command runs is one decision (`oxa-sandbox/src/decision.rs`, `ExecPolicy`). Exec hooks run in the sandbox: on Linux they are refused without bwrap, never run on the host instead; under yolo and off Linux they run with your rights, and `--offline` still holds. An attended interactive session with no OS sandbox requested and no usable bwrap keeps `oxa.sandbox.net: off` as a start warning only. The output of every command that runs with your rights has the host credentials scrubbed at one sink, on every path, and the GitHub CLI credential discovery for that scrub never gives `gh` the network the owner turned off.
 Local model setup refuses agent tool invocations before running engine admission or writing user
 settings.
 

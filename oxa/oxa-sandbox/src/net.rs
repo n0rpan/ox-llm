@@ -222,12 +222,30 @@ impl NetSandbox {
         // token is known, so `cat token.txt` after `gh auth token > token.txt` is scrubbed.
         // `self.token()` loads a lazy token here too: the first networked command may be
         // `cat token.txt` from an earlier session.
-        self.redact_output(s.net, live, |live| run(&s, live))
+        self.sink(self.inner.host_rights(), s.net, live, |live| run(&s, live))
+    }
+
+    /// The one output sink of every command: the session token is scrubbed from networked
+    /// commands; a command with the user's rights (`host`) also gets every host credential
+    /// scrubbed, whatever its network. A sandboxed command cannot read the host credentials,
+    /// so it does not trigger their discovery.
+    pub(crate) fn sink(
+        &self,
+        host: bool,
+        networked: bool,
+        live: &mut dyn FnMut(&[u8]),
+        run: impl FnOnce(&mut dyn FnMut(&[u8])) -> ExecResult,
+    ) -> ExecResult {
+        if host {
+            self.redact_host_output(live, run)
+        } else {
+            self.redact_output(networked, live, run)
+        }
     }
 
     /// Scrub command output using the session's GitHub token. Host execution keeps its
     /// own cleared environment and never receives a token through this method.
-    pub(crate) fn redact_output(
+    fn redact_output(
         &self,
         networked: bool,
         live: &mut dyn FnMut(&[u8]),
@@ -272,7 +290,7 @@ impl NetSandbox {
     /// scrubs every GitHub credential, whether or not the command has the network (a file-backed
     /// token reads the same with the network off). The environment stays cleared; nothing is
     /// injected.
-    pub(crate) fn redact_host_output(
+    fn redact_host_output(
         &self,
         live: &mut dyn FnMut(&[u8]),
         run: impl FnOnce(&mut dyn FnMut(&[u8])) -> ExecResult,
@@ -337,6 +355,9 @@ impl Sandbox for NetSandbox {
     }
     fn network_enforced(&self) -> bool {
         self.inner.network_enforced()
+    }
+    fn host_rights(&self) -> bool {
+        self.inner.host_rights()
     }
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String> {
         self.inner.bwrap_args(&self.clamp(s))
