@@ -115,14 +115,13 @@ fn parse(xml: &[u8]) -> Result<Vec<String>, String> {
                 }
                 stack.push(element);
             }
-            Event::End(_) => {
-                if stack.pop().ok_or("unexpected JUnit closing tag")? == Element::Test {
-                    let test = test.take().ok_or("missing JUnit test case")?;
-                    if test.failed {
-                        failed.insert(test.qualified_name);
-                    }
+            Event::End(_) if stack.pop().ok_or("unexpected JUnit closing tag")? == Element::Test => {
+                let test = test.take().ok_or("missing JUnit test case")?;
+                if test.failed {
+                    failed.insert(test.qualified_name);
                 }
             }
+            Event::End(_) => {}
             Event::DocType(_) => return Err("JUnit document type declarations are unsupported".into()),
             Event::Text(text)
                 if stack.is_empty() && !text.as_ref().bytes().all(|byte| byte.is_ascii_whitespace()) =>

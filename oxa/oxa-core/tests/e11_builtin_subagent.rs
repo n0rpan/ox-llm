@@ -590,15 +590,24 @@ fn parallel_is_queued() {
         assert_eq!(pair[0].replace("start", "end"), pair[1], "{lines:?}");
     }
 
-    // More than 8: refused before anything starts.
-    let parks = host.parks();
+    // More than 8: every task runs and the result ends with a warning.
     let nine: Vec<Value> = (0..9)
         .map(|i| json!({"agent": "scout", "task": format!("t{i}")}))
         .collect();
     let o = run(&env, &h, json!({ "tasks": nine }));
-    assert!(o.out.is_error);
-    assert_eq!(o.out.text, "Too many parallel tasks (9). Max is 8.");
-    assert_eq!(host.parks(), parks, "no park for a refused call");
+    assert!(!o.out.is_error, "{}", o.out.text);
+    assert!(
+        o.out.text.starts_with("Parallel: 9/9 succeeded"),
+        "{}",
+        o.out.text
+    );
+    assert!(
+        o.out
+            .text
+            .ends_with("Warning: 9 parallel tasks, above oxa.subagent.maxChildren (8). All of them ran."),
+        "{}",
+        o.out.text
+    );
     assert_eq!(SubagentHooks::MAX_PARALLEL_TASKS, 8);
 }
 
@@ -1350,16 +1359,9 @@ fn starts(env: &TestEnv) -> usize {
     log(env).into_iter().filter(|l| l.starts_with("start")).count()
 }
 
-/// Join a tool call running on another thread, failing instead of hanging.
-fn join_within(rx: &std::sync::mpsc::Receiver<ToolOutput>, what: &str) -> ToolOutput {
-    rx.recv_timeout(std::time::Duration::from_secs(20))
-        .unwrap_or_else(|_| panic!("{what} did not finish within 20 s"))
-}
-
-/// direct spawning: eight tasks in one call run, the ninth is refused with pi's text and
-/// nothing starts
+/// direct spawning: eight tasks in one call run quietly; a ninth task is a warning, not a refusal
 #[test]
-fn cap_eight_tasks_ok_ninth_refused() {
+fn cap_eight_tasks_ok_nine_warn() {
     let env = TestEnv::new();
     let host = MockHost::new(&env);
     let h = hooks(&env, OK_BODY, &host);
@@ -1373,15 +1375,14 @@ fn cap_eight_tasks_ok_ninth_refused() {
     assert_eq!(starts(&env), 8);
 
     let o = run(&env, &h, json!({ "tasks": items(9) }));
-    assert!(o.out.is_error);
-    assert_eq!(o.out.text, "Too many parallel tasks (9). Max is 8.");
-    assert_eq!(starts(&env), 8, "a refused call starts no child");
-    assert_eq!(host.parks(), 1, "a refused call does not park the session");
+    assert!(!o.out.is_error, "{}", o.out.text);
+    assert!(o.out.text.contains("Warning: 9 parallel tasks"), "{}", o.out.text);
+    assert_eq!(starts(&env), 17, "all nine children of the second call ran");
 }
 
-/// chains: eight steps run, a chain of nine is refused (the cap is not only for `tasks`)
+/// chains: eight steps run quietly, a chain of nine runs with a warning (not only for `tasks`)
 #[test]
-fn cap_chain_of_eight_ok_nine_refused() {
+fn cap_chain_of_eight_ok_nine_warns() {
     let env = TestEnv::new();
     let host = MockHost::new(&env);
     let h = hooks(&env, OK_BODY, &host);
@@ -1390,107 +1391,9 @@ fn cap_chain_of_eight_ok_nine_refused() {
     assert_eq!(starts(&env), 8, "eight steps, one after another");
 
     let o = run(&env, &h, json!({ "chain": items(9) }));
-    assert!(o.out.is_error);
-    assert_eq!(o.out.text, "Too many chain steps (9). Max is 8.");
-    assert_eq!(starts(&env), 8, "a refused chain starts no child");
-}
-
-/// the cap is per parent session over every call in flight: with five children running or
-/// queued, a call (tasks or chain) asking for four more is refused, three more fit, and the
-/// budget is free again when the calls have ended
-#[test]
-fn cap_counts_running_and_queued_children_across_calls() {
-    let env = TestEnv::new();
-    let host = MockHost::new(&env);
-    let h = Arc::new(hooks(&env, HANG_BODY, &host));
-    let cancel = CancelToken::new();
-    let (tx, rx) = std::sync::mpsc::channel();
-    {
-        let (h, root, cancel) = (h.clone(), env.root().to_path_buf(), cancel.clone());
-        std::thread::spawn(move || {
-            let out = run_in(&TestEnvRef(root), &h, json!({ "tasks": items(5) }), &cancel);
-            let _ = tx.send(out);
-        });
-    }
-    // One child is live, four are queued.
-    wait_for(&env.root().join("sleep-sess.s1"));
-
-    for shape in ["tasks", "chain"] {
-        let o = run(&env, &h, json!({ shape: items(4) }));
-        assert!(o.out.is_error, "{shape}");
-        assert_eq!(
-            o.out.text,
-            "Too many subagent tasks for this session (5 running or queued, 4 more requested). Max is 8. Wait for the running subagent call to finish, or ask for fewer tasks.",
-            "{shape}"
-        );
-    }
-    assert_eq!(starts(&env), 1, "the refused calls started nothing");
-
-    // Three more fit (5 + 3 = 8): the call is accepted and waits for its turn; a fourth
-    // child on top of those is refused while it waits.
-    let cancel2 = CancelToken::new();
-    let (tx2, rx2) = std::sync::mpsc::channel();
-    {
-        let (h, root, cancel2) = (h.clone(), env.root().to_path_buf(), cancel2.clone());
-        std::thread::spawn(move || {
-            let out = run_in(&TestEnvRef(root), &h, json!({ "chain": items(3) }), &cancel2);
-            let _ = tx2.send(out);
-        });
-    }
-    // Wait until the queued chain holds its reservation. The probe asks for four, which is
-    // refused before (5 + 4) and after (8 + 4) the reservation, so it can never be accepted
-    // and block behind the hanging call.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    loop {
-        let o = run(&env, &h, json!({ "tasks": items(4) }));
-        assert!(o.out.is_error, "{}", o.out.text);
-        if o.out.text.contains("(8 running or queued, 4 more requested)") {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the queued chain never reserved its three children: {}",
-            o.out.text
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    // Eight are running or queued: the ninth child is refused, also as a single task.
-    let o = run(&env, &h, json!({"agent": "scout", "task": "one more"}));
-    assert!(o.out.is_error);
-    assert!(
-        o.out.text.starts_with(
-            "Too many subagent tasks for this session (8 running or queued, 1 more requested). Max is 8."
-        ),
-        "{}",
-        o.out.text
-    );
-    assert_eq!(starts(&env), 1, "still only the first child");
-
-    cancel2.cancel();
-    cancel.cancel();
-    let first = join_within(&rx, "the five-task call");
-    assert!(
-        first.text.starts_with("Parallel: 0/5 succeeded"),
-        "{}",
-        first.text
-    );
-    let second = join_within(&rx2, "the queued chain");
-    assert!(second.is_error, "{}", second.text);
-    assert_eq!(
-        starts(&env),
-        1,
-        "only the first child of the first call ever started"
-    );
-
-    // Everything was given back: eight fit again (cancelled, so nothing hangs).
-    let done = CancelToken::new();
-    done.cancel();
-    let o = run_with(&env, &h, json!({ "tasks": items(8) }), &done);
-    assert!(
-        o.out.text.starts_with("Parallel: 0/8 succeeded"),
-        "the budget is released when calls end: {}",
-        o.out.text
-    );
+    assert!(!o.out.is_error, "{}", o.out.text);
+    assert!(o.out.text.contains("Warning: 9 chain steps"), "{}", o.out.text);
+    assert_eq!(starts(&env), 17, "all nine steps of the second chain ran");
 }
 
 // ---------------------------------------------------------------- #509: the child's cwd
@@ -1757,6 +1660,25 @@ fn child_run_usage_includes_non_chat_requests_without_double_charging() {
     assert_eq!(args[at + 1], "40", "charge total usage exactly once");
     assert_eq!(host.limits.lock().unwrap()["remainingTokens"], json!(0));
     assert_eq!(log(&env).iter().filter(|s| s.starts_with("start ")).count(), 2);
+}
+
+#[test]
+fn unknown_child_usage_stops_additional_children_under_the_parent_cap() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    host.limits.lock().unwrap()["remainingTokens"] = json!(100);
+    let body = r#"printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop","usage":{"input":10,"output":5}}}' '{"type":"run_usage","tokens":15,"complete":false}'
+"#;
+    let h = hooks(&env, body, &host);
+    let _ = run(
+        &env,
+        &h,
+        json!({"tasks":[
+            {"agent":"scout","task":"first"}, {"agent":"worker","task":"second"}
+        ]}),
+    );
+    assert_eq!(log(&env).iter().filter(|s| s.starts_with("start ")).count(), 1);
+    assert_eq!(host.limits.lock().unwrap()["remainingTokens"], json!(0));
 }
 
 #[test]

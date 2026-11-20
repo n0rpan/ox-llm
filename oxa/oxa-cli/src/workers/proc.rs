@@ -7,10 +7,9 @@
 //!
 //! Identity: the leader stays unreaped (a zombie is enough) until its group is confirmed empty.
 //! While the leader is unreaped its pid, and therefore its process group number, cannot be
-//! reused, so every signal the supervisor sends reaches the group it started. Zombies are not
-//! live members: Linux reads that from `/proc`, and a platform without procfs asks the kernel
-//! for the group (`killpg(0)`) and observes the unreaped leader with `waitid(WNOWAIT)`. A member
-//! that outlives its leader is caught by the group SIGKILL sweep before the worker is retired.
+//! reused, so every signal the supervisor sends reaches the group it started. Live members are
+//! read from Linux `/proc`. Platforms without procfs are rejected before the
+//! supervisor thread starts, so they can never admit a worker that the supervisor cannot stop.
 //!
 //! Environment: a worker gets exactly the environment its caller passes (`env_clear` first), so the
 //! launch policy in `launch::child_env` is applied by the caller and never bypassed by inheritance.
@@ -78,6 +77,7 @@ impl Supervisor {
                 "the kill helper must be an absolute path",
             ));
         }
+        require_procfs(cfg!(target_os = "linux"))?;
         let (tx, rx) = mpsc::channel();
         thread::Builder::new()
             .name("oxa-workers".into())
@@ -122,6 +122,19 @@ impl Supervisor {
     }
 }
 
+/// Refuse supervision where the process membership probe is unavailable. This check happens in
+/// `Supervisor::new`, before its thread starts and therefore before it can spawn a child.
+fn require_procfs(available: bool) -> io::Result<()> {
+    if available {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "worker supervision requires Linux procfs",
+        ))
+    }
+}
+
 impl Drop for Supervisor {
     fn drop(&mut self) {
         let _ = self.stop_all();
@@ -134,10 +147,11 @@ pub fn kill_helper(host_path: &std::ffi::OsStr, project: &Path, home: &Path) -> 
     crate::netguard::trusted_executable_for("kill", Some(host_path), Some(project), Some(home))
 }
 
-/// How long a stopped worker gets after SIGINT: `oxa.workers.stopGraceSeconds`, else 10 seconds.
+/// How long a stopped worker gets after SIGINT: `oxa.workers.stopGraceSeconds` from the user
+/// settings only (a project file cannot change process-control timing), else 10 seconds.
 pub fn stop_grace(settings: &Settings) -> Duration {
     settings
-        .get("oxa.workers.stopGraceSeconds")
+        .user_value("oxa.workers.stopGraceSeconds")
         .and_then(|value| value.as_f64())
         .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
         .unwrap_or(DEFAULT_STOP_GRACE)
@@ -475,9 +489,10 @@ fn thread_group_alive(pgid: u32) -> io::Result<bool> {
             };
             match fs::read(task.path().join("stat")) {
                 Ok(bytes) => {
-                    let (state, group) = parse_stat(&bytes)?;
-                    if group == pgid && state != 'Z' && state != 'X' {
-                        return Ok(true);
+                    if let Some((state, group)) = parse_stat(&bytes) {
+                        if group == pgid && state != 'Z' && state != 'X' {
+                            return Ok(true);
+                        }
                     }
                 }
                 Err(error) if process_gone(&error) || permission_denied(&error) => {}
@@ -488,22 +503,27 @@ fn thread_group_alive(pgid: u32) -> io::Result<bool> {
     Ok(false)
 }
 
-/// [`group_alive`] without procfs: a live member is an existing group that is not just our
-/// unreaped leader. `ESRCH` is an empty group; `EPERM` is a member we may not signal, which the
-/// Linux path treats the same way.
+/// [`group_alive`] without procfs: ask the kernel whether the group has a member. `ESRCH` is an
+/// empty group; `EPERM` is a member we may not signal, which the Linux path treats the same way.
+/// This probe must not be short-circuited by the leader's exit: another member can survive it.
 #[cfg(not(target_os = "linux"))]
 fn group_alive(pgid: u32) -> io::Result<bool> {
-    if leader_exited(pgid)? {
-        return Ok(false);
-    }
     // SAFETY: killpg only inspects the group; signal 0 delivers nothing.
     if unsafe { libc::killpg(pgid as libc::pid_t, 0) } == 0 {
-        return Ok(true);
+        return group_alive_from_probe(Ok(()), libc::ESRCH, libc::EPERM);
     }
-    let error = io::Error::last_os_error();
+    group_alive_from_probe(Err(io::Error::last_os_error()), libc::ESRCH, libc::EPERM)
+}
+
+/// Interpret the portable signal-0 process-group probe.
+#[cfg(any(test, not(target_os = "linux")))]
+fn group_alive_from_probe(probe: io::Result<()>, missing: i32, denied: i32) -> io::Result<bool> {
+    let Err(error) = probe else {
+        return Ok(true);
+    };
     match error.raw_os_error() {
-        Some(libc::ESRCH) => Ok(false),
-        Some(libc::EPERM) => Ok(true),
+        Some(code) if code == missing => Ok(false),
+        Some(code) if code == denied => Ok(true),
         _ => Err(error),
     }
 }
@@ -550,7 +570,7 @@ const ESRCH: i32 = 3;
 #[cfg(target_os = "linux")]
 fn proc_stat(pid: u32) -> io::Result<Option<(char, u32)>> {
     match fs::read(format!("/proc/{pid}/stat")) {
-        Ok(bytes) => parse_stat(&bytes).map(Some),
+        Ok(bytes) => Ok(parse_stat(&bytes)),
         Err(error) if process_gone(&error) => Ok(None),
         Err(error) => Err(error),
     }
@@ -563,28 +583,19 @@ fn process_gone(error: &io::Error) -> bool {
 }
 
 /// Parse a `/proc/<pid>/stat` record as bytes: `comm` may hold any byte (not only UTF-8), so only
-/// the ASCII fields after the last `)` are decoded.
+/// the ASCII fields after the last `)` are decoded. `None` means there is no usable record: an
+/// exiting process can return an empty or cut read, which is the same as the process being gone.
 #[cfg(target_os = "linux")]
-fn parse_stat(bytes: &[u8]) -> io::Result<(char, u32)> {
-    let malformed = || io::Error::new(io::ErrorKind::InvalidData, "malformed /proc stat line");
+fn parse_stat(bytes: &[u8]) -> Option<(char, u32)> {
     // `pid (comm) state ppid pgrp ...`: comm may contain spaces and parentheses, so split after
     // the last `)`.
-    let close = bytes
-        .iter()
-        .rposition(|byte| *byte == b')')
-        .ok_or_else(malformed)?;
-    let rest = std::str::from_utf8(&bytes[close + 1..]).map_err(|_| malformed())?;
+    let close = bytes.iter().rposition(|byte| *byte == b')')?;
+    let rest = std::str::from_utf8(&bytes[close + 1..]).ok()?;
     let mut fields = rest.split_whitespace();
-    let state = fields
-        .next()
-        .and_then(|field| field.chars().next())
-        .ok_or_else(malformed)?;
-    let _ppid = fields.next().ok_or_else(malformed)?;
-    let group = fields
-        .next()
-        .and_then(|field| field.parse().ok())
-        .ok_or_else(malformed)?;
-    Ok((state, group))
+    let state = fields.next().and_then(|field| field.chars().next())?;
+    let _ppid = fields.next()?;
+    let group = fields.next().and_then(|field| field.parse().ok())?;
+    Some((state, group))
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -664,6 +675,13 @@ mod tests {
             "the background sleep survived stop"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// On platforms without procfs, an exited leader must not override the kernel's report that
+    /// its process group still contains a surviving child.
+    #[test]
+    fn successful_group_probe_reports_survivors_after_leader_exit() {
+        assert!(group_alive_from_probe(Ok(()), ESRCH, 1).expect("group probe"));
     }
 
     #[test]
@@ -840,8 +858,20 @@ mod tests {
         let mut record = b"4242 (a".to_vec();
         record.push(0xff);
         record.extend_from_slice(b") b) S 1 777 777 0 -1\n");
-        assert_eq!(parse_stat(&record).expect("parse"), ('S', 777));
-        assert!(parse_stat(b"no close paren").is_err());
+        assert_eq!(parse_stat(&record), Some(('S', 777)));
+    }
+
+    /// An exiting process can return an empty or cut `stat` read; that is "gone", not an error.
+    #[test]
+    fn parse_stat_treats_an_empty_or_truncated_read_as_gone() {
+        assert_eq!(parse_stat(b""), None);
+        assert_eq!(parse_stat(b"no close paren"), None);
+        assert_eq!(parse_stat(b"4242 (sleep"), None);
+        assert_eq!(parse_stat(b"4242 (sleep) "), None);
+        assert_eq!(parse_stat(b"4242 (sleep) S"), None);
+        assert_eq!(parse_stat(b"4242 (sleep) S 1"), None);
+        assert_eq!(parse_stat(b"4242 (sleep) S 1 77"), Some(('S', 77)));
+        assert!(!group_alive_with(77, [4242], |_| Ok(parse_stat(b""))).expect("scan"));
     }
 
     #[test]
@@ -927,6 +957,13 @@ mod tests {
     }
 
     #[test]
+    fn a_platform_without_procfs_is_rejected_before_supervision() {
+        let error = require_procfs(false).expect_err("a platform without procfs was admitted");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(error.to_string(), "worker supervision requires Linux procfs");
+    }
+
+    #[test]
     fn kill_helper_refuses_a_project_shim() {
         let dir = scratch("shim");
         let project = dir.join("project");
@@ -984,6 +1021,10 @@ mod tests {
         assert_eq!(stop_grace(&set), Duration::from_secs(3));
         let unset = Settings::from_values(json!({}), json!({}));
         assert_eq!(stop_grace(&unset), Duration::from_secs(10));
+        // A project file cannot change it.
+        let project =
+            Settings::from_values(json!({}), json!({"oxa": {"workers": {"stopGraceSeconds": 300}}}));
+        assert_eq!(stop_grace(&project), Duration::from_secs(10));
     }
 
     /// A `/proc/<pid>` read reports a process that exited between the open and the read as
@@ -1117,7 +1158,7 @@ mod tests {
         tasks.flatten().any(|task| {
             matches!(
                 fs::read(task.path().join("stat")).map(|bytes| parse_stat(&bytes)),
-                Ok(Ok((state, _))) if state != 'Z' && state != 'X'
+                Ok(Some((state, _))) if state != 'Z' && state != 'X'
             )
         })
     }

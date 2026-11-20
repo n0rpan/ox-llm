@@ -6,7 +6,7 @@
 //! session and never reach this check.
 use crate::dispatch::RunMode;
 use oxa_config::{Dirs, Env, Settings};
-use oxa_proto::{codes, OxaError};
+use oxa_proto::{codes, OxaError, PermissionMode};
 use oxa_sandbox::{is_home_itself, is_home_or_above};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -21,16 +21,28 @@ pub(crate) const ENV_ALLOW_HOME_CWD: &str = "OXA_ALLOW_HOME_CWD";
 pub(crate) enum Start {
     /// Not a home root, or opted in: start.
     Proceed,
+    /// `--yolo` or `--auto` on the command line: warn and go on, in every mode, without asking.
+    Warn,
     /// Interactive: show the warning and ask (default No).
     Confirm,
     /// Print, json, rpc: refuse.
     Refuse,
 }
 
-/// The decision for `mode`, whether `cwd` is a home root and whether the user opted in.
-pub(crate) fn decide(mode: RunMode, home_root: bool, opted_in: bool) -> Start {
+/// The permission flag on the command line that counts as the owner's opt-in to a home start.
+/// `--standard`, `--plan` and the config default do not.
+pub(crate) fn explicit_opt_in(level: Option<PermissionMode>) -> Option<PermissionMode> {
+    level.filter(|l| matches!(l, PermissionMode::Yolo | PermissionMode::Auto))
+}
+
+/// The decision for `mode`, whether `cwd` is a home root, whether the user opted in in settings
+/// or the environment, and whether the command line named `--yolo` or `--auto`.
+pub(crate) fn decide(mode: RunMode, home_root: bool, opted_in: bool, explicit: bool) -> Start {
     if !home_root || opted_in {
         return Start::Proceed;
+    }
+    if explicit {
+        return Start::Warn;
     }
     match mode {
         RunMode::Interactive => Start::Confirm,
@@ -58,34 +70,53 @@ pub(crate) fn refusal(cwd: &Path) -> OxaError {
 /// never in print, json or rpc mode (only the explicit `oxa.sandbox.allowHomeWrite` setting
 /// does that there, so a script cannot widen access by accident).
 pub(crate) fn home_workspace(mode: RunMode, start: Start, home_itself: bool) -> bool {
-    mode == RunMode::Interactive && home_itself && matches!(start, Start::Proceed | Start::Confirm)
+    mode == RunMode::Interactive
+        && home_itself
+        && matches!(start, Start::Proceed | Start::Warn | Start::Confirm)
 }
 
-/// The start check: `Ok(home_workspace)` to go on (see [`home_workspace`]), `Err` (one line,
-/// non-zero exit through `report`) to stop. Interactive mode prints the warning on `stdout`
-/// and reads the answer from `stdin`.
+/// What the start check decided besides stopping: whether the home is the bash workspace, and
+/// the warning to show (only for an explicit `--yolo` / `--auto`).
+#[derive(Debug, Default)]
+pub(crate) struct HomeStart {
+    pub workspace: bool,
+    pub warning: Option<String>,
+}
+
+/// The start check: `Ok(HomeStart)` to go on, `Err` (one line, non-zero exit through `report`)
+/// to stop. `explicit` is the `--yolo` / `--auto` from the command line (see
+/// [`explicit_opt_in`]). Interactive mode prints the question on `stdout` and reads the answer
+/// from `stdin`.
 pub(crate) fn check(
     mode: RunMode,
     cwd: &Path,
     env: &Env,
     dirs: &Dirs,
+    explicit: Option<PermissionMode>,
     stdin: &mut dyn Read,
     stdout: &mut dyn Write,
-) -> Result<bool, OxaError> {
+) -> Result<HomeStart, OxaError> {
     // A symlink to the home directory is the home directory: check the resolved path as well.
     let resolved = cwd.canonicalize();
     let home_root =
         is_home_or_above(cwd, &dirs.home) || resolved.is_ok_and(|real| is_home_or_above(&real, &dirs.home));
     if !home_root {
-        return Ok(false);
+        return Ok(HomeStart::default());
     }
     let home_itself = is_home_itself(cwd, &dirs.home);
     let user = Settings::load(dirs, cwd, false);
     let opted_in =
         crate::netguard::truthy(env.get(ENV_ALLOW_HOME_CWD)) || user.bool(SETTING_ALLOW_HOME_CWD, false);
-    let start = decide(mode, home_root, opted_in);
+    let start = decide(mode, home_root, opted_in, explicit.is_some());
     match start {
-        Start::Proceed => Ok(home_workspace(mode, start, home_itself)),
+        Start::Proceed => Ok(HomeStart {
+            workspace: home_workspace(mode, start, home_itself),
+            warning: None,
+        }),
+        Start::Warn => Ok(HomeStart {
+            workspace: home_workspace(mode, start, home_itself),
+            warning: explicit.map(|level| warning(cwd, level)),
+        }),
         Start::Refuse => Err(refusal(cwd)),
         Start::Confirm => {
             let e = refusal(cwd);
@@ -106,12 +137,25 @@ pub(crate) fn check(
             let answer = read_answer(stdin);
             let answer = answer.trim().to_lowercase();
             if answer == "y" || answer == "yes" {
-                Ok(home_workspace(mode, start, home_itself))
+                Ok(HomeStart {
+                    workspace: home_workspace(mode, start, home_itself),
+                    warning: None,
+                })
             } else {
                 Err(e)
             }
         }
     }
+}
+
+/// The warning for an explicit `--yolo` / `--auto` start in a home root (one line, shown with the
+/// other start notices of the session).
+fn warning(cwd: &Path, level: PermissionMode) -> String {
+    format!(
+        "oxa was started in {}, which is your home directory or one of its parents; --{} on the command line allows it, so oxa goes on without asking",
+        cwd.display(),
+        level.as_str()
+    )
 }
 
 /// One line from `stdin`, read byte by byte (as the other prompts of `run`).
@@ -136,17 +180,45 @@ mod tests {
     fn decide_table() {
         // Not a home root: always go on.
         for mode in [RunMode::Interactive, RunMode::Print, RunMode::Json, RunMode::Rpc] {
-            assert_eq!(decide(mode, false, false), Start::Proceed);
+            assert_eq!(decide(mode, false, false, false), Start::Proceed);
         }
         // A home root, not opted in: interactive asks, the others refuse.
-        assert_eq!(decide(RunMode::Interactive, true, false), Start::Confirm);
-        assert_eq!(decide(RunMode::Print, true, false), Start::Refuse);
-        assert_eq!(decide(RunMode::Json, true, false), Start::Refuse);
-        assert_eq!(decide(RunMode::Rpc, true, false), Start::Refuse);
+        assert_eq!(decide(RunMode::Interactive, true, false, false), Start::Confirm);
+        assert_eq!(decide(RunMode::Print, true, false, false), Start::Refuse);
+        assert_eq!(decide(RunMode::Json, true, false, false), Start::Refuse);
+        assert_eq!(decide(RunMode::Rpc, true, false, false), Start::Refuse);
         // Opted in: go on in every mode.
         for mode in [RunMode::Interactive, RunMode::Print, RunMode::Json, RunMode::Rpc] {
-            assert_eq!(decide(mode, true, true), Start::Proceed);
+            assert_eq!(decide(mode, true, true, false), Start::Proceed);
         }
+    }
+
+    #[test]
+    fn home_cwd_yolo_flag_warns_only() {
+        // S11: an explicit --yolo / --auto is the opt-in. It warns in every mode and never asks
+        // or refuses, so `cd ~ && oxa --yolo -p ...` works.
+        for mode in [RunMode::Interactive, RunMode::Print, RunMode::Json, RunMode::Rpc] {
+            assert_eq!(decide(mode, true, false, true), Start::Warn);
+        }
+        assert_eq!(
+            explicit_opt_in(Some(PermissionMode::Yolo)),
+            Some(PermissionMode::Yolo)
+        );
+        assert_eq!(
+            explicit_opt_in(Some(PermissionMode::Auto)),
+            Some(PermissionMode::Auto)
+        );
+        // --standard, --plan and the configured default are not an opt-in.
+        assert_eq!(explicit_opt_in(Some(PermissionMode::Standard)), None);
+        assert_eq!(explicit_opt_in(Some(PermissionMode::Plan)), None);
+        assert_eq!(explicit_opt_in(None), None);
+        // The warning does not change where bash may write: only an interactive start in home
+        // itself makes home the workspace, as for a confirmed start.
+        assert!(home_workspace(RunMode::Interactive, Start::Warn, true));
+        assert!(!home_workspace(RunMode::Print, Start::Warn, true));
+        let text = warning(Path::new("/home/u"), PermissionMode::Yolo);
+        assert!(text.contains("--yolo on the command line"), "{text}");
+        assert!(!text.contains('\n'));
     }
 
     #[test]

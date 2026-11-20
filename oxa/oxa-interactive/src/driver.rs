@@ -13,9 +13,11 @@ use crate::selectors::{
     ScopedModelsSelector, SessionPick, SessionPicker, SettingsSelector, ThemeSelector, ThinkingSelector,
     TreeFilter, TreePick, TreeSelector,
 };
+use crate::skin::stage::{built_in, pending_of, Director};
 use crate::skin::{
-    frame_box, frame_inner_width, hot_theme, oxa_arcade_line, oxa_footer, oxa_splash, oxa_title_text,
-    oxa_yolo_banner, reduced_motion, Animation, ArcadeScene, ArcadeState, HintContext, SPRITE_FRAME_MS,
+    frame_box, frame_inner_width, hot_theme, oxa_arcade_line, oxa_footer, oxa_splash, oxa_stage_line,
+    oxa_title_text, oxa_yolo_banner, reduced_motion, scene_cells, Animation, ArcadeScene, ArcadeState,
+    HintContext, SPRITE_FRAME_MS,
 };
 use crate::{
     activity_text, choose_clip_method, compose_fullscreen, copy_text, debug_dump, dispatch_slash,
@@ -25,10 +27,12 @@ use crate::{
     ScrollbarMode, SelectEvent, SelectorKind, SessionCmd, SessionInfo, SlashCx, SoftWrap, StatusModel,
     TranscriptSearch, TrustChoice, UiRequest, ViewCx, ViewModel, ViewSettings, Viewport, WorkerMsg,
 };
-use oxa_config::Keymap;
+use oxa_config::{Dirs, Keymap, Settings};
 use oxa_core::Handle;
 use oxa_export::default_output_name;
-use oxa_proto::{AgentEvent, Autonomy, Level, Mode, OxaError, Part, PermissionMode, ThinkingLevel, Value};
+use oxa_proto::{
+    AgentEvent, Autonomy, DangerAnswer, Level, Mode, OxaError, Part, PermissionMode, ThinkingLevel, Value,
+};
 use oxa_session::{SessionMeta, SessionRef, Tree};
 use oxa_tui::{
     detect_caps, list_themes, resolve_theme, title_sequence, CombinedProvider, Component, CursorPos, Editor,
@@ -292,6 +296,9 @@ pub(crate) struct Loop<'a> {
     anim_step: u64,
     /// The arcade scene's counters of the run (coins, the closing scene).
     arcade: ArcadeState,
+    /// Design 3.2 (C4): the scene director of the activity row, used when `ui.animationScene`
+    /// is unset and the terminal does not draw pixels.
+    stage: Director,
     /// OXA's fullscreen look: the editor's suggestion panel of this frame and the editor's
     /// first row among the bottom lines (the panel floats above it, over the transcript).
     popup_overlay: Option<(usize, Vec<String>)>,
@@ -448,6 +455,7 @@ impl<'a> Loop<'a> {
             palette: None,
             anim_step: 0,
             arcade: ArcadeState::default(),
+            stage: Director::new("", built_in().scenes),
             popup_overlay: None,
             pixel: crate::skin::PixelStage::new(caps.cell_px),
             gfx_answered,
@@ -516,6 +524,15 @@ impl<'a> Loop<'a> {
                 self.gfx_answered,
                 self.gfx_placeholders,
             )
+    }
+
+    /// C4: the activity row's scene comes from the director (`skin/stage`) when the arcade plays,
+    /// no pixel scene is drawn and `ui.animationScene` is unset (an explicit scene keeps its own).
+    fn stage_on(&self) -> bool {
+        self.animation() == Animation::Arcade
+            && self.view.skin == crate::Skin::Oxa
+            && self.opts.settings.string("ui.animationScene").is_none()
+            && !self.pixels()
     }
 
     /// Delete every image of the graphics tier from the terminal, now (exit, suspend).
@@ -614,7 +631,13 @@ impl<'a> Loop<'a> {
     /// reads, the hot or cool theme, and (the first time yolo is switched on in the session)
     /// the banner and a notice that stays in the transcript.
     fn sync_yolo(&mut self) {
+        // #1512 S3: the run's sandbox is fixed at start; the guard label follows it.
+        if self.vm.status.os_sandbox != self.opts.os_sandbox {
+            self.vm.status.os_sandbox = self.opts.os_sandbox;
+            self.dirty = true;
+        }
         let Some(switch) = self.opts.yolo.clone() else {
+            self.sync_guard();
             return;
         };
         let level = switch.level();
@@ -627,6 +650,7 @@ impl<'a> Loop<'a> {
             self.vm.status.autonomy = level;
             self.dirty = true;
         }
+        self.sync_guard();
         let mode = self.permission_mode();
         if self.yolo_shown == Some(mode) {
             return;
@@ -667,6 +691,28 @@ impl<'a> Loop<'a> {
                 self.vm.status.ext_status.remove("yolo");
             }
         }
+    }
+
+    /// #1512 S3: the pi skin shows the guard as an extension status entry, like the yolo one.
+    /// The oxa skin draws it in the HUD instead.
+    fn sync_guard(&mut self) {
+        if self.view.skin.is_oxa() {
+            return;
+        }
+        let label = self.vm.status.guard_label().map(str::to_string);
+        let current = self.vm.status.ext_status.get("sandbox").cloned();
+        if label == current {
+            return;
+        }
+        match label {
+            Some(text) => {
+                self.vm.status.ext_status.insert("sandbox".to_string(), text);
+            }
+            None => {
+                self.vm.status.ext_status.remove("sandbox");
+            }
+        }
+        self.dirty = true;
     }
 
     /// O-182: `/yolo`, the `app.yolo.toggle` key. Off returns to the level before yolo.
@@ -758,8 +804,13 @@ impl<'a> Loop<'a> {
     }
 
     pub(crate) fn animating(&self) -> bool {
-        self.running()
-            || self.dialogs.is_open()
+        // Active work always refreshes its elapsed time. With the director, a pending scene
+        // deadline can keep the activity row animating as well.
+        activity_refreshing(
+            self.running(),
+            self.stage_on(),
+            self.stage.next_deadline_ms(now_ms()).is_some(),
+        ) || self.dialogs.is_open()
             || self.mouse_sel.dragging
             || now_ms() < self.yolo_banner_until
             || self.arcade.finishing(now_ms())
@@ -792,6 +843,23 @@ impl<'a> Loop<'a> {
 
     fn cwd(&self) -> PathBuf {
         PathBuf::from(&self.vm.status.cwd)
+    }
+
+    /// #1512 S2: answer a pending "always allow": its keys are saved to the user settings first.
+    /// A failed write shows an error and answers `Session`, so the grant still holds this run.
+    fn finish_danger_always(&mut self) {
+        let Some((keys, reply)) = self.dialogs.take_danger_always() else {
+            return;
+        };
+        let cwd = self.cwd();
+        let answer = match append_always(&mut self.opts.settings, &self.opts.dirs, &cwd, &keys) {
+            Ok(()) => DangerAnswer::Always,
+            Err(e) => {
+                self.push_notice(Level::Error, e.to_string());
+                DangerAnswer::Session
+            }
+        };
+        let _ = reply.send(answer);
     }
 
     // -----------------------------------------------------------------------------------------
@@ -846,6 +914,10 @@ impl<'a> Loop<'a> {
                     "Recovery prompt was not sent after the session changed; it is back in the editor."
                         .to_string(),
                 );
+            }
+            WorkerMsg::LimitExit(code) => {
+                self.push_notice(Level::Info, "Session limit or stop signal reached.".to_string());
+                self.quit = Some(code);
             }
             WorkerMsg::Done(result) => {
                 // The wire may have changed: the same draft is a new prefill.
@@ -931,13 +1003,24 @@ impl<'a> Loop<'a> {
         if self.session.id != info.id || self.inbox.is_none() {
             // A Reopen may have recovered an already-admitted message without a file
             // left to trigger the new watcher. Wake only the recovered destination.
-            if self.handle.has_inbox_input() && self.handle.request_inbox_wake() {
+            if self.handle.has_external_inbox_input() && self.handle.request_inbox_wake() {
                 let _ = self.cmds.send(SessionCmd::Inbox {
                     session_id: info.id.clone(),
                 });
             }
+            // A completion retained behind a stop boundary (a failed or interrupted turn) is not
+            // delivered on a reopen: the replacement session starts with no outcome, so waking
+            // it would start a model turn nobody asked for. It stays queued for the next prompt.
             // Stop the old callback before installing one bound to the current handle.
             self.inbox = None;
+            // W4: a finished background job of this session wakes it the way an inbox message does.
+            let job_cmds = self.cmds.clone();
+            self.handle
+                .set_wake_notifier(std::sync::Arc::new(move |session_id: &str| {
+                    let _ = job_cmds.send(SessionCmd::JobWake {
+                        session_id: session_id.to_string(),
+                    });
+                }));
             let handle = self.handle.clone();
             let cmds = self.cmds.clone();
             let session_id = info.id.clone();
@@ -982,10 +1065,7 @@ impl<'a> Loop<'a> {
                 "yolo",
                 "Toggle yolo: full access, no prompts, bash without the sandbox",
             ),
-            (
-                "auto",
-                "Auto mode: no prompts; the sandbox and the deny-list stay on",
-            ),
+            ("auto", "Auto mode: no prompts; dangerous commands still ask"),
             ("debug", "Write a debug dump"),
             ("exit", "Quit oxa"),
         ] {
@@ -1167,6 +1247,10 @@ impl<'a> Loop<'a> {
             animating
         };
         if self.dialogs.tick(now_ms()) || animating || self.arcade.take_expired(now_ms()) {
+            self.dirty = true;
+        }
+        // C4: the director's row changed (a new frame, a new activity or the scene taken away).
+        if self.stage_on() && self.stage.redraw_due(now_ms()) {
             self.dirty = true;
         }
         self.draft_tick();
@@ -1407,11 +1491,14 @@ impl<'a> Loop<'a> {
             self.handle.abort();
             self.handle.abort_retry();
             self.dialogs.key(&key, &self.opts.keymap);
+            self.finish_danger_always();
             self.restore_queue();
             return;
         }
         if self.dialogs.is_open() {
-            match self.dialogs.key(&key, &self.opts.keymap) {
+            let outcome = self.dialogs.key(&key, &self.opts.keymap);
+            self.finish_danger_always();
+            match outcome {
                 DialogKey::NotOpen => {}
                 DialogKey::ExternalEditor => {
                     self.dialog_external_editor(term);
@@ -1757,6 +1844,8 @@ impl<'a> Loop<'a> {
         if trimmed.is_empty() {
             return;
         }
+        // #1552: the line the owner typed is the one origin that can approve a publication.
+        oxa_proto::owner_reply::typed(&trimmed);
         if let Some(rest) = trimmed.strip_prefix('!') {
             let (excluded, cmd) = match rest.strip_prefix('!') {
                 Some(r) => (true, r),
@@ -2842,17 +2931,39 @@ impl<'a> Loop<'a> {
             } else {
                 None
             };
+            // C4: the director picks the scene of the activity (design 3.2) when the arcade plays
+            // its own scene; the closing scene after a run stays with the arcade.
+            let staged = pixel_line.is_none() && self.stage_on();
+            let now = now_ms();
+            if staged {
+                self.stage.reseed(&self.session.id);
+                let ascii = self.view.skin != crate::Skin::Oxa;
+                self.stage
+                    .update(pending_of(&status.activity, ascii), scene_cells(width), now);
+            }
             let line = pixel_line.or_else(|| {
-                oxa_arcade_line(
-                    &status,
-                    &self.opts.keymap,
-                    self.animation(),
-                    scene,
-                    &run,
-                    width,
-                    &self.theme,
-                    self.view.skin,
-                )
+                if staged && status.activity != Activity::Idle {
+                    oxa_stage_line(
+                        &self.stage,
+                        &status,
+                        &self.opts.keymap,
+                        now,
+                        width,
+                        &self.theme,
+                        self.view.skin,
+                    )
+                } else {
+                    oxa_arcade_line(
+                        &status,
+                        &self.opts.keymap,
+                        self.animation(),
+                        scene,
+                        &run,
+                        width,
+                        &self.theme,
+                        self.view.skin,
+                    )
+                }
             });
             lines.extend(line);
         } else if let Some(text) = activity_text(&status) {
@@ -3256,16 +3367,22 @@ fn foreground_running(vm: &ViewModel, handle_running: bool, preloading: bool, dr
         || (handle_running && !preloading && !drafting)
 }
 
+fn activity_refreshing(running: bool, stage_on: bool, stage_has_deadline: bool) -> bool {
+    running || (stage_on && stage_has_deadline)
+}
+
 fn settle_worker_done(vm: &mut ViewModel, failed: bool) {
     if vm.status.activity != Activity::Idle {
         apply_event(vm, &AgentEvent::AgentSettled { aborted: false });
     }
     // A failed `user_bash` command has no stored entry to replace its live block.
     if failed {
-        for block in &mut vm.blocks {
-            if let Block::Bash { running, .. } = block {
-                *running = false;
-            }
+        if let Some(Block::Bash { running, .. }) = vm
+            .blocks
+            .iter_mut()
+            .find(|block| matches!(block, Block::Bash { running: true, .. }))
+        {
+            *running = false;
         }
     }
 }
@@ -3380,6 +3497,21 @@ mod running_tests {
         assert!(!foreground_running(&vm, false, false, false));
     }
 
+    /// A worker error only belongs to the command the sequential worker just finished; a
+    /// queued command must retain its live block for its own streamed output and result.
+    #[test]
+    fn failed_user_bash_leaves_queued_block_running() {
+        let mut vm = ViewModel {
+            blocks: vec![bash(true), bash(true)],
+            ..Default::default()
+        };
+
+        settle_worker_done(&mut vm, true);
+
+        assert!(matches!(vm.blocks[0], Block::Bash { running: false, .. }));
+        assert!(matches!(vm.blocks[1], Block::Bash { running: true, .. }));
+    }
+
     /// A worker error can precede the stored bash entry, but it still completes the command.
     #[test]
     fn failed_user_bash_closes_live_block() {
@@ -3393,11 +3525,39 @@ mod running_tests {
         assert!(!foreground_running(&vm, false, false, false));
         assert!(matches!(vm.blocks[0], Block::Bash { running: false, .. }));
     }
+
+    /// An active tool without a matching stage scene still needs periodic redraws so its elapsed
+    /// time advances instead of freezing until another event arrives.
+    #[test]
+    fn running_activity_refreshes_without_a_stage_deadline() {
+        assert!(activity_refreshing(true, true, false));
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
 // The trust question before a session exists
 // ---------------------------------------------------------------------------------------------
+
+/// The user setting that lists the keys of "always allow" (#1512 S2); user settings only.
+const APPROVAL_ALWAYS: &str = "oxa.approval.always";
+
+/// #1512 S2: save `keys` to the user settings' `oxa.approval.always`, each key once. The list is
+/// read from the user layer only, so a project's value is never copied into the user file.
+pub fn append_always(
+    settings: &mut Settings,
+    dirs: &Dirs,
+    cwd: &Path,
+    keys: &[String],
+) -> Result<(), OxaError> {
+    let mut list = Settings::load(dirs, cwd, false).list(APPROVAL_ALWAYS);
+    for key in keys {
+        if !list.contains(key) {
+            list.push(key.clone());
+        }
+    }
+    let value = Value::Array(list.into_iter().map(Value::String).collect());
+    settings.set(dirs, cwd, APPROVAL_ALWAYS, value, false)
+}
 
 /// The project trust question (D10 `ask_trust`'s question) drawn directly on `term`, for the
 /// one question asked before the session (and with it the app loop) exists. `None` when

@@ -84,7 +84,7 @@ cmake --build "$FLASH_WORK/build" --parallel 1 --target \
 
 Repack remains off because the streamer rebinds native tensor pointers. RPC is compiled for the historical host-test configuration, not exposed as a runtime endpoint. GPU/NPU backends, backend modules and KleidiAI remain off. Generated `common/build-info.cpp`, `ggml-version.h` and other configure outputs must come from these source templates; do not copy private generated files. New local commit/count/dirty/compiler strings can change embedded versions and binary hashes.
 
-Run the four model-free config/params/mapping-release/file-reader checks after building. Building `bmoe_moe_gates` does not run or pass its model-based byte-identity gates. Schedule those and fresh actual model/profile qualification separately: correct completed functional/tool/agent tasks, unchanged full expert routing, actual RAM/swap/power guards, EOF/reaping/unload and recovery. Only then may the new executable/profile become ready/selectable. See [bootstrap parity](BOOTSTRAP-PARITY.md) for the clean-install finish gate.
+Run the four model-free config/params/mapping-release/file-reader checks after building. Building `bmoe_moe_gates` does not run or pass its model-based byte-identity gates. Schedule those and fresh actual model/profile qualification separately: correct completed functional/tool/agent tasks, unchanged full expert routing, actual RAM/swap/power guards, EOF/reaping/unload and recovery. Only then may the new executable/profile become ready/selectable. See bootstrap parity for the clean-install finish gate.
 
 ## Separate later changes and notices
 

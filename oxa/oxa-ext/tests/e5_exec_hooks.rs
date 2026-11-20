@@ -1,6 +1,4 @@
 //! E5 acceptance tests: Exec hooks.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_ext::{hook_stdin, parse_exec_hooks, reply_from_exit, ExecHooks, EXEC_HOOK_TIMEOUT_S};

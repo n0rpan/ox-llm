@@ -46,6 +46,12 @@ kernel flags `armv8.6-a+dotprod+i8mm+fp16+bf16+nosve+nosme`. x86_64 uses the bas
 No model weights, NPU device features, Flash external libraries or vendor SDK
 are included. These builds make no inference speed or hardware qualification claim.
 
+The same workflow also builds a portable Linux x86_64 `oxa` in `debian:bullseye-slim`
+(glibc 2.31 floor, checked by symbol version) as the `oxa-portable-linux-x86_64`
+artifact, and the job `portable_binary_starts_in_three_images` starts it in
+`debian:bullseye-slim`, `ubuntu:22.04` and `python:3.12-slim` against the fake engine.
+It is separate from the Fedora tarball and is not part of the Arch packages.
+
 Build-time staging collects native executables, Rust dependency license texts,
 the vendored ggml license and product notices. Both Arch recipes omit Python
 from runtime dependencies. The source recipe uses Python to stage files during

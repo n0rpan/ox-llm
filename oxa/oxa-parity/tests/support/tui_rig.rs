@@ -74,7 +74,9 @@ impl Rig {
             .wait_for_named(
                 "the first frame",
                 |s| {
-                    s.contains("oxa v")
+                    // #1512 S3: on a short regular-mode screen the start notices can push
+                    // the header into the scrollback.
+                    (s.contains("oxa v") || s.scrollback_text().contains("oxa v"))
                         && s.rows()
                             .iter()
                             .filter(|r| !r.is_empty() && r.chars().all(|c| c == '─'))
