@@ -149,6 +149,7 @@ fn local_add_writes_user_settings_from_admission_report() {
     let r = report(4096);
     let local = &settings["oxa"]["local"];
     assert_eq!(local["binary"], dir.join("oxe-server").to_str().unwrap());
+    assert_eq!(local["environment"]["HOME"], env.home().to_str().unwrap());
     assert_eq!(
         local["models"]["synthetic-local"]["model"],
         model.to_str().unwrap()
@@ -201,6 +202,30 @@ fn local_add_without_enable_leaves_the_engine_switch_alone() {
         2048
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("not enabled yet"));
+}
+
+#[test]
+fn local_add_preserves_an_explicit_engine_home() {
+    let _guard = LOCK.lock().unwrap();
+    let env = TestEnv::new();
+    let configured_home = env.root().join("engine-home");
+    fs::create_dir_all(&configured_home).unwrap();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        &json!({
+            "oxa": {"local": {"environment": {"HOME": configured_home}}}
+        })
+        .to_string(),
+    );
+    let dir = engine_dir(&env, &report(2048));
+
+    let out = add(&env, &dir, &["--name", "preserved", "--ctx", "2048"]);
+
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        read(&user_settings(&env))["oxa"]["local"]["environment"]["HOME"],
+        configured_home.to_str().unwrap()
+    );
 }
 
 #[test]

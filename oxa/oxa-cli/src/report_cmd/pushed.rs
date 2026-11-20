@@ -104,7 +104,22 @@ fn file_location_key(name: &str) -> bool {
 /// A path-shaped value that is allowed under this key: a relative file path under a key that
 /// names a file location.
 fn location_value(name: &str, value: &str) -> bool {
-    file_location_key(name) && relative_file_path(value)
+    file_location_key(name) && relative_file_path(value) && !encoded_credential(value)
+}
+
+/// Whether a slash-containing value has the shape of an opaque, unpadded base64 credential
+/// rather than a file path. Requiring all three ASCII character classes keeps ordinary
+/// extensionless paths (for example `config/service-account`) eligible as locations.
+fn encoded_credential(value: &str) -> bool {
+    let value = value.trim().trim_matches(['"', '\'']);
+    value.chars().count() >= MIN_KEY_VALUE_CHARS
+        && value.contains('/')
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '='))
+        && value.chars().any(|ch| ch.is_ascii_lowercase())
+        && value.chars().any(|ch| ch.is_ascii_uppercase())
+        && value.chars().any(|ch| ch.is_ascii_digit())
 }
 
 /// A relative file path such as `config/service-account.json`: path characters only, a `/`,
@@ -794,6 +809,7 @@ mod tests {
         for text in [
             "ENCRYPTION_KEY=Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MA/b64==",
             "GOOGLE_APPLICATION_CREDENTIALS=abcdEFGH1234ijklMNOP5678",
+            "GOOGLE_APPLICATION_CREDENTIALS=abcdEFGH1234/ijklMNOP5678",
         ] {
             assert!(scan.check(&added(".env.example", text)).is_some(), "{text}");
         }

@@ -197,6 +197,18 @@ fn kind_of(words: &[String], cwd: &Path, moved: bool) -> Kind {
         "gh" => gh_kind(words, &args, cwd, moved),
         // A wrapper or interpreter that carries git push / gh in its words hides it.
         _ => {
+            // Preserve git's argv boundaries when a wrapper such as `env` passes them
+            // through. Besides ordinary `git push`, this catches global options that
+            // can turn an otherwise unknown subcommand into a push (for example `-c`
+            // with a command alias).
+            if args
+                .iter()
+                .enumerate()
+                .skip(1)
+                .any(|(i, w)| base(w) == "git" && git_kind(words, &args[i..], cwd, moved) != Kind::Other)
+            {
+                return Kind::Unsafe;
+            }
             let hides = args.iter().skip(1).any(|w| {
                 // Quotes and backslashes can split a word (`pu''sh`); compare the plain text.
                 let plain = w.replace(['\'', '"', '\\'], "");
@@ -206,6 +218,8 @@ fn kind_of(words: &[String], cwd: &Path, moved: bool) -> Kind {
                     || (plain.contains("git") && plain.contains("push"))
                     || (plain.contains("git") && w.contains(['$', '`']))
             }) || args.iter().enumerate().any(|(i, w)| {
+                // A wrapper may rewrite argv before it invokes git. Keep this
+                // conservative scan when the argv-shaped parse above is inconclusive.
                 base(w) == "git"
                     && args[i + 1..]
                         .iter()

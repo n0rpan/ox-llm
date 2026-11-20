@@ -230,6 +230,34 @@ commands! {
         surfaces: Surfaces { cli: Availability::Supported, ..LEAD_PENDING },
         requirements: Requirements { owner_only: true, ..NO_REQUIREMENTS },
     },
+    // #1512 S5: the owner's CLI verbs for sessions. The CLI parser keeps them (`oxa send` with
+    // `--approve` and `--approvals` goes to the approval desk); they are declared for help.
+    Send {
+        path: &["send"],
+        aliases: &[],
+        summary: "Send a session a follow-up, or answer its approval request (send <session-id> --approve <request-id> once|session|always|deny)",
+        arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("Session messages are a CLI verb"),
+            menu: Availability::Exception("Session messages are a CLI verb"),
+            web: Availability::Exception("No web frontend is shipped"),
+        },
+        requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
+    },
+    SendApprovals {
+        path: &["send", "--approvals"],
+        aliases: &[],
+        summary: "List the approval requests that wait for an answer",
+        arguments: &[],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("Session messages are a CLI verb"),
+            menu: Availability::Exception("Session messages are a CLI verb"),
+            web: Availability::Exception("No web frontend is shipped"),
+        },
+        requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
+    },
     Memory {
         path: &["memory"], aliases: &[], summary: "Show the memory index, or show or remove one memory entry",
         arguments: &[Argument { name: "verb", kind: ArgumentKind::Tail, required: false }],

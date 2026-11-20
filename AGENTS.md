@@ -195,6 +195,14 @@ code, tests, CI and docs; the owner validates on hardware.
   `oxa.goal.failureBackoffSeconds` (default 60, doubling, capped at 900 unless set higher, `0` opts
   out) is the owner setting. Auth errors, refusals, the repetition stop, aborts and an owner budget
   still stop the goal with the reason shown.
+  Dangerous commands are a floor prompt interactively and never wait in an unattended run:
+  `oxa.approval.unattended` (`auto` by default, `refuse`, `request`; user settings only) refuses or
+  files an owner request, answered only through `oxa send --approve`. Grants are
+  owner-scoped (`once` is consumed by the retrying run; `session`/`always` persist) and a project file
+  or model output cannot grant one. Shell parameter or command substitution markers anywhere in
+  the command prevent reuse of a saved grant. A finding that asks for a default-off switch or for
+  an unattended run to wait is answered here.
+
   The board degrades per item, not per snapshot: a PR whose GitHub evidence exceeds a read page
   is one row marked evidence incomplete that is never eligible for any action; every other item is
   kept and published, and the limit is logged. A merge-queue connection beyond its

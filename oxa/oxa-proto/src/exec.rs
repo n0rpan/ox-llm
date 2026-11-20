@@ -400,4 +400,14 @@ pub trait Policy: Send {
     /// #1512 S2: remember the keys of [`Policy::danger_ask`] for this session (`Session` and
     /// `Always` answers). Never covers any other access.
     fn grant_danger(&mut self, _keys: &[String]) {}
+    /// #1512 S3/S5: the owner's session id for approval requests (bound once the session has
+    /// its id). Never a grant by itself.
+    fn set_session_id(&mut self, _id: &str) {}
+    /// #1512 S5: in a run with no one to ask (`!Ui::interactive`) a dangerous command that
+    /// needs an answer is not paused for. `Some(text)` is the tool error (a refusal, or a request
+    /// the owner answers with `oxa send --approve`); `None` = no unattended answer, the caller
+    /// asks the `Ui` as before.
+    fn danger_unattended(&mut self, _a: &Access, _cwd: &Path) -> Option<String> {
+        None
+    }
 }
