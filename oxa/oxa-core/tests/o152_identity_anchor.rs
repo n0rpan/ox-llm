@@ -202,6 +202,28 @@ fn anchor_bytes_are_identical_across_cwd_date_and_session() {
 }
 
 #[test]
+fn session_identity_leaves_publication_attribution_to_oxa() {
+    let env = TestEnv::new();
+    let cwd = env.work();
+    let guidance = "Do not add or repeat oxa attribution in pull requests or commit messages.";
+    let fallback = open_in(&env, &cwd, scripted(), "without-identity");
+    assert!(fallback.inner().prefix.anchor_text().contains(guidance));
+
+    env.write("home/.oxa/agent/identity.md", &identity_text(&facts()));
+    let installed = open_in(&env, &cwd, scripted(), "with-identity");
+    let anchor = installed.inner().prefix.anchor_text();
+    assert!(
+        anchor.contains("Test Laptop 7x"),
+        "the installed identity is in use"
+    );
+    assert!(anchor.contains(guidance));
+    assert!(
+        !anchor.contains("Prepared with oxa"),
+        "identity facts are not attribution"
+    );
+}
+
+#[test]
 fn missing_identity_falls_back_to_the_generic_text() {
     let env = TestEnv::new();
     let s = open_in(&env, &env.work(), scripted(), "s");

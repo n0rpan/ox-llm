@@ -14,7 +14,7 @@ AGENTS.md and CONTRIBUTING.md override anything here (branch names, tiers, draft
 ## Open
 1. Run the project's done checks first.
 2. `git push -u origin HEAD`.
-3. `gh pr create --draft --base <base> --title ... --body ...`. The body states what changed and why, how it was verified (each command and its result) and which model wrote it.
+3. `gh pr create --draft --base <base> --title ... --body ...`. The body states what changed and why and how it was verified (each command and its result). Leave oxa and model attribution to oxa itself; if none is available, leave it out.
 4. Mark it ready (`gh pr ready N`) only when the done checks are green.
 
 ## Follow up

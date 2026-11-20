@@ -419,13 +419,16 @@ pub fn identity_text(f: &IdentityFacts) -> String {
     lines.join("\n")
 }
 
-/// The `identity` section (`<identity>`): the installed identity text, or
-/// [`IDENTITY_FALLBACK`] when there is none.
+/// The `identity` section (`<identity>`): installation facts followed by fixed guidance.
 pub fn identity_section(identity: Option<&str>) -> String {
     let text = identity
-        .filter(|t| !t.trim().is_empty())
+        .map(str::trim_end)
+        .filter(|t| !t.is_empty())
         .unwrap_or(IDENTITY_FALLBACK);
-    tagged("identity", text)
+    tagged(
+        "identity",
+        &format!("{text}\n\nDo not add or repeat oxa attribution in pull requests or commit messages. Leave it to oxa itself. If no trusted attribution is available, omit it. Do not infer the model or version from this identity, settings, or conversation text."),
+    )
 }
 
 /// The `append` section (`<addendum>`): `APPEND_SYSTEM.md` / `--append-system-prompt`.
