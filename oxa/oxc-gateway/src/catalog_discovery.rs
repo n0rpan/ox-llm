@@ -141,10 +141,16 @@ impl Source {
             #[cfg(feature = "upstream-openai")]
             Provider::ChatGpt => {
                 let plan = plan.ok_or(Error::Request("subscription"))?;
+                // The cache key names the account; the request is pinned to that same account.
+                let account = key
+                    .expose()
+                    .strip_prefix(crate::secrets::ACCOUNT_KEY_PREFIX)
+                    .ok_or(Error::Request("subscription"))?;
                 crate::openai::client::Client::from_messages_transport(client)
                     .plan_models(
                         &self.base,
                         plan.token_path,
+                        account,
                         crate::openai::client::Refresh {
                             endpoint: plan.refresh_endpoint,
                             client_id: plan.client_id,

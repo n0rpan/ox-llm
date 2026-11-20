@@ -16,6 +16,9 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(feature = "upstream-openai")]
+pub(crate) const ACCOUNT_KEY_PREFIX: &str = "chatgpt-account:";
+
 pub struct Key(String);
 impl Key {
     /// Expose only when constructing the provider's request/header or redactor.
@@ -27,7 +30,7 @@ impl Key {
     /// catalog saved for one account is never served to another. It authorizes nothing.
     #[cfg(feature = "upstream-openai")]
     pub(crate) fn for_account(account_id: &str) -> Self {
-        Self(format!("chatgpt-account:{account_id}"))
+        Self(format!("{ACCOUNT_KEY_PREFIX}{account_id}"))
     }
 
     #[cfg(feature = "anthropic-gateway")]

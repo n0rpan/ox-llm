@@ -15,7 +15,7 @@ fn keyed(dirs: &Dirs, provider: Provider) -> bool {
     secrets::read(&super::credential_path(dirs), provider.as_str()).is_ok()
 }
 
-fn signed_in_chatgpt(dirs: &Dirs) -> bool {
+pub(super) fn signed_in_chatgpt(dirs: &Dirs) -> bool {
     super::credential_path(dirs)
         .parent()
         .is_some_and(|dir| dir.join("chatgpt-auth.json").is_file())

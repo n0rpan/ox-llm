@@ -62,7 +62,13 @@ async fn the_plan_list_is_fetched_like_the_codex_cli_and_keeps_only_ids_and_wind
         {"slug":"synthetic-nowindow","visibility":"list"}]}))]);
     let models = Client::new()
         .unwrap()
-        .plan_models(&backend.base_url(), &path, refresh(), Duration::from_secs(5))
+        .plan_models(
+            &backend.base_url(),
+            &path,
+            "synthetic-account",
+            refresh(),
+            Duration::from_secs(5),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -100,7 +106,15 @@ async fn a_rejected_sign_in_and_a_failed_list_are_typed_errors() {
     ]);
     let client = Client::new().unwrap();
     let base = backend.base_url();
-    let call = || client.plan_models(&base, &path, refresh(), Duration::from_secs(5));
+    let call = || {
+        client.plan_models(
+            &base,
+            &path,
+            "synthetic-account",
+            refresh(),
+            Duration::from_secs(5),
+        )
+    };
     assert!(matches!(call().await, Err(client::Error::SignedOut)));
     assert!(matches!(
         call().await,
@@ -109,4 +123,90 @@ async fn a_rejected_sign_in_and_a_failed_list_are_typed_errors() {
     assert!(matches!(call().await, Err(client::Error::Protocol)));
     // A response that echoes the account is refused, like any credential echo.
     assert!(matches!(call().await, Err(client::Error::Protocol)));
+}
+
+#[tokio::test]
+async fn a_request_for_another_account_than_the_cache_key_names_is_refused_unsent() {
+    let (_home, path) = Home::new("pin");
+    let backend = MockOpenAi::start(vec![Reply::json(json!({"models":[{"slug":"synthetic-sol"}]}))]);
+    let result = Client::new()
+        .unwrap()
+        .plan_models(
+            &backend.base_url(),
+            &path,
+            "another-account",
+            refresh(),
+            Duration::from_secs(5),
+        )
+        .await;
+    assert!(matches!(result, Err(client::Error::Credentials)));
+    assert!(backend.requests().is_empty(), "no request for the wrong account");
+}
+
+#[tokio::test]
+async fn a_token_expired_reply_refreshes_once_and_retries_once() {
+    let (_home, path) = Home::new("expired");
+    let refresher = MockOpenAi::start(vec![Reply::json(
+        json!({"access_token":"synthetic-recovered-access","refresh_token":"synthetic-rotated","expires_in":3600}),
+    )]);
+    let backend = MockOpenAi::start(vec![
+        Reply::error(401, "token_expired", "synthetic expiry"),
+        Reply::json(json!({"models":[{"slug":"synthetic-sol","context_window":1000}]})),
+    ]);
+    let endpoint = refresher.base_url();
+    let refresh = Refresh {
+        endpoint: &endpoint,
+        client_id: "synthetic-client",
+        timeout: Duration::from_secs(2),
+    };
+    let models = Client::new()
+        .unwrap()
+        .plan_models(
+            &backend.base_url(),
+            &path,
+            "synthetic-account",
+            refresh,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+    assert_eq!(models, vec![("synthetic-sol".to_owned(), Some(1000))]);
+    assert_eq!(refresher.requests().len(), 1);
+    let requests = backend.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1].header("authorization"),
+        Some("Bearer synthetic-recovered-access")
+    );
+}
+
+#[tokio::test]
+async fn a_second_token_expired_reply_is_not_retried_again() {
+    let (_home, path) = Home::new("expired-twice");
+    let refresher = MockOpenAi::start(vec![Reply::json(
+        json!({"access_token":"synthetic-recovered-access","refresh_token":"synthetic-rotated","expires_in":3600}),
+    )]);
+    let backend = MockOpenAi::start(vec![
+        Reply::error(401, "token_expired", "synthetic expiry"),
+        Reply::error(401, "token_expired", "synthetic expiry"),
+    ]);
+    let endpoint = refresher.base_url();
+    let refresh = Refresh {
+        endpoint: &endpoint,
+        client_id: "synthetic-client",
+        timeout: Duration::from_secs(2),
+    };
+    let result = Client::new()
+        .unwrap()
+        .plan_models(
+            &backend.base_url(),
+            &path,
+            "synthetic-account",
+            refresh,
+            Duration::from_secs(5),
+        )
+        .await;
+    assert!(matches!(result, Err(client::Error::SignedOut)));
+    assert_eq!(backend.requests().len(), 2);
+    assert_eq!(refresher.requests().len(), 1);
 }

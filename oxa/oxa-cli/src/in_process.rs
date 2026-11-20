@@ -542,9 +542,7 @@ fn open_gateway_with_go(
         routes.push((model, billing));
     }
     // The ChatGPT plan's model list needs the sign-in refresh settings too.
-    let signed_in = credential_path(dirs)
-        .parent()
-        .is_some_and(|dir| dir.join("chatgpt-auth.json").is_file());
+    let signed_in = catalog::signed_in_chatgpt(dirs);
     let (subscription, subscription_limits) =
         subscription_options(cloud, needs_subscription || (discover && signed_in))?;
     let cap = match cloud.get("daily_budget_usd") {

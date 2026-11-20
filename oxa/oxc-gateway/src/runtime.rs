@@ -435,6 +435,17 @@ impl Runtime {
                 routes.push(model);
             }
         }
+        if source.provider() == Provider::ChatGpt {
+            // The picker list is not authority to delete an owner's route: owner entries win.
+            for model in configured {
+                if routes.iter().all(|route| route.info().id != model.info().id) {
+                    if let Some(billing) = self.billings.get(model.info().id) {
+                        billings.insert(model.info().id.into(), billing.clone());
+                    }
+                    routes.push(model);
+                }
+            }
+        }
         let catalog = Catalog::new(Access::Enabled, routes).map_err(catalog_error)?;
         self.catalog = catalog;
         self.billings = billings;
@@ -943,6 +954,46 @@ mod discovery_budget_tests {
     #[test]
     fn discovery_cannot_lower_configured_token_limits() {
         assert_discovered_price_floor(1, 1, 1);
+    }
+
+    #[cfg(feature = "upstream-openai")]
+    #[test]
+    fn a_configured_plan_route_survives_a_list_that_omits_it() {
+        let base = crate::openai::client::SUBSCRIPTION_BASE;
+        let owner = Model::new(
+            "chatgpt/owner-pick",
+            Provider::ChatGpt,
+            "owner-pick",
+            base,
+            4096,
+            64,
+        )
+        .unwrap();
+        let mut runtime = Runtime::new(
+            [(owner, Some(Billing::Subscription))],
+            PathBuf::from("/synthetic/credentials.json"),
+            PathBuf::from("/synthetic/ledger"),
+            Options {
+                access: Access::Enabled,
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        let source = Source::new(Provider::ChatGpt, base).unwrap();
+        let offer = Offer {
+            public: false,
+            id: "listed".into(),
+            context: Some(1000),
+            max_output: Some(10),
+            price: None,
+        };
+        runtime.apply_provider_catalog(&source, vec![offer]).unwrap();
+        assert!(runtime.catalog.resolve(Some("chatgpt/owner-pick")).is_ok());
+        assert!(runtime.catalog.resolve(Some("chatgpt/listed")).is_ok());
+        assert!(matches!(
+            runtime.billings.get("chatgpt/owner-pick"),
+            Some(Billing::Subscription)
+        ));
     }
 
     fn assert_discovered_price_floor(live_input: u32, context: u32, output: u32) {
