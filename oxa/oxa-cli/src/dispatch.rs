@@ -325,7 +325,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             // #1512 S5: an owner answer to an approval request or the request list; a plain
             // follow-up takes the inbox path below.
             Subcommand::Send(words) if words.iter().any(|w| w == "--approve" || w == "--approvals") => {
-                crate::approve_cmd::run(&words, &dirs, &cwd, &mut *stdout)
+                crate::approve_cmd::run(&words, &dirs, &cwd, env, &mut *stdout)
             }
             Subcommand::Local(_) if is_agent(env) => Err(OxaError::new(
                 codes::INVALID,
