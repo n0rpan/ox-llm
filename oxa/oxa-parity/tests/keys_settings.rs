@@ -606,6 +606,20 @@ mod tui {
         Some(rows[a + 1..b].to_vec())
     }
 
+    /// #1512 S3: the pi footer's last row (model and thinking), above the extension status
+    /// row (`no sandbox · …`, `sandbox`, `YOLO full access`) that is drawn below it.
+    pub fn footer_row(s: &Screen) -> String {
+        let mut row = s.size().0 - 1;
+        while row > 1 && {
+            let r = s.row(row);
+            let t = r.trim();
+            t == "sandbox" || t.starts_with("no sandbox") || t.starts_with("YOLO full access")
+        } {
+            row -= 1;
+        }
+        s.row(row)
+    }
+
     /// The editor's text: its rows, right-trimmed, joined with `\n`.
     pub fn editor_text(s: &Screen) -> String {
         editor_rows(s)
@@ -990,7 +1004,7 @@ fn set_008() {
     // new prefix epoch, never inside one). pi settings.md: "Model patterns used for startup
     // selection and model cycling. Uses the same format as `--models`": a new session starts on
     // the first match (pi main.ts `scopedModels[0]`), ctrl+p cycles only through the matches.
-    let footer = |s: &Screen| s.row(s.size().0 - 1);
+    let footer = |s: &Screen| footer_row(s);
     let t = Setup::new()
         .settings(json!({ "enabledModels": ["model-c", "model-b*"] }))
         .fake(three_models())
@@ -1387,7 +1401,7 @@ fn set_017() {
     // untrusted project's replacement ["ls"].
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["ask", "bash", "edit", "find", "grep", "ls", "read", "worker", "write"],
+        ["ask", "bash", "edit", "find", "grep", "ls", "read", "wait", "worker", "write"],
         "the project's defaultTools is not applied"
     );
 }
@@ -1410,7 +1424,7 @@ fn set_018() {
     ok(&rig.print(&[]));
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["ask", "bash", "edit", "find", "grep", "ls", "read", "subagent", "worker", "write"],
+        ["ask", "bash", "edit", "find", "grep", "ls", "read", "subagent", "wait", "worker", "write"],
         "the default set on a large non-Flash model: the lead built-ins, worker and subagent"
     );
     let flash = ["--model", "flash", "--model-row", "flash:65536:2048:flash"];
@@ -1420,7 +1434,7 @@ fn set_018() {
         ok(&rig.print(&[]));
         assert_eq!(
             tools(&rig.bodies()[0]),
-            ["ask", "bash", "edit", "find", "grep", "ls", "read", "worker", "write"],
+            ["ask", "bash", "edit", "find", "grep", "ls", "read", "wait", "worker", "write"],
             "{what}: the default set is the lead built-ins and worker"
         );
     }
@@ -1431,7 +1445,7 @@ fn set_018() {
     ok(&rig.print(&[]));
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["ask", "edit", "find", "grep", "ls", "read", "subagent", "worker", "write"],
+        ["ask", "edit", "find", "grep", "ls", "read", "subagent", "wait", "worker", "write"],
         "-name removes"
     );
     let rig = with_agent(&small);
@@ -1439,7 +1453,7 @@ fn set_018() {
     ok(&rig.print(&[]));
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["ask", "edit", "find", "grep", "ls", "read", "worker", "write"],
+        ["ask", "edit", "find", "grep", "ls", "read", "wait", "worker", "write"],
         "-name removes (below 32K)"
     );
 
@@ -2562,7 +2576,12 @@ fn key_003() {
     // The cursor is observed by typing a marker `|` where it stands.
     for profile in [TermProfile::xterm(), TermProfile::kitty()] {
         let name = profile.name;
-        let t = Setup::new().profile(profile).replies("first reply", 1).start();
+        // #1512 S3: 25 rows: the 20-row editor, its rules, the footer and the status row.
+        let t = Setup::new()
+            .profile(profile)
+            .size(25, 80)
+            .replies("first reply", 1)
+            .start();
         let base = "one two three";
         let cases: &[(&[&str], &str)] = &[
             (&["left"], "one two thre|e"),
@@ -2642,8 +2661,8 @@ fn key_003() {
         t.key("down");
         t.wait_editor("");
     }
-    // Regular layout: plain pageUp / pageDown page the editor.
-    let t = Setup::new().regular().start();
+    // Regular layout: plain pageUp / pageDown page the editor (25 rows, as above).
+    let t = Setup::new().regular().size(25, 80).start();
     let long: String = (1..=40)
         .map(|i| format!("L{i:02}"))
         .collect::<Vec<_>>()
@@ -2798,7 +2817,7 @@ fn key_006() {
     // pi docs: keybindings.md "Selection": tui.select.up (up), down (down), pageUp (pageUp),
     // pageDown (pageDown), confirm (enter), cancel (escape, ctrl+c). Driven on the /thinking
     // list (seven levels, off preselected); the chosen level shows in the footer.
-    let footer = |s: &Screen| s.row(s.size().0 - 1);
+    let footer = |s: &Screen| footer_row(s);
     let open = |t: &Tui| {
         t.slash("/thinking");
         t.wait_text("Thinking level");
@@ -3416,7 +3435,7 @@ fn key_013() {
     // epoch (W3): the next request names the new model. Keys: app.model.select (ctrl+l),
     // cycleForward (ctrl+p), cycleBackward (shift+ctrl+p, kitty only), app.models.save (ctrl+s
     // in the selector: select and save as defaultModel).
-    let footer = |s: &Screen| s.row(s.size().0 - 1);
+    let footer = |s: &Screen| footer_row(s);
     let t = Setup::new()
         .profile(TermProfile::kitty())
         .fake(three_models())
@@ -3494,7 +3513,7 @@ fn key_014() {
     // thinking cycle (app.thinking.cycle), ctrl+t collapses or expands thinking blocks
     // (app.thinking.toggle), ctrl+s in the thinking selector saves the level as the default
     // (app.thinking.save; pi thinking-selector.ts `onSelectAsDefault`).
-    let footer = |s: &Screen| s.row(s.size().0 - 1);
+    let footer = |s: &Screen| footer_row(s);
     let t = Setup::new()
         .settings(json!({ "defaultThinkingLevel": "off" }))
         .script(&[
@@ -3822,7 +3841,7 @@ fn key_019() {
     // pi docs: keybindings.md "Scoped models selector": app.models.enableAll (ctrl+a),
     // clearAll (ctrl+x), reorderUp (alt+up), reorderDown (alt+down); app.models.save (ctrl+s)
     // writes the configuration to settings (`enabledModels`), which then scopes the cycle keys.
-    let footer = |s: &Screen| s.row(s.size().0 - 1);
+    let footer = |s: &Screen| footer_row(s);
     let order = |s: &Screen| -> Vec<String> {
         s.rows()
             .iter()

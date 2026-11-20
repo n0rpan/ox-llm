@@ -13,7 +13,9 @@ use oxc_gateway::{
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 
+mod catalog;
 mod routing;
+pub(crate) use catalog::cloud_enabled;
 
 pub(crate) const SETTING: &str = "oxa.engine.inProcessCloud";
 pub(crate) const GO_SETTING: &str = "oxa.cloud.opencode.enabled";
@@ -271,6 +273,9 @@ fn select_for(
     shared: SharedEngines,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Selected, OxaError> {
+    // A provider key or the ChatGPT sign-in is the owner's switch: see `catalog`.
+    let keyed_user = catalog::with_keyed_defaults(user, dirs);
+    let user = &*keyed_user;
     let (requested, scope, endpoint, owner_selected, show_status) = match purpose {
         SelectPurpose::Model(selection) => (
             selection.pattern,
@@ -485,6 +490,8 @@ fn open_gateway_with_go(
     configure: impl FnOnce(Gateway) -> Result<Gateway, OxaError>,
     go_enabled: Option<bool>,
 ) -> Result<OpenedGateway, OxaError> {
+    let keyed_user = catalog::with_keyed_defaults(user, dirs);
+    let user = &*keyed_user;
     // Shared callers defer key checks until the guest catalog is validated.
     let go_configured = go_enabled == Some(true);
     let empty_cloud = Value::Object(serde_json::Map::new());
@@ -559,7 +566,15 @@ fn open_gateway_with_go(
                     first
                 }
             };
-            sources.extend(Source::new(provider, base));
+            // The public metadata catalog fills in only for the provider's own default endpoint:
+            // an owner proxy or local mock keeps every request on that endpoint.
+            sources.extend(Source::new(provider, base).map(|source| {
+                if base == default {
+                    source
+                } else {
+                    source.with_metadata_base(None)
+                }
+            }));
         }
     }
     // These existing private locations are denied to both file tools and bash.
@@ -612,8 +627,14 @@ fn open_gateway_with_go(
                 }
                 if status.missing_price + status.missing_limits > 0 {
                     notices.push(format!(
-                        "{provider} catalog omitted {} offers with unknown pricing and {} with unknown limits.",
+                        "{provider} catalog has {} offers with unknown pricing and {} with unknown limits; they stay usable, with default limits, and their spend is recorded as uncertain.",
                         status.missing_price, status.missing_limits,
+                    ));
+                }
+                if status.public_metadata > 0 {
+                    notices.push(format!(
+                        "{provider} limits and prices for {} models come from OpenRouter's public catalog.",
+                        status.public_metadata,
                     ));
                 }
                 if status.estimated_price > 0 {

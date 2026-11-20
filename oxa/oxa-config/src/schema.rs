@@ -129,7 +129,7 @@ const SCHEMA: &[KeyDef] = &[
     key("fullscreenWheelScrollLines", Kind::Any, "\"auto\""),
     key("hideThinkingBlock", Kind::Bool, "false"),
     key("hooks", Kind::Object, "{}"),
-    key("httpIdleTimeoutMs", Kind::Any, "300000"),
+    key("httpIdleTimeoutMs", Kind::Any, "900000"),
     key("httpProxy", Kind::String, "null"),
     verdict_o("images.autoResize", Kind::Bool, "true"),
     key("images.blockImages", Kind::Bool, "false"),
@@ -141,6 +141,7 @@ const SCHEMA: &[KeyDef] = &[
     ),
     key("modelThinkingLevels", Kind::Object, "{}"),
     key("outputPad", Kind::Number, "1"),
+    key("oxa.a2a.enabled", Kind::Bool, "true"),
     key("oxa.allowHomeCwd", Kind::Bool, "false"),
     // #1512 S2: exact rule keys saved by "always allow" in a dangerous-command prompt; user
     // settings only (a project value is never read).
@@ -168,16 +169,25 @@ const SCHEMA: &[KeyDef] = &[
     // V020-OPTIMIZE #1 / #2: unset = on.
     key("oxa.diet.output", Kind::Bool, "null"),
     key("oxa.diet.tools", Kind::Bool, "null"),
+    // Cloud resilience: a reply with no text and no tool call is retried; user settings only
+    // (`settings.rs` reads it via `user_u32`, the descriptor row carries `.user_only()`).
+    key("oxa.emptyReplyRetries", Kind::Number, "1"),
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
-    key("oxa.engine.inProcessCloud", Kind::Bool, "false"),
+    key("oxa.engine.inProcessCloud", Kind::Bool, "null"),
     key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
     // R1: the first wait after a transient request failure of a pursuing goal; `0` opts out.
     key("oxa.goal.failureBackoffSeconds", Kind::Number, "60"),
+    key("oxa.goal.idlePause", Kind::Bool, "false"),
     // K3: a headless print or JSON run of a persisted session with a pursuing goal takes
     // `oxa send` follow-ups from the session inbox for the run; false = off.
     key("oxa.inbox.headless", Kind::Bool, "true"),
+    // W4: a finished background bash job (not one stopped) queues one follow-up message with its
+    // exit code and last lines; true (the default, owner decision); false (opt-out) = the job's output
+    // waits for a read. User
+    // settings only: a project file cannot enable it.
+    key("oxa.jobs.wakeOnFinish", Kind::Bool, "true"),
     // The owner's explicit route for the Lead conversation: an exact model id for
     // the normal `--model` selector and the normal gateway. User settings only;
     // unset keeps the ordinary startup model.
@@ -187,8 +197,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.lead.serve", Kind::Object, "{}"),
     // Exact protected owner Session ID for free-text Lead chat; user settings only.
     key("oxa.lead.sessionId", Kind::String, "null"),
-    // Read-only lead shadow preset; user settings only, default off.
-    key("oxa.lead.shadow", Kind::Bool, "false"),
+    // Read-only lead shadow preset; user settings only, on by default (`false` opts out).
+    key("oxa.lead.shadow", Kind::Bool, "true"),
     // L1: apply a changed settings file at the next run; on by default, `false` opts out.
     key("oxa.liveSettings", Kind::Bool, "true"),
     // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
@@ -203,6 +213,8 @@ const SCHEMA: &[KeyDef] = &[
     // V020-OPTIMIZE #13 / OXA-LOCAL-FIRST F1: timing only (bytes unchanged); unset = on.
     key("oxa.prefill.paste", Kind::Bool, "null"),
     key("oxa.prefill.tools", Kind::Bool, "null"),
+    // B2b: user-only largest image and per-batch image budget; 0 = no limit.
+    key("oxa.read.maxImageBytes", Kind::Number, "20971520"),
     key("oxa.reportIssue.dailyNew", Kind::Number, "null"),
     key("oxa.reportIssue.repo", Kind::String, "null"),
     key("oxa.reportIssue.semanticDedupe", Kind::Bool, "false"),
@@ -216,11 +228,15 @@ const SCHEMA: &[KeyDef] = &[
     ),
     key("oxa.sampling.seed", Kind::Number, "null"),
     key("oxa.sandbox.allowHomeWrite", Kind::Bool, "false"),
+    // #1512 S3: the OS sandbox of an interactive (attended) run; user settings only.
+    key("oxa.sandbox.interactive", Kind::Bool, "false"),
     key("oxa.sandbox.net", Kind::Enum(&["on", "off"]), "\"on\""),
     // B2 (lane harden): extra binds of the bash sandbox; user settings only.
     key("oxa.sandbox.readPaths", Kind::StringList, "[]"),
     // RP6: host runtime sockets (docker, podman) bound into bash; user settings only.
     key("oxa.sandbox.sockets", Kind::StringList, "[]"),
+    // #1512 S3: the OS sandbox of an unattended run (workers, subagents, headless goals).
+    key("oxa.sandbox.unattended", Kind::Bool, "true"),
     key("oxa.sandbox.writePaths", Kind::StringList, "[]"),
     // Skills another product synced into `~/.agents/skills` (`synced/`); off = skipped.
     key("oxa.share.remoteModels", Kind::StringList, "[]"),
@@ -229,7 +245,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.subagent.enabled", Kind::Bool, "null"),
     // Children per parent session (running or queued) and tasks or steps per call; at least 1.
     key("oxa.subagent.maxChildren", Kind::Number, "8"),
-    key("oxa.subagent.remoteConcurrency", Kind::Number, "4"),
+    key("oxa.subagent.remoteConcurrency", Kind::Number, "8"),
     key("oxa.subagent.resultCap", Kind::Number, "6144"),
     key("oxa.subagent.smallContext", Kind::Bool, "false"),
     key("oxa.subagent.softTokens", Kind::Number, "24000"),
@@ -250,8 +266,10 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.toolRepair", Kind::Bool, "true"),
     // The repeat guard for identical tool calls (oxa-core `repeat.rs`).
     key("oxa.toolRepeatGuard", Kind::Bool, "true"),
+    // The `wait` tool is declared in every session; `false` opts out (read at session start).
+    key("oxa.tools.wait", Kind::Bool, "true"),
     // W2: the `wait` tool's `until` conditions, answered by hook sets (`Hooks::poll_event`).
-    key("oxa.wait.maxSeconds", Kind::Number, "3600"),
+    key("oxa.wait.maxSeconds", Kind::Number, "86400"),
     key("oxa.wait.pollSeconds", Kind::Number, "30"),
     // O-169: `web_search` (oxa-web); declared only with a Brave key and never offline.
     key("oxa.webSearch.enabled", Kind::Bool, "true"),
@@ -264,8 +282,13 @@ const SCHEMA: &[KeyDef] = &[
     // The worker runner reads this list from owner settings only.
     key("oxa.work.localChecks", Kind::StringList, "[\"cargo check\"]"),
     // K5a: the `worker` tool (never in a worker child) and the most live workers a session runs.
+    // The `oxa.workers.*` keys are user settings only: a project file cannot start processes,
+    // raise a limit or change the stop timing (`Settings::user_bool`, `user_u32`, `user_value`).
     key("oxa.workers.enabled", Kind::Bool, "true"),
     key("oxa.workers.max", Kind::Number, "4"),
+    // K5b: relaunch the unfinished, dead workers of a session when it is opened again. User
+    // settings only: a project file can neither enable nor disable it (`Settings::user_bool`).
+    key("oxa.workers.resumeOnStart", Kind::Bool, "true"),
     // K4: seconds a worker gets after SIGINT before its process group gets SIGTERM.
     key("oxa.workers.stopGraceSeconds", Kind::Number, "10"),
     key("packages", Kind::Any, "[]"),
@@ -281,7 +304,7 @@ const SCHEMA: &[KeyDef] = &[
     key("retry.baseDelayMs", Kind::Number, "2000"),
     key("retry.enabled", Kind::Bool, "true"),
     key("retry.maxAgentDelayMs", Kind::Number, "60000"),
-    key("retry.maxRetries", Kind::Number, "3"),
+    key("retry.maxRetries", Kind::Number, "10"),
     key("retry.provider.maxRetries", Kind::Number, "0"),
     key("retry.provider.maxRetryDelayMs", Kind::Number, "60000"),
     key("retry.provider.timeoutMs", Kind::Number, "null"),

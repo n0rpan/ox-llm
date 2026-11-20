@@ -492,6 +492,7 @@ impl BashTool {
         if let Err(e) = self.sandbox(cx).check() {
             return ToolOutput::error(e.to_string());
         }
+        let label = command;
         let command = match self.shell.command(command) {
             Ok(c) => c,
             Err(e) => return ToolOutput::error(e),
@@ -507,11 +508,15 @@ impl BashTool {
             timeout_s: timeout_s.filter(|t| *t > 0),
             env: cx.env.to_vec(),
         };
-        match self.jobs.spawn(spec) {
+        match self.jobs.spawn_labeled(spec, label) {
             Ok(id) => ToolOutput {
                 images: Vec::new(),
                 text: format!(
-                    "Started background job {id}. Read its status and output with bash {{\"job\": \"{id}\"}}.\n{JOB_PROCESS_VISIBILITY}"
+                    "Started background job {id}. Read its status and output with bash {{\"job\": \"{id}\"}}.\n{JOB_PROCESS_VISIBILITY}{}",
+                    self.jobs
+                        .over_limit_note()
+                        .map(|n| format!("\n{n}"))
+                        .unwrap_or_default()
                 ),
                 is_error: false,
                 ui: json!({ "job": id }),
@@ -543,10 +548,8 @@ impl BashTool {
                     .jobs
                     .wait(id, remaining.min(Duration::from_secs(3600)), cx.cancel);
             }
-            if let Ok(read) = self.jobs.read(id) {
-                let fresh = usize::try_from(read.total.saturating_sub(shown)).unwrap_or(usize::MAX);
-                let bytes = read.output.as_bytes();
-                sink(&bytes[bytes.len().saturating_sub(fresh)..]);
+            if let Ok((read, fresh)) = self.jobs.read_bytes_from(id, shown) {
+                sink(&fresh);
                 shown = read.total;
                 last_read = Some(read);
             }
@@ -571,7 +574,13 @@ impl BashTool {
             }
             let expired = limit.is_some_and(|l| started.elapsed() >= Duration::from_secs(u64::from(l)));
             if expired {
+                // The complete buffer is needed if the foreground command finishes, but a
+                // detached command may run indefinitely. Retain only its ring-buffer tail.
+                let _ = self.jobs.bound_output(id);
                 let secs = limit.unwrap_or(0);
+                // This job is no longer a foreground result, so retain only the normal
+                // background tail before returning control to the caller.
+                let _ = self.jobs.bound_output(id);
                 let mut text = format!(
                     "Command still running after {} (wall time); it was not stopped. It continues as background job {id}. Wait for it with bash {{\"job\": \"{id}\", \"wait_s\": 60}}, read its output with bash {{\"job\": \"{id}\"}}, or stop it with bash {{\"job\": \"{id}\", \"kill\": true}}.",
                     fmt_wall(started.elapsed())
@@ -639,15 +648,18 @@ impl BashTool {
             Some(own) => {
                 let mut job_spec = spec.clone();
                 job_spec.timeout_s = None;
-                match self.jobs.spawn_on(own, job_spec, true) {
+                match self.jobs.spawn_on_labeled(own, job_spec, true, raw_command) {
                     Ok(id) => match self.follow_job(&id, soft_limit, cx, &mut sink) {
-                        Followed::Detached(out) => return out,
+                        Followed::Detached(out) => {
+                            self.jobs.release_to_background(&id);
+                            return out;
+                        }
                         Followed::Done(res) => {
                             wall_note = started.elapsed() >= WALL_NOTE_AFTER;
                             res
                         }
                     },
-                    // The job limit is reached: run it the old way, in this call.
+                    // The job could not start: run it the old way, in this call.
                     Err(_) => self.sandbox(cx).run(&spec, cx.cancel, &mut sink),
                 }
             }
@@ -1859,7 +1871,7 @@ echo '\''a'\'''"#
     }
 
     #[test]
-    fn job_beyond_default_limit_is_refused() {
+    fn job_beyond_default_limit_starts_with_a_warning() {
         let limit = crate::jobs::MAX_JOBS;
         let jobs = Arc::new(JobRegistry::new());
         let sb = Arc::new(Blocking {
@@ -1872,18 +1884,15 @@ echo '\''a'\'''"#
             assert!(!out.is_error, "{:?}", out.text);
         }
         let out = run_job_tool(&tool, &*sb, json!({"command": "sleep 100", "background": true}));
-        assert!(out.is_error);
-        assert!(
-            out.text.contains(&format!("At most {limit} background jobs")),
-            "{:?}",
-            out.text
-        );
+        assert!(!out.is_error, "{:?}", out.text);
+        assert!(out.text.contains("Started background job"), "{:?}", out.text);
+        assert!(out.text.contains("oxa.bash.maxJobs"), "{:?}", out.text);
         jobs.kill_all();
     }
 
     /// #519: `bash {job, kill: true}` stops one job and frees its slot; the others keep running.
     #[test]
-    fn kill_stops_one_job_and_frees_its_slot() {
+    fn kill_stops_one_job_and_the_others_keep_running() {
         let jobs = Arc::new(JobRegistry::with_max_jobs(4));
         let sb = Arc::new(Blocking {
             seen: Mutex::new(None),
@@ -1894,8 +1903,6 @@ echo '\''a'\'''"#
             let out = run_job_tool(&tool, &*sb, json!({"command": "sleep 100", "background": true}));
             assert!(!out.is_error, "{:?}", out.text);
         }
-        let full = run_job_tool(&tool, &*sb, json!({"command": "sleep 100", "background": true}));
-        assert!(full.is_error);
         let out = run_job_tool(&tool, &*sb, json!({"job": "job-2", "kill": true}));
         assert!(!out.is_error, "{:?}", out.text);
         assert_eq!(out.ui, json!({"job": "job-2", "status": "killed"}));
@@ -2261,6 +2268,63 @@ mod poll_tests {
     }
 
     #[test]
+    fn detached_foreground_job_switches_to_bounded_output() {
+        struct Flood;
+
+        impl Sandbox for Flood {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+            fn run(&self, _s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+                let chunk = [b'x'; 8192];
+                while !c.is_cancelled() {
+                    live(&chunk);
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                ExecResult {
+                    output: Vec::new(),
+                    exit: None,
+                    timed_out: false,
+                    unsandboxed: false,
+                }
+            }
+        }
+
+        let jobs = Arc::new(JobRegistry::new());
+        let tool =
+            BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone()).with_sandbox(Arc::new(Flood));
+        let (out, _) = job_call(&tool, json!({"command": "yes", "timeout": 1}));
+        assert_eq!(out.ui["movedToBackground"], json!(true));
+        assert_eq!(jobs.buffered_len("job-1"), Some(crate::jobs::BUFFER_CAP));
+    }
+
+    fn command_past_its_timeout_keeps_bounded_output() {
+        let (tx, rx) = channel();
+        tx.send(vec![b'x'; crate::jobs::BUFFER_CAP * 2]).unwrap();
+        let jobs = Arc::new(JobRegistry::new());
+        let sandbox = Arc::new(Chunks { rx: Mutex::new(rx) });
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone()).with_sandbox(sandbox);
+
+        let (out, _) = job_call(&tool, json!({"command": "yes", "timeout": 1}));
+
+        // Do not echo command output from this retention test into test logs. In
+        // production that output may contain sensitive command data.
+        assert!(!out.is_error, "bash call unexpectedly failed");
+        assert_eq!(out.ui["movedToBackground"], json!(true));
+        assert_eq!(jobs.buffered_len("job-1"), Some(crate::jobs::BUFFER_CAP));
+        tx.send(vec![b'y'; crate::jobs::BUFFER_CAP * 2]).unwrap();
+        while jobs.read("job-1").unwrap().total != (crate::jobs::BUFFER_CAP * 4) as u64 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(jobs.buffered_len("job-1"), Some(crate::jobs::BUFFER_CAP));
+        drop(tx);
+        jobs.kill_all();
+    }
+
+    #[test]
     fn command_that_ends_in_time_returns_its_output_as_before() {
         let jobs = Arc::new(JobRegistry::new());
         let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone())
@@ -2273,6 +2337,43 @@ mod poll_tests {
         // The finished foreground job is forgotten: no slot, no readable leftover.
         assert_eq!(jobs.running(), 0);
         assert!(jobs.list().is_empty());
+    }
+
+    struct Burst(Vec<u8>);
+
+    impl Sandbox for Burst {
+        fn check(&self) -> Result<(), OxaError> {
+            Ok(())
+        }
+        fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+            Vec::new()
+        }
+        fn run(&self, _s: &ExecSpec, _c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+            live(&self.0);
+            ExecResult {
+                output: Vec::new(),
+                exit: Some(0),
+                timed_out: false,
+                unsandboxed: false,
+            }
+        }
+    }
+
+    #[test]
+    fn foreground_follower_streams_more_than_the_job_read_cap() {
+        // The bounded display tail would begin in the middle of the euro sign as well as
+        // omitting the leading byte, exercising both truncation and UTF-8 corruption.
+        let expected = format!("z€{}", "x".repeat(crate::jobs::READ_CAP - 2));
+        let jobs = Arc::new(JobRegistry::new());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs)
+            .with_sandbox(Arc::new(Burst(expected.as_bytes().to_vec())));
+        let (out, streamed) = job_call(&tool, json!({"command": "burst", "timeout": 30}));
+
+        // Do not include arbitrary command output in assertion diagnostics: it may contain
+        // sensitive data even though this fixture is synthetic.
+        assert!(!out.is_error);
+        assert_eq!(streamed, expected);
+        assert_eq!(out.text, expected);
     }
 
     /// #1782: an executor can fail before it has a process to stream from. The foreground job

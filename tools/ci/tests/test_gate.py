@@ -5,6 +5,7 @@ Parsed line by line (no YAML library) so it runs with a bare `python3 -I`.
 import importlib.util
 from pathlib import Path
 import re
+import subprocess
 import tomllib
 import unittest
 
@@ -67,6 +68,12 @@ class Gate(unittest.TestCase):
         needs = set(re.search(r'^    needs: \[(.*)\]', block, re.M).group(1).replace(' ', '').split(','))
         self.assertIn('if: always()', block)
         self.assertEqual(needs, set(jobs(self.checks)) - set(UNGATED))
+
+    def test_openai_contract_runner_is_valid_shell_without_merge_markers(self):
+        runner = WORKFLOWS.parents[1] / 'tools' / 'openai-contract' / 'run.sh'
+        text = runner.read_text()
+        self.assertNotRegex(text, r'(?m)^(<<<<<<<|=======|>>>>>>>)')
+        subprocess.run(['bash', '-n', str(runner)], check=True)
 
     def test_merge_group_always_selects_complete_oxa_workspace(self):
         build = job_block(self.checks, 'build')
@@ -184,13 +191,16 @@ class EngineNextest(unittest.TestCase):
         self.assertIn('flash-m3 selftest', flash)
         self.assertNotIn('cargo test', job_block(build, 'flash'))
 
-    def test_wall_clock_binaries_run_alone(self):
+    def test_wall_clock_tests_run_alone_and_server_is_not_whole(self):
         self.assertRegex(self.config, r'(?m)^\[test-groups\.wall-clock\]\nmax-threads = 1$')
-        override = re.search(r"\[\[profile\.default\.overrides\]\]\nfilter = '(.*)'\ntest-group = 'wall-clock'\n"
-                             r"threads-required = 'num-test-threads'", self.config)
+        override = re.search(r"\[\[profile\.default\.overrides\]\]\nfilter = \'\'\'(.*?)\'\'\'\ntest-group = 'wall-clock'\n"
+                             r"threads-required = 'num-test-threads'", self.config, re.S)
         self.assertIsNotNone(override)
-        for binary in ('binary_id(sched)', 'binary_id(server)'):
-            self.assertIn(binary, override.group(1))
+        flt = override.group(1)
+        self.assertIn('binary_id(sched)', flt)
+        # the server lib tests run in parallel except the named elapsed-time tests
+        self.assertNotRegex(flt, r'binary_id\(server\)\s*(\||$)')
+        self.assertIn('binary_id(server) & (', flt)
 
 
 if __name__ == '__main__':

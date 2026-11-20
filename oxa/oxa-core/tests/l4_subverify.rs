@@ -153,6 +153,33 @@ fn the_new_rules_cost_exactly_their_lines() {
     );
 }
 
+/// FH-N2: a headless run adds the `<autonomy>` block after `<rules>`; the same options without
+/// `headless` give the bytes they gave before, so the pinned default hashes do not move.
+#[test]
+fn headless_adds_the_autonomy_block_after_the_rules_and_only_then() {
+    use oxa_core::prompt::HEADLESS_AUTONOMY;
+    let env = TestEnv::new();
+    for diet in [false, true] {
+        let opts = PrefixOpts {
+            diet_output: diet,
+            ..Default::default()
+        };
+        let plain = system_opts(&env, opts, false);
+        let headless = system_opts(
+            &env,
+            PrefixOpts {
+                headless: true,
+                ..opts
+            },
+            false,
+        );
+        assert!(!plain.contains("<autonomy>"));
+        assert!(headless.contains(&format!("<autonomy>\n{HEADLESS_AUTONOMY}\n</autonomy>")));
+        assert!(headless.find("</rules>").unwrap() < headless.find("<autonomy>").unwrap());
+        assert_eq!(plain, system(&env, diet, false, false));
+    }
+}
+
 #[test]
 fn integrity_rule_only_in_a_headless_diet_session_that_is_not_a_child() {
     use oxa_core::prompt::RULE_INTEGRITY;
