@@ -128,8 +128,8 @@ fn models_reads_no_key_and_no_ledger() {
     assert_eq!(value["type"], "oxa_models");
 }
 
-/// Native catalog listing is metadata-only even when the owner enabled both discovery paths.
-/// In particular, OpenCode discovery normally requires the protected credential store.
+/// Native catalog listing is metadata-only even when the owner enabled cloud discovery.
+/// In particular, discovery normally requires the protected credential store.
 #[test]
 fn models_native_discovery_reads_neither_credentials_nor_ledger() {
     let env = TestEnv::new();
@@ -141,7 +141,6 @@ fn models_native_discovery_reads_neither_credentials_nor_ledger() {
                 "engine": {"inProcessCloud": true},
                 "cloud": {
                     "discover_models": true,
-                    "opencode": {"enabled": true, "base_url": "http://127.0.0.1:9"},
                     "subscription_limits": {"daily_requests": 2, "daily_tokens": 1000},
                     "models": {"configured-cloud": {
                         "provider": "anthropic",
@@ -165,6 +164,45 @@ fn models_native_discovery_reads_neither_credentials_nor_ledger() {
     assert!(!captured.err.contains("credential"), "stderr: {}", captured.err);
     let value: Value = serde_json::from_str(captured.out.trim()).expect("catalog JSON");
     assert_eq!(value["models"][0]["id"], "configured-cloud");
+    assert!(!env.home().join(".config/oxc/llm/cloud-secrets.json").exists());
+    assert!(!env.agent_dir().join("cloud-ledger").exists());
+}
+
+/// An explicitly enabled OpenCode Go that cannot work fails the listing exactly the way it
+/// fails `--list-models`: the engine selection is shared, and the hint names the setting. The
+/// listing still reads no credential content and writes no ledger.
+#[test]
+fn models_fails_on_explicitly_broken_go_like_list_models() {
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        &json!({
+            "oxa": {
+                "engine": {"inProcessCloud": true},
+                "cloud": {
+                    "discover_models": true,
+                    "opencode": {"enabled": true, "base_url": "http://127.0.0.1:9"}
+                }
+            }
+        })
+        .to_string(),
+    );
+    let captured = go_with(
+        &env_of(&env, "http://127.0.0.1:9"),
+        &env.work(),
+        &["models", "--json"],
+    );
+    assert_ne!(captured.code, 0);
+    assert!(
+        captured.err.contains("OpenCode Go: broken"),
+        "stderr: {}",
+        captured.err
+    );
+    assert!(
+        captured.err.contains("User setting: oxa.cloud.opencode.enabled"),
+        "stderr: {}",
+        captured.err
+    );
     assert!(!env.home().join(".config/oxc/llm/cloud-secrets.json").exists());
     assert!(!env.agent_dir().join("cloud-ledger").exists());
 }
