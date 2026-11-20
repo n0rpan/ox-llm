@@ -881,6 +881,7 @@ fn apply(
         } => fetch(st, &url, &method, &headers, body, ui),
         HostAction::CallTool { name, args } => call_tool(st, &name, &args, sink, ui),
         HostAction::ParkSession => crate::compaction::park(st, sink, ui),
+        HostAction::ForkSeed => crate::fork::seed_of(st),
         HostAction::ClearEngineHint(hint) => clear_engine_hint(st, &hint),
         HostAction::GetSessionName => Ok(session_name(st).map_or(Value::Null, Value::String)),
         HostAction::GetThinkingLevel => Ok(Value::String(st.thinking.as_str().to_string())),

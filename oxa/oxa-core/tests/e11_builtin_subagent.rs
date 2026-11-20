@@ -32,6 +32,8 @@ struct MockHost {
     clear_fails: bool,
     /// Model ids `HostAction::ModelInfo` reports as remote (cloud through oxc).
     remote: Mutex<Vec<String>>,
+    /// #1844 PR 2: the answer of `HostAction::ForkSeed`; `None` = this host cannot fork.
+    fork: Option<Value>,
 }
 
 impl MockHost {
@@ -43,6 +45,7 @@ impl MockHost {
             park: json!({"parked": true, "promptTokens": 100, "snapPos": 100}),
             clear_fails: false,
             remote: Mutex::new(Vec::new()),
+            fork: None,
         })
     }
     fn with(env: &TestEnv, limits: Value, park: Value, clear_fails: bool) -> Arc<MockHost> {
@@ -53,6 +56,7 @@ impl MockHost {
             park,
             clear_fails,
             remote: Mutex::new(Vec::new()),
+            fork: None,
         })
     }
     fn calls(&self) -> Vec<HostAction> {
@@ -105,6 +109,10 @@ impl Host for MockHost {
                 append(&self.log, "park");
                 Ok(self.park.clone())
             }
+            HostAction::ForkSeed => self
+                .fork
+                .clone()
+                .ok_or_else(|| OxaError::new(codes::INVALID, "not in the mock")),
             HostAction::ClearEngineHint(h) => {
                 append(&self.log, &format!("clear {h}"));
                 if self.clear_fails {
@@ -158,6 +166,7 @@ last=""
 for a; do last="$a"; done
 hint="$OXA_SESSION_HINT"
 {{ for a; do printf 'arg=%s\n' "$a"; done; printf 'cwd=%s\n' "$(pwd)"; env | grep '^OXA_' | sort; }} > "$ROOT/dump-$hint.txt"
+if [ -n "$OXA_CHILD_FORK" ]; then echo "seed=$(cat "$OXA_CHILD_FORK")" >> "$ROOT/dump-$hint.txt"; fi
 echo "start $hint" >> "$ROOT/calls.log"
 {body}
 echo "end $hint" >> "$ROOT/calls.log"
@@ -1690,4 +1699,89 @@ fn depleted_run_token_budget_starts_no_child() {
     let outcome = run(&env, &h, json!({"agent":"scout","task":"go"}));
     assert!(outcome.out.is_error);
     assert!(!log(&env).iter().any(|s| s.starts_with("start ")));
+}
+
+// ---------------------------------------------------------------- #1844 PR 2: the fork
+
+/// The head a forking host hands over: one entry line, as the session codec writes it.
+const SEED: &str = "{\"type\":\"message\",\"id\":\"e1\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"role\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"delegate this\"},\"wire\":{\"role\":\"user\",\"content\":\"delegate this\"}}";
+
+/// A host that can hand over the session's head (a local session with a compaction point).
+fn forking_host(env: &TestEnv) -> Arc<MockHost> {
+    Arc::new(MockHost {
+        log: env.root().join("calls.log"),
+        calls: Mutex::new(Vec::new()),
+        limits: Mutex::new(limits("sess", 131_072, Some(100_000))),
+        park: json!({"parked": true}),
+        clear_fails: false,
+        remote: Mutex::new(Vec::new()),
+        fork: Some(json!({"entries": SEED})),
+    })
+}
+
+#[test]
+fn a_local_child_forks_from_the_parents_head() {
+    let env = TestEnv::new();
+    let host = forking_host(&env);
+    let h = hooks(&env, OK_BODY, &host);
+    let o = run(&env, &h, json!({"agent": "scout", "task": "look"}));
+    assert!(!o.out.is_error, "{}", o.out.text);
+
+    // Nothing is parked: the child's request continues the parent's prompt instead.
+    assert_eq!(log(&env), ["start sess.s1", "end sess.s1", "clear sess.s1"]);
+    assert_eq!(host.parks(), 0);
+
+    // The child got the head, in an owner-only file that is gone once the child is.
+    let seed_path = env_of(&env, "sess.s1", "OXA_CHILD_FORK").expect("OXA_CHILD_FORK");
+    assert!(
+        dump(&env, "sess.s1").contains(&format!("seed={}", json!({"entries": SEED}))),
+        "the seed holds the host's answer: {}",
+        dump(&env, "sess.s1")
+    );
+    assert!(!Path::new(&seed_path).exists(), "the seed file is removed");
+
+    // Its agent prompt rides in the task, not in the prefix (the prefix is the parent's).
+    let words = argv(&env, "sess.s1");
+    assert_eq!(
+        words.last().map(String::as_str),
+        Some("You are scout.\n\nTask: look"),
+        "{words:?}"
+    );
+    assert!(!words.iter().any(|w| w == "--append-system-prompt"));
+    // It starts at the parent's context: the limit is the parent's compaction point.
+    assert_eq!(
+        env_of(&env, "sess.s1", "OXA_CHILD_SOFT_TOKENS").as_deref(),
+        Some("100000")
+    );
+}
+
+#[test]
+fn the_isolated_setting_keeps_the_childs_own_session_and_names_its_cost() {
+    let env = TestEnv::new();
+    let host = forking_host(&env);
+    let h = hooks_with(
+        child_script(&env, OK_BODY),
+        vec![agent("scout", None)],
+        json!({"oxa": {"subagent": {"isolated": true}}}),
+        &host,
+    );
+    let o = run(&env, &h, json!({"agent": "scout", "task": "look"}));
+    assert!(!o.out.is_error, "{}", o.out.text);
+    // The head was not used: the child has its own session, and the parent is parked.
+    assert_eq!(
+        log(&env),
+        ["park", "start sess.s1", "end sess.s1", "clear sess.s1"]
+    );
+    assert_eq!(env_of(&env, "sess.s1", "OXA_CHILD_FORK"), None);
+    let words = argv(&env, "sess.s1");
+    assert!(words.iter().any(|w| w == "--append-system-prompt"), "{words:?}");
+    assert_eq!(words.last().map(String::as_str), Some("Task: look"));
+    // The cost is named once, when the owner chose it.
+    let cost: Vec<&String> = o
+        .notes
+        .iter()
+        .map(|(_, text)| text)
+        .filter(|text| text.contains("oxa.subagent.isolated"))
+        .collect();
+    assert_eq!(cost.len(), 1, "{:?}", o.notes);
 }

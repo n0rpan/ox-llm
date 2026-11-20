@@ -105,7 +105,7 @@ When the summary of a compaction fails, or is cancelled twice in a row, oxa does
 
 A `compaction.modelOverrides` entry that names another model for the summary is ignored with a warning. The summary always runs on the session's model, because only one model is loaded at a time.
 
-Subagents compact on their own context. Their soft limit is the smaller of `oxa.subagent.softTokens` (24000; half the window on a cloud model unless set), the parent's compaction point, and the child's window minus one ([tools.md](tools.md#subagent)).
+Subagents compact on their own context. A fork child starts at the session's context, so its soft limit is the session's own compaction point (or the child's window minus one); an isolated child's is the smaller of `oxa.subagent.softTokens` (24000; half the window on a cloud model unless set), the parent's compaction point, and the child's window minus one ([tools.md](tools.md#subagent)).
 
 ## Example
 

@@ -251,6 +251,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.skills.includeSynced", Kind::Bool, "false"),
     // O-146: unset = on except on Flash and below 32K (`SubagentHooks::declared_for`).
     key("oxa.subagent.enabled", Kind::Bool, "null"),
+    // #1844 PR 2: local children run in their own session and prefix instead of forking.
+    key("oxa.subagent.isolated", Kind::Bool, "false"),
     // Children per parent session (running or queued) and tasks or steps per call; at least 1.
     key("oxa.subagent.maxChildren", Kind::Number, "8"),
     key("oxa.subagent.remoteConcurrency", Kind::Number, "8"),
