@@ -68,8 +68,9 @@ pub(super) fn render(html: &mut String, view: &AttachedView<'_>) {
     html.push_str("</ol>");
     let _ = write!(
         html,
-        r#"<form method=post action=/chat><input type=hidden name=csrf value="{}"><label for=lead-message>Message</label><textarea id=lead-message name=message required></textarea><button>Send</button></form>"#,
-        escape(view.csrf)
+        r#"<form method=post action=/chat><input type=hidden name=csrf value="{}"><input type=hidden name=session value="{}"><label for=lead-message>Message</label><textarea id=lead-message name=message required></textarea><button>Send</button></form>"#,
+        escape(view.csrf),
+        escape(&view.id)
     );
     if view.sent {
         html.push_str("<p role=status>Sent. The session reads it at its next turn.</p>");
@@ -282,6 +283,7 @@ mod tests {
                 truncated: false,
                 live,
                 short_id: "abcd1234".into(),
+                id: "abcd1234-full-id".into(),
                 sent,
                 activity: live.then_some("working"),
                 context_tokens: Some(1234),
@@ -315,6 +317,7 @@ mod tests {
         }
         assert!(html.contains("<secret>") || html.contains("&lt;secret&gt;"));
         assert!(html.contains("name=message") && html.contains("id=lead-message"));
+        assert!(html.contains(r#"name=session value="abcd1234-full-id""#));
         assert!(html.contains("running") && !html.contains("not running"));
         assert!(!html.contains("Sent."));
         assert!(html.contains("running · working") && html.contains("Context: 1234 tokens"));

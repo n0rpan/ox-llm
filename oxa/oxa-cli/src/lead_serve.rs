@@ -425,6 +425,23 @@ impl OwnerChat {
             });
             return Err("503 Service Unavailable");
         };
+        // The attached form names the session it was rendered for. Another tab or device may
+        // have switched the target since, and the text must not land in a different session.
+        let submission = match submission {
+            OwnerSubmission::AttachedMessage { session: id, text } => {
+                if !matches!(&session, OwnerSession::Attached(attached) if attached.id() == id) {
+                    self.journal.log(RefusalFact {
+                        status: 409,
+                        stage: Stage::Reply,
+                        reason: "stale_target",
+                        fix: "reload the page and send again to the session it shows",
+                    });
+                    return Err("409 Conflict");
+                }
+                OwnerSubmission::Message(text)
+            }
+            other => other,
+        };
         let binding_refusal = || {
             self.journal.log(RefusalFact {
                 status: 503,
@@ -522,7 +539,9 @@ impl OwnerChat {
                 current.confirmed = true;
             }
             // The run closure answers approvals itself, so they never wait on the chat turn lock.
-            OwnerSubmission::Approve { .. } | OwnerSubmission::Attach(_) => return Err("409 Conflict"),
+            OwnerSubmission::Approve { .. }
+            | OwnerSubmission::Attach(_)
+            | OwnerSubmission::AttachedMessage { .. } => return Err("409 Conflict"),
         }
         Ok(())
     }
@@ -686,6 +705,7 @@ impl Source {
                     truncated: tail.truncated,
                     live: attached.live(),
                     short_id: attached.short_id(),
+                    id: attached.id().to_owned(),
                     sent: owner.sent.swap(false, Ordering::SeqCst),
                     activity: lead_attach::activity(&tail.entries).map(|activity| match activity {
                         lead_attach::Activity::Working => "working",
@@ -1028,6 +1048,69 @@ mod tests {
         assert!(!text.contains("blocked"));
         assert!(!text.contains("fixture"));
         assert!(!text.contains("```"));
+    }
+
+    #[test]
+    fn a_stale_attached_form_never_reaches_another_session() {
+        use oxa_session::{FsStore, SessionStore};
+        use std::os::unix::fs::MetadataExt;
+
+        let test = TestEnv::new();
+        let dirs = Dirs::under(test.root());
+        std::fs::set_permissions(&dirs.agent_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = std::fs::metadata(test.root()).unwrap().uid();
+        let mut live = Vec::new();
+        for _ in 0..2 {
+            let store = FsStore::new(dirs.sessions_dir.clone());
+            let session = store.create(&test.work(), None, None).unwrap();
+            store.acquire(&session).unwrap();
+            store.commit_lock();
+            live.push((store, session.id));
+        }
+        let (a, b) = (live[0].1.clone(), live[1].1.clone());
+        let inbox = |id: &str| {
+            std::fs::read_dir(dirs.agent_dir.join("inbox").join(id)).map_or(0, |entries| entries.count())
+        };
+        let (journal, buffer) = captured_journal();
+        let owner = OwnerChat::new(dirs.clone(), uid, None, "fixture".into(), journal);
+        let env = Env::from_pairs(&[]);
+        owner
+            .post(OwnerSubmission::Attach(Some(a.clone())), &env)
+            .unwrap();
+        // Another tab or device switches the page's target to B after this page was rendered for A.
+        owner
+            .post(OwnerSubmission::Attach(Some(b.clone())), &env)
+            .unwrap();
+        let stale = OwnerSubmission::AttachedMessage {
+            session: a.clone(),
+            text: "meant for A".into(),
+        };
+        assert_eq!(owner.post(stale, &env), Err("409 Conflict"));
+        assert_eq!((inbox(&a), inbox(&b)), (0, 0));
+        // Back on the start-up target (none), a form for B is stale as well.
+        owner.post(OwnerSubmission::Attach(None), &env).unwrap();
+        let orphan = OwnerSubmission::AttachedMessage {
+            session: b.clone(),
+            text: "meant for B".into(),
+        };
+        assert_eq!(owner.post(orphan, &env), Err("409 Conflict"));
+        assert_eq!((inbox(&a), inbox(&b)), (0, 0));
+        // A form for the session the page is on goes through.
+        owner
+            .post(OwnerSubmission::Attach(Some(b.clone())), &env)
+            .unwrap();
+        let current = OwnerSubmission::AttachedMessage {
+            session: b.clone(),
+            text: "meant for B".into(),
+        };
+        owner.post(current, &env).unwrap();
+        assert_eq!((inbox(&a), inbox(&b)), (0, 1));
+        let lines = recorded(&buffer);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines
+            .iter()
+            .all(|line| line.contains("status=409 stage=reply reason=stale_target")));
+        assert!(lines.iter().all(|line| !line.contains("meant for")));
     }
 
     #[test]

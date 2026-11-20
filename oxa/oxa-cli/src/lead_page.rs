@@ -96,6 +96,8 @@ pub struct AttachedView<'a> {
     pub truncated: bool,
     pub live: bool,
     pub short_id: String,
+    /// The full id the message form names, so a stale page cannot send to another session.
+    pub id: String,
     /// A message was accepted since the last render.
     pub sent: bool,
     /// `working` or `idle`, from the newest message; only meaningful while running.

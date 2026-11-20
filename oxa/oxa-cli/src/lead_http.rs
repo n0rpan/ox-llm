@@ -129,6 +129,12 @@ pub(crate) struct FixedForm {
 
 pub(crate) enum OwnerSubmission {
     Message(String),
+    /// A message from the attached-session form, with the full id of the session the page was
+    /// rendered for. The service refuses it when the page's target has since changed.
+    AttachedMessage {
+        session: String,
+        text: String,
+    },
     Confirm(String),
     /// The owner's choice of a running session to attach the page to (`Some(id)`), or back to
     /// the start-up target (`None`). The id is only a lookup key into the live session list.
@@ -475,11 +481,12 @@ fn fixed_target(bytes: &[u8], expected: &str) -> Result<String, Rejected> {
 }
 
 fn owner_submission(bytes: &[u8], expected: &str) -> Result<OwnerSubmission, Rejected> {
-    let (mut csrf, mut input) = (None, None);
+    let (mut csrf, mut input, mut session) = (None, None, None);
     for field in std::str::from_utf8(bytes).map_err(|_| Rejected::Body)?.split('&') {
         let (key, value) = field.split_once('=').ok_or(Rejected::Body)?;
         match key {
             "csrf" if csrf.replace(value).is_none() => {}
+            "session" if session.replace(value).is_none() => {}
             "message" | "proposal_id" | "attach" if input.replace((key, value)).is_none() => {}
             _ => return Err(Rejected::Body),
         }
@@ -487,10 +494,24 @@ fn owner_submission(bytes: &[u8], expected: &str) -> Result<OwnerSubmission, Rej
     if csrf != Some(expected) {
         return Err(Rejected::Csrf);
     }
-    match input.ok_or(Rejected::Body)? {
-        ("message", value) => decode_message(value)
-            .map(OwnerSubmission::Message)
-            .ok_or(Rejected::Body),
+    let input = input.ok_or(Rejected::Body)?;
+    if session.is_some() && input.0 != "message" {
+        return Err(Rejected::Body);
+    }
+    match input {
+        ("message", value) => {
+            let text = decode_message(value).ok_or(Rejected::Body)?;
+            match session {
+                None => Ok(OwnerSubmission::Message(text)),
+                Some(id) if id.len() <= 128 && crate::args::valid_session_id(id) => {
+                    Ok(OwnerSubmission::AttachedMessage {
+                        session: id.to_owned(),
+                        text,
+                    })
+                }
+                Some(_) => Err(Rejected::Body),
+            }
+        }
         ("proposal_id", value)
             if value.len() == 43
                 && value
@@ -1191,5 +1212,28 @@ mod approval_transport_tests {
             assert!(matches!(parse(body), Err(Rejected::Body)), "{body}");
         }
         assert!(matches!(parse("csrf=wrong&attach=a"), Err(Rejected::Csrf)));
+    }
+
+    #[test]
+    fn owner_message_may_name_its_session_and_nothing_else_may() {
+        let parse = |body: &str| owner_submission(body.as_bytes(), "nonce");
+        assert!(matches!(
+            parse("csrf=nonce&session=abc-123&message=hi"),
+            Ok(OwnerSubmission::AttachedMessage { session, text }) if session == "abc-123" && text == "hi"
+        ));
+        assert!(matches!(
+            parse("csrf=nonce&message=hi"),
+            Ok(OwnerSubmission::Message(text)) if text == "hi"
+        ));
+        for body in [
+            "csrf=nonce&session=..%2Fx&message=hi",
+            "csrf=nonce&session=&message=hi",
+            "csrf=nonce&session=a&session=a&message=hi",
+            "csrf=nonce&session=a&attach=a",
+            "csrf=nonce&session=a&proposal_id=x",
+            "csrf=nonce&session=a",
+        ] {
+            assert!(matches!(parse(body), Err(Rejected::Body)), "{body}");
+        }
     }
 }
