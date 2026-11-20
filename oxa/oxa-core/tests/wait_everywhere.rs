@@ -168,3 +168,67 @@ fn a_typed_message_interrupts_a_wait_outside_a_goal() {
         .any(|m| m.tool_call_id.as_deref() == Some("w")
             && m.content.as_deref() == Some("Wait ended: input arrived.")));
 }
+
+#[test]
+fn a_resumed_session_without_a_goal_can_still_wait() {
+    let env = TestEnv::new();
+    let store = Arc::new(MemStore::new());
+    let deps = |engine: Arc<ScriptedEngine>| Deps {
+        engine,
+        store: store.clone(),
+        tools: Vec::new(),
+        hooks: Vec::new(),
+        policy: Box::new(ModePolicy::new()),
+        sandbox: Arc::new(Plain),
+        settings: Settings::from_values(plain(), serde_json::json!({})),
+        dirs: Dirs::under(env.root()),
+        cwd: env.work(),
+        selection: ToolSelection::default(),
+        resources: Default::default(),
+        model: None,
+        thinking: None,
+        mode: None,
+        session_id: None,
+        jobs: Arc::new(JobRegistry::new()),
+    };
+    let first_engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("one")]));
+    let mut first = Session::open(deps(first_engine.clone()), Open::New).expect("open");
+    first
+        .prompt(
+            "hello".into(),
+            vec![],
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    let sref = first.inner().sref.clone();
+    first.shutdown(&mut HeadlessUi::default());
+    drop(first);
+
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("w", "wait", r#"{"seconds":1,"reason":"synthetic"}"#),
+        ScriptTurn::text("done"),
+    ]));
+    let mut resumed = Session::open(deps(engine.clone()), Open::Resume(sref)).expect("resume");
+    assert!(resumed.inner().active.get("wait").is_some());
+    resumed
+        .prompt(
+            "again".into(),
+            vec![],
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    let seen = engine.requests();
+    assert_eq!(seen[0].tools_json, first_engine.requests()[0].tools_json);
+    let result = seen[1]
+        .messages
+        .iter()
+        .find(|m| m.tool_call_id.as_deref() == Some("w"))
+        .and_then(|m| m.content.clone())
+        .unwrap();
+    assert!(
+        !result.contains(&oxa_proto::tool_errors::UNKNOWN_TOOL.replace("{name}", "wait")),
+        "{result}"
+    );
+}

@@ -82,6 +82,27 @@ fn gather(st: &SessionState) -> Inputs {
     }
 }
 
+/// Rebuild the live tool handlers from the current state without touching the prefix: a
+/// resumed or switched-to session replays its stored prefix, but `wait` and the goal controls
+/// must be callable and bound to this session's own goal runtime.
+pub(crate) fn rebind_tools(st: &mut SessionState, sink: &mut dyn EventSink) {
+    let Inputs {
+        all,
+        active,
+        warnings,
+        ..
+    } = gather(st);
+    for w in warnings {
+        sink.emit(&AgentEvent::Notice {
+            level: Level::Warning,
+            text: w,
+        });
+    }
+    st.all_tools = all;
+    st.active = active;
+    crate::tune::refresh(st);
+}
+
 /// The prefix options of an epoch, from the settings as they are now.
 pub(crate) fn prefix_opts(st: &SessionState) -> PrefixOpts {
     PrefixOpts {
