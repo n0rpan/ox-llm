@@ -4,7 +4,7 @@ use oxa_fake::TestEnv;
 use oxa_perm::{ApprovalDesk, DangerHit, DangerRules, ModePolicy, UnattendedMode};
 use oxa_proto::{Access, Decision, Mode, Policy};
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 const DANGEROUS: &str = "git push --force origin main";
@@ -45,21 +45,6 @@ fn request_id(text: &str) -> String {
         .and_then(|rest| rest.get(..16))
         .unwrap_or_default()
         .to_string()
-}
-
-/// How many stored records of the desk carry `status`.
-fn records_with(agent: &Path, status: &str) -> usize {
-    let needle = format!("\"status\":\"{status}\"");
-    std::fs::read_dir(agent.join("approvals"))
-        .expect("desk directory")
-        .filter_map(Result::ok)
-        .filter(|e| e.file_name().to_string_lossy().ends_with(".json"))
-        .filter(|e| {
-            std::fs::read_to_string(e.path())
-                .unwrap_or_default()
-                .contains(&needle)
-        })
-        .count()
 }
 
 #[test]
@@ -311,9 +296,9 @@ fn desk_symlinked_dir_is_refused() {
 }
 
 #[test]
-fn unattended_auto_with_os_sandbox_refuses_and_records() {
+fn unattended_auto_with_os_sandbox_refuses_without_recording() {
     let env = TestEnv::new();
-    let (desk, agent) = open_desk(&env);
+    let (desk, _) = open_desk(&env);
     let cwd = env.work();
     let mut p = policy(&desk, "s1", UnattendedMode::Auto, true);
     assert_eq!(p.decide(Mode::Workspace, &exec(DANGEROUS), &cwd), Decision::Ask);
@@ -332,7 +317,10 @@ fn unattended_auto_with_os_sandbox_refuses_and_records() {
         desk.pending().expect("pending").is_empty(),
         "a refusal is not a request"
     );
-    assert_eq!(records_with(&agent, "refused"), 1);
+    assert!(
+        desk.records().expect("records").is_empty(),
+        "refused model-controlled commands must not consume persistent storage"
+    );
 }
 
 #[test]
@@ -354,7 +342,7 @@ fn unattended_auto_without_os_sandbox_requests() {
 #[test]
 fn unattended_refuse_setting_overrides_auto() {
     let env = TestEnv::new();
-    let (desk, agent) = open_desk(&env);
+    let (desk, _) = open_desk(&env);
     let cwd = env.work();
     // Without the OS sandbox `auto` would request; `refuse` refuses.
     let mut p = policy(&desk, "s1", UnattendedMode::Refuse, false);
@@ -364,7 +352,29 @@ fn unattended_refuse_setting_overrides_auto() {
     assert!(!text.contains("OS sandbox"), "{text}");
     assert!(text.contains("oxa.approval.unattended"), "{text}");
     assert!(desk.pending().expect("pending").is_empty());
-    assert_eq!(records_with(&agent, "refused"), 1);
+    assert!(
+        desk.records().expect("records").is_empty(),
+        "an explicit refusal must not create an approval record"
+    );
+}
+
+#[test]
+fn repeated_unattended_refusals_do_not_grow_the_approval_desk() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let mut p = policy(&desk, "s1", UnattendedMode::Refuse, false);
+
+    for i in 0..100 {
+        let command = format!("git push --force origin hostile-{i}");
+        let text = p.danger_unattended(&exec(&command), &cwd).expect("refusal");
+        assert!(text.starts_with("Refused: dangerous command ("), "{text}");
+    }
+
+    assert!(
+        desk.records().expect("records").is_empty(),
+        "repeated refusals must leave the approval desk empty"
+    );
 }
 
 #[test]
