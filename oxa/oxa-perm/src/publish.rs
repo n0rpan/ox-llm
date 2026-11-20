@@ -841,5 +841,5 @@ fn is_alias(globals: &[String], name: &str, cwd: &Path, dirs: &[String]) -> bool
             return true;
         }
     }
-    names.iter().any(|n| *n == name)
+    names.contains(&name)
 }

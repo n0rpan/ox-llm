@@ -1161,7 +1161,9 @@ impl WorkerHooks {
     /// Apply the current owner's launch ceiling to a supervisor retained from an earlier turn.
     /// Existing children keep their original mode; every new start or resume uses this ceiling.
     fn refresh_authority_from(&self, current: &WorkerHooks) {
-        self.refresh_authority(current.core.max.load(Ordering::SeqCst), &lock(&current.core.yolo));
+        let max = current.core.max.load(Ordering::SeqCst);
+        let yolo = lock(&current.core.yolo).clone();
+        self.refresh_authority(max, &yolo);
     }
 
     fn refresh_authority(&self, max: usize, yolo: &YoloSwitch) {
@@ -1807,9 +1809,13 @@ mod tests {
         set_session(&kept, "parent-authority");
         start_alpha(&kept, &repo);
 
-        let current = Arc::new(hooks(&fake, &agent));
-        current.core.max.store(1, Ordering::SeqCst);
-        *lock(&current.core.yolo) = YoloSwitch::new(Autonomy::Standard);
+        let current = retained_owner_workers(&agent, 1, &YoloSwitch::new(Autonomy::Standard))
+            .expect("the owner hooks should be retained");
+        assert!(Arc::ptr_eq(&current, &first));
+
+        // LeadOwner::keep_workers passes the hook found above back through this function. Both
+        // arguments consequently share one core, so authority refresh must not hold its source
+        // mutex while locking the destination mutex.
         let reused = kept_owner_workers(&agent, current);
         assert!(Arc::ptr_eq(&reused, &first));
         assert_eq!(reused.core.max.load(Ordering::SeqCst), 1);
