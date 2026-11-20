@@ -112,9 +112,9 @@ impl EmbeddedGateway for Backend {
         let mut limits = Map::new();
         let models: Vec<_> = self.gateway.discovery().map(|model| {
             limits.insert(model.id.into(), json!({"cap":model.context_window,"max_output":model.max_output,
-                "capabilities":{"remote":true,"remote_provider":model.provider.as_str(),
+                "capabilities":{"remote":true,"remote_provider":model.provider_name,
                 "context_window":model.context_window,"echo":false,"cache_hints":false,"prefill":false,"cancel":true}}));
-            json!({"id":model.id,"remote":true,"remote_provider":model.provider.as_str(),
+            json!({"id":model.id,"remote":true,"remote_provider":model.provider_name,
                 "context_length":model.context_window,"max_output_tokens":model.max_output})
         }).collect();
         let selected = models.first().map_or(Value::Null, |model| model["id"].clone());

@@ -9,11 +9,11 @@ impl Client {
     pub(crate) async fn stream_openrouter<F>(
         &self,
         chat: Chat<'_>,
+        rules: Option<&crate::model_rules::Rules>,
         key: &Key,
         cancel: &Cancellation,
         on: &mut F,
-        terminal_usage: &mut Option<Usage>,
-        terminal_reported_cost: &mut Option<f64>,
+        (terminal_usage, terminal_reported_cost): (&mut Option<Usage>, &mut Option<f64>),
     ) -> Result<Completed, Error>
     where
         F: FnMut(Event) -> Control + ?Sized,
@@ -21,14 +21,18 @@ impl Client {
         if cancel.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        // Reuse the same HTTPS/loopback-only and no-userinfo/query validation.
-        let mut endpoint = messages_endpoint(chat.base_url)?;
-        let path = format!(
-            "{}/chat/completions",
-            endpoint.path().strip_suffix("/messages").ok_or(Error::Endpoint)?
-        );
-        endpoint.set_path(&path);
-        let body = request(&chat)?;
+        let endpoint = if rules.is_some() {
+            resource_endpoint(chat.base_url, &["chat", "completions"])?
+        } else {
+            let mut endpoint = messages_endpoint(chat.base_url)?;
+            let path = format!(
+                "{}/chat/completions",
+                endpoint.path().strip_suffix("/messages").ok_or(Error::Endpoint)?
+            );
+            endpoint.set_path(&path);
+            endpoint
+        };
+        let body = request(&chat, rules)?;
         let body = serde_json::to_vec(&body).map_err(|_| Error::Protocol)?;
         if body.len() > MAX_BODY {
             return Err(Error::TooLarge);
@@ -108,7 +112,7 @@ impl Client {
     }
 }
 
-fn request(chat: &Chat<'_>) -> Result<Value, Error> {
+fn request(chat: &Chat<'_>, rules: Option<&crate::model_rules::Rules>) -> Result<Value, Error> {
     let mut body = json!({"model":chat.upstream_model,"stream":true,
         "stream_options":{"include_usage":true}});
     // Owner routing preferences only; with none configured nothing is added.
@@ -156,6 +160,14 @@ fn request(chat: &Chat<'_>) -> Result<Value, Error> {
         .filter(|v| !v.is_null())
         .map(|v| v.as_str().ok_or(Error::Request("reasoning_effort")))
         .transpose()?;
+    if let Some(rules) = rules {
+        // Generic Chat Completions uses the model's own thinking format, never
+        // OpenRouter's routing or reasoning extensions.
+        rules
+            .resolve(crate::model_rules::Route::Cloud, chat.upstream_model)
+            .apply(body.as_object_mut().expect("request object"), effort);
+        return Ok(body);
+    }
     body["reasoning"] = match effort {
         Some("none" | "minimal") => json!({"enabled":false}),
         Some("xhigh") => json!({"effort":"high"}),
@@ -423,4 +435,37 @@ fn usage(raw: &Value) -> Result<Usage, Error> {
         cache_read_input_tokens: cached,
         cache_creation_input_tokens: written,
     })
+}
+
+#[cfg(test)]
+mod named_tests {
+    use super::*;
+
+    #[test]
+    fn deepseek_named_tool_history_uses_model_rules() {
+        let payload = json!({
+            "reasoning_effort": "high",
+            "messages": [
+                {"role":"assistant", "tool_calls":[{"id":"call_1", "type":"function", "function":{"name":"lookup", "arguments":"{}"}}]},
+                {"role":"tool", "tool_call_id":"call_1", "content":"found"}
+            ]
+        });
+        let body = request(
+            &Chat {
+                base_url: "https://example.invalid/compatible/v1",
+                upstream_model: "deepseek-v4-flash",
+                alias: "example/deepseek-v4-flash",
+                max_output: Some(1024),
+                payload: &payload,
+                created: 0,
+                provider: None,
+            },
+            Some(&crate::model_rules::Rules::default()),
+        )
+        .unwrap();
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["messages"][0]["reasoning_content"], "");
+        assert_eq!(body["messages"][1], payload["messages"][1]);
+        assert!(body.get("reasoning").is_none());
+    }
 }

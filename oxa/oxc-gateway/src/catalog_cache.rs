@@ -36,7 +36,7 @@ pub(crate) struct Cache {
 impl Cache {
     /// `directory` is the private agent directory that already holds the ledger
     /// and is denied to file tools and bash.
-    pub(crate) fn new(directory: &Path, filename: &'static str) -> Self {
+    pub(crate) fn new(directory: &Path, filename: &str) -> Self {
         Self {
             path: directory.join(filename),
         }

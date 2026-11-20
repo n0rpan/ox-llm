@@ -124,7 +124,7 @@ fn invalid_billing() -> Refusal {
     }
 }
 fn unpaid(model: &Model, billing: Option<&Billing>) -> Value {
-    let mut fields = json!({"remote":true,"remote_provider":model.info().provider.as_str(),"remote_model":model.upstream(),
+    let mut fields = json!({"remote":true,"remote_provider":model.provider_name(),"remote_model":model.upstream(),
         "cost_usd":0.0,"settled":"not_forwarded"});
     if matches!(billing, Some(Billing::Subscription)) {
         fields["billing"] = json!("subscription");
@@ -181,8 +181,9 @@ impl Runtime {
         let mut routes = Vec::new();
         let mut configured_models = BTreeSet::new();
         for (model, billing) in models {
-            if matches!(model.info().provider, Provider::ChatGpt | Provider::OpenCode)
-                != matches!(billing, Some(Billing::Subscription))
+            if model.configured_route().is_none()
+                && matches!(model.info().provider, Provider::ChatGpt | Provider::OpenCode)
+                    != matches!(billing, Some(Billing::Subscription))
             {
                 return Err(invalid_billing());
             }
@@ -339,12 +340,18 @@ impl Runtime {
     }
 
     pub(crate) fn catalog_key(&self, provider: Provider) -> Result<Option<Key>, Refusal> {
+        self.catalog_key_named(provider, provider.as_str())
+    }
+
+    pub(crate) fn catalog_key_named(&self, provider: Provider, key: &str) -> Result<Option<Key>, Refusal> {
         if let Err(error @ (catalog::Error::Disabled | catalog::Error::Offline)) = self.catalog.resolve(None)
         {
             return Err(catalog_error(error));
         }
-        #[cfg(feature = "upstream-openai")]
         if provider == Provider::ChatGpt {
+            #[cfg(not(feature = "upstream-openai"))]
+            return Ok(None);
+            #[cfg(feature = "upstream-openai")]
             // The plan has no API key: a usable sign-in and refresh settings are the credential.
             return Ok(self.subscription.as_ref().and_then(|_| {
                 crate::openai::chatgpt_tokens::read(&self.token_path)
@@ -352,11 +359,7 @@ impl Runtime {
                     .map(|record| Key::for_account(record.account_id()))
             }));
         }
-        Ok(self
-            .key_file
-            .as_ref()
-            .ok()
-            .and_then(|file| file.read(provider.as_str()).ok()))
+        Ok(self.key_file.as_ref().ok().and_then(|file| file.read(key).ok()))
     }
 
     /// The token file and refresh settings a ChatGPT-plan model list needs.
@@ -428,7 +431,9 @@ impl Runtime {
         offers: Vec<Offer>,
     ) -> Result<(usize, usize, usize), Refusal> {
         let same_source = |model: &Model| {
-            model.configured_route().is_none()
+            (source.is_named() || model.configured_route().is_none())
+                && model.provider_name() == source.name()
+                && model.credential_name() == source.key_name()
                 && model.info().provider == source.provider()
                 && model.endpoint().as_str().trim_end_matches('/') == source.base().trim_end_matches('/')
         };
@@ -451,7 +456,7 @@ impl Runtime {
                 .collect();
             let generated;
             let ids: Vec<&str> = if explicit.is_empty() {
-                generated = format!("{}/{}", source.provider().as_str(), offer.id);
+                generated = format!("{}/{}", source.name(), offer.id);
                 vec![generated.as_str()]
             } else {
                 explicit.iter().map(|model| model.info().id).collect()
@@ -475,20 +480,12 @@ impl Runtime {
                     (None, Some(output)) => Some((UNKNOWN_CONTEXT.max(output), output)),
                     _ => None,
                 };
-                if source.provider() == Provider::ChatGpt {
-                    // A plan model is an unpriced subscription route with advisory limits.
-                    missing_limits += usize::from(limits.is_none());
-                    let (context, output) = limits.unwrap_or((UNKNOWN_CONTEXT, UNKNOWN_OUTPUT));
-                    let Ok(model) = Model::new(
-                        alias,
-                        source.provider(),
-                        &offer.id,
-                        source.base(),
-                        context,
-                        output,
-                    ) else {
-                        continue;
-                    };
+                let (context, output) = limits.unwrap_or((UNKNOWN_CONTEXT, UNKNOWN_OUTPUT));
+                let Ok(model) = source.model(alias, &offer.id, context, output) else {
+                    continue;
+                };
+                missing_limits += usize::from(limits.is_none());
+                if source.is_subscription() {
                     billings.insert(alias.into(), Billing::Subscription);
                     routes.push(model);
                     continue;
@@ -502,36 +499,19 @@ impl Runtime {
                     (_, live) => live.cloned(),
                 }
                 .or_else(|| self.unpriced_discovered.get(alias).cloned());
-                let (context, output) = limits.unwrap_or((UNKNOWN_CONTEXT, UNKNOWN_OUTPUT));
                 let price = price.filter(|price| {
                     price
-                        .reservation(
-                            source.provider().as_str(),
-                            &offer.id,
-                            u64::from(context),
-                            u64::from(output),
-                        )
+                        .reservation(source.name(), &offer.id, u64::from(context), u64::from(output))
                         .is_some_and(f64::is_finite)
                 });
                 missing_price += usize::from(price.is_none());
-                missing_limits += usize::from(limits.is_none());
                 let price = price.unwrap_or_else(crate::pricing::Price::unpriced);
-                let Ok(model) = Model::new(
-                    alias,
-                    source.provider(),
-                    &offer.id,
-                    source.base(),
-                    context,
-                    output,
-                ) else {
-                    continue;
-                };
                 estimated_price += usize::from(price.is_estimated());
                 billings.insert(alias.into(), Billing::Metered(price));
                 routes.push(model);
             }
         }
-        if source.provider() == Provider::ChatGpt {
+        if source.provider() == Provider::ChatGpt || source.is_named() {
             // The picker list is not authority to delete an owner's route: owner entries win.
             for model in configured {
                 if self.configured_models.contains(model.info().id)
@@ -776,7 +756,7 @@ impl Runtime {
                 .as_ref()
                 .map_err(Clone::clone)?;
             let billing = accounting::Model {
-                provider: model.info().provider.as_str().into(),
+                provider: model.provider_name().into(),
                 upstream: model.upstream().into(),
                 context: u64::from(model.info().context_window),
                 max_output: u64::from(model.info().max_output),
@@ -784,11 +764,13 @@ impl Runtime {
             };
             let hold = match &billing.billing {
                 Billing::Metered(_) => daily.budget().reserve(&self.cap, true, &billing, output)?,
-                Billing::Subscription => {
-                    daily
-                        .budget()
-                        .reserve_subscription(self.subscription_limits, true, &billing, output)?
-                }
+                Billing::Subscription => daily.budget().reserve_subscription_route(
+                    self.subscription_limits,
+                    true,
+                    &billing,
+                    output,
+                    model.configured_route().is_some(),
+                )?,
             };
             let (_, mut entry) = audit.take().expect("known model")?;
             entry.admitted();
@@ -879,7 +861,7 @@ impl<'a> Call<'a> {
             Some(route) => {
                 entry.provider_session_hint(&format!("{}\0{}", route.provider(), self.model.endpoint()))
             }
-            None => entry.provider_session_hint(self.model.info().provider.as_str()),
+            None => entry.provider_session_hint(self.model.provider_name()),
         };
         hint.ok_or_else(|| invalid("session"))
     }

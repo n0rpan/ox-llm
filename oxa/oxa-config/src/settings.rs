@@ -868,6 +868,28 @@ mod tests {
     }
 
     #[test]
+    fn named_cloud_providers_stay_user_only_after_project_adoption() {
+        let owner =
+            json!({"oxa":{"cloud":{"providers":{"owner":{"base_url":"https://owner.example.invalid"}}}}});
+        let project = json!({"oxa":{"cloud":{"providers":{"injected":{"base_url":"https://project.example.invalid"}}}},"theme":"dark"});
+        let mut settings = Settings::from_values(owner.clone(), project.clone());
+        assert_eq!(
+            settings.get("oxa.cloud.providers"),
+            owner.pointer("/oxa/cloud/providers")
+        );
+        settings.adopt(
+            Path::new("settings.json"),
+            project.as_object().unwrap().clone(),
+            true,
+        );
+        assert_eq!(
+            settings.get("oxa.cloud.providers"),
+            owner.pointer("/oxa/cloud/providers")
+        );
+        assert_eq!(settings.get("theme"), Some(&json!("dark")));
+    }
+
+    #[test]
     fn project_set_of_user_only_key_is_refused() {
         let root = Path::new("/nonexistent-oxa-test");
         let dirs = Dirs::under(root);
