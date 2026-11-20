@@ -295,11 +295,12 @@ impl OwnerChat {
         })?;
         match submission {
             OwnerSubmission::Message(message) => {
-                let reply =
-                    crate::lead_chat::converse_bound(&message, &self.binding, env).map_err(|error| {
+                let reply = crate::lead_chat::converse_bound(&message, &self.binding, env, true).map_err(
+                    |error| {
                         self.journal.log(conversation_refusal(&error));
                         "503 Service Unavailable"
-                    })?;
+                    },
+                )?;
                 self.binding.recheck().map_err(|_| {
                     self.journal.log(RefusalFact {
                         status: 503,
@@ -403,17 +404,20 @@ impl Source {
         let sample = self
             .board
             .as_deref()
-            .and_then(|path| crate::lead_input::board_and_app_quota(path, self.uid).ok());
+            .and_then(|path| crate::lead_input::sample(path, self.uid).ok());
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        let github_quotas = sample.as_ref().and_then(|(board, app_quota)| {
-            crate::lead_quota::GitHubQuotas::from_app_sample((*app_quota)?, board.observed_at, now)
+        let github_quotas = sample.as_ref().and_then(|sample| {
+            crate::lead_quota::GitHubQuotas::from_app_sample(sample.app_quota?, sample.board.observed_at, now)
         });
         let owner = self.owner.as_ref().filter(|owner| {
             matches!(page, crate::lead_page::Page::Chat(_)) && owner.binding.recheck().is_ok()
         });
         let latest = owner.and_then(|owner| owner.latest.try_lock().ok());
+        // The authenticated live readback (#1391): open owner asks are read from
+        // the authorized durable Session on every render, never from a sample.
+        let durable_asks = self.durable_asks();
         let view = crate::lead_page::View {
             owner_chat: owner
                 .zip(latest.as_deref())
@@ -423,8 +427,12 @@ impl Source {
                     proposal: latest.as_ref().and_then(|latest| latest.proposal.as_ref()),
                     confirmed: latest.as_ref().is_some_and(|latest| latest.confirmed),
                 }),
-            board: sample.as_ref().map(|(board, _)| board),
+            board: sample.as_ref().map(|sample| &sample.board),
             github_quotas: github_quotas.as_ref(),
+            durable_asks: durable_asks.as_deref(),
+            // Stuck-work signals from the same protected record, with each
+            // unobserved source explicit in the view (#1391).
+            alarms: sample.as_ref().map(|sample| &sample.alarms),
             fixed_prompt_csrf: self.form.as_ref().map(|form| form.csrf.as_str()),
             ..Default::default()
         };
@@ -433,6 +441,21 @@ impl Source {
         } else {
             crate::lead_page::document_for(page, &view, now)
         }
+    }
+
+    /// Open owner asks read live from the authorized durable Lead Session, with
+    /// their original revisions. The binding revalidates the owner-only session
+    /// file and the user settings on every read; an unauthorized, busy or absent
+    /// session stays explicitly unavailable rather than quietly empty.
+    fn durable_asks(&self) -> Option<Vec<oxa_session::OpenGoalAsk>> {
+        let owner = self.owner.as_ref()?;
+        owner.binding.recheck().ok()?;
+        let entries = owner.binding.read_entries().ok()?;
+        let goal = oxa_session::Goal::latest(&entries).ok()?;
+        Some(
+            goal.map(|goal| goal.lead.map_or_else(Vec::new, |lead| lead.open_asks))
+                .unwrap_or_default(),
+        )
     }
 }
 
@@ -488,6 +511,7 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
         });
         source.owner = Some(chat.clone());
         let env = env.clone();
+        stop_workers_on_interrupt();
         Some(OwnerForm {
             csrf: chat.csrf.clone(),
             post: Arc::new(move |submission| chat.post(submission, &env)),
@@ -507,7 +531,7 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
     writeln!(out, "lead board: listening on configured loopback endpoint")
         .and_then(|()| out.flush())
         .map_err(|_| invalid("cannot report lead startup"))?;
-    crate::lead_http::serve_fixed(
+    let served = crate::lead_http::serve_fixed(
         listener,
         move |stream, request| authorized(&config, uid, stream, request, &identity_journal),
         move |page, fragment| source.render(page, fragment),
@@ -515,8 +539,32 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
         owner,
         Some(refusal_log),
     )
-    .map_err(|_| invalid("lead listener failed"))?;
+    .map_err(|_| invalid("lead listener failed"));
+    // The workers the owner Lead started outlive its chat turns and stop with the Lead.
+    crate::workers::tool::stop_owner_workers();
+    served?;
     Ok(0)
+}
+
+/// Ctrl-C or SIGTERM of the lead process stops the whole tree: the workers the owner Lead
+/// started, then the process. (`--resume` wakes them again from their records.)
+fn stop_workers_on_interrupt() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let hit = Arc::new(AtomicBool::new(false));
+    for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
+        if signal_hook::flag::register(signal, hit.clone()).is_err() {
+            return;
+        }
+    }
+    let _ = std::thread::Builder::new()
+        .name("oxa-lead-interrupt".into())
+        .spawn(move || {
+            while !hit.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            crate::workers::tool::stop_owner_workers();
+            std::process::exit(130);
+        });
 }
 
 #[cfg(test)]

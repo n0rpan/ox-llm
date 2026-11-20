@@ -165,6 +165,29 @@ impl DangerRules {
         hits
     }
 
+    /// The publish rule (owner decision 2026-11-19), a floor prompt next to the built-in rules
+    /// but not one of them: it is not listed in `BUILTIN_RULES` and `oxa.approval.dangerous`
+    /// cannot turn it off. A hit is a git push or gh command beyond the session's own
+    /// non-default branch, or any command chained with a publish command (see `publish.rs`).
+    pub fn publish_classify(&self, command: &str, cwd: &Path) -> Vec<DangerHit> {
+        crate::publish::record_baseline(cwd);
+        let Some(stages) = parse_line(command) else {
+            return vec![DangerHit {
+                rule: "publish-unsafe".to_string(),
+                reason: "the publish approval floor could not safely parse this command".to_string(),
+                segment: command.trim().to_string(),
+            }];
+        };
+        crate::publish::publish_hits(&stages, cwd)
+            .into_iter()
+            .map(|segment| DangerHit {
+                rule: "publish-unsafe".to_string(),
+                reason: "git push beyond the session's own non-default branch, gh merge/release/repo changes, or a command chained with a publish command".to_string(),
+                segment,
+            })
+            .collect()
+    }
+
     /// Adds a hit for a built-in rule (only when enabled) or for a custom `cmd:` rule.
     fn push(&self, hits: &mut Vec<DangerHit>, rule: &str, segment: &str) {
         let reason = match BUILTIN_RULES.iter().find(|row| row.0 == rule) {
@@ -676,7 +699,8 @@ impl DangerRules {
             }
             "pkill" | "killall" => self.push(hits, "kill-foreign", seg),
             "oxa" => {
-                // Global flags (`--offline`, `--model x`, `-q`) come before the verb.
+                // Global flags (`--offline`, `--model x`, `-q`) come before the verb, and some
+                // take a value: skip both forms so `oxa --model send ..` is not read as the verb.
                 let mut k = 1usize;
                 while k < argv.len() && argv[k].starts_with('-') {
                     let takes_value = !argv[k].contains('=')
@@ -686,7 +710,16 @@ impl DangerRules {
                         );
                     k += if takes_value { 2 } else { 1 };
                 }
-                if matches!(argv.get(k).map(String::as_str), Some("send") | Some("approve")) {
+                let by_argv = matches!(argv.get(k).map(String::as_str), Some("send") | Some("approve"));
+                // The CLI also takes leading switches before a subcommand (`oxa --offline send
+                // ..`): a word that is not an option is the subcommand, and either reading marks
+                // the self-approve rule.
+                let by_args = args
+                    .iter()
+                    .map(String::as_str)
+                    .find(|a| !a.starts_with('-'))
+                    .is_some_and(|sub| matches!(sub, "send" | "approve"));
+                if by_argv || by_args {
                     self.push(hits, "oxa-self-approve", seg);
                 }
             }
@@ -971,22 +1004,22 @@ fn heredoc_substitutions(body: &[char]) -> Vec<String> {
 
 /// A tokenized simple command. `pipe_in`: it reads the stdout of the stage before it.
 #[derive(Debug, Default)]
-struct Stage {
-    words: Vec<String>,
+pub(crate) struct Stage {
+    pub(crate) words: Vec<String>,
     /// (operator, target), e.g. (">>", "~/.ssh/authorized_keys"); `<<` and `<<<` included.
-    redirects: Vec<(String, String)>,
+    pub(crate) redirects: Vec<(String, String)>,
     pipe_in: bool,
     /// The previous stage is joined by `&&` or `||`, so this one may not run at all.
     conditional: bool,
     /// This command is followed by `&` and therefore cannot change the parent shell directory.
-    background: bool,
+    pub(crate) background: bool,
     /// A subshell or command-substitution boundary rather than a command.
-    mark: Option<Mark>,
+    pub(crate) mark: Option<Mark>,
 }
 
 /// The kind of a boundary stage: `(`/`$(`/backtick opens a subshell, `)` closes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mark {
+pub(crate) enum Mark {
     Open,
     Close,
 }
@@ -1853,8 +1886,35 @@ fn is_find_expr(a: &str) -> bool {
 }
 
 /// `true` when the text has a `$` or a backtick: a value the shell computes.
-fn has_dynamic(text: &str) -> bool {
+pub(crate) fn has_dynamic(text: &str) -> bool {
     text.contains('$') || text.contains('`')
+}
+
+/// `true` when the command takes data from a file or stdin that can change between the owner's
+/// answer and a replay of the same text: an input redirection (`< targets`), or a reader that
+/// turns its input into arguments (`xargs`, `parallel`, `read`, `mapfile`, `readarray`,
+/// `--files-from`). A saved unattended approval never covers such a command, because the text
+/// the owner reviewed does not fix what it acts on. The check is deliberately coarse: a false
+/// positive only means the command is not replayed unattended.
+pub(crate) fn has_mutable_input(text: &str) -> bool {
+    let is_reader = |w: &str| {
+        matches!(w, "xargs" | "parallel" | "read" | "mapfile" | "readarray")
+            || w.ends_with("/xargs")
+            || w.ends_with("/parallel")
+            || w.starts_with("--files-from")
+    };
+    // A backslash-newline continues a word (`xa\<newline>rgs` is `xargs`): join it before
+    // splitting, then also check the words the shell parser itself produces.
+    let joined = text.replace("\\\r\n", "").replace("\\\n", "");
+    joined.contains('<')
+        || joined
+            .split(|c: char| c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')' | '{' | '}'))
+            // Shell quoting and escapes inside a word do not change the command it names:
+            // `x'a'rgs`, `"xargs"` and `xa\rgs` are all `xargs`.
+            .map(|w| w.replace(['\'', '"', '\\'], ""))
+            .any(|w| is_reader(&w))
+        || parse_line(&joined)
+            .is_some_and(|stages| stages.iter().any(|st| st.words.iter().any(|w| is_reader(w))))
 }
 
 /// Where a brace expansion (`{a,b}`, `{1..3}`) starts in `w`, if it has one. `{}` (the

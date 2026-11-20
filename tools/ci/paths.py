@@ -87,10 +87,7 @@ def main():
     full = full_gate(name, os.environ.get('GITHUB_REF', ''))
     result = classify(changed_paths(event, name), full)
     if full:
-        if name == 'merge_group':
-            # Every queued tree runs all oxa tests, including tests that consume docs/assets.
-            result['oxa'] = True
-        else:
+        if name != 'merge_group':
             # Main, nightly and manual runs test every component.
             result.update(dict.fromkeys(OUTPUTS, True))
     with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:

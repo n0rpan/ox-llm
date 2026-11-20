@@ -792,7 +792,7 @@ const ROWS: &[Row] = &[
     },
     Row {
         name: "subshell_cd_does_not_move_the_parent",
-        cmd: "cd /; (cd /workspace/ox-llm); rm -rf var/tmp/victim",
+        cmd: "cd /; (cd '<WORKSPACE>'); rm -rf var/tmp/victim",
         cwd: ".",
         expect: RM,
     },
@@ -804,7 +804,7 @@ const ROWS: &[Row] = &[
     },
     Row {
         name: "conditional_cd_keeps_both_directories",
-        cmd: "cd /; false && cd /workspace/ox-llm; rm -rf var/tmp/victim",
+        cmd: "cd /; false && cd '<WORKSPACE>'; rm -rf var/tmp/victim",
         cwd: ".",
         expect: RM,
     },
@@ -822,13 +822,13 @@ const ROWS: &[Row] = &[
     },
     Row {
         name: "background_cd_does_not_move_the_parent",
-        cmd: "cd /; cd /workspace/ox-llm & rm -rf var/tmp/victim",
+        cmd: "cd /; cd '<WORKSPACE>' & rm -rf var/tmp/victim",
         cwd: ".",
         expect: RM,
     },
     Row {
         name: "last_pipeline_cd_does_not_move_the_parent",
-        cmd: "cd /; printf x | cd /workspace/ox-llm; rm -rf var/tmp/victim",
+        cmd: "cd /; printf x | cd '<WORKSPACE>'; rm -rf var/tmp/victim",
         cwd: ".",
         expect: RM,
     },
@@ -900,7 +900,7 @@ const ROWS: &[Row] = &[
     },
     Row {
         name: "cd_in_a_pipeline_does_not_move_the_parent",
-        cmd: "cd /; cd /workspace/ox-llm | cat; rm -rf var/tmp/victim",
+        cmd: "cd /; cd '<WORKSPACE>' | cat; rm -rf var/tmp/victim",
         cwd: ".",
         expect: RM,
     },
@@ -1045,14 +1045,18 @@ fn danger_table_matches() {
     let mut bad: Vec<String> = Vec::new();
     for row in ROWS {
         let cwd = env.work().join(row.cwd);
-        let got = ids(&rules.classify(row.cmd, &cwd, &guard));
+        // Directory-isolation rows must point back into this synthetic workspace. A fixed path
+        // outside it would still classify the later removal as dangerous even if a subshell,
+        // conditional, background command, or pipeline incorrectly moved the parent directory.
+        let command = row.cmd.replace("<WORKSPACE>", &env.work().display().to_string());
+        let got = ids(&rules.classify(&command, &cwd, &guard));
         let mut want: Vec<String> = row.expect.iter().map(|s| s.to_string()).collect();
         want.sort();
         want.dedup();
         if got != want {
             bad.push(format!(
                 "{}: `{}` gave {:?}, want {:?}",
-                row.name, row.cmd, got, want
+                row.name, command, got, want
             ));
         }
     }
