@@ -297,6 +297,22 @@ fn command_wrappers_and_cumulative_git_directories_ask() {
     ] {
         assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{c}");
     }
+
+    // A second relative `-C` is resolved from the first directory. Walking back to the session
+    // repository is safe, while staying in the nested repository must continue to ask.
+    std::fs::create_dir_all(cwd.join("vendor/plain")).unwrap();
+    assert_eq!(
+        decide(
+            &cwd,
+            Autonomy::Auto,
+            "git -C vendor/plain -C ../.. push origin HEAD"
+        ),
+        Decision::Allow
+    );
+    assert_eq!(
+        decide(&cwd, Autonomy::Auto, "git -C vendor -C other push origin HEAD"),
+        Decision::Ask
+    );
 }
 
 #[test]
