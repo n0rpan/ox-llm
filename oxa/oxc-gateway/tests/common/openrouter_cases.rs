@@ -1068,3 +1068,118 @@ fn invalid_openrouter_provider_preferences_are_refused() {
     }
     mock.finish();
 }
+
+fn named_gateway(mock: &MockAnthropic) -> (Gateway, skeleton::Fixture) {
+    let fixture = skeleton::Fixture::new(mock);
+    std::fs::write(&fixture.key_path, json!({"demo-plan": CREDENTIAL}).to_string()).unwrap();
+    let source = Source::named(
+        "demo",
+        Provider::OpenRouter,
+        "https://example.invalid",
+        "demo-plan",
+        true,
+    )
+    .unwrap()
+    .with_mock_base(&mock.base_url());
+    let model = source
+        .model("demo/deepseek-v4-flash", "deepseek-v4-flash", 4096, 128)
+        .unwrap();
+    let runtime = Runtime::new(
+        [(model, Some(Billing::Subscription))],
+        fixture.key_path.clone(),
+        fixture.ledger_dir.clone(),
+        Options {
+            access: Access::Enabled,
+            daily_budget_usd: Some(1.0),
+            ledger_enabled: true,
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    (Gateway::new(runtime).unwrap(), fixture)
+}
+
+#[tokio::test]
+async fn named_deepseek_tool_turn_replays_reasoning_and_settles_tokens_only() {
+    let mock = MockAnthropic::start(vec![
+        wire(
+            vec![
+                json!({"choices":[{"index":0,"delta":{"reasoning_content":"Check the file."},"finish_reason":null}]}),
+                json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"synthetic-call","function":{"name":"read","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":21,"completion_tokens":5,"cost":0.25}}),
+            ],
+            true,
+        ),
+        wire(chunks(), true),
+    ]);
+    let (gateway, fixture) = named_gateway(&mock);
+    let mut request = json!({"model":"demo/deepseek-v4-flash","reasoning_effort":"high",
+        "messages":[{"role":"user","content":"Read the file"}],
+        "tools":[{"type":"function","function":{"name":"read","parameters":{"type":"object"}}}]});
+    let completed = gateway
+        .chat_payload(
+            &request,
+            Context::default(),
+            &Cancellation::default(),
+            &mut |_| Control::Continue,
+        )
+        .await
+        .unwrap();
+    assert_eq!(completed.finish_reason, "tool_calls");
+    assert_eq!(completed.assistant["tool_calls"][0]["id"], "synthetic-call");
+    let mut assistant = completed.assistant;
+    assistant["role"] = json!("assistant");
+    request["messages"].as_array_mut().unwrap().extend([
+        assistant,
+        json!({"role":"tool","tool_call_id":"synthetic-call","content":"found"}),
+    ]);
+    gateway
+        .chat_payload(
+            &request,
+            Context::default(),
+            &Cancellation::default(),
+            &mut |_| Control::Continue,
+        )
+        .await
+        .unwrap();
+    let requests = mock.requests();
+    assert_eq!(requests[0].target, "/v1/chat/completions");
+    assert_eq!(requests[0].body["thinking"]["type"], "enabled");
+    assert!(requests[0].body.get("reasoning").is_none());
+    assert_eq!(
+        requests[1].body["messages"][1]["reasoning_content"],
+        "Check the file."
+    );
+    let ledger = rows(&fixture);
+    assert_eq!(ledger.len(), 2);
+    for row in ledger {
+        assert_eq!(row["remote_provider"], "demo");
+        assert_eq!(row["billing"], "subscription");
+        assert_eq!(row["completion_tokens"], 5);
+        assert_eq!(row["cost_usd"], 0.0);
+    }
+    mock.finish();
+}
+
+#[tokio::test]
+async fn named_chat_does_not_follow_a_cross_origin_redirect() {
+    let other = MockAnthropic::start(vec![]);
+    let mock = MockAnthropic::start(vec![Reply::redirect(&format!(
+        "{}/chat/completions",
+        other.base_url()
+    ))]);
+    let (gateway, _fixture) = named_gateway(&mock);
+    let request = json!({"model":"demo/deepseek-v4-flash","messages":[{"role":"user","content":"Hello"}]});
+    let result = gateway
+        .chat_payload(
+            &request,
+            Context::default(),
+            &Cancellation::default(),
+            &mut |_| Control::Continue,
+        )
+        .await;
+    assert!(result.is_err());
+    assert_eq!(mock.requests().len(), 1);
+    assert!(other.requests().is_empty());
+    mock.finish();
+    other.finish();
+}

@@ -436,36 +436,3 @@ fn usage(raw: &Value) -> Result<Usage, Error> {
         cache_creation_input_tokens: written,
     })
 }
-
-#[cfg(test)]
-mod named_tests {
-    use super::*;
-
-    #[test]
-    fn deepseek_named_tool_history_uses_model_rules() {
-        let payload = json!({
-            "reasoning_effort": "high",
-            "messages": [
-                {"role":"assistant", "tool_calls":[{"id":"call_1", "type":"function", "function":{"name":"lookup", "arguments":"{}"}}]},
-                {"role":"tool", "tool_call_id":"call_1", "content":"found"}
-            ]
-        });
-        let body = request(
-            &Chat {
-                base_url: "https://example.invalid/compatible/v1",
-                upstream_model: "deepseek-v4-flash",
-                alias: "example/deepseek-v4-flash",
-                max_output: Some(1024),
-                payload: &payload,
-                created: 0,
-                provider: None,
-            },
-            Some(&crate::model_rules::Rules::default()),
-        )
-        .unwrap();
-        assert_eq!(body["thinking"]["type"], "enabled");
-        assert_eq!(body["messages"][0]["reasoning_content"], "");
-        assert_eq!(body["messages"][1], payload["messages"][1]);
-        assert!(body.get("reasoning").is_none());
-    }
-}
