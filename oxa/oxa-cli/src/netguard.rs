@@ -1,15 +1,23 @@
 //! Wave H: the network decisions of the front end (O-167(b), P3, P4). Every
 //! decision is here; `dispatch.rs` only calls in.
 use oxa_config::{dirs_from_env, Env, Settings};
-use oxa_proto::{Level, OxaError, Sandbox};
+use oxa_proto::{Level, OxaError, PermissionMode, Sandbox};
 use oxa_sandbox::{sandbox_net_setting, NetSandbox, SETTING_SANDBOX_NET};
 use std::path::Path;
 use std::sync::Arc;
 
 /// O-167(b): the process sandbox with the bash network decision (`oxa.sandbox.net`, default
 /// on; always off while offline). Read once at startup.
-pub(crate) fn with_net(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<dyn Sandbox> {
+pub(crate) fn with_net(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<NetSandbox> {
     with_policy(sandbox, settings, true)
+}
+
+/// S11: yolo gives bash the network whatever `oxa.sandbox.net` says; the setting still applies to
+/// auto and standard. Say so at the start instead of ignoring the setting silently. Enforcement
+/// does not change, and an offline session has no bash network in any mode, so it is not noted.
+pub(crate) fn yolo_net_notice(level: PermissionMode, net: Option<&str>, offline: bool) -> Option<String> {
+    (level == PermissionMode::Yolo && !offline && !sandbox_net_setting(net))
+        .then(|| format!("yolo: bash has the network; {SETTING_SANDBOX_NET}=off applies to auto/standard"))
 }
 
 /// Acceptance commands keep the user's network policy without GitHub authentication.
@@ -17,7 +25,7 @@ pub(crate) fn without_github(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> 
     with_policy(sandbox, settings, false)
 }
 
-fn with_policy(sandbox: Arc<dyn Sandbox>, settings: &Settings, github_auth: bool) -> Arc<dyn Sandbox> {
+fn with_policy(sandbox: Arc<dyn Sandbox>, settings: &Settings, github_auth: bool) -> Arc<NetSandbox> {
     let runner_owns_github = std::env::var_os(oxa_work::RUNNER_GITHUB_ENV).is_some_and(|value| value == "1");
     let on = !runner_owns_github && sandbox_net_setting(settings.string(SETTING_SANDBOX_NET).as_deref());
     let offline = oxa_proto::offline();
@@ -31,12 +39,139 @@ fn with_policy(sandbox: Arc<dyn Sandbox>, settings: &Settings, github_auth: bool
                 .ok()
                 .as_deref(),
         );
-    let ns = NetSandbox::new(sandbox, on, offline);
-    Arc::new(if lookup {
-        ns.with_gh_token_lazy(gh_token)
+    // Host-rights bash can read a file-backed login with the network off too, and `gh auth token
+    // --user other` names any account: every credential is scrubbed from its output, so this
+    // lookup does not depend on the network setting, nor on who owns GitHub for the run (a
+    // runner-owned task still must not print a file-backed login). Offline, or when the runner
+    // owns GitHub, `gh` itself is never started (a shim could install it over the network, and
+    // the run must not use GitHub authentication): the `hosts.yml` tokens are scrubbed then.
+    let run_gh = !runner_owns_github && !offline;
+    let scrub_host = github_auth
+        && !test_isolated(
+            std::env::var(oxa_proto::names::ENV_TEST_ISOLATION)
+                .ok()
+                .as_deref(),
+        );
+    let mut ns = NetSandbox::new(sandbox, on, offline);
+    if lookup {
+        ns = ns.with_gh_token_lazy(gh_token);
+    }
+    if scrub_host {
+        ns = ns.with_host_secrets_lazy(move || gh_host_secrets(run_gh));
+    }
+    Arc::new(ns)
+}
+
+/// Every GitHub CLI credential of this machine: the plain tokens in `hosts.yml` and the token
+/// `gh auth token` returns for each host and account it lists (keyring logins included), in
+/// every config store `gh` may read ([`gh_config_dirs`]). Host bash runs with a cleared
+/// environment, so its `gh` can read another store than this process: every store is scrubbed.
+/// Runs `gh` outside the sandbox with a short deadline; any failure yields what was found so
+/// far. Reads local state only. Tokens are never logged. With `run_gh` false only the
+/// `hosts.yml` files are read and no program is started.
+fn gh_host_secrets(run_gh: bool) -> Vec<String> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let configs = gh_config_dirs(
+        std::env::var_os("GH_CONFIG_DIR").as_deref(),
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        home.as_deref(),
+    );
+    let exe = if run_gh {
+        trusted_gh_for(
+            std::env::var_os("PATH").as_deref(),
+            std::env::current_dir().ok().as_deref(),
+            home.as_deref(),
+        )
     } else {
-        ns
-    })
+        None
+    };
+    let mut found = Vec::new();
+    for config in &configs {
+        let text = std::fs::read_to_string(config.join("hosts.yml")).unwrap_or_default();
+        let (tokens, accounts) = parse_gh_hosts(&text);
+        found.extend(tokens);
+        let Some(exe) = &exe else { continue };
+        let mut ask = |args: &[&str]| {
+            let mut command = std::process::Command::new(exe);
+            command.args(args).env("GH_CONFIG_DIR", config);
+            if let Some((0, out)) = oxa_work::command_runner(command, Some(4096), GH_DEADLINE) {
+                let t = out.trim();
+                if !t.is_empty() && !t.chars().any(char::is_whitespace) {
+                    found.push(t.to_string());
+                }
+            }
+        };
+        ask(&["auth", "token", "--hostname", "github.com"]);
+        for (host, user) in accounts.iter() {
+            ask(&[
+                "auth",
+                "token",
+                "--hostname",
+                host.as_str(),
+                "--user",
+                user.as_str(),
+            ]);
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// The `gh` config stores a command on this machine may read: `GH_CONFIG_DIR` of this
+/// process, `$XDG_CONFIG_HOME/gh` and `$HOME/.config/gh` (the defaults a cleared environment
+/// falls back to). Duplicates removed, order kept.
+fn gh_config_dirs(
+    gh_config_dir: Option<&std::ffi::OsStr>,
+    xdg_config_home: Option<&std::ffi::OsStr>,
+    home: Option<&Path>,
+) -> Vec<std::path::PathBuf> {
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    let candidates = [
+        gh_config_dir.map(std::path::PathBuf::from),
+        xdg_config_home.map(|x| std::path::PathBuf::from(x).join("gh")),
+        home.map(|h| h.join(".config").join("gh")),
+    ];
+    for dir in candidates.into_iter().flatten() {
+        if !dir.as_os_str().is_empty() && !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
+/// The plain `oauth_token` values and the (host, user) pairs of a `gh` `hosts.yml`. A line
+/// parser for the fixed shape `gh` writes: hosts at column 0, `users:` with nested account
+/// names, `oauth_token:` values at any depth.
+fn parse_gh_hosts(text: &str) -> (Vec<String>, Vec<(String, String)>) {
+    let mut tokens = Vec::new();
+    let mut accounts = Vec::new();
+    let (mut host, mut in_users, mut users_indent) = (String::new(), false, 0usize);
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - trimmed.len();
+        let unquote = |v: &str| v.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
+        if indent == 0 {
+            host = unquote(trimmed.trim_end_matches(':'));
+            in_users = false;
+        } else if let Some(v) = trimmed.strip_prefix("oauth_token:") {
+            let v = unquote(v);
+            if !v.is_empty() && !v.chars().any(char::is_whitespace) {
+                tokens.push(v);
+            }
+        } else if trimmed == "users:" {
+            in_users = true;
+            users_indent = indent;
+        } else if in_users && indent <= users_indent {
+            in_users = false;
+        } else if in_users && indent == users_indent + 4 && trimmed.ends_with(':') && !host.is_empty() {
+            accounts.push((host.clone(), unquote(trimmed.trim_end_matches(':'))));
+        }
+    }
+    (tokens, accounts)
 }
 
 /// Under test isolation (`OXA_TEST_ISOLATION=1`) the host's `gh` login is never consulted: a
@@ -83,7 +218,7 @@ pub(crate) fn trusted_executable_for(
     let Some(h) = home.map(canon) else {
         return trusted_executable(program, path, cwd);
     };
-    if !cwd.is_some_and(|c| canon(c) == h) {
+    if cwd.is_none_or(|c| canon(c) != h) {
         return trusted_executable(program, path, cwd);
     }
     let allowed: Vec<std::path::PathBuf> = USER_BIN.iter().map(|d| h.join(d)).collect();
@@ -248,6 +383,57 @@ pub(crate) fn endpoint_notice(base_url: &str) -> Option<(Level, String)> {
 
 #[cfg(test)]
 mod tests {
+    /// An owner `GH_CONFIG_DIR` does not hide the default stores: host bash runs with a cleared
+    /// environment, so its `gh` reads `$XDG_CONFIG_HOME/gh` or `$HOME/.config/gh`, and their
+    /// tokens must be scrubbed too.
+    #[test]
+    fn every_gh_config_store_is_scrubbed() {
+        use std::ffi::OsStr;
+        use std::path::{Path, PathBuf};
+        let dirs = super::gh_config_dirs(
+            Some(OsStr::new("/owner/gh")),
+            Some(OsStr::new("/home/u/.config")),
+            Some(Path::new("/home/u")),
+        );
+        assert_eq!(
+            dirs,
+            [PathBuf::from("/owner/gh"), PathBuf::from("/home/u/.config/gh")]
+        );
+        let dirs = super::gh_config_dirs(
+            Some(OsStr::new("/owner/gh")),
+            Some(OsStr::new("/xdg")),
+            Some(Path::new("/home/u")),
+        );
+        assert_eq!(
+            dirs,
+            [
+                PathBuf::from("/owner/gh"),
+                PathBuf::from("/xdg/gh"),
+                PathBuf::from("/home/u/.config/gh")
+            ]
+        );
+        assert_eq!(
+            super::gh_config_dirs(None, None, Some(Path::new("/home/u"))),
+            [PathBuf::from("/home/u/.config/gh")]
+        );
+        assert!(super::gh_config_dirs(Some(OsStr::new("")), None, None).is_empty());
+    }
+
+    #[test]
+    fn hosts_yml_yields_every_account_and_plain_token() {
+        let yml = "github.com:\n    users:\n        alice:\n            oauth_token: SYNTH_ONE\n        bob:\n    oauth_token: SYNTH_TWO\n    git_protocol: https\n    user: alice\nghe.example:\n    users:\n        carol:\n";
+        let (tokens, accounts) = super::parse_gh_hosts(yml);
+        assert_eq!(tokens, ["SYNTH_ONE", "SYNTH_TWO"]);
+        assert_eq!(
+            accounts,
+            [
+                ("github.com".to_string(), "alice".to_string()),
+                ("github.com".to_string(), "bob".to_string()),
+                ("ghe.example".to_string(), "carol".to_string()),
+            ]
+        );
+    }
+
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
@@ -270,6 +456,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// #1449: an unusable user settings file keeps the process offline policy and the bash
+    /// network decision restricted, separately; a missing file keeps the normal defaults.
+    #[test]
+    fn unusable_user_settings_keep_process_and_bash_network_restricted() {
+        let env = Env::from_pairs(&[]);
+        for (tag, content) in [("badjson", Some("{ \"oxa\": {\"offline\": ")), ("absent", None)] {
+            let home = tmp(tag);
+            let dirs = oxa_config::Dirs::under(&home);
+            if let Some(text) = content {
+                std::fs::create_dir_all(dirs.settings_file().parent().unwrap()).unwrap();
+                std::fs::write(dirs.settings_file(), text).unwrap();
+            }
+            let user = Settings::load(&dirs, &home, false);
+            let (offline, allow_remote) = policy_from(false, &env, &user);
+            let bash_net = sandbox_net_setting(user.string(SETTING_SANDBOX_NET).as_deref());
+            let restricted = content.is_some();
+            assert_eq!(offline, restricted, "{tag}: process offline policy");
+            assert!(!allow_remote, "{tag}");
+            assert_eq!(!bash_net, restricted, "{tag}: bash network decision");
+            assert_eq!(user.diagnostics().is_empty(), !restricted, "{tag}");
+        }
     }
 
     #[test]
@@ -420,5 +629,22 @@ mod tests {
         // Only untrusted entries: nothing.
         let only = sep(&[proj.to_str().unwrap(), "rel"]);
         assert_eq!(trusted_executable("gh", Some(&only), Some(&proj)), None);
+    }
+
+    #[test]
+    fn yolo_start_notes_net_off() {
+        // S11: yolo ignores `oxa.sandbox.net=off`; the start says so, and enforcement is unchanged.
+        let note = yolo_net_notice(PermissionMode::Yolo, Some("off"), false).expect("a notice");
+        assert!(
+            note.contains("oxa.sandbox.net=off applies to auto/standard"),
+            "{note}"
+        );
+        assert!(!note.contains('\n'));
+        // Nothing to say when the network is on, when the setting is unset, in other modes, or
+        // when offline already removes the bash network.
+        assert_eq!(yolo_net_notice(PermissionMode::Yolo, None, false), None);
+        assert_eq!(yolo_net_notice(PermissionMode::Yolo, Some("on"), false), None);
+        assert_eq!(yolo_net_notice(PermissionMode::Auto, Some("off"), false), None);
+        assert_eq!(yolo_net_notice(PermissionMode::Yolo, Some("off"), true), None);
     }
 }

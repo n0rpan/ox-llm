@@ -35,7 +35,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Built-in cloud gateway",
         "Use the Rust cloud gateway inside oxa.",
     )
-    .key(Kind::Bool, "false")
+    .key(Kind::Bool, "null")
     .toggle()
     .user_only()
     .apply(Apply::Restart)
@@ -232,7 +232,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Retries",
         "Retries of one agent request.",
     )
-    .key(Kind::Number, "3")
+    .key(Kind::Number, "10")
     .control(Control::Number)
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -256,6 +256,19 @@ pub const ENTRIES: &[Descriptor] = &[
     )
     .key(Kind::Number, "60000")
     .number(Unit::Ms)
+    .apply(Apply::Reload)
+    .web(WebEdit::Edit),
+    d(
+        "oxa.emptyReplyRetries",
+        Group::Models,
+        "Requests and retries",
+        "Empty reply retries",
+        "Ask again when a cloud model returns no text and no tool call. 0 = off.",
+    )
+    .key(Kind::Number, "1")
+    .number(Unit::Count)
+    .zero("off")
+    .user_only()
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
     d(
@@ -287,7 +300,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Stream silence limit",
         "How long the model stream may be silent. 0 = no limit.",
     )
-    .key(Kind::Any, "300000")
+    .key(Kind::Any, "900000")
     .number(Unit::Ms)
     .control(Control::NumberOr("disabled"))
     .zero("no limit")
@@ -314,7 +327,7 @@ mod tests {
 
     #[test]
     fn models_keys_exist_in_schema() {
-        assert_eq!(ENTRIES.len(), 24);
+        assert_eq!(ENTRIES.len(), 25);
         let mut seen = std::collections::HashSet::new();
         for e in ENTRIES {
             assert_eq!(e.group, Group::Models, "{}", e.key);

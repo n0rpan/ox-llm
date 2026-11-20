@@ -38,7 +38,7 @@ pub use models::{
     resolve_model, resolve_scoped, valid_cloud_name, CloudApi, CloudModel, CloudPrice, CloudProvider,
     Endpoint, ModelRef, ModelsConfig,
 };
-pub use profile::{ThinkingPolicy, BASH_TIMEOUT_DEFAULT, SUMMARY_TARGET_DEFAULT};
+pub use profile::{CloudCaps, ThinkingPolicy, BASH_TIMEOUT_DEFAULT, SUMMARY_TARGET_DEFAULT};
 pub use schema::{apply_list_patch, merge_settings, schema, validate, KeyDef, Kind};
 pub use settings::{
     CompactionSettings, ProviderRetrySettings, QueueMode, RetrySettings, Settings, SettingsFiles, Source,

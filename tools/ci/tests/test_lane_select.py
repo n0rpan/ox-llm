@@ -18,7 +18,6 @@ class Selection(unittest.TestCase):
             'oxa/leaf': package('leaf'),
             'oxa/app': package('app', dependencies={'leaf': {'path': '../leaf'}}),
             'oxa/unrelated': package('unrelated'),
-            'oxc-rs': package('oxc', 'oxc-rs', {'app': {'path': '../oxa/app'}}),
         }
 
     def names(self, matrix):
@@ -31,13 +30,11 @@ class Selection(unittest.TestCase):
         with self.assertRaises(ValueError):
             lane.member_matches('crates/server', '**')
 
-    def test_leaf_change_covers_local_consumers_across_workspaces_only(self):
+    def test_leaf_change_covers_local_consumers(self):
         matrix, deferred, _ = lane.select(self.packages, self.packages, ['oxa/leaf/src/lib.rs'])
         self.assertEqual(self.names(matrix), {
             ('oxa', 'ubuntu-24.04', ('app', 'leaf')),
             ('oxa', 'ubuntu-24.04-arm', ('app', 'leaf')),
-            ('oxc-rs', 'ubuntu-24.04', ('oxc',)),
-            ('oxc-rs', 'ubuntu-24.04-arm', ('oxc',)),
         })
         self.assertEqual(deferred, [])
 
@@ -50,10 +47,9 @@ class Selection(unittest.TestCase):
                      'oxa/examples/skills/example.md', 'oxa/.config/nextest.toml'):
             with self.subTest(path=path):
                 matrix, _, _ = lane.select(self.packages, self.packages, [path])
-                self.assertEqual(len(matrix['include']), 4)
+                self.assertEqual(len(matrix['include']), 2)
                 for entry in matrix['include']:
-                    expected = ['app', 'leaf', 'unrelated'] if entry['workspace'] == 'oxa' else ['oxc']
-                    self.assertEqual(entry['packages'], expected)
+                    self.assertEqual(entry['packages'], ['app', 'leaf', 'unrelated'])
 
     def test_shared_documentation_does_not_start_rust_tests(self):
         matrix, _, _ = lane.select(self.packages, self.packages,
@@ -63,12 +59,11 @@ class Selection(unittest.TestCase):
     def test_workspace_lock_expands_that_workspace_and_real_consumers(self):
         matrix, _, _ = lane.select(self.packages, self.packages, ['oxa/Cargo.lock'])
         for entry in matrix['include']:
-            expected = ['app', 'leaf', 'unrelated'] if entry['workspace'] == 'oxa' else ['oxc']
-            self.assertEqual(entry['packages'], expected)
+            self.assertEqual(entry['packages'], ['app', 'leaf', 'unrelated'])
 
     def test_lane_execution_contract_is_global_but_other_workflows_are_not(self):
         matrix, _, reasons = lane.select(self.packages, self.packages, ['tools/ci/lane_run.py'])
-        self.assertEqual(len(matrix['include']), 4)
+        self.assertEqual(len(matrix['include']), 2)
         self.assertTrue(reasons)
         empty, _, _ = lane.select(self.packages, self.packages, ['.github/workflows/macos.yml'])
         self.assertEqual(empty, {'include': []})

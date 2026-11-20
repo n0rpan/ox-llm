@@ -7,11 +7,67 @@ use crate::schema::Kind;
 
 /// The hidden rows, sorted by key.
 pub(super) const ENTRIES: &[Descriptor] = &[
+    // #1512 S2: exact rule keys saved by "always allow" in a dangerous-command prompt; user
+    // settings only (a project value is never read).
+    d(
+        "oxa.approval.always",
+        Group::Advanced,
+        "",
+        "oxa.approval.always",
+        "",
+    )
+    .key(Kind::StringList, "[]")
+    .hidden(),
+    // #1512: dangerous-command rules (+id/-id/cmd:..); user settings only.
+    d(
+        "oxa.approval.dangerous",
+        Group::Advanced,
+        "",
+        "oxa.approval.dangerous",
+        "",
+    )
+    .key(Kind::StringList, "[]")
+    .hidden(),
+    // #1512 S5: what an unattended run does with a dangerous command (no one to ask): refuse it,
+    // file an approval request, or `auto` (refuse under the OS sandbox, request without it).
+    // User settings only.
+    d(
+        "oxa.approval.unattended",
+        Group::Advanced,
+        "",
+        "oxa.approval.unattended",
+        "",
+    )
+    .key(Kind::Enum(&["auto", "refuse", "request"]), "\"auto\"")
+    .hidden(),
     // F5: seconds; unset = 120; 0 = none.
     // Background jobs that may run at once (`bash {background: true}`); at least 1.
     d("oxa.bash.maxJobs", Group::Advanced, "", "oxa.bash.maxJobs", "")
         .key(Kind::Number, "16")
         .hidden(),
+    // Longest a bash job read blocks, in seconds (default 300; at least 1).
+    d("oxa.bash.waitCap", Group::Advanced, "", "oxa.bash.waitCap", "")
+        .key(Kind::Number, "300")
+        .hidden(),
+    // R1: the first wait after a transient request failure of a pursuing goal; `0` opts out.
+    d(
+        "oxa.goal.failureBackoffSeconds",
+        Group::Advanced,
+        "",
+        "oxa.goal.failureBackoffSeconds",
+        "",
+    )
+    .key(Kind::Number, "60")
+    .hidden(),
+    d(
+        "oxa.goal.idlePause",
+        Group::Advanced,
+        "",
+        "oxa.goal.idlePause",
+        "",
+    )
+    .key(Kind::Bool, "false")
+    .hidden(),
     // V020-OPTIMIZE #1 / #2: unset = on.
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     // K3: a headless print or JSON run of a persisted session with a pursuing goal takes
@@ -25,10 +81,32 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     )
     .key(Kind::Bool, "true")
     .hidden(),
+    // W4: a finished background bash job (not one stopped) queues one follow-up message with its
+    // exit code and last lines; true (the default, owner decision); false (opt-out) = the job's
+    // output waits for a read. User settings only: a project file cannot enable it.
+    d(
+        "oxa.jobs.wakeOnFinish",
+        Group::Advanced,
+        "",
+        "oxa.jobs.wakeOnFinish",
+        "",
+    )
+    .key(Kind::Bool, "true")
+    .hidden(),
     // L1: apply a changed settings file at the next run; on by default, `false` opts out.
     d("oxa.liveSettings", Group::Advanced, "", "oxa.liveSettings", "")
         .key(Kind::Bool, "true")
         .hidden(),
+    // B2b: user-only largest image and per-batch image budget; 0 = no limit.
+    d(
+        "oxa.read.maxImageBytes",
+        Group::Advanced,
+        "",
+        "oxa.read.maxImageBytes",
+        "",
+    )
+    .key(Kind::Number, "20971520")
+    .hidden(),
     // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
     d(
         "oxa.reportIssue.dailyNew",
@@ -38,6 +116,26 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "",
     )
     .key(Kind::Number, "null")
+    .hidden(),
+    // #1512 S3: the OS sandbox of an interactive (attended) run; user settings only.
+    d(
+        "oxa.sandbox.interactive",
+        Group::Advanced,
+        "",
+        "oxa.sandbox.interactive",
+        "",
+    )
+    .key(Kind::Bool, "false")
+    .hidden(),
+    // #1512 S3: the OS sandbox of an unattended run (workers, subagents, headless goals).
+    d(
+        "oxa.sandbox.unattended",
+        Group::Advanced,
+        "",
+        "oxa.sandbox.unattended",
+        "",
+    )
+    .key(Kind::Bool, "true")
     .hidden(),
     // Skills another product synced into `~/.agents/skills` (`synced/`); off = skipped.
     // O-146: unset = on except on Flash and below 32K (`SubagentHooks::declared_for`).
@@ -52,6 +150,10 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .key(Kind::Number, "8")
     .hidden(),
     // The repeat guard for identical tool calls (oxa-core `repeat.rs`).
+    // The `wait` tool is declared in every session; `false` opts out (read at session start).
+    d("oxa.tools.wait", Group::Advanced, "", "oxa.tools.wait", "")
+        .key(Kind::Bool, "true")
+        .hidden(),
     // W2: the `wait` tool's `until` conditions, answered by hook sets (`Hooks::poll_event`).
     d(
         "oxa.wait.maxSeconds",
@@ -60,7 +162,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "oxa.wait.maxSeconds",
         "",
     )
-    .key(Kind::Number, "3600")
+    .key(Kind::Number, "86400")
     .hidden(),
     d(
         "oxa.wait.pollSeconds",
@@ -81,6 +183,32 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "",
     )
     .key(Kind::StringList, "[\"cargo check\"]")
+    .hidden(),
+    // K5a: the `worker` tool (never in a worker child) and the most live workers a session runs.
+    // The `oxa.workers.*` keys are user settings only: a project file cannot start processes,
+    // raise a limit or change the stop timing (`Settings::user_bool`, `user_u32`, `user_value`).
+    d(
+        "oxa.workers.enabled",
+        Group::Advanced,
+        "",
+        "oxa.workers.enabled",
+        "",
+    )
+    .key(Kind::Bool, "true")
+    .hidden(),
+    d("oxa.workers.max", Group::Advanced, "", "oxa.workers.max", "")
+        .key(Kind::Number, "4")
+        .hidden(),
+    // K5b: relaunch the unfinished, dead workers of a session when it is opened again. User
+    // settings only: a project file can neither enable nor disable it (`Settings::user_bool`).
+    d(
+        "oxa.workers.resumeOnStart",
+        Group::Advanced,
+        "",
+        "oxa.workers.resumeOnStart",
+        "",
+    )
+    .key(Kind::Bool, "true")
     .hidden(),
     // K4: seconds a worker gets after SIGINT before its process group gets SIGTERM.
     d(

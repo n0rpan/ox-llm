@@ -10,6 +10,18 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     // the normal `--model` selector and the normal gateway. User settings only;
     // unset keeps the ordinary startup model.
     d(
+        "oxa.a2a.enabled",
+        Group::Lead,
+        "Lead",
+        "Agent channel",
+        "Sessions accept follow-ups and control from the lead over a local authenticated channel. Off: file inbox only.",
+    )
+    .key(Kind::Bool, "true")
+    .toggle()
+    .user_only()
+    .apply(Apply::Restart)
+    .web(WebEdit::Edit),
+    d(
         "oxa.lead.model",
         Group::Lead,
         "Lead",
@@ -21,15 +33,15 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .user_only()
     .apply(Apply::Restart)
     .web(WebEdit::Edit),
-    // Read-only lead shadow preset; user settings only, default off.
+    // Read-only lead shadow preset; user settings only, on by default (`false` opts out).
     d(
         "oxa.lead.shadow",
         Group::Lead,
         "Lead",
         "Shadow mode",
-        "Enable `oxa lead --shadow`: proposals only, no actions.",
+        "Allow `oxa lead --shadow`: proposals only, no actions.",
     )
-    .key(Kind::Bool, "false")
+    .key(Kind::Bool, "true")
     .toggle()
     .user_only()
     .apply(Apply::Restart)

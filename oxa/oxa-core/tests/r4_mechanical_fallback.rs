@@ -53,6 +53,7 @@ fn build(env: &TestEnv, engine: Arc<dyn Engine>, compact: CompactPolicy, setting
         modes: Mutex::new((QueueMode::All, QueueMode::OneAtATime)),
         dirty: AtomicBool::new(false),
         gate: Default::default(),
+        wake: Default::default(),
     });
     SessionState {
         goal: None,
@@ -326,6 +327,7 @@ fn mid_run_failure_is_mechanical() {
         completion: 0,
         cached: 0,
         cached_missing: false,
+        unreported: false,
     });
     let mut sink = VecSink::default();
     assert!(maybe_compact(&mut st, false, &mut sink, &mut HeadlessUi::default()).expect("not blocked"));

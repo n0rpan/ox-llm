@@ -34,7 +34,7 @@ fullscreenScrollbar|Enum(["auto", "always", "hidden"])|"auto"|true
 fullscreenWheelScrollLines|Any|"auto"|true
 hideThinkingBlock|Bool|false|true
 hooks|Object|{}|true
-httpIdleTimeoutMs|Any|300000|true
+httpIdleTimeoutMs|Any|900000|true
 httpProxy|String|null|true
 images.autoResize|Bool|true|false
 images.blockImages|Bool|false|true
@@ -42,9 +42,14 @@ markdown.codeBlockIndent|String|"  "|true
 markdown.mermaid|Enum(["off", "final", "streaming"])|"streaming"|true
 modelThinkingLevels|Object|{}|true
 outputPad|Number|1|true
+oxa.a2a.enabled|Bool|true|true
 oxa.allowHomeCwd|Bool|false|true
+oxa.approval.always|StringList|[]|true
+oxa.approval.dangerous|StringList|[]|true
+oxa.approval.unattended|Enum(["auto", "refuse", "request"])|"auto"|true
 oxa.bash.defaultTimeout|Number|null|true
 oxa.bash.maxJobs|Number|16|true
+oxa.bash.waitCap|Number|300|true
 oxa.bootPreload|Bool|true|true
 oxa.builtinSkills|Bool|true|true
 oxa.cloud|Object|{}|true
@@ -55,15 +60,19 @@ oxa.compaction.summaryTarget|Number|null|true
 oxa.compaction.turnStart|Bool|null|true
 oxa.diet.output|Bool|null|true
 oxa.diet.tools|Bool|null|true
+oxa.emptyReplyRetries|Number|1|true
 oxa.engine.allowRemote|Bool|false|true
-oxa.engine.inProcessCloud|Bool|false|true
+oxa.engine.inProcessCloud|Bool|null|true
 oxa.engine.inProcessLocal|Bool|false|true
 oxa.envNote|Bool|null|true
+oxa.goal.failureBackoffSeconds|Number|60|true
+oxa.goal.idlePause|Bool|false|true
 oxa.inbox.headless|Bool|true|true
+oxa.jobs.wakeOnFinish|Bool|true|true
 oxa.lead.model|String|null|true
 oxa.lead.serve|Object|{}|true
 oxa.lead.sessionId|String|null|true
-oxa.lead.shadow|Bool|false|true
+oxa.lead.shadow|Bool|true|true
 oxa.liveSettings|Bool|true|true
 oxa.local|Object|{}|true
 oxa.maxTurns|Number|null|true
@@ -71,20 +80,24 @@ oxa.mode|Enum(["plan", "workspace", "ask"])|"workspace"|true
 oxa.offline|Bool|false|true
 oxa.prefill.paste|Bool|null|true
 oxa.prefill.tools|Bool|null|true
+oxa.read.maxImageBytes|Number|20971520|true
 oxa.reportIssue.dailyNew|Number|null|true
 oxa.reportIssue.repo|String|null|true
 oxa.reportIssue.semanticDedupe|Bool|false|true
 oxa.sampling.mode|Enum(["greedy", "model"])|"greedy"|true
 oxa.sampling.seed|Number|null|true
 oxa.sandbox.allowHomeWrite|Bool|false|true
+oxa.sandbox.interactive|Bool|false|true
 oxa.sandbox.net|Enum(["on", "off"])|"on"|true
 oxa.sandbox.readPaths|StringList|[]|true
+oxa.sandbox.sockets|StringList|[]|true
+oxa.sandbox.unattended|Bool|true|true
 oxa.sandbox.writePaths|StringList|[]|true
 oxa.share.remoteModels|StringList|[]|true
 oxa.skills.includeSynced|Bool|false|true
 oxa.subagent.enabled|Bool|null|true
 oxa.subagent.maxChildren|Number|8|true
-oxa.subagent.remoteConcurrency|Number|4|true
+oxa.subagent.remoteConcurrency|Number|8|true
 oxa.subagent.resultCap|Number|6144|true
 oxa.subagent.smallContext|Bool|false|true
 oxa.subagent.softTokens|Number|24000|true
@@ -95,12 +108,16 @@ oxa.thinking.toolFollowups|Enum(["auto", "on", "off"])|"auto"|true
 oxa.toolOutputCap|Number|16384|true
 oxa.toolRepair|Bool|true|true
 oxa.toolRepeatGuard|Bool|true|true
-oxa.wait.maxSeconds|Number|3600|true
+oxa.tools.wait|Bool|true|true
+oxa.wait.maxSeconds|Number|86400|true
 oxa.wait.pollSeconds|Number|30|true
 oxa.webSearch.enabled|Bool|true|true
 oxa.webSearch.maxTokens|Number|2048|true
 oxa.webSearch.provider|Enum(["brave", "none"])|"brave"|true
 oxa.work.localChecks|StringList|["cargo check"]|true
+oxa.workers.enabled|Bool|true|true
+oxa.workers.max|Number|4|true
+oxa.workers.resumeOnStart|Bool|true|true
 oxa.workers.stopGraceSeconds|Number|10|true
 packages|Any|[]|true
 permissions.defaultMode|Enum(["standard", "auto", "yolo", "plan"])|"auto"|true
@@ -109,7 +126,7 @@ quietStartup|Any|false|true
 retry.baseDelayMs|Number|2000|true
 retry.enabled|Bool|true|true
 retry.maxAgentDelayMs|Number|60000|true
-retry.maxRetries|Number|3|true
+retry.maxRetries|Number|10|true
 retry.provider.maxRetries|Number|0|true
 retry.provider.maxRetryDelayMs|Number|60000|true
 retry.provider.timeoutMs|Number|null|true
@@ -188,6 +205,7 @@ Models|retry.enabled
 Models|retry.maxRetries
 Models|retry.baseDelayMs
 Models|retry.maxAgentDelayMs
+Models|oxa.emptyReplyRetries
 Models|retry.provider.maxRetries
 Models|retry.provider.maxRetryDelayMs
 Models|httpIdleTimeoutMs
@@ -199,6 +217,7 @@ Budgets|oxa.cloud.subscription_limits.daily_tokens
 Budgets|oxa.cloud.discover_models
 Budgets|oxa.cloud.models
 Budgets|oxa.cloud.unpriced_discovered_pricing
+Budgets|oxa.cloud.openrouter_provider
 Budgets|oxa.cloud.discovery
 Budgets|oxa.cloud.subscription
 Budgets|oxa.maxTurns
@@ -245,6 +264,7 @@ Codemode|codemode.enabled
 Codemode|codemode.mode
 Codemode|codemode.toolSearch
 Codemode|codemode.maxWorkers
+Lead|oxa.a2a.enabled
 Lead|oxa.lead.model
 Lead|oxa.lead.shadow
 Lead|oxa.lead.serve
@@ -269,6 +289,7 @@ Safety|oxa.sandbox.net
 Safety|oxa.sandbox.allowHomeWrite
 Safety|oxa.sandbox.readPaths
 Safety|oxa.sandbox.writePaths
+Safety|oxa.sandbox.sockets
 Advanced|sessionDir
 Advanced|oxa.local
 Advanced|oxa.lead.sessionId

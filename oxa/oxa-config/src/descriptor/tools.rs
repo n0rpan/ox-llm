@@ -300,7 +300,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Cloud subagents at once",
         "Children of one call that run at once on cloud models.",
     )
-    .key(Kind::Number, "4")
+    .key(Kind::Number, "8")
     .number(Unit::Count)
     .advise(1, 16, 1, "more than 16 children at once is unusual")
     .apply(Apply::Reload)
@@ -355,7 +355,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(fields_of("oxa.cloud").count(), 8);
+        assert_eq!(fields_of("oxa.cloud").count(), 9);
     }
 
     /// The editor of each schema key matches its kind, and choices name only schema options.
@@ -401,6 +401,7 @@ mod tests {
         for key in [
             "oxa.cloud.models",
             "oxa.cloud.unpriced_discovered_pricing",
+            "oxa.cloud.openrouter_provider",
             "oxa.cloud.discovery",
         ] {
             let descriptor = descriptors()

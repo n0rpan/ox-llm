@@ -17,7 +17,7 @@ Used by automated security review (Codex) and by human/agent reviewers. Keep it 
 ## Trust boundaries (must hold)
 1. **Secrets never leave their store:** never printed, logged, put in prompts, tool output, session files, telemetry, test fixtures, CI logs or error messages; redaction covers streamed text and decoded tool arguments.
 2. **User-only settings:** a project file can never change engine transport, native binary/provider selection, `allowRemote`, sharing, login, feature flags, or budgets.
-3. **Sandbox:** model tools run under bubblewrap with private paths denied (credential files, `~/.oxa` private dirs, ledgers); no new escape routes (bind mounts, env passthrough, `/proc`, sockets, setuid helpers).
+3. **Sandbox:** the sandbox standard in `SECURITY.md` says which runs use bubblewrap (unattended runs without yolo). Where it is on, private paths are denied (credential files, `~/.oxa` private dirs, ledgers) and there are no new escape routes (bind mounts, env passthrough, `/proc`, sockets, setuid helpers). In every mode the file tools deny private paths.
 4. **Offline mode** makes no network calls at all.
 5. **Network guard:** the engine endpoint is loopback unless the user enables remote in user settings; no credential is sent across a redirect or to a host it was not issued for.
 6. **Budgets and ledgers:** every metered request is reserved before sending and settled from validated provider usage; unknown usage stays reserved; caps refuse the next request; ledger rows are append-only and validated.

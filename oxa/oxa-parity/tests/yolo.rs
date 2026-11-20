@@ -139,7 +139,8 @@ fn auto_keeps_bash_in_the_sandbox_and_yolo_does_not() {
             &format!("{{\"command\": \"echo leaked > '{}'\"}}", escaped.display()),
         )
     };
-    let (out, _) = run(&env, turn(), &["-p", "--auto", "run it"]);
+    // #1512 S3: an attended --auto run has no OS sandbox unless asked for it.
+    let (out, _) = run(&env, turn(), &["-p", "--auto", "--sandbox", "run it"]);
     assert!(out.status.success());
     assert!(!escaped.exists(), "bash wrote outside the work tree under --auto");
 
@@ -193,7 +194,7 @@ fn bash_and_file_tools_share_tmp_paths_in_auto_and_yolo() {
             ScriptTurn::text("ok"),
         ];
         let srv = FakeServer::start(turns, FakeOpts::default()).unwrap();
-        let out = run_oxa(&env, &srv.url(), &["-p", flag, "use the tools"], "");
+        let out = run_oxa(&env, &srv.url(), &["-p", flag, "--sandbox", "use the tools"], "");
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         let reqs = srv.requests();
         assert_eq!(reqs.len(), 7, "{flag}: the complete tool loop must run");
@@ -402,7 +403,12 @@ fn auto_bash_keeps_session_scratch_between_commands() {
         FakeOpts::default(),
     )
     .unwrap();
-    let out = run_oxa(&env, &srv.url(), &["-p", "--auto", "save then load"], "");
+    let out = run_oxa(
+        &env,
+        &srv.url(),
+        &["-p", "--auto", "--sandbox", "save then load"],
+        "",
+    );
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let reqs = srv.requests();
     let result = reqs
