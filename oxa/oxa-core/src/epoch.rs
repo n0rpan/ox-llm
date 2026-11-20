@@ -42,13 +42,15 @@ fn gather(st: &SessionState) -> Inputs {
         all.extend(h.tools());
         extra.extend(h.prompt_sections());
     }
+    let policy = crate::goal::WaitPolicy::from_settings(&st.settings);
+    // `wait` is declared in every session from its start (`oxa.tools.wait`, default on), with
+    // the same spec a goal's `wait` has, so starting a goal does not change that tool entry.
+    if st.settings.bool("oxa.tools.wait", true) {
+        all.push(crate::goal::wait_tool(&st.shared, &st.hooks, policy, &st.jobs));
+    }
     if let Some(goal) = st.goal.as_ref().filter(|goal| goal.pursuing()) {
         all.retain(|t| !matches!(t.spec().name.as_str(), "goal_done" | "wait"));
-        all.extend(goal.tools(
-            &st.shared,
-            &st.hooks,
-            crate::goal::WaitPolicy::from_settings(&st.settings),
-        ));
+        all.extend(goal.tools(&st.shared, &st.hooks, policy, &st.jobs));
         extra.push((
             "goal".into(),
             crate::prompt::goal_start(&goal.snapshot().objective),
@@ -63,7 +65,12 @@ fn gather(st: &SessionState) -> Inputs {
     let (mut active, warnings) = resolve_toolset(&all, &sel);
     crate::toolset::apply_codemode_mode(&mut active, &st.settings);
     let specs = active.specs();
-    let tune = crate::tune::tune_for(&st.settings, st.info.n_ctx, crate::tune::budget_soft(st));
+    let tune = crate::tune::tune_for(
+        &st.settings,
+        st.info.n_ctx,
+        crate::tune::budget_soft(st),
+        st.info.images == Some(true),
+    );
     Inputs {
         all,
         active,
@@ -305,6 +312,7 @@ pub fn reload(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) 
         trusted,
     );
     st.settings = settings;
+    crate::session::sync_job_wake(st);
     crate::settings_refresh::resync(st);
     st.resources = resources;
     crate::host::observe_hooks(st, HookPoint::SessionShutdown, &Value::Null, sink, ui);

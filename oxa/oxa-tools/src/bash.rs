@@ -492,6 +492,7 @@ impl BashTool {
         if let Err(e) = self.sandbox(cx).check() {
             return ToolOutput::error(e.to_string());
         }
+        let label = command;
         let command = match self.shell.command(command) {
             Ok(c) => c,
             Err(e) => return ToolOutput::error(e),
@@ -507,7 +508,7 @@ impl BashTool {
             timeout_s: timeout_s.filter(|t| *t > 0),
             env: cx.env.to_vec(),
         };
-        match self.jobs.spawn(spec) {
+        match self.jobs.spawn_labeled(spec, label) {
             Ok(id) => ToolOutput {
                 images: Vec::new(),
                 text: format!(
@@ -572,6 +573,9 @@ impl BashTool {
             let expired = limit.is_some_and(|l| started.elapsed() >= Duration::from_secs(u64::from(l)));
             if expired {
                 let secs = limit.unwrap_or(0);
+                // This job is no longer a foreground result, so retain only the normal
+                // background tail before returning control to the caller.
+                let _ = self.jobs.bound_output(id);
                 let mut text = format!(
                     "Command still running after {} (wall time); it was not stopped. It continues as background job {id}. Wait for it with bash {{\"job\": \"{id}\", \"wait_s\": 60}}, read its output with bash {{\"job\": \"{id}\"}}, or stop it with bash {{\"job\": \"{id}\", \"kill\": true}}.",
                     fmt_wall(started.elapsed())
@@ -639,9 +643,12 @@ impl BashTool {
             Some(own) => {
                 let mut job_spec = spec.clone();
                 job_spec.timeout_s = None;
-                match self.jobs.spawn_on(own, job_spec, true) {
+                match self.jobs.spawn_on_labeled(own, job_spec, true, raw_command) {
                     Ok(id) => match self.follow_job(&id, soft_limit, cx, &mut sink) {
-                        Followed::Detached(out) => return out,
+                        Followed::Detached(out) => {
+                            self.jobs.release_to_background(&id);
+                            return out;
+                        }
                         Followed::Done(res) => {
                             wall_note = started.elapsed() >= WALL_NOTE_AFTER;
                             res
@@ -2261,6 +2268,30 @@ mod poll_tests {
     }
 
     #[test]
+    fn command_past_its_timeout_keeps_bounded_output() {
+        let (tx, rx) = channel();
+        tx.send(vec![b'x'; crate::jobs::BUFFER_CAP * 2]).unwrap();
+        let jobs = Arc::new(JobRegistry::new());
+        let sandbox = Arc::new(Chunks { rx: Mutex::new(rx) });
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone()).with_sandbox(sandbox);
+
+        let (out, _) = job_call(&tool, json!({"command": "yes", "timeout": 1}));
+
+        // Do not echo command output from this retention test into test logs. In
+        // production that output may contain sensitive command data.
+        assert!(!out.is_error, "bash call unexpectedly failed");
+        assert_eq!(out.ui["movedToBackground"], json!(true));
+        assert_eq!(jobs.buffered_len("job-1"), Some(crate::jobs::BUFFER_CAP));
+        tx.send(vec![b'y'; crate::jobs::BUFFER_CAP * 2]).unwrap();
+        while jobs.read("job-1").unwrap().total != (crate::jobs::BUFFER_CAP * 4) as u64 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(jobs.buffered_len("job-1"), Some(crate::jobs::BUFFER_CAP));
+        drop(tx);
+        jobs.kill_all();
+    }
+
+    #[test]
     fn command_that_ends_in_time_returns_its_output_as_before() {
         let jobs = Arc::new(JobRegistry::new());
         let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone())
@@ -2272,6 +2303,54 @@ mod poll_tests {
         assert_eq!(streamed, "start\nend\n");
         // The finished foreground job is forgotten: no slot, no readable leftover.
         assert_eq!(jobs.running(), 0);
+        assert!(jobs.list().is_empty());
+    }
+
+    /// #1782: an executor can fail before it has a process to stream from. The foreground job
+    /// path must retain the diagnostic returned in `ExecResult.output`.
+    #[test]
+    fn foreground_job_preserves_process_creation_failure() {
+        struct SpawnFails;
+
+        impl Sandbox for SpawnFails {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+
+            fn run(&self, _s: &ExecSpec, _c: &CancelToken, _live: &mut dyn FnMut(&[u8])) -> ExecResult {
+                unreachable!("the foreground job path uses run_streaming")
+            }
+
+            fn run_streaming(
+                &self,
+                _s: &ExecSpec,
+                _c: &CancelToken,
+                _live: &mut dyn FnMut(&[u8]),
+            ) -> ExecResult {
+                ExecResult {
+                    output: b"bash: synthetic process creation failure".to_vec(),
+                    exit: None,
+                    timed_out: false,
+                    unsandboxed: false,
+                }
+            }
+        }
+
+        let jobs = Arc::new(JobRegistry::new());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone())
+            .with_sandbox(Arc::new(SpawnFails));
+        let (out, streamed) = job_call(&tool, json!({"command": "true", "timeout": 30}));
+
+        assert!(out.is_error, "{out:?}");
+        assert!(
+            out.text.contains("bash: synthetic process creation failure"),
+            "{out:?}"
+        );
+        assert_eq!(streamed, "bash: synthetic process creation failure");
         assert!(jobs.list().is_empty());
     }
 }

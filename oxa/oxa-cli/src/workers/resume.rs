@@ -155,6 +155,9 @@ mod tests {
                 no_mcp: true,
                 no_web_search: true,
                 no_extensions: true,
+                no_approve: true,
+                no_skills: true,
+                no_prompt_templates: true,
             },
         };
         let (args, _) = resume_argv(&rec("workspace"), Mode::Workspace, Autonomy::Standard, &scope).unwrap();
@@ -164,6 +167,9 @@ mod tests {
             "--session-dir=/work/sessions",
             "--offline",
             "--no-context-files",
+            "--no-approve",
+            "--no-skills",
+            "--no-prompt-templates",
             "--tools=read",
             "--no-tools",
             "--no-builtin-tools",

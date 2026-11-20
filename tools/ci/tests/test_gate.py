@@ -158,7 +158,9 @@ class RetiredControllerJobs(unittest.TestCase):
 
 class EngineNextest(unittest.TestCase):
     def setUp(self):
-        self.engine = job_block((WORKFLOWS / 'build.yml').read_text(), 'engine')
+        build = (WORKFLOWS / 'build.yml').read_text()
+        # Build/package, partitioned tests and the inventory are parallel jobs under one `build` result.
+        self.engine = '\n'.join(job_block(build, name) for name in ('engine', 'engine-tests'))
         self.config = (WORKFLOWS.parents[1] / 'engine' / '.config' / 'nextest.toml').read_text()
 
     def test_engine_job_runs_nextest_doctests_and_counts(self):
@@ -170,13 +172,28 @@ class EngineNextest(unittest.TestCase):
         self.assertIn('tools/ci/engine_test_count.py', self.engine)
         self.assertNotRegex(self.engine, r'cargo test --release --locked --no-fail-fast --workspace --exclude qwen4exp\s*$')
 
-    def test_wall_clock_binaries_run_alone(self):
+    def test_engine_tests_are_partitioned_and_flash_tests_are_split(self):
+        build = (WORKFLOWS / 'build.yml').read_text()
+        tests = job_block(build, 'engine-tests')
+        self.assertIn('shard: [1, 2, 3]', tests)
+        self.assertIn('--partition hash:${{ matrix.shard }}/3', tests)
+        self.assertNotIn('nextest run', job_block(build, 'engine'))
+        self.assertIn('tools/ci/engine_test_count.py', tests)
+        flash = job_block(build, 'flash-tests')
+        self.assertIn('part: [server, qwen4exp]', flash)
+        self.assertIn('flash-m3 selftest', flash)
+        self.assertNotIn('cargo test', job_block(build, 'flash'))
+
+    def test_wall_clock_tests_run_alone_and_server_is_not_whole(self):
         self.assertRegex(self.config, r'(?m)^\[test-groups\.wall-clock\]\nmax-threads = 1$')
-        override = re.search(r"\[\[profile\.default\.overrides\]\]\nfilter = '(.*)'\ntest-group = 'wall-clock'\n"
-                             r"threads-required = 'num-test-threads'", self.config)
+        override = re.search(r"\[\[profile\.default\.overrides\]\]\nfilter = \'\'\'(.*?)\'\'\'\ntest-group = 'wall-clock'\n"
+                             r"threads-required = 'num-test-threads'", self.config, re.S)
         self.assertIsNotNone(override)
-        for binary in ('binary_id(sched)', 'binary_id(server)'):
-            self.assertIn(binary, override.group(1))
+        flt = override.group(1)
+        self.assertIn('binary_id(sched)', flt)
+        # the server lib tests run in parallel except the named elapsed-time tests
+        self.assertNotRegex(flt, r'binary_id\(server\)\s*(\||$)')
+        self.assertIn('binary_id(server) & (', flt)
 
 
 if __name__ == '__main__':

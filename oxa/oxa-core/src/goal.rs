@@ -379,6 +379,7 @@ impl GoalRuntime {
         shared: &Arc<crate::queue::Shared>,
         hooks: &[Arc<dyn oxa_proto::Hooks>],
         wait: WaitPolicy,
+        jobs: &Arc<oxa_tools::JobRegistry>,
     ) -> Vec<Arc<dyn Tool>> {
         let interrupt = shared.cancel_retry.clone();
         [
@@ -396,10 +397,11 @@ impl GoalRuntime {
         .into_iter()
         .map(|(name, description, schema)| {
             Arc::new(Control {
-                goal: self.clone(),
+                goal: Some(self.clone()),
                 interrupt: interrupt.clone(),
                 shared: shared.clone(),
                 hooks: hooks.to_vec(),
+                jobs: jobs.clone(),
                 wait,
                 spec: ToolSpec {
                     name: name.into(),
@@ -414,6 +416,32 @@ impl GoalRuntime {
         .collect()
     }
 }
+/// The `wait` tool of a session with no goal pursued: the same spec as the goal's `wait`
+/// (so the cached prefix does not move when a goal starts), bounded by `oxa.wait.maxSeconds`,
+/// cancellation, input from the owner and the run's own limits instead of a goal budget.
+pub(crate) fn wait_tool(
+    shared: &Arc<crate::queue::Shared>,
+    hooks: &[Arc<dyn oxa_proto::Hooks>],
+    wait: WaitPolicy,
+    jobs: &Arc<oxa_tools::JobRegistry>,
+) -> Arc<dyn Tool> {
+    Arc::new(Control {
+        goal: None,
+        interrupt: shared.cancel_retry.clone(),
+        shared: shared.clone(),
+        hooks: hooks.to_vec(),
+        jobs: jobs.clone(),
+        wait,
+        spec: ToolSpec {
+            name: "wait".into(),
+            description: crate::prompt::GOAL_WAIT_DESCRIPTION.into(),
+            schema_json: crate::prompt::GOAL_WAIT_SCHEMA.into(),
+            class: ToolClass::Write,
+            exposure: Exposure::Direct,
+            source: Source::Builtin,
+        },
+    })
+}
 /// The `oxa.wait.*` settings, read when the goal tools are built (each epoch). Missing or
 /// mistyped values fall back to the defaults.
 #[derive(Clone, Copy, Debug)]
@@ -427,23 +455,30 @@ impl WaitPolicy {
     pub(crate) fn from_settings(settings: &oxa_config::Settings) -> WaitPolicy {
         WaitPolicy {
             poll: Duration::from_secs(u64::from(settings.u32("oxa.wait.pollSeconds", 30)).max(1)),
-            max_secs: u64::from(settings.u32("oxa.wait.maxSeconds", 3600)).clamp(1, 86400),
+            max_secs: u64::from(settings.u32("oxa.wait.maxSeconds", 86400)).clamp(1, 86400),
         }
     }
 }
 struct Control {
-    goal: Arc<GoalRuntime>,
+    /// `None` for the `wait` of a session with no goal pursued.
+    goal: Option<Arc<GoalRuntime>>,
     interrupt: oxa_proto::CancelToken,
     /// Its `wait_wake` ends a wait early when input for the active session arrives.
     shared: Arc<crate::queue::Shared>,
     /// Hook sets consulted for a wait's `until` condition (`Hooks::poll_event`).
     hooks: Vec<Arc<dyn oxa_proto::Hooks>>,
+    /// The session's background jobs, for `until` `job_done`.
+    jobs: Arc<oxa_tools::JobRegistry>,
     wait: WaitPolicy,
     spec: ToolSpec,
 }
 impl Tool for Control {
     fn spec(&self) -> &ToolSpec {
         &self.spec
+    }
+    /// `wait` is in the default selection of every session; `-wait` in `defaultTools` removes it.
+    fn default_selected(&self) -> bool {
+        self.spec.name == "wait"
     }
     fn access(&self, args: &Value, _: &ToolCtx) -> Result<Vec<Access>, String> {
         validate(&self.spec.name, args)?;
@@ -462,8 +497,10 @@ impl Tool for Control {
             } else {
                 GoalStatus::Blocked
             };
-            return match self
-                .goal
+            let Some(goal) = self.goal.as_ref() else {
+                return ToolOutput::error("No goal is being pursued.");
+            };
+            return match goal
                 .lock()
                 .goal
                 .finish(status, args["evidence"].as_str().unwrap().into())
@@ -472,20 +509,24 @@ impl Tool for Control {
                 Err(e) => ToolOutput::error(e.to_string()),
             };
         }
-        let duration = {
-            let state = self.goal.lock();
-            if state.goal.status != GoalStatus::Pursuing || state.goal.exhausted() {
-                return ToolOutput::error("Goal is not pursuing or its budget is exhausted.");
+        let duration = match self.goal.as_ref() {
+            Some(goal) => {
+                let state = goal.lock();
+                if state.goal.status != GoalStatus::Pursuing || state.goal.exhausted() {
+                    return ToolOutput::error("Goal is not pursuing or its budget is exhausted.");
+                }
+                let asked = Duration::from_secs(args["seconds"].as_u64().unwrap().min(self.wait.max_secs));
+                let spent = state.clock.map_or(0, |t| t.elapsed().as_millis());
+                let remaining = state.goal.budget.max_time_ms.map(|cap| {
+                    Duration::from_millis(
+                        cap.saturating_sub(state.goal.elapsed_ms)
+                            .saturating_sub(u64::try_from(spent).unwrap_or(u64::MAX)),
+                    )
+                });
+                remaining.map_or(asked, |remaining| asked.min(remaining))
             }
-            let asked = Duration::from_secs(args["seconds"].as_u64().unwrap().min(self.wait.max_secs));
-            let spent = state.clock.map_or(0, |t| t.elapsed().as_millis());
-            let remaining = state.goal.budget.max_time_ms.map(|cap| {
-                Duration::from_millis(
-                    cap.saturating_sub(state.goal.elapsed_ms)
-                        .saturating_sub(u64::try_from(spent).unwrap_or(u64::MAX)),
-                )
-            });
-            remaining.map_or(asked, |remaining| asked.min(remaining))
+            // No goal: the run's own `--max-time` cancels `cx.cancel`; typed input wakes the wait.
+            None => Duration::from_secs(args["seconds"].as_u64().unwrap().min(self.wait.max_secs)),
         };
         self.shared.arm_wait_wake();
         live("Waiting; cancellation remains available.");
@@ -512,15 +553,23 @@ impl Control {
             // the wait has left so its own work cannot outlive the wait.
             let remaining = deadline.saturating_duration_since(Instant::now());
             let kind = until["kind"].as_str().unwrap_or("");
-            match self
-                .hooks
-                .iter()
-                .find_map(|h| h.poll_event(kind, until, remaining))
-            {
-                None => return ToolOutput::error(format!("Unknown wait condition: {kind}.")),
-                Some(Err(e)) => return ToolOutput::error(e),
-                Some(Ok(Some(evidence))) => return ToolOutput::ok(evidence),
-                Some(Ok(None)) => {}
+            if kind == "job_done" {
+                match self.job_done(until) {
+                    Err(e) => return ToolOutput::error(e),
+                    Ok(Some(evidence)) => return ToolOutput::ok(evidence),
+                    Ok(None) => {}
+                }
+            } else {
+                match self
+                    .hooks
+                    .iter()
+                    .find_map(|h| h.poll_event(kind, until, remaining))
+                {
+                    None => return ToolOutput::error(format!("Unknown wait condition: {kind}.")),
+                    Some(Err(e)) => return ToolOutput::error(e),
+                    Some(Ok(Some(evidence))) => return ToolOutput::ok(evidence),
+                    Some(Ok(None)) => {}
+                }
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -531,18 +580,46 @@ impl Control {
                 cx.cancel,
                 &self.interrupt,
                 &self.shared.wait_wake,
-                remaining.min(self.wait.poll),
+                remaining.min(if until["kind"] == "job_done" {
+                    Duration::from_millis(250).min(self.wait.poll)
+                } else {
+                    self.wait.poll
+                }),
             );
             if cx.cancel.is_cancelled() {
                 return ToolOutput::error("Wait cancelled.");
             }
             if self.shared.wait_wake.is_cancelled() {
+                // A job's own finish wakes the session too: report the job, not the wake.
+                if until["kind"] == "job_done" {
+                    if let Ok(Some(evidence)) = self.job_done(until) {
+                        return ToolOutput::ok(evidence);
+                    }
+                }
                 return ToolOutput::ok("Wait ended: input arrived.");
             }
             if self.interrupt.is_cancelled() {
                 return ToolOutput::ok("Wait ended.");
             }
         }
+    }
+    /// `until {kind:"job_done", job:<id>}`: the background bash job has exited or was killed.
+    /// Reading the listing does not consume the job's output.
+    fn job_done(&self, until: &Value) -> Result<Option<String>, String> {
+        let id = until["job"]
+            .as_str()
+            .ok_or("wait until job_done needs `job` (the job id).")?;
+        let info = self
+            .jobs
+            .list()
+            .into_iter()
+            .find(|j| j.id == id)
+            .ok_or_else(|| format!("Unknown job: {id}"))?;
+        Ok(match info.status {
+            oxa_tools::JobStatus::Running => None,
+            oxa_tools::JobStatus::Exited(code) => Some(format!("Job {id} finished: exit {code}.")),
+            _ => Some(format!("Job {id} finished: killed.")),
+        })
     }
 }
 fn validate(name: &str, args: &Value) -> Result<(), String> {

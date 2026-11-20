@@ -137,6 +137,7 @@ fn build_worker_hooks(
                             session_dir: (sessions_dir != default_sessions).then(|| sessions_dir.clone()),
                             narrowing: crate::workers::launch::Narrowing {
                                 offline: i.args.offline,
+                                no_approve: i.args.approve == Some(false),
                                 no_context_files: i.args.no_context_files,
                                 // The live Lead's worker-only allowlist describes the tools exposed
                                 // to Lead, not the tools its coding workers may use. Ordinary parent
@@ -147,6 +148,8 @@ fn build_worker_hooks(
                                 no_mcp: i.args.no_mcp,
                                 no_web_search: i.args.no_web_search,
                                 no_extensions: i.args.no_extensions,
+                                no_skills: i.args.no_skills,
+                                no_prompt_templates: i.args.no_prompt_templates,
                             },
                         };
                         let agent_dir = if i.dirs.agent_dir.is_absolute() {

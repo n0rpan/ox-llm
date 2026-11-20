@@ -53,13 +53,12 @@ class ReleaseAssets(unittest.TestCase):
         self.assertEqual(dev.count('--prerelease --latest=false'), 2)
         self.assertIn('actions/attest-build-provenance@', dev)
 
-    def test_dev_version_extraction_handles_spaces_around_assignment(self):
+    def test_dev_version_comes_from_the_single_bump_helper(self):
         dev = (W / 'dev-build.yml').read_text()
-        self.assertIn('split($0,a,"=");gsub(/[" ]/,"",a[2]);print a[2]', dev)
-        command = r'''awk '/^\[workspace\.package\]/{p=1;next} /^\[/{p=0} p&&/^version[ ]*=/{split($0,a,"=");gsub(/[" ]/,"",a[2]);print a[2];exit}' oxa/Cargo.toml'''
-        result = subprocess.run(['/bin/sh', '-c', command], cwd=W.parents[1],
+        self.assertIn('tools/ci/dev_version.py', dev)
+        result = subprocess.run(['python3', '-I', 'tools/ci/dev_version.py', 'abc1234'], cwd=W.parents[1],
                                 text=True, capture_output=True, check=True)
-        self.assertRegex(result.stdout.strip(), r'^\d+\.\d+\.\d+[0-9A-Za-z.+-]*$')
+        self.assertRegex(result.stdout.strip(), r'^v\d+\.\d+\.\d+-dev\.abc1234$')
 
     def test_release_environment_resolves_itself_when_sourced_by_a_workflow(self):
         with tempfile.TemporaryDirectory() as temporary:

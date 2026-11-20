@@ -475,30 +475,30 @@ fn production_both_modes_execute_done_only_tools_resume_and_settle_without_pytho
                 .sum::<f64>();
             assert!((total - 0.000091).abs() < 1e-12);
         }
-        let refused = run(
-            &env,
-            &["-p", "--no-session", "--no-tools", "No allowance remains"],
-            None,
-        );
-        assert_eq!(refused.status.code(), Some(oxa_proto::EXIT_BUDGET));
-        assert_eq!(peer.requests().len(), 3);
-        let row = rows(&env).pop().unwrap();
-        assert_eq!(row["status"], 429);
-        assert_eq!(
-            row["error"],
-            if subscription {
-                "subscription_limit_exceeded"
-            } else {
-                "budget_exceeded"
-            }
-        );
-        assert_eq!(row["cost_usd"], 0.0);
+        // A metered budget refuses; a subscription's configured limits are advisory and never do.
+        let refused = (!subscription).then(|| {
+            let refused = run(
+                &env,
+                &["-p", "--no-session", "--no-tools", "No allowance remains"],
+                None,
+            );
+            assert_eq!(refused.status.code(), Some(oxa_proto::EXIT_BUDGET));
+            assert_eq!(peer.requests().len(), 3);
+            let row = rows(&env).pop().unwrap();
+            assert_eq!(row["status"], 429);
+            assert_eq!(row["error"], "budget_exceeded");
+            assert_eq!(row["cost_usd"], 0.0);
+            refused
+        });
         for path in [trace, resumed_trace] {
             let trace = fs::read_to_string(path).unwrap();
             assert!(trace.contains("execve(") && trace.contains("oxa"));
             assert!(!trace.to_ascii_lowercase().contains("python"), "{trace}");
         }
-        for output in [&first, &second, &refused] {
+        for output in [Some(&first), Some(&second), refused.as_ref()]
+            .into_iter()
+            .flatten()
+        {
             let visible = format!(
                 "{}{}",
                 String::from_utf8_lossy(&output.stdout),
