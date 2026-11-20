@@ -1330,6 +1330,13 @@ fn an_operator_commit_on_the_target_branch_is_reported_with_its_exact_sha_and_ne
     git(&env, &operator, &["commit", "-m", "operator commit"]);
     git(&env, &operator, &["push", "origin", "HEAD:refs/heads/agent/test"]);
     let remote_sha = git(&env, &operator, &["rev-parse", "HEAD"]);
+    // The operator's commit is known locally (fetched), so its relation can be classified; a
+    // commit that is not in the local repository is reported as `remote_unknown` with its SHA.
+    git(
+        &env,
+        &env.work().join("project"),
+        &["fetch", "origin", "agent/test"],
+    );
     let record = run_args(&env, edits(), &["work", "../tasks.json", "--publish"], Some(path));
     assert_eq!(record["outcome"], "blocked", "{record}");
     assert_eq!(record["publish_receipt"]["class"], "diverged", "{record}");
