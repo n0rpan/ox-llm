@@ -10,12 +10,18 @@
 //! * `OXA_CHILD_SOFT_TOKENS=<n>`: the child's soft compaction limit, applied as an in-memory
 //!   override of `oxa.compaction.softTokens` (the child compacts by W5 like any session).
 //!
+//! * `OXA_CHILD_FORK=<path>` (#1844 PR 2): the parent wrote its frozen prefix and its whole
+//!   conversation to this owner-only file; the child installs them as its own head before its
+//!   first prompt, so its first request continues the parent's and the engine reuses the
+//!   parent's state. Absent = an isolated child (or a cloud one).
+//!
 //! The variables are read from the `Env` given to `run` (never the process environment).
 use oxa_config::{Env, Settings};
 use oxa_core::SubagentHooks;
 use oxa_proto::{
     AssistantTurn, CancelToken, ChatRequest, Engine, EngineInfo, Level, OxaError, StreamEvent, TurnKind,
 };
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// The key the child's soft limit overrides.
@@ -31,6 +37,9 @@ pub(crate) struct ChildIdentity {
     /// `OXA_WORKER_DEPTH` set: a `worker` tool child, supervised by the session that started it.
     pub worker: bool,
     pub soft_tokens: Option<u32>,
+    /// The fork seed the parent wrote (#1844 PR 2): its prefix and wire, installed before the
+    /// first prompt.
+    pub fork: Option<PathBuf>,
 }
 
 impl ChildIdentity {
@@ -73,6 +82,9 @@ impl ChildIdentity {
                     ));
                 }
             }
+        }
+        if let Some(path) = env.get(oxa_core::fork::ENV_CHILD_FORK) {
+            id.fork = Some(PathBuf::from(path));
         }
         if let Some(s) = env.get(SubagentHooks::ENV_CHILD_SOFT_TOKENS) {
             match s.parse::<u32>() {

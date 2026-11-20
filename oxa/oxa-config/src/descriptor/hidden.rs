@@ -149,6 +149,16 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .hidden(),
     // Skills another product synced into `~/.agents/skills` (`synced/`); off = skipped.
     // O-146: unset = on except on Flash and below 32K (`SubagentHooks::declared_for`).
+    // Local children can run in their own session and prefix instead of forking.
+    d(
+        "oxa.subagent.isolated",
+        Group::Advanced,
+        "",
+        "oxa.subagent.isolated",
+        "",
+    )
+    .key(Kind::Bool, "false")
+    .hidden(),
     // Children per parent session (running or queued) and tasks or steps per call; at least 1.
     d(
         "oxa.subagent.maxChildren",

@@ -444,6 +444,10 @@ pub mod subagent {
     pub const SINGLE_FAILED: &str = "Agent {why}: {output}";
     /// The task line of a child's prompt: `{task}`.
     pub const TASK: &str = "Task: {task}";
+    /// A fork child's task line when its agent has a system prompt: the child continues the
+    /// parent's conversation (its frozen prefix and wire), which cannot carry an agent system
+    /// prompt of its own, so the prompt leads the task instead. `{prompt}`, `{task}`.
+    pub const FORK_PROMPT: &str = "{prompt}\n\nTask: {task}";
 }
 
 /// The `web_search` tool (wave H lane `search`, O-169; oxa-only, pi has no built-in search):

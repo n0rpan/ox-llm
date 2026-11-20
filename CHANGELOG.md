@@ -1,7 +1,8 @@
 # Changelog
 
 Release notes per version. Each public release is one squashed commit; its message carries the notes
-and the receipt ids (`oxc/benchmarks/results/public/<id>.json`).
+and the receipt ids (`oxc/benchmarks/results/public/<id>.json`). New changes go in
+[changelog fragments](changelog.d/README.md), which are included in the published notes.
 
 ## v0.2.0 (unreleased)
 
