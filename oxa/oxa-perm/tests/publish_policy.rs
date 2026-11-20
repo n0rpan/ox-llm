@@ -432,3 +432,20 @@ fn gh_mutation_is_bound_to_the_recorded_repository() {
         Decision::Ask
     );
 }
+
+#[test]
+fn gh_mutation_fingerprint_includes_remotes_after_risky_settings() {
+    let cwd = repo("my-branch");
+    set_config(
+        &cwd,
+        "[push]\n\tdefault = simple\n[remote \"origin\"]\n\turl = https://github.com/o/r.git\n",
+    );
+    let command = "gh pr comment --body hi";
+    assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Allow);
+
+    set_config(
+        &cwd,
+        "[push]\n\tdefault = simple\n[remote \"origin\"]\n\turl = https://github.com/o/other.git\n",
+    );
+    assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask);
+}

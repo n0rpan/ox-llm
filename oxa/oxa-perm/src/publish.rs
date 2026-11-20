@@ -614,6 +614,7 @@ fn urls_unchanged(session: &Path, target: &Path) -> bool {
 
 fn scan_config(dir: &Path, branch: &str, implicit: bool) -> (bool, Vec<String>) {
     let mut fp: Vec<String> = Vec::new();
+    let mut config_risky = false;
     let Some((gitdir, common)) = git_dirs(dir) else {
         return (true, fp);
     };
@@ -685,12 +686,12 @@ fn scan_config(dir: &Path, branch: &str, implicit: bool) -> (bool, Vec<String>) 
         if tracked {
             fp.push(format!("{section}.{}.{key}={val}", sub.as_deref().unwrap_or("")));
         }
-        if risky {
-            return (true, fp);
-        }
+        // Keep scanning after a risky setting: GH mutations use the complete URL fingerprint
+        // even though pushes separately reject the risky configuration.
+        config_risky |= risky;
     }
     fp.sort();
-    (false, fp)
+    (config_risky, fp)
 }
 
 /// Git drops a backslash before the following character in a quoted subsection name.
@@ -841,5 +842,5 @@ fn is_alias(globals: &[String], name: &str, cwd: &Path, dirs: &[String]) -> bool
             return true;
         }
     }
-    names.iter().any(|n| *n == name)
+    names.contains(&name)
 }
