@@ -310,7 +310,11 @@ const SCHEMA: &[KeyDef] = &[
     key("prompts", Kind::StringList, "[]"),
     key("quietStartup", Kind::Any, "false"),
     key("retry.baseDelayMs", Kind::Number, "2000"),
+    // #2050: a local engine that is down or keeps answering the same 5xx gives up after this
+    // short budget (a few seconds), not after the cloud backoff. Both are owner settings.
     key("retry.enabled", Kind::Bool, "true"),
+    key("retry.identical5xxRetries", Kind::Number, "2"),
+    key("retry.localMaxTotalMs", Kind::Number, "5000"),
     key("retry.maxAgentDelayMs", Kind::Number, "60000"),
     key("retry.maxRetries", Kind::Number, "10"),
     key("retry.provider.maxRetries", Kind::Number, "0"),
