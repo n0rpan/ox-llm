@@ -40,6 +40,8 @@ struct State {
     lookups: u64,
     /// (sha256 hex, bytes) of the frozen prefix announced for the next request.
     prefix: Option<(String, usize)>,
+    /// `bash` results that polled for CI (`ci_polls`); `None` until the driver reports it.
+    ci_polls: Option<u32>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -62,6 +64,7 @@ impl Default for State {
             log_failed: false,
             lookups: 0,
             prefix: None,
+            ci_polls: None,
         }
     }
 }
@@ -108,6 +111,9 @@ impl ResultFacts {
     }
     pub(crate) fn finish(&self, stats: oxa_core::Stats) {
         self.state.lock().unwrap_or_else(|p| p.into_inner()).finish = Some((stats.proved, stats.jobs_left));
+    }
+    pub(crate) fn ci_polls(&self, polls: u32) {
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).ci_polls = Some(polls);
     }
     pub(crate) fn session(&self, saved_id: Option<&str>) {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -212,6 +218,8 @@ impl ResultFacts {
         record["usage_scope"] = json!("process");
         // Web searches this invocation made (FH-N5 integrity report); null when unobserved.
         record["web_lookups"] = state.as_ref().map_or(Value::Null, |state| json!(state.lookups));
+        // `bash` calls that polled for CI from a shell loop (#1540); null when unobserved.
+        record["ci_polls"] = state.as_ref().map_or(Value::Null, |state| json!(state.ci_polls));
         // Successful tool calls and generated text are not checked workspace/commit evidence.
         record["files_changed"] = Value::Null;
         record["files_changed_evidence"] = json!("unavailable");

@@ -104,6 +104,7 @@ The tables below are generated from the page sheet in `oxa/oxa-config/src/descri
 |---|---|---|---|
 | `defaultTools` | list | `["read","bash","edit","write","grep","find","ls"]` | tools on by default; names may include `subagent`, `web_search`, `codemode` and `tool_search` |
 | `oxa.bash.defaultTimeout` | number (seconds) | unset | timeout of a bash call that names none; unset is 120; `0` is no timeout. A command still running at its timeout is not killed: it moves to a background job (the result gives the job id and the wall time). A call's own `timeout: 0` is no timeout too, and beats this default |
+| `oxa.bash.ciPollHint` | boolean | `true` | a `bash` command that polls for CI (a shell loop, `watch` or `--watch` around `gh run` / `gh pr checks`) keeps its result and gets a note with the native `wait` call (`until` `ci`) to use instead; `false` turns the note off. A hint, never a block. User settings only |
 | `oxa.bash.waitCap` | number (seconds) | `300` | the longest a bash job read (`wait_s`) blocks; a larger `wait_s` is cut to it. User settings only. At least 1 |
 | `oxa.bash.maxJobs` | number | `16` | background jobs (`bash` with `background: true`) that may run at once; above it a start goes ahead and the result warns, naming this key, unless `oxa.onExceed.bashJobs` is `stop`, which refuses the start. User settings only. At least 1 |
 | `oxa.diet.output` | bool | unset | the system prompt's "be concise" rule is replaced by rules on tool use and a final answer of at most 6 lines. Unset is on |

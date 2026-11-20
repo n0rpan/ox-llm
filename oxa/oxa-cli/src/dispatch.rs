@@ -2058,6 +2058,7 @@ fn run_headless(
             headless_inbox_enabled(&built.settings),
         ),
     };
+    built.result_facts.ci_polls(session.stats().ci_polls);
     built.result_facts.goal(session.goal());
     built.result_facts.finish(session.stats());
     // `session_shutdown` for the hook sets, then their script contexts and MCP servers stop.
