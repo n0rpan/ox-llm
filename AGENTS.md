@@ -24,6 +24,9 @@ code, tests, CI and docs; the owner validates on hardware.
   (user-only) turns it off. Do not add a path that skips the lease check or reads the setting from a
   project file.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
+- The native cloud gateway's built-in recommendations are available by default for providers with
+  configured API keys unless the owner opts out. They never override explicit model settings,
+  trigger live discovery or grant guest access.
 - Preserve sandbox/bwrap enforcement and file-tool denials for private paths. Only explicit
   owner-selected yolo deliberately disables the permission floor. Off Linux there is no OS sandbox
   (owner policy, #1512): in-process guards stay, bash gets the same cleared base environment, and
