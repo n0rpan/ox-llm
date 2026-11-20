@@ -350,6 +350,12 @@ impl GoalRuntime {
             && state.goal.status == GoalStatus::Pursuing;
         (state.goal.clone(), noted)
     }
+    /// End the goal as blocked for an owner budget that chose `stop`; returns the saved goal.
+    pub(crate) fn stop_because(&self, reason: &str) -> Goal {
+        let mut state = self.lock();
+        state.goal.stop_because(reason);
+        state.goal.clone()
+    }
     /// Pause a pursuing goal whose controls the tool selection removed; returns the saved goal.
     pub(crate) fn pause_because(&self, reason: &str) -> Goal {
         let mut state = self.lock();
@@ -783,20 +789,114 @@ pub(crate) fn announce_pause(reason: &str, sink: &mut dyn oxa_proto::EventSink) 
     });
 }
 
-/// The warning for a request with unknown token usage under an owner token budget.
-pub(crate) fn announce_unknown_usage(sink: &mut dyn oxa_proto::EventSink) {
-    sink.emit(&oxa_proto::AgentEvent::Notice {
-        level: oxa_proto::Level::Warning,
-        text: "Goal: a request reported no token usage; its spend is unknown and recorded as uncertain. The token budget keeps counting known usage and does not stop the goal for it".into(),
-    });
+/// The pause or stop reason for a request with unknown token usage under a token budget.
+pub(crate) const UNKNOWN_USAGE: &str = "a request reported no token usage under the goal's token budget";
+
+/// A goal under a token budget met a request whose spend is unknown. `first` is true for the
+/// first such request. By default (`oxa.onExceed.goalUnknownUsage`) the goal pauses, because
+/// the budget can no longer be trusted; the owner can choose `stop` (blocked) or `warn` (the
+/// old behaviour: one warning, the budget keeps counting known usage). Every case shows one
+/// warning and records it.
+pub(crate) fn unknown_usage(
+    st: &mut crate::SessionState,
+    goal: &std::sync::Arc<GoalRuntime>,
+    first: bool,
+    sink: &mut dyn oxa_proto::EventSink,
+) -> Result<(), oxa_proto::OxaError> {
+    use oxa_config::{Budget, OnExceed};
+    let action = st.settings.on_exceed(Budget::GoalUnknownUsage);
+    if goal.snapshot().budget.max_tokens.is_none() {
+        return Ok(());
+    }
+    let text = match action {
+        OnExceed::Warn if first => "Goal: a request reported no token usage; its spend is unknown and recorded as uncertain. The token budget keeps counting known usage and does not stop the goal (oxa.onExceed.goalUnknownUsage is warn)".to_string(),
+        OnExceed::Warn => return Ok(()),
+        _ if !goal.pursuing() => return Ok(()),
+        OnExceed::Pause => {
+            let snapshot = goal.pause_because(UNKNOWN_USAGE);
+            save_checkpoint(st, &snapshot, sink)?;
+            format!("Goal paused: {UNKNOWN_USAGE}; /goal resume (oxa.onExceed.goalUnknownUsage)")
+        }
+        OnExceed::Stop => {
+            let snapshot = goal.stop_because(UNKNOWN_USAGE);
+            save_checkpoint(st, &snapshot, sink)?;
+            format!("Goal stopped: {UNKNOWN_USAGE} (oxa.onExceed.goalUnknownUsage is stop)")
+        }
+    };
+    record_exceeded(st, text, sink)
 }
 
-/// The notice for a second reply without an action when the owner did not ask for a pause.
+/// One warning notice and one recorded `Shown` entry for an exceeded owner budget.
+pub(crate) fn record_exceeded(
+    st: &mut crate::SessionState,
+    text: String,
+    sink: &mut dyn oxa_proto::EventSink,
+) -> Result<(), oxa_proto::OxaError> {
+    sink.emit(&oxa_proto::AgentEvent::Notice {
+        level: oxa_proto::Level::Warning,
+        text: text.clone(),
+    });
+    record_notice(st, text, sink)
+}
+
+/// Record a notice the caller already showed, as a `Shown` entry.
+pub(crate) fn record_notice(
+    st: &mut crate::SessionState,
+    text: String,
+    sink: &mut dyn oxa_proto::EventSink,
+) -> Result<(), oxa_proto::OxaError> {
+    crate::agent_loop::persist(
+        st,
+        oxa_proto::EntryBody::Shown {
+            text,
+            why: oxa_proto::shown_why::NOTICE,
+        },
+        sink,
+    )?;
+    Ok(())
+}
+
+/// The notice for a second reply without an action when the goal is not paused for it.
+pub(crate) const IDLE_NOTICE: &str = "Goal: two replies without an action; still pursuing (a goal with no other budget pauses here by default; oxa.onExceed.goalIdle chooses, /goal pause pauses now)";
+
 pub(crate) fn announce_idle(sink: &mut dyn oxa_proto::EventSink) {
     sink.emit(&oxa_proto::AgentEvent::Notice {
         level: oxa_proto::Level::Warning,
-        text: "Goal: two replies without an action; still pursuing (oxa.goal.idlePause pauses here, /goal pause pauses now)".into(),
+        text: IDLE_NOTICE.into(),
     });
+}
+
+/// What two replies without a tool call do. A goal with a budget of its own (goal token, time
+/// or turn limit, the run's `--max-tokens`, `oxa.maxTurns`) ends at that budget, so the idle
+/// reply only warns. Otherwise `oxa.onExceed.goalIdle` decides (default: pause). The older
+/// owner switch `oxa.goal.idlePause`, when set in the user file, still wins: `true` pauses,
+/// `false` only warns.
+pub(crate) fn idle_action(
+    st: &crate::SessionState,
+    goal: &GoalRuntime,
+    max_turns: u32,
+) -> oxa_config::OnExceed {
+    use oxa_config::{Budget, OnExceed};
+    if let Some(on) = st
+        .settings
+        .user_value("oxa.goal.idlePause")
+        .and_then(Value::as_bool)
+    {
+        return if on { OnExceed::Pause } else { OnExceed::Warn };
+    }
+    let run_cap = st
+        .shared
+        .gate
+        .token_budget
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .is_some();
+    let bounded = goal.snapshot().budget != GoalBudget::default() || run_cap || max_turns > 0;
+    if bounded {
+        OnExceed::Warn
+    } else {
+        st.settings.on_exceed(Budget::GoalIdle)
+    }
 }
 
 /// Publish the goal currently mounted in the session, including a saved pause reason.

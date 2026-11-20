@@ -90,6 +90,9 @@ fn default_tune(read_page_lines: u32, read_page_bytes: u32) -> ToolTune {
         // B2b: no image input in these windows (the tool default); the byte cap is the user
         // setting's own default, which these windows do not change.
         max_image_bytes: Settings::default().read_max_image_bytes(),
+        // The CI polling hint and the `wait` tool are on by default.
+        ci_poll_hint: true,
+        wait_tool: true,
         ..Default::default()
     }
 }

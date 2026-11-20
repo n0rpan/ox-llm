@@ -6,7 +6,7 @@ use oxa_work::board::{
     review::{self, Comment, Findings},
     Action, Board,
 };
-use oxa_work::shadow::{LandingDecision, QueueObservation};
+use oxa_work::shadow::{LandingDecision, QueueObservation, ThreadHold};
 use serde_json::Value;
 use std::{collections::BTreeMap, fmt::Write};
 
@@ -28,6 +28,7 @@ pub(super) fn review_decisions(
         .collect();
     let mut observations = BTreeMap::new();
     let mut exact_holds = BTreeMap::new();
+    let mut thread_holds = BTreeMap::new();
     let (queue, received) = reader.repository_read(
         r#"
         main:ref(qualifiedName:"refs/heads/main"){target{oid}}
@@ -51,6 +52,7 @@ pub(super) fn review_decisions(
                     id number state headRefOid
                     autoMergeRequest{{enabledAt}} mergeQueueEntry{{id}}
                     comments(last:100){{totalCount nodes{{author{{... on Bot{{databaseId}}}} updatedAt body}}}}
+                    reviewThreads(first:100){{totalCount nodes{{isResolved isOutdated comments(first:1){{nodes{{createdAt author{{login}}}}}}}}}}
                 }}"#
             ).expect("writing to a String cannot fail");
         }
@@ -66,7 +68,9 @@ pub(super) fn review_decisions(
             }
             let comments = comments(&row["comments"]);
             let (findings, exact_hold) = review::latest_findings_for_head(comments.as_deref(), &entry.head);
-            if let Some(id) = row["id"].as_str().filter(|_| exact_hold) {
+            let threads = thread_hold(&row["reviewThreads"]);
+            let thread_held = threads.as_ref().is_some_and(|hold| hold.current > 0);
+            if let Some(id) = row["id"].as_str().filter(|_| exact_hold || thread_held) {
                 let auto_merge = row["autoMergeRequest"]["enabledAt"]
                     .as_str()
                     .and_then(oxa_session::parse_utc_seconds)
@@ -74,11 +78,15 @@ pub(super) fn review_decisions(
                 let queued = row["mergeQueueEntry"]["id"].as_str().is_some_and(is_node_id);
                 exact_holds.insert(entry.number, (id.to_owned(), auto_merge, queued));
             }
-            let reviews = match findings {
-                Findings::Unresolved => LatestReviews::Unresolved,
-                Findings::Clear => LatestReviews::Clear,
-                Findings::Unknown => LatestReviews::Unknown,
-            };
+            let reviews = reviews_with_threads(
+                match findings {
+                    Findings::Unresolved => LatestReviews::Unresolved,
+                    Findings::Clear => LatestReviews::Clear,
+                    Findings::Unknown => LatestReviews::Unknown,
+                },
+                threads.as_ref(),
+            );
+            thread_holds.insert(entry.number, threads);
             observations.insert(
                 entry.number,
                 Observation {
@@ -110,12 +118,68 @@ pub(super) fn review_decisions(
                     hold_intervention,
                     queue: queued.remove(&number),
                     latest_reviews: observations[&number].reviews,
+                    threads: thread_holds.remove(&number).flatten(),
                     would_notify_rejection: None,
                 },
             )
         })
         .collect();
     Ok((landing, main.map(str::to_owned)))
+}
+
+/// A current unresolved review thread holds landing whatever the comment-level
+/// findings say, so a thread that arrived after the board read still holds
+/// every enqueue, retry and already-queued path (#1673).
+fn reviews_with_threads(reviews: LatestReviews, threads: Option<&ThreadHold>) -> LatestReviews {
+    if threads.is_some_and(|hold| hold.current > 0) {
+        LatestReviews::Unresolved
+    } else {
+        reviews
+    }
+}
+
+/// Decode one PR's `reviewThreads` page. An absent connection is unobserved
+/// (`None`); a cut-off page or a malformed node is reported as `incomplete`.
+fn thread_hold(value: &Value) -> Option<ThreadHold> {
+    if !value.is_object() {
+        return None;
+    }
+    let mut hold = ThreadHold::default();
+    let rows = value["nodes"].as_array().map(Vec::as_slice).unwrap_or_default();
+    hold.incomplete = value["nodes"].as_array().is_none()
+        || value["totalCount"]
+            .as_u64()
+            .is_none_or(|total| total > rows.len() as u64);
+    let mut oldest = None;
+    for row in rows {
+        let (Some(resolved), Some(outdated)) = (row["isResolved"].as_bool(), row["isOutdated"].as_bool())
+        else {
+            hold.incomplete = true;
+            continue;
+        };
+        if resolved {
+            continue;
+        }
+        hold.unresolved += 1;
+        if !outdated {
+            hold.current += 1;
+        }
+        let first = &row["comments"]["nodes"][0];
+        match first["createdAt"]
+            .as_str()
+            .and_then(oxa_session::parse_utc_seconds)
+        {
+            Some(at) => oldest = Some(oldest.map_or(at, |old: u64| old.min(at))),
+            None => hold.incomplete = true,
+        }
+        if let Some(login) = first["author"]["login"].as_str() {
+            if hold.authors.len() < 4 && !hold.authors.iter().any(|known| known == login) {
+                hold.authors.push(login.to_owned());
+            }
+        }
+    }
+    hold.oldest_at = oldest.unwrap_or(0);
+    Some(hold)
 }
 
 fn queue_observations(queue: &Value, board: &Board) -> Result<BTreeMap<u64, QueueObservation>, String> {
@@ -231,5 +295,91 @@ mod tests {
         let rows = queue_observations(&queue(json!(HEAD), time), &board).unwrap();
         assert_eq!(rows[&42].enqueued_at, 1_767_225_600);
         assert!(rows[&42].group_head.is_none());
+    }
+
+    fn threads(nodes: Value, total: u64) -> Option<ThreadHold> {
+        thread_hold(&json!({"totalCount": total, "nodes": nodes}))
+    }
+
+    fn thread(resolved: bool, outdated: bool, login: &str) -> Value {
+        json!({"isResolved": resolved, "isOutdated": outdated, "comments": {"nodes": [
+            {"createdAt": "2026-01-01T00:00:00Z", "author": {"login": login}}
+        ]}})
+    }
+
+    #[test]
+    fn a_current_unresolved_thread_holds_every_landing_path() {
+        use oxa_work::board::landing::{Next, Policy, Queue, Rejection, Retry};
+        const HEAD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const MAIN: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        const GROUP: &str = "cccccccccccccccccccccccccccccccccccccccc";
+        let entry = Entry {
+            number: 42,
+            head: HEAD.into(),
+            release_pinned: false,
+            action: Action::Ready,
+            lease: None,
+            attempts_today: 0,
+            eligible: true,
+            evidence_incomplete: None,
+        };
+        let rejected = Queue::Rejected(Rejection {
+            head: HEAD,
+            main: GROUP,
+            merge_group_head: GROUP,
+            removal_event: "MDEyOlJlbW92ZWRFdmVudDE=",
+            cause: oxa_work::board::landing::RejectionCause::MergeConflict,
+            notified_event: Some("MDEyOlJlbW92ZWRFdmVudDE="),
+            retry: Retry::Unused { last_admission_at: 1 },
+        });
+        let plan = |reviews, queue| {
+            Policy { enabled: true }
+                .plan(&entry, reviews, queue, MAIN, 1_000_000)
+                .next
+        };
+        let held = threads(json!([thread(false, false, "reviewer")]), 1);
+        let outdated = threads(json!([thread(false, true, "reviewer")]), 1);
+        for (queue, free) in [
+            (Queue::Absent, Next::Enqueue),
+            (rejected, Next::Retry),
+            (Queue::Queued { since: 1 }, Next::AlreadyQueued),
+        ] {
+            // Comment-level findings are clear: only the thread can hold the PR.
+            assert_eq!(
+                plan(
+                    reviews_with_threads(LatestReviews::Clear, outdated.as_ref()),
+                    queue
+                ),
+                free
+            );
+            assert_eq!(
+                plan(reviews_with_threads(LatestReviews::Clear, held.as_ref()), queue),
+                Next::HoldFindings
+            );
+        }
+    }
+
+    #[test]
+    fn thread_pages_report_age_authors_and_incompleteness() {
+        let hold = threads(
+            json!([
+                thread(false, false, "a"),
+                thread(false, true, "a"),
+                thread(true, false, "b")
+            ]),
+            3,
+        )
+        .unwrap();
+        assert_eq!((hold.unresolved, hold.current, hold.incomplete), (2, 1, false));
+        assert_eq!(hold.authors, ["a"]);
+        assert_eq!(hold.oldest_at, 1_767_225_600);
+        // A page cut off by the connection bound, or a malformed node, is incomplete, never zero.
+        assert!(
+            threads(json!([thread(false, false, "a")]), 101)
+                .unwrap()
+                .incomplete
+        );
+        assert!(threads(json!([{"isResolved": "no"}]), 1).unwrap().incomplete);
+        assert!(thread_hold(&Value::Null).is_none());
     }
 }

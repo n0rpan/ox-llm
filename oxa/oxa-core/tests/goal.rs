@@ -36,9 +36,11 @@ fn deps_engine(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<dyn oxa_
         hooks: Vec::new(),
         policy: Box::new(ModePolicy::new()),
         sandbox: Arc::new(NoSandbox),
-        // Exact prompt-byte fixtures select note-free queues/RPC/replay.
+        // Exact prompt-byte fixtures select note-free queues/RPC/replay. The older tests of this
+        // file drive goals that keep pursuing past idle replies and unknown usage, so they
+        // choose `warn`; the owner defaults (pause) are tested with [`deps_owner_defaults`].
         settings: Settings::from_values(
-            serde_json::json!({"oxa": {"envNote": false}}),
+            serde_json::json!({"oxa": {"envNote": false, "onExceed": {"goalIdle": "warn", "goalUnknownUsage": "warn"}}}),
             serde_json::json!({}),
         ),
         dirs: Dirs::under(env.root()),
@@ -51,6 +53,23 @@ fn deps_engine(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<dyn oxa_
         session_id: None,
         jobs: oxa_core::fresh_jobs(),
     }
+}
+
+/// [`deps_engine`] with the settings an owner who chose nothing has, plus `user_oxa` (extra
+/// `oxa.*` user keys) and a project layer.
+fn deps_owner_defaults(
+    env: &TestEnv,
+    engine: Arc<dyn oxa_proto::Engine>,
+    user_oxa: serde_json::Value,
+    project: serde_json::Value,
+) -> Deps {
+    let mut d = deps_engine(env, Arc::new(MemStore::new()), engine);
+    let mut oxa = serde_json::json!({"envNote": false});
+    for (key, value) in user_oxa.as_object().into_iter().flatten() {
+        oxa[key] = value.clone();
+    }
+    d.settings = Settings::from_values(serde_json::json!({"oxa": oxa}), project);
+    d
 }
 
 /// [`deps`] with the owner's `oxa.goal.idlePause`: two replies without an action pause the goal.
@@ -1566,8 +1585,133 @@ fn a_reply_without_usage_charges_the_goal_as_uncertain() {
     );
 }
 
+/// The default (#1966): a goal with no other budget pauses after two replies without a tool
+/// call, with a recorded reason; a project file cannot switch that off.
 #[test]
-fn two_idle_replies_warn_and_the_goal_keeps_pursuing_by_default() {
+fn two_idle_replies_pause_a_goal_with_no_other_budget_by_default() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("Idle"),
+        ScriptTurn::text("Still idle"),
+        ScriptTurn::text("Must not be requested"),
+    ]));
+    let project =
+        serde_json::json!({"oxa": {"onExceed": {"goalIdle": "warn"}, "goal": {"idlePause": false}}});
+    let mut session = Session::open(
+        deps_owner_defaults(&env, engine.clone(), serde_json::json!({}), project),
+        Open::New,
+    )
+    .unwrap();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    let _ = session.prompt(
+        "Start the stored goal".into(),
+        vec![],
+        &mut sink,
+        &mut HeadlessUi::default(),
+    );
+    assert_eq!(engine.requests().len(), 2, "no third request after the pause");
+    let goal = session.goal().unwrap();
+    assert_eq!(goal.status, GoalStatus::Paused);
+    assert_eq!(
+        goal.pause_reason.as_deref(),
+        Some("two replies without an action")
+    );
+    session.shutdown(&mut HeadlessUi::default());
+}
+
+/// A goal with a budget of its own ends at that budget; the idle replies only warn.
+#[test]
+fn a_goal_with_its_own_budget_does_not_pause_on_idle_replies() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("Idle"),
+        ScriptTurn::text("Still idle"),
+        ScriptTurn::tool(
+            "finish",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Finished after two idle replies."}"#,
+        ),
+    ]));
+    let mut session = Session::open(
+        deps_owner_defaults(&env, engine.clone(), serde_json::json!({}), serde_json::json!({})),
+        Open::New,
+    )
+    .unwrap();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(
+            Some(objective(GoalBudget {
+                max_turns: Some(50),
+                ..Default::default()
+            })),
+            &mut sink,
+        )
+        .unwrap();
+    session
+        .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+        .unwrap();
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Done);
+    session.shutdown(&mut HeadlessUi::default());
+}
+
+/// #1963: under a goal token cap, a reply without usage pauses the goal by default (`stop`
+/// blocks it), so the cap cannot be outrun by unmetered requests.
+fn unreported_usage_under_a_token_cap(action: Option<&str>) -> (GoalStatus, usize) {
+    let env = TestEnv::new();
+    let scripted = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("First answer."),
+        ScriptTurn::text("Must not be requested."),
+    ]));
+    let engine: Arc<dyn oxa_proto::Engine> = Arc::new(Unreported(scripted.clone()));
+    let user = action.map_or(
+        serde_json::json!({}),
+        |a| serde_json::json!({"onExceed": {"goalUnknownUsage": a}}),
+    );
+    let mut session = Session::open(
+        deps_owner_defaults(&env, engine, user, serde_json::json!({})),
+        Open::New,
+    )
+    .unwrap();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(
+            Some(objective(GoalBudget {
+                max_tokens: Some(1_000_000),
+                ..Default::default()
+            })),
+            &mut sink,
+        )
+        .unwrap();
+    let _ = session.prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default());
+    let status = session.goal().unwrap().status;
+    let notices = sink
+        .0
+        .iter()
+        .filter(|event| matches!(event, oxa_proto::AgentEvent::Notice { text, .. } if text.contains("no token usage")))
+        .count();
+    session.shutdown(&mut HeadlessUi::default());
+    (status, notices)
+}
+
+#[test]
+fn unknown_usage_under_a_token_cap_pauses_the_goal_by_default() {
+    let (status, notices) = unreported_usage_under_a_token_cap(None);
+    assert_eq!(status, GoalStatus::Paused);
+    assert_eq!(notices, 1, "one warning");
+}
+
+#[test]
+fn unknown_usage_under_a_token_cap_blocks_the_goal_when_the_owner_chose_stop() {
+    let (status, notices) = unreported_usage_under_a_token_cap(Some("stop"));
+    assert_eq!(status, GoalStatus::Blocked);
+    assert_eq!(notices, 1);
+}
+
+#[test]
+fn two_idle_replies_warn_and_the_goal_keeps_pursuing_when_the_owner_chose_warn() {
     let env = TestEnv::new();
     let engine = Arc::new(ScriptedEngine::new(vec![
         ScriptTurn::text("Idle"),

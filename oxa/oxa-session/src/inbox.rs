@@ -213,8 +213,71 @@ fn unlink_at(parent: &File, name: &CStr, flags: libc::c_int) -> io::Result<bool>
 
 /// Publish exactly one message without contacting an engine or requiring a running owner.
 pub fn send_inbox(agent_dir: &Path, id: &str, text: &str) -> io::Result<()> {
+    send_inbox_receipt(agent_dir, id, text).map(|_| ())
+}
+
+/// Whether `message_id` names one published file of the session's inbox. A message id is
+/// the published file name: a single component, never a path.
+fn message_name(message_id: &str) -> io::Result<&OsStr> {
+    if message_id.len() > 255 || !valid_inbox_id(message_id) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid inbox message id",
+        ));
+    }
+    Ok(OsStr::new(message_id))
+}
+
+/// Whether the message is still waiting in the inbox. The owner removes a file only
+/// after accepting it, so a missing file is the acknowledgment.
+pub fn inbox_pending(agent_dir: &Path, id: &str, message_id: &str) -> io::Result<bool> {
+    let name = message_name(message_id)?;
+    let dir = directory(agent_dir, id)?;
+    match open_entry(&dir, name) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Remove an undelivered message through the pinned directory. `false`: it was already gone.
+pub fn withdraw_inbox(agent_dir: &Path, id: &str, message_id: &str) -> io::Result<bool> {
+    let name = CString::new(message_name(message_id)?.as_bytes())?;
+    unlink_at(&directory(agent_dir, id)?.file, &name, 0)
+}
+
+/// What one bounded wait for the owner to accept a message found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Delivered,
+    NotDelivered,
+}
+
+/// Wait up to `wait` for the owner to take `message_id`. Nothing is published again, so a
+/// retry can never create a second writer.
+pub fn await_delivery(
+    agent_dir: &Path,
+    id: &str,
+    message_id: &str,
+    wait: std::time::Duration,
+) -> io::Result<Outcome> {
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        if !inbox_pending(agent_dir, id, message_id)? {
+            return Ok(Outcome::Delivered);
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Ok(Outcome::NotDelivered);
+        }
+        thread::sleep(left.min(std::time::Duration::from_millis(100)));
+    }
+}
+
+/// [`send_inbox`], returning the published file name as the message id.
+pub fn send_inbox_receipt(agent_dir: &Path, id: &str, text: &str) -> io::Result<String> {
     if text.len() <= INBOX_MESSAGE_BYTES {
-        return publish(agent_dir, id, "msg", text);
+        return directory(agent_dir, id).and_then(|dir| publish_into(&dir, "msg", text));
     }
     // `Dirs::tmp_dir` is `<agent_dir>/tmp`; the active session installs its own child as the
     // narrowly scoped readable spill exception without exposing the rest of the agent directory.
@@ -233,7 +296,7 @@ pub fn send_inbox(agent_dir: &Path, id: &str, text: &str) -> io::Result<()> {
         text.len(),
         path.display()
     );
-    publish_into(&agent.child("inbox")?.child(id)?, "msg", &pointer).map(|_| ())
+    publish_into(&agent.child("inbox")?.child(id)?, "msg", &pointer)
 }
 
 /// Publish a control packet for a trusted, already resolved session reference.
@@ -791,6 +854,49 @@ fn remove_entry(dir: &Directory, name: &OsStr) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_receipt_is_delivered_once_the_owner_takes_the_file() {
+        let env = oxa_fake::TestEnv::new();
+        let agent = env.root().join("agent");
+        let id = send_inbox_receipt(&agent, "session-ack", "hello").unwrap();
+        // No watcher yet: the bounded wait says so, and asking again publishes nothing.
+        let wait = std::time::Duration::from_millis(150);
+        assert_eq!(
+            await_delivery(&agent, "session-ack", &id, wait).unwrap(),
+            Outcome::NotDelivered
+        );
+        assert_eq!(
+            await_delivery(&agent, "session-ack", &id, wait).unwrap(),
+            Outcome::NotDelivered
+        );
+        assert_eq!(fs::read_dir(agent.join("inbox/session-ack")).unwrap().count(), 1);
+        assert!(inbox_pending(&agent, "session-ack", &id).unwrap());
+        // The owner accepts it by removing the file.
+        fs::remove_file(agent.join("inbox/session-ack").join(&id)).unwrap();
+        assert_eq!(
+            await_delivery(&agent, "session-ack", &id, wait).unwrap(),
+            Outcome::Delivered
+        );
+    }
+
+    #[test]
+    fn withdraw_removes_only_the_named_message_and_refuses_paths() {
+        let env = oxa_fake::TestEnv::new();
+        let agent = env.root().join("agent");
+        let first = send_inbox_receipt(&agent, "session-wd", "one").unwrap();
+        let second = send_inbox_receipt(&agent, "session-wd", "two").unwrap();
+        assert!(withdraw_inbox(&agent, "session-wd", &first).unwrap());
+        assert!(
+            !withdraw_inbox(&agent, "session-wd", &first).unwrap(),
+            "already gone"
+        );
+        assert!(inbox_pending(&agent, "session-wd", &second).unwrap());
+        for bad in ["../x", "a/b", "", ".hidden", "..", "x\0y"] {
+            assert!(withdraw_inbox(&agent, "session-wd", bad).is_err(), "{bad:?}");
+            assert!(inbox_pending(&agent, "session-wd", bad).is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn child_creation_stays_in_the_pinned_parent_after_a_rename() {
