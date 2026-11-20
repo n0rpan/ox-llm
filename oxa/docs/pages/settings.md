@@ -124,6 +124,7 @@ The tables below are generated from the page sheet in `oxa/oxa-config/src/descri
 | `oxa.wait.maxSeconds` | number (seconds) | `86400` | cap on one `wait` call's `seconds`. The default is the tool's own maximum (one day), so nothing is cut unless you set a lower value; a longer request is cut to it |
 | `oxa.wait.pollSeconds` | number (seconds) | `30` | how often a `wait` with an `until` condition asks the hook sets for its state; no model request is made meanwhile |
 | `oxa.subagent.enabled` | bool | unset | the `subagent` tool; unset is on unless the model is Flash or its window is below 32K |
+| `oxa.subagent.isolated` | bool | `false` | run every local child in its own session and prefix instead of forking the parent's: the engine parks the parent's state and the child prefills its own context, and the call says so once |
 | `oxa.subagent.smallContext` | bool | `false` | declare `subagent` on a model with a window below 32K |
 | `oxa.subagent.softTokens` | number | `24000` | compaction point of a child agent; on a cloud model with a known window and no value set it is half the window (at least 24000) |
 | `oxa.subagent.maxChildren` | number | `8` | children one parent session runs or queues over every call in flight, and the most `tasks` or `chain` steps one call takes. A warning threshold: above it the children still run (queued) and the result ends with a warning. User settings only. At least 1 |
