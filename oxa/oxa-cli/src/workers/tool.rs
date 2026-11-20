@@ -1202,6 +1202,19 @@ pub fn stop_owner_workers() {
     }
 }
 
+#[cfg(test)]
+fn stop_owner_workers_for(key: &Path) {
+    let hooks = {
+        let mut all = lock(&OWNER_WORKERS);
+        all.iter()
+            .position(|(candidate, _)| candidate == key)
+            .map(|index| all.remove(index).1)
+    };
+    if let Some(hooks) = hooks {
+        hooks.stop_all();
+    }
+}
+
 impl Hooks for WorkerHooks {
     fn fire(&self, p: HookPoint, payload: &Value, ui: &mut dyn Ui) -> HookReply {
         if matches!(p, HookPoint::SessionStart | HookPoint::ModelSelect) {
@@ -1740,11 +1753,8 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    static OWNER_WORKERS_TEST_LOCK: Mutex<()> = Mutex::new(());
-
     #[test]
     fn lead_started_worker_survives_the_next_owner_turn() {
-        let _serial = lock(&OWNER_WORKERS_TEST_LOCK);
         let (root, repo, agent, fake) = fixture("owner-turn");
         let made = Arc::new(hooks(&fake, &agent));
         // Turn 1: the owner Lead session starts a worker, then its session closes.
@@ -1763,14 +1773,13 @@ mod tests {
         );
         assert!(second.core.list().text.contains("alpha"));
         // Lead shutdown stops the tree.
-        stop_owner_workers();
+        stop_owner_workers_for(&agent);
         assert!(!PathBuf::from(format!("/proc/{}", rec.pid)).exists());
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn retained_owner_workers_refresh_the_current_launch_ceiling() {
-        let _serial = lock(&OWNER_WORKERS_TEST_LOCK);
         let (root, repo, agent, fake) = fixture("owner-authority");
         let first = Arc::new(hooks(&fake, &agent));
         let kept = kept_owner_workers(&agent, first.clone());
@@ -1794,8 +1803,32 @@ mod tests {
         assert!(out.is_error, "{}", out.text);
         assert!(out.text.contains("limit is 1"), "{}", out.text);
         assert!(!worktree_path(&repo, "beta").unwrap().exists());
-        stop_owner_workers();
+        stop_owner_workers_for(&agent);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn owner_worker_test_cleanup_is_scoped_to_its_hook_set() {
+        let (first_root, first_repo, first_agent, first_fake) = fixture("owner-cleanup-first");
+        let first = kept_owner_workers(&first_agent, Arc::new(hooks(&first_fake, &first_agent)));
+        set_session(&first, "parent-first");
+        start_alpha(&first, &first_repo);
+
+        let (second_root, second_repo, second_agent, second_fake) = fixture("owner-cleanup-second");
+        let second = kept_owner_workers(&second_agent, Arc::new(hooks(&second_fake, &second_agent)));
+        set_session(&second, "parent-second");
+        start_alpha(&second, &second_repo);
+        let second_record = registry::load(&second_agent, "parent-second").unwrap().remove(0);
+
+        stop_owner_workers_for(&first_agent);
+        assert!(
+            PathBuf::from(format!("/proc/{}", second_record.pid)).exists(),
+            "cleaning one owner hook set stopped another hook set's worker"
+        );
+
+        stop_owner_workers_for(&second_agent);
+        let _ = fs::remove_dir_all(&first_root);
+        let _ = fs::remove_dir_all(&second_root);
     }
 
     #[test]
