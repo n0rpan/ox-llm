@@ -98,7 +98,7 @@ To name a model yourself, with its own limits and prices, add it under `oxa.clou
 }
 ```
 
-The provider is `anthropic`, `openai`, `openrouter` or `chatgpt`. The numbers above are an illustration: use the provider's current limits and prices. Then start with `oxa --model example-cloud`.
+The provider is `anthropic`, `openai`, `openrouter` or `chatgpt`. The numbers above are an illustration: use the provider's current limits and prices. Then start with `oxa --model example-cloud`. `oxa models` lists every route this install serves, configured and local alike, without reading credentials or contacting a provider.
 
 These settings count only in your user settings file. A project cannot turn a provider on, change a budget or point oxa at another key file. Every field is described in [settings.md](settings.md#native-cloud-gateway).
 

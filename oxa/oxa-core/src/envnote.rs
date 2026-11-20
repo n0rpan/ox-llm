@@ -39,6 +39,9 @@ pub struct EnvFacts {
     pub offline: bool,
     /// No OS sandbox on this platform: bash runs with the user's rights.
     pub no_os_sandbox: bool,
+    /// Bash is available but its executor cannot provide OS isolation (including the
+    /// interactive Linux fallback when bubblewrap is unavailable).
+    pub bash_unsandboxed: bool,
 }
 
 /// The date line's `{weekday} {date}` (the key that says whether the wire already has today).
@@ -82,11 +85,10 @@ pub fn full_block(t: &LocalTime, f: &EnvFacts) -> String {
     ));
     // A network the platform cannot restrict is itself a missing OS sandbox: say it even when
     // bash networking is enabled, so the model is not told only "bash network on".
-    if f.no_os_sandbox || f.network_unenforced {
-        lines.push(
-            "Sandbox: none. There is no OS sandbox on this platform: commands run with your user rights, and bash is disabled while the bash network is off."
-                .to_string(),
-        );
+    if f.bash_unsandboxed {
+        lines.push("Sandbox: none. Bash commands run with your user rights and no OS isolation.".to_string());
+    } else if f.no_os_sandbox || f.network_unenforced {
+        lines.push("Sandbox: none. There is no OS sandbox on this platform, so bash is disabled while the bash network is off.".to_string());
     }
     lines.push(
         "Use this date for \"today\", \"latest\" and \"recent\" (also for web_search freshness).".to_string(),
@@ -202,6 +204,7 @@ pub fn facts(st: &SessionState) -> EnvFacts {
         network_unenforced: !st.sandbox.network_enforced(),
         offline: oxa_proto::offline(),
         no_os_sandbox: !oxa_proto::OS_SANDBOX,
+        bash_unsandboxed: st.sandbox.persistence_notice() == Some(oxa_sandbox::NO_OS_SANDBOX_NOTICE),
     }
 }
 
@@ -305,6 +308,7 @@ mod tests {
             network_unenforced: false,
             offline: false,
             no_os_sandbox: false,
+            bash_unsandboxed: false,
         }
     }
 
@@ -350,11 +354,28 @@ mod tests {
                 ..f()
             },
         );
-        assert!(none.contains(
-            "Sandbox: none. There is no OS sandbox on this platform: commands run with your user rights"
-        ));
+        assert!(none.contains("Sandbox: none. There is no OS sandbox on this platform"));
         assert_eq!(none.replace(
-            "Sandbox: none. There is no OS sandbox on this platform: commands run with your user rights, and bash is disabled while the bash network is off.\n", ""), with);
+            "Sandbox: none. There is no OS sandbox on this platform, so bash is disabled while the bash network is off.\n", ""), with);
+    }
+
+    #[test]
+    fn interactive_unsandboxed_bash_is_not_described_as_disabled() {
+        let block = full_block(
+            &t("2026-11-14", "13:42"),
+            &EnvFacts {
+                bash_network: false,
+                network_unenforced: true,
+                bash_unsandboxed: true,
+                ..f()
+            },
+        );
+        assert!(block.contains("bash network is NOT restricted"), "{block}");
+        assert!(
+            block.contains("Bash commands run with your user rights and no OS isolation"),
+            "{block}"
+        );
+        assert!(!block.contains("bash is disabled"), "{block}");
     }
 
     #[test]

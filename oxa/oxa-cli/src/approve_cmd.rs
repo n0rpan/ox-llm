@@ -106,7 +106,7 @@ pub(crate) fn list(dirs: &Dirs, out: &mut dyn Write) -> Result<i32, OxaError> {
 /// The text as one printable line. A command and its reasons are model-controlled: written
 /// verbatim they could carry ESC/CSI/OSC or carriage returns that clear or overwrite the line the
 /// owner reads before approving it, so every control character is escaped.
-fn one_line(text: &str) -> String {
+pub(crate) fn one_line(text: &str) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -141,7 +141,7 @@ fn is_invisible_format(c: char) -> bool {
 
 /// `oxa send <session> --approve <request> <answer>`. The request must belong to `session`.
 /// `always` also saves the rule keys to the user settings (never the project's).
-fn approve_with(
+pub(crate) fn approve_with(
     dirs: &Dirs,
     cwd: &Path,
     session: &str,

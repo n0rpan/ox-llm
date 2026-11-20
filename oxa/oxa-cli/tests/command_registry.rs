@@ -72,6 +72,28 @@ fn models_declaration_matches_the_existing_cli_route() {
         matches!(parsed.subcommand, Some(oxa_cli::Subcommand::Models(rest))
         if rest == ["--json"])
     );
+    // #1559: a search word is part of the route, and a leading `--offline` keeps it a command
+    // so the catalog can report the offline refusal itself.
+    let searched: Vec<String> = ["models", "anthropic"].iter().map(|w| w.to_string()).collect();
+    let resolved = parse_cli(&searched).expect("search word resolves");
+    assert_eq!(resolved.command.id, CommandId::Models);
+    assert_eq!(resolved.args, &["anthropic"]);
+    assert!(matches!(oxa_cli::parse_args(&searched, &[]).unwrap().subcommand,
+            Some(oxa_cli::Subcommand::Models(rest)) if rest == ["anthropic"]));
+    let bare: Vec<String> = vec!["models".into()];
+    assert_eq!(
+        oxa_cli::parse_args(&bare, &[]).unwrap().subcommand,
+        Some(oxa_cli::Subcommand::Models(Vec::new()))
+    );
+    let offline: Vec<String> = vec!["--offline".into(), "models".into()];
+    assert_eq!(
+        oxa_cli::parse_args(&offline, &[]).unwrap().subcommand,
+        Some(oxa_cli::Subcommand::Models(Vec::new()))
+    );
+    assert!(
+        oxa_cli::text(&["models"]).is_some(),
+        "the route has public CLI help"
+    );
 }
 
 #[test]

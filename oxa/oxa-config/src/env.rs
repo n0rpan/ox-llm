@@ -319,6 +319,13 @@ pub const ENV_TABLE: &[EnvVar] = &[
         kind: EnvKind::User,
     },
     EnvVar {
+        name: "OXA_WORK_OWNER_CONFIRMED",
+        pi_name: None,
+        description: "1 from a surface that holds the owner's own confirmation (web or runner): confirms the lane push of `oxa work` without the terminal question; ignored when a coding-agent marker (OXA_CODING_AGENT, AI_AGENT, OXA_SUBAGENT_DEPTH) is set",
+        supported: true,
+        kind: EnvKind::User,
+    },
+    EnvVar {
         name: "OXA_WORK_OUTPUT_DIR",
         pi_name: None,
         description: "oxa work sets it for done-check commands: the private output directory (also TMPDIR and CARGO_TARGET_DIR/target) when the task has one",
@@ -385,6 +392,13 @@ pub const ENV_TABLE: &[EnvVar] = &[
         name: "OXA_CHILD_SOFT_TOKENS",
         pi_name: None,
         description: "a parent oxa may set the soft compaction limit of a subagent child; overrides oxa.compaction.softTokens; a bad value is ignored with a notice",
+        supported: true,
+        kind: EnvKind::Internal,
+    },
+    EnvVar {
+        name: "OXA_CHILD_FORK",
+        pi_name: None,
+        description: "a parent oxa sets the path of a local subagent child's fork seed (the session's frozen prefix and its conversation, owner-only, deleted with the child); the child continues that conversation instead of starting its own",
         supported: true,
         kind: EnvKind::Internal,
     },

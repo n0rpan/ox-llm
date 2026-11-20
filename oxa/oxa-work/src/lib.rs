@@ -15,6 +15,8 @@ pub mod budget_policy;
 mod checkpoint;
 mod committed;
 pub use committed::{verify_saved_task, VerifiedTask};
+mod lane;
+pub use lane::LaneVerdict;
 mod derived;
 pub use derived::{CheckOrigin, CheckRun, CheckStatus, LocalCheckCommands};
 mod execute;
@@ -84,6 +86,10 @@ pub struct Task {
     /// Reviewed source for attempts whose execution IDs use a different namespace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviewed_pull_request: Option<ReviewedPullRequest>,
+    /// Require the repository's lane workflow to pass at the saved head before
+    /// the task is accepted. The runner pushes the accepted commit itself.
+    #[serde(default)]
+    pub lane_ci: bool,
 }
 // Manual task files and legacy serialized tasks retain their existing default.
 const fn default_max_time() -> u64 {
@@ -141,6 +147,12 @@ pub struct Record {
     pub reports: Vec<ReportRecord>,
     #[serde(default)]
     pub acceptance_outcome: Option<Outcome>,
+    /// Terminal lane observation for this task, bound to its exact head.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<LaneVerdict>,
+    /// Lane-triggered repair attempts already spent; at most one is allowed.
+    #[serde(default)]
+    pub lane_repairs: u8,
     /// Every check the last acceptance round ran, with its command and exit status (#1442):
     /// what a `done` verdict rests on. Empty until checks run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -479,7 +491,8 @@ impl Task {
     // Derive the subprocess restriction from the frozen task on every launch. This
     // also covers old issue checkpoints resumed through an identical task file.
     fn runner_owns_github(&self) -> bool {
-        self.prompt.starts_with(GITHUB_RUNNER_LEAD)
+        self.lane_ci
+            || self.prompt.starts_with(GITHUB_RUNNER_LEAD)
             || self
                 .id
                 .strip_prefix("issue-")
@@ -722,6 +735,17 @@ fn validate(task: &Task) -> Result<()> {
             return Err("invalid branch or base".into());
         }
     }
+    if task.lane_ci {
+        if !crate::lane::branch_is_laned(&task.branch) {
+            return Err(
+                "lane acceptance needs a branch the lane workflow runs on (agent/, codex/, air/, runner/)"
+                    .into(),
+            );
+        }
+        if task.base != "main" {
+            return Err("lane acceptance compares the branch against main".into());
+        }
+    }
     Ok(())
 }
 
@@ -754,6 +778,7 @@ pub fn issue_task(
         prompt: issue_prompt(number, &issue)?,
         max_time: RUNNER_DEFAULT_MAX_TIME,
         reviewed_pull_request: None,
+        lane_ci: false,
     })
 }
 
@@ -872,6 +897,14 @@ pub struct RunPolicy {
     /// Installed tools only; repository code is invoked inside the sandbox.
     pub host_path: std::ffi::OsString,
     pub terminate_binary: Option<PathBuf>,
+    /// Trusted `gh` outside the project; lane acceptance refuses without it.
+    pub gh_binary: Option<PathBuf>,
+    /// The owner confirmed that a lane task may push its accepted commit.
+    pub push_approved: bool,
+    /// The publication content scan every push must pass first; lane pushes refuse without it.
+    #[allow(clippy::type_complexity)]
+    pub content_scan:
+        Option<std::sync::Arc<dyn Fn(&PushedContent<'_>) -> Option<ContentFinding> + Send + Sync>>,
     pub offline: bool,
     /// Set by the runner from the immutable packet before launching its children.
     pub runner_owns_github: bool,
@@ -1159,6 +1192,8 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
         problem_notes: vec![],
         reports: vec![],
         acceptance_outcome: None,
+        lane: None,
+        lane_repairs: 0,
         checks: vec![],
     }
 }
@@ -1414,6 +1449,7 @@ fn run_locked(
             base: planned.base_sha.clone(),
             prompt: task.prompt.clone(),
             commands: planned.commands.clone(),
+            derived_commands: Vec::new(),
             declared: None,
             worker_error: None,
             merge_error: None,
@@ -1481,105 +1517,203 @@ fn run_locked(
     };
     // Replaying the prior checkpoint precedes this first new checkpoint or action.
     let step = state.record.step;
-    let recover_accepted_save = step == Step::Saving
+    let mut recover_accepted_save = step == Step::Saving
         && matches!(
             state.record.acceptance_outcome.unwrap_or(state.record.outcome),
             Outcome::Done | Outcome::NothingToDo
         );
-    writer
-        .save(&mut state, step, observer)
-        .map_err(RunError::Checkpoint)?;
-    match (execute::Runner {
-        repo: &root,
-        binary,
-        policy: &policy,
-        local_checks: &locked.local_checks,
-        lock: lock_file,
-        writer: &mut writer,
-        observer,
-        scrub_note,
-        base_alias: planned.base_alias.as_ref(),
-        native: planned.native,
-        owner_selected_model: planned.owner_selected_model,
-        #[cfg(target_os = "linux")]
-        managed_steering: locked.managed_steering.as_ref(),
-    })
-    .drive(&mut state)
-    {
-        Ok(()) => {}
-        Err(RunError::Checkpoint(error)) => return Err(RunError::Checkpoint(error)),
-        Err(RunError::Blocked(error)) => {
-            state.record.outcome = if state.record.outcome == Outcome::Interrupted
-                || state
-                    .record
-                    .worker
-                    .as_ref()
-                    .is_some_and(|worker| matches!(worker.outcome, WorkerOutcome::Interrupted))
-            {
-                Outcome::Interrupted
-            } else {
-                Outcome::Blocked
-            };
-            state.record.detail = error;
-        }
-    }
-    state
-        .record
-        .acceptance_outcome
-        .get_or_insert(state.record.outcome);
-    writer
-        .save(&mut state, Step::Saving, observer)
-        .map_err(RunError::Checkpoint)?;
-    if let Err(error) = execute::save_work(&root, binary, task, &policy, lock_file, &mut state.record) {
-        if !matches!(state.record.outcome, Outcome::Interrupted | Outcome::Unverified) {
-            state.record.outcome = Outcome::Blocked;
-        }
-        if !state.record.detail.is_empty() {
-            state.record.detail.push('\n');
-        }
-        state.record.detail.push_str(&format!("save: {error}"));
-        let retry = if matches!(
-            state.record.acceptance_outcome,
-            Some(Outcome::Done | Outcome::NothingToDo | Outcome::Red)
-        ) {
-            Step::Saving
-        } else {
-            // An unfinished merge/worker still needs another execution attempt.
-            Step::Finished
-        };
+    // Refuse before any worker when the owner has not confirmed the push this
+    // lane task will make. A completed task returns above and keeps its evidence.
+    if task.lane_ci && !policy.push_approved {
+        state.record.outcome = Outcome::Blocked;
+        state.record.detail = "lane acceptance requires the owner's push confirmation for this run".into();
         writer
-            .save(&mut state, retry, observer)
+            .save(&mut state, Step::Finished, observer)
             .map_err(RunError::Checkpoint)?;
         return Ok(state.record);
     }
-    state.record.outcome = state
-        .record
-        .acceptance_outcome
-        .take()
-        .unwrap_or(state.record.outcome);
-    if recover_accepted_save {
-        // A failed or interrupted save can leave a worktree that changed since
-        // acceptance. Qualify the exact recovered commit before restoring success.
-        match committed::verify_commit(&root, binary, &policy, &state, lock_file) {
-            Ok(_) => {
-                let initial = state.execution.as_ref().and_then(|point| point.initial.as_ref());
-                state.record.outcome = if state.record.head_sha.as_ref() == initial {
-                    Outcome::NothingToDo
+    writer
+        .save(&mut state, step, observer)
+        .map_err(RunError::Checkpoint)?;
+    loop {
+        // A crash during lane observation resumes that durable step; the saved
+        // commit already exists, so only the observation is repeated.
+        if state.record.step != Step::Lane {
+            match (execute::Runner {
+                repo: &root,
+                binary,
+                policy: &policy,
+                local_checks: &locked.local_checks,
+                lock: lock_file,
+                writer: &mut writer,
+                observer,
+                scrub_note,
+                base_alias: planned.base_alias.as_ref(),
+                native: planned.native,
+                owner_selected_model: planned.owner_selected_model,
+                #[cfg(target_os = "linux")]
+                managed_steering: locked.managed_steering.as_ref(),
+            })
+            .drive(&mut state)
+            {
+                Ok(()) => {}
+                Err(RunError::Checkpoint(error)) => return Err(RunError::Checkpoint(error)),
+                Err(RunError::Blocked(error)) => {
+                    state.record.outcome = if state.record.outcome == Outcome::Interrupted
+                        || state
+                            .record
+                            .worker
+                            .as_ref()
+                            .is_some_and(|worker| matches!(worker.outcome, WorkerOutcome::Interrupted))
+                    {
+                        Outcome::Interrupted
+                    } else {
+                        Outcome::Blocked
+                    };
+                    state.record.detail = error;
+                }
+            }
+            state
+                .record
+                .acceptance_outcome
+                .get_or_insert(state.record.outcome);
+            writer
+                .save(&mut state, Step::Saving, observer)
+                .map_err(RunError::Checkpoint)?;
+            if let Err(error) = execute::save_work(&root, binary, task, &policy, lock_file, &mut state.record)
+            {
+                if !matches!(state.record.outcome, Outcome::Interrupted | Outcome::Unverified) {
+                    state.record.outcome = Outcome::Blocked;
+                }
+                if !state.record.detail.is_empty() {
+                    state.record.detail.push('\n');
+                }
+                state.record.detail.push_str(&format!("save: {error}"));
+                let retry = if matches!(
+                    state.record.acceptance_outcome,
+                    Some(Outcome::Done | Outcome::NothingToDo | Outcome::Red)
+                ) {
+                    Step::Saving
                 } else {
-                    Outcome::Done
+                    // An unfinished merge/worker still needs another execution attempt.
+                    Step::Finished
                 };
+                writer
+                    .save(&mut state, retry, observer)
+                    .map_err(RunError::Checkpoint)?;
+                return Ok(state.record);
+            }
+            state.record.outcome = state
+                .record
+                .acceptance_outcome
+                .take()
+                .unwrap_or(state.record.outcome);
+            if recover_accepted_save {
+                // A failed or interrupted save can leave a worktree that changed since
+                // acceptance. Qualify the exact recovered commit before restoring success.
+                match committed::verify_commit(&root, binary, &policy, &state, lock_file) {
+                    Ok(_) => {
+                        let initial = state.execution.as_ref().and_then(|point| point.initial.as_ref());
+                        state.record.outcome = if state.record.head_sha.as_ref() == initial {
+                            Outcome::NothingToDo
+                        } else {
+                            Outcome::Done
+                        };
+                        state.record.detail.clear();
+                    }
+                    Err(error) => {
+                        state.record.outcome = if error == NO_ACCEPTANCE_CHECKS
+                            || error == HOSTED_TEST_EVIDENCE_REQUIRED
+                            || error.contains("source project is not trusted")
+                        {
+                            Outcome::Unverified
+                        } else {
+                            Outcome::Blocked
+                        };
+                        state.record.detail = format!("save recovery: {error}");
+                    }
+                }
+                recover_accepted_save = false;
+            }
+        }
+        // Lane CI is the acceptance evidence for an opted-in task. Nothing is
+        // done until its run for this exact head concluded successfully.
+        // Locally checked work that only lacks hosted evidence (Rust tests) enters
+        // the lane to collect it; it stays unverified until that run is green.
+        let hosted_pending = state.record.outcome == Outcome::Unverified
+            && state.record.detail == HOSTED_TEST_EVIDENCE_REQUIRED;
+        if !task.lane_ci
+            || !(hosted_pending || matches!(state.record.outcome, Outcome::Done | Outcome::NothingToDo))
+        {
+            break;
+        }
+        if state.record.outcome == Outcome::NothingToDo {
+            break;
+        }
+        let Some(head) = state.record.head_sha.clone() else {
+            break;
+        };
+        if state
+            .record
+            .lane
+            .as_ref()
+            .is_some_and(|verdict| verdict.head == head && verdict.passed())
+        {
+            if hosted_pending {
+                state.record.outcome = Outcome::Done;
                 state.record.detail.clear();
             }
+            break;
+        }
+        if state.record.step != Step::Lane {
+            state.record.step = Step::Lane;
+            writer
+                .save(&mut state, Step::Lane, observer)
+                .map_err(RunError::Checkpoint)?;
+        }
+        match lane::accept(&root, binary, &policy, lock_file, &state) {
+            Ok(lane::LaneAcceptance::Pass(verdict)) => {
+                state.record.lane = Some(verdict);
+                if hosted_pending {
+                    // The exact-head lane run is the hosted evidence that was missing.
+                    state.record.outcome = Outcome::Done;
+                    state.record.detail.clear();
+                }
+                break;
+            }
+            Ok(lane::LaneAcceptance::Blocked { verdict, detail }) => {
+                // A cancelled, timed-out or unstarted run says nothing about the
+                // code, so it keeps its own state and spends no repair round.
+                state.record.lane = Some(verdict);
+                state.record.outcome = Outcome::Blocked;
+                state.record.detail = format!("lane acceptance: {detail}");
+                break;
+            }
+            Ok(lane::LaneAcceptance::Fail { verdict, failures }) => {
+                state.record.lane = Some(verdict);
+                if state.record.lane_repairs == 0 {
+                    state.record.lane_repairs = 1;
+                    if let Some(execution) = state.execution.as_mut() {
+                        execution.failures = failures;
+                    }
+                    state.record.acceptance_outcome = None;
+                    state.record.outcome = Outcome::Running;
+                    state.record.step = Step::Repair;
+                    writer
+                        .save(&mut state, Step::Repair, observer)
+                        .map_err(RunError::Checkpoint)?;
+                    continue;
+                }
+                state.record.outcome = Outcome::Red;
+                state.record.detail = failures;
+                break;
+            }
             Err(error) => {
-                state.record.outcome = if error == NO_ACCEPTANCE_CHECKS
-                    || error == HOSTED_TEST_EVIDENCE_REQUIRED
-                    || error.contains("source project is not trusted")
-                {
-                    Outcome::Unverified
-                } else {
-                    Outcome::Blocked
-                };
-                state.record.detail = format!("save recovery: {error}");
+                // An unobservable lane is never green: the task stays unfinished
+                // and its saved work is retained for a later attempt.
+                state.record.outcome = Outcome::Blocked;
+                state.record.detail = format!("lane acceptance: {error}");
+                break;
             }
         }
     }
@@ -1593,6 +1727,21 @@ fn run_locked(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn every_lane_worker_leaves_github_credentials_with_the_runner() {
+        let task = Task {
+            id: "test".into(),
+            branch: "agent/test".into(),
+            base: default_base(),
+            model: "fake".into(),
+            prompt: "ordinary task file".into(),
+            max_time: default_max_time(),
+            reviewed_pull_request: None,
+            lane_ci: true,
+        };
+        assert!(task.runner_owns_github());
+    }
 
     #[test]
     fn bounded_command_output_preserves_binary_stdout_and_exit_status() {

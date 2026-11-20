@@ -163,10 +163,13 @@ pub(crate) fn run(
             Some(&root),
             Some(&dirs.home),
         );
-        let policy = oxa_work::RunPolicy {
+        let mut policy = oxa_work::RunPolicy {
             git_binary,
             host_path,
             terminate_binary,
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
             offline: oxa_proto::offline(),
             runner_owns_github: false,
             autonomy: runner_autonomy(&oxa_config::Settings::load(dirs, &root, false)),
@@ -185,6 +188,10 @@ pub(crate) fn run(
             storage: dirs.agent_dir.join("work").join(key),
         };
         protected_storage(&policy.storage, &root, &common)?;
+        // Lane acceptance needs the trusted gh executable and the owner's push
+        // approval. The queue may hold lane tasks, so its approval is taken from
+        // the environment only; an interactive run asks below once it knows.
+        configure_lane(&mut policy, &root, env, dirs, false);
         if args.first().is_some_and(|arg| arg == "board") {
             return crate::work_board::run(&args[1..], &root, &common, env, dirs, &policy);
         }
@@ -255,19 +262,12 @@ pub(crate) fn run(
             }
             end -= 1;
         }
-        if (publish || reports)
-            && env.pairs().iter().any(|(name, _)| {
-                matches!(
-                    name.as_str(),
-                    "OXA_CODING_AGENT" | "AI_AGENT" | "OXA_SUBAGENT_DEPTH"
-                )
-            })
-        {
+        if (publish || reports) && agent_launched(env) {
             return Err("publishing and problem reporting require the owner outside an agent tool".into());
         }
         let task_args = &args[..end];
         let is_trusted = trusted(&root, env, dirs)?;
-        let context = Context {
+        let mut context = Context {
             cwd: root.clone(),
             binary: binary.clone(),
             policy: policy.clone(),
@@ -379,6 +379,10 @@ pub(crate) fn run(
                     .into(),
             ),
         };
+        if tasks.iter().any(|task| task.lane_ci) {
+            configure_lane(&mut policy, &root, env, dirs, true);
+            context.policy = policy.clone();
+        }
         let owner_selected_model = explicit_model
             && !env.pairs().iter().any(|(name, _)| {
                 matches!(
@@ -445,6 +449,61 @@ pub(crate) fn run(
         Err(e) => {
             let _ = writeln!(err, "oxa work: {e}");
             2
+        }
+    }
+}
+
+/// Whether the process runs under a coding agent or subagent, whose actions are never
+/// the owner's own confirmation.
+fn agent_launched(env: &Env) -> bool {
+    env.pairs().iter().any(|(name, _)| {
+        matches!(
+            name.as_str(),
+            "OXA_CODING_AGENT" | "AI_AGENT" | "OXA_SUBAGENT_DEPTH"
+        )
+    })
+}
+
+/// Resolve `gh` and the owner's lane push approval. Missing gh only blocks the
+/// lane task that needs it; other tasks run unchanged.
+fn configure_lane(policy: &mut oxa_work::RunPolicy, root: &Path, env: &Env, dirs: &Dirs, ask: bool) {
+    if policy.gh_binary.is_none() {
+        policy.gh_binary = crate::netguard::trusted_executable_for(
+            "gh",
+            Some(policy.host_path.as_os_str()),
+            Some(root),
+            Some(&dirs.home),
+        );
+    }
+    if policy.content_scan.is_none() {
+        // Lane pushes go through exactly the scan `--publish` runs.
+        // The scan reads project settings, so it is built on first use, which only a
+        // trusted project's lane acceptance reaches, never while an unapproved
+        // checkout is being opened.
+        let (scan_env, scan_dirs, scan_root) = (env.clone(), dirs.clone(), root.to_path_buf());
+        let scan = std::sync::OnceLock::<crate::report_cmd::PushScan>::new();
+        policy.content_scan = Some(std::sync::Arc::new(move |item| {
+            scan.get_or_init(|| {
+                crate::report_cmd::PushScan::new(
+                    &scan_env,
+                    &oxa_config::Settings::load(&scan_dirs, &scan_root, true),
+                )
+            })
+            .check(item)
+        }));
+    }
+    // Compatibility for an owner-controlled launcher. Agent children authenticate the owner's
+    // answer through the broker instead. Resolved on both paths: a queue launch has no single
+    // question to ask, so its lane tasks would stay unapprovable without this.
+    if env.get("OXA_WORK_OWNER_CONFIRMED") == Some("1") && !agent_launched(env) {
+        policy.push_approved = true;
+    }
+    if ask && !policy.push_approved {
+        let question = "Lane acceptance will push each accepted commit to origin and wait for lane CI. Type yes to allow pushes for this run: ";
+        if let Some(socket) = env.get(oxa_core::owner_confirm::SOCK_ENV) {
+            policy.push_approved = oxa_core::owner_confirm::ask(Path::new(socket), question) == Some(true);
+        } else if !agent_launched(env) {
+            policy.push_approved = crate::report_cmd::tty_confirm(env)(question) == Some(true);
         }
     }
 }
