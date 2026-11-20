@@ -1,12 +1,12 @@
 //! #1512 S5: the approval desk. A run with no one to ask (`!Ui::interactive`) files a dangerous
 //! command here instead of pausing; the owner answers with `oxa send <session> --approve <id>`
-//! Answers come only from the desk, never from the inbox text path.
+//! (or the lead web approvals page). Answers come only from the desk, never from the inbox text path.
 //!
 //! Storage: `<agent_dir>/approvals/`, mode 0700; one `<id>.json` per request, mode 0600. Files
 //! are written under a private temporary name and renamed into place, so a symlink at a record
 //! name is replaced, never followed. The desk refuses a symlinked agent directory or desk
 //! directory, and one owned by another user.
-use crate::danger::DangerHit;
+use crate::danger::{has_mutable_input, DangerHit};
 use crate::policy::danger_key;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -294,13 +294,14 @@ impl ApprovalDesk {
             )));
         }
         if status != "deny"
-            && rec.keys.iter().any(|key| {
-                key.split_once(' ')
-                    .is_some_and(|(rule, _)| rule == OPAQUE_SHELL_INPUT)
-            })
+            && (has_mutable_input(&rec.command)
+                || rec.keys.iter().any(|key| {
+                    key.split_once(' ')
+                        .is_some_and(|(rule, _)| rule == OPAQUE_SHELL_INPUT)
+                }))
         {
             return Err(invalid_input(
-                "shell input cannot be approved for unattended replay",
+                "mutable input cannot be approved for unattended replay",
             ));
         }
         rec.status = status.to_string();

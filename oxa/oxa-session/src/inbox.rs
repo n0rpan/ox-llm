@@ -1,7 +1,7 @@
 //! File-based session inbox. Writers rename a private temporary file into place. A single
 //! owner watches with inotify, scans once on startup and after notifications, and removes
 //! a message only after its callback accepts it. Plain follow-ups use `.msg` files.
-//! Off Linux (macOS) there is no inotify: the owner scans the same directory every 500 ms.
+//! Off Linux (macOS) there is no inotify: the owner scans the same directory every 200 ms.
 //! Acceptance means admission to the owner's in-memory queue, not durable execution.
 //! A crash can lose an admitted message or replay one whose file wasn't removed yet.
 use crate::SessionRef;
@@ -21,9 +21,6 @@ use std::thread::{self, JoinHandle};
 /// Maximum admitted message size. Larger externally published files stay on disk.
 pub const INBOX_MESSAGE_BYTES: usize = 256 * 1024;
 const CONTROL_BYTES: usize = 32 * 1024;
-/// Scan interval for the polling receiver used where inotify is unavailable.
-#[cfg(not(target_os = "linux"))]
-const POLL_INTERVAL_MS: libc::c_int = 500;
 
 /// Typed inbox delivery keeps the control payload out of the model's follow-up queue.
 #[derive(Debug, PartialEq, Eq)]
@@ -45,9 +42,6 @@ pub fn valid_inbox_id(id: &str) -> bool {
 // inbox component prevents a symlink from redirecting reads, writes, chmod or watch setup.
 struct Directory {
     file: File,
-    // Off Linux there is no /proc handle for the pinned fd, so the opened path is kept.
-    #[cfg(not(target_os = "linux"))]
-    path: PathBuf,
 }
 impl Directory {
     fn open(path: &Path) -> io::Result<Self> {
@@ -56,11 +50,7 @@ impl Directory {
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(path)?;
         make_private(&file)?;
-        Ok(Self {
-            file,
-            #[cfg(not(target_os = "linux"))]
-            path: path.to_path_buf(),
-        })
+        Ok(Self { file })
     }
     fn lock(&self) -> io::Result<()> {
         // SAFETY: the directory fd is live; flock doesn't access memory.
@@ -73,18 +63,19 @@ impl Directory {
     fn path(&self) -> PathBuf {
         fd_path(&self.file)
     }
-    #[cfg(not(target_os = "linux"))]
-    fn path(&self) -> PathBuf {
-        self.path.clone()
-    }
     fn child(&self, name: &str) -> io::Result<Self> {
-        let path = self.path().join(name);
-        match DirBuilder::new().mode(0o700).create(&path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e),
+        let name = CString::new(name)?;
+        // SAFETY: the parent descriptor is live and name is a NUL-terminated component.
+        if unsafe { libc::mkdirat(self.file.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::AlreadyExists {
+                return Err(error);
+            }
         }
-        Self::open(&path)
+        let file =
+            open_directory_at(&self.file, &name)?.ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+        make_private(&file)?;
+        Ok(Self { file })
     }
 }
 
@@ -227,25 +218,22 @@ pub fn send_inbox(agent_dir: &Path, id: &str, text: &str) -> io::Result<()> {
     }
     // `Dirs::tmp_dir` is `<agent_dir>/tmp`; the active session installs its own child as the
     // narrowly scoped readable spill exception without exposing the rest of the agent directory.
-    let spill_root = agent_dir.join("tmp");
     if !valid_inbox_id(id) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "invalid session id for inbox",
         ));
     }
-    DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&spill_root)?;
-    let spill = publish_into(&Directory::open(&spill_root)?.child(id)?, "txt", text)?;
-    let path = spill_root.join(id).join(spill);
+    DirBuilder::new().recursive(true).mode(0o700).create(agent_dir)?;
+    let agent = Directory::open(agent_dir)?;
+    let spill = publish_into(&agent.child("tmp")?.child(id)?, "txt", text)?;
+    let path = agent_dir.join("tmp").join(id).join(spill);
     let pointer = format!(
         "The message is {} bytes, too large to queue inline. Its full text is in the private file {}; read that file.",
         text.len(),
         path.display()
     );
-    publish(agent_dir, id, "msg", &pointer)
+    publish_into(&agent.child("inbox")?.child(id)?, "msg", &pointer).map(|_| ())
 }
 
 /// Publish a control packet for a trusted, already resolved session reference.
@@ -328,55 +316,142 @@ fn publish_into(dir: &Directory, extension: &str, text: &str) -> io::Result<Stri
 
 /// The retry signal of a running [`Inbox`]: cheap to clone and to call from any thread.
 #[derive(Clone)]
-pub struct InboxRetry {
-    #[cfg(target_os = "linux")]
-    fd: Arc<File>,
-}
+pub struct InboxRetry(Arc<RetrySignal>);
 impl InboxRetry {
     /// Same effect as [`Inbox::retry`]; calls after the watcher stopped are harmless.
-    #[cfg(target_os = "linux")]
     pub fn retry(&self) {
-        let value = 1u64;
-        // SAFETY: the eventfd stays open while this clone exists, and value points to eight initialized bytes.
-        unsafe { libc::write(self.fd.as_raw_fd(), (&value as *const u64).cast(), 8) };
+        self.0.signal();
+    }
+}
+
+/// Coalescing wake-up for the watcher thread: an eventfd on Linux, a non-blocking pipe elsewhere.
+struct RetrySignal {
+    read: File,
+    write: File,
+}
+impl RetrySignal {
+    #[cfg(target_os = "linux")]
+    fn new() -> io::Result<Self> {
+        // SAFETY: eventfd has no pointer arguments; its new descriptor is owned below.
+        let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: fd is a newly created owned descriptor.
+        let read = unsafe { File::from_raw_fd(fd) };
+        let write = read.try_clone()?;
+        Ok(Self { read, write })
     }
 
-    /// Off Linux the polling receiver rescans on its own timeout, so there is nothing to wake.
     #[cfg(not(target_os = "linux"))]
-    pub fn retry(&self) {}
+    fn new() -> io::Result<Self> {
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: fds has room for the two descriptors pipe writes.
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: both descriptors are newly created and owned here.
+        let (read, write) = unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) };
+        for fd in [read.as_raw_fd(), write.as_raw_fd()] {
+            // SAFETY: fd is open; these flag calls take no pointers.
+            let ok = unsafe {
+                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) == 0
+                    && libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) == 0
+            };
+            if !ok {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(Self { read, write })
+    }
+
+    fn signal(&self) {
+        let value = 1u64;
+        // SAFETY: the descriptor stays open while self exists, and value points to eight initialized bytes.
+        unsafe { libc::write(self.write.as_raw_fd(), (&value as *const u64).cast(), 8) };
+    }
+
+    fn drain(&self) {
+        let mut value = [0u64; 8];
+        loop {
+            // SAFETY: the descriptor is live and value is writable for 64 bytes.
+            let n = unsafe { libc::read(self.read.as_raw_fd(), value.as_mut_ptr().cast(), 64) };
+            // An eventfd yields one counter per read; a pipe may hold several queued signals.
+            if n <= 0 || cfg!(target_os = "linux") {
+                break;
+            }
+        }
+    }
+}
+
+/// Directory change notification: inotify on Linux. Elsewhere there is no kernel watch, so the
+/// descriptor is -1 (ignored by poll) and the watcher rescans on a short timeout instead.
+#[cfg(target_os = "linux")]
+struct Notify(File);
+#[cfg(target_os = "linux")]
+impl Notify {
+    const POLL_TIMEOUT_MS: libc::c_int = -1;
+
+    fn new(dir: &Directory) -> io::Result<Self> {
+        let path = CString::new(dir.path().as_os_str().as_encoded_bytes()).map_err(io::Error::other)?;
+        // SAFETY: inotify_init1 has no pointer arguments; the returned fd is owned below.
+        let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: fd is a newly created, owned descriptor.
+        let notify = unsafe { File::from_raw_fd(fd) };
+        // Subscribe before the initial scan so messages arriving during startup aren't lost.
+        // SAFETY: path is NUL terminated and notify remains open.
+        if unsafe { libc::inotify_add_watch(fd, path.as_ptr(), libc::IN_MOVED_TO | libc::IN_CLOSE_WRITE) } < 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self(notify))
+    }
+    fn fd(&self) -> libc::c_int {
+        self.0.as_raw_fd()
+    }
+    fn drain(&mut self, buffer: &mut [u8]) -> bool {
+        self.0.read(buffer).is_ok()
+    }
+}
+#[cfg(not(target_os = "linux"))]
+struct Notify;
+#[cfg(not(target_os = "linux"))]
+impl Notify {
+    const POLL_TIMEOUT_MS: libc::c_int = 200;
+
+    fn new(_dir: &Directory) -> io::Result<Self> {
+        Ok(Self)
+    }
+    fn fd(&self) -> libc::c_int {
+        -1
+    }
+    fn drain(&mut self, _buffer: &mut [u8]) -> bool {
+        true
+    }
 }
 
 /// Owns the event-driven receiver. Dropping it wakes and joins its thread, so an old
 /// session's callback cannot enqueue anything after a frontend has rebound to a new one.
 pub struct Inbox {
     stop: std::io::PipeWriter,
-    #[cfg(target_os = "linux")]
-    retry: Arc<File>,
+    retry: Arc<RetrySignal>,
     stopping: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 impl Inbox {
     /// Reconsider disk-backed messages after the owner has drained queue capacity.
-    /// An eventfd coalesces retries without polling or blocking the frontend.
-    #[cfg(target_os = "linux")]
+    /// An eventfd or pipe coalesces retries without blocking the frontend.
     pub fn retry(&self) {
-        let value = 1u64;
-        // SAFETY: retry is live and value points to eight initialized bytes.
-        unsafe { libc::write(self.retry.as_raw_fd(), (&value as *const u64).cast(), 8) };
+        self.retry.signal();
     }
-
-    /// Off Linux the polling receiver rescans every 500 ms, so capacity is reconsidered
-    /// without a wakeup.
-    #[cfg(not(target_os = "linux"))]
-    pub fn retry(&self) {}
 
     /// A clone of this watcher's retry signal, for an owner that learns of a queue drain
     /// somewhere other than its own run loop (a headless event sink).
     pub fn retry_handle(&self) -> InboxRetry {
-        InboxRetry {
-            #[cfg(target_os = "linux")]
-            fd: self.retry.clone(),
-        }
+        InboxRetry(self.retry.clone())
     }
 
     pub fn watch(
@@ -429,42 +504,13 @@ impl Inbox {
         id: &str,
         control_extension: Option<String>,
         follow_ups: bool,
-        deliver: impl FnMut(InboxItem) -> bool + Send + 'static,
+        mut deliver: impl FnMut(InboxItem) -> bool + Send + 'static,
     ) -> io::Result<Self> {
         let dir = directory(agent_dir, id)?;
         dir.lock()?;
-        Self::start(dir, control_extension, follow_ups, deliver)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn start(
-        dir: Directory,
-        control_extension: Option<String>,
-        follow_ups: bool,
-        mut deliver: impl FnMut(InboxItem) -> bool + Send + 'static,
-    ) -> io::Result<Self> {
-        // SAFETY: inotify_init1 has no pointer arguments; the returned fd is owned below.
-        let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: fd is a newly created, owned descriptor.
-        let mut notify = unsafe { File::from_raw_fd(fd) };
-        let path = CString::new(dir.path().as_os_str().as_encoded_bytes()).map_err(io::Error::other)?;
-        // Subscribe before the initial scan so messages arriving during startup aren't lost.
-        // SAFETY: path is NUL terminated and notify remains open.
-        if unsafe { libc::inotify_add_watch(fd, path.as_ptr(), libc::IN_MOVED_TO | libc::IN_CLOSE_WRITE) } < 0
-        {
-            return Err(io::Error::last_os_error());
-        }
+        let mut notify = Notify::new(&dir)?;
         let (stop_read, stop) = std::io::pipe()?;
-        // SAFETY: eventfd has no pointer arguments; its new descriptor is owned below.
-        let retry_fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
-        if retry_fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: retry_fd is a newly created owned descriptor.
-        let retry = Arc::new(unsafe { File::from_raw_fd(retry_fd) });
+        let retry = Arc::new(RetrySignal::new()?);
         let retry_read = retry.clone();
         let stopping = Arc::new(AtomicBool::new(false));
         let stopped = stopping.clone();
@@ -473,7 +519,7 @@ impl Inbox {
             scan(&dir, extension, follow_ups, &mut deliver, &stopped);
             let mut fds = [
                 libc::pollfd {
-                    fd: notify.as_raw_fd(),
+                    fd: notify.fd(),
                     events: libc::POLLIN,
                     revents: 0,
                 },
@@ -483,7 +529,7 @@ impl Inbox {
                     revents: 0,
                 },
                 libc::pollfd {
-                    fd: retry_read.as_raw_fd(),
+                    fd: retry_read.read.as_raw_fd(),
                     events: libc::POLLIN,
                     revents: 0,
                 },
@@ -491,7 +537,7 @@ impl Inbox {
             let mut buffer = [0u8; 8192];
             loop {
                 // SAFETY: fds contains three live descriptors and is writable for its length.
-                let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, -1) };
+                let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, Notify::POLL_TIMEOUT_MS) };
                 if n < 0 {
                     if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
                         continue;
@@ -501,13 +547,11 @@ impl Inbox {
                 if fds[1].revents != 0 || stopped.load(Ordering::Relaxed) {
                     break;
                 }
-                if fds[0].revents & libc::POLLIN != 0 && notify.read(&mut buffer).is_err() {
+                if fds[0].revents & libc::POLLIN != 0 && !notify.drain(&mut buffer) {
                     break;
                 }
                 if fds[2].revents & libc::POLLIN != 0 {
-                    let mut value = 0u64;
-                    // SAFETY: retry_read is live and value is writable for eight bytes.
-                    unsafe { libc::read(retry_read.as_raw_fd(), (&mut value as *mut u64).cast(), 8) };
+                    retry_read.drain();
                 }
                 // Capacity notifications and inotify overflow both trigger a rescan.
                 scan(&dir, extension, follow_ups, &mut deliver, &stopped);
@@ -516,49 +560,6 @@ impl Inbox {
         Ok(Self {
             stop,
             retry,
-            stopping,
-            thread: Some(thread),
-        })
-    }
-
-    /// Off Linux: the same single-consumer, rescan-on-tick contract as the inotify path,
-    /// with a bounded poll of the inbox directory instead of file notifications.
-    #[cfg(not(target_os = "linux"))]
-    fn start(
-        dir: Directory,
-        control_extension: Option<String>,
-        follow_ups: bool,
-        mut deliver: impl FnMut(InboxItem) -> bool + Send + 'static,
-    ) -> io::Result<Self> {
-        let (stop_read, stop) = std::io::pipe()?;
-        let stopping = Arc::new(AtomicBool::new(false));
-        let stopped = stopping.clone();
-        let thread = thread::Builder::new().name("oxa-inbox".into()).spawn(move || {
-            let extension = control_extension.as_deref();
-            scan(&dir, extension, follow_ups, &mut deliver, &stopped);
-            let mut fds = [libc::pollfd {
-                fd: stop_read.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            }];
-            loop {
-                // SAFETY: fds holds one live descriptor and is writable for its length.
-                let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, POLL_INTERVAL_MS) };
-                if n < 0 {
-                    if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
-                        continue;
-                    }
-                    break;
-                }
-                // The stop pipe wakes the poll at once; a timeout falls through to a rescan.
-                if fds[0].revents != 0 || stopped.load(Ordering::Relaxed) {
-                    break;
-                }
-                scan(&dir, extension, follow_ups, &mut deliver, &stopped);
-            }
-        })?;
-        Ok(Self {
-            stop,
             stopping,
             thread: Some(thread),
         })
@@ -790,6 +791,23 @@ fn remove_entry(dir: &Directory, name: &OsStr) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn child_creation_stays_in_the_pinned_parent_after_a_rename() {
+        let env = oxa_fake::TestEnv::new();
+        let agent = env.root().join("agent");
+        fs::create_dir(&agent).unwrap();
+        let pinned = Directory::open(&agent).unwrap();
+        let moved = env.root().join("moved");
+        fs::rename(&agent, &moved).unwrap();
+        fs::create_dir(&agent).unwrap();
+
+        let child = pinned.child("inbox").unwrap().child("session-pin").unwrap();
+        publish_into(&child, "msg", "queued").unwrap();
+
+        assert!(!agent.join("inbox").exists());
+        assert_eq!(fs::read_dir(moved.join("inbox/session-pin")).unwrap().count(), 1);
+    }
 
     #[test]
     fn publish_keeps_writing_the_pinned_directory_after_a_rename() {

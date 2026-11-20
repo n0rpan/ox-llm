@@ -193,7 +193,28 @@ fn earlier_branch_switch_asks() {
         "git branch -f x && git push",
         "git switch main && gh pr create --title t --body b",
     ] {
-        assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{c}");
+        for level in [Autonomy::Standard, Autonomy::Auto] {
+            assert_eq!(decide(&cwd, level, c), Decision::Ask, "{level:?}: {c}");
+        }
+    }
+
+    // A later switch cannot change the branch that the earlier push publishes.
+    assert_eq!(
+        decide(&cwd, Autonomy::Auto, "git push origin HEAD && git switch main"),
+        Decision::Allow
+    );
+}
+
+#[test]
+fn concurrent_branch_switch_asks() {
+    let cwd = repo("my-branch");
+    for c in [
+        "git push origin HEAD | git switch main",
+        "git switch main | git push origin HEAD",
+    ] {
+        for level in [Autonomy::Standard, Autonomy::Auto] {
+            assert_eq!(decide(&cwd, level, c), Decision::Ask, "{level:?}: {c}");
+        }
     }
 }
 
@@ -428,13 +449,41 @@ fn local_writers_and_path_qualified_publish_tools_ask() {
 }
 
 #[test]
-fn continued_config_values_and_git_aliases_ask() {
+fn git_names_that_can_resolve_outside_builtin_dispatch_ask() {
+    let cwd = repo("my-branch");
+    for command in ["git citool", "git p4", "git send-email", "git svn", "git hook"] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask, "{command}");
+    }
+}
+
+#[test]
+fn continued_config_values_and_unresolved_git_subcommands_ask() {
     let cwd = repo("my-branch");
     set_config(
         &cwd,
         "[remote \"origin\"]\n\tharmless = x\\\n[ignored]\n\tpush = HEAD:refs/heads/main\n",
     );
     assert_eq!(decide(&cwd, Autonomy::Auto, "git push origin"), Decision::Ask);
+
+    let cwd = repo("my-branch");
+    assert_eq!(decide(&cwd, Autonomy::Auto, "git ship"), Decision::Ask);
+
+    // A documented builtin keeps its classification: local state commands such as
+    // `git merge --abort` or `git update-ref` are not publish commands and must not
+    // ask (the aborting-merge and replace-ref work guards depend on them running).
+    let cwd = repo("my-branch");
+    for c in [
+        "git diff-files",
+        "git diff-index --quiet HEAD --",
+        "git diff-tree HEAD",
+        "git version",
+        "git merge --abort",
+        "git update-ref refs/replace/deadbeef deadbeef",
+        "git rebase origin/main",
+        "git config user.name someone",
+    ] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Allow, "{c}");
+    }
 
     let cwd = repo("my-branch");
     set_config(&cwd, "[alias]\n\tship = push origin HEAD:main\n");

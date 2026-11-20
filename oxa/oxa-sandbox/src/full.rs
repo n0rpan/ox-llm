@@ -212,10 +212,13 @@ impl FullAccess {
     ) -> ExecResult {
         if !self.no_net() {
             let spec = self.host_spec(s);
-            if let Some(net) = &self.host_net {
-                return net.redact_host_output(live, |live| run_unsandboxed_capture(&spec, c, live, capture));
-            }
-            return run_unsandboxed_capture(&spec, c, live, capture);
+            let mut result = if let Some(net) = &self.host_net {
+                net.redact_host_output(live, |live| run_unsandboxed_capture(&spec, c, live, capture))
+            } else {
+                run_unsandboxed_capture(&spec, c, live, capture)
+            };
+            result.unsandboxed = true;
+            return result;
         }
         self.run_without_network(s, None, c, live, capture)
     }
@@ -297,9 +300,10 @@ impl Sandbox for FullAccess {
         self.inner.run_streaming(s, c, live)
     }
     /// Only exec hooks pass standard input; they are the user's own configuration, not the
-    /// model's bash. With the OS sandbox on they stay in the wrapped sandbox. Without it
-    /// (#1512 S3) they run with the user's rights, like bash, keep the owner's network setting,
-    /// and start from an empty environment plus the hook's own (never the yolo inherit path).
+    /// model's bash. With the OS sandbox on they stay in the wrapped sandbox at every level
+    /// (no full-access bypass). Without it (#1512 S3) they run with the user's rights, like
+    /// bash, keep the owner's network setting, and start from an empty environment plus the
+    /// hook's own (never the yolo inherit path).
     fn run_with_stdin(
         &self,
         s: &ExecSpec,

@@ -4,6 +4,7 @@ use crate::Diagnostic;
 use oxa_proto::{Level, Value};
 use serde_json::Map;
 use std::collections::HashSet;
+use std::sync::OnceLock;
 
 /// Value kind of a settings key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,357 +36,30 @@ pub struct KeyDef {
 // Lead-only tools are included in settings patches, but are registered by the CLI only for leads.
 pub(crate) const DEFAULT_TOOLS: &[&str] = &["read", "bash", "edit", "write", "grep", "find", "ls", "ask"];
 
-const fn key(key: &'static str, kind: Kind, default: &'static str) -> KeyDef {
-    KeyDef {
-        key,
-        kind,
-        default,
-        supported: true,
-    }
-}
-
-const fn verdict_o(key: &'static str, kind: Kind, default: &'static str) -> KeyDef {
-    KeyDef {
-        key,
-        kind,
-        default,
-        supported: false,
-    }
-}
-
-/// Sorted by key (byte order); `schema_is_sorted_and_unique` in the tests checks it.
-const SCHEMA: &[KeyDef] = &[
-    key("$schema", Kind::String, "null"),
-    key("autocompleteMaxVisible", Kind::Number, "5"),
-    key("branchSummary.reserveTokens", Kind::Number, "16384"),
-    key("branchSummary.skipPrompt", Kind::Bool, "false"),
-    key(
-        "cacheWarming",
-        Kind::Enum(&["off", "streaming", "idle"]),
-        "\"idle\"",
-    ),
-    // oxa: `codemode.enabled`, `codemode.toolSearch` and `codemode.maxWorkers` turn on the
-    // built-in codemode / tool-search hook sets and size the script pool (oxa-cli hooks.rs);
-    // pi activates them through `defaultTools`, which oxa honours as well.
-    key("codemode.enabled", Kind::Bool, "false"),
-    key("codemode.maxWorkers", Kind::Number, "0"),
-    key("codemode.mode", Kind::Enum(&["on", "only"]), "\"on\""),
-    key("codemode.toolSearch", Kind::Bool, "false"),
-    key("compaction.enabled", Kind::Bool, "true"),
-    key("compaction.keepRecentTokens", Kind::Number, "4000"),
-    key("compaction.modelOverrides", Kind::Object, "null"),
-    key(
-        "compaction.profile",
-        Kind::Enum(&["auto", "local", "cloud"]),
-        "\"auto\"",
-    ),
-    key("compaction.reserveTokens", Kind::Number, "16384"),
-    key("defaultModel", Kind::String, "null"),
-    key(
-        "defaultProjectTrust",
-        Kind::Enum(&["ask", "always", "never"]),
-        "\"ask\"",
-    ),
-    verdict_o("defaultProvider", Kind::String, "null"),
-    key(
-        "defaultThinkingLevel",
-        Kind::Enum(&["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
-        "\"medium\"",
-    ),
-    key(
-        "defaultTools",
-        Kind::StringList,
-        "[\"read\",\"bash\",\"edit\",\"write\",\"grep\",\"find\",\"ls\"]",
-    ),
-    key("done", Kind::StringList, "[]"),
-    key(
-        "doubleEscapeAction",
-        Kind::Enum(&["tree", "fork", "none"]),
-        "\"tree\"",
-    ),
-    key("editorPaddingX", Kind::Number, "0"),
-    verdict_o("enableAnalytics", Kind::Bool, "false"),
-    verdict_o("enableInstallTelemetry", Kind::Bool, "true"),
-    key("enableSkillCommands", Kind::Bool, "true"),
-    key("enabledModels", Kind::StringList, "null"),
-    key("extensions", Kind::StringList, "[]"),
-    key("externalEditor", Kind::String, "null"),
-    key(
-        "followUpMode",
-        Kind::Enum(&["all", "one-at-a-time"]),
-        "\"one-at-a-time\"",
-    ),
-    key("fullscreenCopyOnSelect", Kind::Bool, "true"),
-    key(
-        "fullscreenExitOutput",
-        Kind::Enum(&["transcript", "resume-hint"]),
-        "\"transcript\"",
-    ),
-    key(
-        "fullscreenScrollbar",
-        Kind::Enum(&["auto", "always", "hidden"]),
-        "\"auto\"",
-    ),
-    key("fullscreenWheelScrollLines", Kind::Any, "\"auto\""),
-    key("hideThinkingBlock", Kind::Bool, "false"),
-    key("hooks", Kind::Object, "{}"),
-    key("httpIdleTimeoutMs", Kind::Any, "900000"),
-    key("httpProxy", Kind::String, "null"),
-    verdict_o("images.autoResize", Kind::Bool, "true"),
-    key("images.blockImages", Kind::Bool, "false"),
-    key("markdown.codeBlockIndent", Kind::String, "\"  \""),
-    key(
-        "markdown.mermaid",
-        Kind::Enum(&["off", "final", "streaming"]),
-        "\"streaming\"",
-    ),
-    key("modelThinkingLevels", Kind::Object, "{}"),
-    key("outputPad", Kind::Number, "1"),
-    key("oxa.a2a.enabled", Kind::Bool, "true"),
-    key("oxa.allowHomeCwd", Kind::Bool, "false"),
-    // #1512 S2: exact rule keys saved by "always allow" in a dangerous-command prompt; user
-    // settings only (a project value is never read).
-    key("oxa.approval.always", Kind::StringList, "[]"),
-    // #1512: dangerous-command rules (+id/-id/cmd:..); user settings only.
-    key("oxa.approval.dangerous", Kind::StringList, "[]"),
-    // #1512 S5: what an unattended run does with a dangerous command (no one to ask): refuse it,
-    // file an approval request, or `auto` (refuse under the OS sandbox, request without it).
-    // User settings only.
-    key(
-        "oxa.approval.unattended",
-        Kind::Enum(&["auto", "refuse", "request"]),
-        "\"auto\"",
-    ),
-    // F5: seconds; unset = 120; 0 = none.
-    key("oxa.bash.defaultTimeout", Kind::Number, "null"),
-    // Background jobs that may run at once (`bash {background: true}`); at least 1.
-    key("oxa.bash.maxJobs", Kind::Number, "16"),
-    // Longest a bash job read blocks, in seconds (default 300; at least 1).
-    key("oxa.bash.waitCap", Kind::Number, "300"),
-    key("oxa.bootPreload", Kind::Bool, "true"),
-    key("oxa.builtinSkills", Kind::Bool, "true"),
-    key("oxa.cloud", Kind::Object, "{}"),
-    // V020-OPTIMIZE #7: unset = on.
-    key("oxa.compaction.idleSummary", Kind::Bool, "null"),
-    // L5 mid-run: unset = on.
-    key("oxa.compaction.midRun", Kind::Bool, "null"),
-    key("oxa.compaction.softTokens", Kind::Number, "null"),
-    // V020-OPTIMIZE #7: soft length target of a summary in tokens; unset = 700; 0 = none.
-    key("oxa.compaction.summaryTarget", Kind::Number, "null"),
-    // L5: unset = on.
-    key("oxa.compaction.turnStart", Kind::Bool, "null"),
-    // V020-OPTIMIZE #1 / #2: unset = on.
-    key("oxa.diet.output", Kind::Bool, "null"),
-    key("oxa.diet.tools", Kind::Bool, "null"),
-    // Cloud resilience: a reply with no text and no tool call is retried; user settings only
-    // (`settings.rs` reads it via `user_u32`, the descriptor row carries `.user_only()`).
-    key("oxa.emptyReplyRetries", Kind::Number, "1"),
-    key("oxa.engine.allowRemote", Kind::Bool, "false"),
-    key("oxa.engine.inProcessCloud", Kind::Bool, "null"),
-    key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
-    // The per-prompt environment note (date, time, runtime facts): unset = on.
-    key("oxa.envNote", Kind::Bool, "null"),
-    // R1: the first wait after a transient request failure of a pursuing goal; `0` opts out.
-    key("oxa.goal.failureBackoffSeconds", Kind::Number, "60"),
-    key("oxa.goal.idlePause", Kind::Bool, "false"),
-    // K3: a headless print or JSON run of a persisted session with a pursuing goal takes
-    // `oxa send` follow-ups from the session inbox for the run; false = off.
-    key("oxa.inbox.headless", Kind::Bool, "true"),
-    // W4: a finished background bash job (not one stopped) queues one follow-up message with its
-    // exit code and last lines; true (the default, owner decision); false (opt-out) = the job's output
-    // waits for a read. User
-    // settings only: a project file cannot enable it.
-    key("oxa.jobs.wakeOnFinish", Kind::Bool, "true"),
-    // The owner's explicit route for the Lead conversation: an exact model id for
-    // the normal `--model` selector and the normal gateway. User settings only;
-    // unset keeps the ordinary startup model.
-    key("oxa.lead.model", Kind::String, "null"),
-    // Lead web access scaffold: user-layer object, disabled by default, no listener installed yet.
-    // The CLI validates the fields it reads (identity mode, loopback bind, port, allow-list).
-    key("oxa.lead.serve", Kind::Object, "{}"),
-    // Exact protected owner Session ID for free-text Lead chat; user settings only.
-    key("oxa.lead.sessionId", Kind::String, "null"),
-    // Read-only lead shadow preset; user settings only, on by default (`false` opts out).
-    key("oxa.lead.shadow", Kind::Bool, "true"),
-    // L1: apply a changed settings file at the next run; on by default, `false` opts out.
-    key("oxa.liveSettings", Kind::Bool, "true"),
-    // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
-    key("oxa.local", Kind::Object, "{}"),
-    key("oxa.maxTurns", Kind::Number, "null"),
-    key(
-        "oxa.mode",
-        Kind::Enum(&["plan", "workspace", "ask"]),
-        "\"workspace\"",
-    ),
-    key("oxa.offline", Kind::Bool, "false"),
-    // V020-OPTIMIZE #13 / OXA-LOCAL-FIRST F1: timing only (bytes unchanged); unset = on.
-    key("oxa.prefill.paste", Kind::Bool, "null"),
-    key("oxa.prefill.tools", Kind::Bool, "null"),
-    // B2b: user-only largest image and per-batch image budget; 0 = no limit.
-    key("oxa.read.maxImageBytes", Kind::Number, "20971520"),
-    key("oxa.reportIssue.dailyNew", Kind::Number, "null"),
-    key("oxa.reportIssue.repo", Kind::String, "null"),
-    key("oxa.reportIssue.semanticDedupe", Kind::Bool, "false"),
-    // B3 (lane harden): user settings only (read from the user file whatever the project says).
-    // `greedy` = W6 `temperature: 0` (MTP on); `model` = the model card's sampling (oxa-core
-    // `sampling.rs`). The seed is sent only with `model`.
-    key(
-        "oxa.sampling.mode",
-        Kind::Enum(&["greedy", "model"]),
-        "\"greedy\"",
-    ),
-    key("oxa.sampling.seed", Kind::Number, "null"),
-    key("oxa.sandbox.allowHomeWrite", Kind::Bool, "false"),
-    // #1512 S3: the OS sandbox of an interactive (attended) run; user settings only.
-    key("oxa.sandbox.interactive", Kind::Bool, "false"),
-    key("oxa.sandbox.net", Kind::Enum(&["on", "off"]), "\"on\""),
-    // B2 (lane harden): extra binds of the bash sandbox; user settings only.
-    key("oxa.sandbox.readPaths", Kind::StringList, "[]"),
-    // RP6: host runtime sockets (docker, podman) bound into bash; user settings only.
-    key("oxa.sandbox.sockets", Kind::StringList, "[]"),
-    // #1512 S3: the OS sandbox of an unattended run (workers, subagents, headless goals).
-    key("oxa.sandbox.unattended", Kind::Bool, "true"),
-    key("oxa.sandbox.writePaths", Kind::StringList, "[]"),
-    // Skills another product synced into `~/.agents/skills` (`synced/`); off = skipped.
-    key("oxa.share.remoteModels", Kind::StringList, "[]"),
-    key("oxa.skills.includeSynced", Kind::Bool, "false"),
-    // O-146: unset = on except on Flash and below 32K (`SubagentHooks::declared_for`).
-    key("oxa.subagent.enabled", Kind::Bool, "null"),
-    // Children per parent session (running or queued) and tasks or steps per call; at least 1.
-    key("oxa.subagent.maxChildren", Kind::Number, "8"),
-    key("oxa.subagent.remoteConcurrency", Kind::Number, "8"),
-    key("oxa.subagent.resultCap", Kind::Number, "6144"),
-    key("oxa.subagent.smallContext", Kind::Bool, "false"),
-    key("oxa.subagent.softTokens", Kind::Number, "24000"),
-    // Optional local engine cap, capability-gated; null leaves the current policy unchanged.
-    key("oxa.thinking.budget", Kind::Number, "null"),
-    // Adaptive escalation of tool follow-ups (oxa-core `think.rs`): calls without progress
-    // before thinking turns on; 0 = never on that ground.
-    key("oxa.thinking.escalation.fruitlessCalls", Kind::Number, "6"),
-    // T5: unset = `auto`.
-    key("oxa.thinking.policy", Kind::Enum(&["fixed", "auto"]), "null"),
-    // Thinking on tool follow-ups under policy `auto` (oxa-core `think.rs`).
-    key(
-        "oxa.thinking.toolFollowups",
-        Kind::Enum(&["auto", "on", "off"]),
-        "\"auto\"",
-    ),
-    key("oxa.toolOutputCap", Kind::Number, "16384"),
-    key("oxa.toolRepair", Kind::Bool, "true"),
-    // The repeat guard for identical tool calls (oxa-core `repeat.rs`).
-    key("oxa.toolRepeatGuard", Kind::Bool, "true"),
-    // The `wait` tool is declared in every session; `false` opts out (read at session start).
-    key("oxa.tools.wait", Kind::Bool, "true"),
-    // W2: the `wait` tool's `until` conditions, answered by hook sets (`Hooks::poll_event`).
-    key("oxa.wait.maxSeconds", Kind::Number, "86400"),
-    key("oxa.wait.pollSeconds", Kind::Number, "30"),
-    // O-169: `web_search` (oxa-web); declared only with a Brave key and never offline.
-    key("oxa.webSearch.enabled", Kind::Bool, "true"),
-    key("oxa.webSearch.maxTokens", Kind::Number, "2048"),
-    key(
-        "oxa.webSearch.provider",
-        Kind::Enum(&["brave", "none"]),
-        "\"brave\"",
-    ),
-    // The worker runner reads this list from owner settings only.
-    key("oxa.work.localChecks", Kind::StringList, "[\"cargo check\"]"),
-    // Read from the user layer only. Unset follows the mode: yolo `worker`, auto `broker`,
-    // standard `runner`.
-    key(
-        "oxa.work.workerGithub",
-        Kind::Enum(&["runner", "broker", "worker"]),
-        "null",
-    ),
-    // K5a: the `worker` tool (never in a worker child) and the most live workers a session runs.
-    // The `oxa.workers.*` keys are user settings only: a project file cannot start processes,
-    // raise a limit or change the stop timing (`Settings::user_bool`, `user_u32`, `user_value`).
-    key("oxa.workers.enabled", Kind::Bool, "true"),
-    key("oxa.workers.max", Kind::Number, "4"),
-    // K5b: relaunch the unfinished, dead workers of a session when it is opened again. User
-    // settings only: a project file can neither enable nor disable it (`Settings::user_bool`).
-    key("oxa.workers.resumeOnStart", Kind::Bool, "true"),
-    // K4: seconds a worker gets after SIGINT before its process group gets SIGTERM.
-    key("oxa.workers.stopGraceSeconds", Kind::Number, "10"),
-    key("packages", Kind::Any, "[]"),
-    // #202: the permission mode at start; a project's value may only lower it
-    // (`Settings::default_permission_mode`).
-    key(
-        "permissions.defaultMode",
-        Kind::Enum(&["standard", "auto", "yolo", "plan"]),
-        "\"auto\"",
-    ),
-    key("prompts", Kind::StringList, "[]"),
-    key("quietStartup", Kind::Any, "false"),
-    key("retry.baseDelayMs", Kind::Number, "2000"),
-    key("retry.enabled", Kind::Bool, "true"),
-    key("retry.maxAgentDelayMs", Kind::Number, "60000"),
-    key("retry.maxRetries", Kind::Number, "10"),
-    key("retry.provider.maxRetries", Kind::Number, "0"),
-    key("retry.provider.maxRetryDelayMs", Kind::Number, "60000"),
-    key("retry.provider.timeoutMs", Kind::Number, "null"),
-    verdict_o("selfUpdateCommand", Kind::StringList, "null"),
-    key("sessionDir", Kind::String, "null"),
-    verdict_o(
-        "sessionShareDestination",
-        Kind::Enum(&["auto", "gist", "radius"]),
-        "\"auto\"",
-    ),
-    key("shellCommandPrefix", Kind::String, "null"),
-    key("shellPath", Kind::String, "null"),
-    key("showCacheMissNotices", Kind::Bool, "false"),
-    key("skills", Kind::StringList, "[]"),
-    key(
-        "steeringMode",
-        Kind::Enum(&["all", "one-at-a-time"]),
-        "\"one-at-a-time\"",
-    ),
-    key("terminal.clearOnShrink", Kind::Bool, "false"),
-    key("terminal.imageWidthCells", Kind::Number, "60"),
-    key("terminal.showImages", Kind::Bool, "true"),
-    key("theme", Kind::String, "\"system\""),
-    key("themes", Kind::StringList, "[]"),
-    verdict_o(
-        "transport",
-        Kind::Enum(&["auto", "sse", "websocket", "websocket-cached"]),
-        "\"auto\"",
-    ),
-    key(
-        "treeFilterMode",
-        Kind::Enum(&["default", "no-tools", "user-only", "labeled-only", "all"]),
-        "\"default\"",
-    ),
-    key(
-        "tuiMode",
-        Kind::Enum(&["regular", "fullscreen"]),
-        "\"fullscreen\"",
-    ),
-    key(
-        "ui.animation",
-        Kind::Enum(&["arcade", "minimal", "off"]),
-        "\"arcade\"",
-    ),
-    key("ui.animationGraphics", Kind::Enum(&["auto", "off"]), "\"auto\""),
-    key(
-        "ui.animationScene",
-        Kind::Enum(&["graphics", "stack", "stars", "charge"]),
-        "null",
-    ),
-    key(
-        "ui.notify",
-        Kind::Enum(&["off", "unfocused", "always"]),
-        "\"unfocused\"",
-    ),
-    key("ui.reducedMotion", Kind::Bool, "false"),
-    key("ui.skin", Kind::Enum(&["auto", "pi", "oxa", "ascii"]), "\"auto\""),
-    verdict_o("warnings.anthropicExtraUsage", Kind::Bool, "true"),
-    verdict_o("websocketConnectTimeoutMs", Kind::Any, "15000"),
-];
-
 /// Every key of pi's settings.md plus oxa's `oxa.*` keys (`oxa.toolOutputCap`,
 /// `oxa.compaction.softTokens`, `oxa.mode`, `oxa.subagent.*`, O-152's `oxa.bootPreload`,
 /// `oxa.builtinSkills`, `oxa.reportIssue.repo`, `oxa.thinking.policy`; `ui.skin`), sorted by key.
+///
+/// Derived from the descriptor rows that declare a key (`descriptor.rs`, `descriptor/*.rs`).
 pub fn schema() -> &'static [KeyDef] {
+    static SCHEMA: OnceLock<Vec<KeyDef>> = OnceLock::new();
     SCHEMA
+        .get_or_init(|| {
+            let mut keys: Vec<KeyDef> = crate::descriptor::all_rows()
+                .iter()
+                .filter_map(|row| {
+                    row.schema.map(|info| KeyDef {
+                        key: row.key,
+                        kind: info.kind,
+                        default: info.default,
+                        supported: info.supported,
+                    })
+                })
+                .collect();
+            keys.sort_by(|a, b| a.key.cmp(b.key));
+            keys
+        })
+        .as_slice()
 }
 
 /// Check `v` (one settings file) against [`schema`]. Unknown key, wrong type, unsupported key =
@@ -441,7 +115,7 @@ pub fn apply_list_patch(base: &[String], patch: &[String]) -> Vec<String> {
 
 /// The schema entry for an exact dotted key.
 pub(crate) fn find_key(key: &str) -> Option<&'static KeyDef> {
-    SCHEMA.iter().find(|d| d.key == key)
+    schema().iter().find(|d| d.key == key)
 }
 
 /// Whether `v` has the value kind `kind`.
@@ -543,7 +217,7 @@ fn check_value(v: &Value, path: &str, source: &str, diags: &mut Vec<Diagnostic>)
         return None;
     }
     let prefix = format!("{path}.");
-    if SCHEMA.iter().any(|d| d.key.starts_with(&prefix)) {
+    if schema().iter().any(|d| d.key.starts_with(&prefix)) {
         return match v {
             Value::Object(map) => Some(Value::Object(check_map(map, path, source, diags))),
             _ => {

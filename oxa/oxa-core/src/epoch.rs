@@ -142,7 +142,8 @@ pub(crate) fn open_epoch_costed(
     sink: &mut dyn EventSink,
     cost: EpochCost,
 ) -> Result<bool, OxaError> {
-    open_epoch_at(st, reason, true, sink, Some(cost))
+    // The model switch caller owns the session, either idle or between goal requests.
+    open_epoch_inner(st, reason, true, sink, Some(cost))
 }
 
 fn open_epoch_at(

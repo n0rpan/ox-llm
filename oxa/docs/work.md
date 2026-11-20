@@ -38,6 +38,16 @@ and verified merge-group rejection evidence in `queue_rejections`, including the
 removal event time.
 Use `--queue-evidence` to record only the rejection evidence alongside the board.
 
+Add `--lead-alarms` to also record the protected Lead view's stuck-work sources in the
+same sample: the raw `panels` repository record (main required checks with classic
+protection and ruleset requirements, the verified main merge and merge-queue
+membership) and complete `status=queued` Actions pages in `runs`. Each source is
+captured and degraded independently: a missing or oversized record stays absent,
+the sample is never dropped for it, and the Lead view renders that source as
+explicitly unavailable. A main alarm needs one failed required check at the exact
+observed head; failing optional jobs, pending required checks and unobserved
+requirements never page.
+
 To verify the provenance of test-report archives, pass `--queue-report-policy FILE` with an owner-only
 JSON file in a private directory. Set the trusted workflow path, the exact names
 of required checks that consume those reports, and every JUnit producer and artifact.
@@ -219,8 +229,9 @@ commit and still requires hosted test evidence for Rust changes or declared suit
 The runner reads the child's exit code, terminal `oxa_result` and session header,
 without retaining its event stream. It checkpoints the session ID as soon as the
 header arrives. A blocked or failed worker remains blocked; an interrupted worker
-remains interrupted. Neither consumes a repair attempt. Failed acceptance after a successful
-worker continues that same saved session once, then acceptance runs once more.
+remains interrupted. Neither consumes a repair attempt. Failed acceptance (local
+or lane) after a successful worker continues that same saved session once, then
+acceptance runs once more.
 JSON lines include the worker result, session ID, captured `base_sha`, saved
 `head_sha`/`tree_sha`, step, checkpoint revision and time, and the `checks` evidence
 of the last acceptance round. Outcomes are `done`,
@@ -251,12 +262,14 @@ directory so the normal sandbox can bind git objects and refs for commits.
 Before finishing, the runner saves staged, unstaged and untracked work with an
 ordinary sandboxed commit, including red, blocked and interrupted work. Normal
 hooks remain active. Unresolved merges are kept in progress; a rejecting hook or
-remaining dirty files block completion. No automatic cleanup, push or PR creation
-is implemented. Keep retained work until its saved commit has been published and
-inspected. Review task prompts and bases before running them.
+remaining dirty files block completion. No automatic cleanup or PR creation is implemented. A task with `lane_ci`
+pushes its accepted commit as described below; other tasks never push. Keep
+retained work until its saved commit has been published and inspected. Review
+task prompts and bases before running them.
 
-`done` here describes locally checked and saved work. It does not mean published,
-externally accepted or merged. Publication must verify a clean committed export,
+`done` here describes locally checked and saved work. For a `lane_ci` task it
+also requires the lane run at the saved head to have passed. It does not mean
+published or merged. Publication must verify a clean committed export,
 bind checks to that commit and verify base-object integrity before pushing;
 ignored files in a retained working directory are not commit-bound evidence.
 
@@ -427,3 +440,76 @@ A saved worker result keeps its launch identity across checkpoint replay.
 
 Problem-report workflows hold a per-user kernel lease across drafting, duplicate
 search, match reads and writing, so concurrent workers share one reporting lane.
+
+## Lane CI acceptance
+
+Add `"lane_ci": true` to a task to make the repository's own CI the acceptance
+authority. The branch must be one `.github/workflows/lane.yml` runs on (`agent/`,
+`codex/`, `air/` or `runner/`) and its base must be `main`, because the workflow
+selects the branch diff against `main`. Other tasks keep local-only acceptance.
+
+After the local `done` commands pass and the saved commit exists, the runner
+first re-verifies that exact commit with the existing committed proof (a clean,
+object-verified export whose captured checks run), then pushes it to
+`refs/heads/<branch>` on `origin`. It waits, without a model turn, for the `lane`
+workflow run whose `headSha` is exactly that commit and whose event is the push,
+and records its terminal conclusion in the task record (`lane`). A crash during
+the wait resumes the saved `lane` step instead of rerunning the worker.
+
+Rust work that passed its local checks but needs hosted tests enters the lane
+anyway: the exact-head lane run is that hosted evidence. The task stays `unverified`
+while the run is pending and becomes `done` only when it is green; the push still
+passes the structural checks, owner confirmation and content scan first. The run's
+plan and at least one lane test job must actually succeed: an overall-success run
+whose test jobs were skipped is not evidence.
+
+The lane run only counts for what it actually ran. The workflow selects the crates
+the branch diff touches (and their reverse dependencies), so a declared acceptance
+crate is covered only when the task diff selects it: a declaration the head does not
+touch refuses with the uncovered crate names, and the work stays `unverified` rather
+than crediting a suite that never ran. The engine workspace never counts: the lane
+runs only the portable engine crates and defers the rest to the self-hosted route,
+so any engine change refuses lane evidence and needs the hosted route instead — a
+changed `engine/Cargo.toml`, `engine/Cargo.lock` or `engine/.cargo/` input refuses it too,
+although it names no crate.
+
+A `lane_ci` task's worker launches GitHub-isolated, like a runner-owned task: no
+host `gh` token is injected into its bash (and no MCP, extensions, web search or
+subagents), because the runner alone performs the owner-approved public push.
+
+A green run accepts the task (`done`). A completed `failure` spends the task's
+single repair round, shared with a local acceptance repair, with the failed job,
+step and test names; the runner saves and pushes the repaired commit and observes
+the new head once more. A second failure is `red`. Cancellation, timeouts,
+startup errors and an unobservable run (no matching push run before the bounded
+wait, or a GitHub read error) are `blocked` with their own state and spend no
+repair. In every non-green case the task is never `done`.
+
+Because the lane workflow is the authority, a head that changes
+`.github/workflows/lane.yml` or `tools/ci/` is refused before the push: those
+changes land in their own owner-reviewed change instead of qualifying themselves.
+The check covers every commit the push would add (against the destination's own
+tips), not only the diff from the saved base. A green lane run is evidence only for
+what the lane tests: a change under `engine/`, or under `fuzz/`, stays on the hosted route.
+A branch whose open pull request is already in the merge queue is refused too;
+use a new task branch for follow-up work.
+
+The push is gated. Inside an oxa session, `oxa work` asks through the session's
+owner-confirm broker, so the session dialog or yolo choice is recorded even when
+an agent child launched the command. Outside a session, the owner can confirm at
+the controlling terminal, or an owner-controlled web/runner surface can set
+`OXA_WORK_OWNER_CONFIRMED=1`; those compatibility paths are ignored when a
+coding-agent marker such as `OXA_CODING_AGENT`, `AI_AGENT` or
+`OXA_SUBAGENT_DEPTH` is set. Without that confirmation a lane task ends
+`blocked` before any worker starts and pushes nothing. Offline mode, an untrusted
+project, a missing trusted `gh`, or a missing sandbox refuse it later.
+
+The lane push goes through the same publication content scan as `--publish`,
+immediately before anything is sent: every commit the push would add (the head
+minus the tips `origin` itself advertises) is scanned, including commit objects,
+added lines and file names, with tags and submodules off. A finding refuses the
+push, the task ends `blocked` and no lane run is awaited.
+
+`--publish` refuses a `lane_ci` task unless its saved record has a passing lane
+run at the saved head, so a pull request is opened only after CI passed at that
+head. `oxa work verify` uses the same saved record and therefore the same rule.

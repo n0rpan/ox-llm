@@ -278,6 +278,20 @@ commands! {
         arguments: &[Argument { name: "name", kind: ArgumentKind::Word, required: true }],
         surfaces: MEMORY_CLI_ONLY, requirements: NO_REQUIREMENTS,
     },
+    Models {
+        path: &["models"], aliases: &[], summary: "List the local and cloud models this install can serve, as a table or as JSON",
+        arguments: &[
+            Argument { name: "json", kind: ArgumentKind::Flag, required: false },
+            Argument { name: "search", kind: ArgumentKind::Word, required: false },
+        ],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("No models slash handler is shipped"),
+            menu: Availability::Exception("No models menu handler is shipped"),
+            web: Availability::Exception("No web frontend is shipped"),
+        },
+        requirements: NO_REQUIREMENTS,
+    },
     Local {
         path: &["local"], aliases: &[], summary: "Wire a local GGUF model into the native local engine settings",
         arguments: &[Argument { name: "verb", kind: ArgumentKind::Tail, required: false }],
@@ -522,6 +536,19 @@ mod tests {
         assert!(parse_cli(&input).is_none());
         assert!(entries(Surface::Slash).any(|entry| entry.id == CommandId::Goal));
         assert!(!entries(Surface::Cli).any(|entry| entry.id == CommandId::Goal));
+    }
+
+    #[test]
+    fn models_declares_its_json_flag_search_word_and_cli_only_surface() {
+        let input = words("models --json");
+        let parsed = parse_cli(&input).expect("models resolves on the CLI");
+        assert_eq!(parsed.command.id, CommandId::Models);
+        assert_eq!(parsed.args, &input[1..]);
+        assert_eq!(parsed.command.arguments[0].name, "json");
+        assert_eq!(parsed.command.arguments[0].kind, ArgumentKind::Flag);
+        assert_eq!(parsed.command.arguments[1].name, "search");
+        assert_eq!(parsed.command.arguments[1].kind, ArgumentKind::Word);
+        assert!(dispatch_slash(&input).is_none());
     }
 
     #[test]

@@ -864,8 +864,12 @@ pub(crate) fn failure_backoff(
 /// Wait `delay` without a model request. An abort ends the wait as `Aborted`; `abort_retry` ends
 /// it as `RetryStopped` and resets that token, as a retry wait does.
 pub(crate) fn wait_failure_backoff(st: &crate::SessionState, delay: Duration) -> BackoffEnd {
-    let no_wake = oxa_proto::CancelToken::new();
-    wait_cancelled(&st.shared.cancel, &st.shared.cancel_retry, &no_wake, delay);
+    wait_cancelled(
+        &st.shared.cancel,
+        &st.shared.cancel_retry,
+        &st.shared.wait_wake,
+        delay,
+    );
     if st.shared.cancel.is_cancelled() {
         BackoffEnd::Aborted
     } else if st.shared.cancel_retry.is_cancelled() {
