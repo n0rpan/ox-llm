@@ -66,15 +66,23 @@ code, tests, CI and docs; the owner validates on hardware.
   records it. The broker socket is owned by the session (dir 0700, socket 0600) and validates a
   complete, bounded request frame before asking. A typed yes answers only a request whose dialog
   oxa has already shown (the broker records it); a yes with no shown dialog, or for another request
-  id, is ignored. Work publication, lane-push approval and problem reporting authenticate the
-  broker on the connection that carries the question. In the Linux sandbox accept only the pinned
-  socket and a same-user peer outside the child's PID namespace; retain the nested-user-namespace
-  denial. Outside the sandbox on Linux and macOS require the same user and the unique ancestor
-  running the same oxa executable. An env value, visible sandbox peer or ambiguous ancestry is no
-  answer. A direct owner terminal may use `/dev/tty`, never stdin. The legacy work-report search
-  still asks before transmitting scrubbed worker queries; semantic dedupe retains its owner opt-in.
-  The question is shown as process text, not an oxa instruction. Do not add terminal-only requirements
-  for actions that can use the authenticated broker.
+  id, is ignored. Report-issue posting, work publication, lane-push approval and work problem
+  reporting authenticate the broker on the connection that carries the question. In the Linux
+  sandbox accept only the pinned socket and a same-user peer outside the child's PID namespace;
+  retain the nested-user-namespace denial. Outside the sandbox on Linux and macOS require the same
+  user and the unique ancestor running the same oxa executable. Neither `OXA_CONFIRM_SOCK` nor
+  `OXA_CODING_AGENT` establishes authority: a fake listener, visible sandbox peer or ambiguous
+  ancestry is no answer. Yolo is unchanged (the model already has the owner's rights). A direct
+  owner terminal may use `/dev/tty`, never stdin. The legacy work-report search still asks before
+  transmitting scrubbed worker queries; semantic dedupe retains its owner opt-in. The question is
+  shown as process text, not an oxa instruction. Do not add terminal-only requirements or env-marker
+  refusals for owner actions that can use the authenticated broker.
+- **Lead web attach (#2075):** attached mode takes the session id from the user-only
+  `oxa.lead.attachSessionId` only (never a project file or an HTTP value), reads the transcript
+  without the writer lock (bounded tail, never append, sync or repair), and sends only through the
+  session's inbox like `oxa send`. Re-prove the owner-only file and the setting before every read
+  and send. An inbox message is never an approval. Flag a path that supplies the session from a
+  project file or request, takes the session lock, or opens a provider there.
 - The live owner-authorized Lead service may launch and steer background workers through its sole
   `worker` tool. The shadow Lead preset and one-shot `oxa lead chat` stay tool-free; user-only
   worker enablement, limits and the current permission ceiling govern every new launch.

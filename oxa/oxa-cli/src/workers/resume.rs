@@ -99,6 +99,7 @@ mod tests {
             log_file: "/l".into(),
             started_ms: 0,
             stopped: false,
+            ..WorkerRecord::default()
         }
     }
 

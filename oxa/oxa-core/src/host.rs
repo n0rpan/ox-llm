@@ -908,7 +908,11 @@ fn apply(
                     .map(|i| i.caps.remote)
                     .unwrap_or(false)
             };
-            Ok(serde_json::json!({ "model": model, "remote": remote }))
+            // Known to this install: the session's own model, or one of the engine's models.
+            let known = model == st.model
+                || st.info.models.iter().any(|m| *m == model)
+                || st.engine.info(Some(&model)).is_ok();
+            Ok(serde_json::json!({ "model": model, "remote": remote, "known": known }))
         }
         HostAction::AccountRunTokens(tokens) => {
             crate::Handle {

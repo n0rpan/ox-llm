@@ -46,6 +46,20 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .advanced()
     .apply(Apply::Restart)
     .web(WebEdit::ReadOnly),
+    // Exact owner Session ID the lead web page attaches to; user settings only.
+    d(
+        "oxa.lead.attachSessionId",
+        Group::Advanced,
+        "Paths and launch",
+        "Lead attach session id",
+        "The running owner session the lead web page shows and sends to.",
+    )
+    .key(Kind::String, "null")
+    .text()
+    .user_only()
+    .advanced()
+    .apply(Apply::Restart)
+    .web(WebEdit::ReadOnly),
     d(
         "packages",
         Group::Advanced,

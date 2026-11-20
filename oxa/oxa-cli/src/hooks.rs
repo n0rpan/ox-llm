@@ -112,6 +112,8 @@ fn build_worker_hooks(
         .find(|(k, _)| k == worker_tool::ENV_WORKER_DEPTH)
         .map(|(_, v)| v.as_str());
     if !i.args.no_session && worker_tool::built(worker_depth, worker_tool::enabled(i.settings)) {
+        // The owner's model policy (user settings only); malformed parts are dropped with a notice.
+        let (models, model_notices) = crate::workers::model_policy::from_settings(i.settings);
         // The HTTP owner opens one Session per message. Reuse its process-owned
         // supervisor before constructing WorkerCore, which pins a launcher copy
         // of the current executable as part of construction.
@@ -120,10 +122,12 @@ fn build_worker_hooks(
                 &i.dirs.agent_dir,
                 worker_tool::max_workers(i.settings),
                 &i.yolo,
+                models.clone(),
             ) {
                 return Some(workers);
             }
         }
+        notices.extend(model_notices.into_iter().map(|n| (Level::Warning, n)));
         match std::env::current_exe() {
             Ok(bin) => {
                 // The supervisor needs a trusted `kill` from the host PATH (never a project shim),
@@ -190,6 +194,7 @@ fn build_worker_hooks(
                             parent_scope,
                             yolo: i.yolo.clone(),
                             resume_on_start: crate::workers::resume::enabled(i.settings),
+                            models,
                         }));
                         return Some(workers);
                     }

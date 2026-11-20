@@ -1,0 +1,1 @@
+- The lead web page can attach to a running owner session (#2075): set the user-only `oxa.lead.attachSessionId` and `/chat` shows its live transcript and sends your messages through its inbox like `oxa send`, without a dedicated Lead session, a session lock or model tokens.
