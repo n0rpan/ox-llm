@@ -467,11 +467,16 @@ The lane run only counts for what it actually ran. The workflow selects the crat
 the branch diff touches (and their reverse dependencies), so a declared acceptance
 crate is covered only when the task diff selects it: a declaration the head does not
 touch refuses with the uncovered crate names, and the work stays `unverified` rather
-than crediting a suite that never ran. The engine workspace never counts: the lane
-runs only the portable engine crates and defers the rest to the self-hosted route,
-so any engine change refuses lane evidence and needs the hosted route instead — a
-changed `engine/Cargo.toml`, `engine/Cargo.lock` or `engine/.cargo/` input refuses it too,
-although it names no crate.
+than crediting a suite that never ran. What the lane tests comes from one data file,
+`tools/ci/lane_coverage.json`, which the lane planner (`tools/ci/lane_select.py`) and the
+runner's guard both read. The guard reads it from the trusted base commit, never from the
+pushed head, so a head cannot widen its own coverage; a missing or invalid file covers
+nothing and the work stays `unverified`. A path is covered only under a workspace whose
+packages are all tested (`oxa`). Under a workspace that lists packages (`engine`: the
+portable crates, the rest rides the self-hosted route) every path is uncovered, fixtures and
+shared inputs such as `engine/Cargo.toml` included, and so is any path with a `Cargo.toml`
+ancestor outside the listed workspaces (`fuzz/`, a new top-level crate), without a code
+change. Documentation needs no lane evidence.
 
 A `lane_ci` task's worker launches GitHub-isolated, like a runner-owned task: no
 host `gh` token is injected into its bash (and no MCP, extensions, web search or
@@ -490,7 +495,12 @@ Because the lane workflow is the authority, a head that changes
 changes land in their own owner-reviewed change instead of qualifying themselves.
 The check covers every commit the push would add (against the destination's own
 tips), not only the diff from the saved base. A green lane run is evidence only for
-what the lane tests: a change under `engine/`, or under `fuzz/`, stays on the hosted route.
+what the lane tests (see the coverage data above): for example a change under `engine/` or
+`fuzz/` stays on the hosted route. Besides the diff from the saved base and every commit the
+destination lacks, the controls must also equal the destination's own tip of the base branch
+from its merge base with the head, so the workflow that runs is the base branch's, not one
+inherited from another pushed branch (when that tip is not in the local object store the first
+two checks stand).
 A branch whose open pull request is already in the merge queue is refused too;
 use a new task branch for follow-up work.
 
