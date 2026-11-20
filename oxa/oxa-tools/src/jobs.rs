@@ -9,7 +9,7 @@
 //! running job, which makes the sandbox's run loop kill the whole process group.
 //!
 //! Limits: at most [`MAX_JOBS`] jobs run at once by default (`oxa.bash.maxJobs` sets it per
-//! registry, see [`JobRegistry::with_max_jobs`]; a further start is refused); a
+//! registry, see [`JobRegistry::with_max_jobs`]; a further start goes ahead with a warning); a
 //! finished job keeps at most [`BUFFER_CAP`] bytes of output (a ring buffer), and only the
 //! last [`MAX_FINISHED`] finished jobs stay readable.
 
@@ -25,7 +25,7 @@ const WAIT_TICK: Duration = Duration::from_millis(10);
 /// How long [`JobRegistry::kill`] waits for a cancelled job to settle.
 const KILL_SETTLE: Duration = Duration::from_secs(5);
 
-/// The default for how many background jobs may run at once (`oxa.bash.maxJobs`).
+/// The default for how many background jobs run before a warning (`oxa.bash.maxJobs`).
 pub const MAX_JOBS: usize = 16;
 /// How many finished jobs stay readable; spawning a job forgets the oldest ones beyond this.
 pub const MAX_FINISHED: usize = 16;
@@ -227,6 +227,22 @@ impl JobRegistry {
         }
     }
 
+    /// The limit `oxa.bash.maxJobs` sets (a warning threshold, not a refusal).
+    pub fn max_jobs(&self) -> usize {
+        self.max_jobs
+    }
+
+    /// The warning line when more jobs run than `oxa.bash.maxJobs`: the start went ahead.
+    pub fn over_limit_note(&self) -> Option<String> {
+        let running = self.running();
+        (running > self.max_jobs).then(|| {
+            format!(
+                "Warning: {running} background jobs are running, above oxa.bash.maxJobs ({}). Nothing was refused; stop jobs you no longer need with bash {{\"job\": \"<id>\", \"kill\": true}} or raise the setting.",
+                self.max_jobs
+            )
+        })
+    }
+
     /// The sandbox every job runs under. Set once by the session that owns the registry
     /// (the same `Arc` the session's tools run with).
     pub fn set_sandbox(&self, sandbox: Arc<dyn Sandbox>) {
@@ -261,9 +277,8 @@ impl JobRegistry {
             .count()
     }
 
-    /// Start `spec` detached and return its id. `Err` when the registry's limit of jobs is
-    /// already running (the refusal names the oldest one, so the model can stop it), or when no
-    /// sandbox has been set.
+    /// Start `spec` detached and return its id. `Err` when no sandbox has been set. Running
+    /// more jobs than the limit is allowed; see [`JobRegistry::over_limit_note`].
     pub fn spawn(&self, spec: ExecSpec) -> Result<String, String> {
         self.spawn_labeled(spec, "")
     }
@@ -303,23 +318,6 @@ impl JobRegistry {
         label: &str,
     ) -> Result<String, String> {
         let mut state = self.state.lock().unwrap();
-        let running: Vec<String> = state
-            .jobs
-            .iter()
-            .filter(|(_, j)| *j.status.lock().unwrap() == JobStatus::Running)
-            .map(|(id, _)| id.clone())
-            .collect();
-        if running.len() >= self.max_jobs {
-            let oldest = running
-                .iter()
-                .min_by_key(|id| job_number(id))
-                .cloned()
-                .unwrap_or_default();
-            return Err(format!(
-                "At most {} background jobs can run at once. Stop one with bash {{\"job\": \"{oldest}\", \"kill\": true}} or wait for it to finish. The limit is oxa.bash.maxJobs.",
-                self.max_jobs
-            ));
-        }
         // Forget the oldest finished jobs (ids grow with start order), so a long session does
         // not keep every job's output tail. Running jobs are never dropped.
         let mut finished: Vec<(u64, String)> = state
@@ -719,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn job_past_the_limit_is_refused() {
+    fn job_past_the_limit_starts_and_warns() {
         let reg = JobRegistry::new();
         let sb = Arc::new(Blocking {
             seen: Mutex::new(None),
@@ -729,17 +727,16 @@ mod tests {
             reg.spawn(spec()).unwrap();
         }
         assert_eq!(reg.running(), MAX_JOBS);
-        let err = reg.spawn(spec()).unwrap_err();
-        assert!(
-            err.contains(&format!("At most {MAX_JOBS} background jobs")),
-            "{err}"
-        );
-        assert!(err.contains("\"job\": \"job-1\""), "{err}");
+        assert!(reg.over_limit_note().is_none(), "at the limit is not above it");
+        reg.spawn(spec()).expect("a start above the limit goes ahead");
+        assert_eq!(reg.running(), MAX_JOBS + 1);
+        let note = reg.over_limit_note().expect("above the limit is a warning");
+        assert!(note.contains(&format!("oxa.bash.maxJobs ({MAX_JOBS})")), "{note}");
         reg.kill_all();
     }
 
-    /// `oxa.bash.maxJobs` is the registry's limit: a registry built with 2 refuses the third
-    /// start and names the oldest running job; the default registry keeps [`MAX_JOBS`].
+    /// `oxa.bash.maxJobs` is the registry's limit: a registry built with 2 warns from the third
+    /// start on; the default registry keeps [`MAX_JOBS`].
     #[test]
     fn jobs_limit_is_per_registry() {
         let reg = JobRegistry::with_max_jobs(2);
@@ -749,9 +746,10 @@ mod tests {
         reg.set_sandbox(sb.clone());
         reg.spawn(spec()).unwrap();
         reg.spawn(spec()).unwrap();
-        let err = reg.spawn(spec()).unwrap_err();
-        assert!(err.contains("At most 2 background jobs"), "{err}");
-        assert!(err.contains("\"job\": \"job-1\""), "{err}");
+        assert!(reg.over_limit_note().is_none());
+        reg.spawn(spec()).expect("a third start goes ahead");
+        let note = reg.over_limit_note().expect("warns above the limit");
+        assert!(note.contains("3 background jobs"), "{note}");
         reg.kill_all();
         assert_eq!(JobRegistry::with_max_jobs(0).max_jobs, 1);
         assert_eq!(JobRegistry::new().max_jobs, MAX_JOBS);

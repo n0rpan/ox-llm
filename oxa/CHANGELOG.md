@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Limits warn and record instead of blocking (owner decision 2026-11-19). `oxa.bash.maxJobs` and `oxa.subagent.maxChildren` are warning thresholds: a job or child above them starts (children queue) and the result carries a warning. A goal token budget counts known usage only; a request with unknown usage is recorded (`unknown_requests`) with one warning and no longer counts as exhausted. Two replies without a tool call give a warning and the goal keeps pursuing; `oxa.goal.idlePause: true` restores the pause.
+- On a cloud model with a known window, `oxa.toolOutputCap`, `oxa.subagent.resultCap` and `oxa.subagent.softTokens` scale with the window unless you set them; local models are unchanged. `read`, `grep`, `find` and `ls` now honour an `oxa.toolOutputCap` above 16 KiB.
+
 ### Fixed
 
 - `oxa send` never refuses the owner's text for size (yolo power plan, S14). A message over 256 KiB is kept in full in the session's private, tool-readable spill directory, and a short follow-up names that file. `oxa wipe` removes spill files with the session. See [cli.md](docs/pages/cli.md).

@@ -18,7 +18,7 @@ fn setup(test: &TestEnv) -> (Dirs, u32) {
 fn select(dirs: &Dirs, id: &str) {
     fs::write(
         dirs.settings_file(),
-        serde_json::json!({"oxa":{"lead":{"sessionId":id}}}).to_string(),
+        serde_json::json!({"oxa":{"lead":{"sessionId":id},"goal":{"idlePause":true}}}).to_string(),
     )
     .unwrap();
     fs::set_permissions(dirs.settings_file(), fs::Permissions::from_mode(0o600)).unwrap();
