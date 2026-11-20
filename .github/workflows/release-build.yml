@@ -189,28 +189,20 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: Portable Linux x86_64 oxa (glibc 2.31 floor)
     runs-on: ubuntu-latest
-    container:
-      image: debian:bullseye-slim
     timeout-minutes: 120
     steps:
-      - name: Build tools and git before checkout
-        run: |
-          # Debian 11 is end of life: its packages live on archive.debian.org.
-          printf '%s\n' \
-            'deb http://archive.debian.org/debian bullseye main' \
-            'deb http://archive.debian.org/debian-security bullseye-security main' \
-            > /etc/apt/sources.list
-          rm -f /etc/apt/sources.list.d/*
-          apt-get -o Acquire::Check-Valid-Until=false update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-            git ca-certificates curl gcc libc6-dev binutils make
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The debian:bullseye-slim container prepares itself inside the checked-out tree, so the
+      # workflow installs nothing itself (`tools/ci/apt_install.sh` is the Ubuntu path and needs
+      # sudo). See packaging/release/portable-bootstrap.sh.
       - name: Build against Debian 11 glibc and check the symbol floor
         run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          packaging/release/portable-build.sh
+          docker run --rm \
+            -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+            -v "$GITHUB_WORKSPACE:/w" -w /w \
+            debian:bullseye-slim bash packaging/release/portable-bootstrap.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: oxa-portable-linux-x86_64
