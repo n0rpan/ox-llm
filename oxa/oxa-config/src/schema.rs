@@ -179,6 +179,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.envNote", Kind::Bool, "null"),
     // R1: the first wait after a transient request failure of a pursuing goal; `0` opts out.
     key("oxa.goal.failureBackoffSeconds", Kind::Number, "60"),
+    key("oxa.goal.idlePause", Kind::Bool, "false"),
     // K3: a headless print or JSON run of a persisted session with a pursuing goal takes
     // `oxa send` follow-ups from the session inbox for the run; false = off.
     key("oxa.inbox.headless", Kind::Bool, "true"),

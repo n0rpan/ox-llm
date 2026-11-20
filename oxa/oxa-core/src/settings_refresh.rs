@@ -27,6 +27,9 @@ pub(crate) fn resync(st: &SessionState) {
     }
 }
 
+// `Refresh` is consumed immediately at the run boundary. Boxing `Settings` would add an
+// allocation to every successful refresh solely to reduce this short-lived enum's stack size.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Refresh {
@@ -84,8 +87,9 @@ pub(crate) fn check(
 }
 
 /// Everything that feeds the prefix from the settings (see `epoch::gather`, `prefix_opts`).
-#[allow(clippy::type_complexity)]
-fn prompt_inputs(s: &Settings) -> (bool, Option<Vec<String>>, Option<Vec<String>>, Option<String>) {
+type PromptInputs = (bool, Option<Vec<String>>, Option<Vec<String>>, Option<String>);
+
+fn prompt_inputs(s: &Settings) -> PromptInputs {
     (
         s.diet_output(),
         s.default_tools(),

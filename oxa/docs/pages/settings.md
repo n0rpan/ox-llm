@@ -99,7 +99,7 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `defaultTools` | list | `["read","bash","edit","write","grep","find","ls"]` | tools on by default; names may include `subagent`, `web_search`, `codemode` and `tool_search` |
 | `oxa.bash.defaultTimeout` | number (seconds) | unset | timeout of a bash call that names none; unset is 120; `0` is no timeout. A command still running at its timeout is not killed: it moves to a background job (the result gives the job id and the wall time). A call's own `timeout: 0` is no timeout too, and beats this default |
 | `oxa.bash.waitCap` | number (seconds) | `300` | the longest a bash job read (`wait_s`) blocks; a larger `wait_s` is cut to it. User settings only. At least 1 |
-| `oxa.bash.maxJobs` | number | `16` | background jobs (`bash` with `background: true`) that may run at once; a further start is refused and names the oldest running job to stop with `kill`. User settings only. At least 1 |
+| `oxa.bash.maxJobs` | number | `16` | background jobs (`bash` with `background: true`) that may run at once; above it a start still goes ahead and the result warns, naming this key. User settings only. At least 1 |
 | `oxa.diet.output` | bool | unset | the system prompt's "be concise" rule is replaced by rules on tool use and a final answer of at most 6 lines. Unset is on |
 | `oxa.diet.tools` | bool | unset | shorter `grep` and `bash` output: `grep` prints each path once, and runs of three or more blank lines in bash output become two. Unset is on |
 | `oxa.emptyReplyRetries` | number | `1` | user settings only, a project file cannot set it: a cloud reply with no text and no tool call is asked once more (a new request, the empty reply is not kept); `0` turns it off. Waits between agent retries double from `retry.baseDelayMs` up to `retry.maxAgentDelayMs` (60 s) and follow a `Retry-After` up to that cap |
@@ -107,20 +107,21 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `oxa.liveSettings` | bool | `true` | on by default; `false` opts out. When on, a changed settings file is applied at the start of the next run without `/reload` (one `stat` per file; keys that feed the prompt rebuild it). Read from the settings the session holds, so turning it on takes effect at the next `/reload` or start. A file that no longer parses keeps the previous settings |
 | `oxa.read.maxImageBytes` | number (bytes) | `20971520` | the largest image `read` sends to a model that takes images (PNG, JPEG, GIF, WebP), and the aggregate image budget across retained session history and the current tool-call batch; a result that would cross the limit is not sent and names this limit. User settings only, so a project cannot raise or disable the bound. `0` is no limit. Other models get the text line `[image <name> <w>x<h>: not visible to this model]` whatever the size |
 | `oxa.maxTurns` | number | unset | end a run after this many model replies with a `turn_limit` error (a cap against loops the repeat guard cannot see, such as alternating calls). Unset or `0` is no limit |
-| `oxa.toolOutputCap` | number (bytes) | `16384` | cap on one tool output sent to the model. When `oxa.compaction.softTokens` is set or the engine publishes a compaction point, one tool result is at most a quarter of it (never below 2048 bytes), unless this is set; `grep`, `find`, `ls` and a `read` with `offset` or `limit` are cut at that cap, the first page of `read` at 8 KiB within it; see [tools-context.md](tools-context.md) |
+| `oxa.toolOutputCap` | number (bytes) | `16384` | cap on one tool output sent to the model; on a cloud model with a known window and no value set it is 3/16 of the window in bytes (at least 16384), and a higher value you set applies to `read`, `grep`, `find` and `ls` too. When `oxa.compaction.softTokens` is set or the engine publishes a compaction point, one tool result is at most a quarter of it (never below 2048 bytes), unless this is set; `grep`, `find`, `ls` and a `read` with `offset` or `limit` are cut at that cap, the first page of `read` at 8 KiB within it; see [tools-context.md](tools-context.md) |
 | `oxa.toolRepair` | bool | `true` | repair a malformed tool call with one extra turn ([tools.md](tools.md#repair-turn)) |
 | `oxa.work.localChecks` | list of strings | `["cargo check"]` | owner-only local compile commands for `oxa work`. The runner adds `-p <crate>` for a touched crate. The hosted lane supplies the test verdict. |
 | `oxa.toolRepeatGuard` | bool | `true` | answer a tool call that returned the same result three times in a row with a short note, and warn once (shown and kept in the session) if it goes on; the run continues ([tools.md](tools.md#repeated-calls)) |
+| `oxa.goal.idlePause` | boolean | `false` | `true` pauses a goal after two replies without a tool call (with a notice and `/goal resume`); by default the second such reply only shows a warning and the goal keeps pursuing. User settings only |
 | `oxa.goal.failureBackoffSeconds` | number (seconds) | `60` | a pursuing goal whose request fails transiently (stream cut, engine down or busy, timeout, 429 or 5xx) notes it, waits this long without a model request, and sends the same request again; each further consecutive failure doubles the wait, capped at 900 s unless this is set higher. There is no attempt cap. `0` opts out: the run ends as before. Auth errors, refusals, a repetition stop, an abort and an owner-set budget still stop the goal with the reason shown |
 | `oxa.tools.wait` | bool | `true` | declare the `wait` tool in every session (interactive, print, RPC, lead and workers), not only while a goal is pursued. It is declared from the session start and its entry is the same in a goal, so the cached prefix does not change. `false` opts out (read at session start). Outside a goal a wait ends when the owner types a message, on cancel or on `--max-time`; with offline mode the GitHub probes stay refused |
 | `oxa.wait.maxSeconds` | number (seconds) | `86400` | cap on one `wait` call's `seconds`. The default is the tool's own maximum (one day), so nothing is cut unless you set a lower value; a longer request is cut to it |
 | `oxa.wait.pollSeconds` | number (seconds) | `30` | how often a `wait` with an `until` condition asks the hook sets for its state; no model request is made meanwhile |
 | `oxa.subagent.enabled` | bool | unset | the `subagent` tool; unset is on unless the model is Flash or its window is below 32K |
 | `oxa.subagent.smallContext` | bool | `false` | declare `subagent` on a model with a window below 32K |
-| `oxa.subagent.softTokens` | number | `24000` | compaction point of a child agent |
-| `oxa.subagent.maxChildren` | number | `8` | children one parent session runs or queues over every call in flight, and the most `tasks` or `chain` steps one call takes. User settings only. At least 1 |
+| `oxa.subagent.softTokens` | number | `24000` | compaction point of a child agent; on a cloud model with a known window and no value set it is half the window (at least 24000) |
+| `oxa.subagent.maxChildren` | number | `8` | children one parent session runs or queues over every call in flight, and the most `tasks` or `chain` steps one call takes. A warning threshold: above it the children still run (queued) and the result ends with a warning. User settings only. At least 1 |
 | `oxa.subagent.remoteConcurrency` | number | `8` | children of one `tasks` call that run at once when some run on a cloud model (local children run one at a time). Never above `oxa.subagent.maxChildren`; lower it if your provider rate-limits parallel requests |
-| `oxa.subagent.resultCap` | number (bytes) | `6144` | cap on the text a child returns |
+| `oxa.subagent.resultCap` | number (bytes) | `6144` | cap on the text a child returns; on a cloud model with a known window and no value set it is 3/32 of the window in bytes (at least 6144) |
 | `oxa.webSearch.enabled` | bool | `true` | the `web_search` tool, when a key exists |
 | `oxa.webSearch.provider` | `brave` / `none` | `brave` | search provider; `none` turns the tool off |
 | `oxa.webSearch.maxTokens` | number | `2048` | size of the search result the provider returns |
@@ -213,12 +214,19 @@ See [quickstart.md](quickstart.md#cloud-models) for the keys file and a first se
 `openrouter`, `openai` or `anthropic` key, or after `oxa login chatgpt`; with it
 on, `oxa.cloud.discover_models` also defaults to `true`. An explicit value
 always wins, so `false` opts out (a local HTTP engine with a key in the file
-sets it to `false`). The built-in recommended models of a keyed provider
-(Anthropic and OpenAI current models with their limits and prices, and the
-ChatGPT plan models after sign-in) are merged under `oxa.cloud.models`: an
-entry of yours with the same alias (`provider/upstream-model`) is never
-replaced, and discovery refines the built-in limits and prices. Prices go stale;
-set your own entry to pin one. Offline mode
+sets it to `false`). There is no built-in model table: model data is always
+fetched. The model list comes from each provider's models endpoint with your
+key; limits and prices the provider does not list come from OpenRouter's public
+model catalog (`GET https://openrouter.ai/api/v1/models`, sent with no key and
+no data about you, matched by model id), and the last successful fetch stays in
+the on-disk catalog cache for when a fetch fails. A model nobody lists limits
+for gets a conservative default window (128,000 tokens, 8,192 output) and a
+model nobody prices is usable with unknown cost, recorded as uncertain spend
+(`--list-models` start-up notices say how many and where the data came from).
+An entry of yours under `oxa.cloud.models` with the same alias
+(`provider/upstream-model`) always wins; set one to pin a limit or price.
+Public metadata is used only for a provider's default endpoint, never when you
+point discovery at a proxy. Offline mode
 refuses before opening the gateway; configuration or gateway failures are returned
 directly. Project settings cannot enable this transport or change its cloud policy.
 
@@ -315,7 +323,7 @@ An invalid saved binding refuses the request before provider I/O.
 A `chatgpt` route defaults to `https://chatgpt.com/backend-api/codex` and uses the
 existing owner-only `chatgpt-auth.json` beside the key file. It does not discover
 other applications' credentials or start a sign-in. After `oxa login chatgpt` the plan models
-(`chatgpt/gpt-5`, `chatgpt/gpt-5-codex`) exist without a route in your settings;
+(`chatgpt/gpt-6.2-astra`, `chatgpt/gpt-6.2-sol` and the other models Codex offers with ChatGPT sign-in) exist without a route in your settings;
 the optional user-only `oxa.cloud.subscription_limits` object (positive integer
 `daily_requests` and `daily_tokens`) only adds warnings. The separate optional `oxa.cloud.subscription` refresh object
 accepts a public `client_id` override (`[A-Za-z0-9_.-]{1,128}`); its default is the

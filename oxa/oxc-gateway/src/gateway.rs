@@ -277,6 +277,7 @@ impl Gateway {
             Some(cached) => cached,
             None => (State::Fresh, self.fetch_catalog(source, &key, timeout)?),
         };
+        let public_metadata = offers.iter().filter(|offer| offer.public).count();
         let (missing_price, missing_limits, estimated_price) = self
             .runtime
             .apply_provider_catalog(source, offers)
@@ -286,6 +287,7 @@ impl Gateway {
             missing_price,
             missing_limits,
             estimated_price,
+            public_metadata,
         }))
     }
     /// Replace only the private cache on a stale refresh.

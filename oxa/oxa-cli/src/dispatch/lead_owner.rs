@@ -94,7 +94,7 @@ fn selection(dirs: &Dirs, uid: u32) -> Result<Option<String>, OxaError> {
 /// The user-only explicit model choice for the Lead conversation, read through the
 /// same owner-private settings file as the session ID. HTTP, project and prompt
 /// input never supply it; `None` keeps the ordinary startup model.
-fn lead_model(dirs: &Dirs, uid: u32) -> Result<Option<String>, OxaError> {
+pub(crate) fn lead_model(dirs: &Dirs, uid: u32) -> Result<Option<String>, OxaError> {
     let Some(settings) = user_settings(dirs, uid)? else {
         return Ok(None);
     };
@@ -244,6 +244,13 @@ impl LeadOwnerBinding {
         })?;
         self.recheck()?;
         Ok(store)
+    }
+
+    /// The entries of the selected Session, read without its writer lock: no append, no sync and
+    /// no checkpoint. `FsStore::load` drops a torn last line in memory and never repairs the file.
+    pub(crate) fn read_entries(&self) -> Result<Vec<Entry>, OxaError> {
+        self.recheck()?;
+        FsStore::new(self.dirs.sessions_dir.clone()).load(&self.session)
     }
 
     pub(crate) fn recheck(&self) -> Result<(), OxaError> {
