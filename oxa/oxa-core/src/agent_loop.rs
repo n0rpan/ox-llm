@@ -768,6 +768,7 @@ fn run_inner(
             }
             idle_streak = 0;
             done.note_edits(&results);
+            st.stats.ci_polls += results.iter().filter(|r| r.ui["ciPoll"] == true).count() as u32;
             done.note_proof(&calls, &results);
             done.note_bash(st, &results);
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.

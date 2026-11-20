@@ -4,7 +4,15 @@ mod work;
 use oxa_fake::{ScriptTurn, TestEnv};
 use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf, process::Command};
-use work::{git, run_observed_with, setup};
+use work::{git, run_observed_with, setup_with_files};
+
+/// The lane coverage data every base commit of a lane task carries (`tools/ci/lane_coverage.json`,
+/// read from the trusted base by the Rust lane guard).
+const COVERAGE: &str = r#"{"workspaces":{"oxa":{"packages":"all"},"engine":{"packages":["server"]}},"contract":["tools/ci/lane_coverage.json"]}"#;
+
+fn setup_lane(env: &TestEnv, done: &str) {
+    setup_with_files(env, done, &[("tools/ci/lane_coverage.json", COVERAGE)]);
+}
 
 fn state_path(env: &TestEnv) -> PathBuf {
     let common = env.work().join("project/.git").canonicalize().unwrap();
@@ -129,7 +137,7 @@ fn command(env: &TestEnv, path: &str, args: &[&str]) -> std::process::Output {
 #[test]
 fn a_green_lane_run_at_the_pushed_head_is_done() {
     let env = TestEnv::new();
-    setup(&env, r#"["true"]"#);
+    setup_lane(&env, r#"["true"]"#);
     lane_task(&env);
     let path = configure(&env);
     env.write("home/lane-pass", "");
@@ -163,7 +171,7 @@ fn a_green_lane_run_at_the_pushed_head_is_done() {
 #[test]
 fn a_green_workflow_with_skipped_test_jobs_is_not_lane_evidence() {
     let env = TestEnv::new();
-    setup(&env, r#"["true"]"#);
+    setup_lane(&env, r#"["true"]"#);
     lane_task(&env);
     let path = configure(&env);
     env.write("home/lane-pass", "");
@@ -182,7 +190,7 @@ fn a_green_workflow_with_skipped_test_jobs_is_not_lane_evidence() {
 #[test]
 fn a_local_pass_with_a_failed_lane_run_is_red_after_one_repair() {
     let env = TestEnv::new();
-    setup(&env, r#"["true"]"#);
+    setup_lane(&env, r#"["true"]"#);
     lane_task(&env);
     let path = configure(&env);
     // No "lane-pass" marker: every lane observation fails.
@@ -208,7 +216,7 @@ fn a_local_pass_with_a_failed_lane_run_is_red_after_one_repair() {
 #[test]
 fn a_head_that_changes_any_push_workflow_is_refused_before_any_push() {
     let env = TestEnv::new();
-    setup(&env, r#"["true"]"#);
+    setup_lane(&env, r#"["true"]"#);
     // The base already carries the lane runner, so the worker edits a tracked
     // control rather than creating a new path the write tool may not create.
     env.write(
@@ -258,7 +266,7 @@ fn a_head_that_changes_any_push_workflow_is_refused_before_any_push() {
 #[test]
 fn a_local_repair_consumes_the_single_lane_repair_allowance() {
     let env = TestEnv::new();
-    setup(&env, r#"["grep -Fx repaired answer.txt"]"#);
+    setup_lane(&env, r#"["grep -Fx repaired answer.txt"]"#);
     lane_task(&env);
     let path = configure(&env);
     // No "lane-pass": the lane run fails after the local repair passes.
@@ -274,7 +282,7 @@ fn a_local_repair_consumes_the_single_lane_repair_allowance() {
 #[test]
 fn a_cancelled_lane_run_is_blocked_without_spending_the_repair() {
     let env = TestEnv::new();
-    setup(&env, r#"["true"]"#);
+    setup_lane(&env, r#"["true"]"#);
     lane_task(&env);
     let path = configure(&env);
     env.write("home/lane-cancelled", "");
@@ -298,7 +306,7 @@ fn a_cancelled_lane_run_is_blocked_without_spending_the_repair() {
 #[test]
 fn publication_refuses_a_lane_task_without_green_evidence() {
     let env = TestEnv::new();
-    setup(&env, r#"["true"]"#);
+    setup_lane(&env, r#"["true"]"#);
     lane_task(&env);
     let path = configure(&env);
     env.write("home/lane-pass", "");
@@ -349,7 +357,7 @@ fn publication_refuses_a_lane_task_without_green_evidence() {
 fn an_agent_marker_voids_the_ambient_owner_confirmation() {
     for marker in ["OXA_CODING_AGENT", "AI_AGENT", "OXA_SUBAGENT_DEPTH"] {
         let env = TestEnv::new();
-        setup(&env, r#"["true"]"#);
+        setup_lane(&env, r#"["true"]"#);
         lane_task(&env);
         let path = configure(&env);
         let server = oxa_fake::FakeServer::start(edits(), oxa_fake::FakeOpts::default()).unwrap();
@@ -379,7 +387,7 @@ fn an_agent_marker_voids_the_ambient_owner_confirmation() {
 #[test]
 fn an_agent_process_can_use_the_owner_confirm_broker() {
     let env = TestEnv::new();
-    setup(&env, r#"["true"]"#);
+    setup_lane(&env, r#"["true"]"#);
     lane_task(&env);
     let path = configure(&env);
     env.write("home/lane-pass", "");
@@ -411,7 +419,7 @@ fn an_agent_process_can_use_the_owner_confirm_broker() {
 #[test]
 fn a_queue_launch_approves_lane_tasks_from_the_owner_environment() {
     let env = TestEnv::new();
-    setup(&env, r#"["true"]"#);
+    setup_lane(&env, r#"["true"]"#);
     // A lane task arrives through the queue directory, not a task file: the queue
     // path never reaches the interactive ask, so only the owner-controlled
     // environment can approve its pushes.
@@ -474,7 +482,7 @@ fn a_queue_launch_approves_lane_tasks_from_the_owner_environment() {
 #[test]
 fn a_lane_task_without_owner_push_approval_runs_its_local_checks_but_is_never_done() {
     let env = TestEnv::new();
-    setup(&env, r#"["true"]"#);
+    setup_lane(&env, r#"["true"]"#);
     lane_task(&env);
     let path = configure(&env);
     let server = oxa_fake::FakeServer::start(edits(), oxa_fake::FakeOpts::default()).unwrap();
@@ -516,7 +524,7 @@ fn a_lane_task_without_owner_push_approval_runs_its_local_checks_but_is_never_do
 #[test]
 fn a_lane_task_only_accepts_lane_triggering_branches() {
     let env = TestEnv::new();
-    setup(&env, r#"["true"]"#);
+    setup_lane(&env, r#"["true"]"#);
     env.write(
         "work/tasks.json",
         r#"[{"id":"test","branch":"feature/test","model":"fake","prompt":"Finish task","lane_ci":true}]"#,
@@ -541,7 +549,7 @@ fn a_lane_task_only_accepts_lane_triggering_branches() {
 #[test]
 fn lane_task_with_a_fake_token_is_refused_before_push_and_no_lane_run_is_awaited() {
     let env = TestEnv::new();
-    setup(&env, r#"["true"]"#);
+    setup_lane(&env, r#"["true"]"#);
     lane_task(&env);
     let path = configure(&env);
     env.write("home/lane-pass", "");
@@ -587,7 +595,7 @@ fn lane_task_with_a_fake_token_is_refused_before_push_and_no_lane_run_is_awaited
 #[test]
 fn rust_unverified_work_collects_lane_evidence_and_becomes_done_on_green() {
     let env = TestEnv::new();
-    setup(&env, r#"["true"]"#);
+    setup_lane(&env, r#"["true"]"#);
     lane_task(&env);
     let path = configure(&env);
     env.write("home/lane-pass", "");
@@ -609,4 +617,114 @@ fn rust_unverified_work_collects_lane_evidence_and_becomes_done_on_green() {
     assert_eq!(origin_head(&env), record["head_sha"].as_str().unwrap());
     let push_calls = fs::read_to_string(env.home().join("push-calls")).unwrap();
     assert_eq!(push_calls.lines().count(), 1, "{push_calls}");
+}
+
+fn assert_refused_before_any_push(env: &TestEnv, record: &serde_json::Value, expect: &str) {
+    assert_ne!(record["outcome"], "done", "{record}");
+    let detail = record["detail"].as_str().unwrap_or_default();
+    assert!(detail.contains(expect), "{record}");
+    assert!(
+        !env.home().join("push-calls").exists(),
+        "a refused head was pushed"
+    );
+}
+
+/// #2105: the lane never runs the engine suites, so a green run is no evidence for an engine
+/// fixture change (the coverage data lists only some engine packages).
+#[test]
+fn a_lane_green_run_is_no_evidence_for_an_engine_fixture_change() {
+    let env = TestEnv::new();
+    setup_lane(&env, r#"["true"]"#);
+    lane_task(&env);
+    let path = configure(&env);
+    env.write("home/lane-pass", "");
+    let record = run_lane(
+        &env,
+        vec![
+            ScriptTurn::tool(
+                "write",
+                "write",
+                r#"{"path":"engine/tests/fixtures/f.txt","content":"x\n"}"#,
+            ),
+            ScriptTurn::text("done"),
+        ],
+        path,
+    );
+    assert_refused_before_any_push(&env, &record, "does not test engine/tests/fixtures/f.txt");
+}
+
+/// #2106: `fuzz/` has no lane evidence either.
+#[test]
+fn a_lane_green_run_is_no_evidence_for_a_fuzz_change() {
+    let env = TestEnv::new();
+    setup_lane(&env, r#"["true"]"#);
+    lane_task(&env);
+    let path = configure(&env);
+    env.write("home/lane-pass", "");
+    env.write(
+        "work/project/fuzz/oxa/Cargo.toml",
+        "[package]\nname = \"fuzz-oxa\"\n",
+    );
+    git(&env, &env.work().join("project"), &["add", "."]);
+    git(&env, &env.work().join("project"), &["commit", "-m", "fuzz crate"]);
+    git(&env, &env.work().join("project"), &["push", "origin", "main"]);
+    let record = run_lane(
+        &env,
+        vec![
+            ScriptTurn::tool(
+                "write",
+                "write",
+                r#"{"path":"fuzz/oxa/lib.rs","content":"fn f() {}\n"}"#,
+            ),
+            ScriptTurn::text("done"),
+        ],
+        path,
+    );
+    // The crate's own local compile check may stop it first; either way it is never done and
+    // nothing is pushed (the rule itself is covered in oxa-work lane/coverage.rs).
+    assert_refused_before_any_push(&env, &record, "");
+}
+
+/// #2104: a local base that is ahead of origin with a `tools/ci` commit is refused: that commit
+/// is part of what the push would add.
+#[test]
+fn a_local_base_ahead_of_origin_with_a_ci_commit_is_refused_before_any_push() {
+    let env = TestEnv::new();
+    setup_lane(&env, r#"["true"]"#);
+    env.write("work/project/tools/ci/extra.py", "print('tampered')\n");
+    git(&env, &env.work().join("project"), &["add", "."]);
+    git(
+        &env,
+        &env.work().join("project"),
+        &["commit", "-m", "unpushed ci change"],
+    );
+    lane_task(&env);
+    let path = configure(&env);
+    env.write("home/lane-pass", "");
+    let record = run_lane(&env, edits(), path);
+    assert_refused_before_any_push(&env, &record, "refuses a head that changes GitHub workflows");
+}
+
+/// #2102: workflow files that differ from the base branch's own history are refused even when
+/// no unpushed commit touches them (here another pushed branch already carries the change).
+#[test]
+fn a_head_with_workflows_inherited_from_another_pushed_branch_is_refused() {
+    let env = TestEnv::new();
+    setup_lane(&env, r#"["true"]"#);
+    let project = env.work().join("project");
+    git(&env, &project, &["checkout", "-b", "other"]);
+    env.write(
+        "work/project/.github/workflows/x.yml",
+        "name: inherited\non: push\n",
+    );
+    git(&env, &project, &["add", "."]);
+    git(&env, &project, &["commit", "-m", "workflow on another branch"]);
+    git(&env, &project, &["push", "origin", "other"]);
+    git(&env, &project, &["checkout", "main"]);
+    git(&env, &project, &["merge", "--ff-only", "other"]);
+    lane_task(&env);
+    let path = configure(&env);
+    env.write("home/lane-pass", "");
+    let record = run_lane(&env, edits(), path);
+    assert_refused_before_any_push(&env, &record, "differ from the base branch's");
 }
