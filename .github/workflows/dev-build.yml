@@ -7,6 +7,11 @@ on:
     # dev push.
     - cron: "43 4 * * *"
   workflow_dispatch:
+    inputs:
+      macos_stage_only:
+        description: Build and upload the native macOS dev archive without publishing
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -38,7 +43,7 @@ jobs:
   covered:
     # Same-SHA green evidence: a main push whose commit already passed the merge queue skips the
     # repeated model-free source tests (tools/ci/queue_covered.py decides; any doubt runs them).
-    if: github.repository == 'oxstack/ox-llm'
+    if: github.repository == 'oxstack/ox-llm' && !inputs.macos_stage_only
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     permissions:
@@ -66,16 +71,16 @@ jobs:
       reproducible: ${{ github.event_name != 'push' }}
       skip_source_tests: ${{ needs.covered.outputs.covered == 'true' }}
   macos:
-    if: github.event_name == 'push'
-    # Best effort: a red macOS build never blocks the Linux dev release (owner decision 4).
+    if: github.event_name == 'push' || inputs.macos_stage_only
+    # A failed main build never blocks Linux; an explicit qualification must pass.
     needs: version
     runs-on: macos-15
-    continue-on-error: true
+    continue-on-error: ${{ github.event_name == 'push' }}
     timeout-minutes: 90
     env:
       CARGO_BUILD_JOBS: '3'
       RUST_VERSION: '1.99.1'
-      VERSION: ${{ needs.version.outputs.version }}
+      FILE_VERSION: ${{ needs.version.outputs.file_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -97,17 +102,22 @@ jobs:
         working-directory: oxa
         run: cargo build --release --locked -p oxa-cli --bin oxa
       - name: Stage the archive
+        id: stage
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/macos-dist"
-          bash packaging/macos/stage.sh "$VERSION" oxa/target/release/oxa "$out"
-          mkdir -p "$RUNNER_TEMP/probe" && tar -xzf "$out/ox-llm-$VERSION-macos-arm64.tar.gz" -C "$RUNNER_TEMP/probe"
-          "$RUNNER_TEMP/probe/usr/bin/oxa" --version
-          echo "MACOS_DIST=$out" >> "$GITHUB_ENV"
+          archive=$(bash packaging/macos/stage.sh "$FILE_VERSION" oxa/target/release/oxa "$out")
+          test "$archive" = "$out/ox-llm-$FILE_VERSION-macos-arm64.tar.gz"
+          probe=$(mktemp -d "$RUNNER_TEMP/probe.XXXXXX")
+          tar -xzf "$archive" -C "$probe"
+          cmp oxa/target/release/oxa "$probe/usr/bin/oxa"
+          test "$(lipo -archs "$probe/usr/bin/oxa")" = arm64
+          "$probe/usr/bin/oxa" --version
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-dist-arm64
-          path: ${{ env.MACOS_DIST }}/
+          path: ${{ steps.stage.outputs.archive }}
           if-no-files-found: error
           retention-days: 7
   publish:
@@ -137,33 +147,8 @@ jobs:
         with:
           name: macos-dist-arm64
           path: macos-dist
-      - name: Keep both qualified payloads and architecture-specific proof receipts
-        run: |
-          set -euo pipefail
-          mkdir dist
-          for arch in aarch64 x86_64; do
-            source="combined/release-build-$arch"
-            (cd "$source" && sha256sum -c SHA256SUMS)
-            cp "$source/ox-llm-$FILE_VERSION-linux-$arch.tar.gz" "$source/ox-llm-$FILE_VERSION-linux-$arch.sbom.cdx.json" dist/
-            for proof in REPRODUCIBILITY TOOLCHAIN NO-PYTHON-PROOF; do
-              cp "$source/$proof.txt" "dist/ox-llm-$FILE_VERSION-linux-$arch.$proof.txt"
-            done
-          done
-          # The macOS archive is included only when its build produced exactly the expected file.
-          if [[ -f macos-dist/ox-llm-$VERSION-macos-arm64.tar.gz ]]; then
-            cp "macos-dist/ox-llm-$VERSION-macos-arm64.tar.gz" dist/
-          else
-            echo "::warning::no macOS arm64 asset for $VERSION; publishing Linux only"
-          fi
-          # Every payload path is under usr/, and the native oxa is present.
-          for tarball in dist/*.tar.gz; do
-            tar -tzf "$tarball" | awk '!/^usr\// || /(^|\/)\.\.(\/|$)/ { print "unsafe payload path: " $0; bad = 1 } END { exit bad }'
-            tar -tzf "$tarball" | grep -x 'usr/bin/oxa' >/dev/null || { echo "missing native oxa in $tarball" >&2; exit 1; }
-          done
-          # Linux archives must hold ELF executables; only the -macos-arm64 archive holds Mach-O.
-          packaging/release/no-python.sh dist/*.tar.gz
-          (cd dist && sha256sum -- * > SHA256SUMS && sha256sum -c SHA256SUMS)
-          cp dist/SHA256SUMS "dist/SHA256SUMS-$FILE_VERSION"
+      - name: Assemble and verify the dev assets
+        run: bash packaging/release/dev-dist.sh "$FILE_VERSION"
       - name: Provenance for the exact dev assets and checksums
         id: provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

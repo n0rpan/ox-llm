@@ -44,10 +44,16 @@ previous build are retained.
 ## macOS arm64 dev build
 
 `dev-build.yml` also builds `oxa` natively on `macos-15` and publishes
-`ox-llm-<version>-macos-arm64.tar.gz` (`usr/bin/oxa` only, staged by
+`ox-llm-<file-version>-macos-arm64.tar.gz` (`usr/bin/oxa` only, staged by
 `packaging/macos/stage.sh`) to the same `dev` prerelease. It is covered by the same
-`SHA256SUMS-<version>` and provenance. The job is best effort: if it fails, the Linux
+`SHA256SUMS-<file-version>` and provenance. The job is best effort: if it fails, the Linux
 assets still publish and the Mac asset is simply absent.
+
+To qualify a branch without publishing, dispatch `dev-build.yml` on that branch with
+`macos_stage_only=true`. Check that the run's head SHA matches the commit under test.
+The job extracts the archive, checks that `oxa` is arm64, runs `oxa --version`, and
+uploads that same archive as `macos-dist-arm64`. This dispatch does not create a release
+or release provenance.
 
 On an Apple Silicon Mac, with `gh` installed (`brew install gh`; used only to verify
 provenance), run `bash tools/lab/dev-update-macos.sh` from a checkout. The install is at

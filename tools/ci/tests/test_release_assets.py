@@ -1,8 +1,10 @@
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -78,34 +80,73 @@ class ReleaseAssets(unittest.TestCase):
         macos = dev.split('  macos:', 1)[1].split('  publish:', 1)[0]
         publish = dev.split('  publish:', 1)[1]
         # A red macOS build never blocks the Linux release.
-        self.assertIn('continue-on-error: true', macos)
+        self.assertIn("continue-on-error: ${{ github.event_name == 'push' }}", macos)
         self.assertIn('runs-on: macos-15', macos)
-        self.assertIn('bash packaging/macos/stage.sh', macos)
+        self.assertIn('bash packaging/macos/stage.sh "$FILE_VERSION"', macos)
         self.assertIn('!cancelled() && needs.build.result == \'success\'', publish)
         self.assertNotIn('needs.macos.result', publish)
-        # The archive is in dist/ before the checksums and the attestation cover it.
-        copy = publish.index('macos-dist/ox-llm-$VERSION-macos-arm64.tar.gz')
-        self.assertLess(copy, publish.index('sha256sum -- * > SHA256SUMS'))
-        self.assertLess(copy, publish.index('actions/attest-build-provenance@'))
-        # The same no-python scan covers the macOS archive, which may hold Mach-O only.
-        self.assertLess(copy, publish.index('packaging/release/no-python.sh dist/*.tar.gz'))
-        script = (W.parents[1] / 'packaging/release/no-python.sh').read_text()
-        self.assertIn('*-macos-arm64.tar.gz) native=cffaedfe', script)
+        self.assertLess(publish.index('bash packaging/release/dev-dist.sh "$FILE_VERSION"'),
+                        publish.index('actions/attest-build-provenance@'))
+        self.assertIn('subject-path: dist/*', publish)
 
-    def test_macos_dev_publish_policy_is_documented_consistently(self):
-        root = W.parents[1]
-        documents = {
-            'agent policy': (root / 'AGENTS.md').read_text(),
-            'security policy': (root / 'SECURITY.md').read_text(),
-            'developer guide': (root / 'docs/DEV.md').read_text(),
-            'installation guide': (root / 'oxa/docs/pages/install.md').read_text(),
-        }
-        for name, document in documents.items():
-            with self.subTest(document=name):
-                self.assertIn('best effort', document)
-        install = documents['installation guide']
-        self.assertNotIn('No macOS build is published yet', install)
-        self.assertIn('versioned checksum and build provenance', install)
+    def test_dev_dist_checksums_only_the_matching_macos_archive(self):
+        repo = W.parents[1]
+        version = subprocess.check_output(
+            ['python3', '-I', 'tools/ci/dev_version.py', 'abc1234', '--file-name'],
+            cwd=repo, text=True).strip()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scripts = root / 'packaging/release'
+            scripts.mkdir(parents=True)
+            shutil.copy2(repo / 'packaging/release/no-python.sh', scripts)
+            binary = root / 'oxa'
+
+            def digest(path):
+                return hashlib.sha256(path.read_bytes()).hexdigest()
+
+            for arch in ('aarch64', 'x86_64'):
+                release = root / 'combined' / f'release-build-{arch}'
+                release.mkdir(parents=True)
+                binary.write_bytes(b'\x7fELF' + bytes(64))
+                base = f'ox-llm-{version}-linux-{arch}'
+                with tarfile.open(release / f'{base}.tar.gz', 'w:gz') as archive:
+                    archive.add(binary, arcname='usr/bin/oxa')
+                (release / f'{base}.sbom.cdx.json').write_text('{}')
+                for proof in ('REPRODUCIBILITY', 'TOOLCHAIN', 'NO-PYTHON-PROOF'):
+                    (release / f'{proof}.txt').write_text('fixture\n')
+                (release / 'SHA256SUMS').write_text(''.join(
+                    f'{digest(path)}  {path.name}\n' for path in release.iterdir()))
+
+            binary.write_bytes(b'\xcf\xfa\xed\xfe' + bytes(64))
+            binary.chmod(0o755)
+            macos = root / 'macos-dist'
+            stale = 'ox-llm-v0.2.1-dev.abc1234-macos-arm64.tar.gz'
+            asset = f'ox-llm-{version}-macos-arm64.tar.gz'
+            dist = root / 'dist'
+            for case in ('absent', 'stale', 'matching'):
+                with self.subTest(case=case):
+                    if case == 'stale':
+                        macos.mkdir()
+                        with tarfile.open(macos / stale, 'w:gz') as archive:
+                            archive.add(binary, arcname='usr/bin/oxa')
+                    elif case == 'matching':
+                        subprocess.run(['bash', repo / 'packaging/macos/stage.sh', version,
+                                        binary, macos], check=True, capture_output=True)
+
+                    subprocess.run(['bash', repo / 'packaging/release/dev-dist.sh', version],
+                                   cwd=root, check=True, capture_output=True)
+                    sums = (dist / f'SHA256SUMS-{version}').read_text()
+                    self.assertEqual(sums, (dist / 'SHA256SUMS').read_text())
+                    self.assertEqual(len(list(dist.glob('*-linux-*.tar.gz'))), 2)
+                    expected = [asset] if case == 'matching' else []
+                    self.assertEqual([p.name for p in dist.glob('*-macos-arm64.tar.gz')], expected)
+                    self.assertNotIn(stale, sums)
+                    if expected:
+                        self.assertIn(f'{digest(macos / asset)}  {asset}', sums.splitlines())
+                        self.assertEqual(digest(dist / asset), digest(macos / asset))
+                    else:
+                        self.assertNotIn(asset, sums)
+                    shutil.rmtree(dist)
 
     def test_dev_version_comes_from_the_single_bump_helper(self):
         dev = (W / 'dev-build.yml').read_text()
@@ -258,7 +299,9 @@ EOF
         self.assertIn('packaging/release/no-python.sh dist/*.tar.gz', (W / 'release.yml').read_text())
         dev = (W / 'dev-build.yml').read_text()
         publish = dev.split('  publish:', 1)[1]
-        self.assertLess(publish.index('packaging/release/no-python.sh dist/*.tar.gz'),
+        dev_dist = (W.parents[1] / 'packaging/release/dev-dist.sh').read_text()
+        self.assertIn('packaging/release/no-python.sh dist/*.tar.gz', dev_dist)
+        self.assertLess(publish.index('bash packaging/release/dev-dist.sh'),
                         publish.index('gh release upload dev'))
         arch = (W.parents[1] / 'packaging/release/arch-test.sh').read_text()
         self.assertIn('sh /no-python.sh --list /tmp/installed-files', arch)

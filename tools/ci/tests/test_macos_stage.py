@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[3] / 'packaging/macos/stage.sh'
-VERSION = 'v0.2.1-dev.abcdef0'
+VERSION = 'v0.2.1-dev.137.abcdef0'
 
 
 class MacosStage(unittest.TestCase):
@@ -64,8 +64,11 @@ exec {real_tar} "${{args[@]}}"
         self.assertFalse(list((root / 'out').glob('*')) if (root / 'out').exists() else [])
 
     def test_refuses_a_malformed_version(self):
-        _, proc = self.run_stage(b'\xcf\xfa\xed\xfe', version='0.2.1')
-        self.assertNotEqual(proc.returncode, 0)
+        for version in ('0.2.1', 'v0.2.1-dev.abcdef0', 'v0.2.1-dev.137+abcdef0'):
+            with self.subTest(version=version):
+                root, proc = self.run_stage(b'\xcf\xfa\xed\xfe', version=version)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertFalse((root / 'out').exists())
 
 
 if __name__ == '__main__':

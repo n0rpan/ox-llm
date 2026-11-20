@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Stage the macOS arm64 dev archive from a built oxa binary (bash and BSD tools only).
-# usage: stage.sh <version> <oxa-binary> <output-dir>
-# Writes <output-dir>/ox-llm-<version>-macos-arm64.tar.gz holding exactly usr/, usr/bin/ and
+# usage: stage.sh <file-version> <oxa-binary> <output-dir>
+# Writes <output-dir>/ox-llm-<file-version>-macos-arm64.tar.gz holding exactly usr/, usr/bin/ and
 # usr/bin/oxa: the layout tools/lab/dev-update-macos.sh extracts and checks.
 set -euo pipefail
 version=${1:?version}
 binary=${2:?oxa binary}
 out=${3:?output dir}
-[[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*-dev\.[0-9a-f]{7}$ ]] || { echo "bad dev version: $version" >&2; exit 1; }
+[[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.-]*-dev\.[0-9]+\.[0-9a-f]{7}$ ]] || { echo "bad dev file version: $version" >&2; exit 1; }
 test -f "$binary" && test -x "$binary" && test ! -L "$binary" || { echo "not an executable file: $binary" >&2; exit 1; }
 # Mach-O 64-bit, little endian (arm64): cf fa ed fe.
 magic=$(od -An -tx1 -N4 "$binary" | tr -d ' \n')
