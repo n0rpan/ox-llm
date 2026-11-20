@@ -10,6 +10,18 @@ from pathlib import Path
 W = Path(__file__).resolve().parents[3] / '.github' / 'workflows'
 
 
+def job_block(text, name):
+    """One job's block, from its key to the next job key."""
+    lines = text.splitlines(keepends=True)
+    start = lines.index(f'  {name}:\n')
+    block = [lines[start]]
+    for line in lines[start + 1:]:
+        if re.match(r'^  \S', line):
+            break
+        block.append(line)
+    return ''.join(block)
+
+
 class ReleaseAssets(unittest.TestCase):
     def test_release_attaches_combined_archives(self):
         rel = (W / 'release.yml').read_text()
@@ -53,8 +65,10 @@ class ReleaseAssets(unittest.TestCase):
         dev = (W / 'dev-build.yml').read_text()
         self.assertRegex(dev, r'on:\s*\n  push:\s*\n    branches: \[main\]')
         self.assertNotIn('pull_request', dev)
-        # A running dev build finishes; only the newest pending push is kept.
-        self.assertIn('group: dev-build\n  cancel-in-progress: false', dev)
+        # A running push build finishes; only the newest pending push is kept, and the nightly
+        # qualification has its own group so it never delays a push.
+        self.assertIn('group: dev-build-${{ github.event_name }}\n  cancel-in-progress: false', dev)
+        self.assertRegex(dev, r'(?m)^  schedule:')
         # Publication moves only forward, checked before any create or upload.
         publish = dev.split('  publish:', 1)[1]
         self.assertLess(publish.index('compare/$GITHUB_SHA...main'), publish.index('gh release create dev'))
@@ -62,7 +76,8 @@ class ReleaseAssets(unittest.TestCase):
         self.assertIn('uses: ./.github/workflows/release-build.yml', dev)
         self.assertIn('needs: [version, build]', dev)
         self.assertNotIn('contents: write', dev.split('  publish:', 1)[0])
-        self.assertIn("github.ref == 'refs/heads/main'", dev.split('  publish:', 1)[1])
+        # A nightly or dispatched run qualifies without republishing the same commit.
+        self.assertIn("github.event_name == 'push'", dev.split('  publish:', 1)[1])
         self.assertIn('for arch in aarch64 x86_64', dev)
         release_commands = [line.strip() for line in dev.splitlines()
                             if 'gh release create ' in line or 'gh release edit ' in line]
@@ -262,6 +277,42 @@ EOF
             result = run(str(linked))
             self.assertEqual(result.returncode, 1)
             self.assertIn('unsupported symlink', result.stderr)
+
+
+class DevBuildShape(unittest.TestCase):
+    def test_a_dev_push_builds_once_and_the_arch_source_rebuild_runs_beside_the_build(self):
+        dev = (W / 'dev-build.yml').read_text()
+        rb = (W / 'release-build.yml').read_text()
+        build = job_block(dev, 'build')
+        self.assertIn('uses: ./.github/workflows/release-build.yml', build)
+        self.assertRegex(build, r"reproducible: \$\{\{ github\.event_name != 'push' \}\}")
+        # The recipe's own default is the strict two-build form, so the release lane and a
+        # nightly or dispatched dev-build keep the reproducibility comparison.
+        inputs = rb.split('  workflow_dispatch:', 1)[0]
+        self.assertRegex(inputs, r'(?m)^      reproducible:\n(?:.*\n)*?        default: true\n')
+        self.assertNotIn('reproducible:', (W / 'release.yml').read_text())
+        # The source package needs no release artifact: it runs without the build job.
+        source = job_block(rb, 'arch-source')
+        self.assertIsNone(re.search(r'(?m)^    needs:', source))
+        self.assertIn('bash /arch-test.sh source', source)
+        # Only the binary package consumes the built tarball.
+        binary = job_block(rb, 'arch-binary')
+        self.assertIn('needs: binaries', binary)
+        self.assertIn('bash /arch-test.sh binary', binary)
+
+    def test_a_queue_tested_commit_skips_only_the_repeated_source_tests(self):
+        dev = (W / 'dev-build.yml').read_text()
+        covered = job_block(dev, 'covered')
+        # Same-SHA green evidence only, from the merge-queue run of the same commit.
+        self.assertIn('tools/ci/queue_covered.py', covered)
+        self.assertIn('actions: read', covered)
+        # Skipping is opt-in: an absent input (release, dispatch, pull request) runs the tests.
+        inputs = (W / 'release-build.yml').read_text().split('  workflow_dispatch:', 1)[0]
+        self.assertRegex(inputs, r'(?m)^      skip_source_tests:\n(?:.*\n)*?        default: false\n')
+        self.assertRegex(job_block(dev, 'build'),
+                         r"skip_source_tests: \$\{\{ needs\.covered\.outputs\.covered == 'true' \}\}")
+        # A release never takes the shortcut.
+        self.assertNotIn('skip_source_tests:', (W / 'release.yml').read_text())
 
 
 if __name__ == '__main__':
