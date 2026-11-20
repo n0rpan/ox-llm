@@ -1079,7 +1079,8 @@ impl WorkerCore {
         }
         let id = match retry {
             Some(id) => id.to_owned(),
-            None => match oxa_session::send_inbox_receipt(&self.agent_dir, &rec.session_id, text) {
+            // #2183: the parent's message steers the worker at its next tool boundary.
+            None => match oxa_session::send_inbox_steer_receipt(&self.agent_dir, &rec.session_id, text) {
                 Ok(id) => id,
                 Err(e) => return ToolOutput::error(format!("worker: cannot deliver to {name}: {e}")),
             },
@@ -2157,7 +2158,7 @@ mod tests {
         let texts: Vec<String> = fs::read_dir(&inbox)
             .unwrap()
             .flatten()
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".msg"))
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".steer"))
             .map(|e| fs::read_to_string(e.path()).unwrap())
             .collect();
         assert_eq!(texts, vec!["please add tests".to_string()]);
