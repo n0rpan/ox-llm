@@ -113,6 +113,9 @@ pub mod tool_errors {
     /// the action ("write /tmp/x"). Nobody declined; avoid workarounds whose approval depends
     /// on the active policy and path protections.
     pub const DENIED_UNATTENDED: &str = "Permission denied: {what} needs approval, but this run cannot ask (non-interactive), so it was refused; nobody declined it.";
+    /// #1512 S2: a dangerous command in a run with no one to ask. `{why}` is the matched rules.
+    pub const DANGEROUS_UNATTENDED: &str =
+        "Refused: dangerous command ({why}). This run has no one to approve it; nobody declined it.";
     pub const ABORTED: &str = "Tool execution aborted";
     /// A call in a reply cut by the output limit (`Finish::Length`) is never run (pi's
     /// `failToolCallsFromTruncatedMessage`). `{name}` is replaced by the tool name.
@@ -195,6 +198,12 @@ pub struct ToolTune {
     /// `offset` / `limit` cut their result at it (never above pi's 16 KiB), notices inside it.
     /// 0 = none (pi: each tool's own 16 KiB cut).
     pub output_cap_bytes: u32,
+    /// B2b: the model takes image parts (`EngineInfo::images`). `read` then returns the image
+    /// itself instead of the placeholder line. `false` = the placeholder.
+    pub image_input: bool,
+    /// B2b: the largest image `read` sends, in bytes (`oxa.read.maxImageBytes`). 0 = no limit.
+    /// A larger image is not sent; the result names the limit and the setting.
+    pub max_image_bytes: u32,
 }
 
 /// A tool the model can call. Built-ins, extension tools, MCP tools and codemode all implement

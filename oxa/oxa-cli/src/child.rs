@@ -28,13 +28,23 @@ pub(crate) struct ChildIdentity {
     pub hint: Option<String>,
     /// `OXA_SUBAGENT_DEPTH` (0 = not a child).
     pub depth: u32,
+    /// `OXA_WORKER_DEPTH` set: a `worker` tool child, supervised by the session that started it.
+    pub worker: bool,
     pub soft_tokens: Option<u32>,
 }
 
 impl ChildIdentity {
     /// Read the three variables. A malformed value is ignored with a warning in `notices`.
     pub fn from_env(env: &Env, notices: &mut Vec<(Level, String)>) -> ChildIdentity {
-        let mut id = ChildIdentity::default();
+        // `Env::get` treats an empty value as unset, so the marker is read from the pairs.
+        let mut id = ChildIdentity {
+            worker: env
+                .pairs()
+                .iter()
+                .rev()
+                .any(|(k, _)| k == crate::workers::tool::ENV_WORKER_DEPTH),
+            ..ChildIdentity::default()
+        };
         if let Some(h) = env.get(SubagentHooks::ENV_SESSION_HINT) {
             if is_child_hint(h) {
                 id.hint = Some(h.to_string());
@@ -79,9 +89,11 @@ impl ChildIdentity {
         id
     }
 
-    /// `true` for a subagent child: it must not build `builtin:subagent` itself.
+    /// `true` for a supervised child (a subagent, or a `worker` tool child): it must not build
+    /// `builtin:subagent` itself, and it keeps the terminating parent-death signal instead of the
+    /// root session's cooperative handler.
     pub fn nested(&self) -> bool {
-        self.depth > 0 || self.hint.is_some()
+        self.depth > 0 || self.hint.is_some() || self.worker
     }
 
     /// The engine this process uses: [`ChildEngine`] when a hint is set.
@@ -247,6 +259,17 @@ mod tests {
         );
         assert!(got[2].3, "other hints unchanged");
         assert_eq!(got[0].4, "k1");
+    }
+
+    #[test]
+    fn a_worker_child_is_a_supervised_child() {
+        // The worker launcher sets only this marker; the child must keep the terminating
+        // parent-death signal rather than install the root session's cooperative handler.
+        let (id, notices) = identity(&[("OXA_WORKER_DEPTH", "1")]);
+        assert!(notices.is_empty());
+        assert!(id.worker && id.nested());
+        let (id, _) = identity(&[("OXA_WORKER_DEPTH", "")]);
+        assert!(id.nested(), "an empty marker still means a worker child");
     }
 
     #[test]
