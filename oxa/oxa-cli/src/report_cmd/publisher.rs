@@ -362,8 +362,7 @@ mod tests {
     fn a_tool_child_posts_through_the_broker_with_the_agent_marker_and_no_sandbox() {
         let f = fixture("It stalls.");
         let dirs = Dirs::under(f.env.root());
-        let broker =
-            OwnerConfirm::start(&f.env.root().join("broker"), YoloSwitch::new(Autonomy::Yolo)).unwrap();
+        let broker = OwnerConfirm::start(YoloSwitch::new(Autonomy::Yolo)).unwrap();
         let vars = Env::from_pairs(&[("PATH", f.path.as_str())]);
         broker.set_publisher(Arc::new(ReportPublisher::new(
             &dirs,
