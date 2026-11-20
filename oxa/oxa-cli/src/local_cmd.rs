@@ -485,6 +485,14 @@ fn add(args: &AddArgs, dirs: &Dirs, cwd: &Path, out: &mut dyn Write) -> Result<i
     )
     .map_err(write_err)?;
     writeln!(out, "  arguments {}", arguments.join(" ")).map_err(write_err)?;
+    for warning in report["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        writeln!(out, "Warning: {warning}").map_err(write_err)?;
+    }
     if args.enable {
         writeln!(out, "oxa.engine.inProcessLocal is now true.").map_err(write_err)?;
     } else {
