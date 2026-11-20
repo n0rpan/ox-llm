@@ -421,7 +421,8 @@ fn a_queue_launch_approves_lane_tasks_from_the_owner_environment() {
     );
     let path = configure(&env);
     let server = oxa_fake::FakeServer::start(edits(), oxa_fake::FakeOpts::default()).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
+    command
         .args([
             "work",
             "--queue",
