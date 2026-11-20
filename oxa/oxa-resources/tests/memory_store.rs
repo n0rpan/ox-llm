@@ -3,7 +3,7 @@
 
 use oxa_config::Dirs;
 use oxa_fake::TestEnv;
-use oxa_resources::memory::{self, MemoryKind, MAX_MEMORY_BODY};
+use oxa_resources::memory::{self, MemoryKind, MAX_MEMORY_BODY, MAX_MEMORY_HEADER};
 use std::path::PathBuf;
 
 fn memory_dir(env: &TestEnv) -> PathBuf {
@@ -126,4 +126,129 @@ fn write_atomic_removes_temp_sibling_when_rename_fails() {
         .filter(|n| n.contains(".tmp."))
         .collect();
     assert!(leftovers.is_empty(), "temp file left behind: {leftovers:?}");
+}
+
+fn mode_of(path: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+#[test]
+fn memory_dir_lock_entries_and_index_are_owner_only() {
+    let env = TestEnv::new();
+    let dir = memory_dir(&env);
+    // A directory created earlier with a loose mode is tightened by the next save.
+    std::fs::create_dir_all(&dir).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    memory::save(&dir, "private-note", MemoryKind::Fact, "Secret", "Body.\n").unwrap();
+    assert_eq!(mode_of(&dir), 0o700, "memory dir");
+    assert_eq!(mode_of(&dir.join(".lock")), 0o600, "lock");
+    assert_eq!(mode_of(&dir.join("private-note.md")), 0o600, "entry");
+    assert_eq!(mode_of(&dir.join("MEMORY.md")), 0o600, "index");
+    // Replacing an entry keeps it private.
+    memory::save(&dir, "private-note", MemoryKind::Fact, "Secret", "New body.\n").unwrap();
+    assert_eq!(mode_of(&dir.join("private-note.md")), 0o600, "replaced entry");
+}
+
+#[test]
+fn index_scan_survives_an_oversized_entry_next_to_a_valid_one() {
+    let env = TestEnv::new();
+    let dir = memory_dir(&env);
+    memory::save(&dir, "good-note", MemoryKind::Rule, "Fine", "Body.\n").unwrap();
+    // A file dropped in by hand, far above the save cap: it is read only up to a bounded prefix.
+    let huge = format!(
+        "---\nkind: fact\ndescription: \"Huge\"\n---\n{}",
+        "x".repeat(3 * 1024 * 1024)
+    );
+    std::fs::write(dir.join("huge-note.md"), huge).unwrap();
+    // Junk that never closes its frontmatter is skipped, not an error.
+    std::fs::write(dir.join("junk-note.md"), "y".repeat(1024 * 1024)).unwrap();
+    let index = memory::index(&dir, usize::MAX);
+    assert!(
+        index.contains("[good-note](good-note.md) (rule): Fine"),
+        "{index}"
+    );
+    assert!(
+        index.contains("[huge-note](huge-note.md) (fact): Huge"),
+        "{index}"
+    );
+    assert!(!index.contains("junk-note"), "{index}");
+    // A save still rebuilds a complete index around it.
+    memory::save(&dir, "other-note", MemoryKind::Lesson, "Next", "Body.\n").unwrap();
+    let file = std::fs::read_to_string(dir.join("MEMORY.md")).unwrap();
+    assert_eq!(file.lines().count(), 3, "{file}");
+}
+
+#[test]
+fn every_saved_description_stays_indexed_and_a_longer_one_is_refused() {
+    let env = TestEnv::new();
+    let dir = memory_dir(&env);
+    // The longest description save accepts, next to the longest body: the bounded scan reads it whole.
+    let long = "d".repeat(MAX_MEMORY_HEADER - 64);
+    memory::save(
+        &dir,
+        "long-note",
+        MemoryKind::Fact,
+        &long,
+        &"b".repeat(MAX_MEMORY_BODY),
+    )
+    .unwrap();
+    let index = memory::index(&dir, usize::MAX);
+    assert!(
+        index.contains(&format!("[long-note](long-note.md) (fact): {long}")),
+        "{index}"
+    );
+    let file = std::fs::read_to_string(dir.join("MEMORY.md")).unwrap();
+    assert!(file.contains("long-note"), "{file}");
+
+    // A description the scan could not read past is refused before anything is written.
+    let err = memory::save(
+        &dir,
+        "too-long",
+        MemoryKind::Fact,
+        &"x".repeat(13 * 1024),
+        "Short.\n",
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("description is too long"), "{err}");
+    assert!(memory::read(&dir, "too-long").unwrap().is_none());
+}
+
+#[test]
+fn failed_index_write_does_not_hide_a_committed_save_or_delete() {
+    let env = TestEnv::new();
+    let dir = memory_dir(&env);
+    memory::save(&dir, "first-note", MemoryKind::Fact, "One", "Body.\n").unwrap();
+    // A directory at MEMORY.md makes every index rewrite fail.
+    std::fs::remove_file(dir.join("MEMORY.md")).unwrap();
+    std::fs::create_dir(dir.join("MEMORY.md")).unwrap();
+
+    memory::save(&dir, "first-note", MemoryKind::Fact, "One", "Replaced.\n").unwrap();
+    assert_eq!(
+        memory::read(&dir, "first-note").unwrap().unwrap().text,
+        "Replaced.\n"
+    );
+    memory::save(&dir, "second-note", MemoryKind::Fact, "Two", "Body.\n").unwrap();
+    let live = memory::index(&dir, usize::MAX);
+    assert!(
+        live.contains("(first-note.md)") && live.contains("(second-note.md)"),
+        "{live}"
+    );
+
+    assert!(memory::delete(&dir, "second-note").unwrap());
+    assert!(memory::read(&dir, "second-note").unwrap().is_none());
+    assert!(!memory::index(&dir, usize::MAX).contains("second-note"));
+
+    // Once the index can be written again, a retried delete (even of the gone entry) repairs it.
+    std::fs::remove_dir(dir.join("MEMORY.md")).unwrap();
+    assert!(!memory::delete(&dir, "second-note").unwrap());
+    let file = std::fs::read_to_string(dir.join("MEMORY.md")).unwrap();
+    assert_eq!(file.lines().count(), 1, "{file}");
+    assert!(
+        file.contains("first-note") && !file.contains("second-note"),
+        "{file}"
+    );
 }

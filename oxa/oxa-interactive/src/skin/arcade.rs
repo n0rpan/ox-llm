@@ -13,6 +13,7 @@
 //!   `TERM=dumb`) and `ui.animation = "off"` give the static badge and no scene at all.
 //! * No sound, ever.
 use super::chrome::{activity_line_lead, activity_style};
+use super::stage::Director;
 use super::{badge, glyphs, oxa_activity_line_with, SPRITE_FRAME_MS};
 use crate::{Activity, Block, Skin, StatusModel};
 use oxa_config::Keymap;
@@ -203,7 +204,7 @@ pub fn scene_cells(width: u16) -> usize {
 }
 
 /// The most cells a scene has.
-const MAX_CELLS: usize = 12;
+pub(super) const MAX_CELLS: usize = 12;
 
 /// The label on a tool's crate: one character per kind of tool (ASCII when `ascii`).
 pub fn tool_icon(name: &str, ascii: bool) -> char {
@@ -242,7 +243,7 @@ pub fn tool_icon(name: &str, ascii: bool) -> char {
 
 /// Colour roles of a scene's cells; mapped to theme tokens by [`Canvas::paint`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Ink {
+pub(super) enum Ink {
     /// The hero (the ox, the ship, the stack): the activity's own colour.
     Hero,
     /// Ground, dust, far stars.
@@ -255,22 +256,24 @@ enum Ink {
     Good,
     /// Lives, failure.
     Bad,
+    /// The current tool's icon (the `I` ink of a data scene): the tool colour.
+    Icon,
 }
 
-struct Canvas {
+pub(super) struct Canvas {
     cells: [(char, Ink); MAX_CELLS],
     len: usize,
 }
 
 impl Canvas {
-    fn new(len: usize) -> Canvas {
+    pub(super) fn new(len: usize) -> Canvas {
         Canvas {
             cells: [(' ', Ink::Dim); MAX_CELLS],
             len: len.min(MAX_CELLS),
         }
     }
 
-    fn put(&mut self, x: usize, ch: char, ink: Ink) {
+    pub(super) fn put(&mut self, x: usize, ch: char, ink: Ink) {
         if x < self.len {
             self.cells[x] = (ch, ink);
         }
@@ -283,7 +286,7 @@ impl Canvas {
     }
 
     /// The row as styled text: runs of one colour share one escape pair; blanks carry none.
-    fn paint(&self, hero: &str, hot: bool, theme: &Theme) -> String {
+    pub(super) fn paint(&self, hero: &str, hot: bool, theme: &Theme) -> String {
         let mut out = String::with_capacity(self.len * 4 + 48);
         let mut i = 0;
         while i < self.len {
@@ -308,6 +311,7 @@ impl Canvas {
                 Ink::Crate => "accent",
                 Ink::Good => "success",
                 Ink::Bad => "error",
+                Ink::Icon => "warning",
             };
             out.push_str(&theme.fg(token, &run));
             i = j;
@@ -709,6 +713,28 @@ pub fn oxa_arcade_line(
         ));
     }
     let lead = arcade_scene(scene, st, run, cells, theme, skin);
+    activity_line_lead(st, keymap, lead, width, theme, skin)
+}
+
+/// The activity line whose scene is the director's frame (`stage`, design 3.2): the same line as
+/// [`oxa_arcade_line`] while a run is active, with the scene the director picked for the
+/// activity. The caller has already told the director the activity (`Director::update`) at
+/// `now_ms`. Waiting for the user and idle show the static badge, as before.
+pub fn oxa_stage_line(
+    stage: &Director,
+    st: &StatusModel,
+    keymap: &Keymap,
+    now_ms: u64,
+    width: u16,
+    theme: &Theme,
+    skin: Skin,
+) -> Option<String> {
+    let lead = match activity_style(&st.activity) {
+        Some((_, token)) if !matches!(st.activity, Activity::Blocked) => {
+            stage.row(now_ms, token, st.yolo, theme, skin != Skin::Oxa)
+        }
+        _ => None,
+    };
     activity_line_lead(st, keymap, lead, width, theme, skin)
 }
 

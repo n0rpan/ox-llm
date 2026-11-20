@@ -9,6 +9,9 @@ use crate::{
 use anthropic::{MockAnthropic, Reply, CREDENTIAL};
 
 fn gateway(mock: &MockAnthropic) -> (Gateway, skeleton::Fixture) {
+    gateway_with(mock, None)
+}
+fn gateway_with(mock: &MockAnthropic, provider: Option<Value>) -> (Gateway, skeleton::Fixture) {
     let fixture = skeleton::Fixture::new(mock);
     std::fs::write(
         &fixture.key_path,
@@ -24,7 +27,7 @@ fn gateway(mock: &MockAnthropic) -> (Gateway, skeleton::Fixture) {
         16,
     )
     .unwrap();
-    let runtime = Runtime::new(
+    let mut runtime = Runtime::new(
         [(
             model,
             Price::from_model(&fixture.config["cloud"]["models"][skeleton::MODEL]).map(Billing::Metered),
@@ -39,6 +42,9 @@ fn gateway(mock: &MockAnthropic) -> (Gateway, skeleton::Fixture) {
         },
     )
     .unwrap();
+    if let Some(provider) = provider {
+        runtime = runtime.with_openrouter_provider(&provider).unwrap();
+    }
     (Gateway::new(runtime).unwrap(), fixture)
 }
 #[test]
@@ -171,6 +177,7 @@ async fn openrouter_privacy_redaction_and_settlement_before_done() {
                 &Cancellation::default(),
                 &mut |event| {
                     match event {
+                        Event::Warning(text) => panic!("unexpected OpenRouter warning: {text}"),
                         Event::Chunk(value) => output.push(value),
                         Event::Done => {
                             done += 1;
@@ -199,9 +206,9 @@ async fn openrouter_privacy_redaction_and_settlement_before_done() {
         );
         assert!(request.header("x-api-key").is_none());
         assert_eq!(request.body["model"], "synthetic-router");
-        assert_eq!(
-            request.body["provider"],
-            json!({"zdr":true,"data_collection":"deny"})
+        assert!(
+            request.body.get("provider").is_none(),
+            "default adds no provider routing; the caller's own value is never forwarded"
         );
         assert_eq!(request.body["reasoning"], json!({"enabled":false}));
         assert!(request.body.get("reasoning_effort").is_none());
@@ -290,6 +297,7 @@ async fn openrouter_cancel_on_final_chunk_preserves_private_usage() {
             Context::default(),
             &Cancellation::default(),
             &mut |event| match event {
+                Event::Warning(text) => panic!("unexpected OpenRouter warning: {text}"),
                 Event::Done => panic!("cancelled delivery cannot signal done"),
                 Event::Chunk(chunk) if !chunk["choices"][0]["finish_reason"].is_null() => Control::Stop,
                 _ => Control::Continue,
@@ -350,6 +358,7 @@ async fn openrouter_decoded_tool_arguments_refuse_held_key_and_preserve_clean_by
                 &Cancellation::default(),
                 &mut |event| {
                     match event {
+                        Event::Warning(text) => panic!("unexpected OpenRouter warning: {text}"),
                         Event::Chunk(chunk) => output.push(chunk),
                         Event::Done => done = true,
                     }
@@ -493,6 +502,7 @@ async fn openrouter_reported_cost_reaches_ledger_and_budget_with_or_without_publ
                     &Cancellation::default(),
                     &mut |event| {
                         match event {
+                            Event::Warning(text) => panic!("unexpected OpenRouter warning: {text}"),
                             Event::Chunk(value) => {
                                 if value.get("usage").is_some() {
                                     public_usage = Some(value["usage"].clone());
@@ -634,6 +644,7 @@ async fn openrouter_length_discards_tools_and_preserves_terminal_metering() {
                     &Cancellation::default(),
                     &mut |event| {
                         match event {
+                            Event::Warning(text) => panic!("unexpected OpenRouter warning: {text}"),
                             Event::Chunk(value) => output.push(value),
                             Event::Done => {
                                 done += 1;
@@ -739,6 +750,7 @@ async fn normalized_tool_reply(calls: Value) -> (Completed, Vec<Value>, Vec<Valu
             &Cancellation::default(),
             &mut |event| {
                 match event {
+                    Event::Warning(text) => panic!("unexpected OpenRouter warning: {text}"),
                     Event::Chunk(value) => output.push(value),
                     Event::Done => assert_eq!(rows(&fixture)[0]["cost_usd"], 0.25),
                 }
@@ -842,6 +854,7 @@ async fn openrouter_identity_support_keeps_required_typed_and_held_key_guards() 
                 &Cancellation::default(),
                 &mut |event| {
                     match event {
+                        Event::Warning(text) => panic!("unexpected OpenRouter warning: {text}"),
                         Event::Chunk(value) => {
                             assert!(value.pointer("/choices/0/delta/tool_calls").is_none())
                         }
@@ -986,6 +999,7 @@ async fn openrouter_normalized_tool_objects_still_refuse_held_key_atomically() {
                 &Cancellation::default(),
                 &mut |event| {
                     match event {
+                        Event::Warning(text) => panic!("unexpected OpenRouter warning: {text}"),
                         Event::Chunk(value) => output.push(value),
                         Event::Done => panic!("unsafe normalized tools cannot complete"),
                     }
@@ -1003,4 +1017,54 @@ async fn openrouter_normalized_tool_objects_still_refuse_held_key_atomically() {
         assert_eq!(rows(&fixture)[0]["settled"], "reserved");
         mock.finish();
     }
+}
+
+#[tokio::test]
+async fn openrouter_provider_preferences_follow_the_owner_setting() {
+    for (setting, expected) in [
+        (None, None),
+        (Some(json!({})), None),
+        (Some(json!({"zdr":true})), Some(json!({"zdr":true}))),
+        (Some(json!({"zdr":false})), Some(json!({"zdr":false}))),
+        (
+            Some(json!({"zdr":true,"data_collection":"deny"})),
+            Some(json!({"zdr":true,"data_collection":"deny"})),
+        ),
+    ] {
+        let mock = MockAnthropic::start(vec![wire(chunks(), true)]);
+        let (gateway, _fixture) = gateway_with(&mock, setting.clone());
+        gateway
+            .chat_payload(
+                &payload(true),
+                Context::default(),
+                &Cancellation::default(),
+                &mut |_| Control::Continue,
+            )
+            .await
+            .unwrap();
+        let request = mock.requests().pop().unwrap();
+        assert_eq!(request.body.get("provider").cloned(), expected, "{setting:?}");
+        mock.finish();
+    }
+}
+#[test]
+fn invalid_openrouter_provider_preferences_are_refused() {
+    let mock = MockAnthropic::start(vec![]);
+    for bad in [
+        json!(true),
+        json!({"zdr":"yes"}),
+        json!({"data_collection":"maybe"}),
+        json!({"sort":"price"}),
+    ] {
+        let fixture = skeleton::Fixture::new(&mock);
+        let runtime = Runtime::new(
+            Vec::<(Model, Option<Billing>)>::new(),
+            fixture.key_path.clone(),
+            fixture.ledger_dir.clone(),
+            Options::default(),
+        )
+        .unwrap();
+        assert!(runtime.with_openrouter_provider(&bad).is_err(), "{bad}");
+    }
+    mock.finish();
 }

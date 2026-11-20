@@ -4,7 +4,7 @@ Thanks for looking. This is a lab: we try ideas, measure them honestly and keep 
 
 ## Two repositories
 
-- **oxc/** (this one): controller, OpenAI-compatible API, harness integrations, benchmark and qualification tools, results and docs. Python.
+- **oxc/** (this one): benchmark and qualification results, receipt tools and docs. The Python controller was removed (#951).
 - **engine/**: the Rust engines (`oxe` MoE, Flash SSD streaming, `oxi` images) and their vendored kernels.
 
 Open issues where the code lives; if unsure, open it here.
@@ -27,7 +27,6 @@ Share only what you meant to make public. Use `python3 -I tools/export_receipt.p
 
 ## Code
 
-- Lab: `./tools/run_lab_tests.sh` must pass. It gives the suite a temporary HOME and XDG directories; do not point tests at an installed runtime or its inference lease. To select tests, pass unittest arguments, for example `./tools/run_lab_tests.sh discover -s tests -p test_000_isolation.py`.
 - Engine: `cargo test --release` for the crates you touch; Flash changes also `flash-m3 selftest`. Build failures must fail the script (`set -o pipefail`).
 - Keep changes small and behind a flag when they change numerics or scheduling; default off until measured.
 - Tests and helpers get a timeout. Anything that may use more than ~1 GiB runs under a memory limit.

@@ -13,12 +13,15 @@ pub use crate::history::HistorySeal;
 use auth::Credential;
 pub use auth::{OpenAiAuthHandle, Subscription};
 use serde_json::{json, Value};
-#[cfg(feature = "share")]
-use std::collections::BTreeSet;
+
+/// Window and output assumed for a discovered model no catalog gives limits for: small enough to
+/// be safe on any current model, so an unknown model works without a promise it cannot keep.
+const UNKNOWN_CONTEXT: u32 = 128_000;
+const UNKNOWN_OUTPUT: u32 = 8_192;
 #[cfg(feature = "upstream-openai")]
 use std::path::Path;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::{Arc, OnceLock},
 };
@@ -45,6 +48,8 @@ pub struct Runtime {
     diagnostics: Option<crate::diagnostics::Diagnostics>,
     catalog: Catalog,
     billings: BTreeMap<String, Billing>,
+    configured_models: BTreeSet<String>,
+    recommended: BTreeSet<String>,
     unpriced_discovered: BTreeMap<String, crate::pricing::Price>,
     #[cfg(feature = "share")]
     guest_models: BTreeSet<String>,
@@ -56,6 +61,8 @@ pub struct Runtime {
     ledger_dir: PathBuf,
     ledger: OnceLock<Result<Ledger, Refusal>>,
     cap: Value,
+    /// Owner-chosen OpenRouter `provider` routing preferences. `None` sends nothing.
+    openrouter_provider: Option<Value>,
     ledger_enabled: bool,
     subscription_limits: Option<crate::billing::SubscriptionLimits>,
     #[cfg(feature = "upstream-openai")]
@@ -171,6 +178,7 @@ impl Runtime {
         }
         let mut billings = BTreeMap::new();
         let mut routes = Vec::new();
+        let mut configured_models = BTreeSet::new();
         for (model, billing) in models {
             if matches!(model.info().provider, Provider::ChatGpt | Provider::OpenCode)
                 != matches!(billing, Some(Billing::Subscription))
@@ -180,6 +188,7 @@ impl Runtime {
             if let Some(billing) = billing {
                 billings.insert(model.info().id.to_owned(), billing);
             }
+            configured_models.insert(model.info().id.to_owned());
             routes.push(model);
         }
         let catalog = Catalog::new(options.access, routes).map_err(catalog_error)?;
@@ -192,6 +201,8 @@ impl Runtime {
             diagnostics: None,
             catalog,
             billings,
+            configured_models,
+            recommended: BTreeSet::new(),
             unpriced_discovered: BTreeMap::new(),
             #[cfg(feature = "share")]
             guest_models: BTreeSet::new(),
@@ -201,6 +212,7 @@ impl Runtime {
             ledger_dir,
             ledger: OnceLock::new(),
             cap: json!(options.daily_budget_usd),
+            openrouter_provider: None,
             ledger_enabled: options.ledger_enabled,
             subscription_limits: options.subscription_limits,
             #[cfg(feature = "upstream-openai")]
@@ -211,7 +223,13 @@ impl Runtime {
     }
 
     pub fn discovery(&self) -> impl Iterator<Item = ModelInfo<'_>> {
-        self.catalog.models().filter(|model| supported(model.provider))
+        let models = || self.catalog.models().filter(|model| supported(model.provider));
+        models()
+            .filter(move |model| !self.recommended.contains(model.id))
+            .chain(models().filter(move |model| self.recommended.contains(model.id)))
+    }
+    pub(crate) fn recommended_models(&self) -> &BTreeSet<String> {
+        &self.recommended
     }
     /// Trusted user settings, keyed by the exact discovered public alias.
     pub fn with_unpriced_discovered_pricing(mut self, raw: &Value) -> Result<Self, Refusal> {
@@ -221,6 +239,27 @@ impl Runtime {
             self.unpriced_discovered.insert(alias.clone(), price);
         }
         Ok(self)
+    }
+    /// Trusted user settings: OpenRouter provider routing preferences, sent
+    /// exactly as configured. Only `zdr` (bool) and `data_collection`
+    /// (`allow` or `deny`) are accepted; anything else is refused. Never forced.
+    pub fn with_openrouter_provider(mut self, raw: &Value) -> Result<Self, Refusal> {
+        let bad = || invalid("openrouter_provider");
+        let map = raw.as_object().ok_or_else(bad)?;
+        let mut out = serde_json::Map::new();
+        for (key, value) in map {
+            match (key.as_str(), value) {
+                ("zdr", Value::Bool(_)) => {}
+                ("data_collection", Value::String(s)) if matches!(s.as_str(), "allow" | "deny") => {}
+                _ => return Err(bad()),
+            }
+            out.insert(key.clone(), value.clone());
+        }
+        self.openrouter_provider = (!out.is_empty()).then_some(Value::Object(out));
+        Ok(self)
+    }
+    pub(crate) fn openrouter_provider(&self) -> Option<&Value> {
+        self.openrouter_provider.as_ref()
     }
     /// Enable catalog writes only for the owner-selected discovery setting.
     pub fn with_catalog_cache(mut self) -> Self {
@@ -293,11 +332,83 @@ impl Runtime {
         {
             return Err(catalog_error(error));
         }
+        #[cfg(feature = "upstream-openai")]
+        if provider == Provider::ChatGpt {
+            // The plan has no API key: a usable sign-in and refresh settings are the credential.
+            return Ok(self.subscription.as_ref().and_then(|_| {
+                crate::openai::chatgpt_tokens::read(&self.token_path)
+                    .ok()
+                    .map(|record| Key::for_account(record.account_id()))
+            }));
+        }
         Ok(self
             .key_file
             .as_ref()
             .ok()
             .and_then(|file| file.read(provider.as_str()).ok()))
+    }
+
+    /// The token file and refresh settings a ChatGPT-plan model list needs.
+    #[cfg(feature = "upstream-openai")]
+    pub(crate) fn plan(&self) -> Option<crate::catalog_discovery::Plan<'_>> {
+        let subscription = self.subscription.as_ref()?;
+        Some(crate::catalog_discovery::Plan {
+            token_path: &self.token_path,
+            refresh_endpoint: &subscription.refresh_endpoint,
+            client_id: &subscription.client_id,
+            timeout: subscription.timeout,
+        })
+    }
+
+    pub(crate) fn add_recommended_models(
+        &mut self,
+        models: impl IntoIterator<Item = (Model, crate::pricing::Price)>,
+    ) -> Result<(), Refusal> {
+        let candidates: Vec<_> = models
+            .into_iter()
+            .filter(|(model, _)| {
+                let info = model.info();
+                model.configured_route().is_none()
+                    && matches!(
+                        info.provider,
+                        Provider::Anthropic | Provider::OpenRouter | Provider::OpenAi
+                    )
+                    && supported(info.provider)
+                    && self.catalog.configured(info.id).is_none()
+            })
+            .collect();
+        let mut available = Vec::new();
+        for provider in [Provider::Anthropic, Provider::OpenRouter, Provider::OpenAi] {
+            if candidates
+                .iter()
+                .any(|(model, _)| model.info().provider == provider)
+                && self.catalog_key(provider)?.is_some()
+            {
+                available.push(provider);
+            }
+        }
+        let (models, billings): (Vec<_>, Vec<_>) = candidates
+            .into_iter()
+            .filter(|(model, _)| available.contains(&model.info().provider))
+            .map(|(model, price)| {
+                let billing = (model.info().id.to_owned(), Billing::Metered(price));
+                (model, billing)
+            })
+            .unzip();
+        if !models.is_empty() {
+            self.catalog = Catalog::new(
+                Access::Enabled,
+                self.catalog
+                    .models()
+                    .filter_map(|info| self.catalog.configured(info.id).cloned())
+                    .chain(models),
+            )
+            .map_err(catalog_error)?;
+            self.recommended
+                .extend(billings.iter().map(|(alias, _)| alias.clone()));
+            self.billings.extend(billings);
+        }
+        Ok(())
     }
 
     pub(crate) fn apply_provider_catalog(
@@ -345,9 +456,32 @@ impl Runtime {
                 // Discovery may raise the owner's configured reservation bounds.
                 let context = offer.context.max(fallback_info.map(|info| info.context_window));
                 let max_output = offer.max_output.max(fallback_info.map(|info| info.max_output));
-                let limits = context
-                    .zip(max_output)
-                    .filter(|(context, output)| output <= context);
+                // What nobody can tell is not refused: a conservative generic window and, for a price
+                // nobody lists, an unpriced route whose usage is recorded with unknown cost.
+                let limits = match (context, max_output) {
+                    (Some(context), Some(output)) if output <= context => Some((context, output)),
+                    (Some(context), None) => Some((context, UNKNOWN_OUTPUT.min(context))),
+                    (None, Some(output)) => Some((UNKNOWN_CONTEXT.max(output), output)),
+                    _ => None,
+                };
+                if source.provider() == Provider::ChatGpt {
+                    // A plan model is an unpriced subscription route with advisory limits.
+                    missing_limits += usize::from(limits.is_none());
+                    let (context, output) = limits.unwrap_or((UNKNOWN_CONTEXT, UNKNOWN_OUTPUT));
+                    let Ok(model) = Model::new(
+                        alias,
+                        source.provider(),
+                        &offer.id,
+                        source.base(),
+                        context,
+                        output,
+                    ) else {
+                        continue;
+                    };
+                    billings.insert(alias.into(), Billing::Subscription);
+                    routes.push(model);
+                    continue;
+                }
                 let price = match (self.billings.get(alias), offer.price.as_ref()) {
                     (Some(Billing::Metered(configured)), live) if configured.is_estimated() => live.cloned(),
                     (Some(Billing::Metered(configured)), Some(live)) => {
@@ -357,23 +491,20 @@ impl Runtime {
                     (_, live) => live.cloned(),
                 }
                 .or_else(|| self.unpriced_discovered.get(alias).cloned());
+                let (context, output) = limits.unwrap_or((UNKNOWN_CONTEXT, UNKNOWN_OUTPUT));
                 let price = price.filter(|price| {
-                    limits.is_none_or(|(context, output)| {
-                        price
-                            .reservation(
-                                source.provider().as_str(),
-                                &offer.id,
-                                u64::from(context),
-                                u64::from(output),
-                            )
-                            .is_some_and(f64::is_finite)
-                    })
+                    price
+                        .reservation(
+                            source.provider().as_str(),
+                            &offer.id,
+                            u64::from(context),
+                            u64::from(output),
+                        )
+                        .is_some_and(f64::is_finite)
                 });
                 missing_price += usize::from(price.is_none());
                 missing_limits += usize::from(limits.is_none());
-                let (Some(price), Some((context, output))) = (price, limits) else {
-                    continue;
-                };
+                let price = price.unwrap_or_else(crate::pricing::Price::unpriced);
                 let Ok(model) = Model::new(
                     alias,
                     source.provider(),
@@ -387,6 +518,19 @@ impl Runtime {
                 estimated_price += usize::from(price.is_estimated());
                 billings.insert(alias.into(), Billing::Metered(price));
                 routes.push(model);
+            }
+        }
+        if source.provider() == Provider::ChatGpt {
+            // The picker list is not authority to delete an owner's route: owner entries win.
+            for model in configured {
+                if self.configured_models.contains(model.info().id)
+                    && routes.iter().all(|route| route.info().id != model.info().id)
+                {
+                    if let Some(billing) = self.billings.get(model.info().id) {
+                        billings.insert(model.info().id.into(), billing.clone());
+                    }
+                    routes.push(model);
+                }
             }
         }
         let catalog = Catalog::new(Access::Enabled, routes).map_err(catalog_error)?;
@@ -409,9 +553,6 @@ impl Runtime {
             diagnostics.clear();
         }
         if let Err(catalog::Error::Disabled | catalog::Error::Offline) = self.catalog.resolve(None) {
-            return Err(Error::Request);
-        }
-        if self.subscription_limits.is_none() {
             return Err(Error::Request);
         }
         // The credential store is still read before the cache, so a missing or
@@ -454,9 +595,6 @@ impl Runtime {
         use crate::opencode::client::Error;
         let cache = self.go_cache.as_ref().ok_or(Error::Request)?;
         if let Err(catalog::Error::Disabled | catalog::Error::Offline) = self.catalog.resolve(None) {
-            return Err(Error::Request);
-        }
-        if self.subscription_limits.is_none() {
             return Err(Error::Request);
         }
         let key = self.go_key()?;
@@ -565,7 +703,13 @@ impl Runtime {
             }
             let billing = self.billings.get(alias);
             let guest_allowed = allow_guest && matches!(billing, Some(Billing::Metered(_)));
-            policy::before_credentials(payload, shared && !guest_allowed, false, billing.is_some())?;
+            policy::before_credentials(
+                payload,
+                shared && !guest_allowed,
+                false,
+                billing.is_some(),
+                !self.cap.is_null(),
+            )?;
             if model.info().provider == Provider::OpenCode && !owner_origin {
                 return Err(Refusal {
                     status: 403,
@@ -574,7 +718,10 @@ impl Runtime {
                     message: "This subscription provider is available only to the owner agent.",
                 });
             }
-            let billing = billing.expect("policy validated billing");
+            // An unpriced model reaches here only with no cap (policy above). It is metered with
+            // no rates, so admission records its usage as unknown cost.
+            let unpriced = Billing::Metered(crate::pricing::Price::unpriced());
+            let billing = billing.unwrap_or(&unpriced);
             let mut output = u64::from(model.info().max_output);
             for field in ["max_tokens", "max_completion_tokens", "n_predict"] {
                 if let Some(value) = payload.get(field) {
@@ -588,8 +735,6 @@ impl Runtime {
             }
             if matches!(billing, Billing::Metered(_)) {
                 policy::daily_budget(&self.cap, self.ledger_enabled, Some(0.0), 0.0, 0.0)?;
-            } else if self.subscription_limits.is_none() {
-                return Err(crate::billing::SubscriptionLimits::missing());
             } else if !self.ledger_enabled {
                 return Err(Refusal::ledger());
             }
@@ -689,6 +834,10 @@ impl Runtime {
     }
 }
 impl<'a> Call<'a> {
+    pub(crate) fn budget_warning(&self) -> Option<&'static str> {
+        self.hold.as_ref().and_then(Hold::budget_warning)
+    }
+
     pub fn model(&self) -> &'a Model {
         self.model
     }
@@ -894,6 +1043,49 @@ mod discovery_budget_tests {
         assert_discovered_price_floor(1, 1, 1);
     }
 
+    #[cfg(feature = "upstream-openai")]
+    #[test]
+    fn a_configured_plan_route_survives_refresh_when_a_discovered_route_does_not() {
+        let base = "https://example.invalid/chatgpt";
+        let owner = Model::new(
+            "chatgpt/owner-pick",
+            Provider::ChatGpt,
+            "owner-pick",
+            base,
+            4096,
+            64,
+        )
+        .unwrap();
+        let mut runtime = Runtime::new(
+            [(owner, Some(Billing::Subscription))],
+            PathBuf::from("/synthetic/credentials.json"),
+            PathBuf::from("/synthetic/ledger"),
+            Options {
+                access: Access::Enabled,
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        let source = Source::new(Provider::ChatGpt, base).unwrap();
+        let offer = Offer {
+            public: false,
+            id: "listed".into(),
+            context: Some(1000),
+            max_output: Some(10),
+            price: None,
+        };
+        runtime.apply_provider_catalog(&source, vec![offer]).unwrap();
+        assert!(runtime.catalog.resolve(Some("chatgpt/owner-pick")).is_ok());
+        assert!(runtime.catalog.resolve(Some("chatgpt/listed")).is_ok());
+        runtime.apply_provider_catalog(&source, Vec::new()).unwrap();
+        assert!(runtime.catalog.resolve(Some("chatgpt/owner-pick")).is_ok());
+        assert!(runtime.catalog.resolve(Some("chatgpt/listed")).is_err());
+        assert!(matches!(
+            runtime.billings.get("chatgpt/owner-pick"),
+            Some(Billing::Subscription)
+        ));
+    }
+
     fn assert_discovered_price_floor(live_input: u32, context: u32, output: u32) {
         let base = "https://example.invalid/api/v1";
         let provider = Provider::OpenRouter;
@@ -926,6 +1118,7 @@ mod discovery_budget_tests {
         .unwrap();
         let source = Source::new(provider, base).unwrap();
         let offer = Offer {
+            public: false,
             id: upstream.into(),
             context: Some(context),
             max_output: Some(output),

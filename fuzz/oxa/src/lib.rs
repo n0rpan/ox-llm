@@ -53,6 +53,7 @@ pub fn repair(data: &[u8]) {
     }
     let turn = AssistantTurn {
         msg: WireMsg {
+            images: Vec::new(),
             provider_history: None,
             role: oxa_proto::Role::Assistant,
             content: Some(text.to_string()),
@@ -61,12 +62,7 @@ pub fn repair(data: &[u8]) {
             tool_call_id: None,
         },
         finish: Finish::Stop,
-        usage: Usage {
-            prompt: 0,
-            completion: 0,
-            cached: 0,
-            cached_missing: true,
-        },
+        usage: Usage::unreported(),
         timings: None,
         model: String::new(),
         level: ThinkingLevel::Off,

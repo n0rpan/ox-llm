@@ -149,7 +149,8 @@ fn resize_rerenders() {
                 let rows = s.rows();
                 rows.iter().any(|r| *r == "─".repeat(60))
                     && rows.iter().all(|r| r.chars().count() <= 60)
-                    && rows[29].contains("fake-model")
+                    // #1512 S3: the model row is the last one or above the status row.
+                    && rows[28..].iter().any(|r| r.contains("fake-model"))
             },
             EXIT,
         )

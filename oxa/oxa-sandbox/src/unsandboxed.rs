@@ -5,7 +5,7 @@
 //! masking, the network setting in [`crate::NetSandbox`]) are unaffected.
 use crate::bwrap::base_env;
 use crate::layout::Layout;
-use crate::run::{run_unsandboxed_env, run_unsandboxed_stdin};
+use crate::run::{run_unsandboxed_env, run_unsandboxed_stdin_env};
 use crate::NO_OS_SANDBOX_NOTICE;
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox};
 use std::path::PathBuf;
@@ -23,7 +23,9 @@ pub struct Unsandboxed {
 
 impl Unsandboxed {
     fn env(&self, s: &ExecSpec) -> Vec<(String, String)> {
-        base_env(s, &self.home.to_string_lossy(), &self.layout)
+        let mut e = base_env(&self.home.to_string_lossy(), &self.layout);
+        e.extend(s.env.iter().cloned());
+        e
     }
 }
 
@@ -61,6 +63,6 @@ impl Sandbox for Unsandboxed {
         c: &CancelToken,
         live: &mut dyn FnMut(&[u8]),
     ) -> ExecResult {
-        run_unsandboxed_stdin(s, stdin, c, live, &self.env(s))
+        run_unsandboxed_stdin_env(s, stdin, c, live, &self.env(s))
     }
 }

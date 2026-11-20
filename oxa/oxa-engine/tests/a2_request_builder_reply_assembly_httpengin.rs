@@ -1,6 +1,4 @@
 //! A2 acceptance tests: Request builder, reply assembly, HttpEngine.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 //!
 //! The network tests talk to `oxa_fake::FakeServer` on 127.0.0.1 (an ephemeral port) or to a
@@ -597,6 +595,7 @@ fn events_in_order_and_request_headers() {
             StreamEvent::ToolArgs { .. } => "tool",
             StreamEvent::Prefill { .. } => "prefill",
             StreamEvent::Queued { .. } => "queued",
+            StreamEvent::Warning(_) => "warning",
         })
         .collect();
     assert_eq!(kinds, vec!["reasoning", "text", "tool"]);

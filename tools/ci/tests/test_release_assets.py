@@ -1,5 +1,6 @@
-import re
+import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -52,6 +53,13 @@ class ReleaseAssets(unittest.TestCase):
         self.assertEqual(dev.count('--prerelease --latest=false'), 2)
         self.assertIn('actions/attest-build-provenance@', dev)
 
+    def test_dev_version_comes_from_the_single_bump_helper(self):
+        dev = (W / 'dev-build.yml').read_text()
+        self.assertIn('tools/ci/dev_version.py', dev)
+        result = subprocess.run(['python3', '-I', 'tools/ci/dev_version.py', 'abc1234'], cwd=W.parents[1],
+                                text=True, capture_output=True, check=True)
+        self.assertRegex(result.stdout.strip(), r'^v\d+\.\d+\.\d+-dev\.abc1234$')
+
     def test_release_environment_resolves_itself_when_sourced_by_a_workflow(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / 'source'
@@ -72,9 +80,170 @@ class ReleaseAssets(unittest.TestCase):
     def test_arch_consumers_accept_the_versioned_archive(self):
         # release-build names the archive ox-llm-v<version>-linux-<arch>; the PKGBUILD wants the
         # unprefixed pkgver name, so arch-test.sh must map one to the other.
-        t = (W.parents[1] / 'packaging/release/arch-test.sh').read_text()
+        root = W.parents[1]
+        t = (root / 'packaging/release/arch-test.sh').read_text()
         self.assertIn('ox-llm-v*-linux-$(uname -m).tar.gz', t)
-        self.assertIn('ox-llm-0.2.0-linux-$(uname -m).tar.gz', t)
+        # The unprefixed copy must carry the version being released: read it from the workspace
+        # manifest, so a bump that forgets this script fails here instead of hardcoding a second
+        # copy of the number to update on every release.
+        version = re.search(r'(?m)^version = "([0-9]+\.[0-9]+\.[0-9]+)"',
+                            (root / 'oxa/Cargo.toml').read_text()).group(1)
+        self.assertIn(f'ox-llm-{version}-linux-$(uname -m).tar.gz', t)
+
+    def test_release_build_needs_no_python(self):
+        root = W.parents[1]
+        rb = (W / 'release-build.yml').read_text()
+        for gone in ('sbom.py', 'smoke.py', 'python3 -B', 'python3 -I -'):
+            self.assertNotIn(gone, rb)
+        self.assertIn('packaging/release/sbom.sh /build/payload', rb)
+        self.assertIn('packaging/release/smoke.sh:/smoke.sh:ro', rb)
+        self.assertIn('bash packaging/release/no-python-installers.sh', rb)
+        self.assertFalse((root / 'packaging/release/sbom.py').exists())
+        self.assertFalse((root / 'packaging/release/smoke.py').exists())
+        self.assertNotRegex((root / 'packaging/release/setup.sh').read_text(), r'\bpython')
+        arch = (root / 'packaging/release/arch-test.sh').read_text()
+        self.assertNotIn('python -B', arch)
+        self.assertIn('bash /smoke.sh', arch)
+        self.assertNotRegex(arch.split('pacman -Syu', 1)[1].splitlines()[0], r'\bpython\b')
+        self.assertIn('(depend|makedepend|checkdepend) = python', arch)
+
+    def test_sbom_preserves_sources_and_json_encodes_payload_names(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'source'
+            scripts = root / 'packaging/release'
+            scripts.mkdir(parents=True)
+            shutil.copyfile(W.parents[1] / 'packaging/release/sbom.sh', scripts / 'sbom.sh')
+            (scripts / 'sbom.sh').chmod(0o755)
+            (root / 'engine').mkdir()
+            (root / 'engine/Cargo.toml').write_text('[workspace]\n')
+            (root / 'engine/Cargo.lock').write_text('''
+[[package]]
+name = "same"
+version = "1.0.0"
+source = "registry+https://example.invalid/index"
+checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[[package]]
+name = "same"
+version = "1.0.0"
+source = "git+https://example.invalid/repo#0123456789abcdef"
+''')
+            fakebin = root / 'fakebin'
+            fakebin.mkdir()
+            cargo = fakebin / 'cargo'
+            cargo.write_text('''#!/bin/sh
+cat <<EOF
+{"packages":[
+ {"name":"same","version":"1.0.0","source":"registry+https://example.invalid/index","manifest_path":"/cargo/one/Cargo.toml","license":"MIT"},
+ {"name":"same","version":"1.0.0","source":"git+https://example.invalid/repo#0123456789abcdef","manifest_path":"/cargo/two/Cargo.toml","license":null},
+ {"name":"not-a-feature","version":"2.0.0","source":null,"manifest_path":"$PWD/member/Cargo.toml","license":null}
+]}
+EOF
+''')
+            cargo.chmod(0o755)
+            payload = root / 'payload'
+            payload.mkdir()
+            unusual = 'back\\slash "quote"'
+            (payload / unusual).write_bytes(b'payload')
+            output = root / 'sbom.json'
+            env = os.environ.copy()
+            env['VERSION'] = 'v9.8.7'
+            env['PATH'] = f'{fakebin}:{env["PATH"]}'
+            subprocess.run([scripts / 'sbom.sh', payload, output],
+                           cwd=root, env=env, check=True)
+            document = json.loads(output.read_text())
+
+            self.assertEqual(document['metadata']['component']['version'], '9.8.7')
+            files = [item for item in document['components'] if item['type'] == 'file']
+            self.assertEqual([item['name'] for item in files], [unusual])
+            self.assertRegex(files[0]['hashes'][0]['content'], r'^[0-9a-f]{64}$')
+            libraries = [item for item in document['components'] if item['type'] == 'library']
+            self.assertFalse(any(item['version'] == 'eature' for item in libraries))
+            same = [item for item in libraries if item['name'] == 'same']
+            self.assertEqual(len(same), 2)
+            self.assertEqual(len({item['purl'] for item in same}), 2)
+            registry = next(item for item in same if 'registry%2B' in item['purl'])
+            self.assertEqual(registry['hashes'][0]['content'], 'a' * 64)
+            self.assertEqual(len({item['bom-ref'] for item in document['components']}),
+                             len(document['components']))
+
+    def test_smoke_tracks_the_execed_server_process(self):
+        smoke = (W.parents[1] / 'packaging/release/smoke.sh').read_text()
+        self.assertRegex(smoke, r'run_server\(\) \{ exec env -i ')
+        self.assertIn('run_server oxe-server --engine stub', smoke)
+
+    def test_installer_check_flags_python_recipes_and_scripts(self):
+        script = W.parents[1] / 'packaging/release/no-python-installers.sh'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'packaging/release').mkdir(parents=True)
+            (root / 'packaging/arch/x').mkdir(parents=True)
+            copied = root / 'packaging/release/no-python-installers.sh'
+            shutil.copyfile(script, copied)
+            recipe = root / 'packaging/arch/x/PKGBUILD'
+            helper = root / 'packaging/release/helper.sh'
+            run = lambda: subprocess.run(['/bin/bash', str(copied)], text=True, capture_output=True)
+            recipe.write_text("depends=('glibc')\nmakedepends=('cargo' 'cmake')\n")
+            helper.write_text('# python3 only in a comment\nbash stage.sh\n')
+            self.assertEqual(run().returncode, 0, run().stderr)
+            recipe.write_text("depends=('glibc')\nmakedepends=('cargo'\n 'python')\n")
+            self.assertEqual(run().returncode, 1)
+            recipe.write_text("depends=('glibc')\n")
+            helper.write_text('python3 -B tool.py\n')
+            self.assertEqual(run().returncode, 1)
+
+    def test_no_python_check_is_wired_into_every_release_path(self):
+        script = (W.parents[1] / 'packaging/release/no-python.sh').read_text()
+        self.assertTrue(script.startswith('#!/bin/sh\n'))
+        for rule in ('python shebang', 'non-native executable', 'controller payload', 'python invocation'):
+            self.assertIn(rule, script)
+        self.assertIn('packaging/release/no-python.sh "$artifact"',
+                      (W / 'release-build.yml').read_text())
+        self.assertIn('packaging/release/no-python.sh:/no-python.sh:ro',
+                      (W / 'release-build.yml').read_text())
+        self.assertIn('packaging/release/no-python.sh dist/*.tar.gz', (W / 'release.yml').read_text())
+        dev = (W / 'dev-build.yml').read_text()
+        publish = dev.split('  publish:', 1)[1]
+        self.assertLess(publish.index('packaging/release/no-python.sh dist/*.tar.gz'),
+                        publish.index('gh release upload dev'))
+        arch = (W.parents[1] / 'packaging/release/arch-test.sh').read_text()
+        self.assertIn('sh /no-python.sh --list /tmp/installed-files', arch)
+        for name in ('dev-build.yml', 'release-build.yml'):
+            self.assertNotIn('python3 -I - <<', (W / name).read_text())
+            self.assertNotIn('tomllib', (W / name).read_text())
+
+    def test_no_python_script_flags_python_and_passes_native_trees(self):
+        script = W.parents[1] / 'packaging/release/no-python.sh'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            good = root / 'good/usr/bin'
+            good.mkdir(parents=True)
+            (good / 'oxa').write_bytes(b'\x7fELF\x02\x01')
+            (root / 'good/usr/share/licenses').mkdir(parents=True)
+            (root / 'good/usr/share/licenses/LICENSE').write_text('python3 is mentioned in a licence\n')
+            run = lambda *a: subprocess.run(['/bin/sh', str(script), *a], text=True, capture_output=True)
+            self.assertEqual(run(str(root / 'good')).returncode, 0)
+            cases = {
+                'usr/share/x/tool.py': 'print(1)\n',
+                'usr/bin/script': '#!/usr/bin/env python3\n',
+                'usr/share/ox-llm/memlat/hook.sh': '#!/bin/sh\nexec /usr/bin/python3 x\n',
+                'usr/share/ox-llm/hooks/plain.sh': '#!/bin/sh\nexec python "$@"\n',
+                'usr/share/ox-llm/oxc/a': 'x\n',
+            }
+            for index, (name, text) in enumerate(cases.items()):
+                bad = root / f'bad-{index}'
+                shutil.copytree(root / 'good', bad)
+                (bad / name).parent.mkdir(parents=True, exist_ok=True)
+                (bad / name).write_text(text)
+                self.assertEqual(run(str(bad)).returncode, 1, name)
+
+            linked = root / 'linked'
+            shutil.copytree(root / 'good', linked)
+            (linked / 'usr/bin/oxa').unlink()
+            (linked / 'usr/bin/oxa').symlink_to('/usr/bin/python3')
+            result = run(str(linked))
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('unsupported symlink', result.stderr)
 
 
 if __name__ == '__main__':

@@ -26,6 +26,7 @@ use std::{
 
 pub enum Event {
     Chunk(Value),
+    Warning(&'static str),
     Done,
 }
 
@@ -276,6 +277,7 @@ impl Gateway {
             Some(cached) => cached,
             None => (State::Fresh, self.fetch_catalog(source, &key, timeout)?),
         };
+        let public_metadata = offers.iter().filter(|offer| offer.public).count();
         let (missing_price, missing_limits, estimated_price) = self
             .runtime
             .apply_provider_catalog(source, offers)
@@ -285,6 +287,7 @@ impl Gateway {
             missing_price,
             missing_limits,
             estimated_price,
+            public_metadata,
         }))
     }
     /// Replace only the private cache on a stale refresh.
@@ -297,6 +300,14 @@ impl Gateway {
             self.fetch_catalog(source, &key, timeout)?;
         }
         Ok(())
+    }
+    #[cfg(feature = "upstream-openai")]
+    fn catalog_plan(&self) -> Option<crate::catalog_discovery::Plan<'_>> {
+        self.runtime.plan()
+    }
+    #[cfg(not(feature = "upstream-openai"))]
+    fn catalog_plan(&self) -> Option<crate::catalog_discovery::Plan<'_>> {
+        None
     }
     fn fetch_catalog(
         &self,
@@ -311,11 +322,30 @@ impl Gateway {
             .enable_all()
             .build()
             .map_err(|_| Error::Upstream(anthropic_client::Error::Setup))?;
-        let result =
-            driver.block_on(source.fetch(&self.client, key, timeout, self.runtime.catalog_cache_dir()));
+        let result = driver.block_on(source.fetch(
+            &self.client,
+            key,
+            timeout,
+            self.runtime.catalog_cache_dir(),
+            self.catalog_plan(),
+        ));
         driver.shutdown_timeout(Duration::from_secs(1));
         result.map_err(Error::Upstream)
     }
+    /// Add bundled meter-priced alternatives after configured routes and discovery.
+    pub fn add_recommended_models(
+        &mut self,
+        models: impl IntoIterator<Item = (crate::catalog::Model, crate::pricing::Price)>,
+    ) -> Result<(), Error> {
+        self.runtime
+            .add_recommended_models(models)
+            .map_err(Error::Refused)
+    }
+
+    pub fn recommended_models(&self) -> &std::collections::BTreeSet<String> {
+        self.runtime.recommended_models()
+    }
+
     pub fn discovery(&self) -> impl Iterator<Item = crate::catalog::ModelInfo<'_>> {
         self.runtime.discovery()
     }
@@ -439,6 +469,17 @@ impl Gateway {
                 return Err(Error::Refused(error));
             }
         }
+        if let Some(warning) = call.budget_warning() {
+            if on(Event::Warning(warning)) == Control::Stop {
+                return self.finish(
+                    call,
+                    Err(Error::Upstream(anthropic_client::Error::Cancelled)),
+                    None,
+                    false,
+                    on,
+                );
+            }
+        }
         self.forward(call, payload, history, cancel, on).await
     }
 
@@ -486,6 +527,7 @@ impl Gateway {
             created: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |t| t.as_secs()),
+            provider: self.runtime.openrouter_provider(),
         };
         let mut forwarding_error = None;
         let mut deliver = |event| match event {
@@ -701,8 +743,8 @@ impl Gateway {
         F: FnMut(Event) -> Control + ?Sized,
     {
         use crate::opencode::client::Error as GoError;
-        // Parsed terminal usage survives cancellation before public delivery.
-        // Meter it privately before consuming the hold, just as for Anthropic.
+        // A validated terminal report survives cancellation before public delivery.
+        // Provisional early usage can reach here only after a clean [DONE].
         call.metered_go(usage.as_ref());
         // Go chat completions have no native replay items. The common request
         // path already verifies incoming history before dispatch; the common

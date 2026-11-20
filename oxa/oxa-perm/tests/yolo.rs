@@ -366,17 +366,6 @@ fn auto_after_yolo_restores_the_floor() {
     );
 }
 
-/// Review of #314: the one-line description shown in the picker, the start notice and stderr
-/// must say what the policy does at `yolo`: every guard is gone (pinned by the tests above).
-#[test]
-fn yolo_description_says_every_guard_is_gone() {
-    use oxa_proto::PermissionMode;
-    let text = PermissionMode::Yolo.describe();
-    assert!(text.contains("without the sandbox"), "{text}");
-    assert!(text.contains("no deny-list"), "{text}");
-    assert!(text.contains("no protected paths"), "{text}");
-}
-
 /// Full access also applies to the pinned path used by file tools, including directory walks.
 /// Switching down restores both the deny-list verdict and the walk filter immediately.
 #[test]

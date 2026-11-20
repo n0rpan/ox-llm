@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run as root in a fresh archlinux:latest container, with artifacts mounted at /artifacts.
 set -euo pipefail
-pacman -Syu --noconfirm --needed base-devel namcap python bubblewrap rust cmake ninja git
+pacman -Syu --noconfirm --needed base-devel namcap bubblewrap rust cmake ninja git
 useradd -m builder
 install -d -o builder -g builder /build
 cp /artifacts/* /build/
@@ -12,8 +12,8 @@ export SOURCE_DATE_EPOCH
 export OX_SOURCE_COMMIT
 export OX_SOURCE_SHA256=$(sha256sum "ox-llm-$OX_SOURCE_COMMIT.tar.gz" | cut -d' ' -f1)
 # release-build names the archive with the tag (ox-llm-v0.2.0-...); the PKGBUILD uses pkgver.
-cp ox-llm-v*-linux-$(uname -m).tar.gz "ox-llm-0.2.0-linux-$(uname -m).tar.gz"
-export OX_BINARY_SHA256=$(sha256sum "ox-llm-0.2.0-linux-$(uname -m).tar.gz" | cut -d' ' -f1)
+cp ox-llm-v*-linux-$(uname -m).tar.gz "ox-llm-0.2.1-linux-$(uname -m).tar.gz"
+export OX_BINARY_SHA256=$(sha256sum "ox-llm-0.2.1-linux-$(uname -m).tar.gz" | cut -d' ' -f1)
 # Verify the binary package and then a real source rebuild (including check()).
 for variant in ox-llm-bin ox-llm; do
   install -d -o builder -g builder "/build/$variant"
@@ -24,7 +24,7 @@ for variant in ox-llm-bin ox-llm; do
   runuser -u builder -- makepkg --noconfirm --cleanbuild
   package=$(find . -maxdepth 1 -name '*.pkg.tar.zst' -print)
   bsdtar -xOf "$package" .PKGINFO | awk '
-    /^depend = python($|[-<>=])/ { print "Unexpected runtime dependency: " $0; failed = 1 }
+    /^(depend|makedepend|checkdepend) = python($|[-<>=:])/ { print "Unexpected Python dependency: " $0; failed = 1 }
     END { exit failed }
   '
   namcap PKGBUILD 2>&1 | tee /tmp/namcap.log
@@ -37,11 +37,8 @@ for variant in ox-llm-bin ox-llm; do
   pacman -Ql "$variant" | awk '{print $2}' | while read -r path; do
     if [[ ! -d $path ]]; then echo "$path"; fi
   done > /tmp/installed-files
-  if grep -E '\.(py|pyc|pyo)$' /tmp/installed-files; then
-    echo "Unexpected Python files in $variant" >&2
-    exit 1
-  fi
-  python -B /smoke.py
+  sh /no-python.sh --list /tmp/installed-files
+  bash /smoke.sh
   pacman -Qkk "$variant"
   pacman -Rns --noconfirm "$variant"
   while read -r path; do

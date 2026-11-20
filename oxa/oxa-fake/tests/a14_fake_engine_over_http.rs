@@ -1,6 +1,4 @@
 //! A14 acceptance tests: Fake engine over HTTP.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_fake::{
@@ -394,7 +392,7 @@ fn h2_idempotent_replay() {
 
     // A new key with the same body is a new request; the script is exhausted.
     let fresh = post_chat(&url, &body, "s", "key-2");
-    assert_eq!(fresh.status, 500);
+    assert_eq!(fresh.status, 422);
     assert!(String::from_utf8_lossy(&fresh.body).contains("script exhausted"));
 }
 
@@ -583,6 +581,7 @@ fn record_keeps_raw_tools_and_args() {
         sha256: [0u8; 32],
     };
     let asst = WireMsg {
+        images: Vec::new(),
         role: oxa_proto::Role::Assistant,
         content: Some("  padded  ".to_string()),
         reasoning: Some(String::new()),

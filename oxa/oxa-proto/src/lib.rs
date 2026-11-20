@@ -52,6 +52,7 @@ mod wire;
 pub mod bounded_io;
 pub mod control;
 pub mod guard;
+pub mod owner_reply;
 pub mod panic;
 pub mod time;
 pub mod work;
@@ -75,7 +76,7 @@ pub use wire::*;
 pub use serde_json::Value;
 
 /// Version of this frozen interface. Bumped only by the architect.
-pub const PROTO_VERSION: u32 = 3;
+pub const PROTO_VERSION: u32 = 4;
 
 /// Product names (plan sec. 0). Never spell these literally elsewhere.
 pub mod names {
@@ -95,6 +96,9 @@ pub mod names {
     /// Environment variable (in `ToolCtx::env`) that carries the id of the running tool call;
     /// extension tools pass it to `execute` as `toolCallId`.
     pub const ENV_TOOL_CALL_ID: &str = "OXA_TOOL_CALL_ID";
+    /// Set to `1` by every spawner of an unattended run (worker, subagent child, `oxa work`):
+    /// no person is at the keyboard, so the OS sandbox stays on by default (#1512).
+    pub const ENV_UNATTENDED: &str = "OXA_UNATTENDED";
     /// Session file format version (pi v3 envelope).
     pub const SESSION_VERSION: u32 = 3;
 }

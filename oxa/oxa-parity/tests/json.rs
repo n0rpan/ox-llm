@@ -76,6 +76,10 @@ fn overloaded() -> ScriptTurn {
     })
 }
 
+/// Retries with millisecond waits and `maxRetries` 3 (the default is 10 retries of 2..60 s, which
+/// is six minutes for a request that keeps failing).
+const FAST_RETRY: &str = r#"{"retry":{"maxRetries":3,"baseDelayMs":1,"maxAgentDelayMs":5}}"#;
+
 /// Parse JSONL stdout: one JSON object per LF-terminated record.
 fn parse_records(bytes: &[u8]) -> Vec<Value> {
     let text = std::str::from_utf8(bytes).expect("utf-8 stdout");
@@ -905,6 +909,7 @@ fn json_021() {
 #[test]
 fn json_022() {
     let env = TestEnv::new();
+    env.write("home/.oxa/agent/settings.json", FAST_RETRY);
     let server = start(vec![overloaded(), text("after the retry")]);
     let (out, recs) = run_json(&env, &server, &["--mode", "json", "hi"], "");
     assert!(out.status.success());
@@ -924,6 +929,7 @@ fn json_022() {
     documented("JSON-022", ends[0], "auto_retry_end");
 
     let env2 = TestEnv::new();
+    env2.write("home/.oxa/agent/settings.json", FAST_RETRY);
     let server2 = start(vec![
         overloaded(),
         overloaded(),

@@ -1,6 +1,4 @@
 //! A4 acceptance tests: Transcript fold (W1) and session tree.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_proto::{
@@ -41,6 +39,7 @@ fn usage(prompt: u32, completion: u32) -> Usage {
         completion,
         cached: 0,
         cached_missing: false,
+        unreported: false,
     }
 }
 
@@ -105,6 +104,7 @@ fn random_body(rng: &mut Rng, ids: &[String], prefix_seen: bool) -> EntryBody {
         },
         3 => EntryBody::Msg {
             wire: WireMsg {
+                images: Vec::new(),
                 role: Role::Assistant,
                 content: Some(text(rng)),
                 reasoning: Some(text(rng)),
@@ -596,4 +596,65 @@ fn f1_expected_cache_drops_the_last_generated_token() {
     assert_eq!(t.context(), 540);
     t.set_usage(&usage(0, 0));
     assert_eq!(t.expected_cache(), 0);
+}
+
+/// A reply the embedded gateway accepted without usage (0 prompt, 0 completion) is not a
+/// measurement: it must not reset the context baseline to zero, or compaction would be skipped
+/// while the conversation keeps growing.
+#[test]
+fn unreported_usage_keeps_the_previous_context_baseline() {
+    let mut t = Transcript::default();
+    let user = |text: &str| WireMsg {
+        role: Role::User,
+        content: Some(text.to_string()),
+        images: Vec::new(),
+        reasoning: None,
+        tool_calls: Vec::new(),
+        provider_history: None,
+        tool_call_id: None,
+    };
+    let reply = |text: &str| WireMsg {
+        role: Role::Assistant,
+        content: Some(text.to_string()),
+        images: Vec::new(),
+        reasoning: None,
+        tool_calls: Vec::new(),
+        provider_history: None,
+        tool_call_id: None,
+    };
+    t.apply(&entry("u1", None, msg(user("first"))));
+    t.apply(&entry("a1", Some("u1"), msg(reply("first reply"))));
+    t.apply(&entry(
+        "use1",
+        Some("a1"),
+        EntryBody::Usage {
+            kind: TurnKind::Chat.as_str().to_string(),
+            usage: usage(100, 20),
+        },
+    ));
+    assert_eq!(t.context(), 120);
+    assert_eq!(t.usage_wire_len(), Some(t.wire().len()));
+
+    t.apply(&entry("u2", Some("use1"), msg(user("second"))));
+    t.apply(&entry("a2", Some("u2"), msg(reply("second reply"))));
+    let before = t.usage_wire_len();
+    t.apply(&entry(
+        "use2",
+        Some("a2"),
+        EntryBody::Usage {
+            kind: TurnKind::Chat.as_str().to_string(),
+            usage: Usage::unreported(),
+        },
+    ));
+    assert_eq!(t.context(), 120, "an unreported usage is not a zero context");
+    assert_eq!(
+        t.usage_wire_len(),
+        before,
+        "the baseline stays where it was counted"
+    );
+    assert_eq!(
+        t.expected_cache(),
+        0,
+        "an unreported usage stops the cache expecting a continuation"
+    );
 }

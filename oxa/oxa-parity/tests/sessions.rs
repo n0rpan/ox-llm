@@ -15,6 +15,7 @@
 
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use oxa_parity::oxa_bin;
+use oxa_session::{FsStore, Goal, GoalBudget, SessionStore};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::{symlink, PermissionsExt};
@@ -503,6 +504,40 @@ fn ses_002_picker() {
     assert_eq!(user_texts(&last), vec!["cherry question", "more cherries"]);
 }
 
+#[test]
+fn resume_picker_shows_saved_goal_without_running_it() {
+    let env = TestEnv::new();
+    three_sessions(&env);
+    let store = FsStore::new(sessions_root(&env));
+    let path = file_of(&env, "apple question").unwrap();
+    let session = store.resolve(path.to_str().unwrap()).unwrap();
+    let entries = store.load(&session).unwrap();
+    let parent = entries.last().unwrap();
+    let goal = Goal::new("Ship the parser".into(), GoalBudget::default(), parent.ts_ms).unwrap();
+    let id = oxa_session::new_entry_id(&|id| entries.iter().any(|entry| entry.id == id));
+    store
+        .append(
+            &session,
+            &oxa_proto::Entry {
+                id,
+                parent: Some(parent.id.clone()),
+                ts_ms: parent.ts_ms,
+                body: goal.body(),
+            },
+        )
+        .unwrap();
+
+    let mut rig = picker_rig(env, RigOpts::default());
+    select_listed(&rig, "apple question");
+    rig.pty.send_key("enter");
+    rig.pty.wait_for_text("Goal pursuing: Ship the parser").unwrap();
+    rig.quit();
+    assert!(
+        rig.generating().is_empty(),
+        "reopening must not run the stored goal"
+    );
+}
+
 /// pi docs: sessions.md "Deleting a session uses `trash` when available" (picker delete).
 #[test]
 fn ses_003() {
@@ -822,6 +857,53 @@ fn picker_rig(env: TestEnv, opts: RigOpts) -> Rig {
         .wait_for_named("the picker", |s| picker_rows(s).len() == 3, WAIT)
         .unwrap();
     rig
+}
+
+#[test]
+fn interactive_startup_deadline_does_not_follow_a_new_or_cloned_session() {
+    const STARTUP_LIMIT: Duration = Duration::from_secs(8);
+    for (command, notice) in [
+        ("/new", "New session started"),
+        ("/clone", "Cloned to new session"),
+    ] {
+        let env = TestEnv::new();
+        env.write(
+            "home/.oxa/agent/settings.json",
+            r#"{"oxa":{"bootPreload":false,"subagent":{"enabled":true}}}"#,
+        );
+        env.write(
+            "home/.oxa/agent/agents/scout.md",
+            "---\nname: scout\ndescription: Looks around\ntools: read\n---\nYou are a scout.\n",
+        );
+        let mut rig = Rig::start_in(
+            env,
+            vec![
+                ScriptTurn::text("Initial response"),
+                ScriptTurn::tool(
+                    "delegate",
+                    "subagent",
+                    r#"{"agent":"scout","task":"Look around"}"#,
+                ),
+                ScriptTurn::text("Child response"),
+                ScriptTurn::text("Parent response"),
+            ],
+            RigOpts {
+                args: vec!["--max-time".into(), STARTUP_LIMIT.as_secs().to_string()],
+                ..RigOpts::default()
+            },
+        );
+        rig.prompt("Prime the startup session", "Initial response");
+        rig.slash(command);
+        rig.pty.wait_for_text(notice).unwrap();
+        // A deadline started before the first response has certainly expired by now.
+        std::thread::sleep(STARTUP_LIMIT);
+        rig.prompt("Delegate in the replacement", "Parent response");
+        assert!(
+            rig.generating().iter().any(|request| request.kind == "subagent"),
+            "{command} must not inherit the startup subagent deadline"
+        );
+        rig.quit();
+    }
 }
 
 /// pi docs: sessions.md "`--no-session`": an ephemeral run keeps nothing on disk.

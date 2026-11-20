@@ -98,7 +98,7 @@ fn live_openai_ids_filter_the_configured_overlay_and_reuse_the_cache() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains(MODEL));
         assert!(!stdout.contains("synthetic-not-offered"));
-        assert!(!stdout.contains("synthetic-unknown-metadata"));
+        assert!(stdout.contains("synthetic-unknown-metadata"));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             stderr.contains("1 offers with unknown pricing and 1 with unknown limits"),
@@ -147,7 +147,7 @@ fn live_openrouter_discovery_uses_the_key_scoped_priced_text_offers() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stdout.contains("openrouter/vendor/synthetic-priced"), "{stdout}");
-        assert!(!stdout.contains("synthetic-unpriced"));
+        assert!(stdout.contains("synthetic-unpriced"));
         assert!(stderr.contains("1 offers with unknown pricing"), "{stderr}");
         assert!(!stdout.contains(KEY) && !stderr.contains(KEY));
     }
@@ -174,6 +174,50 @@ fn final_reply(text: &str) -> mock::Reply {
         "usage":{"input_tokens":7,"output_tokens":2,"total_tokens":9}}}),
     ])
 }
+
+#[test]
+fn a_configured_openai_alias_in_the_go_namespace_keeps_its_provider() {
+    let env = TestEnv::new();
+    let peer = mock::MockOpenAi::start(vec![
+        final_reply("Synthetic configured reply"),
+        final_reply("Synthetic scoped reply"),
+    ]);
+    settings(&env, &peer.base_url(), false);
+    let path = env.agent_dir().join("settings.json");
+    let mut user: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let cloud = &mut user["oxa"]["cloud"];
+    let models = cloud["models"].as_object_mut().unwrap();
+    let model = models.remove(MODEL).unwrap();
+    let alias = "opencode/synthetic-openai";
+    models.insert(alias.into(), model);
+    cloud["opencode"] = json!({"enabled": false});
+    fs::write(path, user.to_string()).unwrap();
+    private_file(
+        &env.home().join(".config/oxc/llm/cloud-secrets.json"),
+        &json!({"openai": KEY}).to_string(),
+    );
+
+    let output = run(
+        &env,
+        &["--model", alias, "--no-tools", "-p", "Synthetic request"],
+        None,
+    );
+    success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Synthetic configured reply"));
+    let scoped = run(
+        &env,
+        &["--models", alias, "--no-tools", "-p", "Synthetic scoped request"],
+        None,
+    );
+    success(&scoped);
+    assert!(String::from_utf8_lossy(&scoped.stdout).contains("Synthetic scoped reply"));
+    assert_eq!(peer.requests().len(), 2);
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 2);
+    assert!(ledger.iter().all(|row| row["remote_provider"] == "openai"));
+    peer.assert_healthy();
+}
+
 fn rows(env: &TestEnv) -> Vec<Value> {
     fs::read_dir(env.home().join(".oxa/agent/cloud-ledger"))
         .unwrap()
@@ -215,7 +259,7 @@ fn unpriced_discovery_uses_owner_rates_for_admission_and_estimated_ledger_spend(
     );
     fs::write(&path, user.to_string()).unwrap();
     let unpriced = run(&env, &["--list-models"], None);
-    assert!(!String::from_utf8_lossy(&unpriced.stdout).contains(MODEL));
+    assert!(String::from_utf8_lossy(&unpriced.stdout).contains(MODEL));
     assert_eq!(peer.requests().len(), 1);
 
     user["oxa"]["cloud"]["unpriced_discovered_pricing"] = pricing;
@@ -431,30 +475,30 @@ fn production_both_modes_execute_done_only_tools_resume_and_settle_without_pytho
                 .sum::<f64>();
             assert!((total - 0.000091).abs() < 1e-12);
         }
-        let refused = run(
-            &env,
-            &["-p", "--no-session", "--no-tools", "No allowance remains"],
-            None,
-        );
-        assert_eq!(refused.status.code(), Some(oxa_proto::EXIT_BUDGET));
-        assert_eq!(peer.requests().len(), 3);
-        let row = rows(&env).pop().unwrap();
-        assert_eq!(row["status"], 429);
-        assert_eq!(
-            row["error"],
-            if subscription {
-                "subscription_limit_exceeded"
-            } else {
-                "budget_exceeded"
-            }
-        );
-        assert_eq!(row["cost_usd"], 0.0);
+        // A metered budget refuses; a subscription's configured limits are advisory and never do.
+        let refused = (!subscription).then(|| {
+            let refused = run(
+                &env,
+                &["-p", "--no-session", "--no-tools", "No allowance remains"],
+                None,
+            );
+            assert_eq!(refused.status.code(), Some(oxa_proto::EXIT_BUDGET));
+            assert_eq!(peer.requests().len(), 3);
+            let row = rows(&env).pop().unwrap();
+            assert_eq!(row["status"], 429);
+            assert_eq!(row["error"], "budget_exceeded");
+            assert_eq!(row["cost_usd"], 0.0);
+            refused
+        });
         for path in [trace, resumed_trace] {
             let trace = fs::read_to_string(path).unwrap();
             assert!(trace.contains("execve(") && trace.contains("oxa"));
             assert!(!trace.to_ascii_lowercase().contains("python"), "{trace}");
         }
-        for output in [&first, &second, &refused] {
+        for output in [Some(&first), Some(&second), refused.as_ref()]
+            .into_iter()
+            .flatten()
+        {
             let visible = format!(
                 "{}{}",
                 String::from_utf8_lossy(&output.stdout),

@@ -1,4 +1,5 @@
 use super::listener::{Failure, Request};
+use oxa_http::server::{content_length, parse_headers, parse_request_line, split_head, Headers, RequestLine};
 use serde_json::Value;
 
 pub(super) struct Head {
@@ -6,30 +7,50 @@ pub(super) struct Head {
     pub bearer: String,
     pub length: usize,
 }
+/// The single `Content-Length`, canonical decimal. An all-digit value too big for `usize` is a
+/// size problem (413); every other defect is a malformed request (400).
+fn length_of(headers: &Headers<'_>, value: &str) -> Result<usize, Failure> {
+    match content_length(headers) {
+        Ok(n) => Ok(n.unwrap_or(0)),
+        Err(_)
+            if headers.count("content-length") == 1
+                && !value.is_empty()
+                && value.bytes().all(|b| b.is_ascii_digit())
+                && value.parse::<usize>().is_err() =>
+        {
+            Err(Failure::TooLarge)
+        }
+        Err(_) => Err(Failure::BadRequest),
+    }
+}
+
 pub(super) fn head(bytes: &[u8], max_body: usize) -> Result<Head, Failure> {
-    let text = std::str::from_utf8(bytes).map_err(|_| Failure::BadRequest)?;
-    let mut lines = text.split("\r\n");
-    let chat = match lines.next() {
-        Some("GET /v1/models HTTP/1.1") => false,
-        Some("POST /v1/chat/completions HTTP/1.1") => true,
+    let (line, block) = split_head(bytes).map_err(|_| Failure::BadRequest)?;
+    // Only this exact request line is served; any other shape is an unknown route.
+    let chat = match parse_request_line(line) {
+        Ok(RequestLine {
+            method: "GET",
+            target: "/v1/models",
+            version: "HTTP/1.1",
+        }) => false,
+        Ok(RequestLine {
+            method: "POST",
+            target: "/v1/chat/completions",
+            version: "HTTP/1.1",
+        }) => true,
         _ => return Err(Failure::NotFound),
     };
-    let (mut bearer, mut length, mut host, mut content_type) = (None, None, false, false);
-    for (i, line) in lines.enumerate() {
-        if line.is_empty() {
-            break;
-        }
-        if i >= 64 {
+    // A 65th header line is refused as too large, but only once the 64 before it were well formed.
+    let block = match block.match_indices("\r\n").nth(63) {
+        Some((end, _)) => {
+            parse_headers(&block[..end]).map_err(|_| Failure::BadRequest)?;
             return Err(Failure::TooLarge);
         }
-        let (name, value) = line.split_once(':').ok_or(Failure::BadRequest)?;
-        if name.is_empty()
-            || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            || value.bytes().any(|b| b < 32 && b != b'\t' || b == 127)
-        {
-            return Err(Failure::BadRequest);
-        }
-        let value = value.trim();
+        None => block,
+    };
+    let headers = parse_headers(block).map_err(|_| Failure::BadRequest)?;
+    let (mut bearer, mut length, mut host, mut content_type) = (None, None, false, false);
+    for (name, value) in headers.iter() {
         match name.to_ascii_lowercase().as_str() {
             "host" if !host && !value.is_empty() => host = true,
             "host" | "transfer-encoding" | "expect" => return Err(Failure::BadRequest),
@@ -46,10 +67,7 @@ pub(super) fn head(bytes: &[u8], max_body: usize) -> Result<Head, Failure> {
             }
             "authorization" => return Err(Failure::BadRequest),
             "content-length" if length.is_none() => {
-                if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
-                    return Err(Failure::BadRequest);
-                }
-                length = Some(value.parse::<usize>().map_err(|_| Failure::TooLarge)?);
+                length = Some(length_of(&headers, value)?);
             }
             "content-length" => return Err(Failure::BadRequest),
             "content-type" if !content_type => {

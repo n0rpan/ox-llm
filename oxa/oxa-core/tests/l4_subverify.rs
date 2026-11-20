@@ -33,6 +33,18 @@ fn subagent_spec() -> ToolSpec {
 /// The system text of a session with the diet on or off, as a parent (`child` false) or a
 /// subagent child, with or without a declared `subagent` tool.
 fn system(env: &TestEnv, diet_output: bool, child: bool, subagent: bool) -> String {
+    system_opts(
+        env,
+        PrefixOpts {
+            diet_output,
+            child,
+            ..Default::default()
+        },
+        subagent,
+    )
+}
+
+fn system_opts(env: &TestEnv, prefix_opts: PrefixOpts, subagent: bool) -> String {
     let dirs = Dirs::under(env.root());
     let settings = Settings::load(&dirs, &env.work(), true);
     let opts = DiscoverOpts {
@@ -45,7 +57,6 @@ fn system(env: &TestEnv, diet_output: bool, child: bool, subagent: bool) -> Stri
     if subagent {
         specs.push(subagent_spec());
     }
-    let prefix_opts = PrefixOpts { diet_output, child };
     build_prefix_with(&env.work(), &resources, &specs, &[], &prefix_opts).system_text()
 }
 
@@ -129,11 +140,68 @@ fn the_new_rules_cost_exactly_their_lines() {
     let env = TestEnv::new();
     let plain = system(&env, true, false, false);
     let child = system(&env, true, true, false);
-    assert_eq!(child.len() - plain.len(), RULE_CHILD_VERIFY.len() + 3);
+    // A child gets the child check instead of the done check (`RULE_VERIFY`, 2026-11-19).
+    assert_eq!(
+        child.len() + oxa_core::prompt::RULE_VERIFY.len(),
+        plain.len() + RULE_CHILD_VERIFY.len()
+    );
     let sub_only = system(&env, true, false, true);
     assert_eq!(
         sub_only.len() - plain.len(),
         (RULE_SUBAGENT.len() + 3) + (RULE_SUBAGENT_CHECK.len() + 3),
         "a declared subagent tool adds its rule and the check"
     );
+}
+
+/// FH-N2: a headless run adds the `<autonomy>` block after `<rules>`; the same options without
+/// `headless` give the bytes they gave before, so the pinned default hashes do not move.
+#[test]
+fn headless_adds_the_autonomy_block_after_the_rules_and_only_then() {
+    use oxa_core::prompt::HEADLESS_AUTONOMY;
+    let env = TestEnv::new();
+    for diet in [false, true] {
+        let opts = PrefixOpts {
+            diet_output: diet,
+            ..Default::default()
+        };
+        let plain = system_opts(&env, opts, false);
+        let headless = system_opts(
+            &env,
+            PrefixOpts {
+                headless: true,
+                ..opts
+            },
+            false,
+        );
+        assert!(!plain.contains("<autonomy>"));
+        assert!(headless.contains(&format!("<autonomy>\n{HEADLESS_AUTONOMY}\n</autonomy>")));
+        assert!(headless.find("</rules>").unwrap() < headless.find("<autonomy>").unwrap());
+        assert_eq!(plain, system(&env, diet, false, false));
+    }
+}
+
+#[test]
+fn integrity_rule_only_in_a_headless_diet_session_that_is_not_a_child() {
+    use oxa_core::prompt::RULE_INTEGRITY;
+    let env = TestEnv::new();
+    let on = PrefixOpts {
+        diet_output: true,
+        headless: true,
+        ..Default::default()
+    };
+    let has = |o: PrefixOpts| line_of(&system_opts(&env, o, false), RULE_INTEGRITY).is_some();
+    assert!(has(on));
+    assert!(!has(PrefixOpts {
+        headless: false,
+        ..on
+    }));
+    assert!(!has(PrefixOpts {
+        diet_output: false,
+        ..on
+    }));
+    assert!(!has(PrefixOpts { child: true, ..on }));
+    let lower = RULE_INTEGRITY.to_lowercase();
+    for banned in ["date", "today", "plan mode"] {
+        assert!(!lower.contains(banned), "{banned}");
+    }
 }
