@@ -83,7 +83,7 @@ The 14 GiB rows (063) and the 16/18 GiB rows (G3′) use different protocols and
 | 18 GiB beside OpenCode | host fell to 0.95 GiB, guard stopped the task | [M G3′] |
 | Load-time admission need, 14 / 16 / 18 / 20 GiB tiers | 24.1 / 26.1 / 28.1 / 30.1 GiB free (cache + measured overhead + 0.8 GiB harness growth + 1 GiB floor) | [D F118] |
 
-Later [FLASH-PREFIX-2 is INSTALLED_O43b with accepted timing exceptions](FLASH-PREFIX-2.md). Its one-pair 19.343× gain concerns prefill only; both original raw FAILs, the installed chat/context timing FAIL, cancel recovery below 5 seconds and historical R0 guard stop remain explicit. FP-SHORTLAT targets a ≤50 ms short-fixture delta in v0.1.2.
+Later FLASH-PREFIX-2 is INSTALLED_O43b with accepted timing exceptions. Its one-pair 19.343× gain concerns prefill only; both original raw FAILs, the installed chat/context timing FAIL, cancel recovery below 5 seconds and historical R0 guard stop remain explicit. FP-SHORTLAT targets a ≤50 ms short-fixture delta in v0.1.2.
 
 ### 3.2 Ornith-1.5-35B-A3B (default) and Qwen3.6-35B-A3B on `oxe`
 

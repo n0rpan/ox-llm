@@ -7,7 +7,7 @@
 //! * **Concurrency 1 on the local engine.** A lock held for the whole call serialises calls that
 //!   arrive concurrently (e.g. from codemode). A `tasks` call whose children all run locally
 //!   runs them in call order and shows the rest as `subagent k/n, queued`; when some child runs
-//!   on a remote (cloud) model, up to `oxa.subagent.remoteConcurrency` (default 4) children run
+//!   on a remote (cloud) model, up to `oxa.subagent.remoteConcurrency` (default 8) children run
 //!   at once, local ones still one at a time, and results come back in call order (#458);
 //!   more than [`MAX_PARALLEL_TASKS`] tasks are refused with pi's text. Depth 1: a child gets
 //!   `OXA_SUBAGENT_DEPTH=1` and the binary then does not build this hook set.
@@ -116,7 +116,7 @@ pub const SETTING_SMALL_CONTEXT: &str = "oxa.subagent.smallContext";
 pub const DEFAULT_SOFT_TOKENS: u32 = 24_000;
 pub const DEFAULT_RESULT_CAP: usize = 6144;
 pub const SETTING_REMOTE_CONCURRENCY: &str = "oxa.subagent.remoteConcurrency";
-pub const DEFAULT_REMOTE_CONCURRENCY: usize = 4;
+pub const DEFAULT_REMOTE_CONCURRENCY: usize = 8;
 
 /// pi's limit on `tasks`, and the default of `oxa.subagent.maxChildren`: the most children one
 /// parent session runs or queues over every call in flight, and the most steps one call takes.
@@ -717,6 +717,35 @@ fn parse_limits(v: &Value) -> Limits {
         remote: v.get("remote").and_then(Value::as_bool).unwrap_or(false),
         context_window: num("contextWindow").unwrap_or(u32::MAX),
         compact_at: num("compactAt"),
+    }
+}
+
+/// #1512 S3: the environment of a subagent child. Every child is unattended (`OXA_UNATTENDED=1`):
+/// no person watches it, so the OS sandbox stays on by default.
+fn child_env(hint: &str, soft: u32) -> Vec<(String, String)> {
+    vec![
+        (ENV_SESSION_HINT.to_string(), hint.to_string()),
+        (ENV_SUBAGENT_DEPTH.to_string(), "1".to_string()),
+        (ENV_CHILD_SOFT_TOKENS.to_string(), soft.to_string()),
+        (oxa_proto::names::ENV_UNATTENDED.to_string(), "1".to_string()),
+    ]
+}
+
+#[cfg(test)]
+mod child_env_tests {
+    use super::child_env;
+
+    #[test]
+    fn subagent_child_env_sets_oxa_unattended() {
+        let env = child_env("sess.s1", 24000);
+        assert!(
+            env.contains(&("OXA_UNATTENDED".to_string(), "1".to_string())),
+            "{env:?}"
+        );
+        assert!(
+            env.contains(&("OXA_SUBAGENT_DEPTH".to_string(), "1".to_string())),
+            "{env:?}"
+        );
     }
 }
 
@@ -1372,11 +1401,7 @@ impl Run<'_, '_> {
             argv.push(agent.system_prompt.clone());
         }
         argv.push(T::TASK.replace("{task}", task));
-        let env = vec![
-            (ENV_SESSION_HINT.to_string(), hint.clone()),
-            (ENV_SUBAGENT_DEPTH.to_string(), "1".to_string()),
-            (ENV_CHILD_SOFT_TOKENS.to_string(), soft.to_string()),
-        ];
+        let env = child_env(&hint, soft);
         let expected = &self.cwds[k];
         let current = child_cwd(self.cx.cwd, item.cwd.as_deref().unwrap_or("."));
         if &current != expected {

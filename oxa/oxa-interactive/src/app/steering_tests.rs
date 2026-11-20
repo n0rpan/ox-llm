@@ -169,6 +169,7 @@ fn gated_prompt_with_cancel(
         gated: Vec::new(),
         engine_status: None,
         yolo: None,
+        os_sandbox: false,
     };
     let mut terminal = TestTerminal::new(100, 30);
     let (cmd_tx, cmd_rx) = mpsc::channel();

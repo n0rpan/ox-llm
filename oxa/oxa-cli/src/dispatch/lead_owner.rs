@@ -311,9 +311,11 @@ pub fn with_lead_owner<T>(
         &binding.project,
         env,
         &binding.dirs,
+        None,
         &mut std::io::empty(),
         &mut std::io::sink(),
-    )?;
+    )?
+    .workspace;
     let mut args = Args::default();
     let prep = binding.prepare(&mut args, env, RunMode::Print, home_workspace)?;
     let mut session = binding.open(&prep)?;

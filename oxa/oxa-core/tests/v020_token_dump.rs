@@ -1,6 +1,6 @@
 //! V020-OPTIMIZE token measurement (lane `tokens`): one scripted session per arm, the chat
 //! transcript of each written as JSONL for the engine-tokenizer harness
-//! (`oxc/benchmarks/tokens/token_harness.py`). Ignored by default; it writes nothing unless
+//! (the Python harness was removed with the controller, #951). Ignored by default; it writes nothing unless
 //! `OXA_TOKEN_DUMP_DIR` is set:
 //!
 //! `OXA_TOKEN_DUMP_DIR=<dir> cargo test -p oxa-core --test v020_token_dump -- --ignored --nocapture`
