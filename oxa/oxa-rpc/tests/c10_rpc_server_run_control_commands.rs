@@ -176,7 +176,8 @@ fn file_control_receipts_report_revisioned_and_durable_owner_transitions() {
     use oxa_session::{send_inbox_control, Goal, GoalBudget, GoalStatus, SessionRef};
 
     let env = TestEnv::new();
-    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    // The applied resume starts one continuation run; the engine answers it once.
+    let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("Nothing to do yet.")]));
     let mut owner = open_session(&env, engine.clone());
     let mut sink = NullSink;
     let goal = Goal::new("Review synthetic work.".into(), GoalBudget::default(), 1000).unwrap();
@@ -243,6 +244,11 @@ fn file_control_receipts_report_revisioned_and_durable_owner_transitions() {
     enqueue("resume", "resume", paused_revision);
     let resumed_revision = receipt(&rpc, "resume")["revision"].as_u64().unwrap();
     assert!(resumed_revision > paused_revision);
+    // The resume ran the continuation prompt once; the run moved the goal revision on.
+    rpc.agent_settled();
+    assert_eq!(engine.requests().len(), 1);
+    let state = rpc.call("after_resume", json!({"type":"get_state"}));
+    let resumed_revision = state["data"]["goalRevision"].as_u64().unwrap();
     enqueue("cancel", "cancel", resumed_revision);
     let canceled_revision = receipt(&rpc, "cancel")["revision"].as_u64().unwrap();
     assert!(canceled_revision > resumed_revision);

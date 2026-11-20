@@ -121,10 +121,10 @@ pub fn run_loop(
     // last reply): `message_start` / `message_end` each, and they open `agent_end.messages`.
     let opening = crate::fire::opening_messages(st);
     let result = run_inner(st, sink, ui, &mut run_msgs, &opening);
-    // A failed run leaves its pursuing goal paused with the reason, so `/goal resume` (or the
-    // a2a resume) continues it in this session.
+    // A failed run records why its pursuing goal stopped; `/goal resume` (or the a2a resume)
+    // continues it in this session.
     if let Ok(RunEnd::Failed(error)) = &result {
-        crate::goal::pause_after_failure(st, error, sink)?;
+        crate::goal::record_failure(st, error, sink)?;
     }
     crate::goal::checkpoint(st, false, sink)?;
     drop(steering);

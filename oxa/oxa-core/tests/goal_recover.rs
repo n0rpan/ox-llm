@@ -28,10 +28,13 @@ fn deps(
         policy: Box::new(ModePolicy::new()),
         sandbox: Arc::new(NoSandbox),
         settings: Settings::from_values(
-            serde_json::json!({"oxa": {"envNote": false, "goal": goal}, "retry": {"enabled": false}}),
             // A goal with no budget of its own pauses on idle by default (`oxa.onExceed.goalIdle`);
             // these tests are about the goals that only warn.
-            serde_json::json!({"oxa": {"goal": goal, "onExceed": {"goalIdle": "warn"}}}),
+            serde_json::json!({
+                "oxa": {"envNote": false, "goal": goal, "onExceed": {"goalIdle": "warn"}},
+                "retry": {"enabled": false}
+            }),
+            serde_json::json!({}),
         ),
         dirs: Dirs::under(env.root()),
         cwd: env.work(),
@@ -82,7 +85,7 @@ fn notices(sink: &VecSink, prefix: &str) -> usize {
 }
 
 #[test]
-fn a_failed_run_pauses_the_goal_and_resume_continues_in_the_same_session() {
+fn a_failed_run_records_why_and_resume_continues_in_the_same_session() {
     let env = TestEnv::new();
     let engine = Arc::new(ScriptedEngine::new(vec![bad_gateway(), finish()]));
     let store = Arc::new(MemStore::new());
@@ -105,15 +108,9 @@ fn a_failed_run_pauses_the_goal_and_resume_continues_in_the_same_session() {
         .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
         .unwrap();
     assert!(matches!(session.stats().outcome, RunOutcome::Failed(_)));
-    let goal = session.goal().unwrap();
-    assert_eq!(goal.status, GoalStatus::Paused);
-    assert!(
-        goal.pause_reason
-            .as_deref()
-            .is_some_and(|r| r.starts_with("request failed: ")),
-        "{:?}",
-        goal.pause_reason
-    );
+    // The goal stays pursuing and the run's failure is recorded, code only.
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Pursuing);
+    assert_eq!(notices(&sink, "Goal: the run failed ("), 1);
 
     let bound = session.inner().sref.clone();
     let revision = session.goal_revision();
@@ -190,7 +187,7 @@ fn resume_works_from_pursuing_and_is_refused_for_done_canceled_and_exhausted_goa
 #[test]
 fn a_schema_answer_is_recorded_and_the_goal_goes_on_to_wait_and_finish() {
     let env = TestEnv::new();
-    let answer = r#"{"ok":true}"#;
+    let answer = r#"{"ok":"yes"}"#;
     let engine = Arc::new(ScriptedEngine::new(vec![
         ScriptTurn::text(answer),
         ScriptTurn::tool("w1", "wait", r#"{"seconds":1,"reason":"Nothing to do yet"}"#),
@@ -210,7 +207,7 @@ fn a_schema_answer_is_recorded_and_the_goal_goes_on_to_wait_and_finish() {
     session.set_output_schema(Some(
         oxa_core::output_schema::OutputSchema::new(serde_json::json!({
             "type": "object",
-            "properties": {"ok": {"type": "boolean"}},
+            "properties": {"ok": {"type": "string"}},
             "required": ["ok"]
         }))
         .unwrap(),

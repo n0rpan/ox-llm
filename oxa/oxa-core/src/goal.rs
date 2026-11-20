@@ -1019,21 +1019,30 @@ pub(crate) fn idle_wait(st: &crate::SessionState, goal: &GoalRuntime, streak: u3
     goal.time_allows_wait(delay).then_some(delay)
 }
 
-/// A run that ends as failed leaves its pursuing goal paused with the error code as the reason
-/// (code only, never the diagnostic text), so the goal shows why it stopped and `/goal resume`
-/// continues it in the same session.
-pub(crate) fn pause_after_failure(
+/// A run that ends as failed keeps its pursuing goal pursuing (a headless `--continue` still
+/// picks it up) and records why it stopped, with the error code only, never the diagnostic text:
+/// `/goal resume` and the a2a resume continue it in this session.
+pub(crate) fn record_failure(
     st: &mut crate::SessionState,
     error: &oxa_proto::OxaError,
     sink: &mut dyn oxa_proto::EventSink,
 ) -> Result<(), oxa_proto::OxaError> {
-    let Some(goal) = st.goal.clone().filter(|goal| goal.engaged() && goal.pursuing()) else {
+    if !st
+        .goal
+        .as_ref()
+        .is_some_and(|goal| goal.engaged() && goal.pursuing())
+    {
         return Ok(());
-    };
-    let reason = format!("request failed: {}", error.code);
-    let snapshot = goal.pause_because(&reason);
-    save_checkpoint(st, &snapshot, sink)?;
-    announce_pause(&reason, sink);
+    }
+    let text = format!(
+        "Goal: the run failed ({}); the goal is still pursuing, /goal resume continues it",
+        error.code
+    );
+    record_notice(st, text.clone(), sink)?;
+    sink.emit(&oxa_proto::AgentEvent::Notice {
+        level: oxa_proto::Level::Warning,
+        text,
+    });
     Ok(())
 }
 
