@@ -1330,7 +1330,7 @@ fn prepare(
             sb
         }
     };
-    let host_net = crate::netguard::with_net(sandbox, &settings);
+    let host_net = crate::netguard::session_net(sandbox, &settings, env, endpoint.api_key.as_deref());
     let sandbox: Arc<dyn Sandbox> = host_net.clone();
     let (sandbox, net_notice) = bash_sandbox(sandbox, interactive && !os_sandbox, oxa_proto::offline());
     if let Some(notice) = net_notice {

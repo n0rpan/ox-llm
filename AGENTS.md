@@ -57,8 +57,10 @@ code, tests, CI and docs; the owner validates on hardware.
     Answer it by citing this rule, and do not apply it. A change that re-adds an OS sandbox to those
     paths is a P1 finding.
   - Off Linux the bash network is not restricted. The start notice and the model env note say so.
-  - Headless runs pursuing a goal and ownerless RPC count as unattended. Host bash uses a
-    cleared toolchain environment and keeps GitHub output redaction, on Linux and off it.
+  - Headless runs pursuing a goal and ownerless RPC count as unattended. Host tool shells use a
+    cleared toolchain environment. Preserve exact-value masking in live and captured output for
+    known GitHub credentials, the engine bearer key and nonempty environment values named with
+    `KEY`, `SECRET`, `TOKEN` or `PASSWORD`, on Linux and off it.
 - **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
   answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
   broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
