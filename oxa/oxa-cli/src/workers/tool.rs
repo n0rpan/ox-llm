@@ -2180,14 +2180,30 @@ mod tests {
         use oxa_fake::{ScriptTurn, ScriptedEngine};
         use oxa_proto::{AgentEvent, EventSink, HeadlessUi};
 
-        struct FinishDuringWait(Option<registry::WorkerRecord>);
+        // The worker the wait watches: started, and finished, while the `wait` call runs. A
+        // worker start asks the session for the model catalog, which only a run's own host pump
+        // answers, and the wait polls `worker_done` until the worker's status file is terminal.
+        struct FinishDuringWait {
+            core: Arc<WorkerCore>,
+            agent: PathBuf,
+            repo: PathBuf,
+            parent: String,
+        }
         impl EventSink for FinishDuringWait {
             fn emit(&mut self, event: &AgentEvent) {
                 if !matches!(event, AgentEvent::ToolExecutionUpdate { tool_name, .. } if tool_name == "wait")
                 {
                     return;
                 }
-                let Some(rec) = self.0.take() else { return };
+                let out = self.core.start(
+                    &json!({"action": "start", "name": "alpha", "goal": "g"}),
+                    &self.repo,
+                    Mode::Workspace,
+                    Autonomy::Standard,
+                );
+                assert!(!out.is_error, "{}", out.text);
+                let rec = registry::load(&self.agent, &self.parent).unwrap().remove(0);
+                assert_eq!(rec.name, "alpha");
                 let status = json!({"session_id": rec.session_id, "pid": rec.pid, "phase": "finished",
                     "outcome": {"type": "oxa_result", "outcome": "done", "exit_code": 0}});
                 fs::create_dir_all(rec.status_file.parent().unwrap()).unwrap();
@@ -2233,14 +2249,20 @@ mod tests {
         .unwrap();
         let goal = oxa_session::Goal::new("Review synthetic work.".into(), Default::default(), 1000).unwrap();
         session.set_goal(Some(goal), &mut oxa_proto::NullSink).unwrap();
-        start_alpha(&hooks, &repo);
+        // The hook set learns the parent session (and model) through the host at attach.
         let (parent, _) = hooks.core.session();
-        let rec = registry::load(&agent, &parent).unwrap().remove(0);
+        assert_eq!(parent, session.inner().sref.id);
+        let mut sink = FinishDuringWait {
+            core: hooks.core.clone(),
+            agent: agent.clone(),
+            repo: repo.clone(),
+            parent: parent.clone(),
+        };
         session
             .prompt(
                 "Wait for the review.".into(),
                 vec![],
-                &mut FinishDuringWait(Some(rec)),
+                &mut sink,
                 &mut HeadlessUi::default(),
             )
             .unwrap();
