@@ -445,6 +445,8 @@ read its result; they never launch builds or tests.
   its surfaces and help (P1 if added outside it or without an exception reason).
 
 **Security invariants**
+- Inbox child creation, publication, scanning and privacy wipes must stay relative to opened
+  no-follow directory descriptors on Linux and macOS. Do not re-resolve a saved pathname.
 
 - Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests; use synthetic fixtures.
   Do not open real credential files during review.
@@ -496,3 +498,5 @@ read its result; they never launch builds or tests.
   advisory), keyed Go, the bash and subagent limits, cargo cache mounts, `oxa work` acceptance, the repeat guard (it
   warns and continues), board evidence (it degrades per item), report dedupe (one consent), the headless inbox, and
   the Go review bound (20,000 comments, then the review defers).
+
+- **Named cloud providers:** `oxa.cloud.providers` is user-only. A distinct non-built-in secret-store key selector is pinned to the provider's HTTPS API base for discovery and chat, without redirects. Discovery and per-model settings cannot override that binding or the provider's billing class. Public metadata never supplies another provider's prices for a named route.

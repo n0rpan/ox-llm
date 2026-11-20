@@ -352,7 +352,29 @@ provider prices. This example uses an illustrative model and prices:
 The key is read for each request from the existing private
 `~/.config/oxc/llm/cloud-secrets.json` (owner-only, mode `0600`, outside a checkout).
 Keep keys out of settings. The file uses the existing provider-key JSON format.
-Private settlement rows live in `<agent directory>/cloud-ledger/`. Listing models
+
+To add a named provider, set `oxa.cloud.providers.myplan` in **user settings**:
+
+```json
+{ "api": "openai-chat", "base_url": "https://example.invalid/compatible/v1",
+  "key": "myplan", "billing": "subscription" }
+```
+
+Use the provider's HTTPS API base and put the credential under `myplan` in
+the existing secrets file. `api` accepts `openai-chat` (Chat Completions) or
+`anthropic` (Messages). A keyed provider discovers models from `<base_url>/models`
+and caches the last successful list. `oxa --list-models myplan` filters that list;
+pass a qualified model name from the list to `oxa --model`. Explicit owner discovery and gateway
+opt-outs still win. Offline mode does not contact the provider.
+
+Use `subscription` for token accounting or `metered` for USD accounting. When a
+provider does not publish rates, an owner model entry can supply them; public
+catalog prices for other providers do not apply. A model entry can supply limits
+and an upstream model ID, but cannot change the named provider's URL or key.
+A named Chat Completions provider can finish a reply or tool call without reporting
+usage. The ledger retains a conservative reservation instead of recording zero usage.
+
+Private settlement rows live in `<agent directory>/cloud-ledger/`. Listing only explicitly configured routes
 reads neither the key nor the ledger and contacts no provider. `daily_budget_usd` is
 optional: without it there is no budget check, requests are admitted (including a
 model with no price) and their cost is still recorded in the ledger (a request whose
