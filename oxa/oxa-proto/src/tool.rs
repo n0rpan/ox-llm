@@ -98,7 +98,31 @@ impl ToolOutput {
             ui: Value::Null,
         }
     }
+
+    /// Mark this output as the result of an exceeded owner budget (`oxa.onExceed`): the loop
+    /// shows `notice` once as a warning and records it in the session.
+    pub fn exceeded(mut self, budget: &str, notice: &str) -> Self {
+        let mut ui = match std::mem::take(&mut self.ui) {
+            Value::Object(map) => map,
+            _ => serde_json::Map::new(),
+        };
+        ui.insert(BUDGET_EXCEEDED.into(), Value::from(budget));
+        ui.insert(BUDGET_NOTICE.into(), Value::from(notice));
+        self.ui = Value::Object(ui);
+        self
+    }
+
+    /// The exceeded budget and its notice, when a tool marked this output with [`Self::exceeded`].
+    pub fn exceeded_notice(ui: &Value) -> Option<(&str, &str)> {
+        Some((
+            ui.get(BUDGET_EXCEEDED)?.as_str()?,
+            ui.get(BUDGET_NOTICE)?.as_str()?,
+        ))
+    }
 }
+
+const BUDGET_EXCEEDED: &str = "budgetExceeded";
+const BUDGET_NOTICE: &str = "budgetNotice";
 
 /// Fixed tool-error texts produced by the loop itself (deterministic, part of W4).
 pub mod tool_errors {

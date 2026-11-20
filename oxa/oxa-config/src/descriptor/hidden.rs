@@ -54,6 +54,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     // Background jobs that may run at once (`bash {background: true}`); at least 1.
     d("oxa.bash.maxJobs", Group::Advanced, "", "oxa.bash.maxJobs", "")
         .key(Kind::Number, "16")
+<<<<<<< HEAD
         .hidden(),
     d(
         "oxa.bash.ciPollHint",
@@ -64,6 +65,10 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     )
     .key(Kind::Bool, "true")
     .hidden(),
+=======
+        .hidden()
+        .user_only(),
+>>>>>>> origin/main
     // Longest a bash job read blocks, in seconds (default 300; at least 1).
     d("oxa.bash.waitCap", Group::Advanced, "", "oxa.bash.waitCap", "")
         .key(Kind::Number, "300")
@@ -177,12 +182,14 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "",
     )
     .key(Kind::Number, "8")
-    .hidden(),
+    .hidden()
+    .user_only(),
     // The repeat guard for identical tool calls (oxa-core `repeat.rs`).
     // The `wait` tool is declared in every session; `false` opts out (read at session start).
     d("oxa.tools.wait", Group::Advanced, "", "oxa.tools.wait", "")
         .key(Kind::Bool, "true")
-        .hidden(),
+        .hidden()
+        .user_only(),
     // Read from the user layer only. Unset follows the mode: yolo `worker`, auto `broker`,
     // standard `runner`.
     d(
@@ -260,6 +267,27 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "",
     )
     .key(Kind::Bool, "true")
+    .hidden(),
+    // How long `worker send` waits for the worker to take the message before it reports
+    // `not_delivered`; 0 does not wait. User settings only.
+    d(
+        "oxa.workers.sendAckSeconds",
+        Group::Advanced,
+        "",
+        "oxa.workers.sendAckSeconds",
+        "",
+    )
+    .key(Kind::Number, "10")
+    .hidden(),
+    // Requests kept back per App resource for required Lead reads (#1413). Unset = no gate.
+    d(
+        "oxa.lead.github_reserve",
+        Group::Advanced,
+        "",
+        "oxa.lead.github_reserve",
+        "",
+    )
+    .key(Kind::Number, "null")
     .hidden(),
     // K4: seconds a worker gets after SIGINT before its process group gets SIGTERM.
     d(

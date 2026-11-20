@@ -509,18 +509,23 @@ impl BashTool {
             env: cx.env.to_vec(),
         };
         match self.jobs.spawn_labeled(spec, label) {
-            Ok(id) => ToolOutput {
-                images: Vec::new(),
-                text: format!(
-                    "Started background job {id}. Read its status and output with bash {{\"job\": \"{id}\"}}.\n{JOB_PROCESS_VISIBILITY}{}",
-                    self.jobs
-                        .over_limit_note()
-                        .map(|n| format!("\n{n}"))
-                        .unwrap_or_default()
-                ),
-                is_error: false,
-                ui: json!({ "job": id }),
-            },
+            Ok(id) => {
+                let note = self.jobs.over_limit_note();
+                let out = ToolOutput {
+                    images: Vec::new(),
+                    text: format!(
+                        "Started background job {id}. Read its status and output with bash {{\"job\": \"{id}\"}}.\n{JOB_PROCESS_VISIBILITY}{}",
+                        note.as_ref().map(|n| format!("\n{n}")).unwrap_or_default()
+                    ),
+                    is_error: false,
+                    ui: json!({ "job": id }),
+                };
+                match note {
+                    Some(note) => out.exceeded("bashJobs", &note),
+                    None => out,
+                }
+            }
+            Err(e) if JobRegistry::refused(&e) => ToolOutput::error(e.clone()).exceeded("bashJobs", &e),
             Err(e) => ToolOutput::error(e),
         }
     }

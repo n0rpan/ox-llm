@@ -406,6 +406,9 @@ pub mod subagent {
         "Warning: {n} chain steps, above oxa.subagent.maxChildren ({max}). The chain ran anyway.";
     /// The count is per parent session, over every call in flight.
     pub const TOO_MANY_SESSION: &str = "Warning: {pending} subagent tasks were already running or queued for this session and {n} more were added, above oxa.subagent.maxChildren ({max}). They were queued, not refused.";
+    /// The owner chose to refuse (`oxa.onExceed.subagentChildren`): nothing ran.
+    pub const REFUSED_TOO_MANY: &str = "Refused: {n} subagent tasks in one call, above the owner's limit oxa.subagent.maxChildren ({max}) with oxa.onExceed.subagentChildren set to stop. Nothing ran; send at most {max} at a time.";
+    pub const REFUSED_TOO_MANY_SESSION: &str = "Refused: {pending} subagent tasks are already running or queued for this session and {n} more would pass the owner's limit oxa.subagent.maxChildren ({max}) with oxa.onExceed.subagentChildren set to stop. Nothing ran; wait for the running ones to finish.";
     pub const NOT_ATTACHED: &str = "Subagent failed: the session host is not attached";
     pub const NOT_STARTED: &str = "Subagent was aborted before starting";
     pub const ABORTED: &str = "Subagent was aborted";
