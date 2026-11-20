@@ -10,6 +10,10 @@ they are not repeated here. [SECURITY.md](SECURITY.md) says how to report a vuln
 details are in [oxc/CONTRIBUTING.md](oxc/CONTRIBUTING.md) (measurement rules, receipts, privacy) and
 [engine/CONTRIBUTING.md](engine/CONTRIBUTING.md) (kernels, vendored code, engine tests).
 
+## Changelog
+
+Add one [changelog fragment](changelog.d/README.md) per PR instead of editing a shared changelog.
+
 ## Measuring engine changes
 
 1. **Declare the class** of a change before measuring it: *lossless* (bit-identical against the
