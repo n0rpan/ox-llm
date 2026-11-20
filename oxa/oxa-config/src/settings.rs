@@ -302,6 +302,12 @@ impl Settings {
                 .and_then(|n| u32::try_from(n).ok()),
         }
     }
+    /// Skill reactivation adds instructions to later prompts, so only an owner can enable it.
+    pub fn compaction_reactivate_skills(&self) -> bool {
+        self.user_value("compaction.reactivateSkills")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
     pub fn retry(&self) -> RetrySettings {
         RetrySettings {
             enabled: self.bool("retry.enabled", true),
