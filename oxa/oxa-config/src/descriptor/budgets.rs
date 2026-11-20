@@ -136,3 +136,18 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openrouter_provider_preferences_require_restart() {
+        let preferences = ENTRIES
+            .iter()
+            .find(|entry| entry.key == "oxa.cloud.openrouter_provider")
+            .expect("OpenRouter provider preferences descriptor");
+
+        assert_eq!(preferences.apply, Apply::Restart);
+    }
+}
