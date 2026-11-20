@@ -250,6 +250,30 @@ fn desk_grants_cover_only_the_reviewed_command_line() {
     );
 }
 
+#[test]
+fn desk_grant_does_not_ignore_semantic_trailing_whitespace() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
+
+    let escaped_space = exec("rm -rf /tmp/reviewed\\ ");
+    assert_eq!(p.decide(Mode::Workspace, &escaped_space, &cwd), Decision::Ask);
+    let request = p
+        .danger_unattended(&escaped_space, &cwd)
+        .expect("approval request");
+    desk.answer(&request_id(&request), "session")
+        .expect("owner approves the exact command");
+    assert_eq!(p.decide(Mode::Workspace, &escaped_space, &cwd), Decision::Allow);
+
+    let escaped_newline = exec("rm -rf /tmp/reviewed\\\n");
+    assert_eq!(
+        p.decide(Mode::Workspace, &escaped_newline, &cwd),
+        Decision::Ask,
+        "approval for a path ending in a space must not cover a path without it"
+    );
+}
+
 /// Two processes can create the desk at the same instant: the second must keep working with the
 /// directory the first made instead of disabling approval requests for its whole process.
 #[test]
