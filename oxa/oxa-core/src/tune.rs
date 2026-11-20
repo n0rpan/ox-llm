@@ -108,6 +108,8 @@ pub(crate) fn tune_for_model(
             && !settings.user_bool("images.blockImages", false)
             && !settings.bool("images.blockImages", false),
         max_image_bytes: settings.read_max_image_bytes(),
+        ci_poll_hint: settings.user_bool("oxa.bash.ciPollHint", true),
+        wait_tool: settings.bool("oxa.tools.wait", true),
     }
 }
 
