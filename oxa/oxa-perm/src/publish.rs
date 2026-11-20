@@ -316,18 +316,16 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
     let rest = &args[1..];
     let (k, dirs, opaque) = git_globals(rest);
     let sub = rest.get(k).map(String::as_str);
-    // An opaque global can define an alias or redirect Git before the apparent
-    // subcommand runs, so it is unsafe even when that subcommand is not `push`.
-    if opaque {
-        return Kind::Unsafe;
-    }
     if sub == Some("send-pack") {
         return Kind::Unsafe;
     }
     if sub != Some("push") {
-        // An alias can expand to a push; builtin names cannot be shadowed by one.
+        // An alias can expand to a push; builtin names cannot be shadowed by one. An opaque
+        // global (`-c`, `--config-env`, `--exec-path`) can define such an alias on the
+        // command line, where the config-file alias check cannot see it, so a subcommand
+        // that is not a known builtin with opaque globals is not what it appears to be.
         if let Some(name) = sub {
-            if !GIT_LOCAL.contains(&name) && is_alias(&rest[..k], name, cwd, &dirs) {
+            if !GIT_LOCAL.contains(&name) && (opaque || is_alias(&rest[..k], name, cwd, &dirs)) {
                 return Kind::Unsafe;
             }
         }

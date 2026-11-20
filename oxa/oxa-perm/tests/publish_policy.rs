@@ -508,6 +508,20 @@ fn continued_config_values_and_git_aliases_ask() {
 }
 
 #[test]
+fn opaque_globals_on_a_builtin_subcommand_stay_local() {
+    let cwd = repo("my-branch");
+    // A builtin subcommand cannot be shadowed by an alias, so `git -c user.name=.. commit`
+    // (the `oxa work` save flow) stays local; only a non-builtin name with opaque globals,
+    // where an inline alias can hide, asks.
+    for c in [
+        "git -c user.name=Test -c user.email=test@example.invalid commit -m task",
+        "git -c core.editor=true status",
+    ] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Allow, "{c}");
+    }
+}
+
+#[test]
 fn gh_mutation_is_bound_to_the_recorded_repository() {
     let cwd = repo("my-branch");
     set_config(&cwd, "[remote \"origin\"]\n\turl = https://github.com/o/r.git\n");
