@@ -300,6 +300,19 @@ fn command_wrappers_and_cumulative_git_directories_ask() {
 }
 
 #[test]
+fn command_launcher_classifies_the_wrapped_push() {
+    let cwd = repo("my-branch");
+    assert_eq!(
+        decide(&cwd, Autonomy::Auto, "command git push origin HEAD"),
+        Decision::Allow
+    );
+    assert_eq!(
+        decide(&cwd, Autonomy::Auto, "command git push origin HEAD:main"),
+        Decision::Ask
+    );
+}
+
+#[test]
 fn unordered_pushes_and_ref_writing_plumbing_ask() {
     let cwd = repo("my-branch");
     for c in [

@@ -1411,9 +1411,9 @@ fn skip_heredoc(chars: &[char], start: usize, delim: &str, strip: bool) -> usize
 }
 
 /// What is left of a simple command after its wrappers.
-struct Peeled {
+pub(crate) struct Peeled {
     /// Index of the command name in the words.
-    start: usize,
+    pub(crate) start: usize,
     privileged: bool,
     /// The targets are not known (`xargs`).
     unknown: bool,
@@ -1424,7 +1424,7 @@ struct Peeled {
 }
 
 /// Skips assignments, reserved words and the wrappers that run another command.
-fn peel(words: &[String], unknown_in: bool) -> Peeled {
+pub(crate) fn peel(words: &[String], unknown_in: bool) -> Peeled {
     let mut out = Peeled {
         start: 0,
         privileged: false,

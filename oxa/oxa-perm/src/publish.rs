@@ -184,7 +184,8 @@ fn env_unsafe(words: &[String]) -> bool {
 }
 
 fn kind_of(words: &[String], cwd: &Path, moved: bool) -> Kind {
-    let args: Vec<String> = words.iter().skip_while(|w| is_assignment(w)).cloned().collect();
+    let peeled = crate::danger::peel(words, false);
+    let args: Vec<String> = words[peeled.start..].to_vec();
     let Some(name) = args.first().cloned() else {
         return Kind::Other;
     };
@@ -841,5 +842,5 @@ fn is_alias(globals: &[String], name: &str, cwd: &Path, dirs: &[String]) -> bool
             return true;
         }
     }
-    names.iter().any(|n| *n == name)
+    names.contains(&name)
 }
