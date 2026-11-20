@@ -490,6 +490,9 @@ impl Ui for LockedUi<'_, '_> {
     fn interactive(&self) -> bool {
         self.with(|u| u.interactive())
     }
+    fn has_publication_dialog(&self) -> bool {
+        self.with(|u| u.has_publication_dialog())
+    }
 }
 
 /// The shortest and the longest pause between two polls of the host receiver in [`pumped`].

@@ -199,6 +199,9 @@ impl Ui for UiProxy {
     fn interactive(&self) -> bool {
         true
     }
+    fn has_publication_dialog(&self) -> bool {
+        true
+    }
 }
 
 /// What the dialog host did with a key.

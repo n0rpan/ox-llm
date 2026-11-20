@@ -583,7 +583,7 @@ impl OwnerConfirm {
         let Some((id, title, body, publish, cancel)) = next else {
             return;
         };
-        if publish && ui.interactive() {
+        if publish && ui.has_publication_dialog() {
             // The paged approval dialog shows the rendered publication exactly; only a key press
             // answers it.
             let verdict = match ui.approve_publication(&title, &body) {
@@ -1555,6 +1555,9 @@ mod tests {
 
     impl Ui for Approver {
         fn interactive(&self) -> bool {
+            true
+        }
+        fn has_publication_dialog(&self) -> bool {
             true
         }
         fn approve_publication(&mut self, title: &str, body: &str) -> Option<bool> {

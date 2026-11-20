@@ -654,6 +654,9 @@ impl Ui for PromptTap<'_> {
     fn interactive(&self) -> bool {
         self.inner.interactive()
     }
+    fn has_publication_dialog(&self) -> bool {
+        self.inner.has_publication_dialog()
+    }
 }
 
 /// The title a permission prompt is reported with.

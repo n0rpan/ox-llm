@@ -100,6 +100,12 @@ pub trait Ui: Send {
     fn interactive(&self) -> bool {
         false
     }
+    /// `true` only for a UI that has the key-press publication dialog
+    /// ([`Ui::approve_publication`]). Others (RPC, print) show a publication as a plain
+    /// confirm dialog instead.
+    fn has_publication_dialog(&self) -> bool {
+        false
+    }
     /// The publication approval dialog: shows `body` exactly, with Approve and Deny (Deny
     /// focused), and returns `Some(true)` only when the person pressed Approve. Only a UI that
     /// a person answers by key implements it; the default (print, json, RPC, hooks, tests)
