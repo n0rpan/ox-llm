@@ -466,12 +466,9 @@ pub(crate) fn bwrap_args_pinned(
     if let Some(sock) = owner_confirm {
         push(&mut a, &["--tmpfs", "/run"]);
         if s.net {
-            for name in ["resolv.conf", "stub-resolv.conf"] {
-                let file = Path::new("/run/systemd/resolve").join(name);
-                if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
-                    let file = file.to_string_lossy();
-                    push(&mut a, &["--ro-bind", &file, &file]);
-                }
+            for file in resolver_files(Path::new("/etc/resolv.conf"), Path::new("/run")) {
+                let file = file.to_string_lossy();
+                push(&mut a, &["--ro-bind", &file, &file]);
             }
         }
         push(&mut a, &["--ro-bind", sock, crate::OWNER_CONFIRM_SOCK]);
@@ -918,6 +915,26 @@ reaches what a command could change, so commands are not run here"
     })
 }
 
+/// #1765: the resolver configuration files under `run_root` that online commands need after
+/// the runtime IPC masks: the two systemd names plus whatever `etc_resolv` resolves to when
+/// that is a regular file below `run_root` (resolvconf, NetworkManager, ...). Regular files
+/// only, so sockets and directories are never restored.
+pub(crate) fn resolver_files(etc_resolv: &Path, run_root: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = ["resolv.conf", "stub-resolv.conf"]
+        .iter()
+        .map(|n| run_root.join("systemd/resolve").join(n))
+        .collect();
+    if let Ok(target) = std::fs::canonicalize(etc_resolv) {
+        if target.starts_with(run_root) {
+            out.push(target);
+        }
+    }
+    out.retain(|f| std::fs::symlink_metadata(f).is_ok_and(|m| m.is_file()));
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// Keep IPC masks identical in both Bubblewrap launch paths. RP6: a listed socket
 /// (`sockets`, with its pinned descriptor) is not masked; inside a masked directory it is bound
 /// back before the directory turns read-only and recorded in `rebound`.
@@ -944,12 +961,9 @@ pub(crate) fn mask_runtime_ipc<'s>(
             }
             if net && p == Path::new("/run/systemd/resolve") {
                 // Preserve only DNS configuration online; all resolver IPC stays hidden.
-                for name in ["resolv.conf", "stub-resolv.conf"] {
-                    let file = p.join(name);
-                    if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
-                        let file = file.to_string_lossy();
-                        push(a, &["--ro-bind", &file, &file]);
-                    }
+                for file in resolver_files(Path::new("/etc/resolv.conf"), Path::new("/run")) {
+                    let file = file.to_string_lossy();
+                    push(a, &["--ro-bind", &file, &file]);
                 }
             }
             push(a, &["--remount-ro", &ps]);
@@ -2159,5 +2173,66 @@ mod detect_tests {
         assert_eq!(b.bwrap, script);
         assert_eq!(b.home, env.home());
         assert!(check_bwrap(&b).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod resolver_tests {
+    use super::*;
+
+    #[test]
+    fn resolver_files_follow_the_symlink_target_under_run_root() {
+        let env = oxa_fake::TestEnv::new();
+        let d = env.root().to_path_buf();
+        let run = d.join("run");
+        std::fs::create_dir_all(run.join("resolvconf")).unwrap();
+        let target = run.join("resolvconf/resolv.conf");
+        std::fs::write(&target, "nameserver 1.1.1.1\n").unwrap();
+        let etc = d.join("resolv.conf");
+        std::os::unix::fs::symlink(&target, &etc).unwrap();
+        let target = std::fs::canonicalize(&target).unwrap();
+        let run = std::fs::canonicalize(&run).unwrap();
+        assert_eq!(resolver_files(&etc, &run), vec![target]);
+        // Argv order is covered at the real `/run`: restored files come after the late tmpfs.
+        let spec = ExecSpec {
+            command: "true".into(),
+            cwd: env.work(),
+            writable: true,
+            net: true,
+            timeout_s: None,
+            env: vec![("OXA_CONFIRM_SOCK".into(), "/nonexistent/confirm.sock".into())],
+        };
+        let argv = bwrap_args(&spec, &env.home());
+        let tmpfs = argv
+            .windows(2)
+            .rposition(|w| w == ["--tmpfs", "/run"])
+            .expect("late /run tmpfs");
+        let sock = argv
+            .iter()
+            .position(|x| x == crate::OWNER_CONFIRM_SOCK)
+            .expect("broker bind");
+        for f in resolver_files(Path::new("/etc/resolv.conf"), Path::new("/run")) {
+            let f = f.to_string_lossy().into_owned();
+            let i = argv
+                .windows(3)
+                .position(|w| w == ["--ro-bind", &f, &f])
+                .expect("restored");
+            assert!(tmpfs < i && i < sock);
+        }
+        let off = ExecSpec { net: false, ..spec };
+        let argv = bwrap_args(&off, &env.home());
+        assert!(!argv
+            .iter()
+            .any(|x| x.starts_with("/run/") && x != crate::OWNER_CONFIRM_SOCK));
+        // A target outside run_root is not restored.
+        let outside = d.join("outside.conf");
+        std::fs::write(&outside, "x").unwrap();
+        let etc2 = d.join("resolv2.conf");
+        std::os::unix::fs::symlink(&outside, &etc2).unwrap();
+        assert!(resolver_files(&etc2, &run).is_empty());
+        // A directory is never restored.
+        let etc3 = d.join("resolv3.conf");
+        std::os::unix::fs::symlink(run.join("resolvconf"), &etc3).unwrap();
+        assert!(resolver_files(&etc3, &run).is_empty());
     }
 }
