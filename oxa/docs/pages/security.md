@@ -83,6 +83,7 @@ What a command sees:
 | your toolchains: `PATH` entries under home, rustup, mise and asdf, nvm and similar, uv, pipx, pyenv and rbenv, git configuration | read-only |
 | package caches of pip, uv, go, cargo registry, npm, pnpm, yarn, bun, deno | read-write |
 | `oxa.sandbox.readPaths`, `oxa.sandbox.writePaths` (user settings, `~/` expanded) | read-only, read-write |
+| a worker's shared build cache `<cache dir>/<hash>/cargo-target` (derived; user-only `oxa.workers.sharedCache`, `oxa.workers.cacheDir`) | read-write, the only path a worker derives for itself |
 | `.oxa`, `.agents/skills`, `.git/hooks`, `.git/config` inside a writable project | read-only |
 | a project's `.git` file (a worktree), `.git/config.worktree`, and a missing `.git/hooks` or `.git/config` | read-only; a missing one cannot be created (see below) |
 | the deny-list below | masked: an empty read-only tmpfs over a directory, `/dev/null` over a file |

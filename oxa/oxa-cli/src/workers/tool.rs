@@ -95,6 +95,8 @@ pub struct WorkerConfig {
     pub resume_on_start: bool,
     /// `oxa.workers.models`: the owner's model choice policy (empty: the session model).
     pub models: ModelPolicy,
+    /// #1541: the shared build cache of this repository, for the Workers view (`None`: off).
+    pub cache: Option<crate::worker_cache::CacheView>,
 }
 
 /// What the parent session allows a worker to have.
@@ -119,6 +121,7 @@ pub struct WorkerCore {
     agent_dir: PathBuf,
     max: AtomicUsize,
     models: Mutex<ModelPolicy>,
+    cache: Option<crate::worker_cache::CacheView>,
     sessions_dir: PathBuf,
     parent_env: Vec<(String, String)>,
     parent_scope: ParentScope,
@@ -464,6 +467,7 @@ impl WorkerCore {
             agent_dir: cfg.agent_dir,
             max: AtomicUsize::new(cfg.max),
             models: Mutex::new(cfg.models),
+            cache: cfg.cache,
             sessions_dir: cfg.sessions_dir,
             parent_env: cfg.parent_env,
             parent_scope: cfg.parent_scope,
@@ -883,7 +887,8 @@ impl WorkerCore {
         if records.is_empty() {
             return ToolOutput::ok("no workers in this session");
         }
-        let lines: Vec<String> = records.iter().map(|r| describe(r, &self.sessions_dir)).collect();
+        let mut lines: Vec<String> = records.iter().map(|r| describe(r, &self.sessions_dir)).collect();
+        lines.extend(self.cache.as_ref().and_then(crate::worker_cache::describe));
         ToolOutput::ok(lines.join("\n"))
     }
 
@@ -1543,6 +1548,7 @@ mod tests {
             yolo: YoloSwitch::new(autonomy),
             resume_on_start: true,
             models: ModelPolicy::default(),
+            cache: None,
         })
     }
 
