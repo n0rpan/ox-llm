@@ -144,6 +144,58 @@ fn not_fired_without_gated_resources() {
     );
 }
 
+#[test]
+fn content_policy_checks_changes_without_a_saved_folder_decision() {
+    for user_settings in [
+        r#"{"projectTrustPolicy":"content"}"#,
+        r#"{"projectTrustPolicy":"content","defaultProjectTrust":"always"}"#,
+    ] {
+        let env = TestEnv::new();
+        env.write("home/.oxa/agent/settings.json", user_settings);
+        project_ext(&env);
+        let marker = env.work().join("project-log.txt");
+        let (code, err) = go(&env);
+        assert_eq!(code, 0, "{err}");
+        assert!(marker.exists(), "first use still trusts the folder");
+        std::fs::remove_file(&marker).unwrap();
+        let (code, err) = go(&env);
+        assert_eq!(code, 0, "{err}");
+        assert!(marker.exists(), "unchanged content still loads");
+        std::fs::remove_file(&marker).unwrap();
+
+        env.write("work/.oxa/extensions/local.js", "// changed\n");
+        let (code, err) = go(&env);
+        assert_eq!(code, 0, "{err}");
+        assert!(
+            err.contains("Project config not loaded") && err.contains("local.js"),
+            "{err}"
+        );
+        assert_eq!(
+            oxa_perm::TrustStore::load(&env.agent_dir().join("trust.json")).lookup(&env.work()),
+            None
+        );
+    }
+}
+
+#[test]
+fn content_policy_tracks_first_resources_in_an_empty_default_trusted_project() {
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"projectTrustPolicy":"content"}"#,
+    );
+    let (code, err) = go(&env);
+    assert_eq!(code, 0, "{err}");
+    project_ext(&env);
+    let (code, err) = go(&env);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("Project config not loaded") && err.contains("local.js"),
+        "{err}"
+    );
+    assert!(!env.work().join("project-log.txt").exists());
+}
+
 /// #201 (3): a project trusted by a saved decision, with no project config when a session
 /// starts, gets its (empty) approval recorded at that start. `.oxa` content the session's tools
 /// then create is new at the next start and needs the normal approval instead of being taken

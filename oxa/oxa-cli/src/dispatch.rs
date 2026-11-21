@@ -22,7 +22,7 @@ use oxa_interactive::{
 };
 use oxa_perm::{
     gated_resources, resolve_trust, ApprovalDesk, DangerRules, DefaultTrust, ModePolicy, TrustInputs,
-    TrustOutcome, TrustStore, UnattendedMode, SHIPPED_DEFAULT_TRUST,
+    TrustOutcome, TrustStore, UnattendedMode,
 };
 use oxa_proto::{codes, Engine, EntryBody, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
 use oxa_resources::{discover, DiscoverOpts, Resources};
@@ -1464,6 +1464,7 @@ fn prepare(
         resources: &resources,
         sandbox: &hook_sandbox,
         trusted: direct_project_trust,
+        mode: table_mode,
         nested: child.nested(),
         env,
         yolo: yolo.clone(),
@@ -1637,17 +1638,20 @@ pub(crate) fn project_trusted(
             }
         }
     };
-    // Apply the owner's folder or content policy only after resolving trust.
-    let trusted = if trusted && !gated.is_empty() {
+    // Under content policy, a default-trusted empty project needs a baseline too:
+    // gated resources first created during the run must not be taken as its first snapshot.
+    let content = user_settings.project_trust_requires_content();
+    let via_default = extension.is_none() && saved.is_none() && default == DefaultTrust::Trust;
+    let trusted = if trusted && (!gated.is_empty() || (content && via_default)) {
         crate::approval::check(crate::approval::Check {
             env,
             dirs,
             cwd,
             store: &mut trust_store,
             via_flag: approve == Some(true),
-            via_default: extension.is_none() && saved.is_none() && default == DefaultTrust::Trust,
+            via_default,
             asked_now,
-            content: user_settings.project_trust_requires_content(),
+            content,
             interactive,
             notices,
         })?
@@ -1723,7 +1727,8 @@ fn help_extension_flags(a: &Args, env: &Env, cwd: &Path, err: &mut dyn Write) ->
     };
     let user = Settings::load(&dirs, cwd, false);
     let default = DefaultTrust::from_setting(user.project_trust_default());
-    let store = TrustStore::load(&dirs.trust_file());
+    let trust_file = dirs.trust_file();
+    let mut store = TrustStore::load(&trust_file);
     let saved = store.lookup(cwd);
     let gated = gated_resources(cwd);
     let trusted = resolve_trust(&TrustInputs {
@@ -1736,10 +1741,20 @@ fn help_extension_flags(a: &Args, env: &Env, cwd: &Path, err: &mut dyn Write) ->
     }) == TrustOutcome::Trusted;
     let trusted = if trusted && !gated.is_empty() {
         if user.project_trust_requires_content() {
-            // Only `--approve`, or the shipped default deciding it with no saved decision and
-            // no owner opt-out for the question, covers content this run did not record.
-            let blanket = a.approve == Some(true) || (saved.is_none() && default == SHIPPED_DEFAULT_TRUST);
-            blanket || !matches!(store.approval(cwd), oxa_perm::Approval::Changed(_))
+            a.approve == Some(true)
+                || match store.check_content(&trust_file, cwd) {
+                    Ok(oxa_perm::Approval::Matches | oxa_perm::Approval::NoRecord) => true,
+                    Ok(oxa_perm::Approval::Changed(changed)) => {
+                        let paths: Vec<_> = changed.iter().map(|ch| ch.path_line()).collect();
+                        let text = crate::approval::not_loaded_text(cwd, &paths);
+                        write_diagnostics(err, [(Level::Warning, text)].into_iter());
+                        false
+                    }
+                    Err(e) => {
+                        report(err, &e);
+                        false
+                    }
+                }
         } else {
             if let Some(text) = store.folder_changes_notice(cwd) {
                 write_diagnostics(err, [(Level::Warning, text)].into_iter());

@@ -144,6 +144,18 @@ impl TrustStore {
         }
     }
 
+    /// Apply the content policy after the caller has admitted the folder. Record its first
+    /// snapshot without saving a folder decision; later reads must compare to that snapshot.
+    pub fn check_content(&mut self, file: &Path, cwd: &Path) -> Result<Approval, OxaError> {
+        match self.approval(cwd) {
+            Approval::NoRecord => {
+                self.record_baseline(file, cwd)?;
+                Ok(self.approval(cwd))
+            }
+            approval => Ok(approval),
+        }
+    }
+
     /// Report differences without granting content approval or printing file contents.
     pub fn folder_changes_notice(&self, cwd: &Path) -> Option<String> {
         let record = self.approved.get(&key_string(cwd))?;

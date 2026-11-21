@@ -488,8 +488,10 @@ read its result; they never launch builds or tests.
   owner opt-ins, the user layer only; a saved decision (the closest saved parent) and `--no-approve`
   still win, and a user settings file that cannot be read fails safe to `never`. Report new or changed
   gated resources by path when loading them. `projectTrustPolicy: "content"` is user-only and retains
-  executable-content re-approval; loading changes under folder trust does not approve those bytes for
-  content policy or managed-worktree inheritance. Preserve explicit denials, safe paths and the owner
+  executable-content re-approval, including when `always` admits the folder without a saved decision.
+  The content opt-in records the first snapshot; loading changes under folder trust does not approve
+  those bytes for content policy or managed-worktree inheritance. MCP startup still honors the session's
+  effective plan mode; project MCP sign-in checks the same project trust as listing. Preserve explicit denials, safe paths and the owner
   approval route. Trusted unattended checks run; untrusted checks report why and how the owner can
   approve the source rather than silently skipping. A finding that asks for the question to be the
   default is answered here.

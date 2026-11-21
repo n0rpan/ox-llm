@@ -1324,6 +1324,17 @@ fn sec_008() {
         "SEC-008: plan mode must not start an MCP stdio server"
     );
 
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"permissions":{"defaultMode":"plan"}}"#,
+    );
+    let owner_plan = drive(&env, &[], "hi");
+    assert_success(&owner_plan.out);
+    assert!(
+        !plan_marker.exists(),
+        "the owner's default plan also denies MCP startup"
+    );
+
     let work_marker = marker(&env, "sec008-workspace");
     env.write("home/.oxa/agent/mcp.json", &marker_mcp(&work_marker));
     let workspace = drive(&env, &["--permission-mode", "workspace"], "hi");

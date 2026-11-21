@@ -49,19 +49,12 @@ pub(crate) fn check(c: Check<'_>) -> Result<bool, OxaError> {
         }
         return Ok(true);
     }
-    if c.via_default && !c.via_flag {
-        return Ok(true);
-    }
     if c.via_flag || c.asked_now {
         c.store.approve(&file, c.cwd)?;
         return Ok(true);
     }
-    match c.store.approval(c.cwd) {
-        Approval::Matches => Ok(true),
-        Approval::NoRecord => {
-            c.store.approve(&file, c.cwd)?;
-            Ok(true)
-        }
+    match c.store.check_content(&file, c.cwd)? {
+        Approval::Matches | Approval::NoRecord => Ok(true),
         Approval::Changed(changed) => {
             let lines: Vec<String> = changed.iter().map(|ch| ch.line()).collect();
             if !c.interactive {
@@ -103,7 +96,8 @@ pub(crate) fn saved_project_resources(
     err: &mut dyn Write,
 ) -> Result<bool, OxaError> {
     let owner = Settings::load(dirs, cwd, false);
-    let store = TrustStore::load(&dirs.trust_file());
+    let trust_file = dirs.trust_file();
+    let mut store = TrustStore::load(&trust_file);
     let default = DefaultTrust::from_setting(owner.project_trust_default());
     // The same decision [`saved_trust`] makes for `/reload` and workers, except that this command
     // reads the project settings file itself: that file is the gated resource, so a project
@@ -121,7 +115,7 @@ pub(crate) fn saved_project_resources(
         return Ok(false);
     }
     if owner.project_trust_requires_content() {
-        if let Approval::Changed(changed) = store.approval(cwd) {
+        if let Approval::Changed(changed) = store.check_content(&trust_file, cwd)? {
             let paths: Vec<_> = changed.iter().map(|ch| ch.path_line()).collect();
             writeln!(err, "{}", not_loaded_text(cwd, &paths))
                 .map_err(|e| OxaError::io("write output", &e))?;

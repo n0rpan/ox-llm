@@ -204,7 +204,7 @@ These paths are found once, when oxa starts, by reading files only. Git is not r
 
 A project can carry configuration that runs code or loads code: settings with hooks, MCP servers, extensions, skills, prompts, and system prompt files. oxa trusts the project by default, so these load without a question. Trust decides only what loads: a project can never change your user settings, your secrets never reach the model, and offline mode stays offline whether or not a project is trusted.
 
-- By default a project is trusted the first time oxa starts in it, so no question is asked, its resources load and no trust decision or content record is written: `trust.json` changes only when you decide (the question, `/trust` or `--approve`).
+- With the default folder policy, oxa trusts a new project without asking or writing a folder decision or content record. The question, `/trust` and `--approve` can record approval.
 - `defaultProjectTrust` sets the answer when no decision is recorded: `always` (the default), `ask` or `never`. It is a user setting. With `ask`, oxa asks once per project in the interface; the options are "Trust this project", "Trust parent directory ... and projects below it" (when offered), "Do not trust (remember)" and "Decide later". Print, JSON and RPC runs never ask: with `ask` they skip the project's resources, and with `never` every run does. `/trust` records a decision at any time.
 - A saved decision written by the question or `/trust` wins over the default. `--no-approve` (`-na`) and `defaultProjectTrust: "never"` skip the project's resources for that run or everywhere.
 - If your user settings file exists but cannot be read, oxa fails safe: `defaultProjectTrust` counts as `never` until you fix the file, whatever the file said.
@@ -215,7 +215,7 @@ A project can carry configuration that runs code or loads code: settings with ho
 
 With `projectTrustPolicy: "content"`, the rules below apply. Loading a change under folder policy does not approve those bytes for content policy later.
 
-Trust covers the content, not just the directory. Once you trust a project, oxa records a hash of each file that runs or loads code: the project's `settings.json` keys that do this, `mcp.json`, `SYSTEM.md`, `APPEND_SYSTEM.md`, and everything under `.oxa/extensions`, `.oxa/skills`, `.oxa/prompts`, and `.agents/skills`. The model can write these files, so if one changes:
+Trust covers the content, not just the directory. On first use of a trusted project, oxa records a content snapshot even if the folder was trusted by default. This does not save a folder decision. The snapshot covers files that run or load code: the project's `settings.json` keys that do this, `mcp.json`, `SYSTEM.md`, `APPEND_SYSTEM.md`, and everything under `.oxa/extensions`, `.oxa/skills`, `.oxa/prompts`, and `.agents/skills`. The model can write these files, so if one changes:
 
 - in the interface, oxa asks again and lists each changed file;
 - in print, JSON and RPC modes, the changed resources are not loaded and a notice names the files.

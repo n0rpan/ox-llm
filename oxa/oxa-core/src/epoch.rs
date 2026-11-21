@@ -266,7 +266,8 @@ fn project_trusted(st: &SessionState, sink: &mut dyn EventSink) -> bool {
         return false;
     }
     let owner = Settings::load(&st.dirs, &st.cwd, false);
-    let store = TrustStore::load(&st.dirs.trust_file());
+    let trust_file = st.dirs.trust_file();
+    let mut store = TrustStore::load(&trust_file);
     let outcome = saved_trust(
         &store,
         &st.cwd,
@@ -276,7 +277,23 @@ fn project_trusted(st: &SessionState, sink: &mut dyn EventSink) -> bool {
         return false;
     }
     if owner.project_trust_requires_content() {
-        return !matches!(store.approval(&st.cwd), oxa_perm::Approval::Changed(_));
+        let text = match store.check_content(&trust_file, &st.cwd) {
+            Ok(oxa_perm::Approval::Matches | oxa_perm::Approval::NoRecord) => return true,
+            Ok(oxa_perm::Approval::Changed(changed)) => format!(
+                "Project config not loaded: {}. Restart and approve the changes to load it.",
+                changed
+                    .iter()
+                    .map(|ch| ch.path_line())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Err(err) => err.message,
+        };
+        sink.emit(&AgentEvent::Notice {
+            level: Level::Warning,
+            text,
+        });
+        return false;
     }
     if let Some(text) = store.folder_changes_notice(&st.cwd) {
         sink.emit(&AgentEvent::Notice {
