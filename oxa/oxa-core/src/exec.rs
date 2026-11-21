@@ -4,9 +4,9 @@ use crate::agent_loop::persist;
 use crate::host::{fire_hook, pumped, serve_level, Serve};
 use crate::SessionState;
 use oxa_proto::{
-    codes, rebase_why, tool_errors, wire_is_prefix, Access, AgentEvent, Answer, AssistantTurn, ChatRequest,
-    DangerAnswer, Decision, EntryBody, EventMessage, EventSink, Hints, HookPoint, HookReply, Level,
-    MessageDelta, OxaError, StopReason, StreamEvent, Tool, ToolCall, ToolClass, ToolCtx, ToolOutput,
+    codes, rebase_why, shown_why, tool_errors, wire_is_prefix, Access, AgentEvent, Answer, AssistantTurn,
+    ChatRequest, DangerAnswer, Decision, EntryBody, EventMessage, EventSink, Hints, HookPoint, HookReply,
+    Level, MessageDelta, OxaError, StopReason, StreamEvent, Tool, ToolCall, ToolClass, ToolCtx, ToolOutput,
     TurnKind, Ui, Usage, Value, WireMsg,
 };
 use sha2::{Digest, Sha256};
@@ -85,11 +85,15 @@ pub fn request(
     } else {
         request_messages(&wire, &opts.extra)
     };
-    // History can contain image parts produced before a switch to a text-only model. Keep the
-    // transcript intact, but never put unsupported parts in this model's request.
-    if st.info.images != Some(true) {
-        msgs = without_images(msgs);
-    }
+    // History can contain image parts produced before a switch to a text-only model, or more
+    // image bytes than the owner's current budget. Keep the transcript intact, but send only
+    // what this model and the owner's settings allow.
+    msgs = shape_images(
+        msgs,
+        st.info.images == Some(true),
+        !st.tune.image_input,
+        st.tune.max_image_bytes,
+    );
     let idem = if opts.idem_key.is_empty() {
         new_idem_key(st)
     } else {
@@ -240,6 +244,63 @@ fn request_messages(wire: &Arc<Vec<WireMsg>>, extra: &[WireMsg]) -> Arc<Vec<Wire
     v.extend(wire.iter().cloned());
     v.extend(extra.iter().cloned());
     Arc::new(v)
+}
+
+/// The images of `messages` a request may send (#1922, #1923). A model without image input gets
+/// none, silently. With the owner's `images.blockImages` none are sent and a text marker says
+/// so. Otherwise the newest images that fit `oxa.read.maxImageBytes` (`0` = no limit) are sent
+/// and the oldest are replaced by a marker, so a lowered limit bounds every later request. The
+/// stored transcript is never changed.
+fn shape_images(
+    messages: Arc<Vec<WireMsg>>,
+    model_takes_images: bool,
+    owner_blocks: bool,
+    max: u32,
+) -> Arc<Vec<WireMsg>> {
+    if !model_takes_images {
+        return without_images(messages);
+    }
+    if !messages.iter().any(|message| !message.images.is_empty()) {
+        return messages;
+    }
+    if !owner_blocks && (max == 0 || retained_image_bytes(&messages) <= u64::from(max)) {
+        return messages;
+    }
+    let mut shaped = messages.as_ref().clone();
+    let mut room = if owner_blocks { 0 } else { u64::from(max) };
+    let mut full = owner_blocks;
+    for message in shaped.iter_mut().rev() {
+        if message.images.is_empty() {
+            continue;
+        }
+        let mut kept = Vec::new();
+        let mut omitted = 0usize;
+        for image in std::mem::take(&mut message.images).into_iter().rev() {
+            let bytes = decoded_image_bytes(&image.base64);
+            if !full && bytes <= room {
+                room -= bytes;
+                kept.push(image);
+            } else {
+                full = true;
+                omitted += 1;
+            }
+        }
+        kept.reverse();
+        message.images = kept;
+        if omitted > 0 {
+            let why = if owner_blocks {
+                "images.blockImages is on".to_string()
+            } else {
+                format!("over the {max}-byte oxa.read.maxImageBytes budget")
+            };
+            let note = format!("[{omitted} image(s) not sent: {why}; the session keeps them]");
+            message.content = Some(match message.content.take() {
+                Some(text) if !text.is_empty() => format!("{text}\n{note}"),
+                _ => note,
+            });
+        }
+    }
+    Arc::new(shaped)
 }
 
 fn without_images(messages: Arc<Vec<WireMsg>>) -> Arc<Vec<WireMsg>> {
@@ -408,9 +469,6 @@ pub(crate) fn run_calls(
     // alone, so writes and exec calls are serial.
     let n = prepared.len();
     let mut outputs: Vec<Option<(ToolOutput, Duration)>> = (0..n).map(|_| None).collect();
-    // The same owner limit bounds retained history as well as this batch. Otherwise a model can
-    // accumulate one limit-sized image per turn and make every later request grow without bound.
-    let mut image_bytes = retained_image_bytes(st.transcript.wire());
     // F1: results shaped ahead for the tool-result prefill (reused in phase 3 when unchanged).
     let mut early: Vec<Option<Early>> = (0..n).map(|_| None).collect();
     let mut prefilled = false;
@@ -443,7 +501,7 @@ pub(crate) fn run_calls(
             // Held while the call runs: an unwind ends the prefill too.
             let guard = warming.then(|| PrefillGuard(st.shared.clone()));
             let (mut output, duration) = run_one(st, &prepared[i], sink, ui);
-            admit_batch_images(&mut output, &mut image_bytes, st.tune.max_image_bytes);
+            admit_batch_images(&mut output, st.tune.max_image_bytes);
             outputs[i] = Some((output, duration));
             if let Some(guard) = guard {
                 prefilled = finish_tool_prefill(guard, sink);
@@ -538,10 +596,10 @@ fn retained_image_bytes(messages: &[WireMsg]) -> u64 {
         .fold(0, u64::saturating_add)
 }
 
-/// Admit image data against one aggregate raw-byte budget for retained history and this batch.
-/// Image-producing reads are serialized above, so a refused result is dropped before the next
-/// image is allocated. A zero owner limit deliberately remains unlimited.
-fn admit_batch_images(output: &mut ToolOutput, used: &mut u64, max: u32) {
+/// Refuse one tool result whose images alone are over `oxa.read.maxImageBytes` (a zero limit is
+/// unlimited). Older images are bounded at request time by [`shape_images`], not here, so a
+/// lowered limit also applies to history; [`note_stored_images`] records the stored total.
+fn admit_batch_images(output: &mut ToolOutput, max: u32) {
     if output.images.is_empty() || max == 0 {
         return;
     }
@@ -549,15 +607,64 @@ fn admit_batch_images(output: &mut ToolOutput, used: &mut u64, max: u32) {
         .images
         .iter()
         .map(|image| decoded_image_bytes(&image.base64))
-        .sum::<u64>();
+        .fold(0, u64::saturating_add);
     let limit = u64::from(max);
-    if used.saturating_add(bytes) > limit {
+    if bytes > limit {
         *output = ToolOutput::error(format!(
-            "Images not sent: retained session images and this tool-call batch are over the {limit}-byte image budget (oxa.read.maxImageBytes)."
+            "Images not sent: this tool-call batch is over the {limit}-byte image budget (oxa.read.maxImageBytes)."
         ));
-    } else {
-        *used += bytes;
     }
+}
+
+/// The raw image bytes the whole session tree stores, also what a compaction no longer sends.
+fn stored_image_bytes(entries: &[oxa_proto::Entry]) -> u64 {
+    entries
+        .iter()
+        .filter_map(|entry| match &entry.body {
+            EntryBody::Msg { wire, .. } => Some(wire),
+            _ => None,
+        })
+        .flat_map(|wire| &wire.images)
+        .map(|image| decoded_image_bytes(&image.base64))
+        .fold(0, u64::saturating_add)
+}
+
+/// Warn once per session, and record it, when the images the session stores pass the owner's
+/// `oxa.read.maxImageBytes` (#1924). Nothing is refused: older images stop being sent
+/// ([`shape_images`]) but stay in the session file, which the owner can prune.
+pub(crate) fn note_stored_images(
+    st: &mut SessionState,
+    results: &[CallResult],
+    sink: &mut dyn EventSink,
+) -> Result<(), OxaError> {
+    let max = u64::from(st.tune.max_image_bytes);
+    if max == 0
+        || !results.iter().any(|result| !result.msg.images.is_empty())
+        || st.shared.gate.image_budget_warned.load(Ordering::SeqCst)
+    {
+        return Ok(());
+    }
+    let stored = stored_image_bytes(st.tree.entries());
+    if stored <= max {
+        return Ok(());
+    }
+    st.shared.gate.image_budget_warned.store(true, Ordering::SeqCst);
+    let text = format!(
+        "This session stores {stored} bytes of images, over the {max}-byte oxa.read.maxImageBytes budget. Older images are no longer sent to the model; the session file keeps them."
+    );
+    sink.emit(&AgentEvent::Notice {
+        level: Level::Warning,
+        text: text.clone(),
+    });
+    crate::agent_loop::persist(
+        st,
+        EntryBody::Shown {
+            text,
+            why: shown_why::NOTICE,
+        },
+        sink,
+    )?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -778,12 +885,14 @@ fn start_tool_prefill(
         return false;
     }
     let cap = crate::tune::output_cap(st);
-    let mut msgs: Vec<WireMsg> = wire.to_vec();
-    if st.info.images != Some(true) {
-        for msg in &mut msgs {
-            msg.images.clear();
-        }
-    }
+    // The same images a request would send, so the prefilled prompt is the one that follows.
+    let shaped = shape_images(
+        Arc::new(wire.to_vec()),
+        st.info.images == Some(true),
+        !st.tune.image_input,
+        st.tune.max_image_bytes,
+    );
+    let mut msgs: Vec<WireMsg> = Arc::try_unwrap(shaped).unwrap_or_else(|shared| (*shared).clone());
     let mut bytes = 0usize;
     for k in 0..i {
         let Some((out, _)) = &outputs[k] else {
@@ -1858,53 +1967,118 @@ mod request_messages_tests {
         assert_eq!(request[0].content, history[0].content);
     }
 
-    #[test]
-    fn aggregate_image_budget_refuses_the_result_that_crosses_it() {
-        let image = || oxa_proto::WireImage {
+    fn png(base64: &str) -> oxa_proto::WireImage {
+        oxa_proto::WireImage {
             mime: "image/png".into(),
-            base64: "AAAAAAAA".into(), // six decoded bytes
-        };
-        let mut used = 0;
-        let mut first = ToolOutput::ok("first");
-        first.images.push(image());
-        admit_batch_images(&mut first, &mut used, 10);
-        assert_eq!(used, 6);
-        assert_eq!(first.images.len(), 1);
+            base64: base64.into(),
+        }
+    }
 
-        let mut second = ToolOutput::ok("second");
-        second.images.push(image());
-        admit_batch_images(&mut second, &mut used, 10);
-        assert!(second.is_error);
-        assert!(second.images.is_empty());
-        assert_eq!(used, 6);
+    fn image_msg(id: &str, text: &str, base64: &str) -> WireMsg {
+        let mut message = WireMsg::tool_result(id, text);
+        message.images.push(png(base64));
+        message
+    }
+
+    /// One batch whose images alone pass the limit is refused; nothing else is counted here.
+    #[test]
+    fn a_single_batch_over_the_limit_is_refused() {
+        let mut fits = ToolOutput::ok("fits");
+        fits.images.push(png("AAAAAAAA")); // six decoded bytes
+        admit_batch_images(&mut fits, 6);
+        assert!(!fits.is_error);
+        assert_eq!(fits.images.len(), 1);
+
+        let mut over = ToolOutput::ok("over");
+        over.images.push(png("AAAAAAAA"));
+        admit_batch_images(&mut over, 5);
+        assert!(over.is_error);
+        assert!(over.images.is_empty());
+
+        let mut unlimited = ToolOutput::ok("unlimited");
+        unlimited.images.push(png("AAAAAAAA"));
+        admit_batch_images(&mut unlimited, 0);
+        assert_eq!(unlimited.images.len(), 1);
     }
 
     #[test]
-    fn image_budget_counts_padding_and_retained_history() {
-        let image = |base64: &str| oxa_proto::WireImage {
-            mime: "image/png".into(),
-            base64: base64.into(),
-        };
+    fn image_bytes_subtract_base64_padding() {
         assert_eq!(decoded_image_bytes("AQ=="), 1);
         assert_eq!(decoded_image_bytes("AQI="), 2);
         assert_eq!(decoded_image_bytes("AQID"), 3);
+    }
 
-        let mut retained = WireMsg::tool_result("old", "old image");
-        retained.images.push(image("AQID"));
-        let mut used = retained_image_bytes(&[retained]);
-        assert_eq!(used, 3);
+    /// #1923: a lowered limit bounds the images a request sends. The newest fit, the oldest are
+    /// replaced by a marker, and the stored history is not changed.
+    #[test]
+    fn a_request_sends_only_the_newest_images_that_fit_the_current_limit() {
+        let history = Arc::new(vec![
+            image_msg("old", "first", "AAAAAAAA"),  // 6 bytes
+            image_msg("mid", "second", "AAAAAAAA"), // 6 bytes
+            image_msg("new", "third", "AAAAAAAA"),  // 6 bytes
+        ]);
+        let sent = shape_images(Arc::clone(&history), true, false, 13);
+        assert!(sent[0].images.is_empty());
+        assert!(sent[0]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("1 image(s) not sent"));
+        assert!(sent[0]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("oxa.read.maxImageBytes"));
+        assert_eq!(sent[1].images.len(), 1);
+        assert_eq!(sent[2].images.len(), 1);
+        assert!(
+            history.iter().all(|m| m.images.len() == 1),
+            "the stored history is untouched"
+        );
+        assert_eq!(history[0].content.as_deref(), Some("first"));
 
-        let mut exact = ToolOutput::ok("new image");
-        exact.images.push(image("AQI="));
-        admit_batch_images(&mut exact, &mut used, 5);
-        assert_eq!(used, 5);
-        assert_eq!(exact.images.len(), 1);
+        // Within the limit, or with no limit, the very same messages go out.
+        assert!(Arc::ptr_eq(
+            &shape_images(Arc::clone(&history), true, false, 18),
+            &history
+        ));
+        assert!(Arc::ptr_eq(
+            &shape_images(Arc::clone(&history), true, false, 0),
+            &history
+        ));
+    }
 
-        let mut over = ToolOutput::ok("one too many");
-        over.images.push(image("AQ=="));
-        admit_batch_images(&mut over, &mut used, 5);
-        assert!(over.is_error);
-        assert!(over.images.is_empty());
+    /// #1746 item 1: `images.blockImages` also applies to images already in the history.
+    #[test]
+    fn blocking_images_hides_stored_ones_with_a_marker() {
+        let history = Arc::new(vec![image_msg("a", "read result", "AQID")]);
+        let sent = shape_images(Arc::clone(&history), true, true, 0);
+        assert!(sent[0].images.is_empty());
+        assert!(sent[0]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("images.blockImages is on"));
+        assert_eq!(history[0].images.len(), 1);
+    }
+
+    #[test]
+    fn stored_image_bytes_count_the_whole_tree_not_only_the_active_wire() {
+        let entry = |id: &str, wire: WireMsg| oxa_proto::Entry {
+            id: id.into(),
+            parent: None,
+            ts_ms: 0,
+            body: EntryBody::Msg {
+                wire,
+                parts: Vec::new(),
+                tool: None,
+            },
+        };
+        let entries = vec![
+            entry("a", image_msg("1", "x", "AQID")),
+            entry("b", image_msg("2", "y", "AQI=")),
+        ];
+        assert_eq!(stored_image_bytes(&entries), 5);
     }
 }
 

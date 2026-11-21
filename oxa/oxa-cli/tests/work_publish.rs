@@ -30,7 +30,14 @@ case "$1 $2" in
     fi
     printf '{"nameWithOwner":"example/project","url":"https://%s/example/project"}' "$host"
     if test -f "$HOME/oversized-repo-response"; then head -c 1048576 /dev/zero | tr '\000' ' '; fi ;;
-  'pr list') if test -f "$HOME/pr-state.json"; then printf '['; cat "$HOME/pr-state.json"; printf ']'; else printf '[]'; fi ;;
+  'pr list')
+    if test -f "$HOME/move-head-on-pr-list"; then
+      rm "$HOME/move-head-on-pr-list"
+      printf moved > later.txt
+      /usr/bin/git add later.txt
+      /usr/bin/git -c user.name=t -c user.email=t@example.invalid commit -m 'moved after preflight' >/dev/null
+    fi
+    if test -f "$HOME/pr-state.json"; then printf '['; cat "$HOME/pr-state.json"; printf ']'; else printf '[]'; fi ;;
   'api graphql') if test -f "$HOME/queued"; then printf '%s' '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":{"id":"queue"}}}}}'; else printf '%s' '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":null}}}}'; fi ;;
   'pr create')
     draft=false
@@ -663,6 +670,7 @@ fn green_rerun_can_publish_after_red_remained_local() {
     );
     assert_eq!(red["draft"], false, "{red}");
     assert!(red["pull_request"].is_null());
+    assert!(red["detail"].as_str().unwrap().contains("not published"), "{red}");
     let green = run_args(
         &env,
         vec![
@@ -968,6 +976,24 @@ esac
         unauthorized.is_empty(),
         "public writes without confirmation: {unauthorized:?}"
     );
+}
+
+#[test]
+fn publish_refuses_head_changed_since_preflight() {
+    let env = TestEnv::new();
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
+    let path = configure(&env);
+    let done = run(&env, edits());
+    assert_eq!(done["outcome"], "done", "{done}");
+    env.write("home/move-head-on-pr-list", "move once");
+
+    let record = run_args(&env, vec![], &["work", "../tasks.json", "--publish"], Some(path));
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(record["detail"]
+        .as_str()
+        .unwrap()
+        .contains("changed during confirmation"));
+    assert!(!env.home().join("push-calls").exists());
 }
 
 fn write_turns(path: &str, content: &str) -> Vec<ScriptTurn> {

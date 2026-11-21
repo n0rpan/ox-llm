@@ -843,6 +843,18 @@ fn publish_locked(
     if !super::completed_execution(value.record.step)
         || !matches!(accepted, Outcome::Done | Outcome::NothingToDo)
     {
+        // Say why nothing was published; the unsaved copy carries the note, the checkpoint
+        // stays as it was.
+        let why = format!(
+            "not published: only a finished task accepted as done can be published (this one is {accepted:?} at {:?})",
+            value.record.step
+        )
+        .to_lowercase();
+        value.record.detail = if value.record.detail.is_empty() {
+            why
+        } else {
+            format!("{}; {why}", value.record.detail)
+        };
         return Ok(value.record);
     }
     value.record.acceptance_outcome = Some(accepted);
@@ -894,23 +906,26 @@ fn publish_locked(
         {
             return Err("nothing to publish".into());
         }
-        let existing_body = if let Some(pr) = prs.first() {
+        let (pr_action, existing_body) = if let Some(pr) = prs.first() {
             let number = pr["number"].as_u64().ok_or("PR number missing")?.to_string();
             let value = json(&gh(
                 tree,
                 lock,
                 &["pr", "view", &number, "--repo", name, "--json", "body"],
             )?)?;
-            Some(value["body"].as_str().ok_or("PR body missing")?.to_owned())
+            (
+                format!("update PR #{number}"),
+                Some(value["body"].as_str().ok_or("PR body missing")?.to_owned()),
+            )
         } else {
-            None
+            ("create a PR".into(), None)
         };
         let text = body(task, &head, value.record.lane.as_ref(), existing_body.as_deref())?;
         if confirm(&format!(
-            "Push accepted commit {head} as {} to origin and create/update its PR in {name} (base {base})? Type yes to publish: ",
+            "Push accepted commit {head} as {} to origin and {pr_action} in {name} (base {base})? Type yes to publish: ",
             task.branch
         )) != Some(true) {
-            return Err("publication requires confirmation through the controlling terminal".into());
+            return Err("not published: the owner did not confirm (a session answers through its owner confirm broker, a terminal through /dev/tty)".into());
         }
         if remote != checked(git(repo, &["remote", "get-url", "--push", "--all", "origin"]))?
             || head != checked(git(tree, &["rev-parse", "HEAD"]))?
