@@ -162,7 +162,7 @@ pub(crate) fn read_back(
 /// push says what the remote holds. No force push anywhere.
 pub(crate) fn push_with_receipt(
     policy: &RunPolicy,
-    auth: Option<(&str, &super::committed::Export)>,
+    auth: Option<(&str, &crate::committed::Export)>,
     repo: &Path,
     head: &str,
     branch: &str,
