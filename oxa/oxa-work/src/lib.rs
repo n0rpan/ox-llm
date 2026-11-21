@@ -70,6 +70,7 @@ pub use github::{
     ReviewedPullRequest,
 };
 pub mod incidents;
+pub mod kanban;
 pub mod situation;
 pub mod standing;
 pub use publish::{

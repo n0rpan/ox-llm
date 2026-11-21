@@ -1,5 +1,6 @@
 //! Registry-neutral HTTP adapter. No listener, identity policy or command is declared here.
 //! The owner-approved caller binds the listener and supplies verified request authorization.
+use crate::lead_assets::{etag, Reply};
 use crate::lead_page::Page;
 use oxa_http::server::{
     content_length, parse_headers, parse_request_line, read_head, split_head, HeadError, Headers,
@@ -294,7 +295,7 @@ fn connection_fixed(
                 },
             );
         })
-        .and_then(|(r, fields)| {
+        .and_then(|(r, fields, head)| {
             // Answers to approval requests need the owner form; the fixed prompts never reach them.
             let post = (r.method == "POST" && r.path == "/chat" && (form.is_some() || owner.is_some()))
                 || (r.method == "POST" && r.path == "/approvals" && owner.is_some());
@@ -325,7 +326,7 @@ fn connection_fixed(
             if let (true, Some(token)) = (r.method == "GET" && r.token_in_query, r.client_token) {
                 set_cookie =
                     format!("Set-Cookie: {TOKEN_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/\r\n");
-                return Ok((r.path, Some(r.path.to_string())));
+                return Ok((r.path, Some(r.path.to_string()), head));
             }
             let page = if post {
                 let scheme = form.map_or("https", |form| form.scheme);
@@ -442,43 +443,61 @@ fn connection_fixed(
             } else {
                 None
             };
-            Ok((r.path, page))
+            Ok((r.path, page, head))
         });
     // The live stream starts only after the same authorization as every other path.
-    if let (Ok((path, None)), Some(live)) = (&allowed, live) {
+    if let (Ok((path, None, _)), Some(live)) = (&allowed, live) {
         if *path == "/events/live" {
             return stream_live(&mut stream, live, form.is_some() || owner.is_some());
         }
     }
-    let location = match &allowed {
-        Ok((_, Some(target))) => format!("Location: {target}\r\n{set_cookie}"),
-        _ => String::new(),
+    // The validator, the encoding and the headers a response reads are the request's own
+    // well-formed header block; a refused request has none and gets a plain answer.
+    let empty = "";
+    let request_headers = match &allowed {
+        Ok((_, _, head)) => *head,
+        Err(_) => empty,
     };
-    let (status, kind, body) = match allowed {
-        Ok((_, Some(_))) => ("303 See Other", "text/plain", String::new()),
-        Ok(("/events", None)) => (
+    let request_headers = match oxa_http::server::parse_headers(request_headers) {
+        Ok(headers) => headers,
+        Err(_) => return Ok(()),
+    };
+    // Every path below has already been authorized, so a validator, a `304` and a compressed
+    // body never answer an unauthorized request.
+    let has_form = form.is_some() || owner.is_some();
+    let (form_action, referrer) = if has_form {
+        ("'self'", "same-origin")
+    } else {
+        ("'none'", "no-referrer")
+    };
+    let reply = match &allowed {
+        Ok((_, Some(target), _)) => Reply::redirect(&format!("{target}\r\n{set_cookie}")),
+        Ok(("/events", None, _)) => Reply::plain(
             "200 OK",
             "text/event-stream",
-            format!(
+            &format!(
                 "retry: 5000\nevent: snapshot\ndata: {}\n\n",
                 render(Page::Home, true)
             ),
+            form_action,
+            referrer,
         ),
-        Ok(("/style.css", None)) => ("200 OK", "text/css", crate::lead_page::STYLE.into()),
-        Ok(("/live.js", None)) => ("200 OK", "text/javascript", crate::lead_page::SCRIPT.into()),
-        Ok((path, None)) => match Page::request(path) {
-            Some((page, fragment)) => ("200 OK", "text/html", render(page, fragment)),
-            None => ("404 Not Found", "text/plain", "Not found".into()),
+        Ok((path, None, _)) => match Reply::asset(path, &request_headers) {
+            Some(reply) => reply,
+            None => match Page::request(path) {
+                Some((page, fragment)) => {
+                    let body = render(page, fragment);
+                    let tag = etag(path, fragment, &body);
+                    Reply::page("200 OK", body, &tag, &request_headers, form_action, referrer)
+                }
+                None => Reply::plain("404 Not Found", "text/plain", "Not found", form_action, referrer),
+            },
         },
-        Err(status) => (status, "text/plain", "Request refused".into()),
+        Err(status) => Reply::plain(status, "text/plain", "Request refused", form_action, referrer),
     };
-    let has_form = form.is_some() || owner.is_some();
-    let form_action = if has_form { "'self'" } else { "'none'" };
-    let referrer = if has_form { "same-origin" } else { "no-referrer" };
-    let headers = format!("HTTP/1.1 {status}\r\n{location}Content-Type: {kind}; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action {form_action}\r\nReferrer-Policy: {referrer}\r\n\r\n", body.len());
     write_response(
         &mut stream,
-        &[headers.as_bytes(), body.as_bytes()],
+        &[reply.head().as_bytes(), reply.body()],
         Duration::from_secs(5),
     )
 }
@@ -724,7 +743,13 @@ fn scan<'a>(headers: &Headers<'a>) -> Result<Scanned<'a>, &'static str> {
     Ok((login, authority, fields, length))
 }
 
-fn request(bytes: &[u8], fixed: bool, owner: bool) -> Result<(Request<'_>, Fields<'_>), &'static str> {
+/// One parsed request: the routing fields, and the headers the response builder reads back
+/// for a validator or an encoding (`If-None-Match`, `Accept-Encoding`).
+fn request<'a>(
+    bytes: &'a [u8],
+    fixed: bool,
+    owner: bool,
+) -> Result<(Request<'a>, Fields<'a>, &'a str), &'static str> {
     const BAD: &str = "400 Bad Request";
     let (line, block) = split_head(bytes).map_err(|e| match e {
         HeadError::Closed => "431 Request Header Fields Too Large",
@@ -783,6 +808,7 @@ fn request(bytes: &[u8], fixed: bool, owner: bool) -> Result<(Request<'_>, Field
             denied: std::cell::Cell::new(403),
         },
         fields,
+        block,
     ))
 }
 
@@ -897,7 +923,11 @@ mod tests {
                 "authorized={allowed}, origin={origin}, fetch_site={site:?}, framing={framing:?}: {reply}"
             );
             assert_eq!(count.load(Ordering::SeqCst), usize::from(expected == "303"));
-            assert_eq!(reply.contains("Location: /chat\r\n"), expected == "303");
+            assert_eq!(
+                reply.lines().any(|line| line == "Location: /chat"),
+                expected == "303",
+                "{reply}"
+            );
             // The transport reports only its own chat refusals: identity belongs to the
             // caller's authorization; framing failures carry one fixed early-parse line.
             let facts = facts.lock().unwrap();
@@ -1112,23 +1142,269 @@ mod tests {
     }
     #[test]
     fn shared_renderer_and_sse_read_one_snapshot_after_authorization() {
-        for path in ["/", "/events", "/style.css", "/live.js", "/unknown"] {
+        let (style, script) = (
+            crate::lead_assets::style_path(),
+            crate::lead_assets::script_path(),
+        );
+        for path in [
+            "/",
+            "/events",
+            &style,
+            &script,
+            "/unknown",
+            "/style.css",
+            "/live.js",
+        ] {
             let (reply, reads) = exchange(
                 &format!("GET {path} HTTP/1.1\r\nHost: example.invalid\r\n\r\n"),
                 true,
             );
             assert_eq!(reads, usize::from(matches!(path, "/" | "/events")));
-            assert!(reply.contains("Cache-Control: no-store"));
+            // A hashed asset is immutable and shared; every other answer is a page, a stream
+            // or a refusal, which is never stored by any cache.
+            let asset = path.starts_with("/a/");
+            assert_eq!(
+                reply.contains("Cache-Control: no-store"),
+                !asset,
+                "{path}: {reply}"
+            );
+            assert_eq!(
+                reply.contains("Cache-Control: public, max-age=31536000, immutable"),
+                asset,
+                "{path}: {reply}"
+            );
             if path == "/events" {
                 assert!(reply.contains("Content-Type: text/event-stream"));
                 assert!(reply.contains("event: snapshot\ndata: <main>"));
             }
             if path == "/" {
+                // A page is bytes: its validator names their digest, and the digest changes when
+                // the page does.
+                let tag = reply
+                    .lines()
+                    .find_map(|line| line.strip_prefix("ETag: "))
+                    .expect("a page carries a validator")
+                    .to_owned();
+                let other = fetch("GET /board HTTP/1.1\r\nHost: example.invalid\r\n\r\n", true).0;
+                let other = other
+                    .lines()
+                    .find_map(|line| line.strip_prefix("ETag: "))
+                    .unwrap();
+                assert_ne!(tag, other);
+                // The validator names the digest of the bytes that were sent.
+                let body = fetch("GET / HTTP/1.1\r\nHost: example.invalid\r\n\r\n", true).1;
+                let digest = <sha2::Sha256 as sha2::Digest>::digest(&body);
+                let digest: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+                assert!(tag.contains(&digest[..32]), "{tag}");
                 assert!(reply.contains("No open PRs in this snapshot"));
             }
             if path == "/unknown" {
                 assert!(reply.starts_with("HTTP/1.1 404"));
             }
+        }
+    }
+
+    /// One GET over a real loopback connection, with the reply's body decoded when it is gzip.
+    fn fetch(request: &str, permitted: bool) -> (String, Vec<u8>) {
+        let (head, body) = raw(request, permitted);
+        let text = String::from_utf8_lossy(&head).into_owned();
+        let encoding = text
+            .lines()
+            .any(|line| line.eq_ignore_ascii_case("Content-Encoding: gzip"));
+        let body = if encoding {
+            let mut plain = Vec::new();
+            std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(&body[..]), &mut plain).unwrap();
+            plain
+        } else {
+            body
+        };
+        (text, body)
+    }
+
+    /// The reply's head bytes and body bytes, as sent.
+    fn raw(request: &str, permitted: bool) -> (Vec<u8>, Vec<u8>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let handler = std::thread::spawn(move || {
+            connection(
+                server,
+                |_, _| permitted,
+                |page, fragment| {
+                    let board = oxa_work::board::Board::default();
+                    let view = crate::lead_page::View {
+                        board: Some(&board),
+                        ..Default::default()
+                    };
+                    if fragment {
+                        crate::lead_page::content_for(page, &view, 100)
+                    } else {
+                        crate::lead_page::document_for(page, &view, 100)
+                    }
+                },
+            )
+        });
+        client.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        client.write_all(request.as_bytes()).unwrap();
+        let mut reply = Vec::new();
+        client.read_to_end(&mut reply).unwrap();
+        handler.join().unwrap();
+        let split = reply
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .unwrap_or_else(|| panic!("{:?}", request));
+        let body = reply.split_off(split + 4);
+        reply.truncate(split);
+        (reply, body)
+    }
+
+    fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+        head.lines()
+            .filter_map(|line| line.split_once(": "))
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value)
+    }
+
+    #[test]
+    fn an_unchanged_page_costs_one_revalidated_request() {
+        let get = |extra: &str| {
+            fetch(
+                &format!("GET / HTTP/1.1\r\nHost: example.invalid\r\n{extra}\r\n"),
+                true,
+            )
+        };
+        // First visit: the document, and the two assets it names at their hashed paths. The
+        // page names assets by the digest of their bytes, so a second visit reuses them.
+        let (head, body) = get("");
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        assert!(head.contains("Cache-Control: no-store"), "{head}");
+        let document = String::from_utf8(body.clone()).unwrap();
+        let tag = header(&head, "ETag")
+            .expect("a page carries a validator")
+            .to_owned();
+        for (path, name) in [
+            (crate::lead_assets::style_path(), "style.css"),
+            (crate::lead_assets::script_path(), "live.js"),
+        ] {
+            assert!(
+                document.contains(&format!("href={path}")) || document.contains(&format!("src={path}")),
+                "{name}"
+            );
+            let digest = format!(
+                "{:x}",
+                <sha2::Sha256 as sha2::Digest>::digest(if name == "style.css" {
+                    crate::lead_page::STYLE.as_bytes()
+                } else {
+                    crate::lead_page::SCRIPT.as_bytes()
+                })
+            );
+            assert!(
+                path.contains(&digest[..8]),
+                "{path} does not name its {name} bytes"
+            );
+            // Without an offered encoding the asset is the file exactly, so the path's
+            // digest is a digest of these bytes.
+            let asset_request =
+                format!("GET {path} HTTP/1.1\r\nHost: example.invalid\r\nAccept-Encoding: identity\r\n\r\n");
+            let (asset_head, asset_body) = fetch(&asset_request, true);
+            assert!(asset_head.starts_with("HTTP/1.1 200"), "{asset_head}");
+            assert!(asset_head.contains("max-age=31536000, immutable"), "{asset_head}");
+            assert_eq!(
+                asset_body.len(),
+                if name == "style.css" {
+                    crate::lead_page::STYLE.len()
+                } else {
+                    crate::lead_page::SCRIPT.len()
+                }
+            );
+            // A second visit to the asset is the browser's own cache hit: no request at all.
+            let (cached, _) = fetch(
+                &format!(
+                    "GET {path} HTTP/1.1\r\nHost: example.invalid\r\nIf-None-Match: {}\r\n\r\n",
+                    header(&asset_head, "ETag").unwrap()
+                ),
+                true,
+            );
+            assert!(cached.starts_with("HTTP/1.1 304"), "{cached}");
+            assert!(!cached.contains("Content-Encoding"));
+        }
+        // Repeat navigation: one request, and the name says the page is unchanged.
+        let (repeat, repeat_body) = get(&format!("If-None-Match: {tag}\r\n"));
+        assert!(repeat.starts_with("HTTP/1.1 304 Not Modified"), "{repeat}");
+        assert!(repeat_body.is_empty(), "a 304 carries no body");
+        assert!(repeat.contains("Cache-Control: no-store"), "{repeat}");
+        assert!(
+            repeat.contains(
+                "Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self';"
+            ),
+            "{repeat}"
+        );
+        assert!(repeat.contains("X-Content-Type-Options: nosniff"), "{repeat}");
+        // A fragment answer never validates the document it belongs to.
+        let (fragment, _) = fetch("GET /?fragment=1 HTTP/1.1\r\nHost: example.invalid\r\n\r\n", true);
+        assert!(fragment.starts_with("HTTP/1.1 200"), "{fragment}");
+        let fragment_tag = header(&fragment, "ETag").unwrap();
+        assert_ne!(fragment_tag, tag);
+    }
+
+    #[test]
+    fn gzip_shrinks_a_page_only_for_a_client_that_accepts_it() {
+        let (plain_head, plain) = fetch("GET / HTTP/1.1\r\nHost: example.invalid\r\n\r\n", true);
+        assert!(!plain_head.contains("Content-Encoding"), "{plain_head}");
+        let (packed_head, packed) = fetch(
+            "GET / HTTP/1.1\r\nHost: example.invalid\r\nAccept-Encoding: gzip, deflate\r\n\r\n",
+            true,
+        );
+        assert!(packed_head.contains("Content-Encoding: gzip"), "{packed_head}");
+        assert_eq!(packed, plain, "the client decodes the same document");
+        // Count what the wire carried, not what the client decoded.
+        let (_, sent_plain) = raw("GET / HTTP/1.1\r\nHost: example.invalid\r\n\r\n", true);
+        let (_, sent_packed) = raw(
+            "GET / HTTP/1.1\r\nHost: example.invalid\r\nAccept-Encoding: gzip\r\n\r\n",
+            true,
+        );
+        assert!(
+            sent_packed.len() * 2 < sent_plain.len(),
+            "{} of {} bytes",
+            sent_packed.len(),
+            sent_plain.len()
+        );
+        assert_eq!(
+            header(&packed_head, "ETag"),
+            header(&plain_head, "ETag"),
+            "an encoding is not a different entity"
+        );
+        // gzip;q=0 is a refusal, and a compressed body is never labelled as raw HTML.
+        let (zero, _) = fetch(
+            "GET / HTTP/1.1\r\nHost: example.invalid\r\nAccept-Encoding: gzip;q=0\r\n\r\n",
+            true,
+        );
+        assert!(!zero.contains("Content-Encoding"), "{zero}");
+    }
+
+    #[test]
+    fn an_unauthorized_request_gets_no_validator_and_no_asset() {
+        let style = crate::lead_assets::style_path();
+        let tag = header(
+            &fetch("GET / HTTP/1.1\r\nHost: example.invalid\r\n\r\n", true).0,
+            "ETag",
+        )
+        .unwrap()
+        .to_owned();
+        for path in ["/", &style] {
+            let (refused, body) = fetch(
+                &format!("GET {path} HTTP/1.1\r\nHost: example.invalid\r\nIf-None-Match: {tag}\r\nAccept-Encoding: gzip\r\n\r\n"),
+                false,
+            );
+            assert!(
+                refused.starts_with("HTTP/1.1 403"),
+                "{path}: {} bytes {refused}",
+                refused.len()
+            );
+            assert!(!refused.contains("ETag"), "{path}: {refused}");
+            assert!(!refused.contains("Content-Encoding"), "{path}: {refused}");
+            assert!(!refused.contains("max-age"), "{path}: {refused}");
+            assert_eq!(body, b"Request refused", "{path}");
         }
     }
 

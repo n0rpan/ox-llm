@@ -74,6 +74,10 @@ The tables below are generated from the page sheet in `oxa/oxa-config/src/descri
 | `enableSkillCommands` | bool | `true` | list skills in the slash-command autocomplete |
 | `followUpMode` | `all` / `one-at-a-time` | `one-at-a-time` | how queued follow-up messages are sent |
 | `steeringMode` | `all` / `one-at-a-time` | `one-at-a-time` | how queued steering messages are sent |
+| `oxa.desk.font` | string | `null` | desktop app (`oxa-desk`) only, user settings only: the font family of the window. Unset uses the system font. The terminal UI does not read the `oxa.desk.*` keys |
+| `oxa.desk.fontSize` | number | `14` | desktop app only, user settings only: text size in pixels. A value outside 8 to 40 is saved with a note, not refused |
+| `oxa.desk.blinkCursor` | bool | `false` | desktop app only, user settings only: blink the text cursor. Off by default, so an idle window does not wake up to redraw |
+| `oxa.desk.keepTranscripts` | number | `30` | desktop app only, user settings only: how many threads the desktop app keeps loaded in memory. Beyond that the one used longest ago is dropped and reloads when opened; the open thread and a thread with a pending question always stay loaded |
 <!-- /generated:interface -->
 
 <!-- generated:models -->

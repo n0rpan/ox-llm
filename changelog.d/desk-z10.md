@@ -1,0 +1,1 @@
+- `oxa-rpc` can read its own event records back: `event_from_json` turns a `--mode json` / `--mode rpc` record into the event it was written from, so a client of a remote session (the coming desktop app) uses the same code as a local one. The record formats are unchanged.
