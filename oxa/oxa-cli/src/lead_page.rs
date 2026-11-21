@@ -7,6 +7,7 @@ mod approvals;
 mod chat;
 mod filters;
 mod goal;
+mod home;
 mod pages;
 mod proposals;
 mod quotas;
@@ -316,37 +317,22 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
     }
     match page {
         Page::Home => {
-            goal::render(&mut html, view, now);
+            home::banner(&mut html, view, now);
             html.push_str("<div class=home-layout><div class=home-decisions>");
             attention(&mut html, view, now);
             approvals::render(&mut html, view, now);
             asks(&mut html, view, now);
-            html.push_str("</div><div class=home-overview><section><h2>Snapshot overview</h2>");
-            if let Some(board) = view.board {
-                let _ = write!(
-                    html,
-                    "<p><a href=/board>{} observed items</a></p><p class=muted>{} · observed {}</p>",
-                    board.entries.len(),
-                    if view.board_retained {
-                        "Last-good snapshot"
-                    } else if stale(board, now) {
-                        "Stale snapshot"
-                    } else {
-                        "Board snapshot"
-                    },
-                    human_time(board.observed_at, now)
-                );
-            } else {
-                let (cause, next) = board_gap(view);
-                say_why(&mut html, "Board", cause, next, None, now);
-            }
-            html.push_str("</section><details class=home-work><summary>Observed work</summary>");
-            board(&mut html, view, now, Query::default());
+            html.push_str("</div><div class=home-overview>");
+            goal::row(&mut html, view, now);
+            home::tiles(&mut html, view, now);
             workers(&mut html, view, now);
+            html.push_str("<details class=home-work><summary>Observed work</summary>");
+            board(&mut html, view, now, Query::default());
             queue(&mut html, view, now);
             release(&mut html, view, now);
             html.push_str("</details></div></div>");
         }
+        Page::Goal => goal::render(&mut html, view, now),
         Page::Board | Page::BoardQuery(_) => {
             let query = if let Page::BoardQuery(query) = page {
                 query
@@ -374,24 +360,19 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
     html
 }
 
-fn attention(html: &mut String, view: &View<'_>, now: u64) {
-    let asks = view.situation.map_or(0, |s| s.asks.len()) + view.durable_asks.map_or(0, |asks| asks.len());
+/// The single alarm decision shared by the attention rows and the Home banner
+/// (#2345): whether a protected observation raises an alarm, and which alarm
+/// sources were not observed. An absent source is never healthy (#1391, #2342).
+pub(super) fn alarm_state(view: &View<'_>) -> (bool, Vec<&'static str>) {
     let alarms = view.alarms;
-    // The queue-age alarm binds each PR to its exact observed head: membership
-    // and landing age must come from the same protected record.
-    let overdue: Vec<&PullRequest> = alarms.and_then(Alarms::overdue_in_queue).unwrap_or_default();
-    let main_red = alarms.and_then(|a| a.main_red);
-    let merge_stalled = alarms.and_then(|a| a.main_merge_stalled);
-    let stalled_runs = alarms.and_then(|a| a.stalled_runs.as_deref());
-    let alarm = main_red == Some(true)
-        || merge_stalled == Some(true)
-        || stalled_runs.is_some_and(|runs| !runs.is_empty())
+    let overdue = alarms.and_then(Alarms::overdue_in_queue).unwrap_or_default();
+    let alarm = alarms.and_then(|a| a.main_red) == Some(true)
+        || alarms.and_then(|a| a.main_merge_stalled) == Some(true)
+        || alarms
+            .and_then(|a| a.stalled_runs.as_deref())
+            .is_some_and(|runs| !runs.is_empty())
         || !overdue.is_empty();
-    // An absent alarm source is never healthy. #2342: the missing sources collapse
-    // into one line naming them, with the cause, the age of the last good board
-    // value and the next step, instead of one bullet per source. A page with no
-    // alarm record at all says nothing here; the missing Board section carries it.
-    let missing: Vec<&str> = alarms.map_or(Vec::new(), |a| {
+    let missing = alarms.map_or(Vec::new(), |a| {
         let mut names = Vec::new();
         if a.main_red.is_none() {
             names.push("main checks");
@@ -410,6 +391,24 @@ fn attention(html: &mut String, view: &View<'_>, now: u64) {
         }
         names
     });
+    (alarm, missing)
+}
+
+fn attention(html: &mut String, view: &View<'_>, now: u64) {
+    let asks = view.situation.map_or(0, |s| s.asks.len()) + view.durable_asks.map_or(0, |asks| asks.len());
+    let alarms = view.alarms;
+    // The queue-age alarm binds each PR to its exact observed head: membership
+    // and landing age must come from the same protected record.
+    let overdue: Vec<&PullRequest> = alarms.and_then(Alarms::overdue_in_queue).unwrap_or_default();
+    let main_red = alarms.and_then(|a| a.main_red);
+    let merge_stalled = alarms.and_then(|a| a.main_merge_stalled);
+    let stalled_runs = alarms.and_then(|a| a.stalled_runs.as_deref());
+    // The banner and these rows share one alarm decision. #2342: the missing
+    // sources collapse into one line naming them, with the cause, the age of the
+    // last good board value and the next step, instead of one bullet per source.
+    // A page with no alarm record at all says nothing here; the missing Board
+    // section carries it.
+    let (alarm, missing) = alarm_state(view);
     if alarm || asks > 0 || !missing.is_empty() {
         let (role, icon, label) = if alarm {
             ("alert", "!", "Alarm")
@@ -1025,7 +1024,7 @@ mod tests {
             assert!(html.contains("02:00 CET"), "lease or quota reset: {page:?}");
             assert!(!html.contains("expires 3600") && !html.contains("resets at 3600"));
         }
-        for page in [Page::Home, Page::Chat(Prompt::Status)] {
+        for page in [Page::Goal, Page::Chat(Prompt::Status)] {
             let html = document_for(page, &view, 100);
             let section = owner_goal_section(&html);
             assert!(section.contains("Started 01:00 CET") && section.contains("Observed 02:00 CET"));
@@ -1138,7 +1137,7 @@ mod tests {
     #[test]
     fn canonical_goal_checks_render_without_private_binding_or_new_controls() {
         let (goal, reference) = owner_goal_fixture();
-        for page in [Page::Home, Page::Chat(Prompt::Status)] {
+        for page in [Page::Goal, Page::Chat(Prompt::Status)] {
             let html = owner_goal_html(page, &goal, &reference, None);
             let section = owner_goal_section(&html);
             for expected in [
@@ -1177,7 +1176,7 @@ mod tests {
     #[test]
     fn canonical_goal_acceptance_never_comes_from_board_readiness_or_check_counts() {
         let (mut goal, reference) = owner_goal_fixture();
-        let before = owner_goal_html(Page::Home, &goal, &reference, None);
+        let before = owner_goal_html(Page::Goal, &goal, &reference, None);
         let board = Board {
             observed_at: 100,
             entries: vec![Entry {
@@ -1191,13 +1190,13 @@ mod tests {
                 evidence_incomplete: None,
             }],
         };
-        let ready = owner_goal_html(Page::Home, &goal, &reference, Some(&board));
+        let ready = owner_goal_html(Page::Goal, &goal, &reference, Some(&board));
         assert_eq!(owner_goal_section(&before), owner_goal_section(&ready));
         let plan = goal.plan.as_mut().unwrap();
         plan.acceptance[0].result = plan.subgoals[1].acceptance[0].result.clone();
         plan.subgoals[0].acceptance[0].result.as_mut().unwrap().passed = true;
         assert!(plan.verified());
-        let all_pass = owner_goal_html(Page::Home, &goal, &reference, Some(&board));
+        let all_pass = owner_goal_html(Page::Goal, &goal, &reference, Some(&board));
         let section = owner_goal_section(&all_pass);
         assert!(section.contains("Every acceptance check has passing evidence recorded"));
         assert!(section.contains("Recorded state: pursuing") && !section.contains("Recorded state: done"));
@@ -1205,7 +1204,7 @@ mod tests {
 
     #[test]
     fn missing_or_inconsistent_goal_observations_never_promote_acceptance() {
-        let absent = document_for(Page::Home, &View::default(), 100);
+        let absent = document_for(Page::Goal, &View::default(), 100);
         assert!(owner_goal_section(&absent).contains("No bound native goal observation reached this page"));
         let (mut goal, reference) = owner_goal_fixture();
         for (revision, status) in [
@@ -1214,7 +1213,7 @@ mod tests {
             (7, Some(oxa_session::GoalStatus::Paused)),
         ] {
             let html = document_for(
-                Page::Home,
+                Page::Goal,
                 &View {
                     owner_goal: Some((
                         &goal,
@@ -1233,12 +1232,12 @@ mod tests {
             assert!(!section.contains("Ship &lt;example&gt;"));
         }
         goal.plan.as_mut().unwrap().subgoals[0].board_items = vec![0];
-        let invalid = owner_goal_html(Page::Home, &goal, &reference, None);
+        let invalid = owner_goal_html(Page::Goal, &goal, &reference, None);
         assert!(owner_goal_section(&invalid).contains("Goal observation unavailable"));
         goal.plan = None;
         goal.status = oxa_session::GoalStatus::Done;
         goal.evidence = Some("Legacy outcome reported".into());
-        let legacy = owner_goal_html(Page::Home, &goal, &reference, None);
+        let legacy = owner_goal_html(Page::Goal, &goal, &reference, None);
         let section = owner_goal_section(&legacy);
         assert!(section.contains("done reported; acceptance plan unavailable"));
         assert!(section.contains("The native goal has no saved acceptance plan"));
@@ -1605,9 +1604,173 @@ return true;
             assert!(html.contains(&escape(&ask.question)));
         }
         assert!(html.contains("No open PRs in this snapshot"));
-        assert!(html.contains("href=/board>0 observed items"));
+        assert!(html.contains("href=/board>"));
+        assert!(html.contains("0 observed items"));
         assert!(html.contains("Options, recommendation and meanwhile are unavailable"));
         assert!(!html.contains("<form") && !html.contains("onclick="));
+    }
+
+    #[test]
+    fn home_banner_answers_is_anything_wrong_above_the_fold_without_inventing_health() {
+        let banner_of = |view: &View<'_>| {
+            let html = content_for(Page::Home, view, 100);
+            // #2345: the banner is the first block, above the decision/overview layout.
+            assert!(html.find("id=home-banner").unwrap() < html.find("class=home-layout").unwrap());
+            let banner = html
+                .split("<section id=home-banner")
+                .nth(1)
+                .unwrap()
+                .split("</section>")
+                .next()
+                .unwrap()
+                .to_string();
+            // The rows below own the attention block; the banner never carries its id.
+            assert!(!banner.contains("id=attention"));
+            assert!(!banner.contains("<form") && !banner.contains("<button") && !banner.contains("onclick="));
+            assert!(!banner.contains("All good"));
+            banner
+        };
+        let healthy_alarms = Alarms {
+            main_red: Some(false),
+            main_merge_stalled: Some(false),
+            stalled_runs: Some(vec![]),
+            queue: Some(vec![]),
+            overdue_queue: Some(vec![]),
+        };
+        let board = Board {
+            observed_at: 100,
+            ..Board::default()
+        };
+        let alarm = banner_of(&View {
+            alarms: Some(&Alarms {
+                main_red: Some(true),
+                ..Alarms::default()
+            }),
+            ..View::default()
+        });
+        assert!(alarm.contains("data-tone=bad") && alarm.contains("role=alert") && alarm.contains("Alarm"));
+        let snapshot = observed_asks();
+        let needs = banner_of(&View {
+            situation: Some(&snapshot),
+            ..View::default()
+        });
+        assert!(
+            needs.contains("data-tone=warn") && needs.contains("role=status") && needs.contains("Needs you")
+        );
+        let clear = banner_of(&View {
+            board: Some(&board),
+            alarms: Some(&healthy_alarms),
+            ..View::default()
+        });
+        assert!(
+            clear.contains("data-tone=ok") && clear.contains("role=status") && clear.contains("All clear")
+        );
+        // An absent source is never healthy: a missing board or no alarm record at
+        // all says it cannot tell yet instead of claiming all clear.
+        let partial = banner_of(&View {
+            alarms: Some(&healthy_alarms),
+            ..View::default()
+        });
+        assert!(
+            partial.contains("data-tone=neutral")
+                && partial.contains("Can't tell yet")
+                && !partial.contains("All clear")
+        );
+        let unknown = banner_of(&View::default());
+        assert!(unknown.contains("data-tone=neutral") && !unknown.contains("All clear"));
+    }
+
+    #[test]
+    fn home_tiles_navigate_to_full_pages_with_observed_values_and_name_missing_sources() {
+        let tiles_of = |view: &View<'_>| {
+            let html = content_for(Page::Home, view, 100);
+            let tiles = html
+                .split("<div class=tiles>")
+                .nth(1)
+                .unwrap()
+                .split("</div>")
+                .next()
+                .unwrap()
+                .to_string();
+            assert!(!tiles.contains("<form") && !tiles.contains("<button") && !tiles.contains("onclick="));
+            tiles
+        };
+        let snapshot = observed_asks();
+        let items = vec![
+            (true, "Reported step".to_string()),
+            (false, "Other step".to_string()),
+        ];
+        let board = Board {
+            observed_at: 100,
+            ..Board::default()
+        };
+        let observed = tiles_of(&View {
+            board: Some(&board),
+            situation: Some(&snapshot),
+            alarms: Some(&Alarms {
+                queue: Some(vec![]),
+                ..Alarms::default()
+            }),
+            release: Some((19, &items)),
+            ..View::default()
+        });
+        for href in [
+            "href=/board>",
+            "href=/workers>",
+            "href=/board#queue>",
+            "href=/board#release>",
+        ] {
+            assert!(observed.contains(href), "{href}");
+        }
+        assert!(observed.contains("0 observed items"));
+        assert!(observed.contains("running at observation"));
+        assert!(observed.contains("in the merge queue"));
+        assert!(observed.contains("1/2") && observed.contains("release checklist items"));
+        // A navigation tile carries no checklist glyphs and no worker identity.
+        assert!(!observed.contains('☑') && !observed.contains('☐'));
+        let missing = tiles_of(&View::default());
+        for gap in [
+            "No board observation reached this page",
+            "Lane status unavailable",
+            "No queue observation reached this page",
+            "No release checklist supplied",
+        ] {
+            assert!(missing.contains(gap), "{gap}");
+        }
+        assert!(missing.contains(">—<"));
+    }
+
+    #[test]
+    fn goal_collapses_to_a_home_row_and_the_acceptance_tree_lives_on_the_goal_page() {
+        let (goal, reference) = owner_goal_fixture();
+        let observation = oxa_core::goal::GoalObservation {
+            session: &reference,
+            revision: 7,
+            status: Some(goal.status),
+        };
+        let view = View {
+            owner_goal: Some((&goal, observation)),
+            ..View::default()
+        };
+        let home = content_for(Page::Home, &view, 100);
+        assert!(home.contains("class=goal-row") && home.contains("href=/goal") && home.contains("Started"));
+        // The full acceptance section and tree stay off Home.
+        assert!(!home.contains("id=owner-goal"));
+        assert!(!home.contains("Owner acceptance") && !home.contains("Sub-goals"));
+        assert!(!home.contains("<form") && !home.contains("<button"));
+        // The dedicated read-only page carries the full section and highlights Home.
+        let page = document_for(Page::Goal, &view, 100);
+        assert!(page.contains(">Owner goal</h1>") && page.contains("id=owner-goal"));
+        assert!(page.contains("Owner acceptance") && page.contains("Sub-goals"));
+        assert!(page.contains("aria-current=page>Home"));
+        assert_eq!(Page::request("/goal"), Some((Page::Goal, false)));
+        assert_eq!(Page::Goal.title(), "Owner goal");
+        // An absent observation says so on both surfaces and still links to /goal.
+        let absent_home = content_for(Page::Home, &View::default(), 100);
+        assert!(absent_home.contains("class=goal-row") && absent_home.contains("href=/goal"));
+        assert!(!absent_home.contains("id=owner-goal"));
+        assert!(content_for(Page::Goal, &View::default(), 100)
+            .contains("No bound native goal observation reached this page"));
     }
 
     #[test]
