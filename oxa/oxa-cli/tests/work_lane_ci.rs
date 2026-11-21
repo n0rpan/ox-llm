@@ -147,7 +147,9 @@ fn lane_accepted_work_without_a_pr_receipt_is_reported_pending_not_done() {
     assert_eq!(listed.status.code(), Some(3), "{listed:?}");
     let record: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
     assert_eq!(record["outcome"], "publication_pending", "{record}");
-    assert_eq!(record["acceptance_outcome"], "done", "{record}");
+    // The lane run is the evidence behind the acceptance the pending receipt belongs to.
+    assert_eq!(record["lane"]["conclusion"], "success", "{record}");
+    assert_eq!(record["lane"]["head"], record["head_sha"], "{record}");
     let status = command(&env, &path, &["work", "status"]);
     let text = String::from_utf8(status.stdout).unwrap();
     assert!(text.contains("pending publication, not done"), "{text}");
@@ -529,7 +531,8 @@ fn publication_refuses_a_lane_task_without_green_evidence() {
     let path = configure(&env);
     env.write("home/lane-pass", "");
     let record = run_lane(&env, edits(), path.clone());
-    assert_eq!(record["outcome"], "done", "{record}");
+    // Green lane evidence, PR receipt still owed by the authorised publication path (#2304).
+    assert_eq!(record["outcome"], "publication_pending", "{record}");
     // Remove the lane observation from the saved record: a saved local pass is
     // not publication evidence for a lane task.
     let path_to_state = state_path(&env);

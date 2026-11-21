@@ -352,8 +352,10 @@ saved, and `oxa work status` marks the row `pending publication, not done`. A la
 task without lane CI performs no publication step in its run and stays `done`; it
 publishes on request. This is a distinct result, not a new refusal: nothing is
 blocked, and the next `--publish` or lane acceptance resumes without replaying the
-agent. A `publication_pending` exit code is 3, so a caller that reads only the code
-does not take owed publication for success.
+agent. Its `acceptance_outcome` stays unset: the runner's own publication is still
+owed, so the record names no remote outcome yet. A `publication_pending` exit code
+is 3, so a caller that reads only the code does not take owed publication for
+success.
 
 The [checkpoint integration contract](work-state.md) defines the runner's public
 event hook. Event/situation/standing stores and their CLI adapters are a separate

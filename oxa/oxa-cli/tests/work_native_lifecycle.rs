@@ -769,7 +769,9 @@ fn a_held_native_task_runs_online_and_ends_locally_verified_with_publication_hel
     assert_eq!(checkpoint["record"]["step"], "finished");
     // The held task is accepted but owes its publication receipt, so it never reports done.
     assert_eq!(checkpoint["record"]["outcome"], "publication_pending");
-    assert_eq!(checkpoint["record"]["acceptance_outcome"], "done");
+    // A run that only waits on the runner's publication owes it; declaring acceptance here
+    // would label that wait a remote outcome.
+    assert!(checkpoint["record"]["acceptance_outcome"].is_null());
     assert!(
         checkpoint["record"]["detail"]
             .as_str()

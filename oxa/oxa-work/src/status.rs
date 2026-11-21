@@ -364,7 +364,6 @@ mod tests {
     fn a_recorded_pr_is_published_even_when_the_push_readback_is_unknown() {
         let head = "b".repeat(40);
         let mut record = accepted(&head);
-        record.outcome = Outcome::PublicationPending;
         record.publish_receipt = Some(crate::PublishReceipt {
             requested: head.clone(),
             remote: None,
