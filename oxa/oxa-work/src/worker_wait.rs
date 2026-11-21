@@ -1,4 +1,7 @@
 //! Event-driven child waiting with one wall deadline and two escalation stages.
+//! The SIGKILL grace runs from the actual TERM send and its confirmed delivery, so a
+//! late watcher wake or a slow terminate sender cannot shorten the child's grace; a
+//! stuck sender still cannot delay the kill.
 use crate::Result;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -35,7 +38,7 @@ pub(crate) fn wait(
         .checked_add(max_time)
         .and_then(|at| at.checked_add(grace))
         .ok_or("worker deadline is too large")?;
-    let kill_at = term_at
+    let mut kill_at = term_at
         .checked_add(kill_grace)
         .ok_or("worker deadline is too large")?;
     let mut deadline = false;
@@ -62,6 +65,24 @@ pub(crate) fn wait(
                 .spawn()
                 .ok();
             deadline = true;
+            // The kill grace runs from the actual TERM attempt, not the theoretical
+            // term_at: a late loop wake must not shorten the child's grace.
+            kill_at = Instant::now()
+                .checked_add(kill_grace)
+                .ok_or("worker deadline is too large")?;
+        }
+        if deadline && now < kill_at {
+            if let Some(term) = &mut sender.0 {
+                if term.try_wait().map_err(|e| e.to_string())?.is_some() {
+                    // The sender exited, so TERM was delivered. Give the child its
+                    // full kill grace from delivery, once. A stuck sender never
+                    // reaches this and cannot delay the kill past the bound above.
+                    sender.0 = None;
+                    kill_at = Instant::now()
+                        .checked_add(kill_grace)
+                        .ok_or("worker deadline is too large")?;
+                }
+            }
         }
         if now >= kill_at {
             let _ = child.kill();

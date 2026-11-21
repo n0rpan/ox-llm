@@ -171,7 +171,10 @@ The task's saved deadline is shared by its worker, repair and crash recovery.
 A repair does not get a fresh budget. Each child receives its remaining
 allowance as `--max-time` for one graceful wrap-up turn. If it remains alive 60
 seconds after that allowance, the runner sends SIGTERM, then SIGKILL after another
-10 seconds. The result is interrupted and its worktree is retained. `kill` must be
+10 seconds, counted from the actual SIGTERM send and its confirmed delivery so a
+late watcher wake or a slow terminate sender does not shorten the grace. A stuck
+terminate sender cannot delay the SIGKILL. The result is interrupted and its
+worktree is retained. `kill` must be
 available as a trusted executable outside the project; status reads do not need it.
 IDs and branches must be unique within one file. Existing task branches can be
 continued. For a GitHub issue use `oxa work --issue 123 --model your-model`.

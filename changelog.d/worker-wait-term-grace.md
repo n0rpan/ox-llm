@@ -1,0 +1,1 @@
+- Work runner: the SIGKILL grace after a worker's wall deadline now runs from the actual SIGTERM send and its confirmed delivery, so a late watcher wake or a slow terminate sender cannot shorten the child's wrap-up grace. A stuck terminate sender still cannot delay the kill.
