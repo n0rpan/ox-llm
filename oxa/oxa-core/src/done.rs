@@ -58,6 +58,10 @@ pub(crate) struct DoneState {
     /// Distinct paths the run's successful `edit`/`write` calls named, in first-use order
     /// (#2297). Tool-observed only; reported once at the end as acceptance evidence.
     changed_paths: Vec<String>,
+    /// #2295: the files the current batch wrote successfully, in call order.
+    written: Vec<String>,
+    /// #2295: a `bash` call of the current batch failed.
+    failed_command: bool,
 }
 /// #2293 A: how many declared file deliverables one run keeps; the oldest goes beyond this.
 const MAX_DELIVERABLES: usize = 8;
@@ -88,10 +92,6 @@ pub(crate) struct Evidence {
     pub(crate) text: String,
     /// At least one declared file is not on disk: the notice is a warning, not information.
     pub(crate) incomplete: bool,
-    /// #2295: the files the current batch wrote successfully, in call order.
-    written: Vec<String>,
-    /// #2295: a `bash` call of the current batch failed.
-    failed_command: bool,
 }
 
 /// Bytes of one file path in the verified-artifact line (#2295); longer paths are left out.
@@ -139,14 +139,10 @@ fn artifact_line(cwd: &Path, written: &[String]) -> Option<String> {
     ))
 }
 
-/// #2295: whether this run has `done` checks that run (a project's `done` in an untrusted
-/// folder is offered as a project command but its checks do not run).
+/// #2295: whether this run has `done` checks to run. An untrusted project's `done` is never
+/// merged into the settings, so it is not in the list and nothing is kept for it.
 pub(crate) fn checks_run(st: &SessionState) -> bool {
     !st.settings.done_commands().is_empty()
-        && !st
-            .commands()
-            .iter()
-            .any(|c| c.name == "done" && c.source == oxa_proto::Source::Project)
 }
 
 /// Whether the run changed files and no check has passed since the last change (B4a). Only
@@ -402,7 +398,7 @@ impl DoneState {
     /// #2295: the verified-artifact line for a failed-check repair, only when the batch that
     /// ran the check also failed a command after writing the file; older writes are the parts a
     /// check or a formatter may already have rewritten, so they are not claimed here.
-    fn verified_artifacts(&self, cwd: &Path) -> Option<String> {
+    pub(crate) fn verified_artifacts(&self, cwd: &Path) -> Option<String> {
         if !self.failed_command || !self.proof.checked() {
             return None;
         }

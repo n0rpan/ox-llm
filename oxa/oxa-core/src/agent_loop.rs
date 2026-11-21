@@ -174,7 +174,7 @@ fn run_inner(
     let max_turns = st.settings.u32(crate::repeat::MAX_TURNS, 0);
     // #2295: the verified-artifact line a request may carry, taken by that request and sent
     // once. A run whose checks all passed has none here.
-    let mut artifacts = st.verified_artifacts.take();
+    let mut artifacts: Option<String> = None;
     'turns: loop {
         if crate::goal::terminal(st) {
             return Ok(RunEnd::Stopped);
