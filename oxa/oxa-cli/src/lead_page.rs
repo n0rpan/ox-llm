@@ -289,7 +289,7 @@ pub fn document_for(page: Page, view: &View<'_>, now: u64) -> String {
     } else {
         ""
     };
-    format!("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1,viewport-fit=cover\"><meta name=color-scheme content=\"light dark\">{live}{digest}<title>oxa lead</title><link rel=stylesheet href=/style.css><script src=/live.js defer></script>{refresh}<a class=skip href=#main>Skip to content</a><header class=top><a href=/>oxa <b>lead</b></a><span class=age>{}<span id=connection>Snapshot</span></span>{}</header>{}</html>", ui::dot(), ui::theme_toggle(), content_for(page, view, now))
+    format!("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1,viewport-fit=cover\"><meta name=color-scheme content=\"light dark\">{live}{digest}<title>oxa lead</title><link rel=stylesheet href={style}><script src={script} defer></script>{refresh}<a class=skip href=#main>Skip to content</a><header class=top><a href=/>oxa <b>lead</b></a><span class=age>{}<span id=connection>Snapshot</span></span>{}</header>{}</html>", ui::dot(), ui::theme_toggle(), content_for(page, view, now), style = crate::lead_assets::style_path(), script = crate::lead_assets::script_path())
 }
 
 /// Allow-listed HTML fragment, also used by SSE. No worktrees, sessions, errors or headers.
