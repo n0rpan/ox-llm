@@ -47,15 +47,20 @@ impl PublicationStatus {
     /// published receipt and no recorded PR. The runner's outcome and `oxa work status` take
     /// this one decision, so they cannot disagree about owed publication.
     pub fn owed(record: &Record, now_ms: u64) -> Option<String> {
-        if !publication_pending(record) {
+        let status = Self::read(record, now_ms)?;
+        // An owed run has an accepted verdict and no published receipt or recorded PR; any
+        // other phase (`published_readback_unknown`, `push_unconfirmed`) is not owed
+        // publication. One decision for the runner, the status row and the exit code.
+        if !awaiting_publication(record) || recorded_pr(record) {
             return None;
         }
-        let status = Self::read(record, now_ms)?;
-        Some(format!(
-            "publication pending: {} ({})",
-            status.phase,
-            age_text(status.age_secs)
-        ))
+        (status.phase != "published_readback_unknown").then(|| {
+            format!(
+                "publication pending: {} ({})",
+                status.phase,
+                age_text(status.age_secs)
+            )
+        })
     }
 }
 
@@ -74,13 +79,12 @@ fn phase(record: &Record, awaiting: bool) -> Option<(&'static str, &'static str)
         // the lane push reported success. The readback itself can still be unknown (#2310).
         None => record.lane.as_ref().is_some_and(|lane| lane.head == head),
     };
-    let recorded_pr = record.pull_request.as_deref().is_some_and(|url| !url.is_empty());
-    if pushed && recorded_pr {
+    if pushed && recorded_pr(record) {
         return None;
     }
     // The publication action ran to a recorded PR, so the only gap is that the destination
     // could not be read back; it is not waiting on a lane run that already finished (#2310).
-    if !awaiting && recorded_pr {
+    if !awaiting && recorded_pr(record) {
         return Some((
             "published_readback_unknown",
             "A PR is recorded for this head, but the destination could not be read back after the push. Check the PR's head before any further publication.",
@@ -102,6 +106,11 @@ fn phase(record: &Record, awaiting: bool) -> Option<(&'static str, &'static str)
             "Use the authorized publication path for the saved task; acceptance and approval still apply.",
         )
     })
+}
+
+/// A PR the runner recorded for this task's head.
+fn recorded_pr(record: &Record) -> bool {
+    record.pull_request.as_deref().is_some_and(|url| !url.is_empty())
 }
 
 fn age_secs(record: &Record, now_ms: u64) -> Option<u64> {
@@ -133,9 +142,7 @@ fn awaiting_publication(record: &Record) -> bool {
 /// True for a finished, accepted record whose explicit publication action left no useful
 /// exact-head receipt. The record is not "done" for anyone reading the result (#2304).
 pub fn publication_pending(record: &Record) -> bool {
-    awaiting_publication(record)
-        && !record.pull_request.as_deref().is_some_and(|url| !url.is_empty())
-        && PublicationStatus::read(record, 0).is_some()
+    PublicationStatus::owed(record, 0).is_some()
 }
 
 /// A bounded projection of one saved task, with no worker receipt or private paths.
@@ -395,14 +402,12 @@ mod tests {
             failed: Vec::new(),
         });
         assert!(publication_pending(&record));
+        assert_eq!(
+            PublicationStatus::owed(&record, 0).unwrap(),
+            "publication pending: committed_no_push_recorded (age unknown)"
+        );
         let status = PublicationStatus::read(&record, 0).expect("reported, not hidden");
         assert_eq!(status.phase, "committed_no_push_recorded");
-        // Only a run that reached a lane owes its receipt: an execution that has not run to
-        // completion yet is not pending.
-        let mut no_lane_run = accepted(&head);
-        no_lane_run.acceptance_outcome = None;
-        no_lane_run.outcome = Outcome::Running;
-        assert!(!publication_pending(&no_lane_run));
     }
 
     #[test]
