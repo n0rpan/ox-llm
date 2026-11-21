@@ -137,8 +137,10 @@ impl StreamRedactor {
         out
     }
 
-    /// At EOF, mask all matches in the pending tail before flushing it.
+    /// At EOF, mask all matches in the pending tail before flushing it. Nothing is held back
+    /// from the tail: no more bytes can arrive.
     fn finish(&mut self) -> Vec<u8> {
+        self.tokens.clear();
         let pending = std::mem::take(&mut self.pending);
         self.mask(&pending, pending.len()).0
     }

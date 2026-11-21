@@ -81,11 +81,21 @@ fn with_policy(
         let ttl = github_token_ttl(settings);
         ns = ns.with_gh_token_refreshing(move || gh_token(&command), ttl);
     }
-    if scrub_host || !known.is_empty() {
+    // A runner-owned task never runs the owner's helper: `gh` is not started for it either.
+    let command = (!lookup && !runner_owns_github && !offline)
+        .then(|| github_token_command(settings))
+        .unwrap_or_default();
+    if scrub_host || !known.is_empty() || !command.is_empty() {
         ns = ns.with_host_secrets_lazy(move || {
             let mut secrets = known.clone();
             if scrub_host {
                 secrets.extend(gh_host_secrets(run_gh));
+            }
+            // A host-rights command may start `gh` itself, or `env`, and read the owner's token
+            // that this session never loaded. Asking the same helper is the session's own call;
+            // a program the session never started cannot connect it to a prompt.
+            if let Some(token) = gh_token(&command) {
+                secrets.push(token);
             }
             secrets
         });
