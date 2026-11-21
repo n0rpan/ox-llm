@@ -140,7 +140,6 @@ impl StreamRedactor {
     /// At EOF, mask all matches in the pending tail before flushing it. Nothing is held back
     /// from the tail: no more bytes can arrive.
     fn finish(&mut self) -> Vec<u8> {
-        self.tokens.clear();
         let pending = std::mem::take(&mut self.pending);
         self.mask(&pending, pending.len()).0
     }
@@ -1139,6 +1138,18 @@ mod tests {
         );
         assert_eq!(live, b"[redacted] [redacted]");
         assert_eq!(result.output, live);
+    }
+
+    #[test]
+    fn eof_flushes_the_held_back_tail() {
+        // No more bytes can arrive, so nothing is held back: a secret still in the tail is
+        // masked, and the rest of it is shown.
+        let mut redactor = StreamRedactor::many(&["synthetic-long".to_string()]);
+        assert!(redactor.push(b"synthetic-lo").is_empty());
+        assert_eq!(redactor.finish(), REDACTED.as_bytes());
+        let mut plain = StreamRedactor::many(&["synthetic-long".to_string()]);
+        assert!(plain.push(b"xy").is_empty());
+        assert_eq!(plain.finish(), b"xy".to_vec());
     }
 
     #[test]
