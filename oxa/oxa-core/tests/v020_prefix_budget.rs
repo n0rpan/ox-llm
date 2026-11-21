@@ -164,8 +164,10 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// 2026-11-19: `wait` is declared in every session (tool entry and rule line).
 /// 2026-11-20: the `wait` tool description names `ci` and `pr_merged` first, with an example, and lists `pr_activity{pr,head}`.
 /// 2026-11-21: the `report-issue` skill text describes the session-model draft with in-process facts (#1553).
-const DEFAULT_STABLE_SHA: &str = "42913883f4a32153356048d6a2c680baebd2681d041f9195f3172925b2b653ad";
-const DEFAULT_STABLE_SHA_SUBAGENT: &str = "65a4cd205fb73627d4f89d2d54710e04c1e9b8b1d24ea76f894f06c4045cc71c";
+/// 2026-11-21: repinned from the hosted lane output at the merged head 577619ae (run 44942376628,
+/// identical on x86_64 and ARM).
+const DEFAULT_STABLE_SHA: &str = "0020d537263f19c5b772b280d9155b5a050bea101cf277d4c1a4f39a7bfc1ec4";
+const DEFAULT_STABLE_SHA_SUBAGENT: &str = "5af115f62652ea8ea95bae76f3692be40dc8ba85b410eddc88f3d65eee017014";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
 fn has_date(s: &str) -> bool {
