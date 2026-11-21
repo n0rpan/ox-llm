@@ -1045,6 +1045,8 @@ fn frame_pages_render(port: u16, authority: &str) {
             } else {
                 path.into()
             };
+            // The chat page needs the owner chat to have a composer; every page still
+            // answers with its own title, in the document or the fragment.
             let response = get(port, &path, authority, "");
             assert!(response.starts_with("HTTP/1.1 200"), "{path}");
             assert!(response.contains(&format!(">{title}</h1>")), "{path}");

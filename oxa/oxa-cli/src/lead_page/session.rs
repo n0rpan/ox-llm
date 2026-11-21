@@ -744,7 +744,11 @@ mod tests {
         );
         assert!(!html.contains("/home/synthetic-user"), "{html}");
         assert!(
-            html.matches("<secret>").count() >= 3 && html.contains("<span class=status>failed</span>"),
+            !html.contains("demo-secret-value") && html.contains("<span class=status>failed</span>"),
+            "{html}"
+        );
+        assert!(
+            html.matches("<secret>").count() >= 1 && html.matches("&lt;secret&gt;").count() >= 1,
             "{html}"
         );
         assert!(!html.contains("<script"), "{html}");
