@@ -984,11 +984,15 @@ fn dangerous_dialog_short_terminal_reviews_every_displayed_row() {
         );
     }
     assert_eq!(pages, 12, "24 rows in pages of two");
-    // Focus is still "Always allow"; the last page was on screen, so it answers.
+    // Focus is still "Always allow"; the last page was on screen, so it answers. As in the TUI,
+    // "Always allow" waits for the driver to save its keys before the worker gets the answer.
     assert_eq!(
         press_shown(&mut host, &keymap, 100, Some(SHORT_ROWS), "enter"),
         DialogKey::Closed
     );
+    let (keys, reply) = host.take_danger_always().expect("always is pending");
+    assert_eq!(keys, vec!["rm-recursive-outside rm -rf /srv/data".to_string()]);
+    reply.send(DangerAnswer::Always).unwrap();
     assert_eq!(rx.recv().unwrap(), DangerAnswer::Always);
 }
 
@@ -1023,6 +1027,9 @@ fn dangerous_dialog_short_terminal_keeps_unseen_rows_unreviewed() {
         press_shown(&mut host, &keymap, 100, Some(SHORT_ROWS), "enter"),
         DialogKey::Closed
     );
+    let (keys, reply) = host.take_danger_always().expect("always is pending");
+    assert_eq!(keys, vec!["rm-recursive-outside rm -rf /srv/data".to_string()]);
+    reply.send(DangerAnswer::Always).unwrap();
     assert_eq!(rx.recv().unwrap(), DangerAnswer::Always);
 }
 
