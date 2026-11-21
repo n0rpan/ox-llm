@@ -19,6 +19,7 @@
 mod approval;
 mod approve_cmd;
 mod args;
+pub mod askpass;
 mod child;
 mod config_cmd;
 mod dispatch;

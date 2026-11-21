@@ -44,7 +44,7 @@ pub enum Answer {
 }
 
 /// One sandboxed command.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ExecSpec {
     /// Run as `bash -c <command>`.
     pub command: String,
@@ -56,6 +56,22 @@ pub struct ExecSpec {
     pub timeout_s: Option<u32>,
     /// Extra environment, applied after the sandbox's fixed base environment.
     pub env: Vec<(String, String)>,
+}
+
+impl std::fmt::Debug for ExecSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExecSpec")
+            .field("command", &self.command)
+            .field("cwd", &self.cwd)
+            .field("writable", &self.writable)
+            .field("net", &self.net)
+            .field("timeout_s", &self.timeout_s)
+            .field(
+                "env_keys",
+                &self.env.iter().map(|(key, _)| key).collect::<Vec<_>>(),
+            )
+            .finish()
+    }
 }
 
 /// Result of a sandboxed command. `output` is stdout and stderr interleaved as produced.
@@ -132,6 +148,12 @@ pub trait Sandbox: Send + Sync {
     fn host_rights(&self) -> bool {
         false
     }
+    /// #955: what the bash tool sees at `path` (absolute) when it runs in `cwd`, `writable` as
+    /// the spec would be. The file tools use it to say so when a file they wrote is not shared
+    /// with bash. Default: the same file (no sandbox view).
+    fn bash_view(&self, _cwd: &Path, _path: &Path, _writable: bool) -> BashView {
+        BashView::Same
+    }
     /// The exact `bwrap` argv (without the leading `bwrap`) for `s`. Pure; golden-tested.
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String>;
     /// Run `s`, streaming output chunks to `live`. Cancel and timeout kill the process group.
@@ -162,6 +184,17 @@ pub trait Sandbox: Send + Sync {
             unsandboxed: false,
         }
     }
+}
+
+/// #955: how the bash tool's sandbox shows a host path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BashView {
+    /// The same file, as the file tools see it (readable and writable as the policy allows).
+    Same,
+    /// Visible to bash, but read-only there.
+    ReadOnly,
+    /// Not visible to bash at all.
+    Hidden,
 }
 
 /// How much the policy decides on its own (#202). `Standard` asks the user what the mode table

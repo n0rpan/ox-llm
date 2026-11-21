@@ -50,7 +50,7 @@ A stdio server is started with your rights, outside the bash sandbox. An HTTP se
 
 ### Project servers
 
-A project can add servers only when it is trusted. Its `mcp.json` may also override `enabled`, `exposure` and `toolExposure` of a server the user file defines. Changes to the project file are content-approved like the other project files ([security.md](security.md#project-trust)); a changed file is not used until you approve it.
+A project can add servers only when it is trusted. Its `mcp.json` may also override `enabled`, `exposure` and `toolExposure` of a server the user file defines. A trusted project's changed file loads with a notice under the default folder policy. With `projectTrustPolicy: "content"`, it needs fresh approval ([project trust](security.md#project-trust)).
 
 ## Commands
 

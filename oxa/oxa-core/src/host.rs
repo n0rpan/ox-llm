@@ -436,6 +436,9 @@ impl Ui for LockedUi<'_, '_> {
     fn approve_publication(&mut self, title: &str, body: &str) -> Option<bool> {
         self.with(|u| u.approve_publication(title, body))
     }
+    fn secret(&mut self, title: &str, body: &str) -> Option<String> {
+        self.with(|u| u.secret(title, body))
+    }
 
     fn confirm_cancellable(
         &mut self,

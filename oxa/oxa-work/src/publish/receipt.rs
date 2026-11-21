@@ -5,7 +5,7 @@
 //! answer is classified against the requested commit with local ancestry. A push that reports
 //! success but reads back another commit is an error. A rejected push names the exact remote
 //! commit. Nothing here ever force-pushes: both commits are kept.
-use crate::{checked, git, output, Result, RunPolicy};
+use crate::{command_runner, git, output, Result, RunPolicy, COMMAND_DEADLINE};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::path::Path;
@@ -98,32 +98,24 @@ fn is_ancestor(policy: &RunPolicy, repo: &Path, ancestor: &str, descendant: &str
     }
 }
 
-fn remote_tip(policy: &RunPolicy, repo: &Path, url: &str, branch: &str) -> Result<Option<String>> {
-    if url.starts_with('-') {
-        return Err("invalid publication destination".into());
-    }
+pub(crate) fn remote_tip(
+    policy: &RunPolicy,
+    repo: &Path,
+    url: &str,
+    branch: &str,
+    token: Option<&str>,
+) -> Result<Option<String>> {
     let reference = format!("refs/heads/{branch}");
-    let mut command = git(
-        policy,
-        repo,
-        &[
-            "-c",
-            "protocol.https.allow=always",
-            "-c",
-            "protocol.ssh.allow=always",
-            "-c",
-            "protocol.file.allow=always",
-            "ls-remote",
-            url,
-            &reference,
-        ],
-    );
-    super::isolate_github_environment(&mut command);
-    command
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GIT_ALLOW_PROTOCOL", "https:ssh:file");
-    let text = checked(command)?;
+    let mut command = super::destination_refs_command(policy, repo, url, token)?;
+    command.args(["ls-remote", url, &reference]);
+    let text = command_runner(
+        command,
+        Some(super::MAX_PUBLICATION_RESPONSE_BYTES),
+        COMMAND_DEADLINE,
+    )
+    .filter(|(status, _)| *status == 0)
+    .map(|(_, text)| text)
+    .ok_or("cannot read back the published branch")?;
     Ok(text
         .lines()
         .filter_map(|line| line.split_once('\t'))
@@ -133,14 +125,15 @@ fn remote_tip(policy: &RunPolicy, repo: &Path, url: &str, branch: &str) -> Resul
 }
 
 /// Ask the destination what `branch` holds and classify it against `head`.
-pub(crate) fn read_back(
+fn read_back(
     policy: &RunPolicy,
     repo: &Path,
     url: &str,
     branch: &str,
     head: &str,
+    token: Option<&str>,
 ) -> PublishReceipt {
-    match remote_tip(policy, repo, url, branch) {
+    match remote_tip(policy, repo, url, branch, token) {
         Ok(remote) => {
             let class = classify(head, remote.as_deref(), |a, b| is_ancestor(policy, repo, a, b));
             PublishReceipt {
@@ -157,33 +150,22 @@ pub(crate) fn read_back(
     }
 }
 
-/// Push `head` to `branch` and read the destination back. The receipt is stored in `slot` on
-/// success and on failure. A success that reads back another commit is an error; a rejected
+/// Push `head` to `branch` and return the read-back receipt on both success and failure.
+/// A success that reads back another commit is an error; a rejected
 /// push says what the remote holds. No force push anywhere.
 pub(crate) fn push_with_receipt(
     policy: &RunPolicy,
+    auth: Option<(&str, &crate::committed::Export)>,
     repo: &Path,
     head: &str,
     branch: &str,
     lock: &File,
-    slot: &mut Option<PublishReceipt>,
-) -> Result<()> {
-    let pushed = super::push_head(policy, repo, head, branch, lock);
-    let url = checked(git(
-        policy,
-        repo,
-        &["remote", "get-url", "--push", "--all", "origin"],
-    ))
-    .ok()
-    .and_then(|text| text.lines().next().map(str::to_owned));
-    let receipt = match url {
-        Some(url) => read_back(policy, repo, &url, branch, head),
-        None => PublishReceipt {
-            requested: head.to_owned(),
-            remote: None,
-            class: Divergence::RemoteUnknown,
-        },
-    };
+    url: &str,
+) -> (Result<()>, PublishReceipt) {
+    let pushed = super::push_head(policy, auth, repo, head, branch, lock, url);
+    // The destination is read back whether the push reported success or not, so a rejected
+    // push still names what the remote holds.
+    let receipt = read_back(policy, repo, url, branch, head, auth.map(|(token, _)| token));
     let verdict = match pushed {
         Ok(()) => match receipt.class {
             // An unreadable remote after a successful push is recorded, not guessed.
@@ -199,8 +181,7 @@ pub(crate) fn push_with_receipt(
             )),
         },
     };
-    *slot = Some(receipt);
-    verdict
+    (verdict, receipt)
 }
 
 #[cfg(test)]

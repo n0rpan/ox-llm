@@ -114,6 +114,18 @@ impl Ui for UiProxy {
         }
         rx.recv().ok().flatten()
     }
+    fn secret(&mut self, title: &str, body: &str) -> Option<String> {
+        let (reply, rx) = channel();
+        let req = UiRequest::Secret {
+            title: title.to_string(),
+            body: body.to_string(),
+            reply,
+        };
+        if !self.post(req) {
+            return None;
+        }
+        rx.recv().ok().flatten()
+    }
     fn editor(&mut self, title: &str, prefill: &str) -> Option<String> {
         let (reply, rx) = channel();
         let req = UiRequest::Editor {
@@ -335,6 +347,22 @@ impl DialogHost {
                     body: Body::Text {
                         input: Input::new(&placeholder),
                     },
+                    reply: Reply::Text(reply),
+                    timeout_ms: None,
+                    deadline: None,
+                    last_secs: None,
+                };
+                self.push(dialog, now_ms);
+            }
+            UiRequest::Secret { title, body, reply } => {
+                // The prompt is the requesting process's text: one sanitized line, shown as data
+                // in the title row, with the typed characters masked.
+                let prompt = body.lines().last().map(sanitize_dialog_text).unwrap_or_default();
+                let mut input = Input::new(&prompt);
+                input.set_masked(true);
+                let dialog = Dialog {
+                    title,
+                    body: Body::Text { input },
                     reply: Reply::Text(reply),
                     timeout_ms: None,
                     deadline: None,

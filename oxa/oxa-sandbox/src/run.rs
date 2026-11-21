@@ -47,7 +47,7 @@ pub fn run_argv_capture(
     let mut cmd = Command::new(prog);
     cmd.args(args)
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
-    execute(cmd, prog, None, timeout_s, cancel, live, capture)
+    execute(cmd, None, None, timeout_s, cancel, live, capture)
 }
 
 /// [`run_argv`] with `stdin` written to the child's standard input and then closed. A child
@@ -66,7 +66,7 @@ pub fn run_argv_stdin(
     let mut cmd = Command::new(prog);
     cmd.args(args)
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
-    execute(cmd, prog, Some(stdin), timeout_s, cancel, live, true)
+    execute(cmd, None, Some(stdin), timeout_s, cancel, live, true)
 }
 
 /// Run a resolved command with only the environment chosen by the caller.
@@ -86,7 +86,7 @@ pub(crate) fn run_argv_cleared(
     cmd.args(args)
         .env_clear()
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
-    execute(cmd, prog, stdin, timeout_s, cancel, live, capture)
+    execute(cmd, None, stdin, timeout_s, cancel, live, capture)
 }
 
 /// Run `argv` (optionally feeding `stdin`) so that only this child inherits the listed close-on-exec descriptors.
@@ -118,7 +118,7 @@ pub(crate) fn run_argv_fds(
             });
         }
     }
-    execute(cmd, prog, stdin, timeout_s, cancel, live, capture)
+    execute(cmd, None, stdin, timeout_s, cancel, live, capture)
 }
 
 /// Run `bash -c <command>` with the user's own rights in `s.cwd` (for `!cmd` / `!!cmd`, pi's
@@ -158,8 +158,26 @@ pub(crate) fn run_unsandboxed_env(
     live: &mut dyn FnMut(&[u8]),
     capture: bool,
 ) -> ExecResult {
-    let cmd = unsandboxed_command(s, base);
-    let mut r = execute(cmd, "bash", None, s.timeout_s, cancel, live, capture);
+    let env = base.unwrap_or(&s.env);
+    let launch = s
+        .env
+        .iter()
+        .rev()
+        .find(|(key, _)| key == crate::SUDO_LAUNCH_ENV)
+        .and_then(|(_, selector)| crate::SudoLaunch::resolve(selector, &s.command))
+        .filter(|_| std::path::Path::new(crate::sudo::SYSTEM_SUDO).is_file());
+    let mut cmd = if let Some(launch) = &launch {
+        let mut cmd = launch.command();
+        cmd.current_dir(&s.cwd)
+            .env_clear()
+            .envs(env.iter().map(|(key, value)| (key, value)));
+        cmd.env("SUDO_ASKPASS", launch.helper());
+        cmd
+    } else {
+        unsandboxed_command(s, base)
+    };
+    cmd.env_remove(crate::SUDO_LAUNCH_ENV);
+    let mut r = execute(cmd, launch.as_deref(), None, s.timeout_s, cancel, live, capture);
     // Linux keeps `false`: only a platform without bwrap reports a command as unsandboxed.
     r.unsandboxed = !cfg!(target_os = "linux");
     r
@@ -174,7 +192,7 @@ pub(crate) fn run_unsandboxed_stdin_env(
     base: &[(String, String)],
 ) -> ExecResult {
     let cmd = unsandboxed_command(s, Some(base));
-    let mut r = execute(cmd, "bash", Some(stdin), s.timeout_s, cancel, live, true);
+    let mut r = execute(cmd, None, Some(stdin), s.timeout_s, cancel, live, true);
     r.unsandboxed = true;
     r
 }
@@ -194,7 +212,7 @@ pub fn run_unsandboxed_stdin(
         .current_dir(&s.cwd)
         .env_clear()
         .envs(s.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
-    execute(cmd, "bash", Some(stdin), s.timeout_s, cancel, live, true)
+    execute(cmd, None, Some(stdin), s.timeout_s, cancel, live, true)
 }
 
 /// Bounded capture: the first and last `cap / 2` bytes, with a count of what was dropped.
@@ -264,13 +282,14 @@ fn group_alive(pgid: libc::pid_t) -> bool {
 
 fn execute(
     mut cmd: Command,
-    prog: &str,
+    launch: Option<&crate::SudoLaunch>,
     stdin: Option<&[u8]>,
     timeout_s: Option<u32>,
     cancel: &CancelToken,
     live: &mut dyn FnMut(&[u8]),
     capture: bool,
 ) -> ExecResult {
+    let prog = cmd.get_program().to_string_lossy().into_owned();
     let (reader, writer) = match std::io::pipe() {
         Ok(p) => p,
         Err(e) => return spawn_failed(format!("{prog}: cannot create pipe: {e}")),
@@ -285,9 +304,11 @@ fn execute(
         Stdio::null()
     })
     .stdout(Stdio::from(writer))
-    .stderr(Stdio::from(writer_err))
-    .process_group(0);
-    let spawned = cmd.spawn();
+    .stderr(Stdio::from(writer_err));
+    let spawned = match launch {
+        Some(launch) => launch.spawn(&mut cmd),
+        None => cmd.process_group(0).spawn(),
+    };
     // The Command still holds the write ends; they must close here or the reader never sees EOF.
     drop(cmd);
     let mut child = match spawned {

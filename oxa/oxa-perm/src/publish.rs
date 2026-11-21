@@ -168,6 +168,153 @@ const GIT_BUILTINS: &[&str] = &[
     "write-tree",
 ];
 
+/// #2055: the resolved facts a push acts on, re-read at every decision: the remote's identity (a
+/// digest of the origin URLs and rewrites, never the URLs themselves, which can hold
+/// credentials) and the object id of each source ref. `None` when the line pushes nothing,
+/// `Some(Ok(digest))` for the facts, `Some(Err(()))` when a push is present but its facts cannot
+/// be resolved (dynamic words, an env prefix that can redirect git, an unreadable repository).
+/// A grant keyed on text alone would cover the same words after a commit, a reset or a
+/// `git remote set-url`; keyed on these facts it does not.
+pub(crate) fn push_facts(stages: &[Stage], cwd: &Path) -> Option<Result<String, ()>> {
+    let mut facts: Vec<String> = Vec::new();
+    for st in stages.iter().filter(|st| st.mark.is_none()) {
+        let fx = crate::effects::of(&st.words, &st.redirects, false);
+        let Some(name) = fx.argv.first() else { continue };
+        if base(name) != "git" {
+            // A wrapper that carries a push in its words hides it from this reading.
+            let hides = st.words.iter().any(|w| w.contains("git") && w.contains("push"));
+            if hides {
+                return Some(Err(()));
+            }
+            continue;
+        }
+        let rest = &fx.argv[1..];
+        let (k, dirs, opaque) = git_globals(rest);
+        if rest.get(k).map(String::as_str) != Some("push") {
+            continue;
+        }
+        if name.as_str() != "git"
+            || opaque
+            || !fx.dirs.is_empty()
+            || env_unsafe(&st.words)
+            || st.words.iter().any(|w| dynamic(w))
+        {
+            return Some(Err(()));
+        }
+        match one_push_facts(&rest[k + 1..], &git_working_dir(cwd, &dirs)) {
+            Some(text) => facts.push(text),
+            None => return Some(Err(())),
+        }
+    }
+    if facts.is_empty() {
+        return None;
+    }
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(facts.join("\n").as_bytes());
+    Some(Ok(digest.iter().map(|b| format!("{b:02x}")).collect()))
+}
+
+/// The facts of one `git push` (arguments after `push`) run in `wd`.
+fn one_push_facts(push: &[String], wd: &Path) -> Option<String> {
+    let Some((gitdir, common)) = git_dirs(wd) else {
+        // Outside any repository a push fails by itself; a `.git` that cannot be read is
+        // unresolvable.
+        let has_dotgit = wd
+            .ancestors()
+            .any(|d| std::fs::symlink_metadata(d.join(".git")).is_ok());
+        return (!has_dotgit).then(|| "no repository".to_string());
+    };
+    let remote = url_fingerprint(wd)?.join("\n");
+    let mut positional: Vec<&str> = Vec::new();
+    let mut whole = false;
+    for a in push {
+        match a.as_str() {
+            "--all" | "--mirror" | "--tags" | "--branches" => whole = true,
+            s if s.starts_with('-') => {}
+            s => positional.push(s),
+        }
+    }
+    let mut lines = vec![
+        format!("remote {remote}"),
+        format!("head {}", resolve_ref(&gitdir, &common, "HEAD")?),
+    ];
+    if whole || positional.len() < 2 {
+        // No refspec, or every ref: the content of every local branch decides what goes out.
+        lines.push(format!(
+            "packed {}",
+            read_small(&common.join("packed-refs")).unwrap_or_default()
+        ));
+        let mut branches: Vec<String> = Vec::new();
+        collect_refs(&common.join("refs/heads"), "refs/heads", &mut branches);
+        branches.sort();
+        lines.extend(branches);
+    }
+    for spec in positional.iter().skip(1) {
+        let spec = spec.strip_prefix('+').unwrap_or(spec);
+        let (src, dst) = spec.split_once(':').unwrap_or((spec, spec));
+        if src.is_empty() {
+            lines.push(format!("delete {dst}"));
+            continue;
+        }
+        let full = match src {
+            "HEAD" => "HEAD".to_string(),
+            s if s.starts_with("refs/") => s.to_string(),
+            s => format!("refs/heads/{s}"),
+        };
+        lines.push(format!(
+            "{full} {} -> {dst}",
+            resolve_ref(&gitdir, &common, &full)?
+        ));
+    }
+    Some(lines.join("\n"))
+}
+
+/// The object id `name` (`HEAD`, `refs/heads/x`) points at, read from the git directory: a loose
+/// ref file, then `packed-refs`. No git process runs. `None` when it cannot be read.
+fn resolve_ref(gitdir: &Path, common: &Path, name: &str) -> Option<String> {
+    let mut name = name.to_string();
+    for _ in 0..5 {
+        let loose = [gitdir, common]
+            .iter()
+            .find_map(|dir| read_small(&dir.join(&name)))
+            .map(|t| t.trim().to_string());
+        let value = match loose {
+            Some(v) => v,
+            None => read_small(&common.join("packed-refs"))?
+                .lines()
+                .find_map(|l| {
+                    l.strip_suffix(name.as_str())
+                        .and_then(|oid| oid.strip_suffix(' '))
+                })
+                .map(str::to_string)?,
+        };
+        match value.strip_prefix("ref: ") {
+            Some(next) => name = next.trim().to_string(),
+            None if value.len() >= 40 && value.chars().all(|c| c.is_ascii_hexdigit()) => return Some(value),
+            None => return None,
+        }
+    }
+    None
+}
+
+/// `<ref> <content>` of every loose ref file under `dir`.
+fn collect_refs(dir: &Path, prefix: &str, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = format!("{prefix}/{}", entry.file_name().to_string_lossy());
+        let Ok(md) = std::fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if md.file_type().is_dir() {
+            collect_refs(&entry.path(), &name, out);
+        } else if let Some(text) = read_small(&entry.path()) {
+            out.push(format!("{name} {}", text.trim()));
+        }
+    }
+}
+
 /// What one simple command is, for the publish rule.
 #[derive(PartialEq, Eq)]
 enum Kind {

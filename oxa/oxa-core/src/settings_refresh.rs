@@ -144,19 +144,21 @@ pub(crate) fn refresh_at_run_start(st: &mut SessionState, sink: &mut dyn EventSi
     if !enabled(&st.settings) {
         return;
     }
+    let mut reloaded_project = false;
     let outcome = {
         let Ok(mut watch) = st.shared.gate.settings_watch.lock() else {
             return;
         };
         let mut load = |files, project_changed| {
-            // An unchanged project layer keeps the effective launch trust, including
-            // explicit one-run approval. Changed bytes still need content approval.
-            let read_project = project_changed
-                && matches!(
-                    oxa_perm::TrustStore::load(&st.dirs.trust_file()).approval(&st.cwd),
-                    oxa_perm::Approval::Matches
-                );
-            st.settings.refresh_files(files, read_project)
+            reloaded_project = project_changed && {
+                let store = oxa_perm::TrustStore::load(&st.dirs.trust_file());
+                let saved = store.lookup(&st.cwd);
+                let owner = Settings::load(&st.dirs, &st.cwd, false);
+                saved != Some(false)
+                    && ((saved == Some(true) && !owner.project_trust_requires_content())
+                        || matches!(store.approval(&st.cwd), oxa_perm::Approval::Matches))
+            };
+            st.settings.refresh_files(files, reloaded_project)
         };
         check(&mut watch, &st.settings, &mut load)
     };
@@ -177,6 +179,17 @@ pub(crate) fn refresh_at_run_start(st: &mut SessionState, sink: &mut dyn EventSi
             changed,
             prompt,
         } => {
+            if reloaded_project {
+                let path = st.dirs.project_settings_file(&st.cwd);
+                notice(
+                    sink,
+                    Level::Info,
+                    format!(
+                        "Project settings reloaded: {}",
+                        path.to_string_lossy().escape_debug()
+                    ),
+                );
+            }
             if changed.is_empty() {
                 st.settings = *settings;
                 crate::session::sync_job_wake(st);

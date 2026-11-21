@@ -562,6 +562,213 @@ pub fn command_runner(command: Command, limit: Option<usize>, deadline: Duration
     command_runner_with_stdin(command, limit, Stdio::null(), deadline)
 }
 
+/// Run a vetted command outside the sandbox and take its stdout as a GitHub token: one word
+/// of at most 4096 bytes. Any failure is `None`; the output is never logged.
+pub fn token_from_command(command: Command, deadline: Duration) -> Option<String> {
+    if !Path::new(command.get_program()).is_absolute() {
+        return None;
+    }
+    let (code, out) = command_runner(command, Some(4096), deadline)?;
+    let token = out.trim();
+    (code == 0 && !token.is_empty() && !token.chars().any(|ch| ch.is_whitespace() || ch.is_control()))
+        .then(|| token.to_string())
+}
+
+/// Resolve a configured token command without consulting the ambient PATH. Every operand
+/// must be a trusted absolute helper: an executable can interpret arguments as code regardless
+/// of its name (including renamed interpreters and multicall binaries).
+pub fn trusted_token_program(
+    argv: &[String],
+    path: Option<&std::ffi::OsStr>,
+    project: Option<&Path>,
+    writes: &[PathBuf],
+    writable_home: Option<&Path>,
+) -> Option<Command> {
+    let (program, args) = argv.split_first()?;
+    let project_paths = project.map(token_project_paths).transpose().ok()?;
+    let real_writes: Vec<_> = writes.iter().filter_map(|p| p.canonicalize().ok()).collect();
+    let real_home = writable_home.map(Path::canonicalize).transpose().ok()?;
+    let untrusted = |p: &Path| {
+        token_project_path(p, project_paths.as_ref())
+            || writes.iter().chain(&real_writes).any(|root| p.starts_with(root))
+            || writable_home.into_iter().chain(real_home.as_deref()).any(|home| {
+                p.strip_prefix(home)
+                    .ok()
+                    .and_then(|rest| rest.iter().next())
+                    .is_some_and(|entry| {
+                        !entry.as_encoded_bytes().starts_with(b".")
+                            && !oxa_proto::guard::PROTECTED_IN_HOME
+                                .iter()
+                                .any(|name| entry == *name)
+                    })
+            })
+    };
+    let validate = |candidate: &Path| resolve_token_helper(candidate, &untrusted);
+    let exe = if program.contains('/') {
+        validate(Path::new(program))?
+    } else {
+        if program.is_empty() || matches!(program.as_str(), "." | "..") {
+            return None;
+        }
+        std::env::split_paths(path?).find_map(|dir| validate(&dir.join(program)))?
+    };
+    let args = args
+        .iter()
+        .map(|arg| validate(Path::new(arg)))
+        .collect::<Option<Vec<_>>>()?;
+    let mut command = token_helper_command(&exe, project);
+    command.args(args);
+    Some(command)
+}
+
+fn resolve_token_helper(path: &Path, untrusted: &impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Component;
+
+    // Check each step of resolution: an outside alias can pass through a writable directory
+    // and back out again. Use the resolved path when spawning, not the alias we inspected.
+    let mut pending = path.to_path_buf();
+    for _ in 0..=40 {
+        if !pending.is_absolute() || untrusted(&pending) {
+            return None;
+        }
+        let mut resolved = PathBuf::new();
+        let mut components = pending.components();
+        loop {
+            let part = components.next()?;
+            if part == Component::ParentDir {
+                resolved.pop();
+                continue;
+            }
+            resolved.push(part.as_os_str());
+            if untrusted(&resolved) {
+                return None;
+            }
+            let meta = resolved.symlink_metadata().ok()?;
+            let tail = components.as_path();
+            let mode = meta.permissions().mode();
+            if meta.is_symlink() {
+                let parent = resolved.parent()?;
+                if parent.metadata().ok()?.permissions().mode() & 0o022 != 0 {
+                    return None;
+                }
+                pending = parent.join(resolved.read_link().ok()?).join(tail);
+                break;
+            }
+            if tail.as_os_str().is_empty() {
+                return (meta.is_file() && mode & 0o111 != 0 && mode & 0o022 == 0).then_some(resolved);
+            }
+            let immediate_parent = components.clone().nth(1).is_none();
+            if !meta.is_dir() || (mode & 0o022 != 0 && (immediate_parent || mode & 0o1000 == 0)) {
+                return None;
+            }
+        }
+    }
+    None
+}
+
+fn token_project_root(path: &Path) -> &Path {
+    path.ancestors()
+        .filter(|dir| dir.join(".git").exists())
+        .last()
+        .unwrap_or(path)
+}
+
+fn token_project_paths(path: &Path) -> io::Result<(&Path, PathBuf)> {
+    let real = path.canonicalize()?;
+    Ok((token_project_root(path), token_project_root(&real).to_path_buf()))
+}
+
+fn token_project_path(path: &Path, project: Option<&(&Path, PathBuf)>) -> bool {
+    path.components().any(|part| part.as_os_str() == ".oxa-worktrees")
+        || project.is_some_and(|(root, real)| path.starts_with(root) || path.starts_with(real))
+}
+
+/// Execute the vetted helper outside the checkout with no shell startup, loader,
+/// Git, or credential overrides inherited from the caller.
+pub fn token_helper_command(exe: &Path, project: Option<&Path>) -> Command {
+    token_helper_in(exe, project, std::env::var_os)
+}
+
+fn token_helper_in(
+    exe: &Path,
+    project: Option<&Path>,
+    env: impl Fn(&'static str) -> Option<std::ffi::OsString>,
+) -> Command {
+    let mut command = Command::new(exe);
+    command.env_clear().current_dir("/").env("PATH", "/usr/bin:/bin");
+    let Ok(project) = project.map(token_project_paths).transpose() else {
+        return command;
+    };
+    for key in ["HOME", "XDG_CONFIG_HOME", "GH_CONFIG_DIR"] {
+        let Some(dir) = env(key).map(PathBuf::from) else {
+            continue;
+        };
+        if !dir.is_absolute() || token_project_path(&dir, project.as_ref()) {
+            continue;
+        }
+        if let Ok(real) = dir.canonicalize() {
+            if real.is_dir() && !token_project_path(&real, project.as_ref()) {
+                command.env(key, real);
+            }
+        }
+    }
+    command
+}
+
+#[cfg(test)]
+#[test]
+fn token_helper_never_inherits_checkout_home_or_config() {
+    let dir = test_dir::PrivateDir::new("token-helper-home");
+    let repo = dir.path().join("project");
+    let child = repo.join("src");
+    let home = repo.join("isolated-home");
+    let outside = dir.path().join("outside");
+    for path in [&repo.join(".git"), &child, &home, &outside] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    let alias = dir.path().join("inside-alias");
+    std::os::unix::fs::symlink(&home, &alias).unwrap();
+    let command = token_helper_in(Path::new("/usr/bin/false"), Some(&child), |key| {
+        match key {
+            "HOME" => Some(&home),
+            "XDG_CONFIG_HOME" => Some(&alias),
+            "GH_CONFIG_DIR" => Some(&outside),
+            _ => None,
+        }
+        .map(|path| path.clone().into_os_string())
+    });
+    let passed: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+    assert!(!passed.contains_key(std::ffi::OsStr::new("HOME")));
+    assert!(!passed.contains_key(std::ffi::OsStr::new("XDG_CONFIG_HOME")));
+    assert_eq!(
+        passed
+            .get(std::ffi::OsStr::new("GH_CONFIG_DIR"))
+            .copied()
+            .flatten(),
+        Some(outside.canonicalize().unwrap().as_os_str())
+    );
+}
+
+/// The owner's token command (`oxa.github.tokenCommand`) for the runner's own GitHub calls:
+/// a trusted absolute program, or a bare name only from the vetted tool directories.
+fn policy_token(policy: &RunPolicy, repo: &Path) -> Result<Option<String>> {
+    if policy.github_token_command.is_empty() {
+        return Ok(None);
+    }
+    let command = trusted_token_program(
+        &policy.github_token_command,
+        Some(&policy.host_path),
+        Some(repo),
+        &policy.github_token_write_paths,
+        None,
+    )
+    .ok_or("GitHub token command is outside trusted tool locations")?;
+    token_from_command(command, COMMAND_DEADLINE)
+        .map(Some)
+        .ok_or_else(|| "GitHub token command failed".into())
+}
+
 /// Capture binary stdout with the same process and pipe deadline as the text runner.
 pub fn command_output_bytes(
     command: Command,
@@ -926,6 +1133,11 @@ pub struct RunPolicy {
     pub offline: bool,
     /// Set by the runner from the immutable packet before launching its children.
     pub runner_owns_github: bool,
+    /// `oxa.github.tokenCommand` from the user's settings: argv that prints the token the
+    /// runner's `gh` and `git push` use when publishing. Empty keeps the stored `gh` login.
+    pub github_token_command: Vec<String>,
+    /// Worker-writable roots, including implicit caches. Token commands cannot load code from them.
+    pub github_token_write_paths: Vec<PathBuf>,
     /// The owner's level for the workers this runner starts. Only `Yolo` changes the worker argv.
     pub autonomy: oxa_proto::Autonomy,
     /// How much GitHub access a worker keeps when the runner owns GitHub for its task.
