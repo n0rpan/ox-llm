@@ -1,0 +1,1 @@
+- Desktop app (`oxa-desk`): the build plan, the slice list and the rules for desk slices are in the repository. Nothing users run changes yet.
