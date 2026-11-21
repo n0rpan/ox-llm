@@ -1197,6 +1197,51 @@ mod tests {
     }
 
     #[test]
+    fn live_stream_delivers_a_change_made_right_after_the_first_event() {
+        use std::sync::atomic::{AtomicBool, AtomicU64};
+        use std::sync::{Condvar, Mutex};
+        // Force the interleaving the loaded CI runner hit by chance: the value
+        // changes after the client has received the first event, but before the
+        // server samples its baseline fingerprint. The first fingerprint call
+        // waits (bounded) for that change; a baseline sampled after the first
+        // write swallows it and never sends a second event. With the baseline
+        // sampled before the first write the wait cannot be satisfied in time
+        // and simply expires, and the change is delivered.
+        let value = Arc::new(AtomicU64::new(1));
+        let changed = Arc::new((Mutex::new(false), Condvar::new()));
+        let baseline_call = Arc::new(AtomicBool::new(true));
+        let (fingerprint_value, signal, baseline) = (value.clone(), changed.clone(), baseline_call.clone());
+        let live = Live {
+            fingerprint: Box::new(move || {
+                if baseline.swap(false, Ordering::SeqCst) {
+                    let (lock, cvar) = &*signal;
+                    let mut got = lock.lock().unwrap();
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    while !*got {
+                        let left = deadline.saturating_duration_since(Instant::now());
+                        if left.is_zero() {
+                            break;
+                        }
+                        got = cvar.wait_timeout(got, left).unwrap().0;
+                    }
+                }
+                fingerprint_value.load(Ordering::SeqCst)
+            }),
+            running_sha256: None,
+            poll: Duration::from_millis(20),
+        };
+        let mut client = live_client(true, live);
+        let first = read_updates(&mut client, 1);
+        assert!(first.contains("event: lead-update"), "{first}");
+        value.store(2, Ordering::SeqCst);
+        let (lock, cvar) = &*changed;
+        *lock.lock().unwrap() = true;
+        cvar.notify_all();
+        read_updates(&mut client, 1);
+        drop(client);
+    }
+
+    #[test]
     fn slow_reader_cannot_reset_the_total_response_write_budget() {
         use std::sync::atomic::AtomicBool;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
