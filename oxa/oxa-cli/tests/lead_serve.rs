@@ -862,12 +862,13 @@ fn authorized_durable_asks_reach_the_protected_view_as_a_live_readback() {
         }
     }
 
+    // A proxy-mode lead mints no client token: its proof is the forwarded login.
     let login = "Tailscale-User-Login: owner@example.invalid\r\n";
-    let page = get(port, "/", authority, login);
+    let page = get_raw(port, "/", authority, login);
     assert!(page.starts_with("HTTP/1.1 200"), "{page}");
     assert!(page.contains("Checks on main are failing."), "{page}");
     assert!(page.contains("Unanswered owner decisions (1)"), "{page}");
-    let asks = get(port, "/asks", authority, login);
+    let asks = get_raw(port, "/asks", authority, login);
     assert!(asks.contains(&ask_id), "{asks}");
     assert!(asks.contains("revision"), "{asks}");
     assert!(
@@ -878,7 +879,7 @@ fn authorized_durable_asks_reach_the_protected_view_as_a_live_readback() {
     // durable asks and never claims they were observed empty.
     assert!(asks.contains("Runner asks unavailable."), "{asks}");
     // The durable ask never reaches an unauthorized peer.
-    let refused = get(
+    let refused = get_raw(
         port,
         "/",
         authority,
