@@ -29,14 +29,14 @@ thread_local! {
     static AGENT: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 /// The bearer header of the local client token the running lead wrote for its owner.
-/// A test that starts the service directly names its agent dir; otherwise the child's
-/// `HOME` says where the token was published.
+/// A local lead publishes the token before it reports its listener; the brief wait covers a
+/// read that races the atomic replace. Every test here records the agent dir it started.
 fn bearer() -> String {
-    let dir = AGENT.with(|agent| agent.borrow().clone()).unwrap_or_else(|| {
-        std::env::var_os("HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_default()
-            .join(".oxa/agent")
+    let dir = AGENT.with(|agent| {
+        agent
+            .borrow()
+            .clone()
+            .expect("the lead start recorded its agent dir")
     });
     for _ in 0..200 {
         if let Ok(token) = std::fs::read_to_string(dir.join("lead-client-token")) {
@@ -82,15 +82,26 @@ fn start_with_situation(
     );
     let stdout = child.0.stdout.take().unwrap();
     let (send, receive) = std::sync::mpsc::channel();
+    // Keep reading until the child exits. After the listener line a local lead prints the URL
+    // that carries the client token; a closed read end fails that write and the lead exits
+    // before it serves anything.
     std::thread::spawn(move || {
-        let mut line = String::new();
-        let _ = BufReader::new(stdout).read_line(&mut line);
-        let _ = send.send(line);
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if send.send(line).is_err() {
+                break;
+            }
+        }
     });
-    assert!(receive
-        .recv_timeout(Duration::from_secs(10))
-        .unwrap()
-        .contains("listening"));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let line = receive
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .expect("lead serve did not report its listener");
+        if line.contains("listening") {
+            break;
+        }
+    }
     child
 }
 
@@ -130,6 +141,7 @@ fn form_nonce(page: &str) -> &str {
 
 fn with_fixed_chat(run: impl FnOnce(u16, &str, &std::path::Path)) {
     let test = TestEnv::new();
+    // `start_with_situation` names the agent dir the token went to.
     std::fs::set_permissions(test.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = reservation.local_addr().unwrap().port();
@@ -830,12 +842,12 @@ fn authorized_durable_asks_reach_the_protected_view_as_a_live_readback() {
     let mut child = Running(invocation.spawn().unwrap());
     let stdout = child.0.stdout.take().unwrap();
     let (send, receive) = std::sync::mpsc::channel();
+    // Drain the whole start output, as `start_with_situation` does, so the URL line finds a
+    // reader even though this test starts the service itself.
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
-            let line = line.unwrap_or_default();
-            let found = line.contains("listening");
-            let _ = send.send(line);
-            if found {
+            let Ok(line) = line else { break };
+            if send.send(line).is_err() {
                 break;
             }
         }
