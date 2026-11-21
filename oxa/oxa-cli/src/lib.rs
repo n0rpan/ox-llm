@@ -35,6 +35,7 @@ mod key_hints;
 pub mod lead;
 pub mod lead_access;
 pub(crate) mod lead_attach;
+mod lead_board_cmd;
 pub(crate) mod lead_chat;
 pub mod lead_http;
 pub mod lead_input;
@@ -88,6 +89,7 @@ pub use dispatch::{choose_mode, run, with_lead_owner, LeadOwnerBinding, RunMode,
 pub use help::{requested, text};
 pub use hooks::{build_hooks, HookInputs, HookSets, EXTENSIONS_LOG};
 pub use identity_cmd::{identity_facts, run_identity, write_identity};
+pub use lead_board_cmd::run_lead_board;
 pub use local_cmd::run_local;
 pub use mcp_cmd::run_mcp;
 pub use memory_cmd::run_memory;

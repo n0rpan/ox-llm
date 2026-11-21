@@ -329,7 +329,7 @@ fn valid_workflow(name: Option<&str>) -> Result<String, String> {
 }
 
 /// `owner/name` of a github.com remote URL (ssh, scp-style or https), else `None`.
-fn parse_github_remote(url: &str) -> Option<String> {
+pub(crate) fn parse_github_remote(url: &str) -> Option<String> {
     let rest = [
         "git@github.com:",
         "https://github.com/",
