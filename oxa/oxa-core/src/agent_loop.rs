@@ -1590,7 +1590,7 @@ fn failure_why(e: &OxaError, got_data: bool) -> &'static str {
 fn turn_extra(
     st: &SessionState,
     artifacts: &mut Option<String>,
-    schema_repaired: &Option<String>,
+    schema_repaired: &Option<crate::output_schema::OutputValidationError>,
 ) -> Vec<WireMsg> {
     let mut extra: Vec<WireMsg> = st
         .output_schema

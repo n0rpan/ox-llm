@@ -139,6 +139,15 @@ fn artifact_line(cwd: &Path, written: &[String]) -> Option<String> {
     ))
 }
 
+/// #2295: the path argument of a successful `write`/`edit` call (`None`: not a string).
+fn written_path(call: &ToolCall) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(&call.args_raw)
+        .ok()?
+        .get("path")?
+        .as_str()
+        .map(str::to_owned)
+}
+
 /// #2295: whether this run has `done` checks to run. An untrusted project's `done` is never
 /// merged into the settings, so it is not in the list and nothing is kept for it.
 pub(crate) fn checks_run(st: &SessionState) -> bool {
