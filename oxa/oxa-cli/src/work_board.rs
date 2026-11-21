@@ -1080,7 +1080,7 @@ impl SampleSource<'_> {
             };
         // One sample owns its report history: it writes back the attempts it verified, which
         // the next sample's command run starts from.
-        let mut report_settings = self.report_settings.clone();
+        let mut report_settings = self.report_settings.as_ref().map(landing::report::Settings::fork);
         if let Some(settings) = &mut report_settings {
             match reader.optional("sample_test_reports", |r| {
                 r.sample_test_reports(&mut queue_rejections, settings)
