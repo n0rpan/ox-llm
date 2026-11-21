@@ -1064,6 +1064,15 @@ fn run_inner(
             continue;
         }
         let failed_check = crate::done::check(st, done, sink, ui);
+        eprintln!(
+            "DEBUG-CHECK failed={} turn={} {}",
+            failed_check.is_some(),
+            turn_index,
+            failed_check
+                .as_deref()
+                .map(|t| &t[..t.len().min(300)])
+                .unwrap_or("")
+        );
         let advised = crate::advice::observe_done(st, done.observation.take(), true, sink)?;
         if matches!(advised, crate::advice::AdviceResult::Escalate) {
             return Ok(RunEnd::Failed(OxaError::new(
