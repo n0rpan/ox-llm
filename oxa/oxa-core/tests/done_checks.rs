@@ -172,17 +172,6 @@ fn failing_check_feeds_model_then_passes() {
         .unwrap();
     assert!(last_user.content.as_ref().unwrap().contains("MISSING-FIXED"));
     assert_eq!(engine.remaining(), 0);
-    // What reached the model, for a later failure's message.
-    let repair = |i: usize| -> String {
-        engine.requests()[i]
-            .messages
-            .iter()
-            .rev()
-            .find(|m| m.role == oxa_proto::Role::User)
-            .and_then(|m| m.content.clone())
-            .unwrap_or_default()
-    };
-    eprintln!("REPAIR {:?}", repair(2));
 }
 
 #[test]
@@ -770,6 +759,8 @@ fn call(id: &str, name: &str, args: serde_json::Value) -> oxa_proto::ToolCall {
 #[test]
 fn a_failure_with_a_passing_check_names_the_verified_file_in_the_repair() {
     let env = TestEnv::new();
+    // A build check that passes in this folder: `make all` is a recognised check.
+    env.write("work/Makefile", "all:\n\t@true\n");
     let (rec, engine) = run(
         &env,
         // The check passes on this turn's write and fails as the end-of-run done check.
@@ -779,8 +770,7 @@ fn a_failure_with_a_passing_check_names_the_verified_file_in_the_repair() {
             tools_turn(vec![
                 call("w", "write", json!({"path": "answer.json", "content": "decoded"})),
                 call("b", "bash", json!({"command": "false"})),
-                // A test run that prints its pass summary is the check (a silent exit 0 is
-                // not one).
+                // A build run that succeeds is the check (a bare `true` is not one).
                 call("c", "bash", json!({"command": "make all"})),
             ]),
             ScriptTurn::text("done"),
